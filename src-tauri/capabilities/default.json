@@ -1,0 +1,57 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
+    "dialog:default",
+    "shell:allow-execute",
+    "shell:allow-open",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/rg",
+          "cmd": "binaries/rg",
+          "args": true,
+          "sidecar": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/rg",
+          "cmd": "binaries/rg",
+          "args": true,
+          "sidecar": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-kill",
+      "allow": [
+        {
+          "name": "binaries/rg",
+          "cmd": "binaries/rg",
+          "args": true,
+          "sidecar": true
+        }
+      ]
+    }
+  ]
+}
