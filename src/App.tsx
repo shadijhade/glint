@@ -9,8 +9,11 @@ import { AlertTriangle } from 'lucide-react';
 import { Child } from "@tauri-apps/plugin-shell";
 import { Toaster, toast } from "sonner";
 import * as opener from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
+import { useTheme } from "./hooks/useTheme";
 
 function App() {
+  useTheme(); // Initialize theme system
   const [results, setResults] = useState<RgMatch[]>([]);
   const [searchedQuery, setSearchedQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
@@ -18,7 +21,7 @@ function App() {
   const [searchDuration, setSearchDuration] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const startTimeRef = useRef<number>(0);
-  const { addToHistory, options } = useStore();
+  const { addToHistory, options, settings } = useStore();
   const currentProcess = useRef<Child | null>(null);
 
   useEffect(() => {
@@ -81,7 +84,6 @@ function App() {
     setSelectedIndex(-1);
     startTimeRef.current = performance.now();
     addToHistory(query, path);
-
     try {
       const child = await search(
         query,
@@ -94,12 +96,10 @@ function App() {
           setSearchDuration(performance.now() - startTimeRef.current);
           currentProcess.current = null;
         },
-        options
+        { ...options, exclusions: settings.exclusions }
       );
       currentProcess.current = child;
     } catch (e) {
-      console.error(e);
-      setIsSearching(false);
       setSearchDuration(performance.now() - startTimeRef.current);
     }
   };
@@ -110,6 +110,70 @@ function App() {
       currentProcess.current = null;
       setIsSearching(false);
       setSearchDuration(performance.now() - startTimeRef.current);
+    }
+  };
+
+  const handleReplace = async (replaceText: string) => {
+    if (!searchedQuery) return;
+
+    const matchesByFile = new Map<string, RgMatch[]>();
+    results.forEach(r => {
+      if (r.type === 'match' && r.data.path?.text) {
+        const path = r.data.path.text;
+        if (!matchesByFile.has(path)) {
+          matchesByFile.set(path, []);
+        }
+        matchesByFile.get(path)?.push(r);
+      }
+    });
+
+    let replacedCount = 0;
+    let errorCount = 0;
+
+    const toastId = toast.loading("Replacing...");
+
+    for (const [filePath] of matchesByFile) {
+      try {
+        const content = await invoke<string>("read_file_content", { path: filePath });
+
+        let newContent = content;
+        if (options.regex) {
+          const flags = options.caseSensitive ? 'g' : 'gi';
+          newContent = content.replace(new RegExp(searchedQuery, flags), replaceText);
+        } else {
+          if (options.wholeWord) {
+            const flags = options.caseSensitive ? 'g' : 'gi';
+            const escaped = searchedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            newContent = content.replace(new RegExp(`\\b${escaped}\\b`, flags), replaceText);
+          } else {
+            if (options.caseSensitive) {
+              newContent = content.split(searchedQuery).join(replaceText);
+            } else {
+              const escaped = searchedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              newContent = content.replace(new RegExp(escaped, 'gi'), replaceText);
+            }
+          }
+        }
+
+        if (newContent !== content) {
+          await invoke("write_file_content", { path: filePath, content: newContent });
+          replacedCount++;
+        }
+      } catch (e) {
+        console.error(`Failed to replace in ${filePath}`, e);
+        errorCount++;
+      }
+    }
+
+    toast.dismiss(toastId);
+
+    if (replacedCount > 0) {
+      toast.success(`Replaced in ${replacedCount} files` + (errorCount > 0 ? ` (${errorCount} failed)` : ""));
+      handleSearch(searchedQuery, useStore.getState().path);
+    } else if (errorCount > 0) {
+      toast.error(`Failed to replace in ${errorCount} files`);
+    } else {
+      toast.info("No occurrences replaced");
     }
   };
 
@@ -133,34 +197,35 @@ function App() {
   const selectedMatch = selectedIndex >= 0 ? results[selectedIndex] : null;
 
   return (
-    <div className="min-h-screen bg-black text-foreground font-sans selection:bg-pink-500/30">
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900 via-black to-black -z-10"></div>
+    <div className="min-h-screen bg-white dark:bg-black text-foreground font-sans selection:bg-pink-500/30 transition-colors duration-300">
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-100 via-white to-slate-50 dark:from-zinc-900 dark:via-black dark:to-black -z-10 transition-colors duration-300"></div>
 
       <div className="container mx-auto pt-10 px-4 pb-4 flex flex-col h-screen">
         <div className="text-center mb-6 space-y-0 shrink-0">
-          <h1 className="text-4xl md:text-6xl pb-4 text-left font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-zinc-500 tracking-tight">
+          <h1 className="text-4xl md:text-6xl pb-4 text-left font-bold bg-clip-text text-transparent bg-gradient-to-r from-zinc-900 to-zinc-600 dark:from-white dark:to-zinc-500 tracking-tight transition-colors duration-300">
             ShadUI Ripgrep
           </h1>
-          <p className="text-zinc-500 text-lg text-left">
+          <p className="text-zinc-600 dark:text-zinc-500 text-lg text-left transition-colors duration-300">
             Blazing fast text search
           </p>
         </div>
 
         <div className="shrink-0 mb-4">
-          <Search onSearch={handleSearch} onStop={handleStop} isSearching={isSearching} />
+          <Search onSearch={handleSearch} onStop={handleStop} isSearching={isSearching} onReplace={handleReplace} />
           <SearchStats results={results} isSearching={isSearching} duration={searchDuration} />
         </div>
 
         <div className="flex-1 min-h-0 flex gap-4">
-          <div className="flex-1 min-w-0 border rounded-xl bg-zinc-900/50 backdrop-blur-sm overflow-hidden">
+          <div className="flex-1 min-w-0 border border-zinc-300 dark:border-zinc-800 rounded-xl bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm overflow-hidden">
             <Results
               results={results}
               query={searchedQuery}
               selectedIndex={selectedIndex}
               onOpenFile={handleOpenFile}
+              onSelect={setSelectedIndex}
             />
           </div>
-          <div className="flex-1 min-w-0 border rounded-xl bg-zinc-900/50 backdrop-blur-sm overflow-hidden">
+          <div className="flex-1 min-w-0 border border-zinc-300 dark:border-zinc-800 rounded-xl bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm overflow-hidden">
             <Preview
               filePath={selectedMatch?.data.path?.text || null}
               lineNumber={selectedMatch?.data.line_number}

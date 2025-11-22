@@ -13,18 +13,24 @@ interface SearchOptions {
     regex: boolean;
 }
 
+interface Settings {
+    theme: 'dark' | 'light' | 'system';
+    editorPath: string;
+    exclusions: string[];
+}
+
 interface AppState {
     query: string;
     path: string;
     history: SearchHistoryItem[];
-    theme: 'dark' | 'light' | 'system';
     options: SearchOptions;
+    settings: Settings;
     setQuery: (query: string) => void;
     setPath: (path: string) => void;
     addToHistory: (query: string, path: string) => void;
-    setTheme: (theme: 'dark' | 'light' | 'system') => void;
     clearHistory: () => void;
     setOption: (key: keyof SearchOptions, value: boolean) => void;
+    setSettings: (settings: Partial<Settings>) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -33,11 +39,15 @@ export const useStore = create<AppState>()(
             query: '',
             path: '', // Default to empty, will prompt user or use current dir
             history: [],
-            theme: 'dark',
             options: {
                 caseSensitive: false,
                 wholeWord: false,
                 regex: false,
+            },
+            settings: {
+                theme: 'dark',
+                editorPath: '',
+                exclusions: ['node_modules', '.git', 'dist', 'build'],
             },
             setQuery: (query) => set({ query }),
             setPath: (path) => set({ path }),
@@ -48,10 +58,12 @@ export const useStore = create<AppState>()(
                 ].slice(0, 50); // Keep last 50
                 return { history: newHistory };
             }),
-            setTheme: (theme) => set({ theme }),
             clearHistory: () => set({ history: [] }),
             setOption: (key, value) => set((state) => ({
                 options: { ...state.options, [key]: value }
+            })),
+            setSettings: (newSettings) => set((state) => ({
+                settings: { ...state.settings, ...newSettings }
             })),
         }),
         {

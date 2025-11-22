@@ -1,11 +1,18 @@
 import { RgMatch } from "@/lib/ripgrep";
 import { AutoSizer } from "./AutoSizer";
 import { VirtualList, VirtualListHandle } from "./VirtualList";
-import { FileText, Folder, FileCode2, FileImage, FileArchive, FileAudio, FileVideo, Download } from "lucide-react";
+import {
+    ContextMenu,
+    ContextMenuContent,
+    ContextMenuItem,
+    ContextMenuTrigger,
+    ContextMenuSeparator,
+} from "@/components/ui/context-menu";
+import { FileText, Folder, FileCode2, FileImage, FileArchive, FileAudio, FileVideo, Download, Copy, ExternalLink, FolderOpen } from "lucide-react";
 import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Command } from "@tauri-apps/plugin-shell";
+import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 
 interface ResultsProps {
@@ -13,6 +20,7 @@ interface ResultsProps {
     query: string;
     selectedIndex: number;
     onOpenFile: (filePath: string) => void;
+    onSelect?: (index: number) => void;
 }
 
 // Helper function to get icon based on file extension
@@ -64,7 +72,7 @@ const getFileIcon = (filePath: string) => {
     return iconMap[ext] || FileText;
 };
 
-export function Results({ results, query, selectedIndex, onOpenFile }: ResultsProps) {
+export function Results({ results, query, selectedIndex, onOpenFile, onSelect }: ResultsProps) {
     // Filter only match events for the list
     const matches = results.filter((r) => r.type === "match");
     const listRef = useRef<VirtualListHandle>(null);
@@ -112,21 +120,8 @@ export function Results({ results, query, selectedIndex, onOpenFile }: ResultsPr
                 }).join("\n");
             }
 
-            // Use PowerShell to write file (handling encoding properly is tricky with simple echo, but Set-Content is better)
-
-            // Actually, let's use a Base64 approach to avoid escaping issues.
-            const base64Content = btoa(unescape(encodeURIComponent(content)));
-            const command = Command.create("powershell", [
-                "-Command",
-                `[System.IO.File]::WriteAllBytes('${filePath}', [System.Convert]::FromBase64String('${base64Content}'))`
-            ]);
-
-            const output = await command.execute();
-            if (output.code === 0) {
-                toast.success("Export successful", { description: `Saved to ${filePath}` });
-            } else {
-                throw new Error(output.stderr || "Unknown error");
-            }
+            await invoke("write_file_content", { path: filePath, content: content });
+            toast.success("Export successful", { description: `Saved to ${filePath}` });
 
         } catch (error) {
             console.error("Export failed:", error);
@@ -178,63 +173,89 @@ export function Results({ results, query, selectedIndex, onOpenFile }: ResultsPr
 
         return (
             <div style={style} className="px-4 py-2">
-                <div
-                    className={cn(
-                        "flex flex-col gap-2 rounded-xl border p-4 shadow-lg transition-all backdrop-blur-sm group",
-                        isSelected
-                            ? "bg-zinc-800 border-pink-500/50 shadow-pink-500/10 translate-x-2"
-                            : "bg-zinc-900/60 border-zinc-800 hover:bg-zinc-800/80 hover:border-zinc-700 hover:shadow-xl hover:-translate-y-0.5"
-                    )}
-                >
-                    {/* File path section */}
-                    <div className="flex items-center justify-between gap-3 min-w-0 pb-2 border-b border-zinc-800/50">
-                        <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
-                            <div className="p-1.5 bg-zinc-800 rounded-lg text-pink-500 shrink-0">
-                                <FileIcon className="h-4 w-4" />
+                <ContextMenu>
+                    <ContextMenuTrigger>
+                        <div
+                            onClick={() => onSelect?.(index)}
+                            className={cn(
+                                "flex flex-col gap-2 rounded-xl border p-4 shadow-lg transition-all backdrop-blur-sm group cursor-pointer",
+                                isSelected
+                                    ? "bg-pink-50 dark:bg-zinc-800 border-pink-500/50 shadow-pink-500/10 translate-x-2"
+                                    : "bg-white/60 dark:bg-zinc-900/60 border-zinc-300 dark:border-zinc-800 hover:bg-white/80 dark:hover:bg-zinc-800/80 hover:border-pink-400 dark:hover:border-zinc-700 hover:shadow-xl hover:-translate-y-0.5"
+                            )}
+                        >
+
+                            <div className="flex items-center justify-between gap-3 min-w-0 pb-2 border-b border-zinc-300/50 dark:border-zinc-800/50">
+                                <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
+                                    <div className="p-1.5 bg-pink-100 dark:bg-zinc-800 rounded-lg text-pink-500 shrink-0 transition-colors duration-300">
+                                        <FileIcon className="h-4 w-4" />
+                                    </div>
+                                    <div className="flex flex-col min-w-0 flex-1">
+                                        <span
+                                            className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 hover:text-pink-500 dark:hover:text-pink-400 cursor-pointer truncate transition-colors"
+                                            onClick={() => onOpenFile(filePath)}
+                                            title={fileName}
+                                        >
+                                            {fileName}
+                                        </span>
+                                        {folderPath && (
+                                            <span className="text-[10px] text-zinc-500 dark:text-zinc-500 text-zinc-600 truncate font-mono transition-colors duration-300" title={folderPath}>
+                                                {folderPath}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white dark:bg-zinc-900/90 rounded-lg p-1 border border-zinc-300 dark:border-zinc-800">
+                                    <button
+                                        className="p-1.5 flex items-center justify-center text-zinc-400 hover:text-pink-400 hover:bg-zinc-800 transition-all rounded-md"
+                                        onClick={() => onOpenFile(filePath)}
+                                        title="Open file"
+                                    >
+                                        <FileText className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                        className="p-1.5 flex items-center justify-center text-zinc-400 hover:text-pink-400 hover:bg-zinc-800 transition-all rounded-md"
+                                        onClick={() => onOpenFile(folderPath || filePath)}
+                                        title="Open folder"
+                                    >
+                                        <Folder className="h-3.5 w-3.5" />
+                                    </button>
+                                </div>
                             </div>
-                            <div className="flex flex-col min-w-0 flex-1">
-                                <span
-                                    className="font-semibold text-sm text-zinc-100 hover:text-pink-400 cursor-pointer truncate transition-colors"
-                                    onClick={() => onOpenFile(filePath)}
-                                    title={fileName}
-                                >
-                                    {fileName}
+                            {/* Line content section */}
+                            <div className="flex items-start gap-3 mt-1 bg-zinc-50 dark:bg-black/40 rounded-lg p-2 border border-zinc-300 dark:border-zinc-800/50 font-mono text-xs transition-colors duration-300">
+                                <span className="shrink-0 text-zinc-400 dark:text-zinc-600 select-none min-w-[3ch] text-right border-r border-zinc-300 dark:border-zinc-800 pr-2 mr-1 transition-colors duration-300">
+                                    {lineNumber}
                                 </span>
-                                {folderPath && (
-                                    <span className="text-[10px] text-zinc-500 truncate font-mono" title={folderPath}>
-                                        {folderPath}
-                                    </span>
-                                )}
+                                <code className="break-all text-zinc-700 dark:text-zinc-300 flex-1 leading-relaxed transition-colors duration-300">
+                                    <HighlightedText text={truncatedContent} highlight={query} />
+                                </code>
                             </div>
-                        </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-zinc-900/90 rounded-lg p-1 border border-zinc-800">
-                            <button
-                                className="p-1.5 flex items-center justify-center text-zinc-400 hover:text-pink-400 hover:bg-zinc-800 transition-all rounded-md"
-                                onClick={() => onOpenFile(filePath)}
-                                title="Open file"
-                            >
-                                <FileText className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                                className="p-1.5 flex items-center justify-center text-zinc-400 hover:text-pink-400 hover:bg-zinc-800 transition-all rounded-md"
-                                onClick={() => onOpenFile(folderPath || filePath)}
-                                title="Open folder"
-                            >
-                                <Folder className="h-3.5 w-3.5" />
-                            </button>
-                        </div>
-                    </div>
-                    {/* Line content section */}
-                    <div className="flex items-start gap-3 mt-1 bg-black/40 rounded-lg p-2 border border-zinc-800/50 font-mono text-xs">
-                        <span className="shrink-0 text-zinc-600 select-none min-w-[3ch] text-right border-r border-zinc-800 pr-2 mr-1">
-                            {lineNumber}
-                        </span>
-                        <code className="break-all text-zinc-300 flex-1 leading-relaxed">
-                            <HighlightedText text={truncatedContent} highlight={query} />
-                        </code>
-                    </div>
-                </div>
-            </div>
+                        </div >
+                    </ContextMenuTrigger >
+                    <ContextMenuContent className="w-64">
+                        <ContextMenuItem onClick={() => {
+                            navigator.clipboard.writeText(filePath);
+                            toast.success("Copied path to clipboard");
+                        }}>
+                            <Copy className="mr-2 h-4 w-4" /> Copy Path
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={() => {
+                            navigator.clipboard.writeText(lineContent);
+                            toast.success("Copied content to clipboard");
+                        }}>
+                            <FileText className="mr-2 h-4 w-4" /> Copy Content
+                        </ContextMenuItem>
+                        <ContextMenuSeparator />
+                        <ContextMenuItem onClick={() => onOpenFile(filePath)}>
+                            <ExternalLink className="mr-2 h-4 w-4" /> Open File
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={() => onOpenFile(folderPath || filePath)}>
+                            <FolderOpen className="mr-2 h-4 w-4" /> Reveal in Explorer
+                        </ContextMenuItem>
+                    </ContextMenuContent>
+                </ContextMenu >
+            </div >
         );
     };
 
@@ -242,21 +263,21 @@ export function Results({ results, query, selectedIndex, onOpenFile }: ResultsPr
         <div className="h-full w-full flex-1 overflow-hidden bg-transparent">
             {matches.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center text-muted-foreground gap-4">
-                    <div className="p-6 bg-zinc-900/50 rounded-full border border-zinc-800">
+                    <div className="p-6 bg-zinc-100 dark:bg-zinc-900/50 rounded-full border border-zinc-300 dark:border-zinc-800 transition-colors duration-300">
                         <FileText className="h-12 w-12 opacity-20" />
                     </div>
-                    <p className="text-zinc-500">No results found</p>
+                    <p className="text-zinc-600 dark:text-zinc-500 transition-colors duration-300">No results found</p>
                 </div>
             ) : (
                 <div className="h-full flex flex-col">
-                    <div className="shrink-0 px-6 py-3 border-b border-zinc-800 bg-zinc-900/80 backdrop-blur-md flex justify-between items-center z-10">
-                        <p className="text-sm text-zinc-400 font-medium">
-                            Found <span className="text-pink-500 font-bold">{matches.length}</span> matches for "<span className="text-zinc-200">{query}</span>"
+                    <div className="shrink-0 px-6 py-3 border-b border-zinc-300 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md flex justify-between items-center z-10 transition-colors duration-300">
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium transition-colors duration-300">
+                            Found <span className="text-pink-500 font-bold">{matches.length}</span> matches for "<span className="text-zinc-900 dark:text-zinc-200 transition-colors duration-300">{query}</span>"
                         </p>
                         <button
                             onClick={handleExport}
                             disabled={isExporting}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-xs font-medium text-zinc-300 transition-colors border border-zinc-700"
+                            className="flex items-center gap-2 px-3 py-1.5 bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-lg text-xs font-medium text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-300 dark:border-zinc-700"
                         >
                             <Download className="w-3.5 h-3.5" />
                             {isExporting ? "Exporting..." : "Export"}

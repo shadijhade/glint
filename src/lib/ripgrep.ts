@@ -36,6 +36,7 @@ export interface SearchOptions {
     caseSensitive?: boolean;
     wholeWord?: boolean;
     regex?: boolean;
+    exclusions?: string[];
 }
 
 export async function search(
@@ -59,6 +60,13 @@ export async function search(
 
     if (!options.regex) {
         args.push("--fixed-strings");
+    }
+
+    if (options.exclusions) {
+        for (const exclusion of options.exclusions) {
+            args.push("--glob");
+            args.push(`!${exclusion}`);
+        }
     }
 
     args.push(query);

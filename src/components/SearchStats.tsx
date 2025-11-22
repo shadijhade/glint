@@ -46,7 +46,7 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
             >
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                     {/* Status Card */}
-                    <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 relative overflow-hidden group">
+                    <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 relative overflow-hidden group transition-colors duration-300">
                         <div className={`p-2 rounded-lg ${isSearching ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
                             {isSearching ? (
                                 <Activity className="w-4 h-4 animate-pulse" />
@@ -55,8 +55,8 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
                             )}
                         </div>
                         <div>
-                            <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider">Status</p>
-                            <p className="text-sm font-semibold text-zinc-200">
+                            <p className="text-xs text-zinc-500 dark:text-zinc-500 text-zinc-600 font-medium uppercase tracking-wider transition-colors duration-300">Status</p>
+                            <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300">
                                 {isSearching ? "Scanning..." : "Complete"}
                             </p>
                         </div>
@@ -71,52 +71,52 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
                     </div>
 
                     {/* Time Card */}
-                    <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3">
+                    <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 transition-colors duration-300">
                         <div className="p-2 rounded-lg bg-orange-500/20 text-orange-400">
                             <Clock className="w-4 h-4" />
                         </div>
                         <div>
-                            <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider">Time Taken</p>
-                            <p className="text-sm font-semibold text-zinc-200 font-mono">
+                            <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Time Taken</p>
+                            <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 font-mono transition-colors duration-300">
                                 {duration > 0 ? `${(duration / 1000).toFixed(2)}s` : "--"}
                             </p>
                         </div>
                     </div>
 
                     {/* Files Card */}
-                    <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3">
+                    <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 transition-colors duration-300">
                         <div className="p-2 rounded-lg bg-purple-500/20 text-purple-400">
                             <FileText className="w-4 h-4" />
                         </div>
                         <div>
-                            <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider">Files Found</p>
+                            <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Files Found</p>
                             <div className="flex items-baseline gap-1">
-                                <p className="text-sm font-semibold text-zinc-200">
+                                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300">
                                     {stats.uniqueFiles}
                                 </p>
-                                <span className="text-[10px] text-zinc-500">files</span>
+                                <span className="text-[10px] text-zinc-600 dark:text-zinc-500 transition-colors duration-300">files</span>
                             </div>
                         </div>
                     </div>
 
                     {/* Insights Card */}
-                    <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3">
+                    <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 transition-colors duration-300">
                         <div className="p-2 rounded-lg bg-pink-500/20 text-pink-400">
                             <BarChart3 className="w-4 h-4" />
                         </div>
                         <div>
-                            <p className="text-xs text-zinc-500 font-medium uppercase tracking-wider">Top Type</p>
+                            <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Top Type</p>
                             {stats.topFileType ? (
                                 <div className="flex items-baseline gap-1">
-                                    <p className="text-sm font-semibold text-zinc-200 uppercase">
+                                    <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 uppercase transition-colors duration-300">
                                         .{stats.topFileType.ext}
                                     </p>
-                                    <span className="text-[10px] text-zinc-500">
+                                    <span className="text-[10px] text-zinc-600 dark:text-zinc-500 transition-colors duration-300">
                                         ({Math.round((stats.topFileType.count / stats.totalMatches) * 100)}%)
                                     </span>
                                 </div>
                             ) : (
-                                <p className="text-sm font-semibold text-zinc-200">--</p>
+                                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300">--</p>
                             )}
                         </div>
                     </div>
