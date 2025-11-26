@@ -2,7 +2,7 @@
 
 **ShadUI Ripgrep** is a blazing fast, modern text search application powered by [Ripgrep](https://github.com/BurntSushi/ripgrep) and built with [Tauri](https://tauri.app/). It combines the raw performance of a command-line tool with a beautiful, responsive user interface designed for both power users and casual developers.
 
-![App Screenshot](screenshots/screenshot-search-light-mode.png)
+![App Screenshot](screenshots/screenshot-search-result-dark.png)
 
 ## 🚀 Features
 
