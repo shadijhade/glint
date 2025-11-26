@@ -196,7 +196,7 @@ export function Results({ results, displayItems: propDisplayItems, query, select
             <span>
                 {parts.map((part, i) =>
                     part.toLowerCase() === highlight.toLowerCase() ? (
-                        <span key={i} className="bg-pink-500/30 text-pink-200 rounded px-0.5 font-bold border border-pink-500/50">
+                        <span key={i} className="bg-pink-500/30 text-pink-700 dark:text-pink-200 rounded px-0.5 font-bold border border-pink-500/50">
                             {part}
                         </span>
                     ) : (

@@ -32,16 +32,16 @@ export function History({ isOpen, onClose, onSelect }: HistoryProps) {
                         animate={{ x: 0 }}
                         exit={{ x: "100%" }}
                         transition={{ type: "spring", damping: 20 }}
-                        className="fixed right-0 top-0 bottom-0 w-96 bg-zinc-900 border-l border-zinc-800 z-50 shadow-2xl flex flex-col"
+                        className="fixed right-0 top-0 bottom-0 w-96 bg-white dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-800 z-50 shadow-2xl flex flex-col"
                     >
-                        <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
-                            <div className="flex items-center gap-2 text-zinc-100 font-semibold">
+                        <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-zinc-900 dark:text-zinc-100 font-semibold">
                                 <Clock className="w-5 h-5 text-pink-500" />
                                 <h2>Search History</h2>
                             </div>
                             <button
                                 onClick={onClose}
-                                className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-white transition-colors"
+                                className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors"
                             >
                                 <X className="w-5 h-5" />
                             </button>
@@ -61,10 +61,10 @@ export function History({ isOpen, onClose, onSelect }: HistoryProps) {
                                             onSelect(item.query, item.path);
                                             onClose();
                                         }}
-                                        className="p-3 rounded-xl bg-zinc-800/50 border border-zinc-800 hover:border-pink-500/50 hover:bg-zinc-800 cursor-pointer group transition-all"
+                                        className="p-3 rounded-xl bg-zinc-100 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-800 hover:border-pink-500/50 hover:bg-zinc-200 dark:hover:bg-zinc-800 cursor-pointer group transition-all"
                                     >
                                         <div className="flex items-start justify-between mb-1">
-                                            <span className="font-medium text-zinc-200 group-hover:text-pink-400 transition-colors">
+                                            <span className="font-medium text-zinc-700 dark:text-zinc-200 group-hover:text-pink-600 dark:group-hover:text-pink-400 transition-colors">
                                                 {item.query}
                                             </span>
                                             <span className="text-[10px] text-zinc-500">
@@ -81,7 +81,7 @@ export function History({ isOpen, onClose, onSelect }: HistoryProps) {
                         </div>
 
                         {history.length > 0 && (
-                            <div className="p-4 border-t border-zinc-800">
+                            <div className="p-4 border-t border-zinc-200 dark:border-zinc-800">
                                 <button
                                     onClick={clearHistory}
                                     className="w-full flex items-center justify-center gap-2 p-3 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors text-sm font-medium"
