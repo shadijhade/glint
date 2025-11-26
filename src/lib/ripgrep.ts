@@ -1,4 +1,4 @@
-import { Command } from "@tauri-apps/plugin-shell";
+import { Command, Child } from "@tauri-apps/plugin-shell";
 
 export interface RgMatch {
     type: "match" | "context" | "begin" | "end" | "summary";
@@ -48,6 +48,10 @@ export async function search(
 ) {
     const args = ["--json"];
 
+    // Limit line length to prevent massive memory usage on minified files
+    args.push("--max-columns");
+    args.push("150");
+
     if (options.caseSensitive) {
         args.push("--case-sensitive");
     } else {
@@ -76,8 +80,11 @@ export async function search(
 
     let buffer: RgMatch[] = [];
     let lastEmit = Date.now();
+    let totalMatches = 0;
     const BATCH_SIZE = 1000;
     const BATCH_INTERVAL = 100;
+    const MAX_MATCHES = 20000;
+    let childProcess: Child | null = null;
 
     const flush = () => {
         if (buffer.length > 0) {
@@ -105,6 +112,12 @@ export async function search(
                 if (l.trim()) {
                     try {
                         const parsed = JSON.parse(l) as RgMatch;
+
+                        // Count matches
+                        if (parsed.type === "match") {
+                            totalMatches++;
+                        }
+
                         buffer.push(parsed);
 
                         if (
@@ -112,6 +125,15 @@ export async function search(
                             Date.now() - lastEmit >= BATCH_INTERVAL
                         ) {
                             flush();
+                        }
+
+                        if (totalMatches >= MAX_MATCHES) {
+                            if (childProcess) {
+                                childProcess.kill();
+                            }
+                            flush();
+                            onFinished();
+                            return;
                         }
                     } catch (e) {
                         // ignore parse errors
@@ -124,5 +146,82 @@ export async function search(
     });
 
     const child = await command.spawn();
+    childProcess = child;
     return child;
+}
+
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+// ... existing imports
+
+// ... existing code
+
+export async function searchBatched(
+    query: string,
+    path: string,
+    onData: (lines: string[]) => void,
+    onFinished: () => void,
+    onError: (error: string) => void,
+    options: SearchOptions = {}
+) {
+    const args: string[] = ["--json"];
+
+    // Limit line length to prevent massive memory usage on minified files
+    args.push("--max-columns");
+    args.push("150");
+
+    // Suppress error messages (like Access Denied)
+    args.push("--no-messages");
+
+    if (options.caseSensitive) {
+        args.push("--case-sensitive");
+    } else {
+        args.push("--smart-case");
+    }
+
+    if (options.wholeWord) {
+        args.push("--word-regexp");
+    }
+
+    if (!options.regex) {
+        args.push("--fixed-strings");
+    }
+
+    if (options.exclusions) {
+        for (const exclusion of options.exclusions) {
+            args.push("--glob");
+            args.push(`!${exclusion}`);
+        }
+    }
+
+    args.push(query);
+    args.push(path);
+
+    const unlisten = await listen<{ type: string; lines: string[] }>("search-event", (event) => {
+        const { type, lines } = event.payload;
+        if (type === "data") {
+            onData(lines);
+        } else if (type === "finished") {
+            onFinished();
+        } else if (type === "error") {
+            onError(lines[0] || "Unknown error");
+        }
+    });
+
+    try {
+        await invoke("run_ripgrep_batched", { args });
+    } catch (e) {
+        onError(String(e));
+    }
+
+    return unlisten;
+}
+
+export async function cancelSearch() {
+    try {
+        await invoke("cancel_search");
+    } catch (e) {
+        console.error("Failed to cancel search", e);
+    }
 }

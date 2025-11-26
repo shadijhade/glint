@@ -39,18 +39,38 @@ export function Preview({ filePath, lineNumber }: PreviewProps) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const [startLine, setStartLine] = useState(1);
 
     useEffect(() => {
         if (!filePath) {
             setContent("");
+            setStartLine(1);
             return;
         }
 
+        // Clear content immediately when file changes to avoid stale preview
+        setContent("");
+        setLoading(true);
+
         const fetchContent = async () => {
-            setLoading(true);
             setError(null);
             try {
-                const text = await invoke<string>("read_file_content", { path: filePath });
+                let text = "";
+                let start = 1;
+
+                if (lineNumber) {
+                    // Load window around line number
+                    const WINDOW_SIZE = 200;
+                    start = Math.max(1, lineNumber - WINDOW_SIZE / 2);
+                    const end = start + WINDOW_SIZE;
+                    text = await invoke<string>("read_file_chunk", { path: filePath, startLine: start, endLine: end });
+                    setStartLine(start);
+                } else {
+                    // Load first 200 lines
+                    text = await invoke<string>("read_file_chunk", { path: filePath, startLine: 1, endLine: 200 });
+                    setStartLine(1);
+                }
+
                 setContent(text);
             } catch (err) {
                 console.error(err);
@@ -60,13 +80,20 @@ export function Preview({ filePath, lineNumber }: PreviewProps) {
             }
         };
 
-        const timeoutId = setTimeout(fetchContent, 200); // Debounce
-        return () => clearTimeout(timeoutId);
-    }, [filePath]);
+        fetchContent();
+    }, [filePath, lineNumber]);
 
     // Scroll to line number when content loads
     useEffect(() => {
         if (content && lineNumber) {
+            // Only scroll if the line is within the current view
+            // This prevents scrolling when the content is stale (from previous selection)
+            // but the lineNumber has already updated.
+            const endLine = startLine + 200; // Approximate window size
+            if (lineNumber < startLine || lineNumber >= endLine) {
+                return;
+            }
+
             // Give syntax highlighter a moment to render
             setTimeout(() => {
                 const element = document.getElementById(`line-${lineNumber}`);
@@ -75,7 +102,7 @@ export function Preview({ filePath, lineNumber }: PreviewProps) {
                 }
             }, 100);
         }
-    }, [content, lineNumber]);
+    }, [content, lineNumber, startLine]);
 
     if (!filePath) {
         return (
@@ -99,27 +126,39 @@ export function Preview({ filePath, lineNumber }: PreviewProps) {
                 {error ? (
                     <div className="text-red-400 p-4">{error}</div>
                 ) : (
-                    <SyntaxHighlighter
-                        language={getLanguage(filePath)}
-                        style={isDark ? vscDarkPlus : vs}
-                        showLineNumbers={true}
-                        wrapLines={true}
-                        customStyle={{ margin: 0, padding: '1rem', fontSize: '12px', lineHeight: '1.5', background: 'transparent' }}
-                        lineNumberStyle={{ minWidth: '3em', paddingRight: '1em', color: isDark ? '#6e7681' : '#858585', textAlign: 'right' }}
-                        lineProps={(lineNumberProp) => {
-                            const style: React.CSSProperties = { display: 'block' };
-                            if (lineNumberProp === lineNumber) {
-                                style.backgroundColor = 'rgba(236, 72, 153, 0.2)'; // Pink-500 with opacity
-                                style.borderLeft = '2px solid #ec4899';
-                            }
-                            return {
-                                id: `line-${lineNumberProp}`,
-                                style
-                            };
-                        }}
-                    >
-                        {content}
-                    </SyntaxHighlighter>
+                    <div className="relative">
+                        {startLine > 1 && (
+                            <div className="text-center py-2 text-xs text-zinc-400 bg-zinc-100 dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800">
+                                ... Previous lines hidden ...
+                            </div>
+                        )}
+                        <SyntaxHighlighter
+                            key={`${filePath}-${startLine}`} // Force re-render on chunk change
+                            language={getLanguage(filePath)}
+                            style={isDark ? vscDarkPlus : vs}
+                            showLineNumbers={true}
+                            startingLineNumber={startLine}
+                            wrapLines={true}
+                            customStyle={{ margin: 0, padding: '1rem', fontSize: '12px', lineHeight: '1.5', background: 'transparent' }}
+                            lineNumberStyle={{ minWidth: '3em', paddingRight: '1em', color: isDark ? '#6e7681' : '#858585', textAlign: 'right' }}
+                            lineProps={(lineNumberProp) => {
+                                const style: React.CSSProperties = { display: 'block' };
+                                if (lineNumberProp === lineNumber) {
+                                    style.backgroundColor = 'rgba(236, 72, 153, 0.2)'; // Pink-500 with opacity
+                                    style.borderLeft = '2px solid #ec4899';
+                                }
+                                return {
+                                    id: `line-${lineNumberProp}`,
+                                    style
+                                };
+                            }}
+                        >
+                            {content}
+                        </SyntaxHighlighter>
+                        <div className="text-center py-2 text-xs text-zinc-400 bg-zinc-100 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800">
+                            ... Remaining lines hidden ...
+                        </div>
+                    </div>
                 )}
             </div>
         </div>

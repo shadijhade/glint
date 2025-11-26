@@ -14,18 +14,16 @@ import { cn } from "@/lib/utils";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
+import { DisplayItem } from "../types";
 
 interface ResultsProps {
     results: RgMatch[];
+    displayItems: DisplayItem[];
     query: string;
     selectedIndex: number;
     onOpenFile: (filePath: string) => void;
     onSelect?: (index: number) => void;
 }
-
-type DisplayItem =
-    | { type: 'header'; file: string; matchCount: number }
-    | { type: 'match'; match: RgMatch; originalIndex: number };
 
 // Helper function to get icon based on file extension
 const getFileIcon = (filePath: string) => {
@@ -76,14 +74,7 @@ const getFileIcon = (filePath: string) => {
     return iconMap[ext] || FileText;
 };
 
-export function Results({ results, query, selectedIndex, onOpenFile, onSelect }: ResultsProps) {
-    // Map results to include their original index, then filter for matches
-    const matchesWithIndex = useMemo(() => {
-        return results
-            .map((r, i) => ({ ...r, originalIndex: i }))
-            .filter((r): r is RgMatch & { originalIndex: number } => r.type === "match");
-    }, [results]);
-
+export function Results({ results, displayItems: propDisplayItems, query, selectedIndex, onOpenFile, onSelect }: ResultsProps) {
     const listRef = useRef<VirtualListHandle>(null);
     const [isExporting, setIsExporting] = useState(false);
     const [liveQuery, setLiveQuery] = useState("");
@@ -91,9 +82,17 @@ export function Results({ results, query, selectedIndex, onOpenFile, onSelect }:
 
     // Group and Filter Logic
     const displayItems = useMemo(() => {
+        if (!deferredLiveQuery) {
+            return propDisplayItems;
+        }
+
+        // Only compute matchesWithIndex when we need to filter
+        const matchesWithIndex = results
+            .map((r, i) => ({ ...r, originalIndex: i }))
+            .filter((r): r is RgMatch & { originalIndex: number } => r.type === "match");
+
         // First filter matches based on deferredLiveQuery
         const filtered = matchesWithIndex.filter((m) => {
-            if (!deferredLiveQuery) return true;
             const text = m.data.lines?.text || "";
             const path = m.data.path?.text || "";
             const lowerQuery = deferredLiveQuery.toLowerCase();
@@ -118,7 +117,7 @@ export function Results({ results, query, selectedIndex, onOpenFile, onSelect }:
             });
         }
         return items;
-    }, [matchesWithIndex, deferredLiveQuery]);
+    }, [results, propDisplayItems, deferredLiveQuery]);
 
     // Find the display index corresponding to the selected match
     const scrollIndex = useMemo(() => {
@@ -134,7 +133,15 @@ export function Results({ results, query, selectedIndex, onOpenFile, onSelect }:
     }, [scrollIndex]);
 
     const handleExport = async () => {
-        if (matchesWithIndex.length === 0) return;
+        // We need matchesWithIndex for export if we want to export everything
+        // But matchesWithIndex is not available here if we didn't compute it.
+        // We can compute it on demand for export.
+
+        const matchesToExport = results
+            .map((r, i) => ({ ...r, originalIndex: i }))
+            .filter((r): r is RgMatch & { originalIndex: number } => r.type === "match");
+
+        if (matchesToExport.length === 0) return;
         setIsExporting(true);
 
         try {
@@ -158,10 +165,10 @@ export function Results({ results, query, selectedIndex, onOpenFile, onSelect }:
 
             let content = "";
             if (filePath.endsWith('.json')) {
-                content = JSON.stringify(matchesWithIndex, null, 2);
+                content = JSON.stringify(matchesToExport, null, 2);
             } else {
                 // CSV format: File,Line,Content
-                content = "File,Line,Content\n" + matchesWithIndex.map(m => {
+                content = "File,Line,Content\n" + matchesToExport.map(m => {
                     const file = m.data.path?.text || "";
                     const line = m.data.line_number;
                     const text = (m.data.lines?.text || "").replace(/"/g, '""'); // Escape quotes
@@ -207,6 +214,7 @@ export function Results({ results, query, selectedIndex, onOpenFile, onSelect }:
         if (item.type === 'header') {
             const FileIcon = getFileIcon(item.file);
             const fileName = item.file.split(/[\\/]/).pop() || item.file;
+            const matchCountDisplay = item.matchCount >= 0 ? item.matchCount : "";
 
             return (
                 <div style={style} className="px-4 py-1">
@@ -217,9 +225,11 @@ export function Results({ results, query, selectedIndex, onOpenFile, onSelect }:
                         <span className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 truncate flex-1" title={item.file}>
                             {fileName}
                         </span>
-                        <span className="text-xs text-zinc-500 font-mono bg-zinc-200 dark:bg-zinc-900 px-1.5 py-0.5 rounded shrink-0">
-                            {item.matchCount}
-                        </span>
+                        {matchCountDisplay !== "" && (
+                            <span className="text-xs text-zinc-500 font-mono bg-zinc-200 dark:bg-zinc-900 px-1.5 py-0.5 rounded shrink-0">
+                                {matchCountDisplay}
+                            </span>
+                        )}
                     </div>
                 </div>
             );
@@ -287,7 +297,7 @@ export function Results({ results, query, selectedIndex, onOpenFile, onSelect }:
 
     return (
         <div className="h-full w-full flex-1 overflow-hidden bg-transparent flex flex-col">
-            {matchesWithIndex.length === 0 ? (
+            {displayItems.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center text-muted-foreground gap-4">
                     <div className="p-6 bg-zinc-100 dark:bg-zinc-900/50 rounded-full border border-zinc-300 dark:border-zinc-800 transition-colors duration-300">
                         <FileText className="h-12 w-12 opacity-20" />
@@ -299,7 +309,7 @@ export function Results({ results, query, selectedIndex, onOpenFile, onSelect }:
                     <div className="shrink-0 px-4 py-3 border-b border-zinc-300 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col gap-3 z-10 transition-colors duration-300">
                         <div className="flex justify-between items-center">
                             <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium transition-colors duration-300">
-                                Found <span className="text-pink-500 font-bold">{matchesWithIndex.length}</span> matches
+                                Found <span className="text-pink-500 font-bold">{results.length}</span> matches
                             </p>
                             <button
                                 onClick={handleExport}

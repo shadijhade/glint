@@ -3,18 +3,19 @@ import { Search } from './components/Search';
 import { Results } from './components/Results';
 import { SearchStats } from './components/SearchStats';
 import { Preview } from './components/Preview';
-import { search, checkRgInstalled, RgMatch } from './lib/ripgrep';
+import { searchBatched, checkRgInstalled, cancelSearch, RgMatch } from './lib/ripgrep';
 import { useStore } from './lib/store';
 import { AlertTriangle } from 'lucide-react';
-import { Child } from "@tauri-apps/plugin-shell";
 import { Toaster, toast } from "sonner";
 import * as opener from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { useTheme } from "./hooks/useTheme";
+import { DisplayItem } from "./types";
 
 function App() {
   useTheme(); // Initialize theme system
   const [results, setResults] = useState<RgMatch[]>([]);
+  const [displayItems, setDisplayItems] = useState<DisplayItem[]>([]);
   const [searchedQuery, setSearchedQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [rgInstalled, setRgInstalled] = useState<boolean | null>(null);
@@ -22,14 +23,33 @@ function App() {
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const startTimeRef = useRef<number>(0);
   const { addToHistory, options, settings } = useStore();
-  const currentProcess = useRef<Child | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const unlistenRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     checkRgInstalled().then(setRgInstalled);
 
+    // Initialize worker
+    workerRef.current = new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });
+
+    workerRef.current.onmessage = (e) => {
+      const { type, matches, displayItems: newDisplayItems } = e.data;
+      if (type === 'results') {
+        if (matches && matches.length > 0) {
+          setResults(prev => [...prev, ...matches]);
+        }
+        if (newDisplayItems && newDisplayItems.length > 0) {
+          setDisplayItems(prev => [...prev, ...newDisplayItems]);
+        }
+      }
+    };
+
     return () => {
-      if (currentProcess.current) {
-        currentProcess.current.kill();
+      if (unlistenRef.current) {
+        unlistenRef.current();
+      }
+      if (workerRef.current) {
+        workerRef.current.terminate();
       }
     };
   }, []);
@@ -72,45 +92,65 @@ function App() {
   }, [results, selectedIndex]);
 
   const handleSearch = async (query: string, path: string) => {
-    if (currentProcess.current) {
-      await currentProcess.current.kill();
-      currentProcess.current = null;
+    if (unlistenRef.current) {
+      unlistenRef.current();
+      unlistenRef.current = null;
     }
+
+    // Cancel any running search on the backend
+    await cancelSearch();
 
     setIsSearching(true);
     setResults([]);
+    setDisplayItems([]);
     setSearchedQuery(query);
     setSearchDuration(0);
     setSelectedIndex(-1);
     startTimeRef.current = performance.now();
     addToHistory(query, path);
+
+    // Reset worker state
+    workerRef.current?.postMessage({ type: 'reset' });
+
     try {
-      const child = await search(
+      const unlisten = await searchBatched(
         query,
         path,
-        (events) => {
-          setResults((prev) => [...prev, ...events]);
+        (lines) => {
+          // Forward raw lines to worker
+          workerRef.current?.postMessage({ type: 'data', payload: lines });
         },
         () => {
+          // Flush remaining worker buffer
+          workerRef.current?.postMessage({ type: 'flush' });
+
           setIsSearching(false);
           setSearchDuration(performance.now() - startTimeRef.current);
-          currentProcess.current = null;
+          unlistenRef.current = null;
+        },
+        (error) => {
+          console.error("Search error:", error);
+          setIsSearching(false);
+          setSearchDuration(performance.now() - startTimeRef.current);
         },
         { ...options, exclusions: settings.exclusions }
       );
-      currentProcess.current = child;
+      unlistenRef.current = unlisten;
     } catch (e) {
+      console.error(e);
       setSearchDuration(performance.now() - startTimeRef.current);
+      setIsSearching(false);
     }
   };
 
   const handleStop = async () => {
-    if (currentProcess.current) {
-      await currentProcess.current.kill();
-      currentProcess.current = null;
-      setIsSearching(false);
-      setSearchDuration(performance.now() - startTimeRef.current);
+    await cancelSearch();
+    if (unlistenRef.current) {
+      unlistenRef.current();
+      unlistenRef.current = null;
     }
+    setIsSearching(false);
+    setSearchDuration(performance.now() - startTimeRef.current);
   };
 
   const handleReplace = async (replaceText: string) => {
@@ -219,6 +259,7 @@ function App() {
           <div className="flex-1 min-w-0 border border-zinc-300 dark:border-zinc-800 rounded-xl bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm overflow-hidden">
             <Results
               results={results}
+              displayItems={displayItems}
               query={searchedQuery}
               selectedIndex={selectedIndex}
               onOpenFile={handleOpenFile}
