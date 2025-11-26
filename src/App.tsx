@@ -11,6 +11,10 @@ import * as opener from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { useTheme } from "./hooks/useTheme";
 import { DisplayItem } from "./types";
+import { Sidebar } from "./components/Sidebar";
+import { Footer } from "./components/Footer";
+import { History } from "./components/History";
+import { Settings } from "./components/Settings";
 
 function App() {
   useTheme(); // Initialize theme system
@@ -217,6 +221,20 @@ function App() {
     }
   };
 
+  const [activeView, setActiveView] = useState<'search' | 'history' | 'settings'>('search');
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // Handle Sidebar Navigation
+  const handleNavigate = (view: 'search' | 'history' | 'settings') => {
+    setActiveView(view);
+    if (view === 'history') setIsHistoryOpen(true);
+    if (view === 'settings') setIsSettingsOpen(true);
+    if (view === 'search') {
+      // Just focus search or do nothing special
+    }
+  };
+
   if (rgInstalled === false) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center p-4">
@@ -237,43 +255,85 @@ function App() {
   const selectedMatch = selectedIndex >= 0 ? results[selectedIndex] : null;
 
   return (
-    <div className="min-h-screen bg-white dark:bg-black text-foreground font-sans selection:bg-pink-500/30 transition-colors duration-300">
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-100 via-white to-slate-50 dark:from-zinc-900 dark:via-black dark:to-black -z-10 transition-colors duration-300"></div>
-
-      <div className="container mx-auto pt-10 px-4 pb-4 flex flex-col h-screen">
-        <div className="text-center mb-6 space-y-0 shrink-0">
-          <h1 className="text-4xl md:text-6xl pb-4 text-left font-bold bg-clip-text text-transparent bg-gradient-to-r from-zinc-900 to-zinc-600 dark:from-white dark:to-zinc-500 tracking-tight transition-colors duration-300">
-            ShadUI Ripgrep
-          </h1>
-          <p className="text-zinc-600 dark:text-zinc-500 text-lg text-left transition-colors duration-300">
-            Blazing fast text search
-          </p>
-        </div>
-
-        <div className="shrink-0 mb-4">
-          <Search onSearch={handleSearch} onStop={handleStop} isSearching={isSearching} onReplace={handleReplace} />
-          <SearchStats results={results} isSearching={isSearching} duration={searchDuration} />
-        </div>
-
-        <div className="flex-1 min-h-0 flex gap-4">
-          <div className="flex-1 min-w-0 border border-zinc-300 dark:border-zinc-800 rounded-xl bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm overflow-hidden">
-            <Results
-              results={results}
-              displayItems={displayItems}
-              query={searchedQuery}
-              selectedIndex={selectedIndex}
-              onOpenFile={handleOpenFile}
-              onSelect={setSelectedIndex}
-            />
-          </div>
-          <div className="flex-1 min-w-0 border border-zinc-300 dark:border-zinc-800 rounded-xl bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm overflow-hidden">
-            <Preview
-              filePath={selectedMatch?.data.path?.text || null}
-              lineNumber={selectedMatch?.data.line_number}
-            />
-          </div>
-        </div>
+    <div className="flex h-screen bg-white dark:bg-black text-foreground font-sans selection:bg-pink-500/30 transition-colors duration-300 overflow-hidden">
+      {/* Background */}
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-indigo-100 via-zinc-50 to-white dark:from-zinc-950 dark:via-zinc-900 dark:to-black -z-10 transition-colors duration-300">
+        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 brightness-100 contrast-150 mix-blend-overlay"></div>
+        <div className="absolute inset-0 bg-gradient-to-tr from-pink-500/5 via-transparent to-blue-500/5 dark:from-pink-500/10 dark:to-blue-500/10 pointer-events-none"></div>
       </div>
+
+      {/* Sidebar */}
+      <Sidebar activeView={activeView} onNavigate={handleNavigate} />
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Header / Search Area */}
+        <div className="shrink-0 p-6 pb-2">
+          <Search
+            onSearch={handleSearch}
+            onStop={handleStop}
+            isSearching={isSearching}
+            onReplace={handleReplace}
+          />
+          <div className="mt-4">
+            <SearchStats results={results} isSearching={isSearching} duration={searchDuration} />
+          </div>
+        </div>
+
+        {/* Content Area */}
+        <div className="flex-1 min-h-0 p-6 pt-2 flex gap-4 overflow-hidden">
+          {results.length === 0 && !isSearching ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 select-none">
+              <div className="w-64 h-64 bg-gradient-to-tr from-pink-500/20 to-purple-500/20 rounded-full blur-3xl absolute -z-10 animate-pulse"></div>
+              <AlertTriangle className="w-24 h-24 text-zinc-300 dark:text-zinc-800 mb-6" />
+              <h2 className="text-2xl font-bold text-zinc-400 dark:text-zinc-600 mb-2">Ready to Search</h2>
+              <p className="text-zinc-400 dark:text-zinc-600 max-w-md">
+                Enter a search term and path to begin exploring your codebase with lightning speed.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="flex-1 min-w-0 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-white/40 dark:bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm">
+                <Results
+                  results={results}
+                  displayItems={displayItems}
+                  query={searchedQuery}
+                  selectedIndex={selectedIndex}
+                  onOpenFile={handleOpenFile}
+                  onSelect={setSelectedIndex}
+                />
+              </div>
+              <div className="flex-1 min-w-0 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-white/40 dark:bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm">
+                <Preview
+                  filePath={selectedMatch?.data.path?.text || null}
+                  lineNumber={selectedMatch?.data.line_number}
+                />
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <Footer />
+      </div>
+
+      {/* Modals */}
+      <History
+        isOpen={isHistoryOpen}
+        onClose={() => { setIsHistoryOpen(false); setActiveView('search'); }}
+        onSelect={(q, p) => {
+          setSearchedQuery(q);
+          // We need to update the store too if we want the inputs to update
+          useStore.getState().setQuery(q);
+          useStore.getState().setPath(p);
+          handleSearch(q, p);
+        }}
+      />
+      <Settings
+        isOpen={isSettingsOpen}
+        onOpenChange={(open) => { setIsSettingsOpen(open); if (!open) setActiveView('search'); }}
+      />
+
       <Toaster position="top-right" richColors />
     </div>
   );

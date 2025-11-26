@@ -1,10 +1,9 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "@/lib/store";
-import { Search as SearchIcon, Folder, StopCircle, CaseSensitive, WholeWord, Regex, History as HistoryIcon, Replace } from "lucide-react";
+import { Search as SearchIcon, Folder, StopCircle, CaseSensitive, WholeWord, Regex, Replace } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
-import { History } from "./History";
-import { Settings } from "./Settings";
+
 
 interface SearchProps {
     onSearch: (query: string, path: string) => void;
@@ -15,7 +14,6 @@ interface SearchProps {
 
 export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps) {
     const { query, setQuery, path, setPath, options, setOption } = useStore();
-    const [isHistoryOpen, setIsHistoryOpen] = useState(false);
     const [isReplaceOpen, setIsReplaceOpen] = useState(false);
     const [replaceText, setReplaceText] = useState("");
 
@@ -148,16 +146,7 @@ export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps
                     </button>
 
 
-                    <button
-                        type="button"
-                        onClick={() => setIsHistoryOpen(true)}
-                        disabled={isSearching}
-                        className="px-4 py-3 bg-zinc-200 hover:bg-zinc-300 border border-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:border-zinc-700 rounded-xl text-foreground transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Search History"
-                    >
-                        <HistoryIcon className="w-5 h-5" />
-                    </button>
-                    <Settings />
+
                     {isSearching ? (
                         <button
                             type="button"
@@ -179,15 +168,7 @@ export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps
                 </div>
             </form>
 
-            <History
-                isOpen={isHistoryOpen}
-                onClose={() => setIsHistoryOpen(false)}
-                onSelect={(q, p) => {
-                    setQuery(q);
-                    setPath(p);
-                    onSearch(q, p);
-                }}
-            />
+
         </div>
     );
 }

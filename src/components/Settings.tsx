@@ -1,9 +1,14 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { X, Settings as SettingsIcon, Plus } from 'lucide-react';
+import { X, Plus } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useState } from 'react';
 
-export function Settings() {
+interface SettingsProps {
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+}
+
+export function Settings({ isOpen, onOpenChange }: SettingsProps) {
     const { settings, setSettings } = useStore();
     const [newExclusion, setNewExclusion] = useState('');
 
@@ -19,15 +24,7 @@ export function Settings() {
     };
 
     return (
-        <Dialog.Root>
-            <Dialog.Trigger asChild>
-                <button
-                    className="px-4 py-3 bg-zinc-200 hover:bg-zinc-300 border border-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 transition-all"
-                    title="Settings"
-                >
-                    <SettingsIcon className="w-5 h-5" />
-                </button>
-            </Dialog.Trigger>
+        <Dialog.Root open={isOpen} onOpenChange={onOpenChange}>
             <Dialog.Portal>
                 <Dialog.Overlay className="fixed inset-0 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 z-50" />
                 <Dialog.Content className="fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg transition-colors">
