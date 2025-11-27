@@ -13,7 +13,6 @@ import { useTheme } from "./hooks/useTheme";
 import { DisplayItem } from "./types";
 import { Sidebar } from "./components/Sidebar";
 import { Footer } from "./components/Footer";
-import { History } from "./components/History";
 import { Settings } from "./components/Settings";
 
 function App() {
@@ -221,14 +220,12 @@ function App() {
     }
   };
 
-  const [activeView, setActiveView] = useState<'search' | 'history' | 'settings'>('search');
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [activeView, setActiveView] = useState<'search' | 'settings'>('search');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Handle Sidebar Navigation
-  const handleNavigate = (view: 'search' | 'history' | 'settings') => {
+  const handleNavigate = (view: 'search' | 'settings') => {
     setActiveView(view);
-    if (view === 'history') setIsHistoryOpen(true);
     if (view === 'settings') setIsSettingsOpen(true);
     if (view === 'search') {
       // Just focus search or do nothing special
@@ -263,7 +260,16 @@ function App() {
       </div>
 
       {/* Sidebar */}
-      <Sidebar activeView={activeView} onNavigate={handleNavigate} />
+      <Sidebar
+        activeView={activeView}
+        onNavigate={handleNavigate}
+        onHistorySelect={(q, p) => {
+          setSearchedQuery(q);
+          useStore.getState().setQuery(q);
+          useStore.getState().setPath(p);
+          handleSearch(q, p);
+        }}
+      />
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 relative">
@@ -318,17 +324,6 @@ function App() {
       </div>
 
       {/* Modals */}
-      <History
-        isOpen={isHistoryOpen}
-        onClose={() => { setIsHistoryOpen(false); setActiveView('search'); }}
-        onSelect={(q, p) => {
-          setSearchedQuery(q);
-          // We need to update the store too if we want the inputs to update
-          useStore.getState().setQuery(q);
-          useStore.getState().setPath(p);
-          handleSearch(q, p);
-        }}
-      />
       <Settings
         isOpen={isSettingsOpen}
         onOpenChange={(open) => { setIsSettingsOpen(open); if (!open) setActiveView('search'); }}

@@ -28,6 +28,7 @@ interface AppState {
     setQuery: (query: string) => void;
     setPath: (path: string) => void;
     addToHistory: (query: string, path: string) => void;
+    removeFromHistory: (query: string, path: string) => void;
     clearHistory: () => void;
     setOption: (key: keyof SearchOptions, value: boolean) => void;
     setSettings: (settings: Partial<Settings>) => void;
@@ -55,9 +56,12 @@ export const useStore = create<AppState>()(
                 const newHistory = [
                     { query, path, timestamp: Date.now() },
                     ...state.history.filter(h => h.query !== query || h.path !== path)
-                ].slice(0, 50); // Keep last 50
+                ].slice(0, 1000); // Keep last 1000
                 return { history: newHistory };
             }),
+            removeFromHistory: (query: string, path: string) => set((state) => ({
+                history: state.history.filter(h => h.query !== query || h.path !== path)
+            })),
             clearHistory: () => set({ history: [] }),
             setOption: (key, value) => set((state) => ({
                 options: { ...state.options, [key]: value }
