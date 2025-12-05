@@ -1,4 +1,6 @@
-import { Home, Settings as SettingsIcon, Search as SearchIcon, ChevronDown, ChevronUp, Clock, Trash2, X } from "lucide-react";
+import { Home, Settings as SettingsIcon, Search as SearchIcon, ChevronDown, ChevronUp, Trash2, X, Sparkles, History, Zap } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { useState, useMemo, useRef, useEffect } from "react";
@@ -17,6 +19,18 @@ export function Sidebar({ activeView, onNavigate, onHistorySelect }: SidebarProp
     const [historySearch, setHistorySearch] = useState("");
     const listContainerRef = useRef<HTMLDivElement>(null);
     const [listHeight, setListHeight] = useState(200);
+    const [updateInfo, setUpdateInfo] = useState<{ update_available: boolean; latest_version: string; url: string } | null>(null);
+    const [isUpdateDismissed, setIsUpdateDismissed] = useState(false);
+
+    useEffect(() => {
+        invoke<{ update_available: boolean; latest_version: string; url: string }>("check_update")
+            .then((info) => {
+                if (info.update_available) {
+                    setUpdateInfo(info);
+                }
+            })
+            .catch((err) => console.error("Failed to check for updates:", err));
+    }, []);
 
     const filteredHistory = useMemo(() => {
         if (!historySearch) return history;
@@ -46,7 +60,7 @@ export function Sidebar({ activeView, onNavigate, onHistorySelect }: SidebarProp
             {activeView === view && (
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-pink-500 rounded-r-full" />
             )}
-            <Icon className={cn("w-5 h-5 transition-transform group-hover:scale-110", activeView === view && "fill-current")} />
+            <Icon className={cn("w-5 h-5 transition-transform group-hover:scale-110")} />
             <span className="font-medium">{label}</span>
         </button>
     );
@@ -55,8 +69,8 @@ export function Sidebar({ activeView, onNavigate, onHistorySelect }: SidebarProp
         <div className="w-64 h-full flex flex-col bg-white/50 dark:bg-zinc-950/50 backdrop-blur-xl border-r border-zinc-200 dark:border-zinc-800/50 transition-colors duration-300">
             <div className="p-6 shrink-0">
                 <div className="flex items-center gap-3 mb-8">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center shadow-lg shadow-pink-500/20">
-                        <SearchIcon className="w-6 h-6 text-white" />
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center shadow-lg shadow-pink-500/20 group-hover:scale-105 transition-transform duration-300">
+                        <Zap className="w-6 h-6 text-white fill-current" />
                     </div>
                     <div>
                         <h1 className="font-bold text-lg text-zinc-900 dark:text-white leading-tight">
@@ -81,7 +95,7 @@ export function Sidebar({ activeView, onNavigate, onHistorySelect }: SidebarProp
                         className="w-full flex items-center justify-between px-4 py-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider hover:text-zinc-900 dark:hover:text-zinc-200 transition-colors"
                     >
                         <div className="flex items-center gap-2">
-                            <Clock className="w-4 h-4" />
+                            <History className="w-4 h-4" />
                             <span>Recent ({history.length})</span>
                         </div>
                         {isHistoryExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
@@ -172,7 +186,56 @@ export function Sidebar({ activeView, onNavigate, onHistorySelect }: SidebarProp
                     </AnimatePresence>
                 </div>
 
-                {!isHistoryExpanded && (
+                <AnimatePresence>
+                    {updateInfo && !isHistoryExpanded && !isUpdateDismissed && (
+                        <motion.div
+                            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                            className="p-6 pt-0 relative group/update"
+                        >
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setIsUpdateDismissed(true);
+                                }}
+                                className="absolute top-0 right-6 z-20 p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white/60 hover:text-white opacity-0 group-hover/update:opacity-100 transition-all duration-200 backdrop-blur-sm"
+                                title="Dismiss update"
+                            >
+                                <X className="w-3 h-3" />
+                            </button>
+                            <button
+                                onClick={() => openUrl(updateInfo.url)}
+                                className="w-full group relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 p-[1px] shadow-lg shadow-purple-500/20 hover:shadow-purple-500/40 transition-all duration-300"
+                            >
+                                <div className="relative h-full w-full bg-zinc-950/90 hover:bg-zinc-950/80 rounded-2xl p-4 transition-colors">
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <div className="p-2 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500">
+                                            <Sparkles className="w-4 h-4 text-white animate-pulse" />
+                                        </div>
+                                        <div className="text-left">
+                                            <h3 className="text-sm font-bold text-white leading-none mb-1">
+                                                Update Available
+                                            </h3>
+                                            <p className="text-[10px] font-medium text-purple-200">
+                                                Version {updateInfo.latest_version} is out!
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center justify-between text-xs font-medium text-white/80 group-hover:text-white">
+                                        <span>Download now</span>
+                                        <ChevronDown className="w-4 h-4 -rotate-90 transition-transform group-hover:translate-x-1" />
+                                    </div>
+
+                                    {/* Shine effect */}
+                                    <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/10 to-transparent z-10" />
+                                </div>
+                            </button>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                {!isHistoryExpanded && !updateInfo && !isUpdateDismissed && (
                     <div className="p-6 pt-0">
                         <div className="p-4 rounded-2xl bg-gradient-to-br from-pink-500/10 to-purple-500/10 border border-pink-500/20 dark:border-pink-500/10">
                             <h3 className="text-sm font-semibold text-pink-700 dark:text-pink-300 mb-1">

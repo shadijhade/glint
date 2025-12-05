@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -5,6 +6,19 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, State, Window};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct UpdateInfo {
+    update_available: bool,
+    latest_version: String,
+    url: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct GitHubRelease {
+    tag_name: String,
+    html_url: String,
+}
 
 struct AppState {
     current_search: Arc<Mutex<Option<Child>>>,
@@ -162,6 +176,33 @@ fn run_ripgrep_batched(
     Ok(())
 }
 
+#[tauri::command]
+fn check_update(app_handle: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    let client = reqwest::blocking::Client::new();
+    let res = client
+        .get("https://api.github.com/repos/shadijhade/shadui-ripgrep/releases/latest")
+        .header("User-Agent", "shadui-ripgrep")
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if res.status().is_success() {
+        let release: GitHubRelease = res.json().map_err(|e| e.to_string())?;
+        let latest_version = release.tag_name.trim_start_matches('v');
+        let current_version = app_handle.package_info().version.to_string();
+
+        // Simple version comparison (assuming semver-ish)
+        let update_available = latest_version != current_version;
+
+        Ok(UpdateInfo {
+            update_available,
+            latest_version: latest_version.to_string(),
+            url: release.html_url,
+        })
+    } else {
+        Err(format!("Failed to fetch updates: {}", res.status()))
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -176,7 +217,8 @@ pub fn run() {
             read_file_chunk,
             write_file_content,
             run_ripgrep_batched,
-            cancel_search
+            cancel_search,
+            check_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

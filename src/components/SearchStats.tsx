@@ -10,7 +10,7 @@ interface SearchStatsProps {
 }
 
 export function SearchStats({ results, isSearching, duration }: SearchStatsProps) {
-    const stats = useMemo(() => {
+    const derivedStats = useMemo(() => {
         const matches = results.filter((r) => r.type === "match");
         const totalMatches = matches.length;
 
@@ -44,7 +44,7 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
                 exit={{ opacity: 0, y: 20 }}
                 className="w-full max-w-4xl mx-auto mt-4"
             >
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     {/* Status Card */}
                     <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 relative overflow-hidden group transition-colors duration-300">
                         <div className={`p-2 rounded-lg ${isSearching ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
@@ -78,7 +78,11 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
                         <div>
                             <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Time Taken</p>
                             <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 font-mono transition-colors duration-300">
-                                {duration > 0 ? `${(duration / 1000).toFixed(2)}s` : "--"}
+                                {duration > 0 ? (
+                                    duration < 1 ? `${(duration * 1000).toFixed(0)}µs` :
+                                        duration < 1000 ? `${duration.toFixed(0)}ms` :
+                                            `${(duration / 1000).toFixed(2)}s`
+                                ) : "--"}
                             </p>
                         </div>
                     </div>
@@ -92,7 +96,7 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
                             <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Files Found</p>
                             <div className="flex items-baseline gap-1">
                                 <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300">
-                                    {stats.uniqueFiles}
+                                    {derivedStats.uniqueFiles}
                                 </p>
                                 <span className="text-[10px] text-zinc-600 dark:text-zinc-500 transition-colors duration-300">files</span>
                             </div>
@@ -106,13 +110,13 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
                         </div>
                         <div>
                             <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Top Type</p>
-                            {stats.topFileType ? (
+                            {derivedStats.topFileType ? (
                                 <div className="flex items-baseline gap-1">
                                     <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 uppercase transition-colors duration-300">
-                                        .{stats.topFileType.ext}
+                                        .{derivedStats.topFileType.ext}
                                     </p>
                                     <span className="text-[10px] text-zinc-600 dark:text-zinc-500 transition-colors duration-300">
-                                        ({Math.round((stats.topFileType.count / stats.totalMatches) * 100)}%)
+                                        ({Math.round((derivedStats.topFileType.count / derivedStats.totalMatches) * 100)}%)
                                     </span>
                                 </div>
                             ) : (

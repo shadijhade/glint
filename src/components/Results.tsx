@@ -9,12 +9,14 @@ import {
     ContextMenuSeparator,
 } from "@/components/ui/context-menu";
 import { FileText, FileCode2, FileImage, FileArchive, FileAudio, FileVideo, Download, Copy, ExternalLink, FolderOpen, Search as SearchIcon } from "lucide-react";
+import { Loader } from "@/components/ui/Loader";
 import { useRef, useEffect, useState, useMemo, useDeferredValue } from "react";
 import { cn } from "@/lib/utils";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { DisplayItem } from "../types";
+import { Button } from "@/components/ui/button";
 
 interface ResultsProps {
     results: RgMatch[];
@@ -79,10 +81,27 @@ export function Results({ results, displayItems: propDisplayItems, query, select
     const [isExporting, setIsExporting] = useState(false);
     const [liveQuery, setLiveQuery] = useState("");
     const deferredLiveQuery = useDeferredValue(liveQuery);
+    const [activeFileTypes, setActiveFileTypes] = useState<string[]>([]);
+
+    // Calculate top 3 file types
+    const topExtensions = useMemo(() => {
+        const counts = new Map<string, number>();
+        results.forEach(r => {
+            if (r.type === 'match' && r.data.path?.text) {
+                const parts = r.data.path.text.split('.');
+                const ext = parts.length > 1 ? parts.pop()?.toLowerCase() || '' : 'no-ext';
+                counts.set(ext, (counts.get(ext) || 0) + 1);
+            }
+        });
+        return Array.from(counts.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([ext]) => ext);
+    }, [results]);
 
     // Group and Filter Logic
     const displayItems = useMemo(() => {
-        if (!deferredLiveQuery) {
+        if (!deferredLiveQuery && activeFileTypes.length === 0) {
             return propDisplayItems;
         }
 
@@ -91,13 +110,28 @@ export function Results({ results, displayItems: propDisplayItems, query, select
             .map((r, i) => ({ ...r, originalIndex: i }))
             .filter((r): r is RgMatch & { originalIndex: number } => r.type === "match");
 
-        // First filter matches based on deferredLiveQuery
+        // Filter matches
         const filtered = matchesWithIndex.filter((m) => {
             const text = m.data.lines?.text || "";
             const path = m.data.path?.text || "";
-            const lowerQuery = deferredLiveQuery.toLowerCase();
-            return text.toLowerCase().includes(lowerQuery) ||
-                path.toLowerCase().includes(lowerQuery);
+
+            // File Type Filter
+            if (activeFileTypes.length > 0) {
+                const parts = path.split('.');
+                const ext = parts.length > 1 ? parts.pop()?.toLowerCase() || '' : 'no-ext';
+                if (!activeFileTypes.includes(ext)) {
+                    return false;
+                }
+            }
+
+            // Query Filter
+            if (deferredLiveQuery) {
+                const lowerQuery = deferredLiveQuery.toLowerCase();
+                return text.toLowerCase().includes(lowerQuery) ||
+                    path.toLowerCase().includes(lowerQuery);
+            }
+
+            return true;
         });
 
         // Group by file
@@ -117,7 +151,7 @@ export function Results({ results, displayItems: propDisplayItems, query, select
             });
         }
         return items;
-    }, [results, propDisplayItems, deferredLiveQuery]);
+    }, [results, propDisplayItems, deferredLiveQuery, activeFileTypes]);
 
     // Find the display index corresponding to the selected match
     const scrollIndex = useMemo(() => {
@@ -308,15 +342,39 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                 <>
                     <div className="shrink-0 px-4 py-3 border-b border-zinc-300 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col gap-3 z-10 transition-colors duration-300">
                         <div className="flex justify-between items-center">
-                            <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium transition-colors duration-300">
-                                Found <span className="text-pink-500 font-bold">{results.length}</span> matches
-                            </p>
+                            <div className="flex flex-col gap-2">
+                                <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium transition-colors duration-300">
+                                    Found <span className="text-pink-500 font-bold">{results.length}</span> matches
+                                </p>
+                                {topExtensions.length > 0 && (
+                                    <div className="flex gap-2">
+                                        {topExtensions.map(ext => (
+                                            <Button
+                                                key={ext}
+                                                variant={activeFileTypes.includes(ext) ? "default" : "outline"}
+                                                size="sm"
+                                                onClick={() => setActiveFileTypes(prev =>
+                                                    prev.includes(ext) ? prev.filter(e => e !== ext) : [...prev, ext]
+                                                )}
+                                                className={cn(
+                                                    "h-6 text-xs px-2",
+                                                    activeFileTypes.includes(ext)
+                                                        ? "bg-pink-500 hover:bg-pink-600 text-white border-transparent"
+                                                        : "text-zinc-500 dark:text-zinc-400 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                                                )}
+                                            >
+                                                .{ext}
+                                            </Button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                             <button
                                 onClick={handleExport}
                                 disabled={isExporting}
                                 className="flex items-center gap-2 px-3 py-1.5 bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-lg text-xs font-medium text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-300 dark:border-zinc-700"
                             >
-                                <Download className="w-3.5 h-3.5" />
+                                {isExporting ? <Loader size={14} /> : <Download className="w-3.5 h-3.5" />}
                                 {isExporting ? "Exporting..." : "Export"}
                             </button>
                         </div>

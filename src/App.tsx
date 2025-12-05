@@ -5,7 +5,7 @@ import { SearchStats } from './components/SearchStats';
 import { Preview } from './components/Preview';
 import { searchBatched, checkRgInstalled, cancelSearch, RgMatch } from './lib/ripgrep';
 import { useStore } from './lib/store';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Telescope } from 'lucide-react';
 import { Toaster, toast } from "sonner";
 import * as opener from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
@@ -28,6 +28,7 @@ function App() {
   const { addToHistory, options, settings } = useStore();
   const workerRef = useRef<Worker | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
+  const gotSummaryRef = useRef(false);
 
   useEffect(() => {
     checkRgInstalled().then(setRgInstalled);
@@ -40,6 +41,14 @@ function App() {
       if (type === 'results') {
         if (matches && matches.length > 0) {
           setResults(prev => [...prev, ...matches]);
+
+          // Check for summary to get precise duration
+          const summary = matches.find((m: RgMatch) => m.type === 'summary');
+          if (summary?.data?.elapsed_total?.secs !== undefined) {
+            const { secs, nanos } = summary.data.elapsed_total;
+            setSearchDuration(secs * 1000 + nanos / 1_000_000);
+            gotSummaryRef.current = true;
+          }
         }
         if (newDisplayItems && newDisplayItems.length > 0) {
           setDisplayItems(prev => [...prev, ...newDisplayItems]);
@@ -100,20 +109,17 @@ function App() {
       unlistenRef.current = null;
     }
 
-    // Cancel any running search on the backend
-    await cancelSearch();
+    if (query.trim() && path.trim()) {
+      addToHistory(query, path);
+    }
 
+    startTimeRef.current = performance.now();
+    gotSummaryRef.current = false;
     setIsSearching(true);
     setResults([]);
     setDisplayItems([]);
-    setSearchedQuery(query);
     setSearchDuration(0);
-    setSelectedIndex(-1);
-    startTimeRef.current = performance.now();
-    addToHistory(query, path);
 
-    // Reset worker state
-    workerRef.current?.postMessage({ type: 'reset' });
 
     try {
       const unlisten = await searchBatched(
@@ -128,7 +134,9 @@ function App() {
           workerRef.current?.postMessage({ type: 'flush' });
 
           setIsSearching(false);
-          setSearchDuration(performance.now() - startTimeRef.current);
+          if (!gotSummaryRef.current) {
+            setSearchDuration(performance.now() - startTimeRef.current);
+          }
           unlistenRef.current = null;
         },
         (error) => {
@@ -289,12 +297,15 @@ function App() {
         {/* Content Area */}
         <div className="flex-1 min-h-0 p-6 pt-2 flex gap-4 overflow-hidden">
           {results.length === 0 && !isSearching ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 select-none">
-              <div className="w-64 h-64 bg-gradient-to-tr from-pink-500/20 to-purple-500/20 rounded-full blur-3xl absolute -z-10 animate-pulse"></div>
-              <AlertTriangle className="w-24 h-24 text-zinc-300 dark:text-zinc-800 mb-6" />
-              <h2 className="text-2xl font-bold text-zinc-400 dark:text-zinc-600 mb-2">Ready to Search</h2>
-              <p className="text-zinc-400 dark:text-zinc-600 max-w-md">
-                Enter a search term and path to begin exploring your codebase with lightning speed.
+            <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 select-none relative overflow-hidden">
+              <div className="w-96 h-96 bg-gradient-to-tr from-pink-500/10 to-purple-500/10 rounded-full blur-3xl absolute -z-10 animate-pulse"></div>
+              <div className="relative">
+                <div className="absolute inset-0 bg-pink-500/20 blur-xl rounded-full animate-pulse"></div>
+                <Telescope className="w-32 h-32 text-zinc-300 dark:text-zinc-800 mb-8 relative z-10" strokeWidth={1} />
+              </div>
+              <h2 className="text-3xl font-bold text-zinc-400 dark:text-zinc-600 mb-3 tracking-tight">Ready to Explore</h2>
+              <p className="text-zinc-400 dark:text-zinc-600 max-w-md text-lg leading-relaxed">
+                Enter a search term and path to begin exploring your codebase with <span className="text-pink-500 font-medium">lightning speed</span>.
               </p>
             </div>
           ) : (

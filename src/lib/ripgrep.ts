@@ -8,9 +8,9 @@ export interface RgMatch {
         line_number?: number;
         absolute_offset?: number;
         submatches?: Array<{ match: { text: string }; start: number; end: number }>;
-        elapsed_total?: { human: string; nanos: number; seconds: number };
+        elapsed_total?: { human: string; nanos: number; secs: number };
         stats?: {
-            elapsed?: { human: string; nanos: number; seconds: number };
+            elapsed?: { human: string; nanos: number; secs: number };
             searches?: number;
             searches_with_match?: number;
             bytes_searched?: number;
@@ -173,6 +173,7 @@ export async function searchBatched(
 
     // Suppress error messages (like Access Denied)
     args.push("--no-messages");
+    args.push("--stats");
 
     if (options.caseSensitive) {
         args.push("--case-sensitive");

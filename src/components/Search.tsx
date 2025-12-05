@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "@/lib/store";
-import { Search as SearchIcon, Folder, StopCircle, CaseSensitive, WholeWord, Regex, Replace } from "lucide-react";
+import { Search as SearchIcon, Folder, StopCircle, CaseSensitive, WholeWord, Regex, Replace, Play } from "lucide-react";
+import { Loader } from "@/components/ui/Loader";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
@@ -160,8 +161,9 @@ export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps
                         <button
                             type="submit"
                             disabled={!query || !path}
-                            className="px-8 py-3 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 rounded-xl text-white font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:from-pink-600 disabled:hover:to-purple-600"
+                            className="px-8 py-3 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 rounded-xl text-white font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:from-pink-600 disabled:hover:to-purple-600 flex items-center gap-2 shadow-lg shadow-pink-500/20 hover:shadow-pink-500/40"
                         >
+                            {isSearching ? <Loader size={18} className="text-white" /> : <Play className="w-4 h-4 fill-current" />}
                             Search
                         </button>
                     )}
