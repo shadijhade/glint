@@ -47,6 +47,9 @@ interface AppState {
     clearHistory: () => void;
     setOption: (key: keyof SearchOptions, value: boolean) => void;
     setSettings: (settings: Partial<Settings>) => void;
+    // UI State
+    isSearchFocused: boolean;
+    setSearchFocused: (focused: boolean) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -103,6 +106,8 @@ export const useStore = create<AppState>()(
             setSettings: (newSettings) => set((state) => ({
                 settings: { ...state.settings, ...newSettings }
             })),
+            isSearchFocused: false,
+            setSearchFocused: (focused) => set({ isSearchFocused: focused }),
         }),
         {
             name: 'shadui-ripgrep-storage',

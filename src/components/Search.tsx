@@ -1,10 +1,12 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "@/lib/store";
-import { Search as SearchIcon, Folder, StopCircle, CaseSensitive, WholeWord, Regex, Replace, Play } from "lucide-react";
-import { Loader } from "@/components/ui/Loader";
+import { Folder, StopCircle, CaseSensitive, WholeWord, Regex, Replace, ArrowUp, CornerDownLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState, useEffect } from "react";
-
+import { useState, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 
 interface SearchProps {
     onSearch: (query: string, path: string) => void;
@@ -14,21 +16,36 @@ interface SearchProps {
 }
 
 export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps) {
-    const { query, setQuery, path, setPath, options, setOption, settings } = useStore();
+    const { query, setQuery, path, setPath, options, setOption, settings, setSearchFocused } = useStore();
     const [isReplaceOpen, setIsReplaceOpen] = useState(false);
     const [replaceText, setReplaceText] = useState("");
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    // Auto-resize textarea
+    useEffect(() => {
+        if (textareaRef.current) {
+            textareaRef.current.style.height = "auto";
+            textareaRef.current.style.height = textareaRef.current.scrollHeight + "px";
+        }
+    }, [query]);
 
     // Set default search path on mount if path is empty
     useEffect(() => {
         if (!path && settings.defaultSearchPath) {
             setPath(settings.defaultSearchPath);
         }
-    }, []); // Only run on mount
+    }, []);
 
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (query && path) {
+    const handleSubmit = () => {
+        if (query && path && !isSearching) {
             onSearch(query, path);
+        }
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSubmit();
         }
     };
 
@@ -44,140 +61,129 @@ export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps
     };
 
     return (
-        <div className="w-full max-w-3xl mx-auto">
-            <form onSubmit={handleSubmit} className="space-y-4">
-                {/* Search Input */}
-                <div className="relative group">
-                    <input
-                        type="text"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        placeholder="Search pattern..."
-                        className="w-full pl-6 pr-32 py-4 bg-white/90 dark:bg-zinc-900/80 border border-zinc-300 dark:border-zinc-800 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-pink-500/50 focus:border-transparent transition-all backdrop-blur-sm"
-                        disabled={isSearching}
-                    />
-                    <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                        <button
-                            type="button"
+        <div className="w-full max-w-4xl mx-auto relative z-50">
+            <div className={cn(
+                "relative bg-zinc-100 dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-all duration-300",
+                "focus-within:ring-2 focus-within:ring-pink-500/20 focus-within:border-pink-500/50 focus-within:shadow-xl focus-within:scale-[1.01]"
+            )}>
+                {/* Header: Path & Options */}
+                <div className="flex items-center justify-between px-4 pt-3 pb-2">
+                    <Badge
+                        variant="secondary"
+                        className="cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-800 font-normal text-zinc-500 dark:text-zinc-400 px-3 py-1.5 h-auto text-xs gap-1.5 rounded-lg border border-transparent hover:border-zinc-300 dark:hover:border-zinc-700 transition-all select-none"
+                        onClick={handleBrowse}
+                    >
+                        <Folder className="w-3.5 h-3.5" />
+                        {path ? <span className="truncate max-w-[200px]">{path}</span> : "Select location..."}
+                    </Badge>
+
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => setOption('caseSensitive', !options.caseSensitive)}
-                            className={cn(
-                                "p-1.5 rounded-md transition-colors",
-                                options.caseSensitive ? "bg-pink-500/20 text-pink-400" : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200 dark:text-zinc-500 dark:hover:text-zinc-300 dark:hover:bg-zinc-800"
-                            )}
+                            className={cn("h-7 w-7 p-0 rounded-lg", options.caseSensitive ? "bg-pink-100 text-pink-600 dark:bg-pink-900/30 dark:text-pink-400" : "text-zinc-500")}
                             title="Case Sensitive"
                         >
                             <CaseSensitive className="w-4 h-4" />
-                        </button>
-                        <button
-                            type="button"
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => setOption('wholeWord', !options.wholeWord)}
-                            className={cn(
-                                "p-1.5 rounded-md transition-colors",
-                                options.wholeWord ? "bg-pink-500/20 text-pink-400" : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200 dark:text-zinc-500 dark:hover:text-zinc-300 dark:hover:bg-zinc-800"
-                            )}
+                            className={cn("h-7 w-7 p-0 rounded-lg", options.wholeWord ? "bg-pink-100 text-pink-600 dark:bg-pink-900/30 dark:text-pink-400" : "text-zinc-500")}
                             title="Whole Word"
                         >
                             <WholeWord className="w-4 h-4" />
-                        </button>
-                        <button
-                            type="button"
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => setOption('regex', !options.regex)}
-                            className={cn(
-                                "p-1.5 rounded-md transition-colors",
-                                options.regex ? "bg-pink-500/20 text-pink-400" : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200 dark:text-zinc-500 dark:hover:text-zinc-300 dark:hover:bg-zinc-800"
-                            )}
-                            title="Regular Expression"
+                            className={cn("h-7 w-7 p-0 rounded-lg", options.regex ? "bg-pink-100 text-pink-600 dark:bg-pink-900/30 dark:text-pink-400" : "text-zinc-500")}
+                            title="Regex"
                         >
                             <Regex className="w-4 h-4" />
-                        </button>
-                        <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-800 mx-1" />
-                        <SearchIcon className="w-5 h-5 text-zinc-600 dark:text-zinc-500 group-focus-within:text-pink-500 transition-colors" />
+                        </Button>
+                        <Separator orientation="vertical" className="h-4 mx-1" />
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setIsReplaceOpen(!isReplaceOpen)}
+                            className={cn("h-7 w-7 p-0 rounded-lg", isReplaceOpen ? "bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100" : "text-zinc-500")}
+                            title="Toggle Replace"
+                        >
+                            <Replace className="w-4 h-4" />
+                        </Button>
                     </div>
                 </div>
 
-                {/* Replace Input */}
-                {isReplaceOpen && (
-                    <div className="relative group animate-in slide-in-from-top-2 fade-in duration-200">
-                        <input
-                            type="text"
-                            value={replaceText}
-                            onChange={(e) => setReplaceText(e.target.value)}
-                            placeholder="Replace with..."
-                            className="w-full pl-6 pr-32 py-4 bg-white/90 dark:bg-zinc-900/80 border border-zinc-300 dark:border-zinc-800 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-pink-500/50 focus:border-transparent transition-all backdrop-blur-sm"
+                {/* Input Area */}
+                <div className="px-2 pb-2 flex gap-2 items-end relative">
+                    <div className="flex-1 min-w-0 relative">
+                        <Textarea
+                            ref={textareaRef}
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            onFocus={() => setSearchFocused(true)}
+                            onBlur={() => setSearchFocused(false)}
+                            placeholder="What do you want to find?"
+                            className="min-h-[44px] max-h-[200px] w-full border-0 focus-visible:ring-0 resize-none bg-transparent shadow-none p-3 text-base placeholder:text-zinc-400 dark:placeholder:text-zinc-600 relative z-10"
                             disabled={isSearching}
                         />
-                        <div className="absolute right-4 top-1/2 -translate-y-1/2">
-                            <button
-                                type="button"
-                                onClick={() => onReplace(replaceText)}
-                                disabled={!query || !path || isSearching}
-                                className="px-4 py-1.5 bg-pink-600 hover:bg-pink-500 rounded-lg text-white text-sm font-medium transition-all disabled:opacity-50"
-                            >
-                                Replace All
-                            </button>
-                        </div>
-                    </div>
-                )}
 
-                <div className="flex gap-3">
-                    <div className="relative flex-1 group">
-                        <input
-                            type="text"
-                            value={path}
-                            onChange={(e) => setPath(e.target.value)}
-                            placeholder="Search directory..."
-                            className="w-full px-6 py-3 bg-white/90 dark:bg-zinc-900/80 border border-zinc-300 dark:border-zinc-800 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-pink-500/50 focus:border-transparent transition-all backdrop-blur-sm"
-                            disabled={isSearching}
-                        />
-                        <Folder className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600 dark:text-zinc-500 group-focus-within:text-pink-500 transition-colors" />
-                    </div>
-
-                    <button
-                        type="button"
-                        onClick={() => setIsReplaceOpen(!isReplaceOpen)}
-                        className={cn(
-                            "px-4 py-3 bg-zinc-200 hover:bg-zinc-300 border border-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:border-zinc-700 rounded-xl text-foreground transition-all",
-                            isReplaceOpen && "bg-zinc-300 border-zinc-400 dark:bg-zinc-700 dark:border-zinc-600"
+                        {/* Command Hints Overlay */}
+                        {query && !isSearching && (
+                            <div className="absolute right-0 bottom-3 z-20 hidden md:flex items-center gap-3 pointer-events-none px-2 animate-in fade-in zoom-in-95 duration-200">
+                                <span className="flex items-center gap-1 text-[10px] bg-white/50 dark:bg-black/50 backdrop-blur-sm px-1.5 py-0.5 rounded text-zinc-400 border border-black/5 dark:border-white/5">
+                                    <CornerDownLeft className="w-3 h-3" />
+                                    to search
+                                </span>
+                                <span className="flex items-center gap-1 text-[10px] bg-white/50 dark:bg-black/50 backdrop-blur-sm px-1.5 py-0.5 rounded text-zinc-400 border border-black/5 dark:border-white/5">
+                                    <span className="font-medium">⇧ ↵</span>
+                                    new line
+                                </span>
+                            </div>
                         )}
-                        title="Toggle Replace"
+
+                        {isReplaceOpen && (
+                            <div className="mt-2 relative animate-in slide-in-from-top-1 fade-in duration-200 z-10">
+                                <Textarea
+                                    value={replaceText}
+                                    onChange={(e) => setReplaceText(e.target.value)}
+                                    placeholder="Replace with..."
+                                    className="min-h-[44px] w-full border-0 bg-zinc-50 dark:bg-zinc-950/50 rounded-xl focus-visible:ring-0 resize-none shadow-none p-3 text-sm"
+                                    disabled={isSearching}
+                                />
+                                <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    onClick={() => onReplace(replaceText)}
+                                    disabled={!query || !path || isSearching}
+                                    className="absolute right-2 bottom-2 h-7 text-xs bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+                                >
+                                    Replace All
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+
+                    <Button
+                        size="icon"
+                        onClick={isSearching ? onStop : handleSubmit}
+                        disabled={(!query || !path) && !isSearching}
+                        className={cn(
+                            "rounded-2xl h-12 w-12 shrink-0 transition-all mb-1 relative z-30",
+                            isSearching
+                                ? "bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20"
+                                : "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:opacity-90 shadow-lg hover:scale-105 active:scale-95"
+                        )}
                     >
-                        <Replace className="w-5 h-5" />
-                    </button>
-
-                    <button
-                        type="button"
-                        onClick={handleBrowse}
-                        disabled={isSearching}
-                        className="px-6 py-3 bg-zinc-200 hover:bg-zinc-300 border border-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:border-zinc-700 rounded-xl text-foreground transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        Browse
-                    </button>
-
-
-
-                    {isSearching ? (
-                        <button
-                            type="button"
-                            onClick={onStop}
-                            className="px-8 py-3 bg-red-600 hover:bg-red-500 rounded-xl text-white font-medium transition-all flex items-center gap-2"
-                        >
-                            <StopCircle className="w-4 h-4" />
-                            Stop
-                        </button>
-                    ) : (
-                        <button
-                            type="submit"
-                            disabled={!query || !path}
-                            className="px-8 py-3 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 rounded-xl text-white font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:from-pink-600 disabled:hover:to-purple-600 flex items-center gap-2 shadow-lg shadow-pink-500/20 hover:shadow-pink-500/40"
-                        >
-                            {isSearching ? <Loader size={18} className="text-white" /> : <Play className="w-4 h-4 fill-current" />}
-                            Search
-                        </button>
-                    )}
+                        {isSearching ? <StopCircle className="h-6 w-6" /> : <ArrowUp className="h-6 w-6" />}
+                    </Button>
                 </div>
-            </form>
-
-
+            </div>
         </div>
     );
 }

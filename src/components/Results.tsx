@@ -12,11 +12,14 @@ import { FileText, FileCode2, FileImage, FileArchive, FileAudio, FileVideo, Down
 import { Loader } from "@/components/ui/Loader";
 import { useRef, useEffect, useState, useMemo, useDeferredValue } from "react";
 import { cn } from "@/lib/utils";
+import { motion } from "framer-motion";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { DisplayItem } from "../types";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { useStore } from "@/lib/store";
 
 interface ResultsProps {
@@ -268,8 +271,14 @@ export function Results({ results, displayItems: propDisplayItems, query, select
             const matchCountDisplay = item.matchCount >= 0 ? item.matchCount : "";
 
             return (
-                <div style={style} className="px-4 py-1">
-                    <div className="flex items-center gap-2 p-2 bg-zinc-100/80 dark:bg-zinc-800/80 rounded-lg border border-zinc-200 dark:border-zinc-700/50 backdrop-blur-sm h-full">
+                <motion.div
+                    style={style}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.2, delay: 0.05 }}
+                    className="px-2"
+                >
+                    <Card className="flex items-center gap-2 p-2 bg-zinc-100/80 dark:bg-zinc-800/80 backdrop-blur-sm h-full border-zinc-200 dark:border-zinc-700/50 shadow-sm">
                         <div className="p-1 bg-white dark:bg-zinc-900 rounded text-pink-500 shrink-0">
                             <FileIcon className="h-4 w-4" />
                         </div>
@@ -277,12 +286,12 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                             {fileName}
                         </span>
                         {matchCountDisplay !== "" && (
-                            <span className="text-xs text-zinc-500 font-mono bg-zinc-200 dark:bg-zinc-900 px-1.5 py-0.5 rounded shrink-0">
+                            <Badge variant="secondary" className="font-mono text-xs">
                                 {matchCountDisplay}
-                            </span>
+                            </Badge>
                         )}
-                    </div>
-                </div>
+                    </Card>
+                </motion.div>
             );
         }
 
@@ -300,13 +309,19 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                 : lineContent;
 
         return (
-            <div style={style} className="px-4 py-1">
+            <motion.div
+                style={style}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+                className="px-2"
+            >
                 <ContextMenu>
                     <ContextMenuTrigger>
                         <div
                             onClick={() => onSelect?.(item.originalIndex)}
                             className={cn(
-                                "flex items-center gap-3 rounded-lg border p-2 pl-8 shadow-sm transition-all cursor-pointer h-full",
+                                "flex items-center gap-3 rounded-md border p-1.5 pl-6 shadow-sm transition-all cursor-pointer h-full",
                                 isSelected
                                     ? "bg-pink-50 dark:bg-zinc-800 border-pink-500/50 shadow-pink-500/10"
                                     : "bg-white/40 dark:bg-zinc-900/40 border-zinc-200 dark:border-zinc-800 hover:bg-white/60 dark:hover:bg-zinc-800/60 hover:border-pink-300 dark:hover:border-zinc-700"
@@ -342,13 +357,24 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                         </ContextMenuItem>
                     </ContextMenuContent>
                 </ContextMenu>
-            </div>
+            </motion.div>
         );
     };
 
+    // Item Sizer
+    const getItemSize = (index: number) => {
+        const item = displayItems[index];
+        return item.type === 'header' ? 40 : 32; // Header 40px, Match 32px
+    };
+
+    const hasResults = results.length > 0;
+    const hasDisplayItems = displayItems.length > 0;
+
     return (
         <div className="h-full w-full flex-1 overflow-hidden bg-transparent flex flex-col">
-            {displayItems.length === 0 ? (
+            {!hasResults ? (
+                // Backend Empty State (Not searching, no results yet) - handled by App.tsx actually, 
+                // but if we are passed empty results here:
                 <div className="flex h-full flex-col items-center justify-center text-muted-foreground gap-4">
                     <div className="p-6 bg-zinc-100 dark:bg-zinc-900/50 rounded-full border border-zinc-300 dark:border-zinc-800 transition-colors duration-300">
                         <FileText className="h-12 w-12 opacity-20" />
@@ -357,6 +383,7 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                 </div>
             ) : (
                 <>
+                    {/* Header / Filter Area - Always show if we have backend results */}
                     <div className="shrink-0 px-4 py-3 border-b border-zinc-300 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col gap-3 z-10 transition-colors duration-300">
                         <div className="flex justify-between items-center">
                             <div className="flex flex-col gap-2">
@@ -453,20 +480,28 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                             />
                         </div>
                     </div>
+
                     <div className="flex-1 min-h-0 p-2">
-                        <AutoSizer>
-                            {({ height, width }) => (
-                                <VirtualList
-                                    ref={listRef}
-                                    height={height}
-                                    width={width}
-                                    itemCount={displayItems.length}
-                                    itemSize={50}
-                                >
-                                    {Row}
-                                </VirtualList>
-                            )}
-                        </AutoSizer>
+                        {!hasDisplayItems ? (
+                            <div className="flex h-full flex-col items-center justify-center text-muted-foreground gap-2">
+                                <SearchIcon className="h-8 w-8 opacity-20" />
+                                <p className="text-zinc-500 text-sm">No matches for filter</p>
+                            </div>
+                        ) : (
+                            <AutoSizer>
+                                {({ height, width }) => (
+                                    <VirtualList
+                                        ref={listRef}
+                                        height={height}
+                                        width={width}
+                                        itemCount={displayItems.length}
+                                        itemSize={getItemSize}
+                                    >
+                                        {Row}
+                                    </VirtualList>
+                                )}
+                            </AutoSizer>
+                        )}
                     </div>
                 </>
             )}

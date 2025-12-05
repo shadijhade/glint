@@ -1,8 +1,10 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { Activity, Clock, FileText, Zap, BarChart3, AlertTriangle } from "lucide-react";
+import { Activity, Clock, FileText, Zap, AlertTriangle } from "lucide-react";
 import { RgMatch } from "@/lib/ripgrep";
 import { useMemo } from "react";
 import { useStore } from "@/lib/store";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 
 interface SearchStatsProps {
     results: RgMatch[];
@@ -15,35 +17,16 @@ export function SearchStats({ results, isSearching, duration, onRerunSearch }: S
     const derivedStats = useMemo(() => {
         const matches = results.filter((r) => r.type === "match");
         const totalMatches = matches.length;
-
-        // Count unique files
         const uniqueFiles = new Set(matches.map(m => m.data.path?.text)).size;
-
-        // Calculate file type distribution
-        const fileTypes = matches.reduce((acc, curr) => {
-            const path = curr.data.path?.text || "";
-            const ext = path.split('.').pop()?.toLowerCase() || 'unknown';
-            acc[ext] = (acc[ext] || 0) + 1;
-            return acc;
-        }, {} as Record<string, number>);
-
-        const topFileType = Object.entries(fileTypes).sort((a, b) => b[1] - a[1])[0];
-
-        return {
-            totalMatches,
-            uniqueFiles,
-            topFileType: topFileType ? { ext: topFileType[0], count: topFileType[1] } : null
-        };
+        return { totalMatches, uniqueFiles };
     }, [results]);
 
     const { settings, setSettings } = useStore();
     const { maxResults } = settings;
-
     const limitReached = maxResults !== null && derivedStats.totalMatches >= maxResults;
 
     const handleShowAll = () => {
         setSettings({ maxResults: null });
-        // Trigger re-search if callback is available
         onRerunSearch?.();
     };
 
@@ -52,104 +35,71 @@ export function SearchStats({ results, isSearching, duration, onRerunSearch }: S
     return (
         <AnimatePresence mode="wait">
             <motion.div
-                initial={{ opacity: 0, y: 20 }}
+                initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 20 }}
-                className="w-full max-w-4xl mx-auto mt-4"
+                exit={{ opacity: 0, y: -10 }}
+                className="flex items-center gap-4 text-sm text-muted-foreground bg-zinc-100/50 dark:bg-zinc-900/50 px-4 py-2 rounded-full border border-zinc-200 dark:border-zinc-800 backdrop-blur-sm shadow-sm inline-flex"
             >
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {/* Status Card */}
-                    <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 relative overflow-hidden group transition-colors duration-300">
-                        <div className={`p-2 rounded-lg ${isSearching ? 'bg-blue-500/20 text-blue-400' : limitReached ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'}`}>
-                            {isSearching ? (
-                                <Activity className="w-4 h-4 animate-pulse" />
-                            ) : limitReached ? (
-                                <AlertTriangle className="w-4 h-4" />
-                            ) : (
-                                <Zap className="w-4 h-4" />
-                            )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                            <p className="text-xs text-zinc-500 dark:text-zinc-500 text-zinc-600 font-medium uppercase tracking-wider transition-colors duration-300">Status</p>
-                            <div className="flex items-center gap-2">
-                                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300 truncate">
-                                    {isSearching ? "Scanning..." : limitReached ? "Limit Reached" : "Complete"}
-                                </p>
-                                {limitReached && !isSearching && (
-                                    <button
-                                        onClick={handleShowAll}
-                                        className="text-[10px] bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 px-2 py-0.5 rounded-full transition-colors whitespace-nowrap"
-                                    >
-                                        Show all
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                        {isSearching && (
-                            <motion.div
-                                className="absolute bottom-0 left-0 h-0.5 bg-blue-500"
-                                initial={{ width: "0%" }}
-                                animate={{ width: "100%" }}
-                                transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
-                            />
-                        )}
-                    </div>
-
-                    {/* Time Card */}
-                    <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 transition-colors duration-300">
-                        <div className="p-2 rounded-lg bg-orange-500/20 text-orange-400">
-                            <Clock className="w-4 h-4" />
-                        </div>
-                        <div>
-                            <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Time Taken</p>
-                            <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 font-mono transition-colors duration-300">
-                                {duration > 0 ? (
-                                    duration < 1 ? `${(duration * 1000).toFixed(0)}µs` :
-                                        duration < 1000 ? `${duration.toFixed(0)}ms` :
-                                            `${(duration / 1000).toFixed(2)}s`
-                                ) : "--"}
-                            </p>
-                        </div>
-                    </div>
-
-                    {/* Files Card */}
-                    <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 transition-colors duration-300">
-                        <div className="p-2 rounded-lg bg-purple-500/20 text-purple-400">
-                            <FileText className="w-4 h-4" />
-                        </div>
-                        <div>
-                            <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Files Found</p>
-                            <div className="flex items-baseline gap-1">
-                                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300">
-                                    {derivedStats.uniqueFiles}
-                                </p>
-                                <span className="text-[10px] text-zinc-600 dark:text-zinc-500 transition-colors duration-300">files</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Insights Card */}
-                    <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 transition-colors duration-300">
-                        <div className="p-2 rounded-lg bg-pink-500/20 text-pink-400">
-                            <BarChart3 className="w-4 h-4" />
-                        </div>
-                        <div>
-                            <p className="text-xs text-zinc-600 dark:text-zinc-500 font-medium uppercase tracking-wider transition-colors duration-300">Top Type</p>
-                            {derivedStats.topFileType ? (
-                                <div className="flex items-baseline gap-1">
-                                    <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 uppercase transition-colors duration-300">
-                                        .{derivedStats.topFileType.ext}
-                                    </p>
-                                    <span className="text-[10px] text-zinc-600 dark:text-zinc-500 transition-colors duration-300">
-                                        ({Math.round((derivedStats.topFileType.count / derivedStats.totalMatches) * 100)}%)
-                                    </span>
-                                </div>
-                            ) : (
-                                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300">--</p>
-                            )}
-                        </div>
-                    </div>
+                {/* Status */}
+                <div className="flex items-center gap-2">
+                    {isSearching ? (
+                        <Activity className="w-4 h-4 animate-pulse text-blue-500" />
+                    ) : limitReached ? (
+                        <AlertTriangle className="w-4 h-4 text-yellow-500" />
+                    ) : (
+                        <Zap className="w-4 h-4 text-green-500" />
+                    )}
+                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
+                        {isSearching ? "Scanning" : limitReached ? "Limit Reached" : "Done"}
+                    </span>
                 </div>
+
+                <Separator orientation="vertical" className="h-4" />
+
+                {/* Counts */}
+                <div className="flex items-center gap-2">
+                    <span className="font-mono font-medium text-pink-600 dark:text-pink-400">
+                        {derivedStats.totalMatches}
+                    </span>
+                    <span>matches</span>
+                </div>
+
+                <Separator orientation="vertical" className="h-4" />
+
+                <div className="flex items-center gap-2">
+                    <FileText className="w-4 h-4" />
+                    <span className="font-mono font-medium text-zinc-900 dark:text-zinc-100">
+                        {derivedStats.uniqueFiles}
+                    </span>
+                    <span>files</span>
+                </div>
+
+                <Separator orientation="vertical" className="h-4" />
+
+                {/* Time */}
+                <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    <span className="font-mono text-xs">
+                        {duration > 0 ? (
+                            duration < 1 ? `<1ms` :
+                                duration < 1000 ? `${duration.toFixed(0)}ms` :
+                                    `${(duration / 1000).toFixed(2)}s`
+                        ) : "--"}
+                    </span>
+                </div>
+
+                {limitReached && !isSearching && (
+                    <>
+                        <Separator orientation="vertical" className="h-4" />
+                        <Badge
+                            variant="secondary"
+                            className="text-xs cursor-pointer hover:bg-yellow-100 dark:hover:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800"
+                            onClick={handleShowAll}
+                        >
+                            Show all
+                        </Badge>
+                    </>
+                )}
             </motion.div>
         </AnimatePresence>
     );
