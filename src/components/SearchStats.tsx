@@ -1,15 +1,17 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { Activity, Clock, FileText, Zap, BarChart3 } from "lucide-react";
+import { Activity, Clock, FileText, Zap, BarChart3, AlertTriangle } from "lucide-react";
 import { RgMatch } from "@/lib/ripgrep";
 import { useMemo } from "react";
+import { useStore } from "@/lib/store";
 
 interface SearchStatsProps {
     results: RgMatch[];
     isSearching: boolean;
     duration: number; // in milliseconds
+    onRerunSearch?: () => void;
 }
 
-export function SearchStats({ results, isSearching, duration }: SearchStatsProps) {
+export function SearchStats({ results, isSearching, duration, onRerunSearch }: SearchStatsProps) {
     const derivedStats = useMemo(() => {
         const matches = results.filter((r) => r.type === "match");
         const totalMatches = matches.length;
@@ -34,6 +36,17 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
         };
     }, [results]);
 
+    const { settings, setSettings } = useStore();
+    const { maxResults } = settings;
+
+    const limitReached = maxResults !== null && derivedStats.totalMatches >= maxResults;
+
+    const handleShowAll = () => {
+        setSettings({ maxResults: null });
+        // Trigger re-search if callback is available
+        onRerunSearch?.();
+    };
+
     if (!results.length && !isSearching) return null;
 
     return (
@@ -47,18 +60,30 @@ export function SearchStats({ results, isSearching, duration }: SearchStatsProps
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     {/* Status Card */}
                     <div className="bg-white/50 dark:bg-zinc-900/50 border border-zinc-300 dark:border-zinc-800/50 rounded-xl p-3 backdrop-blur-md flex items-center gap-3 relative overflow-hidden group transition-colors duration-300">
-                        <div className={`p-2 rounded-lg ${isSearching ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
+                        <div className={`p-2 rounded-lg ${isSearching ? 'bg-blue-500/20 text-blue-400' : limitReached ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'}`}>
                             {isSearching ? (
                                 <Activity className="w-4 h-4 animate-pulse" />
+                            ) : limitReached ? (
+                                <AlertTriangle className="w-4 h-4" />
                             ) : (
                                 <Zap className="w-4 h-4" />
                             )}
                         </div>
-                        <div>
+                        <div className="flex-1 min-w-0">
                             <p className="text-xs text-zinc-500 dark:text-zinc-500 text-zinc-600 font-medium uppercase tracking-wider transition-colors duration-300">Status</p>
-                            <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300">
-                                {isSearching ? "Scanning..." : "Complete"}
-                            </p>
+                            <div className="flex items-center gap-2">
+                                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 transition-colors duration-300 truncate">
+                                    {isSearching ? "Scanning..." : limitReached ? "Limit Reached" : "Complete"}
+                                </p>
+                                {limitReached && !isSearching && (
+                                    <button
+                                        onClick={handleShowAll}
+                                        className="text-[10px] bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 px-2 py-0.5 rounded-full transition-colors whitespace-nowrap"
+                                    >
+                                        Show all
+                                    </button>
+                                )}
+                            </div>
                         </div>
                         {isSearching && (
                             <motion.div

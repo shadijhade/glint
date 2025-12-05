@@ -59,8 +59,8 @@ export function Preview({ filePath, lineNumber }: PreviewProps) {
                 let start = 1;
 
                 if (lineNumber) {
-                    // Load window around line number
-                    const WINDOW_SIZE = 200;
+                    // Load window around line number using previewLines setting
+                    const WINDOW_SIZE = settings.previewLines * 20; // Multiply for reasonable window
                     start = Math.max(1, lineNumber - WINDOW_SIZE / 2);
                     const end = start + WINDOW_SIZE;
                     text = await invoke<string>("read_file_chunk", { path: filePath, startLine: start, endLine: end });
@@ -89,7 +89,7 @@ export function Preview({ filePath, lineNumber }: PreviewProps) {
             // Only scroll if the line is within the current view
             // This prevents scrolling when the content is stale (from previous selection)
             // but the lineNumber has already updated.
-            const endLine = startLine + 200; // Approximate window size
+            const endLine = startLine + (settings.previewLines * 20); // Use settings for window size
             if (lineNumber < startLine || lineNumber >= endLine) {
                 return;
             }
@@ -136,7 +136,7 @@ export function Preview({ filePath, lineNumber }: PreviewProps) {
                             key={`${filePath}-${startLine}`} // Force re-render on chunk change
                             language={getLanguage(filePath)}
                             style={isDark ? vscDarkPlus : vs}
-                            showLineNumbers={true}
+                            showLineNumbers={settings.showLineNumbers}
                             startingLineNumber={startLine}
                             wrapLines={true}
                             customStyle={{ margin: 0, padding: '1rem', fontSize: '12px', lineHeight: '1.5', background: 'transparent' }}

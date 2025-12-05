@@ -37,6 +37,7 @@ export interface SearchOptions {
     wholeWord?: boolean;
     regex?: boolean;
     exclusions?: string[];
+    maxResults?: number | null;
 }
 
 export async function search(
@@ -83,7 +84,7 @@ export async function search(
     let totalMatches = 0;
     const BATCH_SIZE = 1000;
     const BATCH_INTERVAL = 100;
-    const MAX_MATCHES = 20000;
+    const MAX_MATCHES = options.maxResults || 20000;
     let childProcess: Child | null = null;
 
     const flush = () => {
@@ -160,6 +161,7 @@ import { listen } from "@tauri-apps/api/event";
 export async function searchBatched(
     query: string,
     path: string,
+    searchId: string,
     onData: (lines: string[]) => void,
     onFinished: () => void,
     onError: (error: string) => void,
@@ -174,6 +176,9 @@ export async function searchBatched(
     // Suppress error messages (like Access Denied)
     args.push("--no-messages");
     args.push("--stats");
+
+    // Note: We don't use --max-count here because it limits per-file, not total.
+    // The total limit is handled Rust-side via the maxResults parameter.
 
     if (options.caseSensitive) {
         args.push("--case-sensitive");
@@ -199,8 +204,10 @@ export async function searchBatched(
     args.push(query);
     args.push(path);
 
-    const unlisten = await listen<{ type: string; lines: string[] }>("search-event", (event) => {
-        const { type, lines } = event.payload;
+    const unlisten = await listen<{ id: string; type: string; lines: string[] }>("search-event", (event) => {
+        const { id, type, lines } = event.payload;
+        if (id !== searchId) return;
+
         if (type === "data") {
             onData(lines);
         } else if (type === "finished") {
@@ -211,7 +218,7 @@ export async function searchBatched(
     });
 
     try {
-        await invoke("run_ripgrep_batched", { args });
+        await invoke("run_ripgrep_batched", { args, searchId, maxResults: options.maxResults });
     } catch (e) {
         onError(String(e));
     }

@@ -17,6 +17,21 @@ interface Settings {
     theme: 'dark' | 'light' | 'system';
     editorPath: string;
     exclusions: string[];
+    // Search defaults
+    defaultSearchPath: string;
+    maxResults: number | null;
+    searchDelay: number; // ms debounce delay
+    // Display preferences
+    fontSize: 'small' | 'medium' | 'large';
+    showLineNumbers: boolean;
+    previewLines: number; // lines of context in preview
+    // Behavior
+    autoOpenPreview: boolean;
+    confirmBeforeReplace: boolean;
+    clearResultsOnNewSearch: boolean;
+    // History
+    maxHistoryItems: number;
+    saveSearchHistory: boolean;
 }
 
 interface AppState {
@@ -49,14 +64,33 @@ export const useStore = create<AppState>()(
                 theme: 'dark',
                 editorPath: '',
                 exclusions: ['node_modules', '.git', 'dist', 'build'],
+                // Search defaults
+                defaultSearchPath: '',
+                maxResults: 10000,
+                searchDelay: 300,
+                // Display preferences
+                fontSize: 'medium',
+                showLineNumbers: true,
+                previewLines: 5,
+                // Behavior
+                autoOpenPreview: true,
+                confirmBeforeReplace: true,
+                clearResultsOnNewSearch: true,
+                // History
+                maxHistoryItems: 1000,
+                saveSearchHistory: true,
             },
             setQuery: (query) => set({ query }),
             setPath: (path) => set({ path }),
             addToHistory: (query, path) => set((state) => {
+                // Check if history saving is enabled
+                if (!state.settings.saveSearchHistory) {
+                    return {}; // Don't save to history
+                }
                 const newHistory = [
                     { query, path, timestamp: Date.now() },
                     ...state.history.filter(h => h.query !== query || h.path !== path)
-                ].slice(0, 1000); // Keep last 1000
+                ].slice(0, state.settings.maxHistoryItems); // Use setting for max items
                 return { history: newHistory };
             }),
             removeFromHistory: (query: string, path: string) => set((state) => ({

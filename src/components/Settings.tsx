@@ -37,71 +37,232 @@ export function Settings({ isOpen, onOpenChange }: SettingsProps) {
                         </Dialog.Description>
                     </div>
 
-                    <div className="grid gap-4 py-4">
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
-                                Theme
-                            </label>
-                            <select
-                                value={settings.theme}
-                                onChange={(e) => setSettings({ theme: e.target.value as any })}
-                                className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/80"
-                                style={{
-                                    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3E%3C/svg%3E")`,
-                                    backgroundPosition: 'right 0.5rem center',
-                                    backgroundRepeat: 'no-repeat',
-                                    backgroundSize: '1.5em 1.5em',
-                                    paddingRight: '2.5rem',
-                                    appearance: 'none',
-                                }}
-                            >
-                                <option value="dark" className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 py-2">Dark</option>
-                                <option value="light" className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 py-2">Light</option>
-                                <option value="system" className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 py-2">System</option>
-                            </select>
+                    <div className="grid gap-6 py-4 max-h-[60vh] overflow-y-auto pr-2">
+                        {/* Theme & Editor */}
+                        <div className="space-y-4">
+                            <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100 border-b border-zinc-200 dark:border-zinc-800 pb-2">General</h3>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
+                                    Theme
+                                </label>
+                                <select
+                                    value={settings.theme}
+                                    onChange={(e) => setSettings({ theme: e.target.value as any })}
+                                    className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/80"
+                                >
+                                    <option value="dark">Dark</option>
+                                    <option value="light">Light</option>
+                                    <option value="system">System</option>
+                                </select>
+                            </div>
+
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
+                                    Editor Path
+                                </label>
+                                <input
+                                    value={settings.editorPath}
+                                    onChange={(e) => setSettings({ editorPath: e.target.value })}
+                                    placeholder="code, notepad, etc. (Default: system default)"
+                                    className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
+                                />
+                            </div>
                         </div>
 
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
-                                Editor Path
-                            </label>
-                            <input
-                                value={settings.editorPath}
-                                onChange={(e) => setSettings({ editorPath: e.target.value })}
-                                placeholder="code, notepad, etc. (Default: system default)"
-                                className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
-                            />
+                        {/* Search Defaults */}
+                        <div className="space-y-4">
+                            <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100 border-b border-zinc-200 dark:border-zinc-800 pb-2">Search Defaults</h3>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
+                                    Default Path
+                                </label>
+                                <input
+                                    value={settings.defaultSearchPath}
+                                    onChange={(e) => setSettings({ defaultSearchPath: e.target.value })}
+                                    placeholder="Default search directory"
+                                    className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
+                                />
+                            </div>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
+                                    Max Results
+                                </label>
+                                <input
+                                    type="number"
+                                    value={settings.maxResults === null ? '' : settings.maxResults}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        setSettings({ maxResults: val === '' ? null : parseInt(val) });
+                                    }}
+                                    placeholder="No limit"
+                                    className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
+                                />
+                            </div>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
+                                    Debounce (ms)
+                                </label>
+                                <input
+                                    type="number"
+                                    value={settings.searchDelay}
+                                    onChange={(e) => setSettings({ searchDelay: parseInt(e.target.value) || 300 })}
+                                    className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
+                                />
+                            </div>
                         </div>
 
-                        <div className="grid grid-cols-4 items-start gap-4">
-                            <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 pt-2 transition-colors">
-                                Exclusions
-                            </label>
-                            <div className="col-span-3 flex flex-col gap-2">
-                                <div className="flex gap-2">
+                        {/* Display Preferences */}
+                        <div className="space-y-4">
+                            <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100 border-b border-zinc-200 dark:border-zinc-800 pb-2">Display</h3>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
+                                    Font Size
+                                </label>
+                                <select
+                                    value={settings.fontSize}
+                                    onChange={(e) => setSettings({ fontSize: e.target.value as any })}
+                                    className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/80"
+                                >
+                                    <option value="small">Small</option>
+                                    <option value="medium">Medium</option>
+                                    <option value="large">Large</option>
+                                </select>
+                            </div>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
+                                    Preview Lines
+                                </label>
+                                <input
+                                    type="number"
+                                    value={settings.previewLines}
+                                    onChange={(e) => setSettings({ previewLines: parseInt(e.target.value) || 5 })}
+                                    className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
+                                />
+                            </div>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <div className="col-start-2 col-span-3 flex items-center space-x-2">
                                     <input
-                                        value={newExclusion}
-                                        onChange={(e) => setNewExclusion(e.target.value)}
-                                        placeholder="Add pattern (e.g. node_modules)"
-                                        className="flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
-                                        onKeyDown={(e) => e.key === 'Enter' && handleAddExclusion()}
+                                        type="checkbox"
+                                        id="showLineNumbers"
+                                        checked={settings.showLineNumbers}
+                                        onChange={(e) => setSettings({ showLineNumbers: e.target.checked })}
+                                        className="rounded border-zinc-300 text-pink-500 focus:ring-pink-500"
                                     />
-                                    <button
-                                        onClick={handleAddExclusion}
-                                        className="p-2 bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-md text-zinc-700 dark:text-zinc-300 transition-colors"
-                                    >
-                                        <Plus className="w-4 h-4" />
-                                    </button>
+                                    <label htmlFor="showLineNumbers" className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                                        Show Line Numbers
+                                    </label>
                                 </div>
-                                <div className="flex flex-wrap gap-2 mt-2 max-h-32 overflow-y-auto">
-                                    {settings.exclusions.map((ex) => (
-                                        <div key={ex} className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-800/50 border border-zinc-300 dark:border-zinc-800 rounded-full px-3 py-1 text-xs text-zinc-700 dark:text-zinc-300 transition-colors">
-                                            {ex}
-                                            <button onClick={() => handleRemoveExclusion(ex)} className="hover:text-red-400 dark:hover:text-red-400 hover:text-red-500 ml-1">
-                                                <X className="w-3 h-3" />
-                                            </button>
-                                        </div>
-                                    ))}
+                            </div>
+                        </div>
+
+                        {/* Behavior */}
+                        <div className="space-y-4">
+                            <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100 border-b border-zinc-200 dark:border-zinc-800 pb-2">Behavior</h3>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <div className="col-start-2 col-span-3 space-y-2">
+                                    <div className="flex items-center space-x-2">
+                                        <input
+                                            type="checkbox"
+                                            id="autoOpenPreview"
+                                            checked={settings.autoOpenPreview}
+                                            onChange={(e) => setSettings({ autoOpenPreview: e.target.checked })}
+                                            className="rounded border-zinc-300 text-pink-500 focus:ring-pink-500"
+                                        />
+                                        <label htmlFor="autoOpenPreview" className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                                            Auto Open Preview
+                                        </label>
+                                    </div>
+                                    <div className="flex items-center space-x-2">
+                                        <input
+                                            type="checkbox"
+                                            id="confirmBeforeReplace"
+                                            checked={settings.confirmBeforeReplace}
+                                            onChange={(e) => setSettings({ confirmBeforeReplace: e.target.checked })}
+                                            className="rounded border-zinc-300 text-pink-500 focus:ring-pink-500"
+                                        />
+                                        <label htmlFor="confirmBeforeReplace" className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                                            Confirm Before Replace
+                                        </label>
+                                    </div>
+                                    <div className="flex items-center space-x-2">
+                                        <input
+                                            type="checkbox"
+                                            id="clearResultsOnNewSearch"
+                                            checked={settings.clearResultsOnNewSearch}
+                                            onChange={(e) => setSettings({ clearResultsOnNewSearch: e.target.checked })}
+                                            className="rounded border-zinc-300 text-pink-500 focus:ring-pink-500"
+                                        />
+                                        <label htmlFor="clearResultsOnNewSearch" className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                                            Clear Results on New Search
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* History */}
+                        <div className="space-y-4">
+                            <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100 border-b border-zinc-200 dark:border-zinc-800 pb-2">History</h3>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-colors">
+                                    Max Items
+                                </label>
+                                <input
+                                    type="number"
+                                    value={settings.maxHistoryItems}
+                                    onChange={(e) => setSettings({ maxHistoryItems: parseInt(e.target.value) || 100 })}
+                                    className="col-span-3 flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
+                                />
+                            </div>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <div className="col-start-2 col-span-3 flex items-center space-x-2">
+                                    <input
+                                        type="checkbox"
+                                        id="saveSearchHistory"
+                                        checked={settings.saveSearchHistory}
+                                        onChange={(e) => setSettings({ saveSearchHistory: e.target.checked })}
+                                        className="rounded border-zinc-300 text-pink-500 focus:ring-pink-500"
+                                    />
+                                    <label htmlFor="saveSearchHistory" className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                                        Save Search History
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Exclusions */}
+                        <div className="space-y-4">
+                            <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100 border-b border-zinc-200 dark:border-zinc-800 pb-2">Exclusions</h3>
+                            <div className="grid grid-cols-4 items-start gap-4">
+                                <label className="text-right text-sm font-medium text-zinc-700 dark:text-zinc-300 pt-2 transition-colors">
+                                    Patterns
+                                </label>
+                                <div className="col-span-3 flex flex-col gap-2">
+                                    <div className="flex gap-2">
+                                        <input
+                                            value={newExclusion}
+                                            onChange={(e) => setNewExclusion(e.target.value)}
+                                            placeholder="Add pattern (e.g. node_modules)"
+                                            className="flex h-9 w-full rounded-md border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-pink-500"
+                                            onKeyDown={(e) => e.key === 'Enter' && handleAddExclusion()}
+                                        />
+                                        <button
+                                            onClick={handleAddExclusion}
+                                            className="p-2 bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-md text-zinc-700 dark:text-zinc-300 transition-colors"
+                                        >
+                                            <Plus className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2 mt-2 max-h-32 overflow-y-auto">
+                                        {settings.exclusions.map((ex) => (
+                                            <div key={ex} className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-800/50 border border-zinc-300 dark:border-zinc-800 rounded-full px-3 py-1 text-xs text-zinc-700 dark:text-zinc-300 transition-colors">
+                                                {ex}
+                                                <button onClick={() => handleRemoveExclusion(ex)} className="hover:text-red-400 dark:hover:text-red-400 hover:text-red-500 ml-1">
+                                                    <X className="w-3 h-3" />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             </div>
                         </div>
