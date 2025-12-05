@@ -74,7 +74,21 @@ export function SettingsView() {
         setSettings({
             theme: 'dark',
             editorPath: '',
-            exclusions: ['node_modules', '.git', 'dist', 'build'],
+            exclusions: [
+                // Folders
+                'node_modules', '.git', 'dist', 'build', 'bin', 'obj', '.vs', '.idea',
+                '__pycache__', '.cache', 'vendor', 'packages', '.nuget', 'coverage',
+                // Binary/Executable files
+                '*.exe', '*.dll', '*.so', '*.dylib', '*.pdb', '*.lib', '*.a', '*.o',
+                // Images
+                '*.png', '*.jpg', '*.jpeg', '*.gif', '*.ico', '*.svg', '*.webp', '*.bmp',
+                // Archives
+                '*.zip', '*.rar', '*.7z', '*.tar', '*.gz',
+                // Other binary formats
+                '*.pdf', '*.woff', '*.woff2', '*.ttf', '*.eot',
+                // Lock files
+                'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+            ],
             defaultSearchPath: '',
             maxResults: 10000,
             searchDelay: 300,
@@ -249,39 +263,172 @@ export function SettingsView() {
 
                 {/* Exclusions Section */}
                 <Section title="Exclusions" icon={X}>
-                    <div className="space-y-4">
+                    <div className="space-y-5">
                         <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                            Patterns to exclude from search results.
+                            Patterns to exclude from search results. Use folder names, file patterns (*.ext), or specific files.
                         </p>
-                        <div className="flex gap-2">
-                            <Input
-                                value={newExclusion}
-                                onChange={(e) => setNewExclusion(e.target.value)}
-                                placeholder="Add exclusion pattern..."
-                                className="flex-1 h-9"
-                                onKeyDown={(e) => e.key === 'Enter' && handleAddExclusion()}
-                            />
-                            <Button
-                                onClick={handleAddExclusion}
-                                disabled={!newExclusion}
-                                className="bg-pink-500 hover:bg-pink-600 h-9"
-                            >
-                                <Plus className="w-4 h-4 mr-2" />
-                                Add
-                            </Button>
+
+                        {/* Quick Add Presets */}
+                        <div className="space-y-3">
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Quick Add</span>
+                                <Separator className="flex-1" />
+                            </div>
+
+                            {/* Preset Categories */}
+                            <div className="grid grid-cols-2 gap-2">
+                                {[
+                                    {
+                                        label: '📁 Folders',
+                                        items: ['node_modules', '.git', 'dist', 'build', 'bin', 'obj', '.vs', '.idea', '__pycache__', '.cache', 'vendor', 'packages', '.nuget', 'coverage', '.next', 'target'],
+                                        color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20 hover:bg-blue-500/20'
+                                    },
+                                    {
+                                        label: '⚙️ Binaries',
+                                        items: ['*.exe', '*.dll', '*.so', '*.dylib', '*.pdb', '*.lib', '*.a', '*.o', '*.class', '*.pyc'],
+                                        color: 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20 hover:bg-red-500/20'
+                                    },
+                                    {
+                                        label: '🖼️ Images',
+                                        items: ['*.png', '*.jpg', '*.jpeg', '*.gif', '*.ico', '*.svg', '*.webp', '*.bmp', '*.tiff', '*.psd'],
+                                        color: 'bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20 hover:bg-green-500/20'
+                                    },
+                                    {
+                                        label: '📦 Archives',
+                                        items: ['*.zip', '*.rar', '*.7z', '*.tar', '*.gz', '*.bz2', '*.xz', '*.iso'],
+                                        color: 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20 hover:bg-orange-500/20'
+                                    },
+                                    {
+                                        label: '🔤 Fonts',
+                                        items: ['*.woff', '*.woff2', '*.ttf', '*.eot', '*.otf'],
+                                        color: 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20 hover:bg-purple-500/20'
+                                    },
+                                    {
+                                        label: '🔒 Lock Files',
+                                        items: ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock', 'Gemfile.lock', 'composer.lock', 'poetry.lock'],
+                                        color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20 hover:bg-amber-500/20'
+                                    },
+                                ].map((category) => {
+                                    const hasAll = category.items.every(item => settings.exclusions.includes(item));
+                                    const hasSome = category.items.some(item => settings.exclusions.includes(item));
+                                    return (
+                                        <Button
+                                            key={category.label}
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => {
+                                                if (hasAll) {
+                                                    // Remove all from this category
+                                                    setSettings({
+                                                        exclusions: settings.exclusions.filter(ex => !category.items.includes(ex))
+                                                    });
+                                                } else {
+                                                    // Add all new from this category
+                                                    const newItems = category.items.filter(item => !settings.exclusions.includes(item));
+                                                    setSettings({ exclusions: [...settings.exclusions, ...newItems] });
+                                                }
+                                            }}
+                                            className={cn(
+                                                "h-9 justify-start gap-2 transition-all",
+                                                hasAll ? category.color : hasSome ? "border-dashed " + category.color : "border-dashed"
+                                            )}
+                                        >
+                                            <span>{category.label}</span>
+                                            <Badge variant="secondary" className="text-[10px] h-4 px-1">
+                                                {category.items.filter(item => settings.exclusions.includes(item)).length}/{category.items.length}
+                                            </Badge>
+                                        </Button>
+                                    );
+                                })}
+                            </div>
                         </div>
-                        <div className="flex flex-wrap gap-2">
-                            {settings.exclusions.map((ex) => (
-                                <Badge key={ex} variant="secondary" className="pl-3 pr-1 py-1 gap-1">
-                                    {ex}
-                                    <button
-                                        onClick={() => handleRemoveExclusion(ex)}
-                                        className="p-0.5 rounded-full hover:bg-red-500/10 hover:text-red-500 transition-colors"
+
+                        <Separator />
+
+                        {/* Custom Pattern Input */}
+                        <div className="space-y-3">
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Custom Pattern</span>
+                                <Separator className="flex-1" />
+                            </div>
+                            <div className="flex gap-2">
+                                <Input
+                                    value={newExclusion}
+                                    onChange={(e) => setNewExclusion(e.target.value)}
+                                    placeholder="folder, *.ext, or filename"
+                                    className="flex-1 h-9"
+                                    onKeyDown={(e) => e.key === 'Enter' && handleAddExclusion()}
+                                />
+                                <Button
+                                    onClick={handleAddExclusion}
+                                    disabled={!newExclusion}
+                                    className="bg-pink-500 hover:bg-pink-600 h-9"
+                                >
+                                    <Plus className="w-4 h-4 mr-2" />
+                                    Add
+                                </Button>
+                            </div>
+                            <p className="text-[10px] text-zinc-400 dark:text-zinc-500">
+                                Examples: <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">node_modules</code> (folder),
+                                <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded ml-1">*.log</code> (file type),
+                                <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded ml-1">thumbs.db</code> (file)
+                            </p>
+                        </div>
+
+                        <Separator />
+
+                        {/* Current Exclusions */}
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Active Exclusions</span>
+                                    <Badge variant="secondary" className="text-[10px] h-5">{settings.exclusions.length}</Badge>
+                                </div>
+                                {settings.exclusions.length > 0 && (
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setSettings({ exclusions: [] })}
+                                        className="h-6 text-xs text-red-500 hover:text-red-600 hover:bg-red-500/10"
                                     >
-                                        <X className="w-3 h-3" />
-                                    </button>
-                                </Badge>
-                            ))}
+                                        Clear All
+                                    </Button>
+                                )}
+                            </div>
+                            <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto p-1">
+                                {settings.exclusions.length === 0 ? (
+                                    <p className="text-sm text-zinc-400 dark:text-zinc-500 italic">No exclusions configured</p>
+                                ) : (
+                                    settings.exclusions.map((ex) => {
+                                        // Determine type for icon/color
+                                        const isFileType = ex.startsWith('*.');
+                                        const isFolder = !ex.includes('.') && !ex.includes('*');
+                                        return (
+                                            <Badge
+                                                key={ex}
+                                                variant="secondary"
+                                                className={cn(
+                                                    "pl-2 pr-1 py-1 gap-1.5 transition-colors",
+                                                    isFolder ? "bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20" :
+                                                        isFileType ? "bg-orange-500/10 text-orange-700 dark:text-orange-300 border border-orange-500/20" :
+                                                            "bg-zinc-100 dark:bg-zinc-800"
+                                                )}
+                                            >
+                                                <span className="text-xs">
+                                                    {isFolder ? '📁' : isFileType ? '📄' : '📋'}
+                                                </span>
+                                                {ex}
+                                                <button
+                                                    onClick={() => handleRemoveExclusion(ex)}
+                                                    className="p-0.5 rounded-full hover:bg-red-500/20 hover:text-red-500 transition-colors"
+                                                >
+                                                    <X className="w-3 h-3" />
+                                                </button>
+                                            </Badge>
+                                        );
+                                    })
+                                )}
+                            </div>
                         </div>
                     </div>
                 </Section>

@@ -66,7 +66,21 @@ export const useStore = create<AppState>()(
             settings: {
                 theme: 'dark',
                 editorPath: '',
-                exclusions: ['node_modules', '.git', 'dist', 'build'],
+                exclusions: [
+                    // Folders
+                    'node_modules', '.git', 'dist', 'build', 'bin', 'obj', '.vs', '.idea',
+                    '__pycache__', '.cache', 'vendor', 'packages', '.nuget', 'coverage',
+                    // Binary/Executable files
+                    '*.exe', '*.dll', '*.so', '*.dylib', '*.pdb', '*.lib', '*.a', '*.o',
+                    // Images
+                    '*.png', '*.jpg', '*.jpeg', '*.gif', '*.ico', '*.svg', '*.webp', '*.bmp',
+                    // Archives
+                    '*.zip', '*.rar', '*.7z', '*.tar', '*.gz',
+                    // Other binary formats
+                    '*.pdf', '*.woff', '*.woff2', '*.ttf', '*.eot',
+                    // Lock files
+                    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+                ],
                 // Search defaults
                 defaultSearchPath: '',
                 maxResults: 10000,
