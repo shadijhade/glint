@@ -1,4 +1,4 @@
-import { Home, Settings as SettingsIcon, Search as SearchIcon, ChevronDown, ChevronUp, Trash2, X, Sparkles, History, Zap } from "lucide-react";
+import { Home, Settings as SettingsIcon, Search as SearchIcon, ChevronUp, Trash2, X, Sparkles, History, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
@@ -57,23 +57,41 @@ export function Sidebar({ activeView, onNavigate, onHistorySelect }: SidebarProp
             <Tooltip>
                 <TooltipTrigger asChild>
                     <Button
-                        variant={activeView === view ? "secondary" : "ghost"}
+                        variant="ghost"
                         onClick={() => onNavigate(view)}
                         className={cn(
-                            "w-full justify-start gap-3 px-4 py-6 rounded-xl transition-all duration-300 relative overflow-hidden",
+                            "w-full justify-start gap-3 px-4 py-6 rounded-xl transition-all duration-300 relative overflow-hidden group",
                             activeView === view
-                                ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-semibold"
-                                : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                                ? "bg-gradient-to-r from-pink-500/15 to-purple-500/10 dark:from-pink-500/20 dark:to-purple-500/15 text-pink-600 dark:text-pink-400 font-semibold shadow-lg shadow-pink-500/10 border border-pink-500/20"
+                                : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-100/80 dark:hover:bg-zinc-800/50"
                         )}
                     >
                         {activeView === view && (
-                            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-pink-500 rounded-r-full" />
+                            <>
+                                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-gradient-to-b from-pink-500 to-purple-500 rounded-r-full shadow-lg shadow-pink-500/50" />
+                                <div className="absolute inset-0 bg-gradient-to-r from-pink-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </>
                         )}
-                        <Icon className={cn("w-5 h-5", activeView === view ? "text-pink-500" : "opacity-70")} />
+                        <div className={cn(
+                            "p-1.5 rounded-lg transition-all duration-300",
+                            activeView === view
+                                ? "bg-pink-500/20 dark:bg-pink-500/30"
+                                : "bg-transparent group-hover:bg-zinc-200/50 dark:group-hover:bg-zinc-700/50"
+                        )}>
+                            <Icon className={cn(
+                                "w-4 h-4 transition-all duration-300",
+                                activeView === view
+                                    ? "text-pink-500 dark:text-pink-400"
+                                    : "text-zinc-500 dark:text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-300"
+                            )} />
+                        </div>
                         <span className="text-sm">{label}</span>
+                        {activeView === view && (
+                            <div className="ml-auto w-2 h-2 rounded-full bg-pink-500 animate-pulse shadow-lg shadow-pink-500/50" />
+                        )}
                     </Button>
                 </TooltipTrigger>
-                <TooltipContent side="right">
+                <TooltipContent side="right" className="bg-zinc-900 text-white border-zinc-800">
                     <p>{label}</p>
                 </TooltipContent>
             </Tooltip>
@@ -110,19 +128,46 @@ export function Sidebar({ activeView, onNavigate, onHistorySelect }: SidebarProp
             {/* Bottom Section */}
             <div className="flex flex-col min-h-0 container-snap">
                 {/* History Section */}
-                <div className="px-4 pb-4 flex flex-col gap-2">
+                <div className="px-3 pb-4 flex flex-col gap-2">
                     <Button
                         variant="ghost"
                         onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
-                        className="w-full justify-between items-center px-4 py-2 h-auto hover:bg-zinc-200/50 dark:hover:bg-zinc-800/50"
+                        className={cn(
+                            "w-full justify-between items-center px-3 py-2.5 h-auto rounded-xl transition-all duration-200",
+                            isHistoryExpanded
+                                ? "bg-gradient-to-r from-pink-500/10 to-purple-500/5 border border-pink-500/20"
+                                : "hover:bg-zinc-100 dark:hover:bg-zinc-800/50"
+                        )}
                     >
-                        <div className="flex items-center gap-2 text-zinc-500 dark:text-zinc-400">
-                            <History className="w-4 h-4" />
-                            <span className="text-xs font-semibold uppercase tracking-wider">Recent</span>
+                        <div className="flex items-center gap-2.5">
+                            <div className={cn(
+                                "p-1.5 rounded-lg transition-all",
+                                isHistoryExpanded
+                                    ? "bg-pink-500/20 text-pink-500"
+                                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-500"
+                            )}>
+                                <History className="w-3.5 h-3.5" />
+                            </div>
+                            <span className={cn(
+                                "text-xs font-semibold uppercase tracking-wider transition-colors",
+                                isHistoryExpanded ? "text-pink-600 dark:text-pink-400" : "text-zinc-500 dark:text-zinc-400"
+                            )}>Recent</span>
                         </div>
                         <div className="flex items-center gap-2">
-                            <Badge variant="secondary" className="text-[10px] h-5 px-1.5">{history.length}</Badge>
-                            {isHistoryExpanded ? <ChevronDown className="w-3 h-3 text-zinc-400" /> : <ChevronUp className="w-3 h-3 text-zinc-400" />}
+                            {history.length > 0 && (
+                                <Badge className="text-[10px] h-5 px-1.5 bg-pink-500/10 text-pink-600 dark:text-pink-400 border-pink-500/20 hover:bg-pink-500/20">
+                                    {history.length}
+                                </Badge>
+                            )}
+                            <div className={cn(
+                                "p-1 rounded-md transition-all",
+                                isHistoryExpanded ? "bg-pink-500/10 rotate-180" : ""
+                            )}>
+                                <ChevronUp className={cn(
+                                    "w-3.5 h-3.5 transition-colors",
+                                    isHistoryExpanded ? "text-pink-500" : "text-zinc-400"
+                                )} />
+                            </div>
                         </div>
                     </Button>
 
@@ -132,85 +177,121 @@ export function Sidebar({ activeView, onNavigate, onHistorySelect }: SidebarProp
                                 initial={{ height: 0, opacity: 0 }}
                                 animate={{ height: "auto", opacity: 1 }}
                                 exit={{ height: 0, opacity: 0 }}
-                                transition={{ duration: 0.2 }}
-                                className="overflow-hidden flex flex-col gap-2"
+                                transition={{ duration: 0.25, ease: "easeOut" }}
+                                className="overflow-hidden"
                             >
-                                <div className="px-1">
-                                    <div className="relative">
+                                <div className="bg-white/50 dark:bg-zinc-900/50 rounded-xl border border-zinc-200 dark:border-zinc-800 p-2 backdrop-blur-sm">
+                                    {/* Search Input */}
+                                    <div className="relative mb-2">
                                         <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
                                         <Input
                                             value={historySearch}
                                             onChange={(e) => setHistorySearch(e.target.value)}
-                                            placeholder="Find..."
-                                            className="h-8 pl-8 pr-8 text-xs bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800"
+                                            placeholder="Filter searches..."
+                                            className="h-8 pl-8 pr-8 text-xs bg-zinc-50 dark:bg-zinc-800/50 border-zinc-200 dark:border-zinc-700 rounded-lg focus:ring-pink-500/20 focus:border-pink-500/50"
                                         />
                                         {historySearch && (
                                             <button
                                                 onClick={() => setHistorySearch("")}
-                                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
                                             >
                                                 <X className="w-3 h-3" />
                                             </button>
                                         )}
                                     </div>
-                                </div>
 
-                                <Separator className="my-1" />
+                                    {/* History List */}
+                                    <div ref={listContainerRef}>
+                                        {filteredHistory.length === 0 ? (
+                                            <div className="flex flex-col items-center justify-center py-8 text-center">
+                                                <div className="p-3 rounded-full bg-zinc-100 dark:bg-zinc-800 mb-3">
+                                                    <SearchIcon className="w-5 h-5 text-zinc-400" />
+                                                </div>
+                                                <p className="text-xs text-zinc-500 dark:text-zinc-400 font-medium">
+                                                    {historySearch ? "No matches found" : "No recent searches"}
+                                                </p>
+                                                <p className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-1">
+                                                    {historySearch ? "Try a different filter" : "Your searches will appear here"}
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            <VirtualList
+                                                height={listHeight}
+                                                width={220}
+                                                itemCount={filteredHistory.length}
+                                                itemSize={() => 56}
+                                            >
+                                                {({ index, style }) => {
+                                                    const item = filteredHistory[index];
+                                                    const folderName = item.path.split(/[\\/]/).pop() || item.path;
 
-                                <div ref={listContainerRef} className="pt-1">
-                                    {filteredHistory.length === 0 ? (
-                                        <div className="text-center py-8 text-zinc-400 text-xs">
-                                            No recent searches
-                                        </div>
-                                    ) : (
-                                        <VirtualList
-                                            height={listHeight}
-                                            width={220} // Approximate width of sidebar content area
-                                            itemCount={filteredHistory.length}
-                                            itemSize={() => 40}
-                                        >
-                                            {({ index, style }) => {
-                                                const item = filteredHistory[index];
-                                                return (
-                                                    <div style={style} className="px-1 py-1">
-                                                        <div className="group flex items-center justify-between w-full h-full rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer transition-all border border-transparent hover:border-zinc-200 dark:hover:border-zinc-700/50 pr-2">
+                                                    return (
+                                                        <div style={style} className="px-0.5 py-1">
                                                             <div
-                                                                onClick={() => onHistorySelect(item.query, item.path)}
-                                                                className="flex-1 min-w-0 flex flex-col justify-center px-3"
+                                                                className="group relative flex items-center gap-2 w-full h-full rounded-lg bg-zinc-50 dark:bg-zinc-800/30 hover:bg-gradient-to-r hover:from-pink-50 hover:to-purple-50 dark:hover:from-pink-950/30 dark:hover:to-purple-950/20 cursor-pointer transition-all duration-200 border border-transparent hover:border-pink-200 dark:hover:border-pink-800/50 px-2.5 overflow-hidden"
                                                             >
-                                                                <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 truncate">{item.query}</span>
-                                                                <span className="text-[10px] text-zinc-400 truncate">{item.path}</span>
+                                                                {/* Left accent line on hover */}
+                                                                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-gradient-to-b from-pink-500 to-purple-500 rounded-r opacity-0 group-hover:opacity-100 transition-opacity" />
+
+                                                                {/* Play icon */}
+                                                                <div
+                                                                    onClick={() => onHistorySelect(item.query, item.path)}
+                                                                    className="shrink-0 p-1.5 rounded-md bg-zinc-100 dark:bg-zinc-700/50 group-hover:bg-pink-500 transition-all duration-200"
+                                                                >
+                                                                    <SearchIcon className="w-3 h-3 text-zinc-500 group-hover:text-white transition-colors" />
+                                                                </div>
+
+                                                                {/* Content */}
+                                                                <div
+                                                                    onClick={() => onHistorySelect(item.query, item.path)}
+                                                                    className="flex-1 min-w-0 flex flex-col justify-center py-1"
+                                                                >
+                                                                    <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-200 truncate group-hover:text-pink-600 dark:group-hover:text-pink-400 transition-colors">
+                                                                        {item.query}
+                                                                    </span>
+                                                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                                                        <span className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate max-w-[100px]" title={item.path}>
+                                                                            📁 {folderName}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* Delete button */}
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="icon"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        removeFromHistory(item.query, item.path);
+                                                                    }}
+                                                                    className="shrink-0 h-6 w-6 opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-all"
+                                                                >
+                                                                    <Trash2 className="w-3 h-3" />
+                                                                </Button>
                                                             </div>
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    removeFromHistory(item.query, item.path);
-                                                                }}
-                                                                className="h-6 w-6 opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
-                                                            >
-                                                                <Trash2 className="w-3 h-3" />
-                                                            </Button>
                                                         </div>
-                                                    </div>
-                                                );
-                                            }}
-                                        </VirtualList>
+                                                    );
+                                                }}
+                                            </VirtualList>
+                                        )}
+                                    </div>
+
+                                    {/* Footer Actions */}
+                                    {history.length > 0 && (
+                                        <>
+                                            <Separator className="my-2" />
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={clearHistory}
+                                                className="w-full text-xs text-zinc-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 h-7 rounded-lg transition-colors"
+                                            >
+                                                <Trash2 className="w-3 h-3 mr-1.5" />
+                                                Clear all history
+                                            </Button>
+                                        </>
                                     )}
                                 </div>
-
-                                {history.length > 0 && (
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={clearHistory}
-                                        className="w-full text-xs text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/10 h-8"
-                                    >
-                                        <Trash2 className="w-3 h-3 mr-2" />
-                                        Clear History
-                                    </Button>
-                                )}
                             </motion.div>
                         )}
                     </AnimatePresence>
