@@ -13,7 +13,7 @@ import { useTheme } from "./hooks/useTheme";
 import { DisplayItem } from "./types";
 import { Sidebar } from "./components/Sidebar";
 import { Footer } from "./components/Footer";
-import { Settings } from "./components/Settings";
+import { SettingsView } from "./components/SettingsView";
 
 function App() {
   useTheme(); // Initialize theme system
@@ -24,6 +24,7 @@ function App() {
   const [rgInstalled, setRgInstalled] = useState<boolean | null>(null);
   const [searchDuration, setSearchDuration] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [limitReached, setLimitReached] = useState(false);
   const startTimeRef = useRef<number>(0);
   const { addToHistory, options, settings } = useStore();
   const workerRef = useRef<Worker | null>(null);
@@ -65,6 +66,33 @@ function App() {
       }
     };
   }, []);
+
+  // Auto-select first result when search completes if setting is enabled
+  useEffect(() => {
+    if (!isSearching && results.length > 0 && settings.autoOpenPreview && selectedIndex < 0) {
+      // Find the first match (not summary or other types)
+      const firstMatchIndex = results.findIndex(r => r.type === 'match');
+      if (firstMatchIndex >= 0) {
+        setSelectedIndex(firstMatchIndex);
+      }
+    }
+  }, [isSearching, results.length, settings.autoOpenPreview]);
+
+  // Detect if search hit the limit
+  useEffect(() => {
+    if (!isSearching && results.length > 0 && settings.maxResults !== null) {
+      const matchCount = results.filter(r => r.type === 'match').length;
+      // Consider limit reached if we got exactly maxResults matches (or close to it)
+      setLimitReached(matchCount >= settings.maxResults);
+    }
+  }, [isSearching, results.length, settings.maxResults]);
+
+  // Font size class mapping
+  const fontSizeClass = {
+    small: 'text-sm',
+    medium: 'text-base',
+    large: 'text-lg',
+  }[settings.fontSize] || 'text-base';
 
   const handleOpenFile = async (filePath: string) => {
     try {
@@ -116,15 +144,29 @@ function App() {
     startTimeRef.current = performance.now();
     gotSummaryRef.current = false;
     setIsSearching(true);
+    setSearchedQuery(query); // Set searched query early
+
+    // Reset worker state before new search
+    workerRef.current?.postMessage({ type: 'reset' });
+
+    // Always clear results when starting a new search
     setResults([]);
     setDisplayItems([]);
     setSearchDuration(0);
+    setLimitReached(false);
+    setSelectedIndex(-1); // Reset selection for new search
 
 
     try {
+      const currentStore = useStore.getState();
+      const currentOptions = currentStore.options;
+      const currentSettings = currentStore.settings;
+      const searchId = crypto.randomUUID();
+
       const unlisten = await searchBatched(
         query,
         path,
+        searchId,
         (lines) => {
           // Forward raw lines to worker
           workerRef.current?.postMessage({ type: 'data', payload: lines });
@@ -144,7 +186,7 @@ function App() {
           setIsSearching(false);
           setSearchDuration(performance.now() - startTimeRef.current);
         },
-        { ...options, exclusions: settings.exclusions }
+        { ...currentOptions, exclusions: currentSettings.exclusions, maxResults: currentSettings.maxResults }
       );
       unlistenRef.current = unlisten;
     } catch (e) {
@@ -164,8 +206,23 @@ function App() {
     setSearchDuration(performance.now() - startTimeRef.current);
   };
 
+  const handleRerunSearch = () => {
+    const { query, path } = useStore.getState();
+    if (query && path) {
+      handleSearch(query, path);
+    }
+  };
+
   const handleReplace = async (replaceText: string) => {
     if (!searchedQuery) return;
+
+    // Confirm before replace if setting is enabled
+    if (settings.confirmBeforeReplace) {
+      const confirmed = window.confirm(
+        `Are you sure you want to replace all occurrences of "${searchedQuery}" with "${replaceText}"?`
+      );
+      if (!confirmed) return;
+    }
 
     const matchesByFile = new Map<string, RgMatch[]>();
     results.forEach(r => {
@@ -229,15 +286,10 @@ function App() {
   };
 
   const [activeView, setActiveView] = useState<'search' | 'settings'>('search');
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Handle Sidebar Navigation
   const handleNavigate = (view: 'search' | 'settings') => {
     setActiveView(view);
-    if (view === 'settings') setIsSettingsOpen(true);
-    if (view === 'search') {
-      // Just focus search or do nothing special
-    }
   };
 
   if (rgInstalled === false) {
@@ -260,7 +312,7 @@ function App() {
   const selectedMatch = selectedIndex >= 0 ? results[selectedIndex] : null;
 
   return (
-    <div className="flex h-screen bg-white dark:bg-black text-foreground font-sans selection:bg-pink-500/30 transition-colors duration-300 overflow-hidden">
+    <div className={`flex h-screen bg-white dark:bg-black text-foreground font-sans selection:bg-pink-500/30 transition-colors duration-300 overflow-hidden ${fontSizeClass}`}>
       {/* Background */}
       <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-indigo-100 via-zinc-50 to-white dark:from-zinc-950 dark:via-zinc-900 dark:to-black -z-10 transition-colors duration-300">
         <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 brightness-100 contrast-150 mix-blend-overlay"></div>
@@ -281,64 +333,84 @@ function App() {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 relative">
-        {/* Header / Search Area */}
-        <div className="shrink-0 p-6 pb-2">
-          <Search
-            onSearch={handleSearch}
-            onStop={handleStop}
-            isSearching={isSearching}
-            onReplace={handleReplace}
-          />
-          <div className="mt-4">
-            <SearchStats results={results} isSearching={isSearching} duration={searchDuration} />
-          </div>
-        </div>
-
-        {/* Content Area */}
-        <div className="flex-1 min-h-0 p-6 pt-2 flex gap-4 overflow-hidden">
-          {results.length === 0 && !isSearching ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 select-none relative overflow-hidden">
-              <div className="w-96 h-96 bg-gradient-to-tr from-pink-500/10 to-purple-500/10 rounded-full blur-3xl absolute -z-10 animate-pulse"></div>
-              <div className="relative">
-                <div className="absolute inset-0 bg-pink-500/20 blur-xl rounded-full animate-pulse"></div>
-                <Telescope className="w-32 h-32 text-zinc-300 dark:text-zinc-800 mb-8 relative z-10" strokeWidth={1} />
+        {activeView === 'settings' ? (
+          <SettingsView />
+        ) : (
+          <>
+            {/* Header / Search Area */}
+            <div className="shrink-0 p-6 pb-2">
+              <Search
+                onSearch={handleSearch}
+                onStop={handleStop}
+                isSearching={isSearching}
+                onReplace={handleReplace}
+              />
+              {import.meta.env.DEV && (
+                <div className="flex gap-2 mt-2 justify-end">
+                  <button
+                    onClick={async () => {
+                      const path = "C:\\Repos";
+                      // Trigger heavy search
+                      handleSearch("Class", path);
+                      // Wait brief moment
+                      await new Promise(r => setTimeout(r, 50));
+                      // Trigger empty/small search
+                      handleSearch("ZXZXZXZX_UNIQUE_STRING", path);
+                    }}
+                    className="px-2 py-1 text-xs bg-red-500/10 text-red-500 rounded hover:bg-red-500/20"
+                  >
+                    Run Race Test
+                  </button>
+                </div>
+              )}
+              <div className="mt-4">
+                <SearchStats results={results} isSearching={isSearching} duration={searchDuration} onRerunSearch={handleRerunSearch} />
               </div>
-              <h2 className="text-3xl font-bold text-zinc-400 dark:text-zinc-600 mb-3 tracking-tight">Ready to Explore</h2>
-              <p className="text-zinc-400 dark:text-zinc-600 max-w-md text-lg leading-relaxed">
-                Enter a search term and path to begin exploring your codebase with <span className="text-pink-500 font-medium">lightning speed</span>.
-              </p>
             </div>
-          ) : (
-            <>
-              <div className="flex-1 min-w-0 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-white/40 dark:bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm">
-                <Results
-                  results={results}
-                  displayItems={displayItems}
-                  query={searchedQuery}
-                  selectedIndex={selectedIndex}
-                  onOpenFile={handleOpenFile}
-                  onSelect={setSelectedIndex}
-                />
-              </div>
-              <div className="flex-1 min-w-0 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-white/40 dark:bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm">
-                <Preview
-                  filePath={selectedMatch?.data.path?.text || null}
-                  lineNumber={selectedMatch?.data.line_number}
-                />
-              </div>
-            </>
-          )}
-        </div>
 
-        {/* Footer */}
-        <Footer />
+            {/* Content Area */}
+            <div className="flex-1 min-h-0 p-6 pt-2 flex gap-4 overflow-hidden">
+              {results.length === 0 && !isSearching ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 select-none relative overflow-hidden">
+                  <div className="w-96 h-96 bg-gradient-to-tr from-pink-500/10 to-purple-500/10 rounded-full blur-3xl absolute -z-10 animate-pulse"></div>
+                  <div className="relative">
+                    <div className="absolute inset-0 bg-pink-500/20 blur-xl rounded-full animate-pulse"></div>
+                    <Telescope className="w-32 h-32 text-zinc-300 dark:text-zinc-800 mb-8 relative z-10" strokeWidth={1} />
+                  </div>
+                  <h2 className="text-3xl font-bold text-zinc-400 dark:text-zinc-600 mb-3 tracking-tight">Ready to Explore</h2>
+                  <p className="text-zinc-400 dark:text-zinc-600 max-w-md text-lg leading-relaxed">
+                    Enter a search term and path to begin exploring your codebase with <span className="text-pink-500 font-medium">lightning speed</span>.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="flex-1 min-w-0 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-white/40 dark:bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm">
+                    <Results
+                      results={results}
+                      displayItems={displayItems}
+                      query={searchedQuery}
+                      selectedIndex={selectedIndex}
+                      onOpenFile={handleOpenFile}
+                      onSelect={setSelectedIndex}
+                      limitReached={limitReached}
+                      onRerunSearch={handleRerunSearch}
+                    />
+                  </div>
+                  <div className="flex-1 min-w-0 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-white/40 dark:bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm">
+                    <Preview
+                      filePath={selectedMatch?.data.path?.text || null}
+                      lineNumber={selectedMatch?.data.line_number}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Footer */}
+            <Footer />
+          </>
+        )}
       </div>
-
-      {/* Modals */}
-      <Settings
-        isOpen={isSettingsOpen}
-        onOpenChange={(open) => { setIsSettingsOpen(open); if (!open) setActiveView('search'); }}
-      />
 
       <Toaster position="top-right" richColors />
     </div>

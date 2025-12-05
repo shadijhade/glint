@@ -8,7 +8,7 @@ import {
     ContextMenuTrigger,
     ContextMenuSeparator,
 } from "@/components/ui/context-menu";
-import { FileText, FileCode2, FileImage, FileArchive, FileAudio, FileVideo, Download, Copy, ExternalLink, FolderOpen, Search as SearchIcon } from "lucide-react";
+import { FileText, FileCode2, FileImage, FileArchive, FileAudio, FileVideo, Download, Copy, ExternalLink, FolderOpen, Search as SearchIcon, AlertTriangle } from "lucide-react";
 import { Loader } from "@/components/ui/Loader";
 import { useRef, useEffect, useState, useMemo, useDeferredValue } from "react";
 import { cn } from "@/lib/utils";
@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { DisplayItem } from "../types";
 import { Button } from "@/components/ui/button";
+import { useStore } from "@/lib/store";
 
 interface ResultsProps {
     results: RgMatch[];
@@ -25,6 +26,8 @@ interface ResultsProps {
     selectedIndex: number;
     onOpenFile: (filePath: string) => void;
     onSelect?: (index: number) => void;
+    limitReached?: boolean;
+    onRerunSearch?: (newLimit: number | null) => void;
 }
 
 // Helper function to get icon based on file extension
@@ -76,12 +79,26 @@ const getFileIcon = (filePath: string) => {
     return iconMap[ext] || FileText;
 };
 
-export function Results({ results, displayItems: propDisplayItems, query, selectedIndex, onOpenFile, onSelect }: ResultsProps) {
+export function Results({ results, displayItems: propDisplayItems, query, selectedIndex, onOpenFile, onSelect, limitReached, onRerunSearch }: ResultsProps) {
+    const { settings, setSettings } = useStore();
     const listRef = useRef<VirtualListHandle>(null);
     const [isExporting, setIsExporting] = useState(false);
     const [liveQuery, setLiveQuery] = useState("");
     const deferredLiveQuery = useDeferredValue(liveQuery);
     const [activeFileTypes, setActiveFileTypes] = useState<string[]>([]);
+    const [showLimitOptions, setShowLimitOptions] = useState(false);
+
+    // Count matches (excluding summary/context types)
+    const matchCount = useMemo(() => {
+        return results.filter(r => r.type === 'match').length;
+    }, [results]);
+
+    // Handle limit change and re-run search
+    const handleLimitChange = (newLimit: number | null) => {
+        setSettings({ maxResults: newLimit });
+        setShowLimitOptions(false);
+        onRerunSearch?.(newLimit);
+    };
 
     // Calculate top 3 file types
     const topExtensions = useMemo(() => {
@@ -343,9 +360,56 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                     <div className="shrink-0 px-4 py-3 border-b border-zinc-300 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col gap-3 z-10 transition-colors duration-300">
                         <div className="flex justify-between items-center">
                             <div className="flex flex-col gap-2">
-                                <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium transition-colors duration-300">
-                                    Found <span className="text-pink-500 font-bold">{results.length}</span> matches
-                                </p>
+                                <div className="flex items-center gap-2">
+                                    <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium transition-colors duration-300">
+                                        Found <span className="text-pink-500 font-bold">{matchCount}</span> matches
+                                    </p>
+                                    {limitReached && (
+                                        <div className="relative">
+                                            <button
+                                                onClick={() => setShowLimitOptions(!showLimitOptions)}
+                                                className="flex items-center gap-1.5 px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg text-amber-600 dark:text-amber-400 text-xs font-medium transition-colors"
+                                                title="Search hit the limit. Click to adjust."
+                                            >
+                                                <AlertTriangle className="w-3.5 h-3.5" />
+                                                <span>Limit reached</span>
+                                            </button>
+                                            {showLimitOptions && (
+                                                <div className="absolute top-full left-0 mt-1 p-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-lg z-50 min-w-[160px]">
+                                                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-2 px-1">Continue with:</p>
+                                                    <div className="flex flex-col gap-1">
+                                                        {[500, 1000, 5000].map(limit => (
+                                                            <button
+                                                                key={limit}
+                                                                onClick={() => handleLimitChange(limit)}
+                                                                className={cn(
+                                                                    "px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-left",
+                                                                    settings.maxResults === limit
+                                                                        ? "bg-pink-500 text-white"
+                                                                        : "hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
+                                                                )}
+                                                            >
+                                                                {limit.toLocaleString()} results
+                                                            </button>
+                                                        ))}
+                                                        <div className="border-t border-zinc-200 dark:border-zinc-700 my-1" />
+                                                        <button
+                                                            onClick={() => handleLimitChange(null)}
+                                                            className={cn(
+                                                                "px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-left",
+                                                                settings.maxResults === null
+                                                                    ? "bg-pink-500 text-white"
+                                                                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
+                                                            )}
+                                                        >
+                                                            Remove limit
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
                                 {topExtensions.length > 0 && (
                                     <div className="flex gap-2">
                                         {topExtensions.map(ext => (

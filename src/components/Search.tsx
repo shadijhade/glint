@@ -3,7 +3,7 @@ import { useStore } from "@/lib/store";
 import { Search as SearchIcon, Folder, StopCircle, CaseSensitive, WholeWord, Regex, Replace, Play } from "lucide-react";
 import { Loader } from "@/components/ui/Loader";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 
 interface SearchProps {
@@ -14,9 +14,16 @@ interface SearchProps {
 }
 
 export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps) {
-    const { query, setQuery, path, setPath, options, setOption } = useStore();
+    const { query, setQuery, path, setPath, options, setOption, settings } = useStore();
     const [isReplaceOpen, setIsReplaceOpen] = useState(false);
     const [replaceText, setReplaceText] = useState("");
+
+    // Set default search path on mount if path is empty
+    useEffect(() => {
+        if (!path && settings.defaultSearchPath) {
+            setPath(settings.defaultSearchPath);
+        }
+    }, []); // Only run on mount
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();

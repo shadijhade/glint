@@ -66,6 +66,7 @@ fn write_file_content(path: String, content: String) -> Result<(), String> {
 
 #[derive(Clone, serde::Serialize)]
 struct SearchEvent {
+    id: String,
     r#type: String,
     lines: Vec<String>,
 }
@@ -83,6 +84,8 @@ fn cancel_search(state: State<AppState>) -> Result<(), String> {
 fn run_ripgrep_batched(
     window: Window,
     args: Vec<String>,
+    search_id: String,
+    max_results: Option<usize>,
     state: State<AppState>,
 ) -> Result<(), String> {
     // Kill any existing search first
@@ -122,17 +125,27 @@ fn run_ripgrep_batched(
         let mut last_emit = Instant::now();
 
         let mut total_matches = 0;
-        const MAX_MATCHES: usize = 20000;
+        let limit = match max_results {
+            Some(0) | None => usize::MAX,
+            Some(n) => n,
+        };
 
         for line in reader.lines() {
             if let Ok(l) = line {
-                total_matches += 1;
+                // Try to parse as JSON to count matches
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&l) {
+                    if json["type"] == "match" {
+                        total_matches += 1;
+                    }
+                }
+
                 batch.push(l);
 
                 if batch.len() >= 1000 || last_emit.elapsed() >= Duration::from_millis(50) {
                     let _ = window.emit(
                         "search-event",
                         SearchEvent {
+                            id: search_id.clone(),
                             r#type: "data".to_string(),
                             lines: batch.clone(),
                         },
@@ -141,7 +154,7 @@ fn run_ripgrep_batched(
                     last_emit = Instant::now();
                 }
 
-                if total_matches >= MAX_MATCHES {
+                if total_matches >= limit {
                     // Kill the process if limit reached
                     let mut current_search = search_handle.lock().unwrap();
                     if let Some(mut child) = current_search.take() {
@@ -158,6 +171,7 @@ fn run_ripgrep_batched(
             let _ = window.emit(
                 "search-event",
                 SearchEvent {
+                    id: search_id.clone(),
                     r#type: "data".to_string(),
                     lines: batch,
                 },
@@ -167,6 +181,7 @@ fn run_ripgrep_batched(
         let _ = window.emit(
             "search-event",
             SearchEvent {
+                id: search_id,
                 r#type: "finished".to_string(),
                 lines: vec![],
             },
