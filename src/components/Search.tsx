@@ -177,7 +177,7 @@ export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps
                             "rounded-2xl h-12 w-12 shrink-0 transition-all mb-1 relative z-30",
                             isSearching
                                 ? "bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20"
-                                : "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:opacity-90 shadow-lg hover:scale-105 active:scale-95"
+                                : "bg-gradient-to-br from-pink-500 to-purple-600 text-white hover:from-pink-600 hover:to-purple-700 shadow-lg shadow-pink-500/30 hover:shadow-pink-500/40 hover:scale-105 active:scale-95"
                         )}
                     >
                         {isSearching ? <StopCircle className="h-6 w-6" /> : <ArrowUp className="h-6 w-6" />}
