@@ -190,8 +190,31 @@ export async function searchBatched(
         args.push("--word-regexp");
     }
 
-    if (!options.regex) {
-        args.push("--fixed-strings");
+    // escape regex Helper
+    const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    let finalQuery = query;
+
+    // Smart Multiline Handling
+    if (query.includes('\n')) {
+        args.push("--multiline");
+        args.push("--multiline-dotall"); // Allow . to match newlines if enabled
+
+        // If not already a regex search, treat it as a literal but handle line ending differences
+        // Browsers/Textareas normalize to \n, but Windows files have \r\n. 
+        // We escape the query and replace \n with \r?\n to match both.
+        if (!options.regex) {
+            finalQuery = escapeRegex(query).replace(/\n/g, '\\r?\\n');
+            // We are forcing a "regex" search now, so we must NOT pass --fixed-strings
+        } else {
+            // If it IS a regex search provided by user, they are on their own for line endings, 
+            // but we still enable multiline mode.
+        }
+    } else {
+        // Single line behavior
+        if (!options.regex) {
+            args.push("--fixed-strings");
+        }
     }
 
     if (options.exclusions) {
@@ -201,7 +224,7 @@ export async function searchBatched(
         }
     }
 
-    args.push(query);
+    args.push(finalQuery);
     args.push(path);
 
     const unlisten = await listen<{ id: string; type: string; lines: string[] }>("search-event", (event) => {

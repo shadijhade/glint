@@ -7,34 +7,47 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
-// Memoized Section component - defined outside to prevent re-creation
+// Memoized Section component with Card
 const Section = memo(({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }) => (
     <motion.div
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white/60 dark:bg-zinc-900/60 backdrop-blur-xl rounded-2xl border border-zinc-200 dark:border-zinc-800 p-6 shadow-sm"
+        className="mb-4"
     >
-        <div className="flex items-center gap-3 mb-6">
-            <div className="p-2 rounded-xl bg-gradient-to-br from-pink-500/10 to-purple-500/10 border border-pink-500/20">
-                <Icon className="w-5 h-5 text-pink-500" />
-            </div>
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">{title}</h2>
-        </div>
-        <div className="space-y-4">{children}</div>
+        <Card className="border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/70 backdrop-blur-md shadow-sm">
+            <CardHeader className="pb-3">
+                <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-xl bg-pink-500/10 border border-pink-500/20 text-pink-500">
+                        <Icon className="w-4 h-4" />
+                    </div>
+                    <CardTitle className="text-base text-zinc-900 dark:text-zinc-100">{title}</CardTitle>
+                </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                {children}
+            </CardContent>
+        </Card>
     </motion.div>
 ));
 Section.displayName = 'Section';
 
 // Memoized SettingRow component
 const SettingRow = memo(({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) => (
-    <div className="flex items-center justify-between gap-4 py-2">
-        <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{label}</p>
-            {description && <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{description}</p>}
+    <div>
+        <div className="flex items-center justify-between gap-4 py-2">
+            <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{label}</p>
+                {description && <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{description}</p>}
+            </div>
+            <div className="shrink-0">{children}</div>
         </div>
-        <div className="shrink-0">{children}</div>
+        <Separator className="mt-2 opacity-50" />
     </div>
 ));
 SettingRow.displayName = 'SettingRow';
@@ -77,8 +90,8 @@ export function SettingsView() {
     }, [setSettings]);
 
     return (
-        <div className="flex-1 overflow-auto p-6 scrollbar-thin">
-            <div className="max-w-3xl mx-auto space-y-6">
+        <ScrollArea className="h-full w-full">
+            <div className="p-8 max-w-4xl mx-auto space-y-6 pb-20">
                 {/* Header */}
                 <motion.div
                     initial={{ opacity: 0, y: -20 }}
@@ -100,15 +113,15 @@ export function SettingsView() {
                             ].map(({ value, icon: ThemeIcon, label }) => (
                                 <Button
                                     key={value}
-                                    variant={settings.theme === value ? "default" : "outline"}
+                                    variant={settings.theme === value ? "secondary" : "ghost"}
                                     size="sm"
                                     onClick={() => setSettings({ theme: value as 'light' | 'dark' | 'system' })}
                                     className={cn(
-                                        "gap-2",
-                                        settings.theme === value && "bg-pink-500 hover:bg-pink-600"
+                                        "gap-2 h-8",
+                                        settings.theme === value && "bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600"
                                     )}
                                 >
-                                    <ThemeIcon className="w-4 h-4" />
+                                    <ThemeIcon className="w-3.5 h-3.5" />
                                     {label}
                                 </Button>
                             ))}
@@ -120,7 +133,7 @@ export function SettingsView() {
                             value={settings.fontSize}
                             onValueChange={(v) => setSettings({ fontSize: v as 'small' | 'medium' | 'large' })}
                         >
-                            <SelectTrigger className="w-32">
+                            <SelectTrigger className="w-32 h-8">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -135,7 +148,6 @@ export function SettingsView() {
                         <Switch
                             checked={settings.showLineNumbers}
                             onCheckedChange={(v) => setSettings({ showLineNumbers: v })}
-                            className="data-[state=checked]:bg-pink-500"
                         />
                     </SettingRow>
                 </Section>
@@ -147,33 +159,28 @@ export function SettingsView() {
                             value={settings.defaultSearchPath}
                             onChange={(e) => setSettings({ defaultSearchPath: e.target.value })}
                             placeholder="C:\Projects"
-                            className="w-48"
+                            className="w-56 h-8"
                         />
                     </SettingRow>
 
                     <SettingRow label="Maximum Results" description="Limit the number of search results">
                         <div className="flex items-center gap-2">
-                            {[500, 1000, 5000, 10000].map(limit => (
+                            {[500, 1000, 5000].map(limit => (
                                 <Button
                                     key={limit}
-                                    variant={settings.maxResults === limit ? "default" : "outline"}
+                                    variant={settings.maxResults === limit ? "secondary" : "ghost"}
                                     size="sm"
                                     onClick={() => setSettings({ maxResults: limit })}
-                                    className={cn(
-                                        "min-w-[60px]",
-                                        settings.maxResults === limit && "bg-pink-500 hover:bg-pink-600"
-                                    )}
+                                    className="h-8 text-xs"
                                 >
                                     {limit >= 1000 ? `${limit / 1000}k` : limit}
                                 </Button>
                             ))}
                             <Button
-                                variant={settings.maxResults === null ? "default" : "outline"}
+                                variant={settings.maxResults === null ? "secondary" : "ghost"}
                                 size="sm"
                                 onClick={() => setSettings({ maxResults: null })}
-                                className={cn(
-                                    settings.maxResults === null && "bg-pink-500 hover:bg-pink-600"
-                                )}
+                                className="h-8 text-xs"
                             >
                                 No limit
                             </Button>
@@ -188,7 +195,7 @@ export function SettingsView() {
                             min={0}
                             max={2000}
                             step={50}
-                            className="w-24 text-right"
+                            className="w-24 text-right h-8"
                         />
                     </SettingRow>
 
@@ -196,7 +203,6 @@ export function SettingsView() {
                         <Switch
                             checked={settings.clearResultsOnNewSearch}
                             onCheckedChange={(v) => setSettings({ clearResultsOnNewSearch: v })}
-                            className="data-[state=checked]:bg-pink-500"
                         />
                     </SettingRow>
                 </Section>
@@ -210,7 +216,7 @@ export function SettingsView() {
                             onChange={(e) => setSettings({ previewLines: Number(e.target.value) })}
                             min={1}
                             max={20}
-                            className="w-24 text-right"
+                            className="w-24 text-right h-8"
                         />
                     </SettingRow>
 
@@ -218,7 +224,6 @@ export function SettingsView() {
                         <Switch
                             checked={settings.autoOpenPreview}
                             onCheckedChange={(v) => setSettings({ autoOpenPreview: v })}
-                            className="data-[state=checked]:bg-pink-500"
                         />
                     </SettingRow>
                 </Section>
@@ -229,8 +234,8 @@ export function SettingsView() {
                         <Input
                             value={settings.editorPath}
                             onChange={(e) => setSettings({ editorPath: e.target.value })}
-                            placeholder="code, notepad, etc."
-                            className="w-48"
+                            placeholder="code, notepad"
+                            className="w-56 h-8"
                         />
                     </SettingRow>
 
@@ -238,7 +243,6 @@ export function SettingsView() {
                         <Switch
                             checked={settings.confirmBeforeReplace}
                             onCheckedChange={(v) => setSettings({ confirmBeforeReplace: v })}
-                            className="data-[state=checked]:bg-pink-500"
                         />
                     </SettingRow>
                 </Section>
@@ -247,20 +251,20 @@ export function SettingsView() {
                 <Section title="Exclusions" icon={X}>
                     <div className="space-y-4">
                         <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                            Patterns to exclude from search results (e.g., node_modules, .git)
+                            Patterns to exclude from search results.
                         </p>
                         <div className="flex gap-2">
                             <Input
                                 value={newExclusion}
                                 onChange={(e) => setNewExclusion(e.target.value)}
                                 placeholder="Add exclusion pattern..."
-                                className="flex-1"
+                                className="flex-1 h-9"
                                 onKeyDown={(e) => e.key === 'Enter' && handleAddExclusion()}
                             />
                             <Button
                                 onClick={handleAddExclusion}
                                 disabled={!newExclusion}
-                                className="bg-pink-500 hover:bg-pink-600"
+                                className="bg-pink-500 hover:bg-pink-600 h-9"
                             >
                                 <Plus className="w-4 h-4 mr-2" />
                                 Add
@@ -268,10 +272,7 @@ export function SettingsView() {
                         </div>
                         <div className="flex flex-wrap gap-2">
                             {settings.exclusions.map((ex) => (
-                                <span
-                                    key={ex}
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700"
-                                >
+                                <Badge key={ex} variant="secondary" className="pl-3 pr-1 py-1 gap-1">
                                     {ex}
                                     <button
                                         onClick={() => handleRemoveExclusion(ex)}
@@ -279,7 +280,7 @@ export function SettingsView() {
                                     >
                                         <X className="w-3 h-3" />
                                     </button>
-                                </span>
+                                </Badge>
                             ))}
                         </div>
                     </div>
@@ -291,7 +292,6 @@ export function SettingsView() {
                         <Switch
                             checked={settings.saveSearchHistory}
                             onCheckedChange={(v) => setSettings({ saveSearchHistory: v })}
-                            className="data-[state=checked]:bg-pink-500"
                         />
                     </SettingRow>
 
@@ -303,11 +303,11 @@ export function SettingsView() {
                             min={10}
                             max={10000}
                             step={10}
-                            className="w-24 text-right"
+                            className="w-24 text-right h-8"
                         />
                     </SettingRow>
 
-                    <div className="pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                    <div className="pt-4 mt-2">
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">Clear Search History</p>
@@ -329,7 +329,7 @@ export function SettingsView() {
 
                 {/* About Section */}
                 <Section title="About" icon={Info}>
-                    <div className="flex items-center gap-4 pb-4 border-b border-zinc-200 dark:border-zinc-800">
+                    <div className="flex items-center gap-4 pb-4">
                         <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center shadow-lg shadow-pink-500/20">
                             <Zap className="w-8 h-8 text-white fill-current" />
                         </div>
@@ -339,19 +339,19 @@ export function SettingsView() {
                         </div>
                     </div>
 
-                    <div className="space-y-3 pt-2">
+                    <div className="space-y-3 pt-2 border-t border-zinc-200 dark:border-zinc-800">
                         <Button
                             variant="ghost"
                             onClick={() => openUrl('https://github.com/shadijhade/shadui-ripgrep')}
-                            className="w-full justify-between"
+                            className="w-full justify-between mt-2"
                         >
                             <span>View on GitHub</span>
                             <ExternalLink className="w-4 h-4" />
                         </Button>
 
-                        <div className="pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                        <div className="pt-2">
                             <Button
-                                variant="ghost"
+                                variant="outline"
                                 onClick={handleResetSettings}
                                 className="w-full text-zinc-600 dark:text-zinc-400"
                             >
@@ -361,10 +361,7 @@ export function SettingsView() {
                         </div>
                     </div>
                 </Section>
-
-                {/* Bottom Spacer */}
-                <div className="h-6" />
             </div>
-        </div>
+        </ScrollArea>
     );
 }
