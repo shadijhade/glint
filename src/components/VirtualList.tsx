@@ -16,7 +16,8 @@ export const VirtualList = forwardRef<VirtualListHandle, VirtualListProps>(({ he
     const [scrollTop, setScrollTop] = useState(0);
     const containerRef = useRef<HTMLDivElement>(null);
 
-    // Precompute offsets
+    // Precompute offsets - recompute on every render to ensure correctness
+    // since itemSize depends on displayItems which can change
     const itemOffsets = useMemo(() => {
         const offsets = new Array(itemCount);
         let current = 0;
@@ -25,7 +26,8 @@ export const VirtualList = forwardRef<VirtualListHandle, VirtualListProps>(({ he
             current += itemSize(i);
         }
         return offsets;
-    }, [itemCount, itemSize]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [itemCount, ...Array.from({ length: Math.min(itemCount, 10) }, (_, i) => itemSize(i))]);
 
     const totalHeight = itemOffsets.length > 0 ? itemOffsets[itemCount - 1] + itemSize(itemCount - 1) : 0;
 

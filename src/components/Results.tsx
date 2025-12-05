@@ -12,7 +12,6 @@ import { FileText, FileCode2, FileImage, FileArchive, FileAudio, FileVideo, Down
 import { Loader } from "@/components/ui/Loader";
 import { useRef, useEffect, useState, useMemo, useDeferredValue } from "react";
 import { cn } from "@/lib/utils";
-import { motion } from "framer-motion";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
@@ -271,12 +270,9 @@ export function Results({ results, displayItems: propDisplayItems, query, select
             const matchCountDisplay = item.matchCount >= 0 ? item.matchCount : "";
 
             return (
-                <motion.div
+                <div
                     style={style}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ duration: 0.2, delay: 0.05 }}
-                    className="px-2"
+                    className="px-2 pb-2"
                 >
                     <Card className="flex items-center gap-2 p-2 bg-zinc-100/80 dark:bg-zinc-800/80 backdrop-blur-sm h-full border-zinc-200 dark:border-zinc-700/50 shadow-sm">
                         <div className="p-1 bg-white dark:bg-zinc-900 rounded text-pink-500 shrink-0">
@@ -291,7 +287,7 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                             </Badge>
                         )}
                     </Card>
-                </motion.div>
+                </div>
             );
         }
 
@@ -309,12 +305,9 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                 : lineContent;
 
         return (
-            <motion.div
+            <div
                 style={style}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.2 }}
-                className="px-2"
+                className="px-2 pb-2"
             >
                 <ContextMenu>
                     <ContextMenuTrigger>
@@ -357,14 +350,14 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                         </ContextMenuItem>
                     </ContextMenuContent>
                 </ContextMenu>
-            </motion.div>
+            </div>
         );
     };
 
-    // Item Sizer
+    // Item Sizer - includes gap between items
     const getItemSize = (index: number) => {
         const item = displayItems[index];
-        return item.type === 'header' ? 40 : 32; // Header 40px, Match 32px
+        return item.type === 'header' ? 52 : 44; // Header 52px, Match 44px (includes 8px gap)
     };
 
     const hasResults = results.length > 0;
@@ -481,7 +474,7 @@ export function Results({ results, displayItems: propDisplayItems, query, select
                         </div>
                     </div>
 
-                    <div className="flex-1 min-h-0 p-2">
+                    <div className="flex-1 min-h-0 p-2 pb-32">
                         {!hasDisplayItems ? (
                             <div className="flex h-full flex-col items-center justify-center text-muted-foreground gap-2">
                                 <SearchIcon className="h-8 w-8 opacity-20" />
