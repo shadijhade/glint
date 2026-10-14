@@ -1,164 +1,125 @@
-import { useEffect, useState, useRef } from "react";
-import { FileText, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus, vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { useStore } from '@/lib/store';
+import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
+import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
+import c from "react-syntax-highlighter/dist/esm/languages/prism/c";
+import cpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp";
+import csharp from "react-syntax-highlighter/dist/esm/languages/prism/csharp";
+import css from "react-syntax-highlighter/dist/esm/languages/prism/css";
+import go from "react-syntax-highlighter/dist/esm/languages/prism/go";
+import java from "react-syntax-highlighter/dist/esm/languages/prism/java";
+import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
+import json from "react-syntax-highlighter/dist/esm/languages/prism/json";
+import jsx from "react-syntax-highlighter/dist/esm/languages/prism/jsx";
+import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
+import markup from "react-syntax-highlighter/dist/esm/languages/prism/markup";
+import powershell from "react-syntax-highlighter/dist/esm/languages/prism/powershell";
+import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
+import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust";
+import sql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
+import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
+import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
+import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
+import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
+import { ExternalLink, FileSearch, FolderOpen } from "lucide-react";
+import { RgMatch } from "@/lib/ripgrep";
+import { useStore } from "@/lib/store";
+import { Button } from "./ui/button";
 
-interface PreviewProps {
-    filePath: string | null;
-    lineNumber?: number;
-}
+// Only these grammars are bundled; anything else previews as plain text.
+const LANGUAGES = { bash, c, cpp, csharp, css, go, java, javascript, json, jsx, markdown, markup, powershell, python, rust, sql, toml, tsx, typescript, yaml };
+Object.entries(LANGUAGES).forEach(([name, grammar]) => SyntaxHighlighter.registerLanguage(name, grammar));
 
-const getLanguage = (filePath: string) => {
-    const ext = filePath.split('.').pop()?.toLowerCase();
-    switch (ext) {
-        case 'ts': case 'tsx': return 'typescript';
-        case 'js': case 'jsx': return 'javascript';
-        case 'rs': return 'rust';
-        case 'py': return 'python';
-        case 'css': return 'css';
-        case 'html': return 'html';
-        case 'json': return 'json';
-        case 'md': return 'markdown';
-        case 'yml': case 'yaml': return 'yaml';
-        case 'sql': return 'sql';
-        case 'go': return 'go';
-        case 'java': return 'java';
-        case 'c': case 'cpp': case 'h': return 'cpp';
-        case 'sh': return 'bash';
-        case 'toml': return 'toml';
-        default: return 'text';
-    }
+const LANGUAGE_BY_EXT: Record<string, keyof typeof LANGUAGES> = {
+    sh: "bash", bash: "bash", c: "c", h: "c", cc: "cpp", cpp: "cpp", hpp: "cpp", cs: "csharp", css: "css", scss: "css",
+    go: "go", java: "java", js: "javascript", mjs: "javascript", cjs: "javascript", json: "json", jsx: "jsx",
+    md: "markdown", html: "markup", htm: "markup", xml: "markup", svg: "markup", xaml: "markup", csproj: "markup",
+    vue: "markup", ps1: "powershell", py: "python", rs: "rust", sql: "sql", toml: "toml", tsx: "tsx", ts: "typescript",
+    mts: "typescript", yml: "yaml", yaml: "yaml",
 };
 
-export function Preview({ filePath, lineNumber }: PreviewProps) {
-    const { settings } = useStore();
-    const isDark = settings.theme === 'dark' || (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    const [content, setContent] = useState<string>("");
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const scrollRef = useRef<HTMLDivElement>(null);
-    const [startLine, setStartLine] = useState(1);
+const BLOCK = 100; // the preview loads 300-line windows aligned to 100-line blocks, so nearby matches reuse it
+
+interface PreviewProps {
+    match?: RgMatch;
+    onOpen: (path: string) => void;
+    onReveal: (path: string) => void;
+}
+
+export function Preview({ match, onOpen, onReveal }: PreviewProps) {
+    const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
+    const [chunk, setChunk] = useState<{ path: string; start: number; text: string } | null>(null);
+    const [error, setError] = useState("");
+    const codeRef = useRef<HTMLDivElement>(null);
+
+    const path = match?.data.path?.text;
+    const line = match?.data.line_number ?? 1;
+    const start = Math.max(1, (Math.floor((line - 1) / BLOCK) - 1) * BLOCK + 1);
 
     useEffect(() => {
-        if (!filePath) {
-            setContent("");
-            setStartLine(1);
-            return;
-        }
-
-        // Clear content immediately when file changes to avoid stale preview
-        setContent("");
-        setLoading(true);
-
-        const fetchContent = async () => {
-            setError(null);
-            try {
-                let text = "";
-                let start = 1;
-
-                if (lineNumber) {
-                    // Load window around line number using previewLines setting
-                    const WINDOW_SIZE = settings.previewLines * 20; // Multiply for reasonable window
-                    start = Math.max(1, lineNumber - WINDOW_SIZE / 2);
-                    const end = start + WINDOW_SIZE;
-                    text = await invoke<string>("read_file_chunk", { path: filePath, startLine: start, endLine: end });
-                    setStartLine(start);
-                } else {
-                    // Load first 200 lines
-                    text = await invoke<string>("read_file_chunk", { path: filePath, startLine: 1, endLine: 200 });
-                    setStartLine(1);
-                }
-
-                setContent(text);
-            } catch (err) {
-                console.error(err);
-                setError(typeof err === 'string' ? err : "Failed to read file");
-            } finally {
-                setLoading(false);
-            }
+        if (!path) return;
+        let stale = false;
+        invoke<string>("read_file_chunk", { path, startLine: start, endLine: start + 3 * BLOCK - 1 })
+            .then((text) => {
+                if (stale) return;
+                setChunk({ path, start, text });
+                setError("");
+            })
+            .catch((e) => {
+                if (!stale) setError(String(e));
+            });
+        return () => {
+            stale = true;
         };
+    }, [path, start]);
 
-        fetchContent();
-    }, [filePath, lineNumber]);
-
-    // Scroll to line number when content loads
     useEffect(() => {
-        if (content && lineNumber) {
-            // Only scroll if the line is within the current view
-            // This prevents scrolling when the content is stale (from previous selection)
-            // but the lineNumber has already updated.
-            const endLine = startLine + (settings.previewLines * 20); // Use settings for window size
-            if (lineNumber < startLine || lineNumber >= endLine) {
-                return;
-            }
+        codeRef.current?.querySelector(".hl-line")?.scrollIntoView({ block: "center" });
+    }, [chunk, line]);
 
-            // Give syntax highlighter a moment to render
-            setTimeout(() => {
-                const element = document.getElementById(`line-${lineNumber}`);
-                if (element) {
-                    element.scrollIntoView({ behavior: "smooth", block: "center" });
-                }
-            }, 100);
-        }
-    }, [content, lineNumber, startLine]);
-
-    if (!filePath) {
+    if (!path) {
         return (
-            <div className="h-full flex flex-col items-center justify-center text-zinc-600 dark:text-zinc-500 gap-2 bg-zinc-100/30 dark:bg-zinc-900/30 border-l border-zinc-300 dark:border-zinc-800 transition-colors duration-300">
-                <FileText className="w-12 h-12 opacity-20" />
-                <p>Select a file to preview</p>
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                <FileSearch className="size-6" /> Select a result to preview it
             </div>
         );
     }
 
-    return (
-        <div className="h-full flex flex-col bg-zinc-100/30 dark:bg-zinc-900/30 border-l border-zinc-300 dark:border-zinc-800 overflow-hidden transition-colors duration-300">
-            <div className="p-3 border-b border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm flex items-center justify-between shrink-0 transition-colors duration-300">
-                <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300 truncate transition-colors duration-300" title={filePath}>
-                    {filePath.split(/[\\/]/).pop()}
-                </span>
-                {loading && <Loader2 className="w-4 h-4 animate-spin text-pink-500" />}
-            </div>
+    const name = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+    const current = chunk?.path === path ? chunk : null;
+    const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
 
-            <div className="flex-1 overflow-auto relative bg-[#f8f8f8] dark:bg-[#1e1e1e] transition-colors duration-300" ref={scrollRef}>
+    return (
+        <div className="flex min-w-0 flex-1 flex-col">
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card pl-3 pr-1.5">
+                <span className="truncate text-sm" title={path}>
+                    <span className="font-medium">{name}</span>
+                    <span className="text-muted-foreground"> · line {line}</span>
+                </span>
+                <div className="ml-auto flex shrink-0">
+                    <Button variant="ghost" size="icon" className="size-7" onClick={() => onReveal(path)} title="Reveal in folder">
+                        <FolderOpen />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpen(path)} title="Open file (Enter)">
+                        <ExternalLink />
+                    </Button>
+                </div>
+            </div>
+            <div ref={codeRef} className="min-h-0 flex-1 select-text overflow-auto bg-card">
                 {error ? (
-                    <div className="text-red-400 p-4">{error}</div>
-                ) : (
-                    <div className="relative">
-                        {startLine > 1 && (
-                            <div className="text-center py-2 text-xs text-zinc-400 bg-zinc-100 dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800">
-                                ... Previous lines hidden ...
-                            </div>
-                        )}
-                        <SyntaxHighlighter
-                            key={`${filePath}-${startLine}`} // Force re-render on chunk change
-                            language={getLanguage(filePath)}
-                            style={isDark ? vscDarkPlus : vs}
-                            showLineNumbers={settings.showLineNumbers}
-                            startingLineNumber={startLine}
-                            wrapLines={true}
-                            customStyle={{ margin: 0, padding: '1rem', fontSize: '12px', lineHeight: '1.5', background: 'transparent' }}
-                            lineNumberStyle={{ minWidth: '3em', paddingRight: '1em', color: isDark ? '#6e7681' : '#858585', textAlign: 'right' }}
-                            lineProps={(lineNumberProp) => {
-                                const style: React.CSSProperties = { display: 'block' };
-                                if (lineNumberProp === lineNumber) {
-                                    style.backgroundColor = 'rgba(236, 72, 153, 0.2)'; // Pink-500 with opacity
-                                    style.borderLeft = '2px solid #ec4899';
-                                }
-                                return {
-                                    id: `line-${lineNumberProp}`,
-                                    style
-                                };
-                            }}
-                        >
-                            {content}
-                        </SyntaxHighlighter>
-                        <div className="text-center py-2 text-xs text-zinc-400 bg-zinc-100 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800">
-                            ... Remaining lines hidden ...
-                        </div>
-                    </div>
+                    <p className="p-4 text-sm text-destructive">{error}</p>
+                ) : current && (
+                    <SyntaxHighlighter
+                        language={LANGUAGE_BY_EXT[ext] ?? "text"}
+                        useInlineStyles={false}
+                        showLineNumbers={showLineNumbers}
+                        startingLineNumber={current.start}
+                        wrapLines
+                        lineProps={(n: number) => ({ className: n === line ? "block pl-3 pr-4 hl-line" : "block pl-3 pr-4" })}
+                        className="min-w-max py-2 font-mono text-[0.8125rem] leading-5"
+                    >
+                        {current.text}
+                    </SyntaxHighlighter>
                 )}
             </div>
         </div>

@@ -1,54 +1,25 @@
 import { useEffect } from 'react';
-import { useStore } from '@/lib/store';
+import { useStore, Settings } from '@/lib/store';
 
-type Theme = 'light' | 'dark' | 'system';
+const FONT_PX: Record<Settings['fontSize'], number> = { small: 14, medium: 16, large: 18 };
 
+/** Height of one results row; scales with the text size setting. */
+export const rowHeight = (size: Settings['fontSize']) => Math.round(FONT_PX[size] * 1.75);
+
+/** Applies the theme (incl. live system changes) and text size to <html>. */
 export function useTheme() {
-    const { settings, setSettings } = useStore();
-    const theme = settings.theme as Theme;
+    const { theme, fontSize } = useStore((s) => s.settings);
 
     useEffect(() => {
-        const root = window.document.documentElement;
-
-        // Remove existing theme classes
-        root.classList.remove('light', 'dark');
-
-        // Determine the effective theme
-        let effectiveTheme: 'light' | 'dark';
-
-        if (theme === 'system') {
-            // Check system preference
-            const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches
-                ? 'dark'
-                : 'light';
-            effectiveTheme = systemTheme;
-        } else {
-            effectiveTheme = theme;
-        }
-
-        // Apply theme class
-        root.classList.add(effectiveTheme);
-    }, [theme]);
-
-    // Listen for system theme changes when in system mode
-    useEffect(() => {
+        const media = window.matchMedia('(prefers-color-scheme: dark)');
+        const apply = () => document.documentElement.classList.toggle('dark', theme === 'dark' || (theme === 'system' && media.matches));
+        apply();
         if (theme !== 'system') return;
-
-        const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-
-        const handleChange = (e: MediaQueryListEvent) => {
-            const root = window.document.documentElement;
-            root.classList.remove('light', 'dark');
-            root.classList.add(e.matches ? 'dark' : 'light');
-        };
-
-        mediaQuery.addEventListener('change', handleChange);
-        return () => mediaQuery.removeEventListener('change', handleChange);
+        media.addEventListener('change', apply);
+        return () => media.removeEventListener('change', apply);
     }, [theme]);
 
-    const setTheme = (newTheme: Theme) => {
-        setSettings({ theme: newTheme });
-    };
-
-    return { theme, setTheme };
+    useEffect(() => {
+        document.documentElement.style.fontSize = `${FONT_PX[fontSize]}px`;
+    }, [fontSize]);
 }

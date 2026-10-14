@@ -1,189 +1,161 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useStore } from "@/lib/store";
-import { Folder, StopCircle, CaseSensitive, WholeWord, Regex, Replace, ArrowUp, CornerDownLeft } from "lucide-react";
+import { CaseSensitive, FolderOpen, Regex, Replace, Search as SearchIcon, Square, WholeWord } from "lucide-react";
+import { SearchOptions, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { useState, useEffect, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
+import { Button } from "./ui/button";
 
-interface SearchProps {
-    onSearch: (query: string, path: string) => void;
-    onStop: () => void;
-    isSearching: boolean;
-    onReplace: (replaceText: string) => void;
+const TOGGLES: { key: keyof SearchOptions; hotkey: string; icon: typeof Regex; label: string }[] = [
+    { key: "caseSensitive", hotkey: "c", icon: CaseSensitive, label: "Match case (Alt+C)" },
+    { key: "wholeWord", hotkey: "w", icon: WholeWord, label: "Whole word (Alt+W)" },
+    { key: "regex", hotkey: "r", icon: Regex, label: "Regular expression (Alt+R)" },
+];
+
+const fieldClass = "h-9 min-w-0 flex-1 bg-transparent px-2 text-sm outline-hidden placeholder:text-muted-foreground";
+
+function Toggle({ pressed, className, ...props }: React.ComponentProps<"button"> & { pressed: boolean }) {
+    return (
+        <button
+            type="button"
+            aria-pressed={pressed}
+            className={cn(
+                "grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground [&_svg]:size-4",
+                pressed && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
+                className
+            )}
+            {...props}
+        />
+    );
 }
 
-export function Search({ onSearch, onStop, isSearching, onReplace }: SearchProps) {
-    const { query, setQuery, path, setPath, options, setOption, settings, setSearchFocused } = useStore();
-    const [isReplaceOpen, setIsReplaceOpen] = useState(false);
-    const [replaceText, setReplaceText] = useState("");
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
+interface SearchBarProps {
+    searching: boolean;
+    canReplace: boolean;
+    onSearch: () => void;
+    onStop: () => void;
+    onReplace: (replacement: string) => void;
+}
 
-    // Auto-resize textarea
-    useEffect(() => {
-        if (textareaRef.current) {
-            textareaRef.current.style.height = "auto";
-            textareaRef.current.style.height = textareaRef.current.scrollHeight + "px";
-        }
-    }, [query]);
+export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }: SearchBarProps) {
+    const { query, setQuery, path, setPath, options, setOption, history, settings } = useStore();
+    const [replaceOpen, setReplaceOpen] = useState(false);
+    const [replacement, setReplacement] = useState("");
+    const queryRef = useRef<HTMLTextAreaElement>(null);
+    const recentPaths = useMemo(() => [...new Set(history.map((h) => h.path))].slice(0, 20), [history]);
 
-    // Set default search path on mount if path is empty
     useEffect(() => {
-        if (!path && settings.defaultSearchPath) {
-            setPath(settings.defaultSearchPath);
-        }
+        if (!path && settings.defaultSearchPath) setPath(settings.defaultSearchPath);
+        // Ctrl+F / Ctrl+K focus the query, Ctrl+H toggles replace — from anywhere.
+        const onKey = (e: KeyboardEvent) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            const key = e.key.toLowerCase();
+            if (key === "f" || key === "k") {
+                e.preventDefault();
+                queryRef.current?.focus();
+                queryRef.current?.select();
+            } else if (key === "h") {
+                e.preventDefault();
+                setReplaceOpen((open) => !open);
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
     }, []);
 
-    const handleSubmit = () => {
-        if (query && path && !isSearching) {
-            onSearch(query, path);
-        }
+    const browse = async () => {
+        const dir = await open({ directory: true, defaultPath: path || undefined });
+        if (typeof dir === "string") setPath(dir);
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+    const onQueryKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        const toggle = e.altKey && TOGGLES.find((t) => t.hotkey === e.key.toLowerCase());
+        if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
-            handleSubmit();
-        }
-    };
-
-    const handleBrowse = async () => {
-        const selected = await open({
-            directory: true,
-            multiple: false,
-            defaultPath: path || undefined,
-        });
-        if (selected) {
-            setPath(selected as string);
+            onSearch();
+        } else if (e.key === "Escape") {
+            e.currentTarget.blur();
+        } else if (toggle) {
+            e.preventDefault();
+            setOption(toggle.key, !options[toggle.key]);
         }
     };
 
     return (
-        <div className="w-full max-w-4xl mx-auto relative z-50">
-            <div className={cn(
-                "relative bg-zinc-100 dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-all duration-300",
-                "focus-within:ring-2 focus-within:ring-pink-500/20 focus-within:border-pink-500/50 focus-within:shadow-xl focus-within:scale-[1.01]"
-            )}>
-                {/* Header: Path & Options */}
-                <div className="flex items-center justify-between px-4 pt-3 pb-2">
-                    <Badge
-                        variant="secondary"
-                        className="cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-800 font-normal text-zinc-500 dark:text-zinc-400 px-3 py-1.5 h-auto text-xs gap-1.5 rounded-lg border border-transparent hover:border-zinc-300 dark:hover:border-zinc-700 transition-all select-none"
-                        onClick={handleBrowse}
-                    >
-                        <Folder className="w-3.5 h-3.5" />
-                        {path ? <span className="truncate max-w-[200px]">{path}</span> : "Select location..."}
-                    </Badge>
-
-                    <div className="flex items-center gap-1">
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setOption('caseSensitive', !options.caseSensitive)}
-                            className={cn("h-7 w-7 p-0 rounded-lg", options.caseSensitive ? "bg-pink-100 text-pink-600 dark:bg-pink-900/30 dark:text-pink-400" : "text-zinc-500")}
-                            title="Case Sensitive"
-                        >
-                            <CaseSensitive className="w-4 h-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setOption('wholeWord', !options.wholeWord)}
-                            className={cn("h-7 w-7 p-0 rounded-lg", options.wholeWord ? "bg-pink-100 text-pink-600 dark:bg-pink-900/30 dark:text-pink-400" : "text-zinc-500")}
-                            title="Whole Word"
-                        >
-                            <WholeWord className="w-4 h-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setOption('regex', !options.regex)}
-                            className={cn("h-7 w-7 p-0 rounded-lg", options.regex ? "bg-pink-100 text-pink-600 dark:bg-pink-900/30 dark:text-pink-400" : "text-zinc-500")}
-                            title="Regex"
-                        >
-                            <Regex className="w-4 h-4" />
-                        </Button>
-                        <Separator orientation="vertical" className="h-4 mx-1" />
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setIsReplaceOpen(!isReplaceOpen)}
-                            className={cn("h-7 w-7 p-0 rounded-lg", isReplaceOpen ? "bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100" : "text-zinc-500")}
-                            title="Toggle Replace"
-                        >
-                            <Replace className="w-4 h-4" />
-                        </Button>
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+            <div className="min-w-0 flex-1 divide-y overflow-hidden rounded-lg border bg-background shadow-xs transition-shadow focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/15">
+                <div className="flex items-start pr-1">
+                    <SearchIcon className="ml-3 mt-2.5 size-4 shrink-0 text-muted-foreground" />
+                    <textarea
+                        ref={queryRef}
+                        rows={1}
+                        autoFocus
+                        spellCheck={false}
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={onQueryKeyDown}
+                        placeholder="Search for text…  (Shift+Enter adds a line)"
+                        aria-label="Search query"
+                        className={cn(fieldClass, "h-auto max-h-40 min-h-9 resize-none py-2 font-mono placeholder:font-sans field-sizing-content")}
+                    />
+                    <div className="flex items-center gap-0.5 pt-1">
+                        {TOGGLES.map(({ key, icon: Icon, label }) => (
+                            <Toggle key={key} pressed={options[key]} onClick={() => setOption(key, !options[key])} title={label} aria-label={label}>
+                                <Icon />
+                            </Toggle>
+                        ))}
+                        <span className="mx-1 h-4 w-px bg-border" />
+                        <Toggle pressed={replaceOpen} onClick={() => setReplaceOpen(!replaceOpen)} title="Replace (Ctrl+H)" aria-label="Toggle replace">
+                            <Replace />
+                        </Toggle>
                     </div>
                 </div>
 
-                {/* Input Area */}
-                <div className="px-2 pb-2 flex gap-2 items-end relative">
-                    <div className="flex-1 min-w-0 relative">
-                        <Textarea
-                            ref={textareaRef}
-                            value={query}
-                            onChange={(e) => setQuery(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            onFocus={() => setSearchFocused(true)}
-                            onBlur={() => setSearchFocused(false)}
-                            placeholder="What do you want to find?"
-                            className="min-h-[44px] max-h-[200px] w-full border-0 focus-visible:ring-0 resize-none bg-transparent shadow-none p-3 text-base placeholder:text-zinc-400 dark:placeholder:text-zinc-600 relative z-10"
-                            disabled={isSearching}
+                {replaceOpen && (
+                    <div className="flex items-center pr-1">
+                        <Replace className="ml-3 size-4 shrink-0 text-muted-foreground" />
+                        <input
+                            spellCheck={false}
+                            value={replacement}
+                            onChange={(e) => setReplacement(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && canReplace && onReplace(replacement)}
+                            placeholder={options.regex ? "Replace with…  ($1 inserts a capture group)" : "Replace with…"}
+                            aria-label="Replacement"
+                            className={cn(fieldClass, "font-mono placeholder:font-sans")}
                         />
-
-                        {/* Command Hints Overlay */}
-                        {query && !isSearching && (
-                            <div className="absolute right-0 bottom-3 z-20 hidden md:flex items-center gap-3 pointer-events-none px-2 animate-in fade-in zoom-in-95 duration-200">
-                                <span className="flex items-center gap-1 text-[10px] bg-white/50 dark:bg-black/50 backdrop-blur-sm px-1.5 py-0.5 rounded text-zinc-400 border border-black/5 dark:border-white/5">
-                                    <CornerDownLeft className="w-3 h-3" />
-                                    to search
-                                </span>
-                                <span className="flex items-center gap-1 text-[10px] bg-white/50 dark:bg-black/50 backdrop-blur-sm px-1.5 py-0.5 rounded text-zinc-400 border border-black/5 dark:border-white/5">
-                                    <span className="font-medium">⇧ ↵</span>
-                                    new line
-                                </span>
-                            </div>
-                        )}
-
-                        {isReplaceOpen && (
-                            <div className="mt-2 relative animate-in slide-in-from-top-1 fade-in duration-200 z-10">
-                                <Textarea
-                                    value={replaceText}
-                                    onChange={(e) => setReplaceText(e.target.value)}
-                                    placeholder="Replace with..."
-                                    className="min-h-[44px] w-full border-0 bg-zinc-50 dark:bg-zinc-950/50 rounded-xl focus-visible:ring-0 resize-none shadow-none p-3 text-sm"
-                                    disabled={isSearching}
-                                />
-                                <Button
-                                    size="sm"
-                                    variant="secondary"
-                                    onClick={() => onReplace(replaceText)}
-                                    disabled={!query || !path || isSearching}
-                                    className="absolute right-2 bottom-2 h-7 text-xs bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700"
-                                >
-                                    Replace All
-                                </Button>
-                            </div>
-                        )}
+                        <Button size="sm" variant="ghost" disabled={!canReplace} onClick={() => onReplace(replacement)} title="Replace in every file of the current results">
+                            Replace all
+                        </Button>
                     </div>
+                )}
 
-                    <Button
-                        size="icon"
-                        onClick={isSearching ? onStop : handleSubmit}
-                        disabled={(!query || !path) && !isSearching}
-                        className={cn(
-                            "rounded-2xl h-12 w-12 shrink-0 transition-all mb-1 relative z-30",
-                            isSearching
-                                ? "bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20"
-                                : "bg-gradient-to-br from-pink-500 to-purple-600 text-white hover:from-pink-600 hover:to-purple-700 shadow-lg shadow-pink-500/30 hover:shadow-pink-500/40 hover:scale-105 active:scale-95"
-                        )}
-                    >
-                        {isSearching ? <StopCircle className="h-6 w-6" /> : <ArrowUp className="h-6 w-6" />}
-                    </Button>
+                <div className="flex items-center pr-1">
+                    <FolderOpen className="ml-3 size-4 shrink-0 text-muted-foreground" />
+                    <input
+                        spellCheck={false}
+                        list="recent-paths"
+                        value={path}
+                        onChange={(e) => setPath(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && onSearch()}
+                        placeholder="Folder to search…"
+                        aria-label="Folder to search"
+                        className={fieldClass}
+                    />
+                    <datalist id="recent-paths">
+                        {recentPaths.map((p) => <option key={p} value={p} />)}
+                    </datalist>
+                    <Button size="sm" variant="ghost" onClick={browse}>Browse…</Button>
                 </div>
             </div>
+
+            {searching ? (
+                <Button variant="outline" onClick={onStop} title="Stop (Esc)">
+                    <Square className="fill-current size-3!" /> Stop
+                </Button>
+            ) : (
+                <Button onClick={onSearch} disabled={!query || !path} title="Search (Enter)">
+                    <SearchIcon /> Search
+                </Button>
+            )}
         </div>
     );
 }

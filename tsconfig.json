@@ -21,7 +21,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "baseUrl": ".",
+    "types": ["node", "react-syntax-highlighter"],
     "paths": {
       "@/*": [
         "./src/*"
