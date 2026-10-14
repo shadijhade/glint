@@ -92,6 +92,38 @@
 }
 
 @layer components {
+  /* File list columns: name, date, type, size (search results: name, folder, date, size).
+     Narrow lists drop the optional column. */
+  .files {
+    container-type: inline-size;
+  }
+
+  .file-row {
+    display: grid;
+    align-items: center;
+    column-gap: 0.75rem;
+    grid-template-columns: minmax(0, 1fr) 9.5rem 8rem 5.5rem;
+  }
+
+  .file-row[data-search] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) 9.5rem 5.5rem;
+  }
+
+  @container (max-width: 42rem) {
+    .file-row {
+      grid-template-columns: minmax(0, 1fr) 9.5rem 5.5rem;
+    }
+
+    .file-row[data-search] {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) 5.5rem;
+    }
+
+    /* !important: header cells are flex items, and utilities outrank this layer. */
+    .col-optional {
+      display: none !important;
+    }
+  }
+
   .hl-line {
     background: hsl(var(--primary) / 0.14);
     box-shadow: inset 2px 0 hsl(var(--primary));

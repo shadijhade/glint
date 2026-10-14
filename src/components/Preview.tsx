@@ -1,42 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
-import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
-import c from "react-syntax-highlighter/dist/esm/languages/prism/c";
-import cpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp";
-import csharp from "react-syntax-highlighter/dist/esm/languages/prism/csharp";
-import css from "react-syntax-highlighter/dist/esm/languages/prism/css";
-import go from "react-syntax-highlighter/dist/esm/languages/prism/go";
-import java from "react-syntax-highlighter/dist/esm/languages/prism/java";
-import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
-import json from "react-syntax-highlighter/dist/esm/languages/prism/json";
-import jsx from "react-syntax-highlighter/dist/esm/languages/prism/jsx";
-import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
-import markup from "react-syntax-highlighter/dist/esm/languages/prism/markup";
-import powershell from "react-syntax-highlighter/dist/esm/languages/prism/powershell";
-import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
-import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust";
-import sql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
-import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
-import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
-import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
-import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import { ExternalLink, FileSearch, FolderOpen } from "lucide-react";
+import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { RgMatch } from "@/lib/ripgrep";
 import { useStore } from "@/lib/store";
 import { Button } from "./ui/button";
-
-// Only these grammars are bundled; anything else previews as plain text.
-const LANGUAGES = { bash, c, cpp, csharp, css, go, java, javascript, json, jsx, markdown, markup, powershell, python, rust, sql, toml, tsx, typescript, yaml };
-Object.entries(LANGUAGES).forEach(([name, grammar]) => SyntaxHighlighter.registerLanguage(name, grammar));
-
-const LANGUAGE_BY_EXT: Record<string, keyof typeof LANGUAGES> = {
-    sh: "bash", bash: "bash", c: "c", h: "c", cc: "cpp", cpp: "cpp", hpp: "cpp", cs: "csharp", css: "css", scss: "css",
-    go: "go", java: "java", js: "javascript", mjs: "javascript", cjs: "javascript", json: "json", jsx: "jsx",
-    md: "markdown", html: "markup", htm: "markup", xml: "markup", svg: "markup", xaml: "markup", csproj: "markup",
-    vue: "markup", ps1: "powershell", py: "python", rs: "rust", sql: "sql", toml: "toml", tsx: "tsx", ts: "typescript",
-    mts: "typescript", yml: "yaml", yaml: "yaml",
-};
 
 const BLOCK = 100; // the preview loads 300-line windows aligned to 100-line blocks, so nearby matches reuse it
 
@@ -97,7 +65,7 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
                     <span className="text-muted-foreground"> · line {line}</span>
                 </span>
                 <div className="ml-auto flex shrink-0">
-                    <Button variant="ghost" size="icon" className="size-7" onClick={() => onReveal(path)} title="Reveal in folder">
+                    <Button variant="ghost" size="icon" className="size-7" onClick={() => onReveal(path)} title="Show in folder">
                         <FolderOpen />
                     </Button>
                     <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpen(path)} title="Open file (Enter)">
@@ -110,7 +78,7 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
                     <p className="p-4 text-sm text-destructive">{error}</p>
                 ) : current && (
                     <SyntaxHighlighter
-                        language={LANGUAGE_BY_EXT[ext] ?? "text"}
+                        language={languageFor(ext)}
                         useInlineStyles={false}
                         showLineNumbers={showLineNumbers}
                         startingLineNumber={current.start}

@@ -1,0 +1,170 @@
+import { joinPath } from "./paths.ts";
+
+/** Windows FILE_ATTRIBUTE_* bits the explorer cares about. */
+export const ATTR = {
+    readonly: 0x1,
+    hidden: 0x2,
+    system: 0x4,
+    reparsePoint: 0x400,
+    offline: 0x1000,
+    recallOnOpen: 0x40000,
+    recallOnDataAccess: 0x400000,
+};
+
+export interface FileEntry {
+    name: string;
+    path: string;
+    dir: boolean;
+    size: number;
+    /** Last write time, ms since the Unix epoch (0 when unknown). */
+    modified: number;
+    attrs: number;
+    /** Lowercased name, for sorting and filtering. */
+    lower: string;
+    /** Lowercased extension without the dot; "" for folders and names without one. */
+    ext: string;
+}
+
+/** An entry as the backend sends it; listings leave out the path. */
+export type RawEntry = Omit<FileEntry, "path" | "lower" | "ext"> & { path?: string };
+
+/** Fills in path, lower and ext in place (no copies: listings can hold 100k entries). */
+export function withDetails(raw: RawEntry, dir = ""): FileEntry {
+    const entry = raw as FileEntry;
+    entry.path = raw.path ?? joinPath(dir, raw.name);
+    entry.lower = raw.name.toLowerCase();
+    const dot = entry.lower.lastIndexOf(".");
+    entry.ext = !raw.dir && dot > 0 ? entry.lower.slice(dot + 1) : "";
+    return entry;
+}
+
+export interface Listing {
+    path: string;
+    entries: FileEntry[];
+    /** Milliseconds Rust spent enumerating and sorting. */
+    elapsed: number;
+}
+
+const utf8 = new TextDecoder();
+
+/**
+ * Reads the binary listing from `list_dir` (layout documented on `encode_listing` in fsx.rs):
+ * numbers are viewed in place as typed arrays, and all names decode in one go.
+ */
+export function decodeListing(buffer: ArrayBuffer): Listing {
+    const view = new DataView(buffer);
+    const count = view.getUint32(0, true);
+    const pathBytes = view.getUint32(4, true);
+    const elapsed = view.getFloat64(8, true);
+    const sizes = new Float64Array(buffer, 16, count);
+    const modified = new Float64Array(buffer, 16 + 8 * count, count);
+    const attrs = new Uint32Array(buffer, 16 + 16 * count, count);
+    const lengths = new Uint32Array(buffer, 16 + 20 * count, count);
+    const text = 16 + 24 * count;
+    const path = utf8.decode(new Uint8Array(buffer, text, pathBytes));
+    const names = utf8.decode(new Uint8Array(buffer, text + pathBytes));
+    const entries = new Array<FileEntry>(count);
+    for (let i = 0, at = 0; i < count; i++) {
+        const name = names.slice(at, (at += lengths[i]));
+        entries[i] = withDetails({ name, dir: (attrs[i] & 0x10) !== 0, size: sizes[i], modified: modified[i], attrs: attrs[i] }, path);
+    }
+    return { path, entries, elapsed };
+}
+
+export const isHidden = (e: FileEntry) => (e.attrs & ATTR.hidden) !== 0;
+
+/** OneDrive-style placeholders: reading them would start a download. */
+export const isOnlineOnly = (e: FileEntry) => (e.attrs & (ATTR.offline | ATTR.recallOnOpen | ATTR.recallOnDataAccess)) !== 0;
+
+export type SortKey = "name" | "modified" | "type" | "size";
+export interface Sort {
+    key: SortKey;
+    desc: boolean;
+}
+
+const isDigit = (c: number) => c >= 48 && c <= 57;
+
+/** Natural order for lowercased names: "file2" before "file10" (matches the Rust side). */
+export function naturalCompare(a: string, b: string) {
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+        const ca = a.charCodeAt(i);
+        const cb = b.charCodeAt(j);
+        if (isDigit(ca) && isDigit(cb)) {
+            let si = i;
+            let sj = j;
+            while (i < a.length && isDigit(a.charCodeAt(i))) i++;
+            while (j < b.length && isDigit(b.charCodeAt(j))) j++;
+            while (si < i - 1 && a.charCodeAt(si) === 48) si++;
+            while (sj < j - 1 && b.charCodeAt(sj) === 48) sj++;
+            if (i - si !== j - sj) return i - si - (j - sj);
+            for (let k = 0; k < i - si; k++) {
+                const d = a.charCodeAt(si + k) - b.charCodeAt(sj + k);
+                if (d) return d;
+            }
+        } else {
+            if (ca !== cb) return ca - cb;
+            i++;
+            j++;
+        }
+    }
+    return a.length - i - (b.length - j);
+}
+
+const byName = (a: FileEntry, b: FileEntry) => naturalCompare(a.lower, b.lower) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+
+/**
+ * Sorts for display. `presorted` entries already come folders-first in name order (listings sort in
+ * Rust), so the default view costs nothing and ties keep name order. `sizeOf` lets folders sort by
+ * their calculated size.
+ */
+export function sortEntries(entries: FileEntry[], sort: Sort, foldersFirst: boolean, presorted: boolean, sizeOf = (e: FileEntry) => e.size) {
+    if (presorted && foldersFirst && sort.key === "name" && !sort.desc) return entries;
+    const direction = sort.desc ? -1 : 1;
+    const group = (e: FileEntry) => (foldersFirst && e.dir ? 0 : 1);
+    const compare: Record<SortKey, (a: FileEntry, b: FileEntry) => number> = {
+        name: byName,
+        modified: (a, b) => a.modified - b.modified,
+        size: (a, b) => sizeOf(a) - sizeOf(b),
+        type: (a, b) => Number(b.dir) - Number(a.dir) || (a.ext < b.ext ? -1 : a.ext > b.ext ? 1 : 0),
+    };
+    const by = compare[sort.key];
+    return [...entries].sort((a, b) => group(a) - group(b) || direction * by(a, b) || (presorted ? 0 : byName(a, b)));
+}
+
+/** Splits a query into terms; "double quotes" keep spaces in one term (matches the Rust side). */
+export function terms(query: string) {
+    const found: string[] = [];
+    let current = "";
+    let quoted = false;
+    for (const c of query) {
+        if (c === '"') quoted = !quoted;
+        else if (!quoted && /\s/.test(c)) {
+            if (current) found.push(current);
+            current = "";
+        } else current += c;
+    }
+    if (current) found.push(current);
+    return found;
+}
+
+function globToRegExp(glob: string) {
+    const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    return new RegExp(`^${source}$`);
+}
+
+/**
+ * The same matching fd does for a search, applied to what's on screen: every term must match the
+ * name, case-insensitively; terms with * or ? match the whole name, others any part of it.
+ */
+export function matcher(query: string): ((e: FileEntry) => boolean) | null {
+    const parts = terms(query.toLowerCase());
+    if (!parts.length) return null;
+    const tests = parts.map((term) => {
+        if (!/[*?]/.test(term)) return (e: FileEntry) => e.lower.includes(term);
+        const re = globToRegExp(term);
+        return (e: FileEntry) => re.test(e.lower);
+    });
+    return (e) => tests.every((test) => test(e));
+}

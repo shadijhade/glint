@@ -1,14 +1,15 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
+import { cn } from "@/lib/utils";
 
 const OVERSCAN = 8;
 
 /** Fixed-row-height virtual list. Scrolls `scrollToIndex` into view whenever it changes. */
-export function VirtualList({ count, rowHeight, scrollToIndex = -1, children }: {
+export function VirtualList({ count, rowHeight, scrollToIndex = -1, children, className, ...props }: {
     count: number;
     rowHeight: number;
     scrollToIndex?: number;
     children: (index: number) => ReactNode;
-}) {
+} & Omit<React.ComponentProps<"div">, "children" | "onScroll" | "ref">) {
     const ref = useRef<HTMLDivElement>(null);
     const [view, setView] = useState({ top: 0, height: 0 });
     const measure = () => {
@@ -42,7 +43,7 @@ export function VirtualList({ count, rowHeight, scrollToIndex = -1, children }: 
     }
 
     return (
-        <div ref={ref} onScroll={measure} className="h-full overflow-y-auto overflow-x-hidden">
+        <div ref={ref} onScroll={measure} className={cn("h-full overflow-y-auto overflow-x-hidden", className)} {...props}>
             <div className="relative" style={{ height: count * rowHeight }}>{rows}</div>
         </div>
     );
