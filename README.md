@@ -24,8 +24,8 @@
 -   **Keyboard Navigation**: Navigate results using arrow keys and open files with `Enter`.
 
 ### Developer Friendly
--   **Open in Editor**: Open files directly in your default editor or a configured custom editor (e.g., VS Code, Notepad++).
--   **Customizable**: Configure your preferred editor path and default exclusions.
+-   **Open in Editor**: Open files in your default app, or set **Settings → Open files with** (e.g. `code`, `notepad++`).
+-   **Customizable**: Theme, text size, result limit, default folder and exclusions.
 
 ---
 
@@ -34,10 +34,7 @@
 ### For Users (Noob Friendly)
 1.  Go to the [Releases](https://github.com/shadijhade/shadui-ripgrep/releases) page.
 2.  Download the latest `.exe` installer for Windows.
-3.  Run the installer and you're good to go!
-
-> **Note**: You will need to have `ripgrep` installed on your system.
-> To install it, you can run `cargo install ripgrep` or download it from the [official repository](https://github.com/BurntSushi/ripgrep).
+3.  Run the installer and you're good to go! Ripgrep is bundled with the app, so there's nothing else to install.
 
 ### For Developers (Pro)
 If you want to build the app from source or contribute, follow these steps:
@@ -45,7 +42,7 @@ If you want to build the app from source or contribute, follow these steps:
 #### Prerequisites
 -   [Node.js](https://nodejs.org/) (v18+)
 -   [Rust](https://www.rust-lang.org/) (latest stable)
--   [Ripgrep](https://github.com/BurntSushi/ripgrep) installed and in your PATH.
+-   The Windows x64 ripgrep binary ships in `src-tauri/binaries/`. On other platforms, add a [ripgrep](https://github.com/BurntSushi/ripgrep) binary named `rg-<target-triple>` there.
 
 #### Build Instructions
 1.  **Clone the repository**:
@@ -86,9 +83,14 @@ If you want to build the app from source or contribute, follow these steps:
 
 | Key | Action |
 | :--- | :--- |
-| `Enter` | Search (when in input) / Open File (when result selected) |
-| `Arrow Up/Down` | Navigate through search results |
-| `Esc` | Close modals (History, Settings) |
+| `Enter` | Search (in the search box) / open the selected result |
+| `Shift+Enter` | New line in the search box (multi-line search) |
+| `Arrow Up/Down` | Move through results |
+| `Ctrl+F` / `Ctrl+K` | Focus the search box |
+| `Ctrl+H` | Show or hide Replace |
+| `Alt+C` / `Alt+W` / `Alt+R` | Toggle match case / whole word / regex |
+| `Ctrl+,` | Open Settings |
+| `Esc` | Stop a running search, close menus and dialogs |
 
 ---
 

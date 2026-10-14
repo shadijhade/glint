@@ -2,9 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>ShadUI Ripgrep</title>
+    <script>
+      // Apply the saved theme before first paint to avoid a light flash.
+      try {
+        var theme = JSON.parse(localStorage.getItem("shadui-ripgrep-storage")).state.settings.theme;
+        if (theme !== "light" && (theme !== "system" || matchMedia("(prefers-color-scheme: dark)").matches)) document.documentElement.classList.add("dark");
+      } catch (e) {
+        document.documentElement.classList.add("dark");
+      }
+    </script>
   </head>
 
   <body>

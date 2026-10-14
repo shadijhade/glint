@@ -1,503 +1,295 @@
-import { RgMatch } from "@/lib/ripgrep";
-import { AutoSizer } from "./AutoSizer";
-import { VirtualList, VirtualListHandle } from "./VirtualList";
-import {
-    ContextMenu,
-    ContextMenuContent,
-    ContextMenuItem,
-    ContextMenuTrigger,
-    ContextMenuSeparator,
-} from "@/components/ui/context-menu";
-import { FileText, FileCode2, FileImage, FileArchive, FileAudio, FileVideo, Download, Copy, ExternalLink, FolderOpen, Search as SearchIcon, AlertTriangle } from "lucide-react";
-import { Loader } from "@/components/ui/Loader";
-import { useRef, useEffect, useState, useMemo, useDeferredValue } from "react";
-import { cn } from "@/lib/utils";
-import { save } from "@tauri-apps/plugin-dialog";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
-import { DisplayItem } from "../types";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
+import { AlertTriangle, Copy, Download, ExternalLink, FileText, FolderOpen, Loader2, Search as SearchIcon, SearchX, X } from "lucide-react";
+import { RgMatch } from "@/lib/ripgrep";
 import { useStore } from "@/lib/store";
+import { segments } from "@/lib/text";
+import { rowHeight } from "@/hooks/useTheme";
+import { cn } from "@/lib/utils";
+import type { SearchRun } from "@/App";
+import { VirtualList } from "./VirtualList";
+import { Preview } from "./Preview";
+import { Button } from "./ui/button";
 
-interface ResultsProps {
-    results: RgMatch[];
-    displayItems: DisplayItem[];
-    query: string;
-    selectedIndex: number;
-    onOpenFile: (filePath: string) => void;
-    onSelect?: (index: number) => void;
-    limitReached?: boolean;
-    onRerunSearch?: (newLimit: number | null) => void;
+type Row =
+    | { type: "file"; path: string; count: number; first: number }
+    | { type: "match"; index: number };
+
+const fmt = (n: number) => n.toLocaleString();
+const basename = (path: string) => path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+const extOf = (path: string) => {
+    const name = basename(path);
+    const dot = name.lastIndexOf(".");
+    return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+};
+const csv = (value: unknown) => `"${String(value).replace(/"/g, '""')}"`;
+
+function Centered({ children }: { children: React.ReactNode }) {
+    return <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted-foreground">{children}</div>;
 }
 
-// Helper function to get icon based on file extension
-const getFileIcon = (filePath: string) => {
-    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+interface ResultsProps {
+    run: SearchRun;
+    matches: RgMatch[];
+    searching: boolean;
+    error: string;
+    duration: number;
+    filesSearched: number | null;
+    selected: number;
+    onSelect: (index: number) => void;
+    onOpen: (path: string) => void;
+    onReveal: (path: string) => void;
+    onShowAll: () => void;
+}
 
-    const iconMap: Record<string, typeof FileText> = {
-        // Code files
-        'ts': FileCode2,
-        'tsx': FileCode2,
-        'js': FileCode2,
-        'jsx': FileCode2,
-        'py': FileCode2,
-        'rs': FileCode2,
-        'go': FileCode2,
-        'java': FileCode2,
-        'cpp': FileCode2,
-        'c': FileCode2,
-        'cs': FileCode2,
+export function Results({ run, matches, searching, error, duration, filesSearched, selected, onSelect, onOpen, onReveal, onShowAll }: ResultsProps) {
+    const fontSize = useStore((s) => s.settings.fontSize);
+    const [filter, setFilter] = useState("");
+    const [activeExts, setActiveExts] = useState<string[]>([]);
+    const deferredFilter = useDeferredValue(filter.toLowerCase());
 
-        // Images
-        'png': FileImage,
-        'jpg': FileImage,
-        'jpeg': FileImage,
-        'gif': FileImage,
-        'svg': FileImage,
-        'webp': FileImage,
-
-        // Archives
-        'zip': FileArchive,
-        'rar': FileArchive,
-        '7z': FileArchive,
-        'tar': FileArchive,
-        'gz': FileArchive,
-
-        // Audio
-        'mp3': FileAudio,
-        'wav': FileAudio,
-        'flac': FileAudio,
-        'ogg': FileAudio,
-
-        // Video
-        'mp4': FileVideo,
-        'avi': FileVideo,
-        'mkv': FileVideo,
-        'mov': FileVideo,
-    };
-
-    return iconMap[ext] || FileText;
-};
-
-export function Results({ results, displayItems: propDisplayItems, query, selectedIndex, onOpenFile, onSelect, limitReached, onRerunSearch }: ResultsProps) {
-    const { settings, setSettings } = useStore();
-    const listRef = useRef<VirtualListHandle>(null);
-    const [isExporting, setIsExporting] = useState(false);
-    const [liveQuery, setLiveQuery] = useState("");
-    const deferredLiveQuery = useDeferredValue(liveQuery);
-    const [activeFileTypes, setActiveFileTypes] = useState<string[]>([]);
-    const [showLimitOptions, setShowLimitOptions] = useState(false);
-
-    // Count matches (excluding summary/context types)
-    const matchCount = useMemo(() => {
-        return results.filter(r => r.type === 'match').length;
-    }, [results]);
-
-    // Handle limit change and re-run search
-    const handleLimitChange = (newLimit: number | null) => {
-        setSettings({ maxResults: newLimit });
-        setShowLimitOptions(false);
-        onRerunSearch?.(newLimit);
-    };
-
-    // Calculate top 3 file types
-    const topExtensions = useMemo(() => {
-        const counts = new Map<string, number>();
-        results.forEach(r => {
-            if (r.type === 'match' && r.data.path?.text) {
-                const parts = r.data.path.text.split('.');
-                const ext = parts.length > 1 ? parts.pop()?.toLowerCase() || '' : 'no-ext';
-                counts.set(ext, (counts.get(ext) || 0) + 1);
+    // Group contiguous matches by file (rg emits each file's matches together) and apply filters.
+    const { rows, fileCount, exts } = useMemo(() => {
+        const rows: Row[] = [];
+        const extCounts = new Map<string, number>();
+        let fileCount = 0;
+        let lastPath = "";
+        let ext = "";
+        let header: Extract<Row, { type: "file" }> | null = null;
+        matches.forEach((m, index) => {
+            const path = m.data.path?.text ?? "";
+            if (path !== lastPath) {
+                lastPath = path;
+                ext = extOf(path);
+                fileCount++;
             }
-        });
-        return Array.from(counts.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 3)
-            .map(([ext]) => ext);
-    }, [results]);
-
-    // Group and Filter Logic
-    const displayItems = useMemo(() => {
-        if (!deferredLiveQuery && activeFileTypes.length === 0) {
-            return propDisplayItems;
-        }
-
-        // Only compute matchesWithIndex when we need to filter
-        const matchesWithIndex = results
-            .map((r, i) => ({ ...r, originalIndex: i }))
-            .filter((r): r is RgMatch & { originalIndex: number } => r.type === "match");
-
-        // Filter matches
-        const filtered = matchesWithIndex.filter((m) => {
-            const text = m.data.lines?.text || "";
-            const path = m.data.path?.text || "";
-
-            // File Type Filter
-            if (activeFileTypes.length > 0) {
-                const parts = path.split('.');
-                const ext = parts.length > 1 ? parts.pop()?.toLowerCase() || '' : 'no-ext';
-                if (!activeFileTypes.includes(ext)) {
-                    return false;
-                }
+            extCounts.set(ext, (extCounts.get(ext) ?? 0) + 1);
+            if (activeExts.length && !activeExts.includes(ext)) return;
+            if (deferredFilter && !(m.data.lines?.text ?? "").toLowerCase().includes(deferredFilter) && !path.toLowerCase().includes(deferredFilter)) return;
+            if (header?.path !== path) {
+                header = { type: "file", path, count: 0, first: index };
+                rows.push(header);
             }
-
-            // Query Filter
-            if (deferredLiveQuery) {
-                const lowerQuery = deferredLiveQuery.toLowerCase();
-                return text.toLowerCase().includes(lowerQuery) ||
-                    path.toLowerCase().includes(lowerQuery);
-            }
-
-            return true;
+            header.count++;
+            rows.push({ type: "match", index });
         });
+        const exts = [...extCounts].sort((a, b) => b[1] - a[1]).slice(0, 4);
+        return { rows, fileCount, exts };
+    }, [matches, activeExts, deferredFilter]);
 
-        // Group by file
-        const grouped = new Map<string, { match: RgMatch, originalIndex: number }[]>();
-        filtered.forEach(item => {
-            const path = item.data.path?.text || "";
-            if (!grouped.has(path)) grouped.set(path, []);
-            grouped.get(path)?.push({ match: item, originalIndex: item.originalIndex });
-        });
+    const selectedRow = useMemo(() => rows.findIndex((r) => r.type === "match" && r.index === selected), [rows, selected]);
+    const selectedMatch = matches[selected];
 
-        // Flatten
-        const items: DisplayItem[] = [];
-        for (const [file, fileMatches] of grouped) {
-            items.push({ type: 'header', file, matchCount: fileMatches.length });
-            fileMatches.forEach(({ match, originalIndex }) => {
-                items.push({ type: 'match', match, originalIndex });
-            });
-        }
-        return items;
-    }, [results, propDisplayItems, deferredLiveQuery, activeFileTypes]);
-
-    // Find the display index corresponding to the selected match
-    const scrollIndex = useMemo(() => {
-        if (selectedIndex < 0) return -1;
-        // We need to find the display item that corresponds to the selectedIndex in the original results array
-        return displayItems.findIndex(item => item.type === 'match' && item.originalIndex === selectedIndex);
-    }, [displayItems, selectedIndex]);
-
+    // ↑/↓ walk the visible matches, Enter opens — unless the user is typing somewhere.
     useEffect(() => {
-        if (scrollIndex >= 0 && listRef.current) {
-            listRef.current.scrollToItem(scrollIndex);
-        }
-    }, [scrollIndex]);
+        const onKey = (e: KeyboardEvent) => {
+            const target = e.target as Element;
+            if (target.closest("input, textarea, dialog, [popover]")) return;
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const step = e.key === "ArrowDown" ? 1 : -1;
+                for (let i = selectedRow + step; i >= 0 && i < rows.length; i += step) {
+                    const row = rows[i];
+                    if (row.type === "match") return onSelect(row.index);
+                }
+            } else if (e.key === "Enter" && selectedMatch?.data.path && !target.closest("button, a")) {
+                e.preventDefault();
+                onOpen(selectedMatch.data.path.text);
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [rows, selectedRow, selectedMatch, onSelect, onOpen]);
 
-    const handleExport = async () => {
-        // We need matchesWithIndex for export if we want to export everything
-        // But matchesWithIndex is not available here if we didn't compute it.
-        // We can compute it on demand for export.
-
-        const matchesToExport = results
-            .map((r, i) => ({ ...r, originalIndex: i }))
-            .filter((r): r is RgMatch & { originalIndex: number } => r.type === "match");
-
-        if (matchesToExport.length === 0) return;
-        setIsExporting(true);
-
+    const exportResults = async () => {
+        const visible = rows.flatMap((r) => (r.type === "match" ? [matches[r.index]] : []));
+        const file = await save({ defaultPath: "search-results.csv", filters: [{ name: "CSV", extensions: ["csv"] }, { name: "JSON", extensions: ["json"] }] });
+        if (!file) return;
+        const content = file.toLowerCase().endsWith(".json")
+            ? JSON.stringify(visible, null, 2)
+            : "File,Line,Content\n" + visible.map((m) => [m.data.path?.text ?? "", m.data.line_number ?? "", (m.data.lines?.text ?? "").trim()].map(csv).join(",")).join("\n");
         try {
-            const filePath = await save({
-                filters: [
-                    {
-                        name: 'JSON',
-                        extensions: ['json'],
-                    },
-                    {
-                        name: 'CSV',
-                        extensions: ['csv'],
-                    },
-                ],
-            });
-
-            if (!filePath) {
-                setIsExporting(false);
-                return;
-            }
-
-            let content = "";
-            if (filePath.endsWith('.json')) {
-                content = JSON.stringify(matchesToExport, null, 2);
-            } else {
-                // CSV format: File,Line,Content
-                content = "File,Line,Content\n" + matchesToExport.map(m => {
-                    const file = m.data.path?.text || "";
-                    const line = m.data.line_number;
-                    const text = (m.data.lines?.text || "").replace(/"/g, '""'); // Escape quotes
-                    return `"${file}",${line},"${text.trim()}"`;
-                }).join("\n");
-            }
-
-            await invoke("write_file_content", { path: filePath, content: content });
-            toast.success("Export successful", { description: `Saved to ${filePath}` });
-
-        } catch (error) {
-            console.error("Export failed:", error);
-            toast.error("Export failed", { description: error instanceof Error ? error.message : "Unknown error" });
-        } finally {
-            setIsExporting(false);
+            await invoke("write_file_content", { path: file, content });
+            toast.success(`Exported ${fmt(visible.length)} results`, { description: file });
+        } catch (e) {
+            toast.error("Export failed", { description: String(e) });
         }
     };
 
-    const HighlightedText = ({ text, highlight }: { text: string; highlight: string }) => {
-        if (!highlight.trim()) {
-            return <span>{text}</span>;
-        }
-        const parts = text.split(new RegExp(`(${highlight})`, 'gi'));
-        return (
-            <span>
-                {parts.map((part, i) =>
-                    part.toLowerCase() === highlight.toLowerCase() ? (
-                        <span key={i} className="bg-pink-500/30 text-pink-700 dark:text-pink-200 rounded px-0.5 font-bold border border-pink-500/50">
-                            {part}
-                        </span>
-                    ) : (
-                        <span key={i}>{part}</span>
-                    )
-                )}
-            </span>
-        );
+    const limited = !searching && run.limit !== null && matches.length >= run.limit;
+    const relative = (path: string) => (path.startsWith(run.path) ? path.slice(run.path.length).replace(/^[\\/]/, "") : path);
+
+    // One shared right-click menu: a native popover positioned at the cursor (light-dismiss and Esc for free).
+    const menuRef = useRef<HTMLDivElement>(null);
+    const [menuTarget, setMenuTarget] = useState<{ path: string; line?: string }>({ path: "" });
+    const openMenu = (e: React.MouseEvent, path: string, match?: RgMatch) => {
+        e.preventDefault();
+        setMenuTarget({ path, line: match?.data.lines?.text.trim() });
+        const menu = menuRef.current!;
+        if (!menu.matches(":popover-open")) menu.showPopover();
+        const { width, height } = menu.getBoundingClientRect();
+        menu.style.left = `${Math.min(e.clientX, window.innerWidth - width - 4)}px`;
+        menu.style.top = `${Math.min(e.clientY, window.innerHeight - height - 4)}px`;
     };
+    const menuAction = (action: () => void) => () => {
+        menuRef.current?.hidePopover();
+        action();
+    };
+    const copy = (text: string, what: string) =>
+        navigator.clipboard.writeText(text).then(() => toast.success(`Copied ${what}`), () => toast.error(`Couldn't copy ${what}`));
 
-    const Row = ({ index, style }: { index: number; style: React.CSSProperties }) => {
-        const item = displayItems[index];
-        if (!item) return null;
-
-        if (item.type === 'header') {
-            const FileIcon = getFileIcon(item.file);
-            const fileName = item.file.split(/[\\/]/).pop() || item.file;
-            const matchCountDisplay = item.matchCount >= 0 ? item.matchCount : "";
-
+    const renderRow = (i: number) => {
+        const row = rows[i];
+        if (row.type === "file") {
             return (
                 <div
-                    style={style}
-                    className="px-2 pb-2"
+                    onClick={() => onSelect(row.first)}
+                    onDoubleClick={() => onOpen(row.path)}
+                    onContextMenu={(e) => openMenu(e, row.path)}
+                    className="flex h-full cursor-default items-center gap-2 bg-muted/50 pl-3 pr-3 hover:bg-accent"
+                    title={row.path}
                 >
-                    <Card className="flex items-center gap-2 p-2 bg-zinc-100/80 dark:bg-zinc-800/80 backdrop-blur-sm h-full border-zinc-200 dark:border-zinc-700/50 shadow-sm">
-                        <div className="p-1 bg-white dark:bg-zinc-900 rounded text-pink-500 shrink-0">
-                            <FileIcon className="h-4 w-4" />
-                        </div>
-                        <span className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 truncate flex-1" title={item.file}>
-                            {fileName}
-                        </span>
-                        {matchCountDisplay !== "" && (
-                            <Badge variant="secondary" className="font-mono text-xs">
-                                {matchCountDisplay}
-                            </Badge>
-                        )}
-                    </Card>
+                    <FileText className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate text-sm">
+                        <span className="font-medium">{basename(row.path)}</span>
+                        <span className="ml-2 text-xs text-muted-foreground">{relative(row.path).slice(0, -basename(row.path).length)}</span>
+                    </span>
+                    <span className="ml-auto shrink-0 rounded-full bg-background px-1.5 text-xs tabular-nums text-muted-foreground">{row.count}</span>
                 </div>
             );
         }
-
-        // Match Item
-        const match = item.match;
-        const data = match.data;
-        const lineContent = data.lines?.text?.trim() || "";
-        const lineNumber = data.line_number;
-        const isSelected = item.originalIndex === selectedIndex;
-
-        // Truncate line content
-        const truncatedContent =
-            lineContent.length > 150
-                ? lineContent.substring(0, 150) + "..."
-                : lineContent;
-
+        const match = matches[row.index];
+        const path = match.data.path?.text ?? "";
         return (
             <div
-                style={style}
-                className="px-2 pb-2"
+                onClick={() => onSelect(row.index)}
+                onDoubleClick={() => onOpen(path)}
+                onContextMenu={(e) => {
+                    onSelect(row.index);
+                    openMenu(e, path, match);
+                }}
+                className={cn(
+                    "relative flex h-full cursor-default items-center gap-2 pl-4 pr-3 hover:bg-accent/60",
+                    i === selectedRow && "bg-primary/10 before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-primary hover:bg-primary/15"
+                )}
             >
-                <ContextMenu>
-                    <ContextMenuTrigger>
-                        <div
-                            onClick={() => onSelect?.(item.originalIndex)}
-                            className={cn(
-                                "flex items-center gap-3 rounded-md border p-1.5 pl-6 shadow-sm transition-all cursor-pointer h-full",
-                                isSelected
-                                    ? "bg-pink-50 dark:bg-zinc-800 border-pink-500/50 shadow-pink-500/10"
-                                    : "bg-white/40 dark:bg-zinc-900/40 border-zinc-200 dark:border-zinc-800 hover:bg-white/60 dark:hover:bg-zinc-800/60 hover:border-pink-300 dark:hover:border-zinc-700"
-                            )}
-                        >
-                            <span className="shrink-0 text-zinc-400 dark:text-zinc-600 select-none min-w-[3ch] text-right font-mono text-xs">
-                                {lineNumber}
-                            </span>
-                            <code className="break-all text-zinc-700 dark:text-zinc-300 flex-1 font-mono text-xs leading-relaxed truncate">
-                                <HighlightedText text={truncatedContent} highlight={query} />
-                            </code>
-                        </div>
-                    </ContextMenuTrigger>
-                    <ContextMenuContent className="w-64">
-                        <ContextMenuItem onClick={() => {
-                            navigator.clipboard.writeText(match.data.path?.text || "");
-                            toast.success("Copied path to clipboard");
-                        }}>
-                            <Copy className="mr-2 h-4 w-4" /> Copy Path
-                        </ContextMenuItem>
-                        <ContextMenuItem onClick={() => {
-                            navigator.clipboard.writeText(lineContent);
-                            toast.success("Copied content to clipboard");
-                        }}>
-                            <FileText className="mr-2 h-4 w-4" /> Copy Content
-                        </ContextMenuItem>
-                        <ContextMenuSeparator />
-                        <ContextMenuItem onClick={() => onOpenFile(match.data.path?.text || "")}>
-                            <ExternalLink className="mr-2 h-4 w-4" /> Open File
-                        </ContextMenuItem>
-                        <ContextMenuItem onClick={() => onOpenFile(match.data.path?.text || "")}>
-                            <FolderOpen className="mr-2 h-4 w-4" /> Reveal in Explorer
-                        </ContextMenuItem>
-                    </ContextMenuContent>
-                </ContextMenu>
+                <span className="w-12 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground/70">{match.data.line_number}</span>
+                <span className="truncate font-mono text-[0.8125rem]">
+                    {segments(match).map((p, k) =>
+                        p.hit ? <mark key={k} className="rounded-sm bg-primary/20 px-px font-semibold text-pink-700 dark:text-pink-300">{p.text}</mark> : p.text
+                    )}
+                </span>
             </div>
         );
     };
 
-    // Item Sizer - includes gap between items
-    const getItemSize = (index: number) => {
-        const item = displayItems[index];
-        return item.type === 'header' ? 52 : 44; // Header 52px, Match 44px (includes 8px gap)
-    };
+    const menuItem = "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4 [&_svg]:text-muted-foreground";
+    const menu = (
+        <div ref={menuRef} popover="auto" role="menu" className="fixed inset-auto m-0 min-w-[12rem] rounded-md border bg-popover p-1 text-popover-foreground shadow-lg">
+            <button role="menuitem" className={menuItem} onClick={menuAction(() => onOpen(menuTarget.path))}><ExternalLink /> Open file</button>
+            <button role="menuitem" className={menuItem} onClick={menuAction(() => onReveal(menuTarget.path))}><FolderOpen /> Reveal in folder</button>
+            <div className="-mx-1 my-1 h-px bg-border" />
+            <button role="menuitem" className={menuItem} onClick={menuAction(() => copy(menuTarget.path, "path"))}><Copy /> Copy path</button>
+            <button role="menuitem" className={menuItem} disabled={menuTarget.line === undefined} onClick={menuAction(() => copy(menuTarget.line ?? "", "line"))}><Copy /> Copy line</button>
+        </div>
+    );
 
-    const hasResults = results.length > 0;
-    const hasDisplayItems = displayItems.length > 0;
+    let body: React.ReactNode;
+    if (error) {
+        body = (
+            <Centered>
+                <AlertTriangle className="size-6 text-destructive" />
+                <p className="font-medium text-foreground">Search failed</p>
+                <pre className="max-w-full select-text whitespace-pre-wrap text-left font-mono text-xs">{error}</pre>
+            </Centered>
+        );
+    } else if (!matches.length) {
+        body = searching ? (
+            <Centered><Loader2 className="size-5 animate-spin text-primary" /> Searching…</Centered>
+        ) : (
+            <Centered>
+                <SearchX className="size-6" />
+                <p className="font-medium text-foreground">No results</p>
+                <p className="max-w-sm">
+                    {filesSearched === 0
+                        ? `Nothing was searched — check that “${run.path}” exists and isn't excluded.`
+                        : "Try different search options. Excluded patterns, .gitignore'd and hidden files are skipped."}
+                </p>
+            </Centered>
+        );
+    } else if (!rows.length) {
+        body = (
+            <Centered>
+                No results match the filter.
+                <Button variant="outline" size="sm" onClick={() => { setFilter(""); setActiveExts([]); }}>Clear filters</Button>
+            </Centered>
+        );
+    } else {
+        body = <VirtualList count={rows.length} rowHeight={rowHeight(fontSize)} scrollToIndex={selectedRow}>{renderRow}</VirtualList>;
+    }
 
     return (
-        <div className="h-full w-full flex-1 overflow-hidden bg-transparent flex flex-col">
-            {!hasResults ? (
-                // Backend Empty State (Not searching, no results yet) - handled by App.tsx actually, 
-                // but if we are passed empty results here:
-                <div className="flex h-full flex-col items-center justify-center text-muted-foreground gap-4">
-                    <div className="p-6 bg-zinc-100 dark:bg-zinc-900/50 rounded-full border border-zinc-300 dark:border-zinc-800 transition-colors duration-300">
-                        <FileText className="h-12 w-12 opacity-20" />
-                    </div>
-                    <p className="text-zinc-600 dark:text-zinc-500 transition-colors duration-300">No results found</p>
-                </div>
-            ) : (
-                <>
-                    {/* Header / Filter Area - Always show if we have backend results */}
-                    <div className="shrink-0 px-4 py-3 border-b border-zinc-300 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col gap-3 z-10 transition-colors duration-300">
-                        <div className="flex justify-between items-center">
-                            <div className="flex flex-col gap-2">
-                                <div className="flex items-center gap-2">
-                                    <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium transition-colors duration-300">
-                                        Found <span className="text-pink-500 font-bold">{matchCount}</span> matches
-                                    </p>
-                                    {limitReached && (
-                                        <div className="relative">
-                                            <button
-                                                onClick={() => setShowLimitOptions(!showLimitOptions)}
-                                                className="flex items-center gap-1.5 px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg text-amber-600 dark:text-amber-400 text-xs font-medium transition-colors"
-                                                title="Search hit the limit. Click to adjust."
-                                            >
-                                                <AlertTriangle className="w-3.5 h-3.5" />
-                                                <span>Limit reached</span>
-                                            </button>
-                                            {showLimitOptions && (
-                                                <div className="absolute top-full left-0 mt-1 p-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-lg z-50 min-w-[160px]">
-                                                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-2 px-1">Continue with:</p>
-                                                    <div className="flex flex-col gap-1">
-                                                        {[500, 1000, 5000].map(limit => (
-                                                            <button
-                                                                key={limit}
-                                                                onClick={() => handleLimitChange(limit)}
-                                                                className={cn(
-                                                                    "px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-left",
-                                                                    settings.maxResults === limit
-                                                                        ? "bg-pink-500 text-white"
-                                                                        : "hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
-                                                                )}
-                                                            >
-                                                                {limit.toLocaleString()} results
-                                                            </button>
-                                                        ))}
-                                                        <div className="border-t border-zinc-200 dark:border-zinc-700 my-1" />
-                                                        <button
-                                                            onClick={() => handleLimitChange(null)}
-                                                            className={cn(
-                                                                "px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-left",
-                                                                settings.maxResults === null
-                                                                    ? "bg-pink-500 text-white"
-                                                                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
-                                                            )}
-                                                        >
-                                                            Remove limit
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                                {topExtensions.length > 0 && (
-                                    <div className="flex gap-2">
-                                        {topExtensions.map(ext => (
-                                            <Button
-                                                key={ext}
-                                                variant={activeFileTypes.includes(ext) ? "default" : "outline"}
-                                                size="sm"
-                                                onClick={() => setActiveFileTypes(prev =>
-                                                    prev.includes(ext) ? prev.filter(e => e !== ext) : [...prev, ext]
-                                                )}
-                                                className={cn(
-                                                    "h-6 text-xs px-2",
-                                                    activeFileTypes.includes(ext)
-                                                        ? "bg-pink-500 hover:bg-pink-600 text-white border-transparent"
-                                                        : "text-zinc-500 dark:text-zinc-400 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                                                )}
-                                            >
-                                                .{ext}
-                                            </Button>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
+        <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex h-10 shrink-0 items-center gap-3 border-b bg-card px-3 text-sm">
+                {searching && <Loader2 className="size-4 shrink-0 animate-spin text-primary" />}
+                <span className="truncate text-muted-foreground">
+                    <b className="font-semibold tabular-nums text-foreground">{fmt(matches.length)}</b> {matches.length === 1 ? "result" : "results"} in{" "}
+                    <b className="font-semibold tabular-nums text-foreground">{fmt(fileCount)}</b> {fileCount === 1 ? "file" : "files"}
+                    {!searching && duration > 0 && ` · ${duration < 1000 ? `${Math.round(duration)} ms` : `${(duration / 1000).toFixed(2)} s`}`}
+                </span>
+                {limited && (
+                    <button onClick={onShowAll} className="shrink-0 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 hover:bg-amber-500/20 dark:text-amber-400" title="Run this search again without the result limit">
+                        Stopped at {fmt(run.limit!)} · Show all
+                    </button>
+                )}
+                <div className="ml-auto flex items-center gap-1.5">
+                    {exts.length > 1 && exts.map(([ext, count]) => {
+                        const active = activeExts.includes(ext);
+                        return (
                             <button
-                                onClick={handleExport}
-                                disabled={isExporting}
-                                className="flex items-center gap-2 px-3 py-1.5 bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-lg text-xs font-medium text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-300 dark:border-zinc-700"
+                                key={ext}
+                                aria-pressed={active}
+                                onClick={() => setActiveExts(active ? activeExts.filter((e) => e !== ext) : [...activeExts, ext])}
+                                className={cn("hidden h-6 items-center gap-1 rounded-full border px-2 font-mono text-xs transition-colors lg:inline-flex", active ? "border-primary/40 bg-primary/15 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
                             >
-                                {isExporting ? <Loader size={14} /> : <Download className="w-3.5 h-3.5" />}
-                                {isExporting ? "Exporting..." : "Export"}
+                                {ext ? `.${ext}` : "no ext"} <span className="tabular-nums opacity-60">{fmt(count)}</span>
                             </button>
-                        </div>
-                        <div className="relative">
-                            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
-                            <input
-                                type="text"
-                                placeholder="Filter results..."
-                                value={liveQuery}
-                                onChange={(e) => setLiveQuery(e.target.value)}
-                                className="w-full pl-9 pr-4 py-2 bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-pink-500/20 transition-all"
-                            />
-                        </div>
-                    </div>
-
-                    <div className="flex-1 min-h-0 p-2 pb-32">
-                        {!hasDisplayItems ? (
-                            <div className="flex h-full flex-col items-center justify-center text-muted-foreground gap-2">
-                                <SearchIcon className="h-8 w-8 opacity-20" />
-                                <p className="text-zinc-500 text-sm">No matches for filter</p>
-                            </div>
-                        ) : (
-                            <AutoSizer>
-                                {({ height, width }) => (
-                                    <VirtualList
-                                        ref={listRef}
-                                        height={height}
-                                        width={width}
-                                        itemCount={displayItems.length}
-                                        itemSize={getItemSize}
-                                    >
-                                        {Row}
-                                    </VirtualList>
-                                )}
-                            </AutoSizer>
+                        );
+                    })}
+                    <div className="relative">
+                        <SearchIcon className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                            value={filter}
+                            onChange={(e) => setFilter(e.target.value)}
+                            onKeyDown={(e) => e.key === "Escape" && setFilter("")}
+                            placeholder="Filter results"
+                            aria-label="Filter results"
+                            spellCheck={false}
+                            className="h-7 w-44 rounded-md border bg-background pl-7 pr-6 text-xs outline-hidden placeholder:text-muted-foreground focus:border-ring/60"
+                        />
+                        {filter && (
+                            <button onClick={() => setFilter("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label="Clear filter">
+                                <X className="size-3.5" />
+                            </button>
                         )}
                     </div>
-                </>
-            )}
+                    <Button variant="ghost" size="icon" className="size-7" onClick={exportResults} disabled={!rows.length} title="Export results (CSV or JSON)">
+                        <Download />
+                    </Button>
+                </div>
+            </div>
+
+            <div className="flex min-h-0 flex-1">
+                <div className="min-w-0 flex-1">{body}</div>
+                {menu}
+                {matches.length > 0 && (
+                    <div className="hidden min-w-0 flex-1 border-l md:flex">
+                        <Preview match={selectedMatch} onOpen={onOpen} onReveal={onReveal} />
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
