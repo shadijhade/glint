@@ -3,17 +3,22 @@ import { Toaster, toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { History as HistoryIcon, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { FolderOpen, History as HistoryIcon, Settings as SettingsIcon, Sparkles, TextSearch } from "lucide-react";
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
-import { HistoryItem, SearchOptions, useStore } from "./lib/store";
+import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
+import { navigate, revealInApp, useExplorer } from "./lib/explorer";
+import { THIS_PC } from "./lib/paths";
 import { toRegExp } from "./lib/text";
+import { cn } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
 import { SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
 import { SettingsView } from "./components/SettingsView";
 import { Home, HistoryPopover, HISTORY_POPOVER_ID } from "./components/History";
+import { AddressBar } from "./components/explorer/AddressBar";
+import { Explorer } from "./components/explorer/Explorer";
 import { Button } from "./components/ui/button";
 
 export interface SearchRun {
@@ -26,9 +31,39 @@ export interface SearchRun {
 
 const RELEASES_API = "https://api.github.com/repos/shadijhade/shadui-ripgrep/releases/latest";
 
+const MODES: { mode: Mode; icon: typeof FolderOpen; label: string; title: string }[] = [
+  { mode: "files", icon: FolderOpen, label: "Files", title: "Browse files (Ctrl+Shift+E)" },
+  { mode: "text", icon: TextSearch, label: "Text", title: "Search inside files with ripgrep (Ctrl+Shift+F)" },
+];
+
+function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }) {
+  return (
+    <div role="tablist" aria-label="Mode" className="flex shrink-0 rounded-lg bg-muted p-0.5">
+      {MODES.map(({ mode: m, icon: Icon, label, title }) => (
+        <button
+          key={m}
+          role="tab"
+          aria-selected={mode === m}
+          title={title}
+          onClick={() => onChange(m)}
+          className={cn(
+            "flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground [&_svg]:size-4",
+            mode === m && "bg-card text-foreground shadow-xs"
+          )}
+        >
+          <Icon className={mode === m ? "text-primary" : undefined} />
+          <span className="hidden sm:inline">{label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function App() {
   useTheme();
   const settings = useStore((s) => s.settings);
+  const mode = useStore((s) => s.mode);
+  const setMode = useStore((s) => s.setMode);
   const [run, setRun] = useState<SearchRun | null>(null);
   const [matches, setMatches] = useState<RgMatch[]>([]);
   const [searching, setSearching] = useState(false);
@@ -46,6 +81,13 @@ function App() {
     if (dialog && !dialog.open) dialog.showModal();
   };
 
+  /** Text search in `folder` (the open folder by default). */
+  const searchText = (folder?: string) => {
+    const target = folder ?? useExplorer.getState().path;
+    if (target && target !== THIS_PC) useStore.getState().setPath(target);
+    setMode("text");
+  };
+
   useEffect(() => {
     Promise.all([getVersion(), fetch(RELEASES_API).then((r) => r.json())])
       .then(([current, latest]) => {
@@ -59,16 +101,23 @@ function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && searching && !(e.target as Element).closest("dialog, [popover]")) {
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (e.key === "Escape" && searching && mode === "text" && !(e.target as Element).closest("dialog, [popover]")) {
         cancelSearch();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+      } else if (ctrl && e.key === ",") {
         e.preventDefault();
         openSettings();
+      } else if (ctrl && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        if (mode === "files") searchText();
+      } else if (ctrl && e.shiftKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        setMode("files");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [searching]);
+  }, [searching, mode]);
 
   const search = async (query: string, path: string, limit = useStore.getState().settings.maxResults) => {
     if (!query || !path) return;
@@ -132,6 +181,10 @@ function App() {
   };
 
   const goHome = () => {
+    if (mode === "files") {
+      navigate(THIS_PC);
+      return;
+    }
     if (searching) cancelSearch();
     runId.current = "";
     unlisten.current?.();
@@ -156,8 +209,11 @@ function App() {
   const openFile = (path: string) =>
     openPath(path, settings.editorPath.trim() || undefined).catch((e) => toast.error("Couldn't open the file", { description: String(e) }));
 
-  const reveal = (path: string) =>
-    revealItemInDir(path).catch((e) => toast.error("Couldn't show the file", { description: String(e) }));
+  // Text search results open their folder here, with the file selected.
+  const reveal = (path: string) => {
+    setMode("files");
+    revealInApp(path);
+  };
 
   const replaceAll = async (replacement: string) => {
     if (!run || searching) return;
@@ -206,55 +262,69 @@ function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-start gap-3 border-b bg-card px-3 py-2.5">
+      <header className={cn("flex shrink-0 gap-2.5 border-b bg-card px-3 py-2.5", mode === "text" ? "items-start" : "items-center")}>
         <button
           onClick={goHome}
           className="shrink-0 rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50"
-          title="Start screen"
-          aria-label="Start screen"
+          title={mode === "files" ? "This PC" : "Start screen"}
+          aria-label={mode === "files" ? "This PC" : "Start screen"}
         >
           <img src={logo} alt="" className="size-9" />
         </button>
-        <SearchBar
-          searching={searching}
-          canReplace={!searching && matches.length > 0}
-          onSearch={searchCurrent}
-          onStop={cancelSearch}
-          onReplace={replaceAll}
-        />
-        <div className="flex shrink-0 items-center gap-0.5 pt-0.5">
+        <div className={cn("shrink-0", mode === "text" && "pt-0.5")}>
+          <ModeSwitch mode={mode} onChange={setMode} />
+        </div>
+        {mode === "files" ? (
+          <AddressBar />
+        ) : (
+          <SearchBar
+            searching={searching}
+            canReplace={!searching && matches.length > 0}
+            onSearch={searchCurrent}
+            onStop={cancelSearch}
+            onReplace={replaceAll}
+          />
+        )}
+        <div className={cn("flex shrink-0 items-center gap-0.5", mode === "text" && "pt-0.5")}>
           {update && (
             <Button variant="ghost" size="sm" className="text-primary hover:text-primary" onClick={() => openUrl(update.url)} title={`Version ${update.version} is available`}>
               <Sparkles /> Update
             </Button>
           )}
-          <Button variant="ghost" size="icon" popoverTarget={HISTORY_POPOVER_ID} title="Recent searches" aria-label="Recent searches">
-            <HistoryIcon />
-          </Button>
+          {mode === "text" && (
+            <Button variant="ghost" size="icon" popoverTarget={HISTORY_POPOVER_ID} title="Recent searches" aria-label="Recent searches">
+              <HistoryIcon />
+            </Button>
+          )}
           <Button variant="ghost" size="icon" onClick={openSettings} title="Settings (Ctrl+,)" aria-label="Settings">
             <SettingsIcon />
           </Button>
         </div>
       </header>
 
-      {run ? (
-        <Results
-          key={run.id}
-          run={run}
-          matches={matches}
-          searching={searching}
-          error={error}
-          duration={duration}
-          filesSearched={filesSearched}
-          selected={current}
-          onSelect={setSelected}
-          onOpen={openFile}
-          onReveal={reveal}
-          onShowAll={() => search(run.query, run.path, null)}
-        />
-      ) : (
-        <Home onPick={pickHistory} />
-      )}
+      <Explorer active={mode === "files"} onSearchText={searchText} />
+
+      <div className={mode === "text" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+        {run ? (
+          <Results
+            key={run.id}
+            active={mode === "text"}
+            run={run}
+            matches={matches}
+            searching={searching}
+            error={error}
+            duration={duration}
+            filesSearched={filesSearched}
+            selected={current}
+            onSelect={setSelected}
+            onOpen={openFile}
+            onReveal={reveal}
+            onShowAll={() => search(run.query, run.path, null)}
+          />
+        ) : (
+          <Home onPick={pickHistory} />
+        )}
+      </div>
 
       <HistoryPopover onPick={pickHistory} />
       <dialog

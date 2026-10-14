@@ -1,8 +1,9 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { AlertTriangle, Copy, Download, ExternalLink, FileText, FolderOpen, Loader2, Search as SearchIcon, SearchX, X } from "lucide-react";
+import { AlertTriangle, Copy, Download, ExternalLink, FileText, FolderOpen, FolderSearch, Loader2, Search as SearchIcon, SearchX, X } from "lucide-react";
 import { RgMatch } from "@/lib/ripgrep";
 import { useStore } from "@/lib/store";
 import { segments } from "@/lib/text";
@@ -31,6 +32,8 @@ function Centered({ children }: { children: React.ReactNode }) {
 }
 
 interface ResultsProps {
+    /** Keyboard navigation only while text search is the visible mode. */
+    active: boolean;
     run: SearchRun;
     matches: RgMatch[];
     searching: boolean;
@@ -44,7 +47,7 @@ interface ResultsProps {
     onShowAll: () => void;
 }
 
-export function Results({ run, matches, searching, error, duration, filesSearched, selected, onSelect, onOpen, onReveal, onShowAll }: ResultsProps) {
+export function Results({ active, run, matches, searching, error, duration, filesSearched, selected, onSelect, onOpen, onReveal, onShowAll }: ResultsProps) {
     const fontSize = useStore((s) => s.settings.fontSize);
     const [filter, setFilter] = useState("");
     const [activeExts, setActiveExts] = useState<string[]>([]);
@@ -84,6 +87,7 @@ export function Results({ run, matches, searching, error, duration, filesSearche
 
     // ↑/↓ walk the visible matches, Enter opens — unless the user is typing somewhere.
     useEffect(() => {
+        if (!active) return;
         const onKey = (e: KeyboardEvent) => {
             const target = e.target as Element;
             if (target.closest("input, textarea, dialog, [popover]")) return;
@@ -101,7 +105,7 @@ export function Results({ run, matches, searching, error, duration, filesSearche
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [rows, selectedRow, selectedMatch, onSelect, onOpen]);
+    }, [active, rows, selectedRow, selectedMatch, onSelect, onOpen]);
 
     const exportResults = async () => {
         const visible = rows.flatMap((r) => (r.type === "match" ? [matches[r.index]] : []));
@@ -189,7 +193,8 @@ export function Results({ run, matches, searching, error, duration, filesSearche
     const menu = (
         <div ref={menuRef} popover="auto" role="menu" className="fixed inset-auto m-0 min-w-[12rem] rounded-md border bg-popover p-1 text-popover-foreground shadow-lg">
             <button role="menuitem" className={menuItem} onClick={menuAction(() => onOpen(menuTarget.path))}><ExternalLink /> Open file</button>
-            <button role="menuitem" className={menuItem} onClick={menuAction(() => onReveal(menuTarget.path))}><FolderOpen /> Reveal in folder</button>
+            <button role="menuitem" className={menuItem} onClick={menuAction(() => onReveal(menuTarget.path))}><FolderOpen /> Show in folder</button>
+            <button role="menuitem" className={menuItem} onClick={menuAction(() => revealItemInDir(menuTarget.path).catch((e) => toast.error("Couldn't open File Explorer", { description: String(e) })))}><FolderSearch /> Show in File Explorer</button>
             <div className="-mx-1 my-1 h-px bg-border" />
             <button role="menuitem" className={menuItem} onClick={menuAction(() => copy(menuTarget.path, "path"))}><Copy /> Copy path</button>
             <button role="menuitem" className={menuItem} disabled={menuTarget.line === undefined} onClick={menuAction(() => copy(menuTarget.line ?? "", "line"))}><Copy /> Copy line</button>

@@ -13,15 +13,22 @@
     "windows": [
       {
         "title": "ShadUI Ripgrep",
-        "width": 1200,
-        "height": 780,
+        "width": 1280,
+        "height": 800,
         "minWidth": 720,
         "minHeight": 480,
         "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": ["**"],
+          "requireLiteralLeadingDot": false
+        }
+      }
     }
   },
   "bundle": {
@@ -35,7 +42,9 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/rg"
+      "binaries/rg",
+      "binaries/fd",
+      "binaries/dust"
     ],
     "windows": {
       "nsis": {
