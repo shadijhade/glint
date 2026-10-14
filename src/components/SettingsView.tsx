@@ -84,6 +84,48 @@ function Segmented<T extends string | number | null>({ value, options, onChange 
     );
 }
 
+/** Add-a-pattern input plus removable chips. */
+function PatternEditor({ value, onChange, placeholder }: { value: string[]; onChange: (value: string[]) => void; placeholder: string }) {
+    const [pattern, setPattern] = useState("");
+    const add = () => {
+        const p = pattern.trim();
+        if (p && !value.includes(p)) onChange([...value, p]);
+        setPattern("");
+    };
+    return (
+        <>
+            <div className="flex gap-2">
+                <Input
+                    value={pattern}
+                    onChange={(e) => setPattern(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && add()}
+                    placeholder={placeholder}
+                    className="font-mono"
+                />
+                <Button size="sm" variant="outline" onClick={add} disabled={!pattern.trim()}>
+                    <Plus /> Add
+                </Button>
+            </div>
+            <div className="flex max-h-44 flex-wrap gap-1.5 overflow-y-auto">
+                {value.length === 0 && <p className="text-sm text-muted-foreground">Nothing is excluded.</p>}
+                {value.map((ex) => (
+                    <span key={ex} className="inline-flex items-center gap-1 rounded-md border bg-background py-0.5 pl-2 pr-0.5 font-mono text-xs">
+                        {ex}
+                        <button
+                            type="button"
+                            onClick={() => onChange(value.filter((e) => e !== ex))}
+                            className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                            aria-label={`Stop excluding ${ex}`}
+                        >
+                            <X className="size-3" />
+                        </button>
+                    </span>
+                ))}
+            </div>
+        </>
+    );
+}
+
 interface SettingsViewProps {
     onClose: () => void;
     update: { version: string; url: string } | null;
@@ -91,18 +133,11 @@ interface SettingsViewProps {
 
 export function SettingsView({ onClose, update }: SettingsViewProps) {
     const { settings, setSettings: set, history, clearHistory } = useStore();
-    const [pattern, setPattern] = useState("");
     const [version, setVersion] = useState("");
 
     useEffect(() => {
         getVersion().then(setVersion).catch(() => {});
     }, []);
-
-    const addPattern = () => {
-        const p = pattern.trim();
-        if (p && !settings.exclusions.includes(p)) set({ exclusions: [...settings.exclusions, p] });
-        setPattern("");
-    };
 
     const browseDefault = async () => {
         const dir = await open({ directory: true, defaultPath: settings.defaultSearchPath || undefined });
@@ -135,7 +170,38 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                     <SwitchRow label="Line numbers in preview" checked={settings.showLineNumbers} onChange={(showLineNumbers) => set({ showLineNumbers })} />
                 </Section>
 
-                <Section title="Search">
+                <Section title="Files">
+                    <Row label="Open on start">
+                        <Segmented value={settings.startFolder} onChange={(startFolder) => set({ startFolder })} options={[["home", "Home"], ["thispc", "This PC"], ["last", "Last folder"]]} />
+                    </Row>
+                    <SwitchRow label="Show hidden items" hint="Files and folders Windows marks as hidden · Ctrl+H" checked={settings.showHidden} onChange={(showHidden) => set({ showHidden })} />
+                    <SwitchRow label="Folders first" checked={settings.foldersFirst} onChange={(foldersFirst) => set({ foldersFirst })} />
+                    <SwitchRow label="Preview pane" hint="Alt+P" checked={settings.showPreviewPane} onChange={(showPreviewPane) => set({ showPreviewPane })} />
+                    <SwitchRow
+                        label="Ask before moving to the Recycle Bin"
+                        hint="Deleting permanently (Shift+Del) always asks"
+                        checked={settings.confirmDelete}
+                        onChange={(confirmDelete) => set({ confirmDelete })}
+                    />
+                </Section>
+
+                <Section title="Find files by name (fd)">
+                    <Row label="Result limit" hint="Stops after this many files and folders">
+                        <Segmented value={settings.findMaxResults} onChange={(findMaxResults) => set({ findMaxResults })} options={[[10000, "10k"], [50000, "50k"], [200000, "200k"], [null, "None"]]} />
+                    </Row>
+                    <SwitchRow
+                        label="Skip what .gitignore lists"
+                        hint="Leaves out build output and dependencies in code folders"
+                        checked={settings.findRespectIgnore}
+                        onChange={(findRespectIgnore) => set({ findRespectIgnore })}
+                    />
+                    <div className="space-y-3 p-4">
+                        <p className="text-xs text-muted-foreground">Folders and patterns name searches skip. Hidden items are searched only while they're shown.</p>
+                        <PatternEditor value={settings.findExclusions} onChange={(findExclusions) => set({ findExclusions })} placeholder="Add a folder or pattern, e.g. node_modules or *.tmp" />
+                    </div>
+                </Section>
+
+                <Section title="Search text (ripgrep)">
                     <Row label="Default folder" hint="Used when no folder is filled in">
                         <Input className="w-52" value={settings.defaultSearchPath} onChange={(e) => set({ defaultSearchPath: e.target.value })} placeholder="None" />
                         <Button variant="outline" size="sm" onClick={browseDefault}>Browse…</Button>
@@ -151,12 +217,12 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                 </Section>
 
                 <Section
-                    title="Excluded files and folders"
+                    title="Text search skips"
                     action={settings.exclusions.length > 0 && <Button variant="ghost" size="sm" className="h-7" onClick={() => set({ exclusions: [] })}>Remove all</Button>}
                 >
                     <div className="space-y-4 p-4">
                         <p className="text-xs text-muted-foreground">
-                            Glob patterns skipped by every search. Files ignored by .gitignore, hidden files and binary files are skipped too.
+                            Glob patterns every text search skips. Files ignored by .gitignore, hidden files and binary files are skipped too.
                         </p>
                         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                             {PRESETS.map(({ label, icon: Icon, items }) => {
@@ -185,34 +251,7 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                                 );
                             })}
                         </div>
-                        <div className="flex gap-2">
-                            <Input
-                                value={pattern}
-                                onChange={(e) => setPattern(e.target.value)}
-                                onKeyDown={(e) => e.key === "Enter" && addPattern()}
-                                placeholder="Add a pattern: folder, *.log, or file name"
-                                className="font-mono"
-                            />
-                            <Button size="sm" variant="outline" onClick={addPattern} disabled={!pattern.trim()}>
-                                <Plus /> Add
-                            </Button>
-                        </div>
-                        <div className="flex max-h-44 flex-wrap gap-1.5 overflow-y-auto">
-                            {settings.exclusions.length === 0 && <p className="text-sm text-muted-foreground">Nothing is excluded.</p>}
-                            {settings.exclusions.map((ex) => (
-                                <span key={ex} className="inline-flex items-center gap-1 rounded-md border bg-background py-0.5 pl-2 pr-0.5 font-mono text-xs">
-                                    {ex}
-                                    <button
-                                        type="button"
-                                        onClick={() => set({ exclusions: settings.exclusions.filter((e) => e !== ex) })}
-                                        className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-                                        aria-label={`Stop excluding ${ex}`}
-                                    >
-                                        <X className="size-3" />
-                                    </button>
-                                </span>
-                            ))}
-                        </div>
+                        <PatternEditor value={settings.exclusions} onChange={(exclusions) => set({ exclusions })} placeholder="Add a pattern: folder, *.log, or file name" />
                     </div>
                 </Section>
 
@@ -234,6 +273,7 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                             <div className="text-xs text-muted-foreground">
                                 {version && `Version ${version} · `}Made with <Heart className="inline size-3 fill-pink-500 text-pink-500" /> by Shadi Sadi
                             </div>
+                            <div className="text-xs text-muted-foreground">Powered by ripgrep, fd and dust</div>
                         </div>
                         {update && (
                             <Button size="sm" onClick={() => openUrl(update.url)}>

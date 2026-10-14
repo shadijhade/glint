@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import type { Sort } from './entries'
 
 export interface HistoryItem {
     query: string;
@@ -13,6 +14,8 @@ export interface SearchOptions {
     regex: boolean;
 }
 
+export type Mode = 'files' | 'text';
+
 export interface Settings {
     theme: 'dark' | 'light' | 'system';
     fontSize: 'small' | 'medium' | 'large';
@@ -25,6 +28,17 @@ export interface Settings {
     exclusions: string[];
     saveSearchHistory: boolean;
     maxHistoryItems: number;
+    // Files
+    startFolder: 'home' | 'thispc' | 'last';
+    showHidden: boolean;
+    foldersFirst: boolean;
+    showPreviewPane: boolean;
+    confirmDelete: boolean; // ask before moving to the Recycle Bin (permanent deletes always ask)
+    sort: Sort;
+    // Find files (fd)
+    findRespectIgnore: boolean;
+    findMaxResults: number | null;
+    findExclusions: string[];
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -53,6 +67,15 @@ export const DEFAULT_SETTINGS: Settings = {
     ],
     saveSearchHistory: true,
     maxHistoryItems: 1000,
+    startFolder: 'home',
+    showHidden: false,
+    foldersFirst: true,
+    showPreviewPane: true,
+    confirmDelete: false,
+    sort: { key: 'name', desc: false },
+    findRespectIgnore: false,
+    findMaxResults: 50000,
+    findExclusions: ['node_modules', '.git'],
 };
 
 interface AppState {
@@ -61,6 +84,9 @@ interface AppState {
     history: HistoryItem[];
     options: SearchOptions;
     settings: Settings;
+    mode: Mode;
+    pinned: string[];
+    lastFolder: string | null;
     setQuery: (query: string) => void;
     setPath: (path: string) => void;
     addToHistory: (query: string, path: string) => void;
@@ -68,6 +94,9 @@ interface AppState {
     clearHistory: () => void;
     setOption: (key: keyof SearchOptions, value: boolean) => void;
     setSettings: (settings: Partial<Settings>) => void;
+    setMode: (mode: Mode) => void;
+    togglePin: (path: string) => void;
+    setLastFolder: (path: string) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -78,6 +107,9 @@ export const useStore = create<AppState>()(
             history: [],
             options: { caseSensitive: false, wholeWord: false, regex: false },
             settings: DEFAULT_SETTINGS,
+            mode: 'files',
+            pinned: [],
+            lastFolder: null,
             setQuery: (query) => set({ query }),
             setPath: (path) => set({ path }),
             addToHistory: (query, path) => set((state) => {
@@ -98,6 +130,11 @@ export const useStore = create<AppState>()(
             setSettings: (newSettings) => set((state) => ({
                 settings: { ...state.settings, ...newSettings }
             })),
+            setMode: (mode) => set({ mode }),
+            togglePin: (path) => set((state) => ({
+                pinned: state.pinned.includes(path) ? state.pinned.filter(p => p !== path) : [...state.pinned, path]
+            })),
+            setLastFolder: (lastFolder) => set({ lastFolder }),
         }),
         {
             name: 'shadui-ripgrep-storage',

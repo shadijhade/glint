@@ -1,54 +1,56 @@
+mod find;
+mod fsx;
+mod proc;
+mod shell;
+mod sizes;
+mod watch;
+
+use fsx::blocking;
+use proc::Slot;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
-use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, State, Window};
 use tauri_plugin_shell::ShellExt;
 
-struct AppState {
-    current_search: Arc<Mutex<Option<Child>>>,
+/// The sidecar runs in flight: ripgrep text search, fd file search and dust folder sizes.
+#[derive(Default)]
+pub struct AppState {
+    pub search: Slot,
+    pub find: Slot,
+    pub sizes: Slot,
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 #[tauri::command]
-fn read_file_content(path: String) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|e| e.to_string())
+async fn read_file_content(path: String) -> Result<String, String> {
+    blocking(move || fs::read_to_string(path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn read_file_chunk(path: String, start_line: usize, end_line: usize) -> Result<String, String> {
-    let file = fs::File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
-
-    let chunk: Vec<String> = reader
-        .lines()
-        .enumerate()
-        .filter_map(|(i, line)| {
-            let line_num = i + 1;
-            if line_num >= start_line && line_num <= end_line {
-                line.ok()
-            } else {
-                None
-            }
-        })
-        .take(end_line - start_line + 1) // Optimization: stop after we have enough lines?
-        // Actually filter_map iterates everything unless we stop.
-        // Let's rewrite to be more efficient: skip and take.
-        .collect();
-
-    // Re-implementation for efficiency
-    // We can't easily "skip" without iterating because lines have variable length.
-    // But we can stop early.
-
-    Ok(chunk.join("\n"))
+async fn read_file_chunk(path: String, start_line: usize, end_line: usize) -> Result<String, String> {
+    blocking(move || {
+        let file = fs::File::open(path).map_err(|e| e.to_string())?;
+        // Stops reading once the last wanted line is in. Lines that aren't valid UTF-8 are shown
+        // lossily rather than dropped, so line numbers stay right.
+        let chunk: Vec<String> = BufReader::new(file)
+            .split(b'\n')
+            .skip(start_line.saturating_sub(1))
+            .take(end_line.saturating_sub(start_line) + 1)
+            .map_while(Result::ok)
+            .map(|line| String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(&line)).into_owned())
+            .collect();
+        Ok(chunk.join("\n"))
+    })
+    .await
 }
 
 #[tauri::command]
-fn write_file_content(path: String, content: String) -> Result<(), String> {
-    fs::write(path, content).map_err(|e| e.to_string())
+async fn write_file_content(path: String, content: String) -> Result<(), String> {
+    blocking(move || fs::write(path, content).map_err(|e| e.to_string())).await
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -59,12 +61,8 @@ struct SearchEvent {
 }
 
 #[tauri::command]
-fn cancel_search(state: State<AppState>) -> Result<(), String> {
-    let mut current_search = state.current_search.lock().map_err(|e| e.to_string())?;
-    if let Some(mut child) = current_search.take() {
-        let _ = child.kill();
-    }
-    Ok(())
+fn cancel_search(state: State<AppState>) {
+    state.search.kill();
 }
 
 #[tauri::command]
@@ -75,14 +73,6 @@ fn run_ripgrep_batched(
     max_results: Option<usize>,
     state: State<AppState>,
 ) -> Result<(), String> {
-    // Kill any existing search first
-    {
-        let mut current_search = state.current_search.lock().map_err(|e| e.to_string())?;
-        if let Some(mut child) = current_search.take() {
-            let _ = child.kill();
-        }
-    }
-
     // The bundled sidecar, so users don't need ripgrep on PATH (it also sets CREATE_NO_WINDOW).
     let mut command: Command = window.shell().sidecar("rg").map_err(|e| e.to_string())?.into();
     command
@@ -96,16 +86,9 @@ fn run_ripgrep_batched(
         .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
     let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
     let mut stderr = child.stderr.take().ok_or("Failed to open stderr")?;
-    let pid = child.id();
-
-    // Store the child process
-    {
-        let mut current_search = state.current_search.lock().map_err(|e| e.to_string())?;
-        *current_search = Some(child);
-    }
-
-    // Clone the Arc to move into the thread
-    let search_handle = state.current_search.clone();
+    // Replaces (and stops) any search still running.
+    let search = state.search.clone();
+    let pid = search.replace(child);
 
     // Drain stderr on its own thread so a chatty rg can never block stdout.
     let stderr_reader = thread::spawn(move || {
@@ -149,12 +132,7 @@ fn run_ripgrep_batched(
 
                 if total_matches >= limit {
                     // Limit reached: kill our rg — but not a newer search that already replaced it.
-                    let mut current_search = search_handle.lock().unwrap();
-                    if current_search.as_ref().map(|c| c.id()) == Some(pid) {
-                        if let Some(mut child) = current_search.take() {
-                            let _ = child.kill();
-                        }
-                    }
+                    search.kill_if(pid);
                     break;
                 }
             } else {
@@ -175,6 +153,7 @@ fn run_ripgrep_batched(
 
         // Surface real failures (e.g. an invalid regex); per-file errors are silenced by --no-messages.
         let errors = stderr_reader.join().unwrap_or_default();
+        search.finish(pid);
         if total_matches == 0 && !errors.trim().is_empty() {
             let _ = window.emit(
                 "search-event",
@@ -202,9 +181,8 @@ fn run_ripgrep_batched(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState {
-            current_search: Arc::new(Mutex::new(None)),
-        })
+        .manage(AppState::default())
+        .manage(watch::FolderWatcher::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -213,7 +191,24 @@ pub fn run() {
             read_file_chunk,
             write_file_content,
             run_ripgrep_batched,
-            cancel_search
+            cancel_search,
+            fsx::list_dir,
+            fsx::resolve_path,
+            fsx::list_drives,
+            fsx::read_text_preview,
+            fsx::create_entry,
+            find::find_files,
+            find::cancel_find,
+            sizes::folder_sizes,
+            sizes::cancel_folder_sizes,
+            shell::file_op,
+            shell::clipboard_set_files,
+            shell::clipboard_get_files,
+            shell::clipboard_clear,
+            shell::show_properties,
+            shell::open_with,
+            shell::open_terminal,
+            watch::watch_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
