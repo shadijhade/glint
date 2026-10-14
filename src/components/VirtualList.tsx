@@ -1,101 +1,49 @@
-import { useRef, useState, ReactNode, forwardRef, useImperativeHandle, useMemo } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 
-interface VirtualListProps {
-    height: number;
-    width: number;
-    itemCount: number;
-    itemSize: (index: number) => number;
-    children: (props: { index: number; style: React.CSSProperties }) => ReactNode;
-}
+const OVERSCAN = 8;
 
-export interface VirtualListHandle {
-    scrollToItem: (index: number) => void;
-}
-
-export const VirtualList = forwardRef<VirtualListHandle, VirtualListProps>(({ height, width, itemCount, itemSize, children }, ref) => {
-    const [scrollTop, setScrollTop] = useState(0);
-    const containerRef = useRef<HTMLDivElement>(null);
-
-    // Precompute offsets - recompute on every render to ensure correctness
-    // since itemSize depends on displayItems which can change
-    const itemOffsets = useMemo(() => {
-        const offsets = new Array(itemCount);
-        let current = 0;
-        for (let i = 0; i < itemCount; i++) {
-            offsets[i] = current;
-            current += itemSize(i);
-        }
-        return offsets;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [itemCount, ...Array.from({ length: Math.min(itemCount, 10) }, (_, i) => itemSize(i))]);
-
-    const totalHeight = itemOffsets.length > 0 ? itemOffsets[itemCount - 1] + itemSize(itemCount - 1) : 0;
-
-    useImperativeHandle(ref, () => ({
-        scrollToItem: (index: number) => {
-            if (containerRef.current && index >= 0 && index < itemCount) {
-                const top = itemOffsets[index];
-                const size = itemSize(index);
-                // Check if item is visible
-                if (top < containerRef.current.scrollTop || top > containerRef.current.scrollTop + height - size) {
-                    containerRef.current.scrollTo({ top, behavior: 'smooth' });
-                }
-            }
-        }
-    }));
-
-    // Identify visible range with binary search or simple scan
-    // Scan is faster for small lists, but binary search is safer for huge ones.
-    // Given we might have thousands, binary search is better.
-    const findStartIndex = (offset: number) => {
-        let low = 0, high = itemCount - 1;
-        while (low <= high) {
-            const mid = Math.floor((low + high) / 2);
-            const midOffset = itemOffsets[mid];
-            const midNextOffset = mid < itemCount - 1 ? itemOffsets[mid + 1] : Infinity;
-
-            if (midOffset <= offset && offset < midNextOffset) {
-                return mid;
-            } else if (midOffset < offset) {
-                low = mid + 1;
-            } else {
-                high = mid - 1;
-            }
-        }
-        return Math.min(low, itemCount - 1);
+/** Fixed-row-height virtual list. Scrolls `scrollToIndex` into view whenever it changes. */
+export function VirtualList({ count, rowHeight, scrollToIndex = -1, children }: {
+    count: number;
+    rowHeight: number;
+    scrollToIndex?: number;
+    children: (index: number) => ReactNode;
+}) {
+    const ref = useRef<HTMLDivElement>(null);
+    const [view, setView] = useState({ top: 0, height: 0 });
+    const measure = () => {
+        const el = ref.current;
+        if (el) setView({ top: el.scrollTop, height: el.clientHeight });
     };
 
-    const startIndex = Math.max(0, findStartIndex(scrollTop) - 2); // Buffer
-    const endIndex = Math.min(itemCount - 1, findStartIndex(scrollTop + height) + 4); // Buffer
+    useEffect(() => {
+        const observer = new ResizeObserver(measure);
+        observer.observe(ref.current!);
+        return () => observer.disconnect();
+    }, []);
 
-    const visibleItems = [];
-    for (let i = startIndex; i <= endIndex; i++) {
-        visibleItems.push(
-            <div key={i}>
-                {children({
-                    index: i,
-                    style: {
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        height: itemSize(i),
-                        transform: `translateY(${itemOffsets[i]}px)`,
-                    },
-                })}
+    useEffect(() => {
+        const el = ref.current;
+        if (!el || scrollToIndex < 0) return;
+        const top = scrollToIndex * rowHeight;
+        if (top < el.scrollTop) el.scrollTop = top;
+        else if (top + rowHeight > el.scrollTop + el.clientHeight) el.scrollTop = top + rowHeight - el.clientHeight;
+    }, [scrollToIndex, rowHeight]);
+
+    const first = Math.max(0, Math.floor(view.top / rowHeight) - OVERSCAN);
+    const last = Math.min(count, Math.ceil((view.top + view.height) / rowHeight) + OVERSCAN);
+    const rows: ReactNode[] = [];
+    for (let i = first; i < last; i++) {
+        rows.push(
+            <div key={i} className="absolute inset-x-0" style={{ top: i * rowHeight, height: rowHeight }}>
+                {children(i)}
             </div>
         );
     }
 
     return (
-        <div
-            ref={containerRef}
-            style={{ height, width, overflow: "auto", position: "relative" }}
-            onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-        >
-            <div style={{ height: totalHeight, position: "relative" }}>
-                {visibleItems}
-            </div>
+        <div ref={ref} onScroll={measure} className="h-full overflow-y-auto overflow-x-hidden">
+            <div className="relative" style={{ height: count * rowHeight }}>{rows}</div>
         </div>
     );
-});
+}

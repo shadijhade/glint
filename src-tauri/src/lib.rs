@@ -1,24 +1,11 @@
-use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, State, Window};
-
-#[derive(Serialize, Deserialize, Debug)]
-struct UpdateInfo {
-    update_available: bool,
-    latest_version: String,
-    url: String,
-}
-
-#[derive(Deserialize, Debug)]
-struct GitHubRelease {
-    tag_name: String,
-    html_url: String,
-}
+use tauri_plugin_shell::ShellExt;
 
 struct AppState {
     current_search: Arc<Mutex<Option<Child>>>,
@@ -96,19 +83,20 @@ fn run_ripgrep_batched(
         }
     }
 
-    let mut command = Command::new("rg");
-    command.args(&args);
-    command.stdout(Stdio::piped());
+    // The bundled sidecar, so users don't need ripgrep on PATH (it also sets CREATE_NO_WINDOW).
+    let mut command: Command = window.shell().sidecar("rg").map_err(|e| e.to_string())?.into();
+    command
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
     let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
+    let mut stderr = child.stderr.take().ok_or("Failed to open stderr")?;
+    let pid = child.id();
 
     // Store the child process
     {
@@ -118,6 +106,13 @@ fn run_ripgrep_batched(
 
     // Clone the Arc to move into the thread
     let search_handle = state.current_search.clone();
+
+    // Drain stderr on its own thread so a chatty rg can never block stdout.
+    let stderr_reader = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        text
+    });
 
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -132,11 +127,9 @@ fn run_ripgrep_batched(
 
         for line in reader.lines() {
             if let Ok(l) = line {
-                // Try to parse as JSON to count matches
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&l) {
-                    if json["type"] == "match" {
-                        total_matches += 1;
-                    }
+                // rg's JSON always starts with the type field, so no need to parse every line.
+                if l.starts_with(r#"{"type":"match""#) {
+                    total_matches += 1;
                 }
 
                 batch.push(l);
@@ -155,10 +148,12 @@ fn run_ripgrep_batched(
                 }
 
                 if total_matches >= limit {
-                    // Kill the process if limit reached
+                    // Limit reached: kill our rg — but not a newer search that already replaced it.
                     let mut current_search = search_handle.lock().unwrap();
-                    if let Some(mut child) = current_search.take() {
-                        let _ = child.kill();
+                    if current_search.as_ref().map(|c| c.id()) == Some(pid) {
+                        if let Some(mut child) = current_search.take() {
+                            let _ = child.kill();
+                        }
                     }
                     break;
                 }
@@ -178,6 +173,19 @@ fn run_ripgrep_batched(
             );
         }
 
+        // Surface real failures (e.g. an invalid regex); per-file errors are silenced by --no-messages.
+        let errors = stderr_reader.join().unwrap_or_default();
+        if total_matches == 0 && !errors.trim().is_empty() {
+            let _ = window.emit(
+                "search-event",
+                SearchEvent {
+                    id: search_id.clone(),
+                    r#type: "error".to_string(),
+                    lines: vec![errors.trim().to_string()],
+                },
+            );
+        }
+
         let _ = window.emit(
             "search-event",
             SearchEvent {
@@ -189,33 +197,6 @@ fn run_ripgrep_batched(
     });
 
     Ok(())
-}
-
-#[tauri::command]
-fn check_update(app_handle: tauri::AppHandle) -> Result<UpdateInfo, String> {
-    let client = reqwest::blocking::Client::new();
-    let res = client
-        .get("https://api.github.com/repos/shadijhade/shadui-ripgrep/releases/latest")
-        .header("User-Agent", "shadui-ripgrep")
-        .send()
-        .map_err(|e| e.to_string())?;
-
-    if res.status().is_success() {
-        let release: GitHubRelease = res.json().map_err(|e| e.to_string())?;
-        let latest_version = release.tag_name.trim_start_matches('v');
-        let current_version = app_handle.package_info().version.to_string();
-
-        // Simple version comparison (assuming semver-ish)
-        let update_available = latest_version != current_version;
-
-        Ok(UpdateInfo {
-            update_available,
-            latest_version: latest_version.to_string(),
-            url: release.html_url,
-        })
-    } else {
-        Err(format!("Failed to fetch updates: {}", res.status()))
-    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -232,8 +213,7 @@ pub fn run() {
             read_file_chunk,
             write_file_content,
             run_ripgrep_batched,
-            cancel_search,
-            check_update
+            cancel_search
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

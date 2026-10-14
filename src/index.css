@@ -1,87 +1,111 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 330 81% 60%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: n the setting Patterns to exclude from search results 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 330 81% 95%;
-    --accent-foreground: 330 81% 40%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 330 81% 60%;
-    --radius: 0.5rem;
-  }
+@custom-variant dark (&:where(.dark, .dark *));
 
-  .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 330 81% 60%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 330 81% 15%;
-    --accent-foreground: 330 81% 80%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 330 81% 60%;
-  }
+@theme {
+  --font-mono: "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@theme inline {
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
 }
 
 @layer base {
+  :root {
+    color-scheme: light;
+    --background: 240 5% 96%;
+    --foreground: 240 10% 4%;
+    --card: 0 0% 100%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 4%;
+    --primary: 330 81% 60%;
+    --primary-foreground: 0 0% 100%;
+    --muted: 240 5% 94%;
+    --muted-foreground: 240 4% 44%;
+    --accent: 240 5% 92%;
+    --destructive: 0 72% 51%;
+    --border: 240 6% 89%;
+    --input: 240 6% 84%;
+    --ring: 330 81% 60%;
+
+    /* Preview syntax colors (GitHub light) */
+    --tk-comment: #6a737d;
+    --tk-keyword: #d73a49;
+    --tk-string: #032f62;
+    --tk-number: #005cc5;
+    --tk-function: #6f42c1;
+    --tk-tag: #22863a;
+    --tk-attr: #e36209;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --background: 240 6% 6%;
+    --foreground: 0 0% 95%;
+    --card: 240 6% 9%;
+    --popover: 240 6% 11%;
+    --popover-foreground: 0 0% 95%;
+    --muted: 240 5% 14%;
+    --muted-foreground: 240 5% 63%;
+    --accent: 240 5% 17%;
+    --destructive: 0 72% 60%;
+    --border: 240 5% 17%;
+    --input: 240 5% 24%;
+
+    /* Preview syntax colors (GitHub dark) */
+    --tk-comment: #8b949e;
+    --tk-keyword: #ff7b72;
+    --tk-string: #a5d6ff;
+    --tk-number: #79c0ff;
+    --tk-function: #d2a8ff;
+    --tk-tag: #7ee787;
+    --tk-attr: #ffa657;
+  }
+
   * {
     @apply border-border;
   }
 
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
   body {
-    @apply bg-background text-foreground;
+    @apply select-none bg-background text-foreground antialiased;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
+  }
+}
+
+@layer components {
+  .hl-line {
+    background: hsl(var(--primary) / 0.14);
+    box-shadow: inset 2px 0 hsl(var(--primary));
   }
 
-  /* Custom Scrollbar */
-  ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+  .linenumber {
+    color: hsl(var(--muted-foreground) / 0.6);
   }
 
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    @apply bg-zinc-800 dark:bg-zinc-800 bg-zinc-300 rounded-full border-2 border-black dark:border-black border-white;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-zinc-700 dark:bg-zinc-700 bg-zinc-400;
-  }
-
-  /* Smooth theme transitions */
-  *,
-  *::before,
-  *::after {
-    transition-property: background-color, border-color, color, fill, stroke;
-    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-    transition-duration: 300ms;
-  }
+  .token.comment, .token.prolog, .token.doctype, .token.cdata { color: var(--tk-comment); font-style: italic; }
+  .token.keyword, .token.atrule, .token.important, .token.rule { color: var(--tk-keyword); }
+  .token.string, .token.char, .token.attr-value, .token.regex, .token.url, .token.inserted { color: var(--tk-string); }
+  .token.number, .token.boolean, .token.constant, .token.symbol, .token.property, .token.builtin { color: var(--tk-number); }
+  .token.function, .token.class-name { color: var(--tk-function); }
+  .token.tag, .token.selector { color: var(--tk-tag); }
+  .token.attr-name, .token.variable, .token.deleted { color: var(--tk-attr); }
 }

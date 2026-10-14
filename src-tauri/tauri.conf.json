@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "shadui-ripgrep",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "identifier": "com.shado.shadui-ripgrep",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "shadui-ripgrep",
-        "width": 800,
-        "height": 600
+        "title": "ShadUI Ripgrep",
+        "width": 1200,
+        "height": 780,
+        "minWidth": 720,
+        "minHeight": 480,
+        "center": true
       }
     ],
     "security": {
@@ -33,6 +36,17 @@
     ],
     "externalBin": [
       "binaries/rg"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "headerImage": "installer/nsis-header.bmp",
+        "sidebarImage": "installer/nsis-sidebar.bmp",
+        "installerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "bannerPath": "installer/wix-banner.bmp",
+        "dialogImagePath": "installer/wix-dialog.bmp"
+      }
+    }
   }
 }
