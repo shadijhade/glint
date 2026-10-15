@@ -1,4 +1,5 @@
-//! Folder sizes with the bundled dust: the size of every subfolder, which Explorer never shows.
+//! Folder sizes, which Explorer never shows: from the instant search index when it has the folder
+//! (instant, and kept current), otherwise measured with the bundled dust.
 
 use crate::fsx::{blocking, ms_since};
 use crate::AppState;
@@ -18,6 +19,8 @@ pub struct FolderSizes {
     /// Subfolder name → bytes.
     pub sizes: Vec<(String, u64)>,
     pub elapsed: f64,
+    /// "index" or "dust".
+    pub engine: &'static str,
 }
 
 /// dust -j prints {"size":"123B","name":"C:\\dir","children":[…]} when sizes are in bytes (-o b).
@@ -46,9 +49,34 @@ fn parse(json: &str) -> Result<(u64, Vec<(String, u64)>), String> {
     Ok((bytes(&root.size), sizes))
 }
 
+/// The index's answer for `path`, if its service runs and has the folder. Junctions and links are
+/// resolved first: the index knows each folder by its real path.
+#[cfg(windows)]
+fn index_sizes(path: &str) -> Option<(u64, Vec<(String, u64)>)> {
+    let real = std::fs::canonicalize(path).ok()?;
+    let sizes = shadui_index::client::sizes(&real.to_string_lossy()).ok()?;
+    Some((sizes.total, sizes.sizes))
+}
+
+#[cfg(not(windows))]
+fn index_sizes(_: &str) -> Option<(u64, Vec<(String, u64)>)> {
+    None
+}
+
+/// Sizes of every subfolder of `path`. With `index_only`, fails instead of running dust when the
+/// index can't answer (for sizing every folder as it opens, which only makes sense when it's instant).
 #[tauri::command]
-pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: String) -> Result<FolderSizes, String> {
+pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: String, index_only: Option<bool>) -> Result<FolderSizes, String> {
     let started = Instant::now();
+    let asked = path.clone();
+    if let Some((total, sizes)) = blocking(move || Ok(index_sizes(&asked))).await? {
+        // A dust run still going is for a folder no longer wanted.
+        state.sizes.kill();
+        return Ok(FolderSizes { path, total, sizes, elapsed: ms_since(started), engine: "index" });
+    }
+    if index_only == Some(true) {
+        return Err("not indexed".into());
+    }
     let mut command: Command = window.shell().sidecar("dust").map_err(|e| e.to_string())?.into();
     // One level deep, folders only, apparent sizes (what Explorer's Properties calls "Size") in exact bytes.
     command
@@ -68,7 +96,7 @@ pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: Stri
             return Err("cancelled".into());
         }
         let (total, sizes) = parse(&json)?;
-        Ok(FolderSizes { path, total, sizes, elapsed: ms_since(started) })
+        Ok(FolderSizes { path, total, sizes, elapsed: ms_since(started), engine: "dust" })
     })
     .await
 }

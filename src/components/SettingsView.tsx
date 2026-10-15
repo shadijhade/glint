@@ -2,8 +2,11 @@ import { ReactNode, useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Archive, Binary, ExternalLink, Folder, Heart, Image, Lock, Plus, RotateCcw, Sparkles, Type, X } from "lucide-react";
+import { Archive, Binary, ExternalLink, Folder, Heart, Image, Loader2, Lock, Plus, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
+import { disableIndex, enableIndex, refreshIndex, useExplorer } from "@/lib/explorer";
+import { formatCount, formatDuration, formatSize } from "@/lib/format";
+import type { IndexVolume } from "@/lib/fs";
 import { DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
@@ -126,6 +129,75 @@ function PatternEditor({ value, onChange, placeholder }: { value: string[]; onCh
     );
 }
 
+function describeVolume(v: IndexVolume) {
+    if (v.state === "scanning") return `${v.volume} reading${v.progressTotal ? ` ${Math.floor((100 * v.progress) / v.progressTotal)}%` : ""}…`;
+    if (v.state === "error") return `${v.volume} unavailable`;
+    return `${v.volume} ${formatCount(v.files + v.folders)} items`;
+}
+
+/** Turning the MFT index service on and off, and how it's doing. */
+function InstantSearch() {
+    const index = useExplorer((s) => s.index);
+    const [working, setWorking] = useState(false);
+    useEffect(() => {
+        refreshIndex();
+    }, []);
+    const run = async (action: () => Promise<void>) => {
+        setWorking(true);
+        try {
+            await action();
+        } finally {
+            setWorking(false);
+        }
+    };
+    const state = index?.state ?? "off";
+    const volumes = index?.volumes ?? [];
+    const outdated = state === "on" && !!index?.version && index.version !== index.appVersion;
+    const details = volumes
+        .map((v) => (v.state === "ready" ? `${v.volume} ${formatSize(v.memory)} in memory, built from ${v.source === "scan" ? "the MFT" : "its snapshot"} in ${formatDuration(v.buildMs)}` : `${v.volume} ${v.error ?? v.state}`))
+        .join("\n");
+    const hint = {
+        on: volumes.length ? volumes.map(describeVolume).join(" · ") : "Starting…",
+        stopped: "Installed, but the service isn't running. Turning it on starts it again.",
+        noAccess: "Another account on this PC turned it on. Allow yours too to use it.",
+        untrusted: index?.error ?? "Something else is using the service's name, so it isn't trusted.",
+        unsupported: "Needs Windows and NTFS drives.",
+        off: "Searches whole drives by name in milliseconds, and shows every folder's size as it opens, like Everything and WizTree.",
+    }[state];
+    const enable = { on: "Update", stopped: "Start", noAccess: "Allow me", untrusted: "Turn on", unsupported: "Turn on", off: "Turn on" }[state];
+    return (
+        <Section title="Instant search">
+            <div className="flex items-center justify-between gap-6 px-4 py-3" title={details || undefined}>
+                <div className="flex min-w-0 items-start gap-3">
+                    <Zap className={cn("mt-0.5 size-4 shrink-0", state === "on" ? "text-primary" : "text-muted-foreground")} />
+                    <div className="min-w-0">
+                        <div className="text-sm">{state === "on" ? (outdated ? "On · an update for the service is ready" : "On") : "Index file names and folder sizes"}</div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>
+                    </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                    {working && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
+                    {(state !== "on" || outdated) && state !== "unsupported" && (
+                        <Button size="sm" disabled={working} onClick={() => run(enableIndex)} title="Windows asks for administrator approval">
+                            <ShieldCheck /> {enable}
+                        </Button>
+                    )}
+                    {(state === "on" || state === "stopped") && (
+                        <Button variant="outline" size="sm" disabled={working} onClick={() => run(disableIndex)} title="Windows asks for administrator approval">
+                            Turn off
+                        </Button>
+                    )}
+                </div>
+            </div>
+            <p className="px-4 py-3 text-xs text-muted-foreground">
+                Turning it on asks for administrator approval once: a small Windows service reads your NTFS drives' file tables, follows their change
+                journals, and answers only your account and administrators. Like Everything, it knows the name, size and date of every file on
+                those drives, including files your account can't open. Turning it off removes the service and its index files.
+            </p>
+        </Section>
+    );
+}
+
 interface SettingsViewProps {
     onClose: () => void;
     update: { version: string; url: string } | null;
@@ -185,13 +257,15 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                     />
                 </Section>
 
-                <Section title="Find files by name (fd)">
+                <InstantSearch />
+
+                <Section title="Find files by name">
                     <Row label="Result limit" hint="Stops after this many files and folders">
                         <Segmented value={settings.findMaxResults} onChange={(findMaxResults) => set({ findMaxResults })} options={[[10000, "10k"], [50000, "50k"], [200000, "200k"], [null, "None"]]} />
                     </Row>
                     <SwitchRow
                         label="Skip what .gitignore lists"
-                        hint="Leaves out build output and dependencies in code folders"
+                        hint="Leaves out build output and dependencies in code folders. Searches with fd: only fd reads .gitignore files."
                         checked={settings.findRespectIgnore}
                         onChange={(findRespectIgnore) => set({ findRespectIgnore })}
                     />
@@ -273,7 +347,7 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                             <div className="text-xs text-muted-foreground">
                                 {version && `Version ${version} · `}Made with <Heart className="inline size-3 fill-pink-500 text-pink-500" /> by Shadi Sadi
                             </div>
-                            <div className="text-xs text-muted-foreground">Powered by ripgrep, fd and dust</div>
+                            <div className="text-xs text-muted-foreground">Powered by ripgrep, fd, dust and an NTFS index</div>
                         </div>
                         {update && (
                             <Button size="sm" onClick={() => openUrl(update.url)}>

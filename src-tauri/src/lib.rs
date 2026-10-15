@@ -1,5 +1,6 @@
 mod find;
 mod fsx;
+mod index;
 mod proc;
 mod shell;
 mod sizes;
@@ -15,11 +16,12 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, State, Window};
 use tauri_plugin_shell::ShellExt;
 
-/// The sidecar runs in flight: ripgrep text search, fd file search and dust folder sizes.
+/// The work in flight: ripgrep text search, file search (fd and the index) and dust folder sizes.
 #[derive(Default)]
 pub struct AppState {
     pub search: Slot,
     pub find: Slot,
+    pub finding: find::Current,
     pub sizes: Slot,
 }
 
@@ -201,6 +203,9 @@ pub fn run() {
             find::cancel_find,
             sizes::folder_sizes,
             sizes::cancel_folder_sizes,
+            index::index_status,
+            index::index_enable,
+            index::index_disable,
             shell::file_op,
             shell::clipboard_set_files,
             shell::clipboard_get_files,

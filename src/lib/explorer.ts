@@ -14,6 +14,10 @@ import {
     fileOp,
     findFiles,
     folderSizes,
+    indexDisable,
+    indexEnable,
+    type IndexInfo,
+    indexStatus,
     listDir,
     listDrives,
     type Listing,
@@ -28,10 +32,12 @@ export interface KnownFolder {
     path: string;
 }
 
-/** A name search with fd. */
+/** A name search, by the index or fd. */
 export interface FindRun {
     id: number;
     query: string;
+    /** Who answers ("index", "fd", "index + fd"); empty until known. */
+    engine: string;
     /** Folder searched (with its subfolders); This PC searches every drive. */
     scope: string;
     entries: FileEntry[];
@@ -41,12 +47,13 @@ export interface FindRun {
     error: string;
 }
 
-/** Subfolder sizes for one folder, from dust. */
+/** Subfolder sizes for one folder, from the index or dust. */
 export interface SizeRun {
     sizes: Map<string, number>;
     total: number;
     elapsed: number;
     running: boolean;
+    engine: "index" | "dust";
 }
 
 interface ExplorerState {
@@ -61,7 +68,7 @@ interface ExplorerState {
     forward: string[];
     drives: Drive[];
     known: KnownFolder[];
-    /** Text in the search box: filters what's shown; Enter searches subfolders with fd. */
+    /** Text in the search box: filters what's shown; Enter searches subfolders by name. */
     filter: string;
     find: FindRun | null;
     selection: ReadonlySet<string>;
@@ -74,6 +81,8 @@ interface ExplorerState {
     cut: ReadonlySet<string>;
     /** Folder that files dragged in from outside would land in. */
     dropTarget: string | null;
+    /** Instant search's service, once asked. */
+    index: IndexInfo | null;
 }
 
 export const useExplorer = create<ExplorerState>(() => ({
@@ -96,6 +105,7 @@ export const useExplorer = create<ExplorerState>(() => ({
     sizes: {},
     cut: new Set(),
     dropTarget: null,
+    index: null,
 }));
 
 const get = useExplorer.getState;
@@ -180,6 +190,8 @@ export async function navigate(target: string, { select, history = true, quiet =
         useStore.getState().setLastFolder(path);
         if (path === THIS_PC) refreshDrives();
     }
+    // With the index, every folder shows its subfolders' sizes as it opens (and after each refresh).
+    if (listing && indexed(path)) autoSizes();
     return true;
 }
 
@@ -261,6 +273,8 @@ export async function initExplorer() {
     initialized = true;
     // Drives fill in when they answer; a sleeping network drive mustn't hold up the first folder.
     refreshDrives();
+    // Asked first (briefly), so the first folder can already show its sizes from the index.
+    await Promise.race([refreshIndex(), new Promise((resolve) => setTimeout(resolve, 300))]);
     await loadKnownFolders();
     const { settings, lastFolder } = useStore.getState();
     const home = get().known.find((k) => k.id === "home")?.path ?? THIS_PC;
@@ -270,7 +284,7 @@ export async function initExplorer() {
 
 let findSeq = 0;
 
-/** Searches the open folder and its subfolders (or every drive from This PC) by name with fd. */
+/** Searches the open folder and its subfolders (or every drive from This PC) by name: index, else fd. */
 export async function runFind(query: string) {
     if (!query.trim()) return clearFind();
     const { path, drives } = get();
@@ -279,7 +293,7 @@ export async function runFind(query: string) {
     const roots = path === THIS_PC ? drives.filter((d) => d.kind === "fixed" || d.kind === "removable").map((d) => d.path) : [path];
     const started = performance.now();
     set({
-        find: { id, query, scope: path, entries: [], running: true, elapsed: 0, limited: false, error: "" },
+        find: { id, query, engine: "", scope: path, entries: [], running: true, elapsed: 0, limited: false, error: "" },
         selection: new Set(),
         focus: null,
         anchor: null,
@@ -300,6 +314,7 @@ export async function runFind(query: string) {
             const find = get().find;
             if (find?.id !== id) return;
             if (event.type === "entries") update({ entries: find.entries.concat(event.entries) });
+            else if (event.type === "started") update({ engine: event.engine });
             else if (event.type === "error") update({ error: event.message });
             else update({ running: false, elapsed: performance.now() - started, limited: event.limited });
         });
@@ -320,8 +335,13 @@ export function clearFind() {
     if (find) reload();
 }
 
-/** Sizes of every subfolder of the open folder, with dust. */
-export async function calcSizes() {
+/** Sizes of every subfolder of the open folder: from the index when it has the folder, else with dust. */
+export const calcSizes = () => sizeFolder(false);
+
+/** As a folder opens: from the index only, and quietly nothing when it can't answer. */
+const autoSizes = () => sizeFolder(true);
+
+async function sizeFolder(auto: boolean) {
     const { path } = get();
     if (path === THIS_PC) return;
     const previous = get().sizes[path];
@@ -329,13 +349,63 @@ export async function calcSizes() {
         const { [path]: _, ...rest } = get().sizes;
         set({ sizes: run ? { ...rest, [path]: run } : rest });
     };
-    save({ sizes: previous?.sizes ?? new Map(), total: previous?.total ?? 0, elapsed: previous?.elapsed ?? 0, running: true });
+    // The index answers in a millisecond or two: no "calculating…" flash for it.
+    if (!auto) save({ sizes: previous?.sizes ?? new Map(), total: previous?.total ?? 0, elapsed: previous?.elapsed ?? 0, running: true, engine: previous?.engine ?? "dust" });
     try {
-        const result = await folderSizes(path);
-        save({ sizes: new Map(result.sizes), total: result.total, elapsed: result.elapsed, running: false });
+        const result = await folderSizes(path, auto);
+        save({ sizes: new Map(result.sizes), total: result.total, elapsed: result.elapsed, running: false, engine: result.engine });
     } catch (e) {
+        if (auto) return;
         save(previous ? { ...previous, running: false } : null);
         if (String(e) !== "cancelled") toast.error("Couldn't calculate folder sizes", { description: String(e) });
+    }
+}
+
+// Instant search
+
+let indexPoll: ReturnType<typeof setTimeout> | undefined;
+
+/** Asks the service how it's doing; while a drive is being read, asks again every second. */
+export async function refreshIndex() {
+    clearTimeout(indexPoll);
+    try {
+        const { path } = get();
+        const before = indexed(path);
+        const index = await indexStatus();
+        set({ index });
+        // The open folder's drive just became ready: show its sizes without waiting for a navigation.
+        if (!before && path === get().path && indexed(path)) autoSizes();
+        if (index.state === "on" && index.volumes.some((v) => v.state === "scanning")) indexPoll = setTimeout(refreshIndex, 1000);
+    } catch {
+        // keep what we knew
+    }
+}
+
+/** Whether the index has the drive `path` is on, ready to answer. */
+export function indexed(path: string) {
+    const { index } = get();
+    const drive = path.slice(0, 2).toUpperCase();
+    return index?.state === "on" && index.volumes.some((v) => v.volume === drive && v.state === "ready");
+}
+
+/** Turns instant search on (or updates it, or allows this user); Windows asks for administrator approval. */
+export async function enableIndex() {
+    try {
+        set({ index: await busy("Turning on instant search…", indexEnable()) });
+        refreshIndex();
+        toast.success("Instant search is on", { description: "Each drive is searched with the index as soon as it has been read." });
+    } catch (e) {
+        if (String(e) !== "cancelled") toast.error("Couldn't turn on instant search", { description: String(e) });
+    }
+}
+
+/** Stops and removes the service and its index files (administrator approval again). */
+export async function disableIndex() {
+    try {
+        set({ index: await busy("Turning off instant search…", indexDisable()) });
+        toast.success("Instant search is off", { description: "The service and its index files were removed." });
+    } catch (e) {
+        if (String(e) !== "cancelled") toast.error("Couldn't turn off instant search", { description: String(e) });
     }
 }
 
