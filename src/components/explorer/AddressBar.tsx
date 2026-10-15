@@ -149,7 +149,7 @@ export function AddressBar() {
                     spellCheck={false}
                     placeholder={`Search ${folderName}`}
                     aria-label={`Search ${folderName}. Typing filters; Enter searches subfolders too.`}
-                    title="Typing filters this folder · Enter searches subfolders with fd (* and ? work, words all must match)"
+                    title="Typing filters this folder · Enter searches subfolders by name, with the instant search index or fd (* and ? work, words all must match)"
                     className="h-9 w-full rounded-lg border bg-background pl-8 pr-8 text-sm shadow-xs outline-hidden transition-shadow placeholder:text-muted-foreground focus:border-ring/60 focus:ring-2 focus:ring-ring/15"
                 />
                 {(filter || find) && (

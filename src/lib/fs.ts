@@ -47,11 +47,13 @@ export interface FindOptions {
 }
 
 export type FindEvent =
+    /** Who answers: "index", "fd", or "index + fd" when the index covers only some folders. */
+    | { type: "started"; engine: string }
     | { type: "entries"; entries: FileEntry[] }
     | { type: "error"; message: string }
     | { type: "finished"; count: number; elapsed: number; limited: boolean };
 
-/** Searches file names under `roots` with fd, streaming results (with metadata) as they're found. */
+/** Searches file names under `roots` (with the index when it runs, else fd), streaming results with metadata. */
 export async function findFiles(roots: string[], query: string, options: FindOptions, onEvent: (event: FindEvent) => void) {
     const channel = new Channel<FindEvent>();
     channel.onmessage = (event) => {
@@ -69,10 +71,14 @@ export interface FolderSizes {
     /** Subfolder name → bytes. */
     sizes: [string, number][];
     elapsed: number;
+    engine: "index" | "dust";
 }
 
-/** Sizes of every subfolder, calculated by dust. Rejects with "cancelled" when superseded or stopped. */
-export const folderSizes = (path: string) => invoke<FolderSizes>("folder_sizes", { path });
+/**
+ * Sizes of every subfolder: from the index when it has the folder, else calculated by dust (unless
+ * `indexOnly`, which rejects instead). Rejects with "cancelled" when superseded or stopped.
+ */
+export const folderSizes = (path: string, indexOnly = false) => invoke<FolderSizes>("folder_sizes", { path, indexOnly });
 export const cancelFolderSizes = () => invoke("cancel_folder_sizes");
 
 export type FileOp =
@@ -93,3 +99,38 @@ export const openTerminal = (path: string) => invoke("open_terminal", { path });
 
 /** Watches one folder (or none); changes arrive as "dir-changed" events carrying its path. */
 export const watchDir = (path: string | null) => invoke("watch_dir", { path });
+
+/** One drive in the instant search index. */
+export interface IndexVolume {
+    /** "C:" */
+    volume: string;
+    state: "scanning" | "ready" | "error";
+    files: number;
+    folders: number;
+    /** Bytes of memory the drive's index takes. */
+    memory: number;
+    /** "scan" (read the MFT) or "snapshot" (loaded from disk), and how long it took. */
+    source: string;
+    buildMs: number;
+    progress: number;
+    progressTotal: number;
+    /** When the last change was applied, ms since the Unix epoch (0 if none yet). */
+    updated: number;
+    error: string | null;
+}
+
+/** Instant search: the MFT index service. */
+export interface IndexInfo {
+    state: "on" | "off" | "stopped" | "noAccess" | "untrusted" | "unsupported";
+    /** The running service's version, and the app's (an update is due when they differ). */
+    version: string | null;
+    appVersion: string;
+    volumes: IndexVolume[];
+    error: string | null;
+}
+
+export const indexStatus = () => invoke<IndexInfo>("index_status");
+/** Installs and starts the service after Windows asks for administrator approval; rejects with "cancelled" if declined. */
+export const indexEnable = () => invoke<IndexInfo>("index_enable");
+/** Stops and removes the service and its index files (administrator approval again). */
+export const indexDisable = () => invoke<IndexInfo>("index_disable");

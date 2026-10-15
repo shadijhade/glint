@@ -104,7 +104,8 @@ export function FileList(props: FileListProps) {
     const renderRow = (i: number) => {
         const entry = rows[i];
         const kind = kindOf(entry);
-        const size = entry.dir ? sizes?.sizes.get(entry.name) : entry.size;
+        // Folders found by the index come with their total; fd's come without one (0).
+        const size = entry.dir ? (search ? entry.size || undefined : sizes?.sizes.get(entry.name)) : entry.size;
         const selected = selection.has(entry.path);
         return (
             <div

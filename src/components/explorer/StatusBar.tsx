@@ -26,24 +26,25 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
 
     let work: React.ReactNode = null;
     if (find) {
+        const engine = find.engine ? `${find.engine} · ` : "";
         work = find.running ? (
             <>
-                <Loader2 className="size-3 animate-spin text-primary" /> fd · searching… {formatCount(find.entries.length)} found
+                <Loader2 className="size-3 animate-spin text-primary" /> {engine}searching… {formatCount(find.entries.length)} found
             </>
         ) : (
-            `fd · ${formatCount(find.entries.length)} found in ${formatDuration(find.elapsed)}${find.limited ? " · stopped at the limit" : ""}`
+            `${engine}${formatCount(find.entries.length)} found in ${formatDuration(find.elapsed)}${find.limited ? " · stopped at the limit" : ""}`
         );
     } else if (sizes?.running) {
         work = (
             <>
-                <Loader2 className="size-3 animate-spin text-primary" /> dust · calculating folder sizes…
+                <Loader2 className="size-3 animate-spin text-primary" /> calculating folder sizes…
             </>
         );
     } else if (path !== THIS_PC && listing) {
         work = (
             <span title={`Rust read this folder in ${formatDuration(listing.elapsed)}; it was on screen ${formatDuration(shownIn)} after the click.`} className="flex items-center gap-1">
                 <Zap className="size-3 text-primary" /> read in {formatDuration(listing.elapsed)} · shown in {formatDuration(shownIn)}
-                {sizes && ` · dust sized ${formatSize(sizes.total)} in ${formatDuration(sizes.elapsed)}`}
+                {sizes && ` · ${sizes.engine} sized ${formatSize(sizes.total)} in ${formatDuration(sizes.elapsed)}`}
             </span>
         );
     }

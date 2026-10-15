@@ -220,7 +220,7 @@ function useSettled<T>(value: T, ms = 70) {
 interface FolderSummary {
     path: string;
     items: number;
-    /** Everything inside, when dust has measured it. */
+    /** Everything inside, once sized (by the index or dust). */
     total?: number;
 }
 
