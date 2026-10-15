@@ -65,7 +65,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     size="sm"
                     onClick={sizing ? stopSizes : calcSizes}
                     disabled={!inFolder || !!find}
-                    title={sizing ? "Stop calculating" : "Calculate the size of every folder here (dust)"}
+                    title={sizing ? "Stop calculating" : "Size every folder here: from the instant search index when it has them, otherwise measured with dust"}
                     className="hidden sm:inline-flex"
                 >
                     {sizing ? <Loader2 className="animate-spin" /> : <HardDrive />} {sizing ? "Stop" : "Folder sizes"}
