@@ -1,3 +1,4 @@
+mod archive;
 mod find;
 mod fsx;
 mod index;
@@ -284,6 +285,10 @@ pub fn run() {
             shell::open_with,
             shell::open_terminal,
             shell::start_drag,
+            archive::archive_extract,
+            archive::archive_stage,
+            archive::cancel_archive_stage,
+            archive::archive_unstage,
             watch::watch_dirs,
             launch::take_launch_targets,
             verbs::explorer_integration,
@@ -302,8 +307,15 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             std::thread::spawn(move || verbs::repair(&handle));
+            // What earlier runs extracted from archives goes, except what's still on the clipboard.
+            std::thread::spawn(|| archive::sweep(&shell::clipboard_paths()));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_, event| {
+            if let tauri::RunEvent::Exit = event {
+                archive::finish();
+            }
+        });
 }

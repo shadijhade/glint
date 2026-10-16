@@ -8,7 +8,7 @@ Glint ships these programs unmodified, as separate executables next to the app. 
 | [fd](https://github.com/sharkdp/fd) (`fd.exe`) | 10.5.0 | Finding files by name | MIT (dual-licensed MIT or Apache-2.0) |
 | [dust](https://github.com/bootandy/dust) (`dust.exe`) | 1.2.6 | Folder sizes | Apache-2.0 |
 
-Rust crates and npm packages compiled into the app keep their own licenses; see `src-tauri/Cargo.lock` and `package-lock.json`.
+Rust crates and npm packages compiled into the app keep their own licenses; see `src-tauri/Cargo.lock` and `package-lock.json`. The crates that read zip and 7z archives are listed under [Archive support](#archive-support-compiled-into-the-app), with the license texts their terms ask to be passed on.
 
 ## ripgrep
 
@@ -266,4 +266,143 @@ Apache License
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+```
+
+## Archive support (compiled into the app)
+
+| Crate | Version | Used for | License |
+| :--- | :--- | :--- | :--- |
+| [zip](https://github.com/zip-rs/zip2) | 9.0.4 | Reading zip archives | MIT |
+| [sevenz-rust2](https://github.com/hasenbanck/sevenz-rust2) | 0.24.0 | Reading 7z archives | Apache-2.0 |
+| [lzma-rust2](https://github.com/hasenbanck/lzma-rust2) | 0.22.0 | LZMA, LZMA2 and XZ | Apache-2.0 |
+| [flate2](https://github.com/rust-lang/flate2-rs) and [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) | 1.1.10, 0.6.8 | Deflate | MIT or Apache-2.0; Zlib |
+| [deflate64](https://github.com/anatawa12/deflate64-rs) | 0.1.12 | Deflate64 (zip) | MIT |
+| [bzip2](https://github.com/trifectatechfoundation/bzip2-rs) and [libbz2-rs-sys](https://github.com/trifectatechfoundation/libbzip2-rs) | 0.6.1, 0.2.5 | BZip2 | MIT or Apache-2.0; bzip2-1.0.6 |
+| [ppmd-rust](https://github.com/hasenbanck/ppmd-rust) | 1.5.0 | PPMd | CC0-1.0 or MIT-0 |
+| [bitstream-io](https://github.com/tuffy/bitstream-io) | 4.10.0 | Shrink, Reduce and Implode (very old zips) | MIT or Apache-2.0 |
+
+The Apache License 2.0 is reproduced in full under [dust](#dust) above; CC0 and MIT-0 ask for no notice. This software uses bzip2 by Julian Seward, as its license appreciates being told.
+
+### zip
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 Mathijs van de Nes
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### deflate64
+
+```text
+The MIT License (MIT)
+
+Copyright (c) .NET Foundation and Contributors
+Copyright (c) anatawa12 2023
+
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### zlib-rs
+
+```text
+(C) 2024 Trifecta Tech Foundation
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
+```
+
+### libbz2-rs-sys (bzip2)
+
+```text
+The original program, "bzip2", the associated library "libbzip2", and all
+documentation, are
+
+Copyright (C) 1996-2021 Julian R Seward.
+Copyright (C) 2019-2020 Federico Mena Quintero
+Copyright (C) 2021 Micah Snyder
+
+This Rust translation, "libbzip2-rs" is a derived work based on "bzip2" and
+"libbzip2", and is Copyright (C) 2024-2025 Trifecta Tech Foundation and contributors
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. The origin of this software must not be misrepresented; you must
+   not claim that you wrote the original software.  If you use this
+   software in a product, an acknowledgment in the product
+   documentation would be appreciated but is not required.
+
+3. Altered source versions must be plainly marked as such, and must
+   not be misrepresented as being the original software.
+
+4. The name of the author may not be used to endorse or promote
+   products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```

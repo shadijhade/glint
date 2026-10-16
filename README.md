@@ -26,6 +26,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/
 -   **Any file on any drive, in milliseconds.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows the change journal. Every `kernel32.dll` on three drives (over 3 million names) is listed in about 8 ms. Without it, fd streams results as it finds them.
 -   **ripgrep for what's inside files**: regular expressions, whole words, replace across files, and a syntax-highlighted preview.
 -   **Thumbnails that never hold up the folder.** Switch to the grid (`Ctrl+Shift+2`) and a folder of 1,200 photos is still on screen in 9.3 ms, with the thumbnails filling in right after from Windows' own thumbnail cache (30 in 71 ms). Photos Windows hasn't seen yet are made on several threads at once, about 220 a second, where Windows' isolated thumbnail process manages about 50.
+-   **Zip and 7z archives open like folders.** Press Enter on one and browse it in the list or the grid, with folder sizes, previews and thumbnails: a zip of 50,000 files is on screen 57 ms after Enter, and nothing is extracted until something needs a file's bytes. Copy, Copy to other pane and drag out extract through Windows' file engine.
 -   **Space to Quick Look, Ctrl+K for everything else.** See any file full size without opening it and arrow through the folder. Jump to the folders you use most (ranked by frecency, like zoxide) or run any command by typing a few letters.
 -   **Tabs, and two panes side by side.** Each pane has its own tabs (Ctrl+T, or middle-click a folder), and Ctrl+Shift+D shows two folders at once to copy or move between. Your tabs are back the next time you start.
 -   **Still Windows.** Copy, move, delete and rename run on Windows' own file engine (progress, *Replace or Skip*, Recycle Bin, UAC). The clipboard and drag and drop work with File Explorer and every other app, and Properties, Open with and Open in Terminal are a right-click away.
@@ -47,12 +48,17 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/
 | Show its thumbnails ² | from Windows' thumbnail cache | the 30 on screen | 71 ms |
 | | photos Windows hasn't seen yet | the 30 on screen | 242 ms |
 | | `C:\Windows\Web\touchkeyboard` | 8 wallpapers | 15 ms |
+| Open an archive ³ | a zip of 50,000 files | 54,001 items | 57 ms |
+| | the same files in a solid 7z | 54,001 items | 60 ms |
+| | a folder in the zip after that | 500 items | 8.9 ms |
 
 Each time runs from pressing Enter until everything is on screen, as the app's status bar reports it: the median of 5 runs, with the files already in Windows' cache (as when you browse back and forth). Intel Core Ultra 7 265K, NVMe SSD, Windows 11, release build. The status bar shows the time for every folder and search, so you can check these numbers on your own machine.
 
 ¹ With [instant search](docs/instant-search.md) on. Without it, fd and dust do the work: fd on its own lists the same 5,015 DLLs in 0.1–0.3 s, and takes 8 s for a name search across a 219 GB home folder.
 
 ² From the first thumbnail asked for to the last one in, as the status bar reports it (*30 thumbnails in 71 ms*), each run a fresh start of the app, so none came from its own memory. Asked for all at once, 1,200 photos come 1,100 a second from Windows' cache, and are made at 220 a second when Windows hasn't seen them.
+
+³ Its list of entries read (47 ms of that), nothing extracted; each run a fresh start of the app, so Glint didn't have the archive in memory yet. After that, every folder in it is read from memory in 0.2 ms. See [docs/archives.md](docs/archives.md).
 
 ## Features
 
@@ -65,6 +71,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Folder sizes.** With instant search on, every folder shows its size as it opens, and search results show folder totals too. Otherwise one click measures them with dust.
 -   **Grid view and thumbnails.** Every folder (and every search) can show as a grid of Windows' own thumbnails, in five tile sizes: see [Grid view](#grid-view) below. In the list, pictures and videos get a small one in place of their icon.
 -   **Disk usage map.** A treemap of the open folder, like WizTree's: see [Disk usage map](#disk-usage-map) below.
+-   **Zip and 7z archives.** `Enter` opens one like a folder, read-only, with previews, thumbnails and copying out: see [Archives](#zip-and-7z-archives) below.
 -   **Preview pane and Quick Look.** Syntax-highlighted code and text, images, video, audio, PDFs and folder summaries, in the side pane (`Alt+P`) or full size on `Space`. Online-only OneDrive files are left alone, so nothing downloads by accident.
 -   **Command palette.** `Ctrl+K` finds any command, or a folder you've been to by typing a few of its letters (`dl` finds Downloads), with the folders you open most often and most recently first. Type a path, `~` or `%APPDATA%` to go there.
 -   **The usual explorer moves.** Back, forward and up, a breadcrumb address bar you can type into, Quick access, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folders and text documents, and hidden items on demand.
@@ -120,6 +127,14 @@ With instant search on, the map comes from the index in one request: all of `C:\
 </tr>
 </table>
 
+### Zip and 7z archives
+
+Press `Enter` on a zip or 7z file (or double-click it, or middle-click for a new tab) and it opens like a folder, in the list or the grid, in either pane and any tab: go into its folders, back up out of it, Back and Forward, the path in the address bar (`C:\Downloads\photos.zip\2024\summer`, typed or pasted too), and its tabs come back when the app starts. An archive inside an archive opens the same way.
+
+Glint reads only the archive's own list of entries (the zip central directory, the 7z header), once, and keeps it in memory: a zip of 50,000 files lists in 57 ms, and every folder in it after that in 0.2 ms. Every folder shows its size, and name search, folder sizes and the disk usage map work inside archives too. Previews, Quick Look and thumbnails extract only the file they show, to a temp copy that goes when you close the app, and opening a file opens a read-only copy of it.
+
+Archives are read-only: what would change one is greyed out, with a *Read-only archive* badge in the command bar. **Copy**, **Copy to other pane** and dragging out extract the selection, folders and all, then let Windows' own file engine copy it, so progress and *Replace or Skip* are Windows' own. Paths can't escape the folder they're extracted to (no zip slip), entries are cut off at their declared size, zip bombs (huge expansion ratios, overlapping entries, oversized 7z headers) are refused, password-protected entries say so, and a damaged archive is an error, never a crash. Methods, limits and the temp folders: [docs/archives.md](docs/archives.md).
+
 ### Instant search (NTFS index)
 
 <img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 37 ms" width="100%">
@@ -167,7 +182,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 ### Files
 | Key | Action |
 | :--- | :--- |
-| `Enter` | Open the selection |
+| `Enter` | Open the selection (a zip or 7z file opens like a folder) |
 | `Space` | Quick Look: the focused item full size. Arrows move through the folder; `Space` or `Esc` closes |
 | `Ctrl+K` / `Ctrl+P` | Command palette: folders you use, paths and every command |
 | `Ctrl+T` / `Ctrl+W` | New tab on this folder / close the tab |
@@ -228,6 +243,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 -   **Folder sizes**: the index's per-folder totals, otherwise dust.
 -   **Thumbnails**: Windows' thumbnail cache through `IShellItemImageFactory` (thumbnails only, from the cache only: about a millisecond each), on worker threads that are each a COM apartment of their own. What the cache doesn't have is made by the file type's thumbnail handler: Windows' photo provider runs on our own threads with `IThumbnailCache` and `WTS_EXTRACTINPROC` (220 a second with 8 threads, where the isolated process Windows uses for other handlers makes about 50 however many ask), and Windows caches each one as if Explorer had made it. Requests wait in their tab's queue, shared between panes showing the same file, and are dropped when the tiles asking for them scroll away. Each tile asks at its size in screen pixels; when the cache answers with a smaller size it has (it keeps 16 to 2,560 px versions), the thumbnail is made at the size asked, and the smaller one is the answer only for online-only files or when making fails. Each answer reaches the UI as one binary buffer, an uncompressed BMP, and both sides keep the latest ones in memory.
 -   **Disk usage map**: one request to the index returns the biggest files and folders six levels down (folders are walked biggest first, so nothing too small to draw is looked at), or dust's JSON tree when the index doesn't have the folder. Either way it reaches the UI as one binary buffer and is drawn on a canvas as a squarified treemap. For all of C: here (464 GB, 2.9 million MFT records) the service answers in 19 ms for the 20,000 biggest items six levels down, and the map is on screen 53 ms after the click; on a synthetic index of 2.86 million records it takes 9–17 ms, whether the map goes 4 or 32 levels down.
+-   **Archives**: [zip](https://github.com/zip-rs/zip2) reads a zip's central directory, served from memory in one read of the file's end (13 ms for 50,000 entries, where reading it from the file takes 150 ms), and [sevenz-rust2](https://github.com/hasenbanck/sevenz-rust2) reads a 7z's header, once Glint has checked how big it unpacks to. Both are pure Rust. The entries become a tree of folders kept in memory, with safe Windows names and folder totals, and each listing reaches the UI as the same binary buffer as a folder's. A file is extracted only when it's previewed, opened or copied, cut off at its declared size, and copies out go through `IFileOperation` from a staging folder. See [docs/archives.md](docs/archives.md).
 -   **Text search**: ripgrep's JSON output, streamed in batches.
 -   **File operations**: Windows' `IFileOperation` (the engine Explorer uses), the clipboard formats Explorer reads, and OLE drag and drop.
 -   **Live folders**: [notify](https://github.com/notify-rs/notify) watches the folders on screen (one per pane).
@@ -276,7 +292,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] Thumbnails and a grid view
 -   [x] Auto-update, with signed update packages
 -   [ ] Code-signed installers, and winget and Scoop packages (`npm run release` is ready for them: [docs/releasing.md](docs/releasing.md))
--   [ ] Zip and 7z archives opened like folders
+-   [x] Zip and 7z archives opened like folders (read-only for now)
 
 Missing something? [Open an issue](https://github.com/shadijhade/glint/issues/new/choose). If the app saves you time, a star helps other people find it.
 
@@ -292,4 +308,4 @@ Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The bundled ripgrep, fd and dust keep their own licenses; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+MIT, see [LICENSE](LICENSE). The bundled ripgrep, fd and dust, and the crates that read archives, keep their own licenses; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

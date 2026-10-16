@@ -1,10 +1,10 @@
-import { Loader2, Zap } from "lucide-react";
+import { FileArchive, Loader2, Zap } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { useExplorer, useTab, viewKey } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
-import { THIS_PC } from "@/lib/paths";
+import { baseName, THIS_PC } from "@/lib/paths";
 import { type ThumbRun, useThumbRuns } from "@/lib/thumbs";
 import { UsageWork } from "./DiskUsage";
 
@@ -73,6 +73,22 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
             <>
                 <Loader2 className="size-3 animate-spin text-primary" /> calculating folder sizes…
             </>
+        );
+    } else if (path !== THIS_PC && listing?.archive) {
+        // A folder in an archive: listed from the archive's own list of entries, read once.
+        const { archive } = listing;
+        const name = baseName(archive.path);
+        const title = archive.cached
+            ? `Glint already had the list of what's in ${name} (${formatCount(archive.entries)} files and folders) in memory, and listed this folder from it in ${formatDuration(listing.elapsed)}; it was on screen ${formatDuration(shownIn)} after the click. The archive is read-only.`
+            : `Rust read the list of what's in ${name} (${formatCount(archive.entries)} files and folders) in ${formatDuration(archive.readMs)}, without extracting anything; this folder was on screen ${formatDuration(shownIn)} after the click. The archive is read-only.`;
+        work = (
+            <span title={title} className="flex items-center gap-1">
+                <FileArchive className="size-3 text-amber-600 dark:text-amber-500" />
+                <span className="hidden @lg:inline">
+                    {archive.format} · {archive.cached ? "" : `${formatCount(archive.entries)} items `}read in {formatDuration(listing.elapsed)} ·
+                </span>
+                <span>shown in {formatDuration(shownIn)}</span>
+            </span>
         );
     } else if (path !== THIS_PC && listing) {
         const sized = sizes && `${sizes.engine} sized ${formatSize(sizes.total)} in ${formatDuration(sizes.elapsed)}`;

@@ -35,49 +35,108 @@ pub fn ms_since(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Lists a folder for the UI, sorted, as one binary buffer (see `encode_listing`).
+/// Lists a folder for the UI, sorted, as one binary buffer (see `encode_listing`). A path that goes
+/// into a zip or 7z archive lists the folder in the archive.
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, String> {
     blocking(move || {
         let started = Instant::now();
         let path = normalize(&path)?;
+        if let Some(listing) = crate::archive::list(&path, started) {
+            return listing.map(tauri::ipc::Response::new);
+        }
         let mut entries = read_dir(&path).map_err(|e| describe(&e))?;
         sort_entries(&mut entries);
-        Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started))))
+        Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started), None)))
     })
     .await
+}
+
+/// What a listing shows of each item: a folder's entries, or an archive's.
+pub trait Listed {
+    fn name(&self) -> &str;
+    fn dir(&self) -> bool;
+    fn size(&self) -> u64;
+    fn modified(&self) -> i64;
+    fn attrs(&self) -> u32;
+}
+
+impl Listed for Entry {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn dir(&self) -> bool {
+        self.dir
+    }
+    fn size(&self) -> u64 {
+        self.size
+    }
+    fn modified(&self) -> i64 {
+        self.modified
+    }
+    fn attrs(&self) -> u32 {
+        self.attrs
+    }
+}
+
+/// A listing of a folder in an archive also says where the archive is in its path, and how its
+/// list of entries was read.
+pub struct InArchive {
+    /// UTF-16 units of the listing's path that are the archive's own path (an archive in an archive
+    /// included), and those that are the archive file on disk.
+    pub archive: u32,
+    pub outer: u32,
+    /// Files and folders in the whole archive.
+    pub entries: u32,
+    /// The archive's list of entries was already in memory.
+    pub cached: bool,
+    /// How long reading it took (0 when it was in memory).
+    pub read_ms: f64,
 }
 
 /// A listing as bytes rather than JSON: a third of the size for big folders, and nothing to parse.
 /// All little-endian, laid out so each array can be viewed in place as a typed array:
 ///   0: u32 count · 4: u32 path length (UTF-8 bytes) · 8: f64 milliseconds spent
-///   16: f64 size[count] · then f64 modified[count] · u32 attrs[count] · u32 name length[count]
+///   16: u32 archive (UTF-16 units of the path that are the archive the folder is in; 0 for a
+///   folder on disk) · 20: u32 outer (those that are the archive file on disk, when archives nest)
+///   24: u32 entries in the archive · 28: u32 flags (1: its list of entries was in memory)
+///   32: f64 milliseconds reading the archive's list of entries
+///   40: f64 size[count] · then f64 modified[count] · u32 attrs[count] · u32 name length[count]
 ///   (UTF-16 units, how JavaScript counts) · the path (UTF-8) · every name back to back (UTF-8).
-pub fn encode_listing(path: &str, entries: &[Entry], elapsed: f64) -> Vec<u8> {
-    let names: usize = entries.iter().map(|e| e.name.len()).sum();
-    let mut out = Vec::with_capacity(16 + 24 * entries.len() + path.len() + names);
+pub fn encode_listing<T: Listed>(path: &str, entries: &[T], elapsed: f64, archive: Option<&InArchive>) -> Vec<u8> {
+    let names: usize = entries.iter().map(|e| e.name().len()).sum();
+    let mut out = Vec::with_capacity(40 + 24 * entries.len() + path.len() + names);
     out.extend((entries.len() as u32).to_le_bytes());
     out.extend((path.len() as u32).to_le_bytes());
     out.extend(elapsed.to_le_bytes());
+    let (inside, outer, count, flags, read_ms) = archive.map_or((0, 0, 0, 0, 0.0), |a| (a.archive, a.outer, a.entries, a.cached as u32, a.read_ms));
+    out.extend(inside.to_le_bytes());
+    out.extend(outer.to_le_bytes());
+    out.extend(count.to_le_bytes());
+    out.extend(flags.to_le_bytes());
+    out.extend(read_ms.to_le_bytes());
     for e in entries {
-        out.extend((e.size as f64).to_le_bytes());
+        out.extend((e.size() as f64).to_le_bytes());
     }
     for e in entries {
-        out.extend((e.modified as f64).to_le_bytes());
+        out.extend((e.modified() as f64).to_le_bytes());
     }
     for e in entries {
         // The directory bit is what the UI reads, so set it on every platform.
-        out.extend((e.attrs | if e.dir { 0x10 } else { 0 }).to_le_bytes());
+        out.extend((e.attrs() | if e.dir() { 0x10 } else { 0 }).to_le_bytes());
     }
     for e in entries {
-        out.extend((e.name.encode_utf16().count() as u32).to_le_bytes());
+        out.extend((e.name().encode_utf16().count() as u32).to_le_bytes());
     }
     out.extend(path.as_bytes());
     for e in entries {
-        out.extend(e.name.as_bytes());
+        out.extend(e.name().as_bytes());
     }
     out
 }
+
+/// What a change inside an archive is answered with.
+pub const READ_ONLY: &str = "Archives open read-only in Glint. Copy items out of the archive to change them.";
 
 #[derive(Serialize)]
 pub struct Resolved {
@@ -85,11 +144,15 @@ pub struct Resolved {
     pub dir: bool,
 }
 
-/// Checks a typed or pasted location; a file resolves too, so the caller can open its folder.
+/// Checks a typed or pasted location; a file resolves too, so the caller can open its folder. A zip
+/// or 7z archive is a folder, as are the folders in it.
 #[tauri::command]
 pub async fn resolve_path(path: String) -> Result<Resolved, String> {
     blocking(move || {
         let path = normalize(&path)?;
+        if let Some(found) = crate::archive::resolve(&path) {
+            return found.map_err(|e| format!("Can't open “{path}”. {e}"));
+        }
         match std::fs::metadata(&path) {
             Ok(meta) => Ok(Resolved { dir: meta.is_dir(), path }),
             Err(_) => Err(format!("Can't find “{path}”. Check the spelling and try again.")),
@@ -173,8 +236,9 @@ pub fn sort_entries(entries: &mut Vec<Entry>) {
 /// A key whose plain byte order is natural order, so sorting compares keys with memcmp instead of
 /// parsing numbers on every comparison: each digit run becomes '0', its length, then its digits
 /// without leading zeros. Since digits are the only bytes from '0' to '9', a run still sorts against
-/// other characters exactly where a digit would. Same order as `natural_cmp`.
-fn natural_key(lower: &str) -> Vec<u8> {
+/// other characters exactly where a digit would. Same order as `natural_cmp`. `lower` is lowercase;
+/// ASCII letters are lowercased here too, so an ASCII name needn't be copied first.
+pub(crate) fn natural_key(lower: &str) -> Vec<u8> {
     let bytes = lower.as_bytes();
     let mut key = Vec::with_capacity(bytes.len() + 4);
     let mut i = 0;
@@ -189,7 +253,7 @@ fn natural_key(lower: &str) -> Vec<u8> {
             key.push(digits.len().min(255) as u8);
             key.extend_from_slice(digits);
         } else {
-            key.push(bytes[i]);
+            key.push(bytes[i].to_ascii_lowercase());
             i += 1;
         }
     }
@@ -513,6 +577,10 @@ pub struct TextPreview {
 pub async fn read_text_preview(path: String, max_bytes: usize) -> Result<TextPreview, String> {
     blocking(move || {
         let limit = max_bytes.clamp(1024, 4 << 20);
+        if let Some(read) = crate::archive::read_prefix(&path, limit) {
+            let (bytes, truncated) = read?;
+            return Ok(decode_text(&bytes, truncated));
+        }
         let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
         let mut bytes = Vec::new();
         file.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
@@ -553,6 +621,9 @@ pub async fn create_entry(parent: String, name: String, dir: bool) -> Result<Str
     blocking(move || {
         if name.is_empty() || name.contains(['\\', '/', ':']) || name == "." || name == ".." {
             return Err("That name isn't allowed".into());
+        }
+        if crate::archive::is_read_only(&parent) {
+            return Err(READ_ONLY.into());
         }
         let (stem, ext) = match name.rfind('.') {
             Some(dot) if !dir && dot > 0 => name.split_at(dot),
@@ -626,16 +697,22 @@ mod tests {
             Entry { name: "sub".into(), path: None, dir: true, size: 0, modified: 5, attrs: 0 },
             Entry { name: "é😀.txt".into(), path: None, dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x2 },
         ];
-        let bytes = encode_listing("C:\\x", &entries, 1.5);
+        let archive = InArchive { archive: 3, outer: 2, entries: 50_000, cached: true, read_ms: 12.5 };
+        let bytes = encode_listing("C:\\x", &entries, 1.5, Some(&archive));
         let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
         assert_eq!((u32_at(0), u32_at(4), f64_at(8)), (2, 4, 1.5));
-        assert_eq!((f64_at(16), f64_at(24)), (0.0, (1u64 << 40) as f64));
-        assert_eq!((f64_at(32), f64_at(40)), (5.0, 1_700_000_000_000.0));
-        assert_eq!((u32_at(48), u32_at(52)), (0x10, 0x2));
+        assert_eq!((u32_at(16), u32_at(20), u32_at(24), u32_at(28), f64_at(32)), (3, 2, 50_000, 1, 12.5));
+        assert_eq!((f64_at(40), f64_at(48)), (0.0, (1u64 << 40) as f64));
+        assert_eq!((f64_at(56), f64_at(64)), (5.0, 1_700_000_000_000.0));
+        assert_eq!((u32_at(72), u32_at(76)), (0x10, 0x2));
         // "é😀.txt" is 7 UTF-16 units: é, a surrogate pair, then ".txt".
-        assert_eq!((u32_at(56), u32_at(60)), (3, 7));
-        assert_eq!(std::str::from_utf8(&bytes[64..]).unwrap(), "C:\\xsubé😀.txt");
+        assert_eq!((u32_at(80), u32_at(84)), (3, 7));
+        assert_eq!(std::str::from_utf8(&bytes[88..]).unwrap(), "C:\\xsubé😀.txt");
+        // A folder on disk has zeros where the archive's details go.
+        let plain = encode_listing("D:\\", &entries[..0], 0.5, None);
+        assert_eq!(plain.len(), 40 + 3);
+        assert!(plain[16..40].iter().all(|&b| b == 0));
     }
 
     #[test]

@@ -4,13 +4,19 @@ import { joinPath } from "./paths.ts";
 /** The folder mapped has no parent. */
 export const NO_PARENT = 0xffffffff;
 
+/** Who drew a map: the index, dust, or (a folder in an archive) the archive's own list of entries. */
+export type UsageEngine = "index" | "dust" | "zip" | "7z";
+/** By the number usage.rs's encode_map writes. */
+const ENGINES: UsageEngine[] = ["index", "dust", "zip", "7z"];
+
 /**
  * A disk-usage map of a folder: its biggest files and folders a few levels down. Node 0 is the folder
  * itself; every folder's items are stored together, biggest first, after the folder.
  */
 export interface UsageMap {
     path: string;
-    engine: "index" | "dust";
+    /** The index, dust, or (a folder in an archive) the archive's own list of entries. */
+    engine: UsageEngine;
     /** Milliseconds Rust spent: the index's answer, or dust's whole run. */
     elapsed: number;
     /** Smaller items were left out; they still count in their folders' sizes. */
@@ -40,7 +46,7 @@ export function decodeUsage(buffer: ArrayBuffer): UsageMap {
     const count = view.getUint32(0, true);
     const pathBytes = view.getUint32(4, true);
     const elapsed = view.getFloat64(8, true);
-    const engine = view.getUint32(16, true) === 0 ? "index" : "dust";
+    const engine = ENGINES[view.getUint32(16, true)] ?? "dust";
     const flags = view.getUint32(20, true);
     const [limited, serviceTooOld] = [(flags & 1) !== 0, (flags & 2) !== 0];
     const size = new Float64Array(buffer, 24, count);

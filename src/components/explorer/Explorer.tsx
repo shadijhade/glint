@@ -23,6 +23,7 @@ import {
     ExternalLink,
     Eye,
     EyeOff,
+    FileArchive,
     FilePlus,
     Folder,
     FolderInput,
@@ -37,6 +38,7 @@ import {
     List,
     ListChecks,
     Loader2,
+    Lock,
     Monitor,
     Moon,
     PanelRight,
@@ -62,8 +64,9 @@ import {
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { type FileEntry, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { type FileEntry, type InArchive, isArchived, isArchiveFile, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
+    archiveOf,
     calcSizes,
     canReopenTab,
     clearFind,
@@ -74,6 +77,7 @@ import {
     currentPath,
     cycleTab,
     deletePaths,
+    dragFromArchive,
     dropFiles,
     duplicateTab,
     focusPane,
@@ -88,10 +92,12 @@ import {
     newItem,
     newTab,
     openEntry,
+    openArchivedWith,
     openInNewTab,
     otherPaneFolder,
     PaneProvider,
     paste,
+    readOnlyNotice,
     refresh,
     refreshDrives,
     reload,
@@ -120,7 +126,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { driveName, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, THIS_PC } from "@/lib/paths";
+import { baseName, samePath, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -150,6 +156,10 @@ const copyText = (text: string, what: string) =>
 
 const report = (what: string) => (e: unknown) => toast.error(what, { description: String(e) });
 const properties = (path: string) => showProperties(path).catch(report("Couldn't show the properties"));
+/** File Explorer, with the archive file selected: what's inside it isn't a place File Explorer can show here. */
+const revealArchive = (archive: InArchive) => revealItemInDir(archive.outer).catch(report("Couldn't open File Explorer"));
+/** A menu's last line in an archive: why the commands that change things are greyed out. */
+const READ_ONLY_NOTE = { label: "Read-only: inside an archive", icon: Lock, disabled: true, onSelect: () => {} };
 const terminal = (path: string) => openTerminal(path).catch(report("Couldn't open a terminal"));
 const focusFind = () => {
     const box = document.getElementById(FIND_BOX_ID) as HTMLInputElement | null;
@@ -188,29 +198,39 @@ interface MenuContext {
     onSearchText: (folder: string) => void;
 }
 
-/** For a folder: the one open in a pane (right-click on empty space, `current`), or a place in the sidebar. */
-function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: { find: boolean; selectAll: () => void }): MenuItem[] {
+/**
+ * For a folder: the one open in a pane (right-click on empty space, `current`), or a place in the
+ * sidebar. In an archive (`view.archive`), what would change it is greyed out.
+ */
+function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: { find: boolean; selectAll: () => void; archive?: InArchive }): MenuItem[] {
     if (folder === THIS_PC) return [{ label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refreshDrives }];
     const isPinned = ctx.pinned.includes(folder);
     const find = !!view?.find;
+    const archive = view?.archive;
     return [
         !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
         !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
-        current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find, onSelect: () => newItem(true) },
-        current && { label: "New text document", icon: FilePlus, disabled: find, onSelect: () => newItem(false) },
+        current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find || !!archive, onSelect: () => newItem(true) },
+        current && { label: "New text document", icon: FilePlus, disabled: find || !!archive, onSelect: () => newItem(false) },
         "separator",
-        { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: current && find, onSelect: () => paste(folder) },
+        { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: current && (find || !!archive), onSelect: () => paste(folder) },
         current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", onSelect: view.selectAll },
         current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
         "separator",
         current && { label: "Folder sizes", icon: HardDrive, disabled: find, onSelect: calcSizes },
-        { label: "Search text here", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
+        !archive && { label: "Search text here", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
         { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
         "separator",
-        { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
-        { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
+        archive
+            ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archive) }
+            : { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
+        !archive && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
         { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
-        { label: "Properties", icon: Info, shortcut: current ? "Alt+Enter" : undefined, onSelect: () => properties(folder) },
+        archive
+            ? { label: "Archive properties", icon: Info, onSelect: () => properties(archive.outer) }
+            : { label: "Properties", icon: Info, shortcut: current ? "Alt+Enter" : undefined, onSelect: () => properties(folder) },
+        archive && "separator",
+        archive && READ_ONLY_NOTE,
     ];
 }
 
@@ -270,7 +290,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             if (pane === undefined || !under?.closest(".files")) return null;
             const s = useExplorer.getState();
             const tab = s.panes[Number(pane)] && s.tabs[s.panes[Number(pane)].active];
-            return tab && tab.path !== THIS_PC && !tab.find ? tab.path : null;
+            // Nothing can be dropped into an archive: it's read-only.
+            return tab && tab.path !== THIS_PC && !tab.find && !tab.listing?.archive ? tab.path : null;
         };
         const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
             const target = activeRef.current && payload.type !== "leave" ? targetAt(payload.position) : null;
@@ -340,11 +361,13 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                     searchOnly: true,
                 }
         );
+        const archive = t.listing?.archive;
+        const writable = inFolder && !archive;
         const actions: (Command | false)[] = [
-            inFolder && !t.find && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
-            inFolder && !t.find && action("new-file", "New text document", FilePlus, () => newItem(false)),
+            writable && !t.find && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
+            writable && !t.find && action("new-file", "New text document", FilePlus, () => newItem(false)),
             action("find", "Find files in this folder", Search, focusFind, "Ctrl+F"),
-            inFolder && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
+            writable && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
             inFolder && !t.find && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
             inFolder && !t.find && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
             canGrid &&
@@ -370,12 +393,14 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
             !!other && chosen && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
-            !!other && chosen && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
+            !!other && chosen && !archive && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
-            inFolder && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
-            inFolder && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
+            writable && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
+            !!archive && action("explorer", "Show the archive in File Explorer", FileArchive, () => revealArchive(archive)),
+            writable && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
-            inFolder && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
+            !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
+            writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
             action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
         ];
@@ -521,6 +546,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
 
     const startRename = (target?: string) => {
         const t = tabState(tabRef.current);
+        if (t?.listing?.archive) return readOnlyNotice();
         const path = target ?? t?.focus ?? (t ? [...t.selection][0] : undefined);
         if (path) updateTab({ renaming: path, selection: new Set([path]), focus: path, anchor: path }, tabRef.current);
     };
@@ -546,9 +572,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         files.forEach(openEntry);
     };
 
-    /** Ctrl+Enter: each selected folder in a new tab. */
+    /** Ctrl+Enter: each selected folder (and archive) in a new tab. */
     const openSelectedInTabs = () => {
-        for (const entry of selectedNow()) if (entry.dir) openInNewTab(entry.path);
+        for (const entry of selectedNow()) if (entry.dir || isArchiveFile(entry)) openInNewTab(entry.path);
     };
 
     useEffect(() => {
@@ -603,7 +629,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 if (key === "ArrowLeft") goBack();
                 else if (key === "ArrowRight") goForward();
                 else if (key === "ArrowUp") goUp();
-                else if (key === "Enter") properties(s.focus ?? s.path);
+                else if (key === "Enter") {
+                    // Properties are File Explorer's, for files on disk; the preview pane has an archived item's details.
+                    if (s.listing?.archive) toast.message("Properties are for files on disk", { id: "archive-properties", description: "For something inside an archive, the preview pane (Alt+P) shows its details." });
+                    else properties(s.focus ?? s.path);
+                }
                 else if (key === "d") useExplorer.setState({ editingAddress: true });
                 else if (key === "p") setSettings({ showPreviewPane: !useStore.getState().settings.showPreviewPane });
                 else return;
@@ -679,9 +709,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const onRowMouseDown = (e: React.MouseEvent, index: number) => {
         const entry = rows[index];
         if (e.button === 1) {
-            // Middle-click: the folder in a new tab (and no autoscroll).
+            // Middle-click: the folder (or archive) in a new tab, and no autoscroll.
             e.preventDefault();
-            if (entry.dir) openInNewTab(entry.path);
+            if (entry.dir || isArchiveFile(entry)) openInNewTab(entry.path);
             return;
         }
         const selection = tabState(tabRef.current)?.selection ?? new Set();
@@ -705,9 +735,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             if (!(e.buttons & 1)) press.current = null;
             else if (Math.hypot(e.clientX - start.x, e.clientY - start.y) >= 6) {
                 press.current = null;
-                const paths = selectedNow().map((r) => r.path);
-                // Moved away (e.g. into another drive's folder in Explorer): show what's left.
+                const chosen = selectedNow();
+                const paths = chosen.map((r) => r.path);
                 if (!paths.length) return;
+                // Out of an archive: extracted first, and dragged as copies.
+                if (chosen.some(isArchived)) {
+                    dragFromArchive(paths);
+                    return;
+                }
+                // Moved away (e.g. into another drive's folder in Explorer): show what's left.
                 const from = tabRef.current;
                 startDrag(paths)
                     .then((effect) => {
@@ -734,15 +770,24 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const itemMenu = (targets: FileEntry[]): MenuItem[] => {
         const one = targets.length === 1 ? targets[0] : null;
         const paths = targets.map((t) => t.path);
-        const folders = targets.filter((t) => t.dir);
+        // Archives open like folders: in a new tab too.
+        const folders = targets.filter((t) => t.dir || isArchiveFile(t));
         const other = dual && !!otherPaneFolder();
+        // Inside an archive, nothing changes: what would is greyed out, and opening a file extracts it.
+        const archived = targets.some(isArchived) ? archiveOf(tabRef.current) : undefined;
+        const browses = !!one && (one.dir || isArchiveFile(one));
         return [
-            { label: one?.dir ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: one?.dir ? FolderOpen : ExternalLink, shortcut: "Enter", onSelect: openSelected },
+            { label: browses ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: browses ? (one!.dir ? FolderOpen : FileArchive) : ExternalLink, shortcut: "Enter", onSelect: openSelected },
             folders.length > 0 && {
                 label: folders.length > 1 ? `Open ${folders.length} folders in new tabs` : "Open in new tab",
                 icon: SquarePlus,
                 shortcut: "Ctrl+Enter",
                 onSelect: () => folders.forEach((f) => openInNewTab(f.path)),
+            },
+            one && isArchiveFile(one) && {
+                label: "Open with its app",
+                icon: AppWindow,
+                onSelect: () => (archived ? openArchivedWith(one, (p) => openPath(p)) : openPath(one.path).catch(report("Couldn't open the file"))),
             },
             one && {
                 label: "Quick Look",
@@ -753,25 +798,36 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     useExplorer.setState({ quickLook: true });
                 },
             },
-            one && !one.dir && !!editorName && { label: `Open with ${editorName}`, icon: Code, onSelect: () => openPath(one.path, editorPath.trim()).catch(report("Couldn't open the file")) },
-            one && !one.dir && { label: "Open with…", icon: AppWindow, onSelect: () => openWith(one.path).catch(report("Couldn't open the app picker")) },
-            one?.dir && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
+            one && !one.dir && !!editorName && {
+                label: `Open with ${editorName}`,
+                icon: Code,
+                onSelect: () => (archived ? openArchivedWith(one, (p) => openPath(p, editorPath.trim())) : openPath(one.path, editorPath.trim()).catch(report("Couldn't open the file"))),
+            },
+            one && !one.dir && {
+                label: "Open with…",
+                icon: AppWindow,
+                onSelect: () => (archived ? openArchivedWith(one, openWith) : openWith(one.path).catch(report("Couldn't open the app picker"))),
+            },
+            one?.dir && !archived && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
             find && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
-            { label: "Show in File Explorer", icon: FolderSearch, onSelect: () => revealItemInDir(paths).catch(report("Couldn't open File Explorer")) },
+            archived
+                ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }
+                : { label: "Show in File Explorer", icon: FolderSearch, onSelect: () => revealItemInDir(paths).catch(report("Couldn't open File Explorer")) },
             "separator",
-            { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", onSelect: () => copyToClipboard(paths, true) },
+            { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", disabled: !!archived, onSelect: () => copyToClipboard(paths, true) },
             { label: "Copy", icon: Copy, shortcut: "Ctrl+C", onSelect: () => copyToClipboard(paths, false) },
             dual && { label: "Copy to other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
-            dual && { label: "Move to other pane", icon: FolderOutput, disabled: !other, onSelect: () => copyToOtherPane(true, paths) },
-            one?.dir && { label: "Paste into folder", icon: ClipboardPaste, onSelect: () => paste(one.path) },
+            dual && { label: "Move to other pane", icon: FolderOutput, disabled: !other || !!archived, onSelect: () => copyToOtherPane(true, paths) },
+            one?.dir && { label: "Paste into folder", icon: ClipboardPaste, disabled: !!archived, onSelect: () => paste(one.path) },
             { label: paths.length === 1 ? "Copy path" : "Copy paths", icon: ClipboardCopy, shortcut: "Ctrl+Shift+C", onSelect: () => copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths") },
             "separator",
-            one && { label: "Rename", icon: PenLine, shortcut: "F2", onSelect: () => startRename(one.path) },
-            { label: "Delete", icon: Trash2, shortcut: "Del", danger: true, onSelect: () => deleteSelected(false) },
+            one && { label: "Rename", icon: PenLine, shortcut: "F2", disabled: !!archived, onSelect: () => startRename(one.path) },
+            { label: "Delete", icon: Trash2, shortcut: "Del", danger: !archived, disabled: !!archived, onSelect: () => deleteSelected(false) },
             "separator",
             one?.dir && { label: pinned.includes(one.path) ? "Unpin from sidebar" : "Pin to sidebar", icon: pinned.includes(one.path) ? PinOff : Pin, onSelect: () => togglePin(one.path) },
-            one?.dir && { label: "Search text in folder", icon: TextSearch, onSelect: () => onSearchText(one.path) },
-            one && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
+            one?.dir && !archived && { label: "Search text in folder", icon: TextSearch, onSelect: () => onSearchText(one.path) },
+            one && !archived && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
+            !!archived && READ_ONLY_NOTE,
         ];
     };
 
@@ -791,7 +847,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const onFolderContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
         selectOnly(null);
-        menu.open(e, folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current) }));
+        menu.open(e, folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive }));
     };
 
     const onSort = (key: SortKey) => setSettings({ sort: { key, desc: sort.key === key ? !sort.desc : key === "modified" || key === "size" } });
@@ -839,7 +895,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </Button>
             </Centered>
         ) : (
-            <Centered>This folder is empty.</Centered>
+            <Centered>{listing.archive && samePath(listing.archive.path, path) ? "This archive is empty." : "This folder is empty."}</Centered>
         );
     }
 

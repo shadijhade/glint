@@ -69,13 +69,16 @@ export async function findFiles(roots: string[], query: string, options: FindOpt
 
 export const cancelFind = (lane: string) => invoke("cancel_find", { lane });
 
+/** Who measured a folder: the index, dust, or (in an archive) the archive's own list of entries. */
+export type SizeEngine = "index" | "dust" | "zip" | "7z";
+
 export interface FolderSizes {
     path: string;
     total: number;
     /** Subfolder name → bytes. */
     sizes: [string, number][];
     elapsed: number;
-    engine: "index" | "dust";
+    engine: SizeEngine;
 }
 
 /**
@@ -133,8 +136,43 @@ export const clipboardSetFiles = (paths: string[], cut: boolean) => invoke("clip
 export const clipboardGetFiles = () => invoke<{ paths: string[]; cut: boolean } | null>("clipboard_get_files");
 export const clipboardClear = () => invoke("clipboard_clear");
 
-/** Drags files out to other apps; call while the mouse button is down. Resolves when dropped or cancelled. */
-export const startDrag = (paths: string[]) => invoke<"copy" | "move" | "link" | "none">("start_drag", { paths });
+/**
+ * Drags files out to other apps; call while the mouse button is down. Resolves when dropped or
+ * cancelled, or "released" when the button was up before it could start. `copyOnly` offers a copy
+ * and nothing else (files extracted from an archive).
+ */
+export const startDrag = (paths: string[], copyOnly = false) => invoke<"copy" | "move" | "link" | "none" | "released">("start_drag", { paths, copyOnly });
+
+/**
+ * A file in a zip or 7z archive extracted to a read-only temp copy, made once and reused: to
+ * preview it (within a size budget) or to open it. Resolves to the copy's path.
+ */
+export const archiveExtract = (path: string, purpose: "preview" | "open") => invoke<string>("archive_extract", { path, purpose });
+
+export interface Staged {
+    /** The staging folder, to delete once its contents are copied (`archiveUnstage`). */
+    folder: string;
+    /** The extracted copy of each item asked for that could be extracted, in order. */
+    paths: string[];
+    /** Files that couldn't be (password-protected, damaged…), with the reason. */
+    skipped: { path: string; reason: string }[];
+    bytes: number;
+}
+
+/**
+ * Extracts files and folders from archives into a staging folder for Windows' file engine to copy
+ * from: "copy" for a copy made here (delete it after), "out" for the clipboard or a drag (Glint
+ * deletes those once they're off the clipboard). Each tab extracts in its own `lane`; rejects with
+ * "cancelled" when stopped.
+ */
+export async function archiveStage(paths: string[], purpose: "copy" | "out", lane: string, onProgress: (done: number, total: number) => void) {
+    const channel = new Channel<{ done: number; total: number }>();
+    channel.onmessage = ({ done, total }) => onProgress(done, total);
+    return invoke<Staged>("archive_stage", { paths, purpose, lane, onProgress: channel });
+}
+
+export const cancelArchiveStage = (lane: string) => invoke("cancel_archive_stage", { lane });
+export const archiveUnstage = (folder: string) => invoke("archive_unstage", { folder });
 
 export const showProperties = (path: string) => invoke("show_properties", { path });
 export const openWith = (path: string) => invoke("open_with", { path });

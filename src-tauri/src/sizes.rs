@@ -19,7 +19,7 @@ pub struct FolderSizes {
     /// Subfolder name → bytes.
     pub sizes: Vec<(String, u64)>,
     pub elapsed: f64,
-    /// "index" or "dust".
+    /// "index" or "dust", or the archive's format ("zip", "7z") for a folder in one.
     pub engine: &'static str,
 }
 
@@ -76,6 +76,13 @@ fn index_sizes(_: &str) -> Option<(u64, Vec<(String, u64)>)> {
 pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: String, index_only: Option<bool>, lane: String) -> Result<FolderSizes, String> {
     let started = Instant::now();
     let slot = state.sizes.slot(&lane);
+    let asked = path.clone();
+    // A folder in an archive: the archive's own list of entries has every size.
+    if let Some(found) = blocking(move || Ok(crate::archive::folder_sizes(&asked))).await? {
+        slot.kill();
+        let (total, sizes, engine) = found?;
+        return Ok(FolderSizes { path, total, sizes, elapsed: ms_since(started), engine });
+    }
     let asked = path.clone();
     if let Some((total, sizes)) = blocking(move || Ok(index_sizes(&asked))).await? {
         // A dust run still going in this tab is for a folder no longer wanted.

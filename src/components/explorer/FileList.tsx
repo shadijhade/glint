@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef } from "react";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp, Cloud } from "lucide-react";
-import { type FileEntry, isHidden, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
+import { ChevronDown, ChevronUp, Cloud, Lock } from "lucide-react";
+import { ATTR, type FileEntry, isArchived, isHidden, isLocked, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
 import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
@@ -107,6 +107,12 @@ export function Header({ sortKey, sort, onSort, className, children }: { sortKey
     );
 }
 
+/** Why an item in an archive can't be opened, for its lock icon. */
+export const lockReason = (entry: FileEntry) => (entry.attrs & ATTR.encrypted ? "Password-protected" : "Compressed in a way Glint can't read");
+
+/** A folder that files dragged in can be dropped on: not one in an archive, which is read-only. */
+export const dropPath = (entry: FileEntry) => (entry.dir && !isArchived(entry) ? entry.path : undefined);
+
 /** Where a search result is, below the folder that was searched ("" when right in it). */
 export function relativeTo(scope: string) {
     const base = scope.replace(/[\\/]+$/, "").toLowerCase();
@@ -139,7 +145,7 @@ export function FileList(props: FileListProps) {
             <div
                 data-row
                 data-search={search || undefined}
-                data-drop={entry.dir ? entry.path : undefined}
+                data-drop={dropPath(entry)}
                 onMouseDown={(e) => props.onRowMouseDown(e, i)}
                 onDoubleClick={() => props.onOpen(entry)}
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
@@ -153,7 +159,7 @@ export function FileList(props: FileListProps) {
             >
                 <div className="flex min-w-0 items-center gap-2" title={entry.name}>
                     <span className="relative grid size-4 shrink-0 place-items-center">
-                        <Thumbnail entry={entry} box={iconBox} lane={lane} enabled={thumbnails && isPictureOrVideo(entry)} iconClassName="size-4" />
+                        <Thumbnail entry={entry} box={iconBox} lane={lane} enabled={thumbnails && isPictureOrVideo(entry) && !isLocked(entry)} iconClassName="size-4" />
                     </span>
                     {renaming === entry.path ? (
                         <RenameInput entry={entry} onCommit={(name) => props.onRename(entry, name)} onCancel={props.onCancelRename} />
@@ -161,6 +167,7 @@ export function FileList(props: FileListProps) {
                         <span className="truncate">{entry.name}</span>
                     )}
                     {isOnlineOnly(entry) && <Cloud className="size-3.5 shrink-0 text-sky-500" aria-label="Online-only" />}
+                    {isLocked(entry) && <Lock className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" aria-label={lockReason(entry)} />}
                 </div>
                 {search && (
                     <span className="truncate text-xs text-muted-foreground" title={parentPath(entry.path)}>
