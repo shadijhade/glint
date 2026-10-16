@@ -173,8 +173,9 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn scratch() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("glint-launch-{}", std::process::id()));
+    /// A folder of the test's own: tests run in parallel, and each deletes its folder when done.
+    fn scratch(test: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("glint-launch-{}-{test}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("sub folder")).unwrap();
         fs::write(dir.join("sub folder").join("notes.txt"), "hi").unwrap();
@@ -187,7 +188,7 @@ mod tests {
 
     #[test]
     fn folders_files_and_drives() {
-        let dir = scratch();
+        let dir = scratch("folders");
         let sub = dir.join("sub folder");
         let file = sub.join("notes.txt");
         let parse = |args: &[&str]| Request::parse(args.iter().map(|a| a.to_string()), &dir);
@@ -210,7 +211,7 @@ mod tests {
 
     #[test]
     fn what_the_app_cannot_open_goes_to_file_explorer() {
-        let dir = scratch();
+        let dir = scratch("explorer");
         let parse = |arg: &str| Request::parse([arg.to_string()], &dir);
         for place in [
             "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
