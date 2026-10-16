@@ -35,4 +35,21 @@ export default defineConfig(async () => ({
       "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("react-syntax-highlighter") || id.includes("refractor") || id.includes("prismjs")) {
+            return "syntax";
+          }
+          if (id.includes("lucide-react")) {
+            return "icons";
+          }
+          if (id.includes("node_modules") && (id.includes("react-dom") || id.includes("@tauri-apps") || id.includes("sonner") || id.includes("zustand"))) {
+            return "vendor";
+          }
+        },
+      },
+    },
+  },
 }));

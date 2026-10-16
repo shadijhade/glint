@@ -3684,10 +3684,12 @@ dependencies = [
 name = "shadui-ripgrep"
 version = "0.3.1"
 dependencies = [
+ "crc32fast",
  "notify",
  "serde",
  "serde_json",
  "sevenz-rust2",
+ "sha2 0.10.9",
  "shadui-index",
  "tauri",
  "tauri-build",
