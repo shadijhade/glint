@@ -302,7 +302,7 @@ function App() {
         </div>
       </header>
 
-      <Explorer active={mode === "files"} onSearchText={searchText} />
+      <Explorer active={mode === "files"} onSearchText={searchText} onOpenSettings={openSettings} />
 
       <div className={mode === "text" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
         {run ? (

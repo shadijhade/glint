@@ -1,0 +1,39 @@
+# Push a tag like v0.3.0 (after bumping the version in package.json, src-tauri/Cargo.toml and
+# src-tauri/tauri.conf.json) to build the installer and attach it to a draft GitHub release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ShadUI Ripgrep ${{ github.ref_name }}
+          releaseBody: Download the `-setup.exe` below and run it. ripgrep, fd and dust are included.
+          releaseDraft: true
+          args: --bundles nsis

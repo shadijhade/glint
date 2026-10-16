@@ -21,6 +21,7 @@ import {
     listDir,
     listDrives,
     type Listing,
+    resolvePath,
     watchDir,
 } from "./fs";
 import { baseName, crumbs, joinPath, parentPath, samePath, THIS_PC } from "./paths";
@@ -83,6 +84,9 @@ interface ExplorerState {
     dropTarget: string | null;
     /** Instant search's service, once asked. */
     index: IndexInfo | null;
+    /** Space-bar preview of the focused item, over everything. */
+    quickLook: boolean;
+    palette: boolean;
 }
 
 export const useExplorer = create<ExplorerState>(() => ({
@@ -106,6 +110,8 @@ export const useExplorer = create<ExplorerState>(() => ({
     cut: new Set(),
     dropTarget: null,
     index: null,
+    quickLook: false,
+    palette: false,
 }));
 
 const get = useExplorer.getState;
@@ -188,6 +194,7 @@ export async function navigate(target: string, { select, history = true, quiet =
     if (!same) {
         watchDir(listing ? path : null).catch(() => {});
         useStore.getState().setLastFolder(path);
+        if (path !== THIS_PC) useStore.getState().recordVisit(path);
         if (path === THIS_PC) refreshDrives();
     }
     // With the index, every folder shows its subfolders' sizes as it opens (and after each refresh).
@@ -446,6 +453,19 @@ export function openEntry(entry: FileEntry) {
 
 /** Shows a file (e.g. a text search result) in its folder here. */
 export const revealInApp = (path: string) => navigate(parentPath(path), { select: path });
+
+/** Opens what someone typed: "This PC", a folder, or a file (its folder, with it selected). */
+export async function goTo(text: string) {
+    const value = text.trim();
+    if (!value || /^this pc$/i.test(value)) return navigate(THIS_PC);
+    try {
+        const target = await resolvePath(value);
+        return target.dir ? navigate(target.path) : revealInApp(target.path);
+    } catch (e) {
+        toast.error(String(e));
+        return false;
+    }
+}
 
 export async function copyToClipboard(paths: string[], cut: boolean) {
     if (!paths.length) return;

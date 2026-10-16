@@ -1,9 +1,8 @@
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, ArrowUp, ChevronRight, type LucideIcon, Monitor, RotateCw, Search as SearchIcon, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { clearFind, goBack, goForward, goUp, navigate, refresh, revealInApp, runFind, useExplorer } from "@/lib/explorer";
-import { driveName, resolvePath } from "@/lib/fs";
+import { clearFind, goBack, goForward, goTo, goUp, navigate, refresh, runFind, useExplorer } from "@/lib/explorer";
+import { driveName } from "@/lib/fs";
 import { crumbs, samePath, THIS_PC } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 
@@ -34,22 +33,9 @@ function AddressInput({ path }: { path: string }) {
         ref.current?.select();
     }, []);
     const close = () => useExplorer.setState({ editingAddress: false });
+    // A file opens its folder with it selected; a typo keeps the box open to fix it.
     const go = async () => {
-        const value = text.trim();
-        if (!value || /^this pc$/i.test(value)) {
-            close();
-            navigate(THIS_PC);
-            return;
-        }
-        try {
-            const target = await resolvePath(value);
-            close();
-            // A file opens its folder with it selected.
-            if (target.dir) navigate(target.path);
-            else revealInApp(target.path);
-        } catch (e) {
-            toast.error(String(e));
-        }
+        if (await goTo(text)) close();
     };
     return (
         <input

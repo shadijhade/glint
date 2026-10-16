@@ -1,0 +1,47 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report this! Please search the existing issues first.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a folder with …
+        2. Press …
+        3. See …
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Settings → About
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+  - type: dropdown
+    id: instant
+    attributes:
+      label: Instant search
+      options:
+        - "Off"
+        - "On"
+  - type: textarea
+    id: details
+    attributes:
+      label: Screenshots, logs or anything else
+      description: For instant search problems, the output of `shadui-index status` helps a lot.

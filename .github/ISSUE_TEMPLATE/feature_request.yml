@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest something that would make the app better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would it solve?
+      description: What are you trying to do that's slow, hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: How do other tools handle it?
+      description: File Explorer, Everything, Files, Total Commander, macOS Finder…

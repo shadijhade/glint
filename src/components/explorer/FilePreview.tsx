@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Cloud, ExternalLink, Files, FolderOpen, HardDrive } from "lucide-react";
+import { Cloud, ExternalLink, Files, FolderOpen, HardDrive, X } from "lucide-react";
 import { type FileEntry, isOnlineOnly } from "@/lib/entries";
 import { calcSizes, navigate, useExplorer } from "@/lib/explorer";
 import { isKnownType, kindOf, previewKind, typeLabel } from "@/lib/fileTypes";
@@ -153,7 +153,8 @@ function Details({ entry }: { entry: FileEntry }) {
     );
 }
 
-function Single({ entry }: { entry: FileEntry }) {
+/** One item's preview with its name, actions and details; Quick Look shows it large, with a close button. */
+export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: () => void }) {
     const kind = previewKind(entry);
     const src = convertFileSrc(entry.path);
     let body: React.ReactNode;
@@ -199,6 +200,11 @@ function Single({ entry }: { entry: FileEntry }) {
                     <Button variant="ghost" size="icon" className="size-7" onClick={open} title="Open (Enter)">
                         <ExternalLink />
                     </Button>
+                    {onClose && (
+                        <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Space or Esc)" aria-label="Close">
+                            <X />
+                        </Button>
+                    )}
                 </div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto bg-card">{body}</div>
@@ -252,5 +258,5 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
             </Centered>
         );
     }
-    return <Single key={entry.path} entry={entry} />;
+    return <EntryPreview key={entry.path} entry={entry} />;
 }

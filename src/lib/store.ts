@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Sort } from './entries'
+import { frecency, type Visit } from './rank'
 
 export interface HistoryItem {
     query: string;
@@ -87,6 +88,8 @@ interface AppState {
     mode: Mode;
     pinned: string[];
     lastFolder: string | null;
+    /** Folders opened, for ranking in the command palette. */
+    visits: Record<string, Visit>;
     setQuery: (query: string) => void;
     setPath: (path: string) => void;
     addToHistory: (query: string, path: string) => void;
@@ -97,7 +100,10 @@ interface AppState {
     setMode: (mode: Mode) => void;
     togglePin: (path: string) => void;
     setLastFolder: (path: string) => void;
+    recordVisit: (path: string) => void;
 }
+
+const MAX_VISITS = 300;
 
 export const useStore = create<AppState>()(
     persist(
@@ -110,6 +116,7 @@ export const useStore = create<AppState>()(
             mode: 'files',
             pinned: [],
             lastFolder: null,
+            visits: {},
             setQuery: (query) => set({ query }),
             setPath: (path) => set({ path }),
             addToHistory: (query, path) => set((state) => {
@@ -135,6 +142,17 @@ export const useStore = create<AppState>()(
                 pinned: state.pinned.includes(path) ? state.pinned.filter(p => p !== path) : [...state.pinned, path]
             })),
             setLastFolder: (lastFolder) => set({ lastFolder }),
+            recordVisit: (path) => set((state) => {
+                const now = Date.now();
+                const visits = { ...state.visits, [path]: { count: (state.visits[path]?.count ?? 0) + 1, last: now } };
+                const paths = Object.keys(visits);
+                // Forget the least used folders once there are many, as zoxide ages its database.
+                if (paths.length > MAX_VISITS) {
+                    paths.sort((a, b) => frecency(visits[a], now) - frecency(visits[b], now));
+                    for (const old of paths.slice(0, paths.length - MAX_VISITS)) delete visits[old];
+                }
+                return { visits };
+            }),
         }),
         {
             name: 'shadui-ripgrep-storage',
