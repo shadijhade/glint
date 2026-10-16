@@ -4,7 +4,8 @@ Off until you turn it on in **Settings → Instant search**. Windows then asks f
 
 -   **Name searches** on indexed drives answer from memory: the same query rules as fd (every word must match, `*` and `?` match the whole name, case-insensitive, same exclusions and hidden-file setting), results streamed into the same list with size, date and attributes.
 -   **Folder sizes** for every folder come from the index, kept current as files change.
--   **Fallbacks are automatic.** fd answers whatever the index can't: drives that aren't indexed (network shares, FAT/exFAT USB sticks, a drive still being read), folders behind junctions, and searches with *Skip what .gitignore lists* on (only fd reads .gitignore). From This PC, indexed drives and the rest are searched together (*index + fd*). dust sizes folders the index doesn't have.
+-   **Disk usage maps** of any folder on an indexed drive come from the index in one request: its 20,000 biggest files and folders, six levels down, with their sizes.
+-   **Fallbacks are automatic.** fd answers whatever the index can't: drives that aren't indexed (network shares, FAT/exFAT USB sticks, a drive still being read), folders behind junctions, and searches with *Skip what .gitignore lists* on (only fd reads .gitignore). From This PC, indexed drives and the rest are searched together (*index + fd*). dust sizes and maps folders the index doesn't have.
 
 ## Measured
 
@@ -30,13 +31,14 @@ Measure your own with `shadui-index bench C:` (administrator) and `shadui-index 
 -   **The USN journal** keeps it current: every 250 ms the service reads new journal records and re-reads each file record they touched through NTFS itself (`FSCTL_GET_NTFS_FILE_RECORD`), so creates, renames, moves, size changes, hard links and deletes converge on what's really on disk however late or often a change is seen. Folder totals are updated along each changed file's folder chain. If the journal wraps while the service isn't running, it reads the MFT again (seconds).
 -   **Snapshots** of each volume's index are saved after indexing, every 30 minutes if anything changed, and when the service stops, so a restart is a load plus a short journal replay.
 -   **The index** keeps, per volume, a record per MFT entry (size, date, attributes) and a link per name to its parent folder, with names in one UTF-8 arena (a lowercase copy only for names that aren't ASCII). A search is a parallel scan over every name, then a walk up each match's folders for the scope, hidden and exclusion rules.
+-   **A disk-usage map** walks the folder's subfolders biggest first. Once it has as many items as the map can hold, anything smaller than the smallest of them can't make the map, so neither it nor anything inside it is looked at; one parallel pass over the names then picks up the files in the folders it opened. The biggest items, with every folder they're in, go back in one binary frame, each folder's items together and largest first. A service from before maps closes the pipe on that request, and the app says the service needs updating while dust measures instead.
 
 ## Security model
 
 -   **Nothing runs elevated unless you turn it on.** Turning it on runs the bundled `shadui-index.exe install` behind the UAC prompt; turning it off runs `shadui-index.exe uninstall` the same way. Uninstalling the app removes the service too (one more prompt, only if it was on).
 -   **Where it runs.** Reading a raw volume requires administrator rights, so the service runs as LocalSystem, but with every privilege removed except `SeChangeNotify`, `SeBackup` and `SeManageVolume`. It's copied to `C:\Program Files\ShadUI Ripgrep\`, which only administrators can change (a LocalSystem service must never run a file its users could swap), and registered with a quoted path, delayed start, and restart on failure. It only reads volumes; the one change it can make is turning on a drive's change journal if it was off (Windows' default size, 32 MB), as Everything does.
 -   **Who can ask it.** It answers on the named pipe `\\.\pipe\shadui-ripgrep-index-v1`, whose ACL lets in only SYSTEM, administrators and the accounts that turned it on, and refuses remote clients. Even those accounts can't create an instance of the pipe, so no other program can pose as the service, and the app also refuses a pipe not owned by SYSTEM or Administrators (a program could otherwise take the name while the service is stopped and feed the app made-up results).
--   **What it exposes.** Like Everything, the index knows the name, size, date and attributes of every file on the indexed drives, **including files your account can't open** (other users' profiles, `System Volume Information`…), and anyone allowed on the pipe can search them. It never reads or returns file contents. On a shared PC, only turn it on for accounts that may see all file names. Its snapshots hold the same names, so they live in LocalSystem's own profile (`%SystemRoot%\System32\config\systemprofile\AppData\Local\ShadUI Ripgrep\Index`), readable only by SYSTEM and administrators, and are deleted when it's turned off.
+-   **What it exposes.** Like Everything, the index knows the name, size, date and attributes of every file on the indexed drives, **including files your account can't open** (other users' profiles, `System Volume Information`…), and anyone allowed on the pipe can search them or map a folder's disk usage, which returns the same four things for the biggest items below it. It never reads or returns file contents. On a shared PC, only turn it on for accounts that may see all file names. Its snapshots hold the same names, so they live in LocalSystem's own profile (`%SystemRoot%\System32\config\systemprofile\AppData\Local\ShadUI Ripgrep\Index`), readable only by SYSTEM and administrators, and are deleted when it's turned off.
 -   **Installing per user.** The app installs per user by default, so the copy of `shadui-index.exe` the UAC prompt runs sits in your own folder, where a program running as you could swap it before you click. Install the app per machine if that matters to you.
 
 ## Why our own service
@@ -50,7 +52,7 @@ Before writing it, these were evaluated (October 2026):
 | [UFFS](https://github.com/skyllc-ai/UltraFastFileSearch) (MPL-2.0) | Raw MFT reading, daemon, 40+ filters | Very large, a separate access-broker service, its own clients in mind |
 | [usn-journal-rs](https://crates.io/crates/usn-journal-rs) / [ntfs-reader](https://crates.io/crates/ntfs-reader) crates | Journal reading; a full raw-MFT reader | `FSCTL_ENUM_USN_DATA` has no sizes or dates; ntfs-reader keeps the whole MFT in memory (~1 KiB per record, ~3 GB here) or reads it twice |
 
-What the app needed (folder totals, its exact query rules, results streamed with metadata, a pipe only the opting-in user can open, fast restarts, few dependencies in a SYSTEM service) came out simpler as a purpose-built service of about 4,000 lines of Rust (plus 850 of tests) in [`src-tauri/index`](../src-tauri/index), with ideas taken from those projects: goz's pipe ACL and server-owner check, everyfind's snapshot and polling tail, Everything's single MFT pass.
+What the app needed (folder totals, its exact query rules, results streamed with metadata, a pipe only the opting-in user can open, fast restarts, few dependencies in a SYSTEM service) came out simpler as a purpose-built service of about 4,400 lines of Rust (plus 1,050 of tests) in [`src-tauri/index`](../src-tauri/index), with ideas taken from those projects: goz's pipe ACL and server-owner check, everyfind's snapshot and polling tail, Everything's single MFT pass.
 
 ## For admins and developers
 
@@ -58,6 +60,7 @@ What the app needed (folder totals, its exact query rules, results streamed with
 shadui-index status                      what the running service has indexed
 shadui-index search QUERY [--in PATH]... [--max N] [--hidden] [--repeat N] [--print | --long]
 shadui-index sizes PATH
+shadui-index usage PATH [--depth N] [--max N] [--repeat N]
 shadui-index install [--allow-sid SID]   (administrator) install or update, and allow a user
 shadui-index uninstall                   (administrator) remove it with its snapshots
 shadui-index run [--volume C:]...        (administrator) run in a console instead, logging to it

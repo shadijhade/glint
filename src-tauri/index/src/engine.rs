@@ -1,10 +1,10 @@
 //! The running index: a worker per NTFS drive (read the MFT or load the last snapshot, catch up with
 //! the journal, then follow it), and the answers to the app's requests.
 
-use crate::proto::{self, unix_ms, Hit, Message, SearchRequest, Sizes, Status, VolumeStatus, FRAME_HITS};
+use crate::proto::{self, unix_ms, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_HITS, FRAME_USAGE, NO_PARENT};
 use crate::query::{Excludes, NameMatcher};
 use crate::snapshot::{self, Meta};
-use crate::tree::{Search, Tree};
+use crate::tree::{Search, Tree, NONE, ROOT};
 use crate::usn;
 use crate::volume::{self, Journal, JournalError, Volume};
 use rayon::prelude::*;
@@ -28,6 +28,10 @@ const RETRY_AFTER: Duration = Duration::from_secs(30);
 const BATCH: usize = 4096;
 /// Even a search with no limit stops here: more than any list can show.
 pub const MAX_HITS: usize = 1_000_000;
+/// Disk-usage maps go at most this deep and hold at most this many items: far more than a screen
+/// can show.
+const MAX_USAGE_DEPTH: u32 = 32;
+const MAX_USAGE_ITEMS: usize = 500_000;
 
 /// A stop signal that sleeping threads wake up for.
 #[derive(Default)]
@@ -444,6 +448,43 @@ impl Engine {
         let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
         let total = tree.rec(dir).filter(|r| r.dir()).ok_or("Not a folder")?.size;
         Ok(Sizes { path: path.to_string(), total, sizes: tree.child_dirs(dir), elapsed: ms(started) })
+    }
+
+    /// Answers a disk-usage map: one frame with the map, then a summary.
+    pub fn usage(&self, request: &UsageRequest, out: &mut dyn Write) -> io::Result<()> {
+        match self.map(request) {
+            Ok((payload, summary)) => {
+                proto::write_frame(out, FRAME_USAGE, &payload)?;
+                proto::write_message(out, &Message::Usage(summary))
+            }
+            Err(message) => proto::write_message(out, &Message::Error { message }),
+        }
+    }
+
+    fn map(&self, request: &UsageRequest) -> Result<(Vec<u8>, UsageSummary), String> {
+        let started = Instant::now();
+        let (letter, rest) = split_drive(&request.path).ok_or("Not a folder on a local drive")?;
+        let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
+        // Encoded under the lock: names are only valid until the next change.
+        let tree = slot.tree.read().unwrap();
+        let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
+        let depth = request.depth.clamp(1, MAX_USAGE_DEPTH);
+        let (items, limited) = tree.usage(dir, depth, (request.max_items as usize).min(MAX_USAGE_ITEMS));
+        let mut payload = Vec::with_capacity(items.len() * 48);
+        for item in &items {
+            let (rec, name, parent) = if item.link == NONE {
+                let name = tree.rec(dir).map_or(NONE, |r| r.first_link);
+                (dir, if dir == ROOT || name == NONE { "" } else { tree.name(name) }, NO_PARENT)
+            } else {
+                (tree.link(item.link).rec, tree.name(item.link), item.parent)
+            };
+            let Some(r) = tree.rec(rec) else { continue };
+            let node = UsageNode { parent, name: name.to_string(), dir: item.dir, size: item.size, modified: unix_ms(r.modified), attrs: r.attrs };
+            proto::encode_usage_node(&mut payload, &node);
+        }
+        let total = items.first().ok_or("Not a folder")?.size;
+        let summary = UsageSummary { path: request.path.clone(), total, items: items.len() as u64, limited, elapsed: ms(started) };
+        Ok((payload, summary))
     }
 }
 

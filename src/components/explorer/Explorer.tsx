@@ -32,6 +32,8 @@ import {
     FolderSearch,
     HardDrive,
     Info,
+    LayoutDashboard,
+    List,
     ListChecks,
     Loader2,
     Monitor,
@@ -56,6 +58,7 @@ import {
     X,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
 import { type FileEntry, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     calcSizes,
@@ -121,6 +124,7 @@ import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
+import { DiskUsage } from "./DiskUsage";
 import { FileList } from "./FileList";
 import { FilePreview } from "./FilePreview";
 import { QuickLook } from "./QuickLook";
@@ -315,6 +319,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("find", "Find files in this folder", Search, focusFind, "Ctrl+F"),
             inFolder && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
             inFolder && !t.find && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
+            inFolder && !t.find && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
             !!t.focus && action("quick-look", "Quick Look", Eye, () => useExplorer.setState({ quickLook: true }), "Space"),
             action("hidden", now.showHidden ? "Hide hidden items" : "Show hidden items", now.showHidden ? EyeOff : Eye, () => setSettings({ showHidden: !now.showHidden }), "Ctrl+H"),
             action("preview", now.showPreviewPane ? "Hide preview pane" : "Show preview pane", PanelRight, () => setSettings({ showPreviewPane: !now.showPreviewPane }), "Alt+P"),
@@ -435,7 +440,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     }, [source, listing, sort, foldersFirst, sizeRun]);
 
     const deferredFilter = useDeferredValue(filter);
-    const { rows, hidden } = useMemo(() => {
+    const { rows: listRows, hidden } = useMemo(() => {
         const match = matcher(deferredFilter);
         if (!match && showHidden) return { rows: sorted, hidden: 0 };
         let hidden = 0;
@@ -448,6 +453,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         });
         return { rows, hidden };
     }, [sorted, deferredFilter, showHidden]);
+    // A tab showing its disk-usage map has the map's items as rows.
+    const mapRows = useMapRows(tabId);
+    const rows = mapRows ?? listRows;
 
     const focusIndex = useMemo(() => (focus ? rows.findIndex((r) => r.path === focus) : -1), [rows, focus]);
     const selected = useMemo(() => (selection.size ? rows.filter((r) => selection.has(r.path)) : NO_ENTRIES), [rows, selection]);
@@ -744,6 +752,13 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         menu.open(e, folderMenu(place, false, menuContext));
     };
 
+    /** Right-click where the open folder shows but none of its items does. */
+    const onFolderContextMenu = (e: React.MouseEvent) => {
+        e.preventDefault();
+        selectOnly(null);
+        menu.open(e, folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current) }));
+    };
+
     const onSort = (key: SortKey) => setSettings({ sort: { key, desc: sort.key === key ? !sort.desc : key === "modified" || key === "size" } });
 
     let empty: React.ReactNode = null;
@@ -832,6 +847,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             <div className="min-h-0 flex-1">
                 {path === THIS_PC && !find ? (
                     <ThisPC onContextMenu={onPlaceContextMenu} />
+                ) : mapRows ? (
+                    <DiskUsage tab={tabId} onItemContextMenu={onRowContextMenu} onFolderContextMenu={onFolderContextMenu} />
                 ) : (
                     <FileList
                         key={`${tabId}:${listKey}`}
@@ -854,11 +871,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                         onRowContextMenu={onRowContextMenu}
                         onOpen={openEntry}
                         onBackgroundMouseDown={(e) => e.button === 0 && !e.ctrlKey && !e.shiftKey && selectOnly(null)}
-                        onBackgroundContextMenu={(e) => {
-                            e.preventDefault();
-                            selectOnly(null);
-                            menu.open(e, folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current) }));
-                        }}
+                        onBackgroundContextMenu={onFolderContextMenu}
                         onRename={(entry, name) => renameEntry(entry, name, tabRef.current)}
                         onCancelRename={() => updateTab({ renaming: null }, tabRef.current)}
                         empty={empty}

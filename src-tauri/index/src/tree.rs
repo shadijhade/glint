@@ -4,7 +4,8 @@
 
 use crate::query::{fold, is_hidden, Excludes, NameMatcher};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 
 /// No record or link.
 pub const NONE: u32 = u32::MAX;
@@ -110,6 +111,18 @@ pub struct Search<'a> {
     /// Include hidden files and folders (and everything inside hidden folders).
     pub hidden: bool,
     pub excludes: &'a Excludes,
+}
+
+/// One item of a disk-usage map (see `Tree::usage`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UsageItem {
+    /// The item's name; NONE for the folder the map is of.
+    pub link: u32,
+    /// Where the folder it's in is in the map; NONE for the folder the map is of.
+    pub parent: u32,
+    /// Files: their size. Folders: everything below them.
+    pub size: u64,
+    pub dir: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, serde::Serialize)]
@@ -513,6 +526,156 @@ impl Tree {
         children.iter().map(|&id| (self.name(id).to_string(), self.recs[self.links[id as usize].rec as usize].size)).collect()
     }
 
+    /// A disk-usage map of folder `dir`: the files and folders in it and in its folders, down to
+    /// `depth` levels, without empty ones. Only the `max` biggest are kept, with the folders they're
+    /// in; the rest still count in their folders' sizes, and the second value says whether any were
+    /// left out. The first item is `dir` itself; then each folder's items follow together, biggest
+    /// first, and every folder comes before what's in it.
+    pub fn usage(&self, dir: u32, depth: u32, max: usize) -> (Vec<UsageItem>, bool) {
+        let Some(top) = self.rec(dir).filter(|r| r.used() && r.dir()) else { return (Vec::new(), false) };
+        let mut items = vec![UsageItem { link: NONE, parent: NONE, size: top.size, dir: true }];
+        if max == 0 {
+            return (items, top.size != 0);
+        }
+        // Folders biggest first, from the folder lists. Once `max` items are known, anything smaller
+        // than the smallest of the biggest `max` so far (`floor`) can't make the map, and neither can
+        // anything inside it: neither is looked at, so deep maps cost little more than shallow ones.
+        // `open` maps every folder whose files are wanted to its place in `items`.
+        let mut biggest: BinaryHeap<Reverse<u64>> = BinaryHeap::with_capacity(max + 1);
+        let mut floor = 0;
+        let mut left_out = false;
+        let mut open: HashMap<u32, u32> = HashMap::new();
+        let mut frontier = BinaryHeap::from([(top.size, dir, 0u32, 0u32)]);
+        while let Some((size, folder, at, level)) = frontier.pop() {
+            if size < floor {
+                left_out = true;
+                continue;
+            }
+            // A folder seen twice is a cycle, which only corruption makes.
+            if open.insert(folder, at).is_some() {
+                continue;
+            }
+            for &id in self.dirs.get(&folder).map_or(&[][..], Vec::as_slice) {
+                let rec = self.links[id as usize].rec;
+                let size = self.recs[rec as usize].size;
+                if size == 0 {
+                    continue;
+                }
+                if size < floor {
+                    left_out = true;
+                    continue;
+                }
+                items.push(UsageItem { link: id, parent: at, size, dir: true });
+                biggest.push(Reverse(size));
+                if biggest.len() > max {
+                    biggest.pop();
+                }
+                if biggest.len() == max {
+                    floor = biggest.peek().map_or(0, |s| s.0);
+                }
+                if level + 1 < depth {
+                    frontier.push((size, rec, (items.len() - 1) as u32, level + 1));
+                }
+            }
+        }
+        // Files aren't listed by folder: one pass over every name finds those in the open folders.
+        let mut wanted = vec![0u64; self.recs.len().div_ceil(64)];
+        for &folder in open.keys() {
+            wanted[folder as usize / 64] |= 1 << (folder % 64);
+        }
+        const CHUNK: usize = 1 << 14;
+        let files: Vec<(Vec<u32>, bool)> = self
+            .links
+            .par_chunks(CHUNK)
+            .enumerate()
+            .map(|(chunk, links)| {
+                let (mut found, mut smaller) = (Vec::new(), false);
+                for (i, link) in links.iter().enumerate() {
+                    let parent = link.parent as usize;
+                    if link.flags & LINK_USED == 0 || parent >= self.recs.len() || wanted[parent / 64] & (1 << (parent % 64)) == 0 {
+                        continue;
+                    }
+                    let rec = &self.recs[link.rec as usize];
+                    if link.rec < FIRST_USER_RECORD || rec.dir() || rec.size == 0 {
+                        continue;
+                    }
+                    if rec.size < floor {
+                        smaller = true;
+                    } else {
+                        found.push((chunk * CHUNK + i) as u32);
+                    }
+                }
+                (found, smaller)
+            })
+            .collect();
+        for (found, smaller) in files {
+            left_out |= smaller;
+            for id in found {
+                let link = &self.links[id as usize];
+                items.push(UsageItem { link: id, parent: open[&link.parent], size: self.recs[link.rec as usize].size, dir: false });
+            }
+        }
+
+        // The biggest `max`, and the folders they're in (a folder is never smaller than its items,
+        // but sizes can tie).
+        let mut keep = vec![true; items.len()];
+        let limited = left_out || items.len() - 1 > max;
+        if items.len() - 1 > max {
+            let mut order: Vec<u32> = (1..items.len() as u32).collect();
+            order.select_nth_unstable_by(max, |&a, &b| items[b as usize].size.cmp(&items[a as usize].size).then(a.cmp(&b)));
+            keep.fill(false);
+            keep[0] = true;
+            for &i in &order[..max] {
+                keep[i as usize] = true;
+            }
+            for &i in &order[..max] {
+                let mut up = items[i as usize].parent;
+                while up != NONE && !keep[up as usize] {
+                    keep[up as usize] = true;
+                    up = items[up as usize].parent;
+                }
+            }
+        }
+
+        // Each folder's items together, biggest first (then by name), breadth first.
+        let mut start = vec![0u32; items.len() + 1];
+        for (i, item) in items.iter().enumerate().skip(1) {
+            if keep[i] {
+                start[item.parent as usize + 1] += 1;
+            }
+        }
+        for i in 0..items.len() {
+            start[i + 1] += start[i];
+        }
+        let mut fill = start.clone();
+        let mut inside = vec![0u32; start[items.len()] as usize];
+        for (i, item) in items.iter().enumerate().skip(1) {
+            if keep[i] {
+                let slot = &mut fill[item.parent as usize];
+                inside[*slot as usize] = i as u32;
+                *slot += 1;
+            }
+        }
+        let mut map = Vec::with_capacity(inside.len() + 1);
+        map.push(items[0]);
+        let mut queue = vec![0u32];
+        let mut at = 0;
+        while at < queue.len() {
+            let folder = queue[at] as usize;
+            let range = &mut inside[start[folder] as usize..start[folder + 1] as usize];
+            range.sort_unstable_by(|&a, &b| {
+                let (a, b) = (&items[a as usize], &items[b as usize]);
+                b.size.cmp(&a.size).then_with(|| self.name_bytes(a.link).cmp(self.name_bytes(b.link)))
+            });
+            for &i in range.iter() {
+                map.push(UsageItem { parent: at as u32, ..items[i as usize] });
+                queue.push(i);
+            }
+            at += 1;
+        }
+        (map, limited)
+    }
+
     /// Every name below `search.scope` that matches, in index order.
     pub fn search(&self, search: &Search) -> Vec<u32> {
         const CHUNK: usize = 1 << 14;
@@ -862,6 +1025,168 @@ mod tests {
         let mut cache = HashMap::new();
         assert_eq!(tree.dir_path(25, &mut cache), Some(r"Users\me\docs\.hidden"));
         assert_eq!(tree.dir_path(ROOT, &mut cache), Some(""));
+    }
+
+    /// A map as (name, parent's place, size, folder), the folder mapped first as "".
+    fn map(tree: &Tree, dir: u32, depth: u32, max: usize) -> (Vec<(String, u32, u64, bool)>, bool) {
+        let (items, limited) = tree.usage(dir, depth, max);
+        let named = items.iter().map(|i| (if i.link == NONE { String::new() } else { tree.name(i.link).to_string() }, i.parent, i.size, i.dir)).collect();
+        (named, limited)
+    }
+
+    fn item(name: &str, parent: u32, size: u64, dir: bool) -> (String, u32, u64, bool) {
+        (name.to_string(), parent, size, dir)
+    }
+
+    #[test]
+    fn maps_disk_usage_level_by_level() {
+        let mut tree = sample();
+        // Empty things take no room in a map.
+        tree.set_record(32, &dir(1, &[(30, "Empty")]));
+        tree.set_record(33, &file(0, &[(30, "zero.txt")]));
+        assert_eq!(map(&tree, ROOT, 1, 100), (vec![item("", NONE, 1135 * KB, true), item("Data", 0, 1024 * KB, true), item("Users", 0, 111 * KB, true)], false));
+        // Every folder's items follow it together, biggest first; hidden ones too.
+        let everything = vec![
+            item("", NONE, 1135 * KB, true),
+            item("Data", 0, 1024 * KB, true),
+            item("Users", 0, 111 * KB, true),
+            item("big.bin", 1, 1024 * KB, false),
+            item("me", 2, 111 * KB, true),
+            item("docs", 4, 110 * KB, true),
+            item("a.txt", 4, KB, false),
+            item(".hidden", 5, 100 * KB, true),
+            item("b.pdf", 5, 10 * KB, false),
+            item("c.pdf", 7, 100 * KB, false),
+        ];
+        assert_eq!(map(&tree, ROOT, 9, 100), (everything.clone(), false));
+        assert_eq!(map(&tree, ROOT, 4, 100).0, everything[..9]);
+        // A folder below the root, and a file instead of a folder.
+        assert_eq!(map(&tree, 21, 1, 100).0, [item("", NONE, 111 * KB, true), item("docs", 0, 110 * KB, true), item("a.txt", 0, KB, false)]);
+        assert!(tree.usage(22, 3, 100).0.is_empty());
+    }
+
+    #[test]
+    fn keeps_the_biggest_items_and_their_folders() {
+        let mut tree = sample();
+        // Only the biggest stay; ties go to the item found first (folders before files).
+        assert_eq!(map(&tree, ROOT, 9, 3), (vec![item("", NONE, 1135 * KB, true), item("Data", 0, 1024 * KB, true), item("Users", 0, 111 * KB, true), item("big.bin", 1, 1024 * KB, false)], true));
+        assert_eq!(map(&tree, ROOT, 9, 0), (vec![item("", NONE, 1135 * KB, true)], true));
+        // A total that drifted below what's in the folder still brings the folder along.
+        tree.recs[25].size = 1;
+        let (kept, limited) = map(&tree, 23, 9, 1);
+        assert_eq!(kept, [item("", NONE, 110 * KB, true), item(".hidden", 0, 1, true), item("c.pdf", 1, 100 * KB, false)]);
+        assert!(limited);
+    }
+
+    /// What `usage` must return, the slow way: every item down to `depth`, cut to the biggest `max`
+    /// (ancestors winning ties) plus their folders, then in map order.
+    fn usage_by_hand(tree: &Tree, dir: u32, depth: u32, max: usize) -> (Vec<(String, u64, bool, String)>, bool) {
+        let mut cache = HashMap::new();
+        // (link, size, folder, level): folders level by level, then files, as discovery order.
+        let mut found: Vec<(u32, u64, bool)> = Vec::new();
+        let mut level = vec![dir];
+        let mut open = vec![];
+        for _ in 0..depth {
+            let mut next = vec![];
+            for folder in level {
+                open.push(folder);
+                for &id in tree.dirs.get(&folder).map_or(&[][..], Vec::as_slice) {
+                    let rec = tree.link(id).rec;
+                    if tree.recs[rec as usize].size > 0 {
+                        found.push((id, tree.recs[rec as usize].size, true));
+                        next.push(rec);
+                    }
+                }
+            }
+            level = next;
+        }
+        for (id, link) in tree.links.iter().enumerate() {
+            let rec = tree.recs[link.rec as usize];
+            if link.flags & LINK_USED != 0 && open.contains(&link.parent) && !rec.dir() && rec.size > 0 && link.rec >= FIRST_USER_RECORD {
+                found.push((id as u32, rec.size, false));
+            }
+        }
+        let mut order: Vec<usize> = (0..found.len()).collect();
+        order.sort_by(|&a, &b| found[b].1.cmp(&found[a].1).then(a.cmp(&b)));
+        let mut kept: Vec<u32> = order.iter().take(max).map(|&i| found[i].0).collect();
+        // Their folders, up to the folder mapped.
+        for &id in kept.clone().iter() {
+            let mut up = tree.link(id).parent;
+            while up != dir {
+                let link = tree.recs[up as usize].first_link;
+                if !kept.contains(&link) {
+                    kept.push(link);
+                }
+                up = tree.link(link).parent;
+            }
+        }
+        let mut items: Vec<(String, u64, bool, String)> = kept
+            .iter()
+            .map(|&id| {
+                let rec = tree.recs[tree.link(id).rec as usize];
+                (tree.name(id).to_string(), rec.size, rec.dir(), tree.dir_path(tree.link(id).parent, &mut cache).unwrap().to_string())
+            })
+            .collect();
+        items.sort();
+        (items, found.len() > max)
+    }
+
+    #[test]
+    fn deep_maps_skip_only_what_cant_make_the_map() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for round in 0..30 {
+            let mut tree = Tree::default();
+            tree.set_record(ROOT, &RecordState { seq: 5, dir: true, ..Default::default() });
+            let mut folders = vec![ROOT];
+            for n in 20..45u32 {
+                let parent = folders[next(folders.len() as u64) as usize];
+                tree.set_record(n, &dir(1, &[(parent, &format!("d{n}"))]));
+                folders.push(n);
+            }
+            // Every file a different power of two, so no two different sets of files tie.
+            let mut bits: Vec<u32> = (0..62).collect();
+            for n in 100..100 + 30 + round {
+                let bit = bits.swap_remove(next(bits.len() as u64) as usize);
+                let parent = folders[next(folders.len() as u64) as usize];
+                tree.set_record(n, &file(1 << bit, &[(parent, &format!("f{n}"))]));
+            }
+            for depth in [1, 2, 3, 5, 9] {
+                for max in [0, 1, 3, 7, 15, 40, 100] {
+                    let (items, limited) = tree.usage(ROOT, depth, max);
+                    let mut cache = HashMap::new();
+                    let mut got: Vec<(String, u64, bool, String)> = items[1..]
+                        .iter()
+                        .map(|i| (tree.name(i.link).to_string(), i.size, i.dir, tree.dir_path(tree.link(i.link).parent, &mut cache).unwrap().to_string()))
+                        .collect();
+                    got.sort();
+                    assert_eq!((got, limited), usage_by_hand(&tree, ROOT, depth, max), "round {round}, depth {depth}, max {max}");
+                    // And in map order: each folder's items together after it, biggest first.
+                    for (i, item) in items.iter().enumerate().skip(1) {
+                        assert!(item.parent < i as u32 && items[item.parent as usize].dir);
+                        if i > 1 && items[i - 1].parent == item.parent {
+                            assert!(items[i - 1].size >= item.size);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maps_every_hard_link_where_it_is() {
+        let mut tree = sample();
+        tree.set_record(40, &file(2 * KB, &[(21, "one.dll"), (30, "two.dll")]));
+        let (items, _) = map(&tree, ROOT, 3, 100);
+        let dlls: Vec<_> = items.iter().filter(|i| i.0.ends_with(".dll")).collect();
+        // Root, Data, Users, then Data's big.bin and two.dll, Users' me, and me's docs, one.dll, a.txt.
+        assert_eq!(dlls, [&item("two.dll", 1, 2 * KB, false), &item("one.dll", 5, 2 * KB, false)]);
+        assert_eq!(items.len(), 9);
     }
 
     #[test]

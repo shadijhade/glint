@@ -22,7 +22,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/
 ## Why
 
 -   **Folders open in milliseconds.** System32's 5,092 items are on screen 12 ms after you press Enter, and a folder of 100,000 files takes 114 ms. One Win32 pass reads names, sizes, dates and attributes together, Rust sorts them, and the list draws only the rows you can see.
--   **Every folder shows its size.** File Explorer keeps them out of the list. Here they're in the Size column as the folder opens (all of `C:\Windows` sized in 0.4 ms from the index), or one click away with dust. Sort by size and you see what's filling your disk.
+-   **Every folder shows its size.** File Explorer keeps them out of the list. Here they're in the Size column as the folder opens (all of `C:\Windows` sized in 0.4 ms from the index), or one click away with dust. Sort by size, or open **Disk usage** for a treemap like WizTree's, and you see what's filling your disk.
 -   **Any file on any drive, in milliseconds.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows the change journal. Every `kernel32.dll` on three drives (over 3 million names) is listed in about 8 ms. Without it, fd streams results as it finds them.
 -   **ripgrep for what's inside files**: regular expressions, whole words, replace across files, and a syntax-highlighted preview.
 -   **Space to Quick Look, Ctrl+K for everything else.** See any file full size without opening it and arrow through the folder. Jump to the folders you use most (ranked by frecency, like zoxide) or run any command by typing a few letters.
@@ -55,6 +55,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Instant folders.** Each folder is read in one Win32 enumeration pass and sorted in Rust in natural order (`img9` before `img10`), then drawn as a virtual list. The status bar says how long it took: *read in 0.3 ms · shown in 6.3 ms*.
 -   **Find files by name.** Typing in the search box filters the folder as you type; **Enter** searches every subfolder too (from This PC, every drive). All words must match, `*` and `?` work like in Explorer, and `"quotes"` keep spaces. The status bar says who answered: *index · 18 found in 7.7 ms* or *fd · 304 found in 8.09 s*.
 -   **Folder sizes.** With instant search on, every folder shows its size as it opens, and search results show folder totals too. Otherwise one click measures them with dust.
+-   **Disk usage map.** **Disk usage** (in the command bar, or `Ctrl+K`) draws the open folder as a squarified treemap, the way WizTree and WinDirStat do: folders nest six levels deep, files are colored by type, and the 20,000 biggest items are drawn, with everything smaller grouped in its folder. Hover for the name, path and size, click a folder to go into it (or a file to go to its folder), `Backspace` or `Alt+Up` to go back out, `Enter` to open, and right-click for the usual menu. With instant search on, the map comes from the index in one request. Otherwise dust measures the folder: going into a folder shows its part of the map while dust measures it, and going back out shows the map you left. Each tab has its own map, and the status bar shows which engine drew it and how long it took.
 -   **Preview pane and Quick Look.** Syntax-highlighted code and text, images, video, audio, PDFs and folder summaries, in the side pane (`Alt+P`) or full size on `Space`. Online-only OneDrive files are left alone, so nothing downloads by accident.
 -   **Command palette.** `Ctrl+K` finds any command, or a folder you've been to by typing a few of its letters (`dl` finds Downloads), with the folders you open most often and most recently first. Type a path, `~` or `%APPDATA%` to go there.
 -   **The usual explorer moves.** Back, forward and up, a breadcrumb address bar you can type into, Quick access, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folders and text documents, and hidden items on demand.
@@ -86,7 +87,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 <img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 30 ms" width="100%">
 
-It's off until you turn it on in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches and folder sizes then answer from memory. fd and dust take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
+It's off until you turn it on in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and dust take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
 
 The service only runs once you opt in, with every privilege removed except the three it needs. It answers only you and administrators, over a named pipe no other program can pose as. It knows the names of all files on the indexed drives, including ones your account can't open, so on a shared PC turn it on only for accounts that may see every file name. Measurements, how it works and the full security model are in **[docs/instant-search.md](docs/instant-search.md)**.
 
@@ -105,6 +106,7 @@ The service only runs once you opt in, with every privilege removed except the t
 | | File Explorer | ShadUI Ripgrep |
 | :--- | :--- | :--- |
 | Folder sizes | In Properties or a tooltip | In the list, for every folder |
+| What fills a drive | Not shown (Storage settings has categories) | A treemap of any folder, like WizTree's |
 | Find a file by name | Windows Search where it indexes, otherwise a walk through every folder | An index of every NTFS drive (opt-in), otherwise fd |
 | Search inside files | Indexed places and file types | ripgrep in any folder, with regex and replace |
 | Preview | Preview pane | Preview pane, and Quick Look on `Space` |
@@ -153,6 +155,17 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 | `Alt+P` | Show or hide the preview pane |
 | `Ctrl+Shift+F` | Search text in this folder |
 
+### Disk usage map
+| Key | Action |
+| :--- | :--- |
+| Click | Go into a folder; on a file, go to its folder with the file selected |
+| `Backspace` / `Alt+Up` | Back out to the folder above |
+| `Alt+Left` · `Alt+Right` | Back · Forward, as in the list |
+| `Enter` / double-click | Open the selected item (a folder is mapped) |
+| `Space` | Quick Look the selected item |
+| Right-click | The item's menu, as in the list |
+| `F5` | Map the folder again (measures it again when dust drew it) |
+
 ### Text search
 | Key | Action |
 | :--- | :--- |
@@ -172,6 +185,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 -   **Folders**: one `FindFirstFileExW` pass (basic info, large fetch) gets every name, size, date and attribute at once. Rust sorts them and hands the whole listing to the UI as a single binary buffer rather than JSON, and React draws only the rows on screen.
 -   **Name search**: the instant-search service when it covers the folder, otherwise fd, with results streamed into the list as they arrive.
 -   **Folder sizes**: the index's per-folder totals, otherwise dust.
+-   **Disk usage map**: one request to the index returns the biggest files and folders six levels down (folders are walked biggest first, so nothing too small to draw is looked at), or dust's JSON tree when the index doesn't have the folder. Either way it reaches the UI as one binary buffer and is drawn on a canvas as a squarified treemap.
 -   **Text search**: ripgrep's JSON output, streamed in batches.
 -   **File operations**: Windows' `IFileOperation` (the engine Explorer uses), the clipboard formats Explorer reads, and OLE drag and drop.
 -   **Live folders**: [notify](https://github.com/notify-rs/notify) watches the folders on screen (one per pane).
@@ -184,7 +198,7 @@ Built with [Tauri 2](https://tauri.app/) and the [windows](https://github.com/mi
 | :--- | :--- | :--- | :--- |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | 15.2.0 | Searching inside files | MIT or Unlicense |
 | [fd](https://github.com/sharkdp/fd) | 10.5.0 | Finding files by name | MIT or Apache-2.0 |
-| [dust](https://github.com/bootandy/dust) | 1.2.6 | Folder sizes | Apache-2.0 |
+| [dust](https://github.com/bootandy/dust) | 1.2.6 | Folder sizes and disk-usage maps | Apache-2.0 |
 
 ## Build from source
 
@@ -208,12 +222,12 @@ node src/lib/text.check.ts
 cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
-The index's tests (MFT record parsing, queries, folder totals under random changes, snapshots, the wire format, and a real named-pipe round trip with its ACL) run without administrator rights.
+The index's tests (MFT record parsing, queries, disk-usage maps, folder totals under random changes, snapshots, the wire format, and a real named-pipe round trip with its ACL) run without administrator rights.
 
 ## Roadmap
 
 -   [x] Tabs and a dual-pane view
--   [ ] A disk-usage map (treemap) from the index
+-   [x] A disk-usage map (treemap) from the index
 -   [ ] Thumbnails and a grid view
 -   [x] Auto-update, with signed update packages
 -   [ ] Code-signed installers, and winget and Scoop packages (`npm run release` is ready for them: [docs/releasing.md](docs/releasing.md))

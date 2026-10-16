@@ -2,7 +2,7 @@
 
 use crate::client::{self, Event};
 use crate::engine::{self, Stop};
-use crate::proto::SearchRequest;
+use crate::proto::{SearchRequest, UsageRequest};
 use crate::query::{Excludes, NameMatcher};
 use crate::tree::{Search, ROOT};
 use crate::volume::Volume;
@@ -21,6 +21,8 @@ shadui-index: instant file name search and folder sizes for ShadUI Ripgrep
   status                      what the running service has indexed
   search QUERY [--in PATH]... [--max N] [--hidden] [--repeat N] [--print | --long]
   sizes PATH                  folder sizes from the running service
+  usage PATH [--depth N] [--max N] [--repeat N]
+                              a disk-usage map from the running service, timed end to end
   bench [C:]...               read drives directly and time indexing and queries (administrator)
 ";
 
@@ -94,6 +96,7 @@ pub fn main() -> i32 {
                 1
             }
         },
+        Some("usage") if rest.first().is_some_and(|p| !p.starts_with("--")) => usage(rest),
         Some("bench") => bench(rest),
         _ => {
             eprint!("{USAGE}");
@@ -198,6 +201,35 @@ fn search(args: &[String]) -> i32 {
     0
 }
 
+/// A disk-usage map through the running service, timed end to end; prints what's biggest at the top.
+fn usage(args: &[String]) -> i32 {
+    let number = |flag: &str, default: u32| values(args, flag).first().and_then(|v| v.parse().ok()).unwrap_or(default);
+    let request = UsageRequest { path: args[0].clone(), depth: number("--depth", 4), max_items: number("--max", 20_000) };
+    let repeat = number("--repeat", 1).max(1);
+    let mut times = Vec::new();
+    for round in 0..repeat {
+        let started = Instant::now();
+        let (nodes, summary) = match client::usage(&request) {
+            Ok(map) => map,
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        };
+        times.push(ms(started));
+        if round == 0 {
+            let more = if summary.limited { ", the biggest" } else { "" };
+            println!("{} bytes in {}: {} items{more}, {} levels down ({:.2} ms in the service)", summary.total, summary.path, summary.items, request.depth, summary.elapsed);
+            for node in nodes.iter().filter(|n| n.parent == 0).take(20) {
+                println!("{:>16}  {}{}", node.size, node.name, if node.dir { "\\" } else { "" });
+            }
+        }
+    }
+    let (median, p95) = median_p95(times);
+    eprintln!("end to end: median {median:.1} ms, p95 {p95:.1} ms over {repeat} run(s)");
+    0
+}
+
 /// Indexes drives in this process and times everything the service does with them.
 fn bench(args: &[String]) -> i32 {
     if !win::is_elevated() {
@@ -250,6 +282,17 @@ fn bench(args: &[String]) -> i32 {
         let started = Instant::now();
         let (total, children) = (tree.rec(ROOT).map_or(0, |r| r.size), tree.child_dirs(ROOT));
         println!("    folder sizes of {letter}:\\ ({} folders, {} GB): {:.3} ms", children.len(), total >> 30, ms(started));
+        for depth in [2, 4, 6] {
+            let mut times = Vec::new();
+            let mut items = 0;
+            for _ in 0..11 {
+                let started = Instant::now();
+                items = tree.usage(ROOT, depth, 20_000).0.len();
+                times.push(ms(started));
+            }
+            let (median, p95) = median_p95(times);
+            println!("    disk-usage map of {letter}:\\, {depth} levels ({items} items): median {median:.1} ms, p95 {p95:.1} ms");
+        }
 
         println!("    query (app defaults: no hidden, skip node_modules/.git, max 50k)   matches   median    p95");
         let queries = ["kernel32.dll", "report", ".pdf", "*.dll", "budget 2026", "zzqxjv", "résumé", "e"];
