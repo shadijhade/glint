@@ -59,7 +59,7 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
 
     return (
         <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card pl-3 pr-1.5">
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-chrome pl-3 pr-1.5">
                 <span className="truncate text-sm" title={path}>
                     <span className="font-medium">{name}</span>
                     <span className="text-muted-foreground"> · line {line}</span>

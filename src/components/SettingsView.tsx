@@ -28,7 +28,7 @@ function Section({ id, title, action, children }: { id?: string; title: string; 
     return (
         <section id={id}>
             <div className="mb-2 flex h-7 items-center justify-between px-1">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+                <h3 className="text-sm font-semibold">{title}</h3>
                 {action}
             </div>
             <div className="divide-y rounded-lg border bg-card">{children}</div>
@@ -69,7 +69,7 @@ function SwitchRow({ label, hint, checked, onChange }: { label: string; hint?: s
 
 function Segmented<T extends string | number | null>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (value: T) => void }) {
     return (
-        <div className="inline-flex rounded-md bg-muted p-0.5">
+        <div className="inline-flex rounded-md bg-foreground/[0.05] p-0.5">
             {options.map(([option, label]) => (
                 <button
                     key={label}
@@ -78,7 +78,7 @@ function Segmented<T extends string | number | null>({ value, options, onChange 
                     onClick={() => onChange(option)}
                     className={cn(
                         "rounded-sm px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
-                        option === value && "bg-card text-foreground shadow-xs"
+                        option === value && "bg-background text-foreground shadow-xs dark:bg-foreground/[0.12]"
                     )}
                 >
                     {label}

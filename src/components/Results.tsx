@@ -45,9 +45,11 @@ interface ResultsProps {
     onOpen: (path: string) => void;
     onReveal: (path: string) => void;
     onShowAll: () => void;
+    /** Back to the start screen. */
+    onClose: () => void;
 }
 
-export function Results({ active, run, matches, searching, error, duration, filesSearched, selected, onSelect, onOpen, onReveal, onShowAll }: ResultsProps) {
+export function Results({ active, run, matches, searching, error, duration, filesSearched, selected, onSelect, onOpen, onReveal, onShowAll, onClose }: ResultsProps) {
     const fontSize = useStore((s) => s.settings.fontSize);
     const [filter, setFilter] = useState("");
     const [activeExts, setActiveExts] = useState<string[]>([]);
@@ -237,7 +239,7 @@ export function Results({ active, run, matches, searching, error, duration, file
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex h-10 shrink-0 items-center gap-3 border-b bg-card px-3 text-sm">
+            <div className="flex h-10 shrink-0 items-center gap-3 border-b bg-chrome px-3 text-sm">
                 {searching && <Loader2 className="size-4 shrink-0 animate-spin text-primary" />}
                 <span className="truncate text-muted-foreground">
                     <b className="font-semibold tabular-nums text-foreground">{fmt(matches.length)}</b> {matches.length === 1 ? "result" : "results"} in{" "}
@@ -272,7 +274,7 @@ export function Results({ active, run, matches, searching, error, duration, file
                             placeholder="Filter results"
                             aria-label="Filter results"
                             spellCheck={false}
-                            className="h-7 w-44 rounded-md border bg-background pl-7 pr-6 text-xs outline-hidden placeholder:text-muted-foreground focus:border-ring/60"
+                            className="fluent-field h-7 w-44 pl-7 pr-6 text-xs outline-hidden placeholder:text-muted-foreground"
                         />
                         {filter && (
                             <button onClick={() => setFilter("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label="Clear filter">
@@ -282,6 +284,9 @@ export function Results({ active, run, matches, searching, error, duration, file
                     </div>
                     <Button variant="ghost" size="icon" className="size-7" onClick={exportResults} disabled={!rows.length} title="Export results (CSV or JSON)">
                         <Download />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={onClose} title="Close the results (back to recent searches)">
+                        <X /> Close
                     </Button>
                 </div>
             </div>

@@ -85,7 +85,7 @@ export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu:
     );
     const canClose = tabs.length > 1 || dual;
     return (
-        <div className="flex h-9 shrink-0 items-end border-b bg-card/40 pl-1.5 pr-1">
+        <div className="flex h-9 shrink-0 items-end border-b bg-chrome pl-1.5 pr-1">
             <div
                 role="tablist"
                 aria-label={dual ? `${pane === 0 ? "Left" : "Right"} pane tabs` : "Tabs"}
