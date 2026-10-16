@@ -165,6 +165,7 @@ fn answer(pipe: Handle, engine: &Engine) {
             };
             proto::write_message(&mut io, &answer)
         }
+        Request::Usage(request) => engine.usage(&request, &mut io),
     };
     match result {
         // Let the client read everything before the pipe goes away.
@@ -183,7 +184,7 @@ fn answer(pipe: Handle, engine: &Engine) {
 mod tests {
     use super::*;
     use crate::client::{self, Error, Event};
-    use crate::proto::SearchRequest;
+    use crate::proto::{SearchRequest, UsageRequest, NO_PARENT};
     use crate::tree::{make_ref, RecordState, Tree, ROOT};
 
     /// T:\Users\me\{report.pdf 1000 B, notes.txt 24 B}
@@ -237,6 +238,16 @@ mod tests {
         let sizes = client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"t:\users").unwrap();
         assert_eq!((sizes.total, sizes.sizes), (1024, vec![("me".to_string(), 1024)]));
         assert!(matches!(client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"T:\Nowhere"), Err(Error::Service(_))));
+
+        let map = |path: &str, depth| client::usage_on(client::connect_to(&name, &trust).unwrap(), &UsageRequest { path: path.into(), depth, max_items: 100 });
+        let (nodes, summary) = map(r"t:\users", 2).unwrap();
+        let shape: Vec<_> = nodes.iter().map(|n| (n.parent, n.name.as_str(), n.dir, n.size)).collect();
+        assert_eq!(shape, [(NO_PARENT, "Users", true, 1024), (0, "me", true, 1024), (1, "report.pdf", false, 1000), (1, "notes.txt", false, 24)]);
+        assert_eq!((nodes[2].modified, nodes[2].attrs), (1_655_526_400_000, 0x20));
+        assert_eq!((summary.path.as_str(), summary.total, summary.items, summary.limited), (r"t:\users", 1024, 4, false));
+        assert_eq!(map(r"T:\", 1).unwrap().0.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["", "Users"]);
+        assert!(matches!(map(r"T:\Users\me\report.pdf", 2), Err(Error::Service(_))));
+        assert!(matches!(map(r"Z:\", 2), Err(Error::Service(_))));
         server.stop();
     }
 
