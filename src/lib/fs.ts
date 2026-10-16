@@ -85,6 +85,9 @@ export interface FolderSizes {
 export const folderSizes = (path: string, lane: string, indexOnly = false) => invoke<FolderSizes>("folder_sizes", { path, indexOnly, lane });
 export const cancelFolderSizes = (lane: string) => invoke("cancel_folder_sizes", { lane });
 
+/** Stops every running rg, fd and dust, in every tab (before an update replaces them). */
+export const stopTools = () => invoke("stop_tools");
+
 export type FileOp =
     | { kind: "copy" | "move"; sources: string[]; dest: string }
     | { kind: "delete"; paths: string[]; permanent: boolean; confirm: boolean }

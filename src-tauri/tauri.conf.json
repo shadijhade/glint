@@ -62,5 +62,17 @@
         "dialogImagePath": "installer/wix-dialog.bmp"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/shadijhade/shadui-ripgrep/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -117,6 +117,8 @@ The service only runs once you opt in, with every privilege removed except the t
 1.  Download `shadui-ripgrep_<version>_x64-setup.exe` from the [latest release](https://github.com/shadijhade/shadui-ripgrep/releases/latest).
 2.  Run it. It installs for your account without administrator rights, and ripgrep, fd and dust come with it.
 
+From then on it updates itself: when a new version is out, the app says so, and **Install** (in that notice or in **Settings → About**) downloads it, checks its signature and restarts into it in a few seconds.
+
 Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen may show *Windows protected your PC*; choose **More info → Run anyway**.
 
 ## Keyboard shortcuts
@@ -195,7 +197,7 @@ npm install
 npm run tauri dev
 ```
 
-`npm run tauri build` makes the installer in `src-tauri/target/release/bundle/nsis/`. The Windows x64 builds of ripgrep, fd and dust ship in `src-tauri/binaries/`; on other platforms, add binaries named `rg-<target-triple>`, `fd-<target-triple>` and `dust-<target-triple>` there.
+`npm run tauri build` makes the installer in `src-tauri/target/release/bundle/nsis/`. The Windows x64 builds of ripgrep, fd and dust ship in `src-tauri/binaries/`; on other platforms, add binaries named `rg-<target-triple>`, `fd-<target-triple>` and `dust-<target-triple>` there. `npm run release` builds a release on top of that: the update package the app installs, code signing, and the winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)).
 
 The checks to run before you commit:
 
@@ -213,7 +215,8 @@ The index's tests (MFT record parsing, queries, folder totals under random chang
 -   [x] Tabs and a dual-pane view
 -   [ ] A disk-usage map (treemap) from the index
 -   [ ] Thumbnails and a grid view
--   [ ] Signed releases, auto-update, and winget and Scoop packages
+-   [x] Auto-update, with signed update packages
+-   [ ] Code-signed installers, and winget and Scoop packages (`npm run release` is ready for them: [docs/releasing.md](docs/releasing.md))
 -   [ ] Zip and 7z archives opened like folders
 
 Missing something? [Open an issue](https://github.com/shadijhade/shadui-ripgrep/issues/new/choose). If the app saves you time, a star helps other people find it.

@@ -2,12 +2,13 @@ import { ReactNode, useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Archive, Binary, ExternalLink, Folder, Heart, Image, Loader2, Lock, Plus, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
+import { Archive, Binary, ExternalLink, Folder, Heart, Image, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
-import { disableIndex, enableIndex, refreshIndex, useExplorer } from "@/lib/explorer";
+import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import type { IndexVolume } from "@/lib/fs";
 import { DEFAULT_SETTINGS, useStore } from "@/lib/store";
+import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -23,9 +24,9 @@ const PRESETS = [
     { label: "Lock files", icon: Lock, items: ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "Gemfile.lock", "composer.lock", "poetry.lock"] },
 ];
 
-function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+function Section({ id, title, action, children }: { id?: string; title: string; action?: ReactNode; children: ReactNode }) {
     return (
-        <section>
+        <section id={id}>
             <div className="mb-2 flex h-7 items-center justify-between px-1">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
                 {action}
@@ -152,7 +153,7 @@ function InstantSearch() {
     };
     const state = index?.state ?? "off";
     const volumes = index?.volumes ?? [];
-    const outdated = state === "on" && !!index?.version && index.version !== index.appVersion;
+    const outdated = serviceOutdated(index);
     const details = volumes
         .map((v) => (v.state === "ready" ? `${v.volume} ${formatSize(v.memory)} in memory, built from ${v.source === "scan" ? "the MFT" : "its snapshot"} in ${formatDuration(v.buildMs)}` : `${v.volume} ${v.error ?? v.state}`))
         .join("\n");
@@ -198,12 +199,38 @@ function InstantSearch() {
     );
 }
 
-interface SettingsViewProps {
-    onClose: () => void;
-    update: { version: string; url: string } | null;
+/** A new version with its Install button, or a way to look for one. */
+function UpdateRow() {
+    const { available, status, error, progress } = useUpdater();
+    if (available) {
+        const installing = progress !== null;
+        return (
+            <Row label={`Version ${available.version} is available`} hint={available.update ? "Installing it restarts the app" : "Download the installer from GitHub"}>
+                <Button variant="ghost" size="sm" onClick={() => openUrl(available.url)}>
+                    What's new
+                </Button>
+                <Button size="sm" disabled={installing} onClick={installUpdate}>
+                    {installing ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                    {installing ? `Downloading ${progress}%` : available.update ? "Install" : "Download"}
+                </Button>
+            </Row>
+        );
+    }
+    const hint = { idle: undefined, checking: "Checking…", latest: "You have the latest version", failed: `Couldn't check: ${error}` }[status];
+    return (
+        <Row label="Updates" hint={hint}>
+            <Button variant="outline" size="sm" disabled={status === "checking"} onClick={() => checkForUpdates(true)}>
+                {status === "checking" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Check for updates
+            </Button>
+        </Row>
+    );
 }
 
-export function SettingsView({ onClose, update }: SettingsViewProps) {
+interface SettingsViewProps {
+    onClose: () => void;
+}
+
+export function SettingsView({ onClose }: SettingsViewProps) {
     const { settings, setSettings: set, history, clearHistory } = useStore();
     const [version, setVersion] = useState("");
 
@@ -345,7 +372,7 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                     </Row>
                 </Section>
 
-                <Section title="About">
+                <Section id="settings-about" title="About">
                     <div className="flex items-center gap-3 px-4 py-4">
                         <img src={logo} alt="" className="size-11" />
                         <div className="min-w-0 flex-1">
@@ -355,15 +382,11 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                             </div>
                             <div className="text-xs text-muted-foreground">Powered by ripgrep, fd, dust and an NTFS index</div>
                         </div>
-                        {update && (
-                            <Button size="sm" onClick={() => openUrl(update.url)}>
-                                <Sparkles /> Get {update.version}
-                            </Button>
-                        )}
                         <Button variant="outline" size="sm" onClick={() => openUrl(REPO_URL)}>
                             <ExternalLink /> GitHub
                         </Button>
                     </div>
+                    <UpdateRow />
                     <Row label="Reset settings" hint="Restore every option above to its default">
                         <Button variant="outline" size="sm" onClick={reset}>
                             <RotateCcw /> Reset

@@ -84,6 +84,14 @@ impl Finds {
         }
     }
 
+    /// Ends every lane's search.
+    pub fn stop_all(&self) {
+        let runs: Vec<Run> = self.lock().drain().map(|(_, run)| run).collect();
+        for run in runs {
+            run.end();
+        }
+    }
+
     /// Forgets `run` once it's done, unless a newer search in the lane replaced it.
     fn finished(&self, lane: &str, run: &Run) {
         let mut runs = self.lock();

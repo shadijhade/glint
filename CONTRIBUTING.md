@@ -34,6 +34,8 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop, Properties |
 | `src-tauri/index/` | The opt-in instant-search service (NTFS MFT + USN journal) |
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `dust` executables |
+| `src/lib/updater.ts` | Finding and installing updates (tauri-plugin-updater) |
+| `scripts/` | `npm run release` and its helpers: update signatures, winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)) |
 
 ## Principles
 
