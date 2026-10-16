@@ -8,7 +8,6 @@
 
 Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/bootandy/dust) and [ripgrep](https://github.com/BurntSushi/ripgrep), with an NTFS index like Everything's.
 
-[![CI](https://github.com/shadijhade/shadui-ripgrep/actions/workflows/ci.yml/badge.svg)](https://github.com/shadijhade/shadui-ripgrep/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/shadijhade/shadui-ripgrep?label=release)](https://github.com/shadijhade/shadui-ripgrep/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/shadijhade/shadui-ripgrep/total)](https://github.com/shadijhade/shadui-ripgrep/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -181,7 +180,7 @@ npm run tauri dev
 
 `npm run tauri build` makes the installer in `src-tauri/target/release/bundle/nsis/`. The Windows x64 builds of ripgrep, fd and dust ship in `src-tauri/binaries/`; on other platforms, add binaries named `rg-<target-triple>`, `fd-<target-triple>` and `dust-<target-triple>` there.
 
-The checks CI runs:
+The checks to run before you commit:
 
 ```bash
 npm run build

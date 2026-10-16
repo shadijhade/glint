@@ -44,7 +44,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 
 ## Checks
 
-Run these before opening a pull request (CI runs them too):
+Run these before you commit or open a pull request:
 
 ```bash
 cd src-tauri && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
