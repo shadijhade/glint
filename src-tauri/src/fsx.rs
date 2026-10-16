@@ -241,7 +241,7 @@ pub fn entry_for_path(path: &str, dir_hint: bool) -> Entry {
 }
 
 #[cfg(windows)]
-pub use win::{read_dir, stat};
+pub use win::{can_list, read_dir, stat};
 
 #[cfg(windows)]
 mod win {
@@ -339,6 +339,22 @@ mod win {
         result.map(|_| entries)
     }
 
+    /// Whether `read_dir` can list `dir`, from its first entry only.
+    pub fn can_list(dir: &str) -> bool {
+        let pattern = wide(&Path::new(dir).join("*"));
+        let mut data = WIN32_FIND_DATAW::default();
+        let found = unsafe { FindFirstFileExW(PCWSTR(pattern.as_ptr()), FindExInfoBasic, &mut data as *mut _ as *mut _, FindExSearchNameMatch, None, Default::default()) };
+        match found {
+            Ok(handle) => {
+                unsafe {
+                    let _ = FindClose(handle);
+                }
+                true
+            }
+            Err(e) => e.code() == ERROR_FILE_NOT_FOUND.to_hresult() && Path::new(dir).is_dir(),
+        }
+    }
+
     /// Metadata without opening the file (GetFileAttributesExW), so it's cheap and never triggers a cloud download.
     pub fn stat(path: &str) -> Option<Entry> {
         let mut data = WIN32_FILE_ATTRIBUTE_DATA::default();
@@ -357,6 +373,11 @@ pub fn read_dir(dir: &str) -> io::Result<Vec<Entry>> {
         entries.push(portable_entry(name, meta.as_ref()));
     }
     Ok(entries)
+}
+
+#[cfg(not(windows))]
+pub fn can_list(dir: &str) -> bool {
+    std::fs::read_dir(dir).is_ok()
 }
 
 #[cfg(not(windows))]
