@@ -8,7 +8,7 @@ import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, 
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
-import { currentPath, openRequested, revealInApp } from "./lib/explorer";
+import { archiveOf, currentPath, openRequested, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
 import { toRegExp } from "./lib/text";
 import { checkForUpdates, useUpdater } from "./lib/updater";
@@ -93,6 +93,11 @@ function App() {
 
   /** Text search in `folder` (the open folder by default). */
   const searchText = (folder?: string) => {
+    // ripgrep reads files on disk: an archive's contents aren't any.
+    if (!folder && archiveOf()) {
+      toast.message("Text search can't look inside archives", { id: "archive-text", description: "It searches files on disk. Copy what you want to search out of the archive first." });
+      return;
+    }
     const target = folder ?? currentPath();
     if (target && target !== THIS_PC) useStore.getState().setPath(target);
     setMode("text");

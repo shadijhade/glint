@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Cloud, ExternalLink, Files, FolderOpen, HardDrive, X } from "lucide-react";
-import { type FileEntry, isOnlineOnly } from "@/lib/entries";
-import { calcSizes, currentPath, navigate, useExplorer } from "@/lib/explorer";
+import { Cloud, ExternalLink, FileArchive, Files, FolderOpen, HardDrive, Loader2, Lock, X } from "lucide-react";
+import { ATTR, type FileEntry, isArchived, isArchiveFile, isLocked, isOnlineOnly } from "@/lib/entries";
+import { archiveOf, calcSizes, currentPath, navigate, openEntry, useExplorer } from "@/lib/explorer";
 import { isKnownType, kindOf, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize } from "@/lib/format";
-import { listDir, readTextPreview } from "@/lib/fs";
+import { archiveExtract, listDir, readTextPreview } from "@/lib/fs";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
@@ -46,6 +46,102 @@ function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
                 className="max-h-[calc(100%-1.5rem)] max-w-full rounded-sm object-contain shadow-sm [background:repeating-conic-gradient(hsl(var(--muted))_0%_25%,transparent_0%_50%)_50%/16px_16px]"
             />
             {dimensions && <span className="text-xs tabular-nums">{dimensions} pixels</span>}
+        </Centered>
+    );
+}
+
+/** True once `ms` have passed: a spinner only for what takes a moment. */
+function useLater(ms: number) {
+    const [late, setLate] = useState(false);
+    useEffect(() => {
+        const timer = setTimeout(() => setLate(true), ms);
+        return () => clearTimeout(timer);
+    }, [ms]);
+    return late;
+}
+
+type MediaKind = "image" | "video" | "audio" | "pdf";
+
+/** A picture, video, sound or PDF, from a file on disk. */
+function Media({ entry, kind, src }: { entry: FileEntry; kind: MediaKind; src: string }) {
+    if (kind === "image") return <ImagePreview entry={entry} src={src} />;
+    if (kind === "video")
+        return (
+            <Centered className="p-3">
+                <video src={src} controls className="max-h-full max-w-full rounded-sm" />
+            </Centered>
+        );
+    if (kind === "audio")
+        return (
+            <Centered>
+                <BigIcon entry={entry} />
+                <audio src={src} controls className="w-full max-w-sm" />
+            </Centered>
+        );
+    return <iframe src={src} title={entry.name} className="h-full w-full bg-white" />;
+}
+
+/** Media in an archive: shown from a temp copy extracted for the preview (once, and within a size budget). */
+function ArchivedMedia({ entry, kind }: { entry: FileEntry; kind: MediaKind }) {
+    const [copy, setCopy] = useState<{ path: string } | { error: string } | null>(null);
+    const late = useLater(300);
+    useEffect(() => {
+        let stale = false;
+        archiveExtract(entry.path, "preview").then(
+            (path) => !stale && setCopy({ path }),
+            (e) => !stale && setCopy({ error: String(e) })
+        );
+        return () => {
+            stale = true;
+        };
+    }, [entry.path, entry.modified]);
+    if (!copy) {
+        return late ? (
+            <Centered>
+                <Loader2 className="size-5 animate-spin text-primary" />
+                <p>Extracting from the archive…</p>
+            </Centered>
+        ) : null;
+    }
+    if ("error" in copy) return <BigIcon entry={entry} note={copy.error} />;
+    return <Media entry={entry} kind={kind} src={convertFileSrc(copy.path)} />;
+}
+
+/** A zip or 7z file: what's in it, from its list of entries (nothing is extracted). */
+function ArchivePreview({ entry }: { entry: FileEntry }) {
+    const [summary, setSummary] = useState<{ items: number; bytes: number; format: string } | { error: string } | null>(null);
+    useEffect(() => {
+        let stale = false;
+        listDir(entry.path).then(
+            (listing) => !stale && setSummary({ items: listing.archive?.entries ?? listing.entries.length, bytes: listing.entries.reduce((sum, e) => sum + e.size, 0), format: listing.archive?.format ?? "" }),
+            (e) => !stale && setSummary({ error: String(e) })
+        );
+        return () => {
+            stale = true;
+        };
+    }, [entry.path, entry.modified]);
+    return (
+        <Centered>
+            <FileArchive className="size-16 stroke-[1.25] text-amber-600 dark:text-amber-500" />
+            {summary &&
+                ("error" in summary ? (
+                    <p className="max-w-sm">{summary.error}</p>
+                ) : (
+                    <>
+                        <p>
+                            {formatCount(summary.items)} {summary.items === 1 ? "file or folder" : "files and folders"}
+                        </p>
+                        <p className="text-foreground">
+                            <b className="font-semibold">{formatSize(summary.bytes)}</b> when extracted
+                            <span className="block text-xs text-muted-foreground">
+                                {formatSize(entry.size)} as a {summary.format} file
+                            </span>
+                        </p>
+                    </>
+                ))}
+            <Button variant="outline" size="sm" onClick={() => navigate(entry.path)}>
+                <FolderOpen /> Open like a folder
+            </Button>
         </Centered>
     );
 }
@@ -156,7 +252,8 @@ function Details({ entry }: { entry: FileEntry }) {
 /** One item's preview with its name, actions and details; Quick Look shows it large, with a close button. */
 export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: () => void }) {
     const kind = previewKind(entry);
-    const src = convertFileSrc(entry.path);
+    const archived = isArchived(entry);
+    const archive = archived ? archiveOf() : undefined;
     let body: React.ReactNode;
     if (entry.dir) body = <FolderPreview entry={entry} />;
     else if (isOnlineOnly(entry))
@@ -166,26 +263,26 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                 <p>This file is online-only. Opening it downloads it.</p>
             </Centered>
         );
-    else if (kind === "image") body = <ImagePreview entry={entry} src={src} />;
-    else if (kind === "video")
-        body = (
-            <Centered className="p-3">
-                <video src={src} controls className="max-h-full max-w-full rounded-sm" />
-            </Centered>
-        );
-    else if (kind === "audio")
+    else if (isLocked(entry))
         body = (
             <Centered>
-                <BigIcon entry={entry} />
-                <audio src={src} controls className="w-full max-w-sm" />
+                <Lock className="size-14 stroke-[1.25] text-amber-600 dark:text-amber-500" />
+                <p className="max-w-sm">
+                    {entry.attrs & ATTR.encrypted ? "This file is password-protected, and Glint can't open encrypted files in archives yet." : "This file is compressed in a way Glint can't read."}
+                </p>
             </Centered>
         );
-    else if (kind === "pdf") body = <iframe src={src} title={entry.name} className="h-full w-full bg-white" />;
+    else if (isArchiveFile(entry)) body = <ArchivePreview entry={entry} />;
+    // In an archive, pictures, video, sound and PDFs are shown from a temp copy; text is read straight out of it.
+    else if (kind === "image" || kind === "video" || kind === "audio" || kind === "pdf")
+        body = archived ? <ArchivedMedia entry={entry} kind={kind} /> : <Media entry={entry} kind={kind} src={convertFileSrc(entry.path)} />;
     // Unknown extensions get a text preview attempt; the backend spots binary files.
     else if (kind === "text" || !isKnownType(entry)) body = <TextPreview entry={entry} />;
     else body = <BigIcon entry={entry} />;
 
-    const open = () => (entry.dir ? navigate(entry.path) : openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) })));
+    const open = () => (archived || entry.dir ? openEntry(entry) : openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) })));
+    // What's in an archive isn't a place File Explorer shows here: it shows the archive.
+    const reveal = () => (archive ? revealItemInDir(archive.outer) : revealItemInDir(entry.path));
 
     return (
         <div className="flex min-w-0 flex-1 flex-col">
@@ -194,7 +291,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                     {entry.name}
                 </span>
                 <div className="ml-auto flex shrink-0">
-                    <Button variant="ghost" size="icon" className="size-7" onClick={() => revealItemInDir(entry.path)} title="Show in File Explorer">
+                    <Button variant="ghost" size="icon" className="size-7" onClick={reveal} title={archive ? "Show the archive in File Explorer" : "Show in File Explorer"}>
                         <FolderOpen />
                     </Button>
                     <Button variant="ghost" size="icon" className="size-7" onClick={open} title="Open (Enter)">

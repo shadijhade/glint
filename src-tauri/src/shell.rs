@@ -2,6 +2,7 @@
 //! engine, so progress, conflicts, Recycle Bin and permission prompts behave exactly like Explorer),
 //! the file clipboard shared with Explorer, Properties, Open with and the terminal.
 
+use crate::archive;
 use crate::fsx::blocking;
 use serde::{Deserialize, Serialize};
 use tauri::Window;
@@ -45,11 +46,29 @@ where
     blocking(move || rx.recv().map_err(|e| e.to_string())?).await
 }
 
-/// Returns false when the person cancelled in one of Windows' dialogs.
+/// Returns false when the person cancelled in one of Windows' dialogs. Nothing is written into a zip
+/// or 7z archive, or taken out of one this way (Windows' own zip folders would): archives open
+/// read-only, and what's copied out of them is extracted first (`archive::archive_stage`).
 #[tauri::command]
 pub async fn file_op(window: Window, op: FileOp) -> Result<bool, String> {
     let owner = owner(&window);
-    blocking(move || imp::file_op(owner, op)).await
+    blocking(move || {
+        let touches_archive = match &op {
+            FileOp::Copy { sources, dest } | FileOp::Move { sources, dest } => archive::is_read_only(dest) || sources.iter().any(|s| archive::is_inside(s)),
+            FileOp::Delete { paths, .. } => paths.iter().any(|p| archive::is_inside(p)),
+            FileOp::Rename { path, .. } => archive::is_inside(path),
+        };
+        if touches_archive {
+            return Err(crate::fsx::READ_ONLY.into());
+        }
+        imp::file_op(owner, op)
+    })
+    .await
+}
+
+/// The files on the clipboard (copied or cut), if any; what extracted copies may not be deleted for.
+pub fn clipboard_paths() -> Vec<String> {
+    imp::clipboard_files(0).ok().flatten().map(|files| files.paths).unwrap_or_default()
 }
 
 /// Puts files on the clipboard the way Explorer does, so they can be pasted there too.
@@ -88,11 +107,13 @@ pub async fn open_with(window: Window, path: String) -> Result<(), String> {
 
 /// Drags files out of the window (into Explorer, a mail, a chat…) with the shell's own drag data,
 /// as Explorer does. Must start while the mouse button is down; resolves once the drop or cancel
-/// happens with "copy", "move", "link" or "none".
+/// happens with "copy", "move", "link" or "none", or with "released" when the button was already up.
+/// `copy_only` offers only a copy (files extracted from an archive, which are copies anyway).
 #[tauri::command]
-pub async fn start_drag(window: Window, paths: Vec<String>) -> Result<String, String> {
+pub async fn start_drag(window: Window, paths: Vec<String>, copy_only: Option<bool>) -> Result<String, String> {
     let owner = owner(&window);
-    on_main(&window, move || imp::start_drag(owner, &paths)).await
+    let copy_only = copy_only.unwrap_or(false);
+    on_main(&window, move || imp::start_drag(owner, &paths, copy_only)).await
 }
 
 /// Opens Windows Terminal in `path`, or a Command Prompt where Terminal isn't installed.
@@ -391,13 +412,13 @@ mod imp {
     }
 
     /// Runs on the UI thread (OLE is initialized there and the drag loop needs it).
-    pub fn start_drag(owner: isize, paths: &[String]) -> Result<String, String> {
+    pub fn start_drag(owner: isize, paths: &[String], copy_only: bool) -> Result<String, String> {
         unsafe {
             // The drag drops wherever the pointer is once the button is up, so if it was released while
             // this request was on its way, don't start: that would drop at once, under the pointer.
             let primary = if GetSystemMetrics(SM_SWAPBUTTON) != 0 { VK_RBUTTON } else { VK_LBUTTON };
             if GetAsyncKeyState(primary.0 as i32) >= 0 {
-                return Ok("none".into());
+                return Ok("released".into());
             }
             let pidls: Vec<*mut ITEMIDLIST> = paths.iter().map(|p| ILCreateFromPathW(&HSTRING::from(p.as_str()))).collect();
             let dragged = (|| {
@@ -409,8 +430,8 @@ mod imp {
                 let data: IDataObject = SHCreateShellItemArrayFromIDLists(&list)
                     .and_then(|items| items.BindToHandler(None::<&IBindCtx>, &BHID_DataObject))
                     .map_err(message)?;
-                let effect = SHDoDragDrop(Some(hwnd(owner)), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK)
-                    .map_err(message)?;
+                let allowed = if copy_only { DROPEFFECT_COPY } else { DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK };
+                let effect = SHDoDragDrop(Some(hwnd(owner)), &data, None::<&IDropSource>, allowed).map_err(message)?;
                 Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
                     "move"
                 } else if effect.0 & DROPEFFECT_COPY.0 != 0 {
@@ -487,7 +508,7 @@ mod imp {
         Err(WINDOWS_ONLY.into())
     }
 
-    pub fn start_drag(_: isize, _: &[String]) -> Result<String, String> {
+    pub fn start_drag(_: isize, _: &[String], _: bool) -> Result<String, String> {
         Err(WINDOWS_ONLY.into())
     }
 

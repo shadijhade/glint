@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
-import { decodeListing, type FileEntry, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
+import { archiveFormat, ATTR, decodeListing, type FileEntry, isArchived, isArchiveFile, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
@@ -55,24 +55,32 @@ assert.equal(matcher("   "), null);
 
 // Binary listings: built here with the layout fsx.rs's encode_listing writes (its test checks the offsets)
 type Item = { name: string; dir: boolean; size: number; modified: number; attrs: number };
-function encodeListing(path: string, items: Item[], elapsed: number) {
+type InArchiveHeader = { archive: number; outer: number; entries: number; cached: boolean; readMs: number };
+function encodeListing(path: string, items: Item[], elapsed: number, archive?: InArchiveHeader) {
     const encoder = new TextEncoder();
     const pathBytes = encoder.encode(path);
     const names = encoder.encode(items.map((e) => e.name).join(""));
     const n = items.length;
-    const buffer = new ArrayBuffer(16 + 24 * n + pathBytes.length + names.length);
+    const buffer = new ArrayBuffer(40 + 24 * n + pathBytes.length + names.length);
     const view = new DataView(buffer);
     view.setUint32(0, n, true);
     view.setUint32(4, pathBytes.length, true);
     view.setFloat64(8, elapsed, true);
+    if (archive) {
+        view.setUint32(16, archive.archive, true);
+        view.setUint32(20, archive.outer, true);
+        view.setUint32(24, archive.entries, true);
+        view.setUint32(28, archive.cached ? 1 : 0, true);
+        view.setFloat64(32, archive.readMs, true);
+    }
     items.forEach((e, i) => {
-        view.setFloat64(16 + 8 * i, e.size, true);
-        view.setFloat64(16 + 8 * n + 8 * i, e.modified, true);
-        view.setUint32(16 + 16 * n + 4 * i, e.attrs | (e.dir ? 0x10 : 0), true);
-        view.setUint32(16 + 20 * n + 4 * i, e.name.length, true);
+        view.setFloat64(40 + 8 * i, e.size, true);
+        view.setFloat64(40 + 8 * n + 8 * i, e.modified, true);
+        view.setUint32(40 + 16 * n + 4 * i, e.attrs | (e.dir ? 0x10 : 0), true);
+        view.setUint32(40 + 20 * n + 4 * i, e.name.length, true);
     });
-    new Uint8Array(buffer).set(pathBytes, 16 + 24 * n);
-    new Uint8Array(buffer).set(names, 16 + 24 * n + pathBytes.length);
+    new Uint8Array(buffer).set(pathBytes, 40 + 24 * n);
+    new Uint8Array(buffer).set(names, 40 + 24 * n + pathBytes.length);
     return buffer;
 }
 const decoded = decodeListing(
@@ -88,6 +96,30 @@ assert.deepEqual(
     ]
 );
 assert.deepEqual(decodeListing(encodeListing("D:\\", [], 0)).entries, []);
+assert.equal(decoded.archive, undefined, "a folder on disk");
+
+// A folder in an archive (here one in an archive in an archive): its listing says where the archives are
+const inside = "C:\\Dö\\photos.zip\\2024\\old.7z\\summer";
+const nested = decodeListing(
+    encodeListing(inside, [{ name: "beach.jpg", dir: false, size: 300, modified: 1.7e12, attrs: ATTR.inArchive }, { name: "secret.txt", dir: false, size: 9, modified: 0, attrs: ATTR.inArchive | ATTR.encrypted }], 0.25, {
+        archive: "C:\\Dö\\photos.zip\\2024\\old.7z".length,
+        outer: "C:\\Dö\\photos.zip".length,
+        entries: 54_001,
+        cached: false,
+        readMs: 13.5,
+    })
+);
+assert.deepEqual(nested.archive, { path: "C:\\Dö\\photos.zip\\2024\\old.7z", outer: "C:\\Dö\\photos.zip", format: "7z", entries: 54_001, cached: false, readMs: 13.5 });
+assert.deepEqual(nested.entries.map((e) => [e.path, isArchived(e), isLocked(e)]), [
+    [`${inside}\\beach.jpg`, true, false],
+    [`${inside}\\secret.txt`, true, true],
+]);
+assert.deepEqual([archiveFormat("a.ZIP"), archiveFormat("b.7z"), archiveFormat("c.tar"), archiveFormat("zip")], ["zip", "7z", null, null]);
+assert.ok(isArchiveFile(entry("x.Zip")) && isArchiveFile(entry("y.7z")) && !isArchiveFile(entry("z.zip/")) && !isArchiveFile(entry("w.rar")));
+assert.ok(!isArchived(entry("plain.txt")));
+// The archive's own top folder, and the crumbs into it: an archive's path is a folder path like any other.
+assert.deepEqual(crumbs(inside).map((c) => c.name), ["C:\\", "Dö", "photos.zip", "2024", "old.7z", "summer"]);
+assert.equal(parentPath("C:\\Dö\\photos.zip"), "C:\\Dö");
 
 // Disk-usage maps: built here with the layout usage.rs's encode_map writes (its test checks the offsets)
 type Node = { name: string; parent: number; dir: boolean; size: number; modified?: number; attrs?: number };
@@ -134,6 +166,8 @@ assert.deepEqual([...usage.end], [4, 6, 7, 0, 8, 0, 0, 0]);
 // dust drew it, because the index service is too old to map.
 const fallback = decodeUsage(encodeMap("D:\\x", sample.slice(0, 1), 0, 1, 2));
 assert.deepEqual([fallback.engine, fallback.limited, fallback.serviceTooOld], ["dust", false, true]);
+// A folder in an archive is mapped from the archive's own list of entries.
+assert.deepEqual([2, 3].map((engine) => decodeUsage(encodeMap("C:\\a.zip", sample.slice(0, 1), 0, engine, 0)).engine), ["zip", "7z"]);
 const mapped = usageEntries(usage);
 assert.deepEqual([mapped[3].name, mapped[3].ext, mapped[3].attrs, mapped[4].dir, mapped[5].modified, mapped[6].ext], ["pagefile.sys", "sys", 0x26, true, 1.7e12, "mkv"]);
 

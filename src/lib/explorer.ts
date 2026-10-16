@@ -3,8 +3,12 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
-import { type FileEntry, withDetails } from "./entries";
+import { type FileEntry, type InArchive, isArchived, isArchiveFile, withDetails } from "./entries";
 import {
+    archiveExtract,
+    archiveStage,
+    archiveUnstage,
+    cancelArchiveStage,
     cancelFind,
     cancelFolderSizes,
     clipboardClear,
@@ -25,6 +29,9 @@ import {
     listDrives,
     type Listing,
     resolvePath,
+    type SizeEngine,
+    type Staged,
+    startDrag,
     takeLaunchTargets,
     watchDirs,
 } from "./fs";
@@ -63,7 +70,8 @@ export interface SizeRun {
     total: number;
     elapsed: number;
     running: boolean;
-    engine: "index" | "dust";
+    /** The index or dust, or the archive's format for a folder in one (its sizes come with its listing). */
+    engine: SizeEngine;
     /** The tab measuring it, so Stop stops the right run. */
     lane: string;
 }
@@ -179,6 +187,17 @@ export const activeTabId = () => shownTab(get(), null).id;
 export const tabState = (id = activeTabId()): TabState | undefined => get().tabs[id];
 /** The active tab's folder, or This PC. */
 export const currentPath = () => tabState()?.path ?? THIS_PC;
+
+/** The archive a tab's folder is in (the active tab's by default), from its listing; undefined for a folder on disk. */
+export const archiveOf = (tab = activeTabId()): InArchive | undefined => tabState(tab)?.listing?.archive;
+
+/** Archives open read-only: says so when something would change one (once at a time). */
+export function readOnlyNotice() {
+    toast.message("Archives are read-only", {
+        id: "read-only",
+        description: "Glint opens zip and 7z archives to look inside and copy out. To change what's in one, copy it out first.",
+    });
+}
 
 /** Changes a tab's state: the active tab's unless `tab` says otherwise. */
 export function updateTab(patch: Partial<TabState>, tab = activeTabId()) {
@@ -332,9 +351,23 @@ export async function navigate(target: string, { select, history = true, quiet =
         if (path !== THIS_PC) useStore.getState().recordVisit(path);
         if (path === THIS_PC) refreshDrives();
     }
-    // With the index, every folder shows its subfolders' sizes as it opens (and after each refresh).
-    if (listing && indexed(path)) autoSizes(tab);
+    // In an archive, every folder's size comes with the listing; with the index, every folder shows
+    // its subfolders' sizes as it opens (and after each refresh).
+    if (listing?.archive) archiveSizes(listing, tab);
+    else if (listing && indexed(path)) autoSizes(tab);
     return true;
+}
+
+/** A folder in an archive: its subfolders' totals are in its listing, as the archive has them. */
+function archiveSizes(listing: Listing, tab: string) {
+    const sizes = new Map<string, number>();
+    let total = 0;
+    for (const e of listing.entries) {
+        if (e.dir) sizes.set(e.name, e.size);
+        total += e.size;
+    }
+    const { [listing.path]: _, ...rest } = get().sizes;
+    set({ sizes: { ...rest, [listing.path]: { sizes, total, elapsed: 0, running: false, engine: listing.archive!.format, lane: tab } } });
 }
 
 /** Called once a tab's new list is on screen, to time the whole navigation. */
@@ -376,16 +409,28 @@ export async function reload(tab = activeTabId()) {
     // A false result from a navigation that was overtaken by a newer one isn't a missing folder.
     if (!(await navigate(t.path, { history: false, quiet: true, silent: true, tab })) && r.navSeq === seq && tabState(tab)) {
         toast.message(`“${baseName(t.path)}” is no longer available`);
-        await navigate(parentPath(t.path), { history: false, tab });
+        if (!t.listing?.archive) {
+            await navigate(parentPath(t.path), { history: false, tab });
+            return;
+        }
+        // A changed (or deleted) archive: the nearest folder above that's still there, in it or out of it.
+        for (let at = parentPath(t.path); at !== THIS_PC; at = parentPath(at)) {
+            if (await navigate(at, { history: false, silent: true, tab })) return;
+            if (!tabState(tab)) return;
+        }
+        await navigate(THIS_PC, { history: false, tab });
     }
 }
 
-/** Re-reads `folder` in every tab on screen that shows it (it changed on disk). */
+/** The folder on disk to watch for a tab: its own, or the one its archive is in. */
+const watchedFolder = (t: TabState) => (t.listing?.archive ? parentPath(t.listing.archive.outer) : t.path);
+
+/** Re-reads `folder` in every tab on screen that shows it, or an archive in it (it changed on disk). */
 export function reloadFolder(folder: string) {
     const s = get();
     for (const id of visibleTabs(s)) {
         const t = s.tabs[id];
-        if (t && !t.find && t.path !== THIS_PC && samePath(folder, t.path)) reload(id);
+        if (t && !t.find && t.path !== THIS_PC && samePath(folder, watchedFolder(t))) reload(id);
     }
 }
 
@@ -526,7 +571,7 @@ function syncWatches() {
     const folders = new Map<string, string>();
     for (const id of visibleTabs(s)) {
         const t = s.tabs[id];
-        if (t?.listing && t.path !== THIS_PC) folders.set(t.path.toLowerCase(), t.path);
+        if (t?.listing && t.path !== THIS_PC) folders.set(watchedFolder(t).toLowerCase(), watchedFolder(t));
     }
     const key = [...folders.keys()].join("|");
     if (key === watching) return;
@@ -807,25 +852,30 @@ export function toggleDual() {
     useStore.getState().setLastFolder(currentPath());
 }
 
-/** The folder open in the other pane, when there's one to copy or move into. */
+/** The folder open in the other pane, when there's one to copy or move into (an archive isn't one). */
 export function otherPaneFolder() {
     const s = get();
     if (!s.dual) return null;
     const other = s.panes[1 - s.activePane];
     const t = other && s.tabs[other.active];
-    return t?.ready && t.path !== THIS_PC && !t.find ? { tab: t.id, path: t.path } : null;
+    return t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive ? { tab: t.id, path: t.path } : null;
 }
 
 /** Dual-pane view: copies (or moves) items to the folder open in the other pane, through Windows' file engine. */
 export async function copyToOtherPane(move: boolean, paths = [...(tabState()?.selection ?? [])]) {
     const target = otherPaneFolder();
     if (!target) {
-        toast.message("Open a folder in the other pane first");
+        toast.message(archiveOf(get().panes[1 - get().activePane]?.active) ? "Archives are read-only: open a folder in the other pane to copy into" : "Open a folder in the other pane first");
+        return;
+    }
+    const tab = activeTabId();
+    if (archiveOf(tab)) {
+        if (move) readOnlyNotice();
+        else copyOutOfArchive(paths, target);
         return;
     }
     const sources = paths.filter((p) => !samePath(parentPath(p), target.path) && !samePath(p, target.path));
     if (!sources.length) return;
-    const tab = activeTabId();
     const what = plural(sources.length, "item");
     try {
         const done = await busy(`${move ? "Moving" : "Copying"} ${what}…`, fileOp({ kind: move ? "move" : "copy", sources, dest: target.path }));
@@ -835,6 +885,105 @@ export async function copyToOtherPane(move: boolean, paths = [...(tabState()?.se
     } catch (e) {
         toast.error(`Couldn't ${move ? "move" : "copy"} ${what}`, { description: String(e) });
     }
+}
+
+// Archives: what's copied out of one is extracted first, then copied by Windows' file engine.
+
+/**
+ * Extracts `paths` (in an archive) for Windows' file engine to copy, with progress once it takes a
+ * moment and a Stop button, then runs `then` on the copies. Says which files couldn't be extracted.
+ * Resolves undefined when it was stopped or failed (and said so).
+ */
+async function extracting<T>(paths: string[], purpose: "copy" | "out", then: (staged: Staged) => Promise<T>): Promise<T | undefined> {
+    const lane = activeTabId();
+    const what = plural(paths.length, "item");
+    let shown: string | number | undefined;
+    let percent = -1;
+    const label = (p: number) => `Extracting ${what} from the archive…${p >= 0 ? ` ${p}%` : ""}`;
+    const show = () => (shown = toast.loading(label(percent), { action: { label: "Stop", onClick: () => cancelArchiveStage(lane) }, duration: Infinity }));
+    const timer = setTimeout(show, 400);
+    working++;
+    try {
+        const staged = await archiveStage(paths, purpose, lane, (done, total) => {
+            const next = total ? Math.floor((100 * done) / total) : 0;
+            if (next === percent) return;
+            percent = next;
+            if (shown !== undefined) toast.loading(label(percent), { id: shown, action: { label: "Stop", onClick: () => cancelArchiveStage(lane) }, duration: Infinity });
+        });
+        clearTimeout(timer);
+        if (shown !== undefined) toast.dismiss(shown);
+        if (staged.skipped.length) {
+            const names = staged.skipped.slice(0, 3).map((s) => `“${baseName(s.path)}”`).join(", ");
+            const more = staged.skipped.length > 3 ? ` and ${staged.skipped.length - 3} more` : "";
+            toast.warning(`${plural(staged.skipped.length, "file")} couldn't be extracted`, { description: `${names}${more}: ${staged.skipped[0].reason}`, duration: 10_000 });
+        }
+        return await then(staged);
+    } catch (e) {
+        clearTimeout(timer);
+        if (shown !== undefined) toast.dismiss(shown);
+        if (String(e) !== "cancelled") toast.error(`Couldn't extract ${what}`, { description: String(e) });
+        return undefined;
+    } finally {
+        if (--working === 0) idle.splice(0).forEach((resolve) => resolve());
+    }
+}
+
+/** Copy to the other pane, out of an archive: extracted, copied by Windows' file engine (progress, *Replace or Skip*), then the extracted copies go. */
+function copyOutOfArchive(paths: string[], target: { tab: string; path: string }) {
+    if (!paths.length) return;
+    return extracting(paths, "copy", async (staged) => {
+        const what = plural(staged.paths.length, "item");
+        try {
+            const done = await busy(`Copying ${what}…`, fileOp({ kind: "copy", sources: staged.paths, dest: target.path }));
+            if (done) await navigate(target.path, { tab: target.tab, history: false, quiet: true, select: staged.paths.map((p) => joinPath(target.path, baseName(p))) });
+        } catch (e) {
+            toast.error(`Couldn't copy ${what}`, { description: String(e) });
+        } finally {
+            archiveUnstage(staged.folder).catch(() => {});
+        }
+    });
+}
+
+/** Copies extracted for a drag that didn't start (the button came up while they were being made), to drag at once next time. */
+let readyToDrag: { key: string; staged: Staged } | null = null;
+
+/**
+ * Drags items out of an archive: they're extracted first (Windows' drag carries files), then
+ * dragged as copies. A big selection can take longer to extract than the button is held: then
+ * the next drag of the same items starts at once.
+ */
+export async function dragFromArchive(paths: string[]) {
+    const key = paths.join("\n").toLowerCase();
+    const ready = readyToDrag?.key === key ? readyToDrag.staged : null;
+    readyToDrag = null;
+    const drag = async (staged: Staged) => {
+        const effect = await startDrag(staged.paths, true);
+        if (effect === "released") {
+            readyToDrag = { key, staged };
+            toast.message("Ready to drag", { id: "drag-ready", description: "They took a moment to extract: drag them again." });
+        }
+    };
+    try {
+        if (ready) return await drag(ready);
+    } catch {
+        // Gone meanwhile (dropped into a folder here, which moves them): extract them again.
+    }
+    return extracting(paths, "out", (staged) => drag(staged).catch((e) => toast.error("Couldn't drag these items", { description: String(e) })));
+}
+
+/** Opens a file in an archive with its app: a read-only temp copy of it, so changes can't be lost silently. */
+async function openFromArchive(entry: FileEntry, open: (path: string) => Promise<unknown> = openPath) {
+    try {
+        const copy = await busy(`Extracting “${entry.name}”…`, archiveExtract(entry.path, "open"));
+        await open(copy);
+    } catch (e) {
+        toast.error(`Couldn't open “${entry.name}”`, { description: String(e) });
+    }
+}
+
+/** "Open with" an app of your choice (or the editor in Settings), for a file in an archive too. */
+export function openArchivedWith(entry: FileEntry, open: (path: string) => Promise<unknown>) {
+    return openFromArchive(entry, open);
 }
 
 // Search
@@ -1030,7 +1179,9 @@ export function selectAll(rows: FileEntry[]) {
 // Actions on files
 
 export function openEntry(entry: FileEntry) {
-    if (entry.dir) return navigate(entry.path);
+    // A zip or 7z archive opens like a folder.
+    if (entry.dir || isArchiveFile(entry)) return navigate(entry.path);
+    if (isArchived(entry)) return openFromArchive(entry);
     return openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) }));
 }
 
@@ -1053,6 +1204,19 @@ export async function goTo(text: string) {
 
 export async function copyToClipboard(paths: string[], cut: boolean) {
     if (!paths.length) return;
+    if (archiveOf()) {
+        if (cut) return readOnlyNotice();
+        // Extracted first: the clipboard carries files. Pasting (here or in File Explorer) copies them.
+        return extracting(paths, "out", async (staged) => {
+            try {
+                await clipboardSetFiles(staged.paths, false);
+                set({ cut: new Set() });
+                toast.success(`Copied ${plural(staged.paths.length, "item")}`, { duration: 1500 });
+            } catch (e) {
+                toast.error("Couldn't use the clipboard", { description: String(e) });
+            }
+        });
+    }
     try {
         await clipboardSetFiles(paths, cut);
         set({ cut: new Set(cut ? paths : []) });
@@ -1066,6 +1230,7 @@ export async function copyToClipboard(paths: string[], cut: boolean) {
 export async function paste(dest = currentPath()) {
     if (dest === THIS_PC) return;
     const tab = activeTabId();
+    if (samePath(dest, tabState(tab)?.path ?? THIS_PC) && archiveOf(tab)) return readOnlyNotice();
     let files: Awaited<ReturnType<typeof clipboardGetFiles>>;
     try {
         files = await clipboardGetFiles();
@@ -1119,6 +1284,7 @@ export async function dropFiles(paths: string[], dest: string) {
 export async function deletePaths(paths: string[], permanent: boolean, next?: string) {
     if (!paths.length) return;
     const tab = activeTabId();
+    if (archiveOf(tab)) return readOnlyNotice();
     try {
         const confirm = useStore.getState().settings.confirmDelete;
         const done = await busy(`Deleting ${plural(paths.length, "item")}…`, fileOp({ kind: "delete", paths, permanent, confirm }));
@@ -1141,6 +1307,7 @@ export const INVALID_NAME_HINT = 'A name can\'t contain any of these characters:
 /** Renames from the box in `tab`'s list (it can lose focus to another pane, so the tab is passed in). */
 export async function renameEntry(entry: FileEntry, name: string, tab = activeTabId()) {
     updateTab({ renaming: null }, tab);
+    if (isArchived(entry)) return readOnlyNotice();
     // Windows drops trailing dots and spaces itself.
     const trimmed = name.trim().replace(/[. ]+$/, "");
     if (!trimmed || trimmed === entry.name) return;
@@ -1167,6 +1334,7 @@ export async function newItem(dir: boolean) {
     const tab = activeTabId();
     const path = tabState(tab)?.path;
     if (!path || path === THIS_PC) return;
+    if (archiveOf(tab)) return readOnlyNotice();
     try {
         const created = await createEntry(path, dir ? "New folder" : "New Text Document.txt", dir);
         if (tabState(tab)?.find?.running) cancelFind(tab);

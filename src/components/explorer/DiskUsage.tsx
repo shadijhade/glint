@@ -464,7 +464,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
         body = (
             <Centered>
                 <Loader2 className="size-5 animate-spin text-primary" />
-                {run.engine === "index" ? (
+                {run.engine !== "dust" ? (
                     <p>Mapping “{title}”…</p>
                 ) : (
                     <>
@@ -620,14 +620,14 @@ export function UsageWork({ tab }: { tab: string }) {
     if (run.running && (run.preview || !current)) {
         return (
             <>
-                <Loader2 className="size-3 animate-spin text-primary" /> {run.engine === "index" ? "index · mapping…" : "dust · measuring…"}
+                <Loader2 className="size-3 animate-spin text-primary" /> {run.engine === "dust" ? "dust · measuring…" : `${run.engine} · mapping…`}
             </>
         );
     }
     if (!current) return null;
     return (
         <span
-            title={`${current.engine === "index" ? "The instant search index" : "dust"} mapped this folder in ${formatDuration(current.elapsed)}; it was on screen ${formatDuration(run.shownIn)} after the click.`}
+            title={`${current.engine === "index" ? "The instant search index" : current.engine === "dust" ? "dust" : "The archive's own list of entries"} mapped this folder in ${formatDuration(current.elapsed)}; it was on screen ${formatDuration(run.shownIn)} after the click.`}
             className="flex items-center gap-1"
         >
             <Zap className="size-3 text-primary" /> {current.engine} · mapped {formatSize(current.size[0])} in {formatDuration(current.elapsed)}
