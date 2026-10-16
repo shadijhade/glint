@@ -1,19 +1,19 @@
 <div align="center">
 
-<img src="src/assets/logo.svg" width="96" alt="ShadUI Ripgrep logo">
+<img src="src/assets/logo.svg" width="96" alt="Glint logo">
 
-# ShadUI Ripgrep
+# Glint
 
 **A file explorer for Windows that opens folders in milliseconds, shows the size of every folder, and finds any file on any drive in an instant.**
 
 Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/bootandy/dust) and [ripgrep](https://github.com/BurntSushi/ripgrep), with an NTFS index like Everything's.
 
-[![Latest release](https://img.shields.io/github/v/release/shadijhade/shadui-ripgrep?label=release)](https://github.com/shadijhade/shadui-ripgrep/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/shadijhade/shadui-ripgrep/total)](https://github.com/shadijhade/shadui-ripgrep/releases)
+[![Latest release](https://img.shields.io/github/v/release/shadijhade/glint?label=release)](https://github.com/shadijhade/glint/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/shadijhade/glint/total)](https://github.com/shadijhade/glint/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 
-**[Download for Windows](https://github.com/shadijhade/shadui-ripgrep/releases/latest)** · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
+**[Download for Windows](https://github.com/shadijhade/glint/releases/latest)** · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
 
 <img src="screenshots/demo.gif" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes, the command palette and two panes side by side" width="100%">
 
@@ -112,7 +112,7 @@ The service only runs once you opt in, with every privilege removed except the t
 
 ## Compared with File Explorer
 
-| | File Explorer | ShadUI Ripgrep |
+| | File Explorer | Glint |
 | :--- | :--- | :--- |
 | Folder sizes | In Properties or a tooltip | In the list, for every folder |
 | What fills a drive | Not shown (Storage settings has categories) | A treemap of any folder, like WizTree's |
@@ -125,8 +125,10 @@ The service only runs once you opt in, with every privilege removed except the t
 
 ## Install
 
-1.  Download `shadui-ripgrep_<version>_x64-setup.exe` from the [latest release](https://github.com/shadijhade/shadui-ripgrep/releases/latest).
+1.  Download `Glint_<version>_x64-setup.exe` from the [latest release](https://github.com/shadijhade/glint/releases/latest).
 2.  Run it. It installs for your account without administrator rights, and ripgrep, fd and dust come with it.
+
+Glint was called ShadUI Ripgrep before 0.3.1. Installing Glint replaces ShadUI Ripgrep and keeps your settings, tabs and instant search.
 
 From then on it updates itself: when a new version is out, the app says so, and **Install** (in that notice or in **Settings → About**) downloads it, checks its signature and restarts into it in a few seconds.
 
@@ -214,8 +216,8 @@ Built with [Tauri 2](https://tauri.app/) and the [windows](https://github.com/mi
 You need Windows 10 or 11, [Node.js](https://nodejs.org/) 22.18 or newer, [Rust](https://www.rust-lang.org/tools/install) (stable, MSVC toolchain) and the [Tauri prerequisites](https://tauri.app/start/prerequisites/).
 
 ```bash
-git clone https://github.com/shadijhade/shadui-ripgrep.git
-cd shadui-ripgrep
+git clone https://github.com/shadijhade/glint.git
+cd glint
 npm install
 npm run tauri dev
 ```
@@ -242,7 +244,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [ ] Code-signed installers, and winget and Scoop packages (`npm run release` is ready for them: [docs/releasing.md](docs/releasing.md))
 -   [ ] Zip and 7z archives opened like folders
 
-Missing something? [Open an issue](https://github.com/shadijhade/shadui-ripgrep/issues/new/choose). If the app saves you time, a star helps other people find it.
+Missing something? [Open an issue](https://github.com/shadijhade/glint/issues/new/choose). If the app saves you time, a star helps other people find it.
 
 ## Contributing
 

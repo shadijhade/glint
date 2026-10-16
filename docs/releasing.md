@@ -5,7 +5,7 @@ Releases are built on the maintainer's PC with `npm run release` and uploaded to
 ## How it works
 
 1.  **`npm run release`** ([`scripts/release.mjs`](../scripts/release.mjs)) checks that `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` agree on the version and that everything is committed, then builds the NSIS installer (code-signed when signing is set up) and signs it for the in-app updater. It writes `latest.json` and checks the update the way the app will: the signature must verify with the public key the app is built with and be bound to the version `latest.json` announces. It also writes the winget and Scoop manifests. Everything lands in `release/vX.Y.Z/`, and it prints the `gh release create` command that makes the draft release.
-2.  **Publishing the draft** makes it the latest release. Copies of the app installed with the setup program read `https://github.com/shadijhade/shadui-ripgrep/releases/latest/download/latest.json` at start and every 12 hours, say *Update available* once, and keep an **Update** button in the header. **Install** (in the notice or in **Settings → About**) downloads the installer, verifies its signature, waits for any copy or move to finish, closes the app, installs over it with a progress bar and opens the new version.
+2.  **Publishing the draft** makes it the latest release. Copies of the app installed with the setup program read `https://github.com/shadijhade/glint/releases/latest/download/latest.json` at start and every 12 hours, say *Update available* once, and keep an **Update** button in the header. **Install** (in the notice or in **Settings → About**) downloads the installer, verifies its signature, waits for any copy or move to finish, closes the app, installs over it with a progress bar and opens the new version.
 
 Copies that the setup program didn't install (Scoop, a portable copy, a dev build) don't install updates themselves: the app tells them about the new version and links to it. A release without `latest.json` gets the same treatment from every copy, through GitHub's latest-release API.
 
@@ -69,21 +69,21 @@ Once releases are signed, take the SmartScreen note out of the README's Install 
 
 ### 4. winget and Scoop (from the first release with the updater)
 
-`npm run release` writes `release/vX.Y.Z/package-manifests/`: `winget/manifests/s/shadijhade/ShadUIRipgrep/X.Y.Z/` (three YAML files) and `scoop/shadui-ripgrep.json`. Submit them once the release is published, since they point at its download. For a release that's already out, `node scripts/package-manifests.mjs X.Y.Z` makes them from GitHub's copy of the installer.
+`npm run release` writes `release/vX.Y.Z/package-manifests/`: `winget/manifests/s/shadijhade/Glint/X.Y.Z/` (three YAML files) and `scoop/glint.json`. Submit them once the release is published, since they point at its download. For a release that's already out, `node scripts/package-manifests.mjs X.Y.Z` makes them from GitHub's copy of the installer.
 
 **winget**:
 
 1.  Read the manifests: check the publisher name, description and tags in the `.locale.en-US.yaml`.
 2.  `winget validate --manifest <folder>`. To try the install, enable local manifests once from an administrator prompt (`winget settings --enable LocalManifestFiles`) and run `winget install --manifest <folder>`.
 3.  Install [wingetcreate](https://github.com/microsoft/winget-create) (`winget install Microsoft.WingetCreate`) and create a classic GitHub token with the `public_repo` scope.
-4.  `wingetcreate submit --token <token> <folder>` opens a pull request to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs). Its bots validate and test-install it, and a moderator merges it; then `winget install shadijhade.ShadUIRipgrep` works.
+4.  `wingetcreate submit --token <token> <folder>` opens a pull request to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs). Its bots validate and test-install it, and a moderator merges it; then `winget install shadijhade.Glint` works.
 
-For later versions, submit the new folder the same way (or let `wingetcreate update shadijhade.ShadUIRipgrep --version X.Y.Z --urls <installer url> --submit --token <token>` write it).
+For later versions, submit the new folder the same way (or let `wingetcreate update shadijhade.Glint --version X.Y.Z --urls <installer url> --submit --token <token>` write it).
 
-**Scoop**: the manifest extracts the installer with 7-Zip instead of running it, so Scoop owns updates (`scoop update`) and the app only links to new versions. `scoop install .\shadui-ripgrep.json` tries it locally (on a PC where instant search is on, `scoop uninstall` then asks to remove the service too). To publish it, either:
+**Scoop**: the manifest extracts the installer with 7-Zip instead of running it, so Scoop owns updates (`scoop update`) and the app only links to new versions. `scoop install .\glint.json` tries it locally (on a PC where instant search is on, `scoop uninstall` then asks to remove the service too). To publish it, either:
 
--   open a pull request adding `bucket/shadui-ripgrep.json` to [ScoopInstaller/Extras](https://github.com/ScoopInstaller/Extras) after reading its contributing guide (its bot then picks up new releases by itself through `checkver` and `autoupdate`), or
--   keep it in a bucket of your own: a repository with the file at `bucket/shadui-ripgrep.json`, added with `scoop bucket add shadijhade https://github.com/shadijhade/<repository>` and installed with `scoop install shadijhade/shadui-ripgrep`. Update the file for each release.
+-   open a pull request adding `bucket/glint.json` to [ScoopInstaller/Extras](https://github.com/ScoopInstaller/Extras) after reading its contributing guide (its bot then picks up new releases by itself through `checkver` and `autoupdate`), or
+-   keep it in a bucket of your own: a repository with the file at `bucket/glint.json`, added with `scoop bucket add shadijhade https://github.com/shadijhade/<repository>` and installed with `scoop install shadijhade/glint`. Update the file for each release.
 
 Once a package is live, add its install command to the README's Install section.
 
@@ -117,7 +117,7 @@ The flow can be tested end to end without the real key, the real install or GitH
 
     ```json
     {
-      "productName": "shadui-ripgrep-updatetest",
+      "productName": "glint-updatetest",
       "identifier": "com.shado.shadui-ripgrep.updatetest",
       "bundle": { "createUpdaterArtifacts": true, "windows": { "nsis": { "installerHooks": null } } },
       "plugins": {
@@ -138,7 +138,7 @@ The flow can be tested end to end without the real key, the real install or GitH
       "pub_date": "2026-10-16T12:00:00Z",
       "platforms": {
         "windows-x86_64": {
-          "url": "http://127.0.0.1:8765/releases/download/v<new>/shadui-ripgrep-updatetest_<new>_x64-setup.exe",
+          "url": "http://127.0.0.1:8765/releases/download/v<new>/glint-updatetest_<new>_x64-setup.exe",
           "signature": "<contents of the installer's .sig>"
         }
       }
@@ -146,5 +146,5 @@ The flow can be tested end to end without the real key, the real install or GitH
     ```
 
     and check it: `node scripts/verify-update.mjs latest.json <installer> "<contents of test.key.pub>"`.
-5.  Install the old build with `/S /NS` (silent, no shortcuts), start it from `%LOCALAPPDATA%\shadui-ripgrep-updatetest`, and install the update from the notice or **Settings → About**: the app closes, the installer's progress bar shows, and the new version opens. To see a refusal, announce a different version in `latest.json` or change a byte of the installer.
+5.  Install the old build with `/S /NS` (silent, no shortcuts), start it from `%LOCALAPPDATA%\glint-updatetest`, and install the update from the notice or **Settings → About**: the app closes, the installer's progress bar shows, and the new version opens. To see a refusal, announce a different version in `latest.json` or change a byte of the installer.
 6.  Afterwards, uninstall the test copy with its `uninstall.exe /S` and delete `%LOCALAPPDATA%\com.shado.shadui-ripgrep.updatetest`.

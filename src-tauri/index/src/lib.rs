@@ -34,7 +34,7 @@ mod win;
 /// The Windows service's name (as `sc query` shows it).
 pub const SERVICE_NAME: &str = "ShadUIRipgrepIndex";
 /// What Services and Task Manager call it.
-pub const SERVICE_DISPLAY_NAME: &str = "ShadUI Ripgrep instant search";
+pub const SERVICE_DISPLAY_NAME: &str = "Glint instant search";
 /// The executable, bundled next to the app and copied to Program Files when installed.
 pub const SERVICE_EXE: &str = "shadui-index.exe";
 /// The pipe the service answers on. The version changes with incompatible protocol changes.

@@ -12,7 +12,7 @@ use std::time::Instant;
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
 
 const USAGE: &str = "\
-shadui-index: instant file name search and folder sizes for ShadUI Ripgrep
+shadui-index: instant file name search and folder sizes for Glint
 
   service                     run as the Windows service (started by Windows)
   install [--allow-sid SID]   install and start the service (administrator)

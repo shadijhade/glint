@@ -22,8 +22,8 @@ use windows::Win32::System::Services::{
 };
 use windows::Win32::UI::Shell::FOLDERID_ProgramFiles;
 
-const DESCRIPTION: &str = "Keeps the names and sizes of the files on your NTFS drives in memory so ShadUI Ripgrep can search them \
-                           and size folders instantly. Turn it off in ShadUI Ripgrep's settings.";
+const DESCRIPTION: &str = "Keeps the names and sizes of the files on your NTFS drives in memory so Glint can search them \
+                           and size folders instantly. Turn it off in Glint's settings.";
 
 /// The step that failed, reported to the app as the process exit code (step << 16 | Windows error).
 #[derive(Debug, Clone, Copy, PartialEq)]

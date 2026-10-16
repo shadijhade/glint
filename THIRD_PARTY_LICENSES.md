@@ -1,6 +1,6 @@
 # Third-party licenses
 
-ShadUI Ripgrep ships these programs unmodified, as separate executables next to the app. Each keeps its own license, reproduced below.
+Glint ships these programs unmodified, as separate executables next to the app. Each keeps its own license, reproduced below.
 
 | Program | Version | Used for | License |
 | :--- | :--- | :--- | :--- |

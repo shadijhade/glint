@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
-const REPO_URL = "https://github.com/shadijhade/shadui-ripgrep";
+const REPO_URL = "https://github.com/shadijhade/glint";
 
 const PRESETS = [
     { label: "Folders", icon: Folder, items: ["node_modules", ".git", "dist", "build", "bin", "obj", ".vs", ".idea", "__pycache__", ".cache", "vendor", "packages", ".nuget", "coverage", ".next", "target"] },
@@ -376,7 +376,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     <div className="flex items-center gap-3 px-4 py-4">
                         <img src={logo} alt="" className="size-11" />
                         <div className="min-w-0 flex-1">
-                            <div className="font-semibold">ShadUI Ripgrep</div>
+                            <div className="font-semibold">Glint</div>
                             <div className="text-xs text-muted-foreground">
                                 {version && `Version ${version} · `}Made with <Heart className="inline size-3 fill-pink-500 text-pink-500" /> by Shadi Sadi
                             </div>

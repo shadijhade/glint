@@ -16,7 +16,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const REPO = "https://github.com/shadijhade/shadui-ripgrep";
+const REPO = "https://github.com/shadijhade/glint";
 const root = resolve(import.meta.dirname, "..");
 const args = process.argv.slice(2);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
@@ -51,7 +51,7 @@ const commit = run("git", ["rev-parse", "HEAD"]).stdout.trim();
 const pushed = run("git", ["branch", "-r", "--contains", commit]).stdout.includes("origin/master");
 console.log(`Releasing ${version} from ${commit.slice(0, 7)}${pushed ? "" : " (not on origin/master yet: push it before publishing)"}`);
 
-const work = mkdtempSync(join(tmpdir(), "shadui-ripgrep-release-"));
+const work = mkdtempSync(join(tmpdir(), "glint-release-"));
 process.on("exit", () => rmSync(work, { recursive: true, force: true }));
 const overlays = [];
 const overlay = (name, value) => {
@@ -107,7 +107,7 @@ async function artifactSigning(endpoint, account, profile) {
     if (!newest) fail("signtool.exe wasn't found: install the Windows SDK (10.0.26100 or newer).");
     return {
         cmd: join(kits, newest, "x64", "signtool.exe"),
-        args: ["sign", "/fd", "SHA256", "/tr", "http://timestamp.acs.microsoft.com", "/td", "SHA256", "/d", "ShadUI Ripgrep",
+        args: ["sign", "/fd", "SHA256", "/tr", "http://timestamp.acs.microsoft.com", "/td", "SHA256", "/d", config.productName,
             "/dlib", join(client, "bin", "x64", "Azure.CodeSigning.Dlib.dll"), "/dmdf", metadata, "%1"],
     };
 }
@@ -123,12 +123,12 @@ if (codeSigned) cpSync(join(work, "binaries"), tools, { recursive: true });
 if (build.error || build.status) fail("The build failed");
 
 const nsis = join(root, "src-tauri", "target", "release", "bundle", "nsis");
-const name = `shadui-ripgrep_${version}_x64-setup.exe`;
+const name = `${config.productName}_${version}_x64-setup.exe`;
 const installer = join(nsis, name);
 if (!existsSync(installer)) fail(`${installer} wasn't built`);
 
 if (codeSigned) {
-    const files = [installer, join(root, "src-tauri", "target", "release", "shadui-ripgrep.exe"), join(root, "src-tauri", "target", "release", "shadui-index.exe")];
+    const files = [installer, join(root, "src-tauri", "target", "release", `${config.mainBinaryName}.exe`), join(root, "src-tauri", "target", "release", "shadui-index.exe")];
     const check = join(work, "check-signatures.ps1");
     writeFileSync(check, "$bad = 0\nforeach ($f in $args) {\n  $s = Get-AuthenticodeSignature $f\n  \"$($s.Status)  $(Split-Path $f -Leaf)  $($s.SignerCertificate.Subject)\"\n  if ($s.Status -ne 'Valid') { $bad++ }\n}\nexit $bad\n");
     const result = run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", check, ...files]);
@@ -160,6 +160,6 @@ const assets = [name, ...(pubkey ? [`${name}.sig`, "latest.json"] : [])].map((f)
 console.log(`
 ✓ release/v${version} is ready. Next (docs/releasing.md):
   1. Create the draft release:
-       gh release create v${version} ${assets} --draft --target ${commit} --title "ShadUI Ripgrep v${version}" --generate-notes
+       gh release create v${version} ${assets} --draft --target ${commit} --title "${config.productName} v${version}" --generate-notes
   2. Read it on GitHub, write the notes, try the installer, and publish it.
   3. Submit release/v${version}/package-manifests to winget and Scoop.`);
