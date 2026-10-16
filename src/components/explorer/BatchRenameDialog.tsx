@@ -289,7 +289,7 @@ export function BatchRenameDialog() {
                             Rename {formatCount(items.length)} {items.length === 1 ? "item" : "items"}
                         </h2>
                         <p className="truncate text-xs text-muted-foreground">
-                            Two-phase cycle-safe transaction with live conflict & regex simulation
+                            Every item is renamed, or none is, and Undo puts the names back
                         </p>
                     </div>
                     {lastUndo && lastUndo.length > 0 && (
@@ -310,7 +310,7 @@ export function BatchRenameDialog() {
                     {/* Find & Replace */}
                     <div className="space-y-2 rounded-md border bg-card p-3">
                         <div className="flex items-center justify-between">
-                            <span className="font-semibold text-foreground">1. Find & Replace in Name</span>
+                            <span className="font-semibold text-foreground">1. Find and replace</span>
                             <div className="flex items-center gap-1">
                                 <button
                                     type="button"
@@ -360,7 +360,7 @@ export function BatchRenameDialog() {
                     {/* Pattern Template & Case */}
                     <div className="space-y-2 rounded-md border bg-card p-3">
                         <div className="flex items-center justify-between gap-2">
-                            <span className="font-semibold text-foreground">2. Pattern Template & Case</span>
+                            <span className="font-semibold text-foreground">2. Pattern and case</span>
                             <div className="flex items-center gap-1.5 text-[11px]">
                                 <span className="text-muted-foreground">Start #</span>
                                 <input
@@ -391,7 +391,7 @@ export function BatchRenameDialog() {
                                 onChange={(e) => setCaseMode(e.target.value as CaseMode)}
                                 className="h-7 rounded border bg-background px-2 text-xs outline-none focus:border-primary"
                             >
-                                <option value="none">Keep Case</option>
+                                <option value="none">Same case</option>
                                 <option value="lower">lowercase</option>
                                 <option value="upper">UPPERCASE</option>
                                 <option value="title">Title Case</option>
@@ -421,9 +421,9 @@ export function BatchRenameDialog() {
                         <thead className="sticky top-0 z-10 border-b bg-muted/90 backdrop-blur-xs">
                             <tr>
                                 <th className="w-10 px-3 py-2 text-right font-normal text-muted-foreground">#</th>
-                                <th className="w-[44%] px-3 py-2 font-semibold text-foreground">Current Name</th>
+                                <th className="w-[44%] px-3 py-2 font-semibold text-foreground">Current name</th>
                                 <th className="w-6 px-1 py-2" />
-                                <th className="px-3 py-2 font-semibold text-foreground">New Name (Live Preview)</th>
+                                <th className="px-3 py-2 font-semibold text-foreground">New name</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y">

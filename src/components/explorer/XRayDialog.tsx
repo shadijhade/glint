@@ -95,6 +95,10 @@ export function XRayDialog() {
     const { open, path, loading, full, report, error } = useXRayStore();
     const [expectedHash, setExpectedHash] = useState("");
     const [removingStream, setRemovingStream] = useState<string | null>(null);
+    // A checksum pasted for one file isn't compared with the next one opened.
+    useEffect(() => {
+        if (open) setExpectedHash("");
+    }, [open, path]);
 
     useEffect(() => {
         if (!open) return;
