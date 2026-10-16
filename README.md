@@ -185,7 +185,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 -   **Folders**: one `FindFirstFileExW` pass (basic info, large fetch) gets every name, size, date and attribute at once. Rust sorts them and hands the whole listing to the UI as a single binary buffer rather than JSON, and React draws only the rows on screen.
 -   **Name search**: the instant-search service when it covers the folder, otherwise fd, with results streamed into the list as they arrive.
 -   **Folder sizes**: the index's per-folder totals, otherwise dust.
--   **Disk usage map**: one request to the index returns the biggest files and folders six levels down (folders are walked biggest first, so nothing too small to draw is looked at), or dust's JSON tree when the index doesn't have the folder. Either way it reaches the UI as one binary buffer and is drawn on a canvas as a squarified treemap.
+-   **Disk usage map**: one request to the index returns the biggest files and folders six levels down (folders are walked biggest first, so nothing too small to draw is looked at), or dust's JSON tree when the index doesn't have the folder. Either way it reaches the UI as one binary buffer and is drawn on a canvas as a squarified treemap. On an index of 2.86 million records (synthetic, shaped like a system drive), the service answers in 9–17 ms for the 20,000 biggest items, whether the map goes 4 or 32 levels down.
 -   **Text search**: ripgrep's JSON output, streamed in batches.
 -   **File operations**: Windows' `IFileOperation` (the engine Explorer uses), the clipboard formats Explorer reads, and OLE drag and drop.
 -   **Live folders**: [notify](https://github.com/notify-rs/notify) watches the folders on screen (one per pane).

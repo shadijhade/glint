@@ -20,6 +20,7 @@ On this machine (Intel Core Ultra 7 265K, NVMe C: with 2.89 million MFT records:
 | Search end to end over the pipe, all three drives | median 4.8 ms (`kernel32.dll`), 8.1 ms (`report`), 4.3 ms (no match), 31–33 ms (50 k results) |
 | Search in the app, Enter to every result listed | 6.5–7.5 ms (`kernel32.dll`), 14–15 ms (`report`), 155–186 ms (50 k results; most of it is handing 50 k rows to the webview) |
 | Folder sizes | 0.02–0.05 ms in the service, 0.4 ms in the app |
+| Disk-usage map, the 20,000 biggest items 4 to 32 levels down | 9–17 ms in the service, on a synthetic index of 2.86 million records shaped like C: |
 | A file created, grown, renamed, moved, hard-linked or deleted | in the index within ~0.3 s (the journal is checked every 250 ms) |
 | The same name search with fd, home folder only (219 GB) | 8.09 s |
 
