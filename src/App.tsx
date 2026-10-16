@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
-import { getVersion } from "@tauri-apps/api/app";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
-import { FolderOpen, History as HistoryIcon, Settings as SettingsIcon, Sparkles, TextSearch } from "lucide-react";
+import { openPath } from "@tauri-apps/plugin-opener";
+import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, Sparkles, TextSearch } from "lucide-react";
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
 import { currentPath, navigate, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
 import { toRegExp } from "./lib/text";
+import { checkForUpdates, useUpdater } from "./lib/updater";
 import { cn } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
 import { SearchBar } from "./components/Search";
@@ -29,7 +29,8 @@ export interface SearchRun {
   limit: number | null;
 }
 
-const RELEASES_API = "https://api.github.com/repos/shadijhade/shadui-ripgrep/releases/latest";
+/** How often a long-running session looks for a new version again (it also looks at start). */
+const UPDATE_CHECK_MS = 12 * 60 * 60 * 1000;
 
 const MODES: { mode: Mode; icon: typeof FolderOpen; label: string; title: string }[] = [
   { mode: "files", icon: FolderOpen, label: "Files", title: "Browse files (Ctrl+Shift+E)" },
@@ -71,7 +72,8 @@ function App() {
   const [duration, setDuration] = useState(0);
   const [filesSearched, setFilesSearched] = useState<number | null>(null);
   const [selected, setSelected] = useState(-1);
-  const [update, setUpdate] = useState<{ version: string; url: string } | null>(null);
+  const update = useUpdater((s) => s.available);
+  const updating = useUpdater((s) => s.progress !== null);
   const runId = useRef("");
   const unlisten = useRef<(() => void) | undefined>(undefined);
   const settingsRef = useRef<HTMLDialogElement>(null);
@@ -79,6 +81,12 @@ function App() {
   const openSettings = () => {
     const dialog = settingsRef.current;
     if (dialog && !dialog.open) dialog.showModal();
+  };
+
+  /** Settings at About, where an available update installs. */
+  const openAbout = () => {
+    openSettings();
+    document.getElementById("settings-about")?.scrollIntoView({ block: "start" });
   };
 
   /** Text search in `folder` (the open folder by default). */
@@ -89,14 +97,12 @@ function App() {
   };
 
   useEffect(() => {
-    Promise.all([getVersion(), fetch(RELEASES_API).then((r) => r.json())])
-      .then(([current, latest]) => {
-        const version = String(latest.tag_name ?? "").replace(/^v/, "");
-        const isNewer = /^\d+(\.\d+)*$/.test(version) && version.localeCompare(current, undefined, { numeric: true }) > 0;
-        if (isNewer) setUpdate({ version, url: latest.html_url });
-      })
-      .catch(() => {}); // offline or rate-limited: no update badge
-    return () => unlisten.current?.();
+    checkForUpdates();
+    const timer = setInterval(checkForUpdates, UPDATE_CHECK_MS);
+    return () => {
+      clearInterval(timer);
+      unlisten.current?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -287,8 +293,8 @@ function App() {
         )}
         <div className={cn("flex shrink-0 items-center gap-0.5", mode === "text" && "pt-0.5")}>
           {update && (
-            <Button variant="ghost" size="sm" className="text-primary hover:text-primary" onClick={() => openUrl(update.url)} title={`Version ${update.version} is available`}>
-              <Sparkles /> Update
+            <Button variant="ghost" size="sm" className="text-primary hover:text-primary" onClick={openAbout} title={`Version ${update.version} is available`}>
+              {updating ? <Loader2 className="animate-spin" /> : <Sparkles />} Update
             </Button>
           )}
           {mode === "text" && (
@@ -332,7 +338,7 @@ function App() {
         onClick={(e) => e.target === e.currentTarget && e.currentTarget.close()}
         className="m-auto h-[min(85vh,46rem)] w-[min(92vw,44rem)] overflow-hidden rounded-xl border bg-background p-0 text-foreground shadow-2xl backdrop:bg-black/50"
       >
-        <SettingsView onClose={() => settingsRef.current?.close()} update={update} />
+        <SettingsView onClose={() => settingsRef.current?.close()} />
       </dialog>
       <Toaster theme={settings.theme} position="bottom-right" richColors />
     </div>

@@ -1,6 +1,6 @@
 [package]
 name = "shadui-ripgrep"
-version = "0.2.0"
+version.workspace = true
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -11,6 +11,11 @@ default-run = "shadui-ripgrep"
 
 [workspace]
 members = ["index"]
+
+# The app and the instant search service share one version: the app offers to update the service
+# whenever the two differ, so every release bumps both (see docs/releasing.md).
+[workspace.package]
+version = "0.2.0"
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -31,6 +36,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 notify = "8"
 shadui-index = { path = "index" }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Without the default `zip` feature: it only unpacks Tauri v1-style .zip updates, and updates here
+# are the NSIS setup.exe itself.
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"

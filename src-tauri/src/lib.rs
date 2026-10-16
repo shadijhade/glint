@@ -67,6 +67,15 @@ fn cancel_search(state: State<AppState>) {
     state.search.kill();
 }
 
+/// Stops every sidecar that runs (the text search, and each tab's file search and folder sizes), so
+/// an update's installer can replace rg, fd and dust.
+#[tauri::command]
+fn stop_tools(state: State<AppState>) {
+    state.search.kill();
+    state.finds.stop_all();
+    state.sizes.close_all();
+}
+
 #[tauri::command]
 fn run_ripgrep_batched(
     window: Window,
@@ -205,6 +214,14 @@ fn disable_browser_keys(app: &tauri::App) {
     }
 }
 
+/// Whether the setup program installed this copy (it leaves `uninstall.exe` next to the app; the Scoop
+/// manifest deletes the one 7-Zip extracts). Only those update themselves: a Scoop or portable copy, or
+/// a dev build, is updated by whatever put it there, so the app just links to the new release.
+#[cfg(desktop)]
+fn installed_by_setup() -> bool {
+    std::env::current_exe().is_ok_and(|exe| exe.with_file_name("uninstall.exe").exists())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -219,6 +236,7 @@ pub fn run() {
             write_file_content,
             run_ripgrep_batched,
             cancel_search,
+            stop_tools,
             fsx::list_dir,
             fsx::resolve_path,
             fsx::list_drives,
@@ -241,9 +259,13 @@ pub fn run() {
             shell::start_drag,
             watch::watch_dirs,
         ])
-        .setup(|_app| {
+        .setup(|app| {
             #[cfg(all(windows, not(debug_assertions)))]
-            disable_browser_keys(_app);
+            disable_browser_keys(app);
+            #[cfg(desktop)]
+            if installed_by_setup() {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

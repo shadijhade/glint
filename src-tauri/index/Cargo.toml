@@ -1,6 +1,6 @@
 [package]
 name = "shadui-index"
-version = "0.2.0"
+version.workspace = true
 description = "NTFS MFT + USN journal index for ShadUI Ripgrep: instant name search and folder sizes"
 edition = "2021"
 publish = false

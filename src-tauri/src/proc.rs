@@ -69,6 +69,14 @@ impl Lanes {
             slot.kill();
         }
     }
+
+    /// Stops every lane's work and forgets the lanes.
+    pub fn close_all(&self) {
+        let slots: Vec<Slot> = self.lock().drain().map(|(_, slot)| slot).collect();
+        for slot in slots {
+            slot.kill();
+        }
+    }
 }
 
 fn stop(mut child: Child) {

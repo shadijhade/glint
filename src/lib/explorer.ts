@@ -28,6 +28,7 @@ import {
 } from "./fs";
 import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
 import { type Session, useStore } from "./store";
+import { firstNotice } from "./utils";
 
 export interface KnownFolder {
     id: "home" | "desktop" | "documents" | "downloads" | "pictures" | "music" | "videos";
@@ -208,17 +209,27 @@ export const savedScroll = (tab: string, key: string) => {
 };
 export const saveScroll = (tab: string, key: string, top: number) => scrolls.set(tab, { key, top });
 
+/** How many busy() operations run, and who waits for none. */
+let working = 0;
+const idle: (() => void)[] = [];
+
 /** Shows `label` while slow work runs (quick operations finish before it appears). */
 async function busy<T>(label: string, work: Promise<T>): Promise<T> {
     let id: string | number | undefined;
     const timer = setTimeout(() => (id = toast.loading(label)), 500);
+    working++;
     try {
         return await work;
     } finally {
         clearTimeout(timer);
         if (id !== undefined) toast.dismiss(id);
+        if (--working === 0) idle.splice(0).forEach((resolve) => resolve());
     }
 }
+
+/** Resolves once no file operation (copy, move, delete…) is running: an update waits for them before the app closes. */
+export const operationsDone = () => (working === 0 ? Promise.resolve() : new Promise<void>((resolve) => idle.push(resolve)));
+export const operationsRunning = () => working > 0;
 
 interface NavOptions {
     /** Paths to select once the folder is open. */
@@ -400,7 +411,7 @@ export async function initExplorer() {
     // Drives fill in when they answer; a sleeping network drive mustn't hold up the first folder.
     refreshDrives();
     // Asked first (briefly), so the first folder can already show its sizes from the index.
-    await Promise.race([refreshIndex(), new Promise((resolve) => setTimeout(resolve, 300))]);
+    await Promise.race([refreshIndex().then(noticeServiceUpdate), new Promise((resolve) => setTimeout(resolve, 300))]);
     await loadKnownFolders();
     const { settings, lastFolder, session } = useStore.getState();
     const home = homeFolder();
@@ -862,14 +873,31 @@ export function indexed(path: string) {
     return index?.state === "on" && index.volumes.some((v) => v.volume === drive && v.state === "ready");
 }
 
+/** Whether the service runs an older (or newer) build than the app's: true after the app updated itself. */
+export const serviceOutdated = (index: IndexInfo | null) =>
+    index?.state === "on" && !!index.version && index.version !== index.appVersion;
+
+/** After the app updates, the service keeps running the version it had until it's updated too (one more approval). */
+function noticeServiceUpdate() {
+    const { index } = get();
+    if (!index || !serviceOutdated(index) || !firstNotice("service-update-notice", index.appVersion)) return;
+    toast.info("Instant search has an update", {
+        description: `Its service is still version ${index.version}. Updating it asks for administrator approval.`,
+        action: { label: "Update", onClick: () => void enableIndex() },
+        duration: 15_000,
+    });
+}
+
 /** Turns instant search on (or updates it, or allows this user); Windows asks for administrator approval. */
 export async function enableIndex() {
+    const updating = serviceOutdated(get().index);
     try {
-        set({ index: await busy("Turning on instant search…", indexEnable()) });
+        set({ index: await busy(updating ? "Updating instant search…" : "Turning on instant search…", indexEnable()) });
         refreshIndex();
-        toast.success("Instant search is on", { description: "Each drive is searched with the index as soon as it has been read." });
+        if (updating) toast.success("Instant search is updated", { description: `Its service now runs version ${get().index?.appVersion}.` });
+        else toast.success("Instant search is on", { description: "Each drive is searched with the index as soon as it has been read." });
     } catch (e) {
-        if (String(e) !== "cancelled") toast.error("Couldn't turn on instant search", { description: String(e) });
+        if (String(e) !== "cancelled") toast.error(updating ? "Couldn't update instant search" : "Couldn't turn on instant search", { description: String(e) });
     }
 }
 
