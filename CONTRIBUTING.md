@@ -35,6 +35,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, dust folder sizes and disk-usage maps (or the index when it's on) |
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop, Properties |
 | `src-tauri/src/thumbs.rs` | Thumbnails from Windows' thumbnail cache (`IShellItemImageFactory`, `IThumbnailCache`) on worker threads, in a queue per tab |
+| `src-tauri/src/launch.rs`, `verbs.rs` | Folders from the command line and later launches (one copy runs at a time), and File Explorer's *Open in Glint* entries ([docs/explorer-integration.md](docs/explorer-integration.md)) |
 | `src-tauri/index/` | The opt-in instant-search service (NTFS MFT + USN journal) |
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `dust` executables |
 | `src/lib/updater.ts` | Finding and installing updates (tauri-plugin-updater) |
@@ -58,7 +59,7 @@ node src/lib/explorer.check.ts
 node src/lib/text.check.ts
 ```
 
-Try UI changes in the app with `npm run tauri dev`, and add a screenshot or GIF to the pull request.
+Try UI changes in the app with `npm run tauri dev`, and add a screenshot or GIF to the pull request. Release builds run once per app identifier and hand their folders to a Glint that's already running, so try a release build under its own name and identifier ([how](docs/explorer-integration.md#trying-it-without-touching-your-glint)).
 
 ## Updating a bundled tool
 

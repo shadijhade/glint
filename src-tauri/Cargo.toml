@@ -41,6 +41,7 @@ shadui-index = { path = "index" }
 # Without the default `zip` feature: it only unpacks Tauri v1-style .zip updates, and updates here
 # are the NSIS setup.exe itself.
 tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
+tauri-plugin-single-instance = "2.5"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"

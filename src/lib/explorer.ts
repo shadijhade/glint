@@ -20,10 +20,12 @@ import {
     indexEnable,
     type IndexInfo,
     indexStatus,
+    type LaunchTarget,
     listDir,
     listDrives,
     type Listing,
     resolvePath,
+    takeLaunchTargets,
     watchDirs,
 } from "./fs";
 import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
@@ -120,7 +122,8 @@ interface ExplorerState {
 let tabSeq = 0;
 const newTabId = () => `tab${++tabSeq}`;
 
-const blankTab = (id: string, path: string, view: ViewMode = "list"): TabState => ({
+/** A tab that opens `path` when it's first shown, as `view`, with `select` selected. */
+const blankTab = (id: string, path: string, view: ViewMode = "list", select?: string): TabState => ({
     id,
     ready: false,
     path,
@@ -131,7 +134,7 @@ const blankTab = (id: string, path: string, view: ViewMode = "list"): TabState =
     forward: [],
     filter: "",
     find: null,
-    selection: new Set(),
+    selection: new Set(select ? [select] : []),
     anchor: null,
     focus: null,
     renaming: null,
@@ -282,10 +285,11 @@ export async function navigate(target: string, { select, history = true, quiet =
 
     const path = listing?.path ?? THIS_PC;
     const same = state.ready && (path === THIS_PC ? state.path === THIS_PC : state.path !== THIS_PC && samePath(path, state.path));
-    // Select what was asked for; on a refresh keep the selection; going up selects where we came from.
+    // Select what was asked for; on a refresh keep the selection; a new tab selects what it was
+    // opened with; going up selects where we came from.
     let wanted: string[] = [];
     if (select !== undefined) wanted = [select].flat();
-    else if (same) wanted = [...state.selection];
+    else if (same || (!state.ready && state.selection.size)) wanted = [...state.selection];
     else if (state.path !== THIS_PC && samePath(parentPath(state.path), path)) wanted = [state.path];
     let selection: string[] = [];
     if (wanted.length && listing) {
@@ -415,21 +419,31 @@ async function loadKnownFolders() {
 
 const homeFolder = () => get().known.find((k) => k.id === "home")?.path ?? THIS_PC;
 
-let initialized = false;
+let initialized: Promise<void> | undefined;
 /** The session is saved only once startup has restored it, so starting can't overwrite it. */
 let restored = false;
 
-export async function initExplorer() {
-    if (initialized) return;
-    initialized = true;
+/** Opens the first folders: last time's tabs or the start folder, and any the app was started with. */
+export const initExplorer = () => (initialized ??= init());
+
+async function init() {
     // Drives fill in when they answer; a sleeping network drive mustn't hold up the first folder.
     refreshDrives();
     // Asked first (briefly), so the first folder can already show its sizes from the index.
     await Promise.race([refreshIndex().then(noticeServiceUpdate), new Promise((resolve) => setTimeout(resolve, 300))]);
     await loadKnownFolders();
+    // Folders from File Explorer, a double-click or the command line, each in a tab of its own.
+    const launch = await takeLaunchTargets().catch((): LaunchTarget[] => []);
     const { settings, lastFolder, session } = useStore.getState();
     const home = homeFolder();
     if (settings.restoreTabs && session && restoreSession(session)) {
+        showOnStart(placeOutsideTabs(launch, true));
+        await Promise.all(visibleTabs().map((id) => openTab(id)));
+    } else if (launch.length) {
+        // The first one instead of the start folder.
+        const tab = activeTabId();
+        set((s) => ({ tabs: { ...s.tabs, [tab]: blankTab(tab, launch[0].path, s.tabs[tab]?.view, launch[0].select ?? undefined) } }));
+        showOnStart(placeOutsideTabs(launch.slice(1), false));
         await Promise.all(visibleTabs().map((id) => openTab(id)));
     } else {
         const start = settings.startFolder === "thispc" ? THIS_PC : settings.startFolder === "last" && lastFolder !== null ? lastFolder : home;
@@ -519,8 +533,11 @@ const closedTabs: { path: string; view: ViewMode; pane: number; index: number }[
 /** Background tabs opened from one tab go after each other, as in a browser. */
 let openedFrom: { from: string; last: string } | null = null;
 
-/** Adds a tab for `path` to `pane`, after `after` (default: the pane's active tab), shown as `view` (default: the active tab's). */
-function addTab(path: string, pane: number, after?: string, view = tabState()?.view) {
+/**
+ * Adds a tab for `path` to `pane`, after `after` (default: the pane's active tab), shown as `view`
+ * (default: the active tab's), with `select` selected once it opens.
+ */
+function addTab(path: string, pane: number, after?: string, view = tabState()?.view, select?: string) {
     const id = newTabId();
     set((s) => {
         const p = s.panes[pane];
@@ -529,9 +546,52 @@ function addTab(path: string, pane: number, after?: string, view = tabState()?.v
         tabs.splice(at < 0 ? tabs.length : at + 1, 0, id);
         const panes = [...s.panes];
         panes[pane] = { ...p, tabs };
-        return { tabs: { ...s.tabs, [id]: blankTab(id, path, view) }, panes };
+        return { tabs: { ...s.tabs, [id]: blankTab(id, path, view, select) }, panes };
     });
     return id;
+}
+
+/**
+ * Adds a tab at the end of the active pane for each folder handed over from outside, and returns
+ * the last one's id. With `reuse` (at start), a restored tab on screen that already shows a folder
+ * stands in for it: an update restarts the app with the folders it was first started with.
+ */
+function placeOutsideTabs(targets: LaunchTarget[], reuse: boolean) {
+    let last: string | null = null;
+    for (const { path, select } of targets) {
+        const s = get();
+        const shown = reuse && !select ? shownPanes(s).find((p) => p.tabs.some((id) => samePath(s.tabs[id]?.path ?? THIS_PC, path))) : undefined;
+        if (shown) {
+            last = shown.tabs.find((id) => samePath(s.tabs[id]?.path ?? THIS_PC, path))!;
+            continue;
+        }
+        const pane = s.panes[s.activePane];
+        last = addTab(path, s.activePane, pane.tabs[pane.tabs.length - 1], undefined, select ?? undefined);
+    }
+    return last;
+}
+
+/** At start, before any folder opens: makes `id` the tab on screen in its pane, and that pane the active one. */
+function showOnStart(id: string | null) {
+    const pane = id ? paneOf(id) : -1;
+    if (pane < 0) return;
+    set((s) => {
+        const panes = [...s.panes];
+        panes[pane] = { ...panes[pane], active: id! };
+        return { panes, activePane: pane };
+    });
+}
+
+/** Opens the folders File Explorer or a later launch handed over ("open-requested"), in new tabs in front. Resolves whether there were any. */
+export async function openRequested() {
+    await initExplorer();
+    const targets = await takeLaunchTargets().catch((): LaunchTarget[] => []);
+    const last = placeOutsideTabs(targets, false);
+    if (!last) return false;
+    useStore.getState().setMode("files");
+    set({ palette: false });
+    activateTab(last);
+    return true;
 }
 
 /** A tab coming on screen: opens its folder the first time, else re-reads it (folders out of sight aren't watched). */

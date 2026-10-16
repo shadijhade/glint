@@ -143,6 +143,27 @@ export const openTerminal = (path: string) => invoke("open_terminal", { path });
 /** Watches exactly these folders (the ones on screen); changes arrive as "dir-changed" events carrying the folder's path. */
 export const watchDirs = (paths: string[]) => invoke("watch_dirs", { paths });
 
+/** A folder handed over from outside (File Explorer, a double-click, the command line), and the file to select in it. */
+export interface LaunchTarget {
+    path: string;
+    select: string | null;
+}
+
+/** Folders waiting to open, each in a new tab: the command line's at start, then each later launch's ("open-requested" says more came). */
+export const takeLaunchTargets = () => invoke<LaunchTarget[]>("take_launch_targets");
+
+/** File Explorer's "Open in Glint", and opening folders here when they're double-clicked. */
+export interface ExplorerIntegration {
+    /** Only a copy the setup program installed can turn them on. */
+    available: boolean;
+    menu: boolean;
+    byDefault: boolean;
+}
+
+export const explorerIntegration = () => invoke<ExplorerIntegration>("explorer_integration");
+/** Opening folders by default needs the menu entries: the folder's entry becomes its default action. */
+export const setExplorerIntegration = (menu: boolean, byDefault: boolean) => invoke<ExplorerIntegration>("set_explorer_integration", { menu, byDefault });
+
 /** One drive in the instant search index. */
 export interface IndexVolume {
     /** "C:" */
