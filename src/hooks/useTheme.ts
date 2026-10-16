@@ -6,6 +6,20 @@ const FONT_PX: Record<Settings['fontSize'], number> = { small: 14, medium: 16, l
 /** Height of one results row; scales with the text size setting. */
 export const rowHeight = (size: Settings['fontSize']) => Math.round(FONT_PX[size] * 1.75);
 
+/** Pixels in a rem at the text size setting. */
+export const remPx = (size: Settings['fontSize']) => FONT_PX[size];
+
+/**
+ * A grid tile, in CSS pixels: the narrowest it gets (tiles widen to fill the row), its height, the
+ * square its thumbnail or icon fits in, and the grid's side padding. Scales with the text size.
+ */
+export function gridTile(size: Settings['fontSize']) {
+    const rem = FONT_PX[size];
+    return { width: Math.round(rem * 7.5), height: Math.round(rem * 10.25), thumb: rem * 6, pad: rem * 0.5 };
+}
+
+export type GridTile = ReturnType<typeof gridTile>;
+
 /** Applies the theme (incl. live system changes) and text size to <html>. */
 export function useTheme() {
     const { theme, fontSize } = useStore((s) => s.settings);

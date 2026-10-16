@@ -283,6 +283,12 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     <SwitchRow label="Folders first" checked={settings.foldersFirst} onChange={(foldersFirst) => set({ foldersFirst })} />
                     <SwitchRow label="Preview pane" hint="Alt+P" checked={settings.showPreviewPane} onChange={(showPreviewPane) => set({ showPreviewPane })} />
                     <SwitchRow
+                        label="Thumbnails in the list"
+                        hint="Pictures and videos show a small one in place of their icon. The grid view (Ctrl+Shift+2) shows them for every file Windows has one of."
+                        checked={settings.listThumbnails}
+                        onChange={(listThumbnails) => set({ listThumbnails })}
+                    />
+                    <SwitchRow
                         label="Ask before moving to the Recycle Bin"
                         hint="Deleting permanently (Shift+Del) always asks"
                         checked={settings.confirmDelete}

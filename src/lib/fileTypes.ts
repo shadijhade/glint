@@ -113,3 +113,6 @@ export const isKnownType = (entry: FileEntry) => kindOf(entry) !== GENERIC;
 
 /** A file's color group on the disk-usage map. */
 export const typeGroup = (entry: FileEntry) => kindOf(entry).group;
+
+/** Pictures and videos: what a thumbnail in the list's icon column tells apart better than an icon. */
+export const isPictureOrVideo = (entry: FileEntry) => !entry.dir && (kindOf(entry).group === G.images || kindOf(entry).group === G.video);

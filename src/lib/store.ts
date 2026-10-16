@@ -17,11 +17,15 @@ export interface SearchOptions {
 
 export type Mode = 'files' | 'text';
 
+/** How a tab shows a folder: a list with columns, or a grid of thumbnails. */
+export type ViewMode = 'list' | 'grid';
+
 /** The tabs open in each pane when the app closed, to reopen them. */
 export interface Session {
     dual: boolean;
     activePane: number;
-    panes: { paths: string[]; active: number }[];
+    /** Each tab's folder and view (`views` came later: missing means lists). */
+    panes: { paths: string[]; active: number; views?: ViewMode[] }[];
 }
 
 export interface Settings {
@@ -42,6 +46,7 @@ export interface Settings {
     showHidden: boolean;
     foldersFirst: boolean;
     showPreviewPane: boolean;
+    listThumbnails: boolean; // small thumbnails of pictures and videos in the list's icon column
     confirmDelete: boolean; // ask before moving to the Recycle Bin (permanent deletes always ask)
     sort: Sort;
     // Find files (fd)
@@ -81,6 +86,7 @@ export const DEFAULT_SETTINGS: Settings = {
     showHidden: false,
     foldersFirst: true,
     showPreviewPane: true,
+    listThumbnails: true,
     confirmDelete: false,
     sort: { key: 'name', desc: false },
     findRespectIgnore: false,

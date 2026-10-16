@@ -33,6 +33,7 @@ import {
     HardDrive,
     Info,
     LayoutDashboard,
+    LayoutGrid,
     List,
     ListChecks,
     Loader2,
@@ -58,7 +59,7 @@ import {
     X,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
+import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
 import { type FileEntry, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     calcSizes,
@@ -111,20 +112,23 @@ import {
     updateTab,
     useExplorer,
     useTab,
+    viewKey,
 } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
 import { driveName, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
+import { gridMove } from "@/lib/grid";
 import { baseName, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { rowHeight } from "@/hooks/useTheme";
+import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
 import { DiskUsage } from "./DiskUsage";
+import { FileGrid } from "./FileGrid";
 import { FileList } from "./FileList";
 import { FilePreview } from "./FilePreview";
 import { QuickLook } from "./QuickLook";
@@ -320,6 +324,10 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             inFolder && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
             inFolder && !t.find && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
             inFolder && !t.find && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
+            (inFolder || !!t.find) &&
+                (t.view === "grid" && !showsUsage(t.id)
+                    ? action("view-list", "Show as a list", List, () => chooseView("list", t.id), "Ctrl+Shift+6")
+                    : action("view-grid", "Show as a grid, with thumbnails", LayoutGrid, () => chooseView("grid", t.id), "Ctrl+Shift+2")),
             !!t.focus && action("quick-look", "Quick Look", Eye, () => useExplorer.setState({ quickLook: true }), "Space"),
             action("hidden", now.showHidden ? "Hide hidden items" : "Show hidden items", now.showHidden ? EyeOff : Eye, () => setSettings({ showHidden: !now.showHidden }), "Ctrl+H"),
             action("preview", now.showPreviewPane ? "Hide preview pane" : "Show preview pane", PanelRight, () => setSettings({ showPreviewPane: !now.showPreviewPane }), "Alt+P"),
@@ -397,7 +405,7 @@ function Pane(props: PaneProps) {
 }
 
 function PaneView({ index, active, menuContext }: PaneProps) {
-    const { tabId, path, listing, loading, find, filter, selection, focus, renaming, cut, sizes, dropTarget, quickLook, current, dual } = useExplorer(
+    const { tabId, path, listing, loading, find, filter, selection, focus, renaming, view, cut, sizes, dropTarget, quickLook, current, dual } = useExplorer(
         useShallow((s) => {
             const t = s.tabs[(s.panes[index] ?? s.panes[0]).active];
             return {
@@ -410,6 +418,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 selection: t.selection,
                 focus: t.focus,
                 renaming: t.renaming,
+                view: t.view,
                 cut: s.cut,
                 sizes: s.sizes[t.path],
                 dropTarget: s.dropTarget,
@@ -424,6 +433,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const { setSettings } = useStore.getState();
     const menu = useMenu();
     const height = rowHeight(settings.fontSize);
+    const tile = useMemo(() => gridTile(settings.fontSize), [settings.fontSize]);
     const paneRef = useRef<HTMLDivElement>(null);
     // Handlers that outlive a render (drags, the rename box) act on the tab they started in.
     const tabRef = useRef(tabId);
@@ -545,22 +555,17 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             const s = tabState(tab);
             if (!s) return;
             const at = s.focus ? rows.findIndex((r) => r.path === s.focus) : -1;
-            const page = Math.max(1, Math.floor((paneRef.current?.querySelector("[data-file-list]")?.clientHeight ?? 400) / height) - 1);
+            // The grid moves by tiles and rows of tiles (Left and Right too), the list by rows.
+            const grid = paneRef.current?.querySelector<HTMLElement>("[data-file-grid]");
+            const cols = Number(grid?.dataset.cols) || 1;
+            const lines = paneRef.current?.querySelector<HTMLElement>("[data-file-list]");
+            const page = grid ? Math.max(1, Math.floor(grid.clientHeight / (Number(grid.dataset.rowHeight) || 1)) - 1) : Math.max(1, Math.floor((lines?.clientHeight ?? 400) / height) - 1);
+            const to = gridMove(key, at, rows.length, cols, page);
             // Arrows select; with Shift they extend from the anchor; with Ctrl they only move the cursor.
-            const go = (to: number) => {
-                if (!rows.length) return;
-                const index = Math.max(0, Math.min(rows.length - 1, to));
+            const go = (index: number) => {
                 if (e.shiftKey) selectRange(rows, index, ctrl);
                 else if (ctrl) updateTab({ focus: rows[index].path }, tab);
                 else selectOnly(rows[index].path);
-            };
-            const moves: Record<string, () => number> = {
-                ArrowDown: () => at + 1,
-                ArrowUp: () => (at < 0 ? 0 : at - 1),
-                PageDown: () => at + page,
-                PageUp: () => at - page,
-                Home: () => 0,
-                End: () => rows.length - 1,
             };
             const { quickLook, dual } = useExplorer.getState();
 
@@ -576,11 +581,13 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "d") useExplorer.setState({ editingAddress: true });
                 else if (key === "p") setSettings({ showPreviewPane: !useStore.getState().settings.showPreviewPane });
                 else return;
-            } else if (moves[key] && !(e.altKey && ctrl)) {
-                go(moves[key]());
+            } else if (to !== null && !e.altKey) {
+                go(to);
             } else if (ctrl) {
                 const paths = selectedNow().map((r) => r.path);
-                if (key === "Tab") cycleTab(e.shiftKey ? -1 : 1);
+                // As in Explorer: Ctrl+Shift+2 for large icons, Ctrl+Shift+6 for details.
+                if (e.shiftKey && (e.code === "Digit2" || e.code === "Digit6") && (s.path !== THIS_PC || s.find)) chooseView(e.code === "Digit2" ? "grid" : "list", tab);
+                else if (key === "Tab") cycleTab(e.shiftKey ? -1 : 1);
                 else if (key === "t" && e.shiftKey) reopenClosedTab();
                 else if (key === "t") newTab();
                 else if (key === "w") closeTab();
@@ -809,7 +816,35 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     }
 
     const scopeName = find && (find.scope === THIS_PC ? "all drives" : baseName(find.scope));
-    const listKey = find ? `find:${find.id}` : `dir:${path}`;
+    const listKey = viewKey({ path, find });
+    // Each view keeps its own place in the folder: a list's scroll position means nothing to the grid.
+    const placeKey = `${listKey}:${view}`;
+    const viewProps = {
+        rows,
+        search: !!find,
+        scope: find?.scope ?? path,
+        sizes: sizeRun,
+        sort,
+        onSort,
+        selection,
+        focusIndex,
+        renaming,
+        cut,
+        dropTarget,
+        inactive: dual && !current,
+        lane: tabId,
+        thumbScope: placeKey,
+        scrollTop: savedScroll(tabId, placeKey),
+        onScrollTop: (top: number) => saveScroll(tabId, placeKey, top),
+        onRowMouseDown,
+        onRowContextMenu,
+        onOpen: openEntry,
+        onBackgroundMouseDown: (e: React.MouseEvent) => e.button === 0 && !e.ctrlKey && !e.shiftKey && selectOnly(null),
+        onBackgroundContextMenu: onFolderContextMenu,
+        onRename: (entry: FileEntry, name: string) => renameEntry(entry, name, tabRef.current),
+        onCancelRename: () => updateTab({ renaming: null }, tabRef.current),
+        empty,
+    };
 
     return (
         <div
@@ -849,33 +884,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     <ThisPC onContextMenu={onPlaceContextMenu} />
                 ) : mapRows ? (
                     <DiskUsage tab={tabId} onItemContextMenu={onRowContextMenu} onFolderContextMenu={onFolderContextMenu} />
+                ) : view === "grid" ? (
+                    <FileGrid key={`${tabId}:${placeKey}`} {...viewProps} pane={index} tile={tile} />
                 ) : (
-                    <FileList
-                        key={`${tabId}:${listKey}`}
-                        rows={rows}
-                        rowHeight={height}
-                        search={!!find}
-                        scope={find?.scope ?? path}
-                        sizes={sizeRun}
-                        sort={sort}
-                        onSort={onSort}
-                        selection={selection}
-                        focusIndex={focusIndex}
-                        renaming={renaming}
-                        cut={cut}
-                        dropTarget={dropTarget}
-                        inactive={dual && !current}
-                        scrollTop={savedScroll(tabId, listKey)}
-                        onScrollTop={(top) => saveScroll(tabId, listKey, top)}
-                        onRowMouseDown={onRowMouseDown}
-                        onRowContextMenu={onRowContextMenu}
-                        onOpen={openEntry}
-                        onBackgroundMouseDown={(e) => e.button === 0 && !e.ctrlKey && !e.shiftKey && selectOnly(null)}
-                        onBackgroundContextMenu={onFolderContextMenu}
-                        onRename={(entry, name) => renameEntry(entry, name, tabRef.current)}
-                        onCancelRename={() => updateTab({ renaming: null }, tabRef.current)}
-                        empty={empty}
-                    />
+                    <FileList key={`${tabId}:${placeKey}`} {...viewProps} rowHeight={height} thumbnails={settings.listThumbnails} iconBox={remPx(settings.fontSize)} />
                 )}
             </div>
             <StatusBar shown={rows.length} hidden={hidden} selected={selected} />
