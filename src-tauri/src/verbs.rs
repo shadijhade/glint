@@ -1,11 +1,12 @@
 //! File Explorer's "Open in Glint" (on the right-click menu of folders, of the empty space in a
 //! folder, and of drives) and, when asked, the app as what a double-click opens folders with:
 //! per-user shell verbs under HKCU\Software\Classes, so no administrator rights. They run this
-//! copy's exe, so only a copy the setup program installed adds them (its uninstaller takes them out
-//! again: installer/hooks.nsh), and any copy that starts and finds them running an exe that's gone
-//! points them at itself or removes them. File Explorer is never left running a missing program.
-//! Turning an option off removes exactly what turning it on added, and puts back what folders
-//! opened with before.
+//! copy's exe, so only an installed copy adds them: one the setup program installed (its uninstaller
+//! takes them out again: installer/hooks.nsh), or one Scoop installed, run through the app's
+//! `current` link (`scoop uninstall` takes them out: the manifest from scripts/package-manifests.mjs).
+//! Any copy that starts and finds them running an exe that's gone points them at itself or removes
+//! them. File Explorer is never left running a missing program. Turning an option off removes
+//! exactly what turning it on added, and puts back what folders opened with before.
 
 use crate::fsx::blocking;
 use serde::Serialize;
@@ -14,7 +15,7 @@ use tauri::AppHandle;
 #[derive(Serialize, Default, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Integration {
-    /// Whether this copy can turn them on: the setup program installed it.
+    /// Whether this copy can turn them on: the setup program or Scoop installed it.
     pub available: bool,
     /// "Open in Glint" is on File Explorer's menu.
     pub menu: bool,
@@ -44,7 +45,8 @@ pub async fn set_explorer_integration(app: AppHandle, menu: bool, by_default: bo
 }
 
 /// At start: entries that run an exe that's gone (a copy deleted without its uninstaller, an install
-/// that moved) are pointed at this copy if the setup program installed it, and removed otherwise.
+/// that moved) are pointed at this copy if the setup program or Scoop installed it, and removed
+/// otherwise.
 pub fn repair(app: &AppHandle) {
     imp::repair(app);
 }
@@ -78,9 +80,11 @@ mod imp {
     }
 
     impl Verbs {
+        /// Running the installed exe, or else this one (whose verbs are only ever taken out).
         fn for_app(app: &AppHandle) -> Option<Verbs> {
             let name = app.package_info().name.clone();
-            Some(Verbs { classes: CLASSES.into(), label: format!("Open in {name}"), name, exe: std::env::current_exe().ok()? })
+            let exe = installed_exe().or_else(|| std::env::current_exe().ok())?;
+            Some(Verbs { classes: CLASSES.into(), label: format!("Open in {name}"), name, exe })
         }
 
         fn key(&self, place: &str) -> String {
@@ -182,12 +186,12 @@ mod imp {
 
     pub fn status(app: &AppHandle) -> Integration {
         let (menu, by_default) = Verbs::for_app(app).map(|v| v.status()).unwrap_or_default();
-        Integration { available: crate::installed_by_setup(), menu, by_default }
+        Integration { available: installed_exe().is_some(), menu, by_default }
     }
 
     pub fn set(app: &AppHandle, menu: bool, by_default: bool) -> Result<(), String> {
-        if !crate::installed_by_setup() {
-            return Err("Only a copy installed with the setup program can do this.".into());
+        if installed_exe().is_none() {
+            return Err("Only a copy installed with the setup program or Scoop can do this.".into());
         }
         let verbs = Verbs::for_app(app).ok_or("Can't tell where the app is")?;
         verbs.set(menu, by_default).map_err(|e| e.to_string())
@@ -199,8 +203,41 @@ mod imp {
             return;
         }
         let (menu, by_default) = verbs.status();
-        let installed = crate::installed_by_setup();
+        let installed = installed_exe().is_some();
         let _ = verbs.set(menu && installed, by_default && installed);
+    }
+
+    /// The exe the entries can run for as long as this copy is installed: the one the setup program
+    /// installed, or a Scoop copy's through its `current` link. A portable copy or a dev build has
+    /// none, as it could be moved or deleted with nothing to take the entries out.
+    fn installed_exe() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        if crate::installed_by_setup() {
+            Some(exe)
+        } else {
+            scoop_current(&exe)
+        }
+    }
+
+    /// For an exe Scoop installed (`<root>\apps\<app>\<version>\Glint.exe`), the same exe through the
+    /// app's `current` link, which `scoop update` points at each new version and which the manifest's
+    /// uninstaller takes the entries out for. It's Scoop's when its folder holds Scoop's record of the
+    /// install and is the one `current` leads to (not an older version kept until `scoop cleanup`), in
+    /// a root that Scoop itself lives in, which is one user's. Apps installed for all users (`--global`)
+    /// don't count, as uninstalling them couldn't reach other accounts' entries, and neither do apps
+    /// without the link (Scoop's `no_junction` setting).
+    fn scoop_current(exe: &Path) -> Option<PathBuf> {
+        let name = exe.file_name()?;
+        let version = exe.parent()?;
+        let app = version.parent()?;
+        let apps = app.parent()?;
+        let current = app.join("current");
+        let scoops = apps.file_name()?.eq_ignore_ascii_case("apps")
+            && apps.join(r"scoop\current").is_dir()
+            // scoop-install.json since Scoop 0.6, install.json before.
+            && ["scoop-install.json", "install.json"].iter().any(|record| version.join(record).is_file())
+            && std::fs::canonicalize(&current).ok()? == std::fs::canonicalize(version).ok()?;
+        scoops.then(|| current.join(name))
     }
 
     /// Tells File Explorer the associations changed.
@@ -485,6 +522,93 @@ mod imp {
             verbs.set(false, false).unwrap();
             assert_eq!(verbs.status(), (false, false));
             assert_eq!(reg::dump(&scratch.0), [r"[\Classes]", "[]"]);
+        }
+
+        /// A folder in %TEMP%, removed afterwards (the links in it, not what they lead to).
+        struct TempDir(PathBuf);
+
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        #[test]
+        fn scoop_copies_run_through_current() {
+            // A Scoop root: Scoop itself, and an app with two versions, `current` leading to the newer.
+            let root = TempDir(std::env::temp_dir().join(format!("GlintTests-{}-scoop", std::process::id())));
+            let apps = root.0.join("apps");
+            let app = apps.join("glint");
+            std::fs::create_dir_all(apps.join(r"scoop\current")).unwrap();
+            for version in ["1.0.0", "1.1.0"] {
+                std::fs::create_dir_all(app.join(version)).unwrap();
+                std::fs::write(app.join(version).join("Glint.exe"), "").unwrap();
+                std::fs::write(app.join(version).join("scoop-install.json"), "{}").unwrap();
+            }
+            let link = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(app.join("current")).arg(app.join("1.1.0")).output().unwrap();
+            assert!(link.status.success(), "{link:?}");
+            let current = app.join(r"current\Glint.exe");
+
+            // Started from Scoop's shortcut or from the version's folder: through `current` either way.
+            assert_eq!(scoop_current(&current), Some(current.clone()));
+            assert_eq!(scoop_current(&app.join(r"1.1.0\Glint.exe")), Some(current.clone()));
+            // A version that an update left until `scoop cleanup`.
+            assert_eq!(scoop_current(&app.join(r"1.0.0\Glint.exe")), None);
+            // Scoop's record of the install, as Scoop before 0.6 named it, and none at all.
+            std::fs::rename(app.join(r"1.1.0\scoop-install.json"), app.join(r"1.1.0\install.json")).unwrap();
+            assert_eq!(scoop_current(&current), Some(current.clone()));
+            std::fs::remove_file(app.join(r"1.1.0\install.json")).unwrap();
+            assert_eq!(scoop_current(&current), None);
+            std::fs::write(app.join(r"1.1.0\scoop-install.json"), "{}").unwrap();
+            // Apps installed for all users: Scoop itself isn't in their root.
+            std::fs::remove_dir_all(apps.join("scoop")).unwrap();
+            assert_eq!(scoop_current(&current), None);
+            // A portable copy.
+            assert_eq!(scoop_current(Path::new(r"C:\Tools\Glint\Glint.exe")), None);
+        }
+
+        /// The Scoop manifest's uninstaller (scripts/package-manifests.mjs), run as Scoop runs it.
+        #[test]
+        fn scoop_uninstall_takes_out_what_turning_them_on_added() {
+            let manifests = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), r"\..\scripts\package-manifests.mjs")).unwrap();
+            let block = manifests.split("const removeExplorerVerbs = String.raw`").nth(1).unwrap().split('`').next().unwrap();
+            let scratch = Scratch::new("scoop");
+            let verbs = Verbs { exe: PathBuf::from(r"C:\Users\Someone\scoop\apps\glint\current\Glint.exe"), ..verbs_with_neighbours(&scratch) };
+            let block = block.replace(r"'Software\Classes'", &format!("'{}'", verbs.classes)).replace("$verb = 'Glint'", "$verb = 'GlintTest'");
+            let scoop = |cmd: &str| {
+                // Progress (loading modules) would go to stderr.
+                let script = format!(r"$ProgressPreference = 'SilentlyContinue'; $cmd = '{cmd}'; $dir = 'C:\Users\Someone\scoop\apps\glint\1.2.3'; Invoke-Command ([scriptblock]::Create($env:GLINT_UNINSTALLER))");
+                let run = std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).env("GLINT_UNINSTALLER", &block).output().unwrap();
+                assert!(run.status.success() && run.stderr.is_empty(), "{run:?}");
+            };
+
+            // With another default, which goes back as it was.
+            let folders = verbs.folders();
+            reg::set(&folders, "", &reg::Value { kind: REG_EXPAND_SZ, data: "OtherApp\0".encode_utf16().flat_map(u16::to_le_bytes).collect() }).unwrap();
+            reg::set_string(&format!(r"{folders}\OtherApp\command"), "", r#""C:\Other.exe" "%1""#).unwrap();
+            let before = reg::dump(&scratch.0);
+            verbs.set(true, true).unwrap();
+            let on = reg::dump(&scratch.0);
+            scoop("update");
+            assert_eq!(reg::dump(&scratch.0), on);
+            scoop("uninstall");
+            assert_eq!(reg::dump(&scratch.0), before);
+
+            // Entries that run another copy stay.
+            let setup = Verbs { exe: PathBuf::from(r"C:\Users\Someone\AppData\Local\Glint\Glint.exe"), ..scratch.verbs() };
+            setup.set(true, true).unwrap();
+            let on = reg::dump(&scratch.0);
+            scoop("uninstall");
+            assert_eq!(reg::dump(&scratch.0), on);
+            setup.set(false, false).unwrap();
+
+            // Something else took the default since: it stays.
+            verbs.set(true, true).unwrap();
+            reg::set_string(&folders, "", "ThirdApp").unwrap();
+            scoop("uninstall");
+            assert_eq!(verbs.status(), (false, false));
+            assert_eq!(reg::get_string(&folders, "").as_deref(), Some("ThirdApp"));
+            assert!(!reg::exists(&verbs.key(FOLDERS)));
         }
     }
 }

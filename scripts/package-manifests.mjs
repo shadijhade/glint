@@ -92,6 +92,62 @@ ${footer("defaultLocale")}`,
 
 // Scoop: extracts the NSIS setup with 7-Zip instead of running it. Without the setup's uninstall.exe the
 // app knows it didn't come from the installer and leaves updating to `scoop update` (see lib.rs).
+// Uninstalling it (not updating: Scoop's $cmd tells them apart) does what the setup's uninstaller does.
+//
+// File Explorer's entries: a Scoop copy adds them running Glint through the app's `current` link, which
+// updates keep (src-tauri/src/verbs.rs). Uninstalling takes them out as GLINT_REMOVE_EXPLORER_VERBS does
+// for the setup's copies (src-tauri/installer/hooks.nsh); verbs.rs tests it against what turning the
+// options on adds.
+const removeExplorerVerbs = String.raw`
+# File Explorer's 'Open in Glint' and opening folders in Glint by default (Settings > Files) run Glint through 'current'.
+# Uninstalling (not updating) removes them where they run this copy, puts back what folders opened with before, and
+# removes the keys above them if that leaves them empty, as the setup's uninstaller does. If that fails, the uninstall
+# stops there, leaving Glint where they can still run it.
+if ($cmd -eq 'uninstall') {
+    $ErrorActionPreference = 'Stop'
+    $verb = 'Glint'
+    $exe = '"' + (Split-Path $dir) + '\current\Glint.exe"'
+    $classes = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Classes', $true)
+    $runs = {
+        param($place)
+        $command = $classes.OpenSubKey("$place\$verb\command")
+        if ($command) { "$($command.GetValue(''))".StartsWith($exe, 'OrdinalIgnoreCase'); $command.Close() }
+    }
+    $changed = $false
+    if (& $runs 'Directory\shell') {
+        $folders = $classes.OpenSubKey('Directory\shell', $true)
+        if ($folders.GetValue('') -eq $verb) {
+            $kept = $folders.OpenSubKey($verb)
+            if ($kept.GetValueNames() -contains 'PreviousDefault') {
+                $folders.SetValue('', $kept.GetValue('PreviousDefault', $null, 'DoNotExpandEnvironmentNames'), $kept.GetValueKind('PreviousDefault'))
+            } else {
+                $folders.DeleteValue('')
+            }
+            $kept.Close()
+        }
+        $folders.Close()
+    }
+    foreach ($place in 'Directory\shell', 'Directory\Background\shell', 'Drive\shell') {
+        if (& $runs $place) {
+            $classes.DeleteSubKeyTree("$place\$verb")
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        foreach ($parent in 'Directory\Background\shell', 'Directory\Background', 'Directory\shell', 'Directory', 'Drive\shell', 'Drive') {
+            $key = $classes.OpenSubKey($parent)
+            if ($key) {
+                $empty = $key.SubKeyCount -eq 0 -and $key.ValueCount -eq 0
+                $key.Close()
+                if ($empty) { $classes.DeleteSubKey($parent) }
+            }
+        }
+        # SHCNE_ASSOCCHANGED: File Explorer reads them again.
+        Add-Type -Namespace GlintScoop -Name Shell -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);'
+        [GlintScoop.Shell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+    }
+    $classes.Close()
+}`;
 const scoop = {
     version,
     description: SHORT,
@@ -99,7 +155,7 @@ const scoop = {
     license: "MIT",
     notes: [
         "Update with 'scoop update glint'; the app links to new versions but doesn't install them itself.",
-        "Instant search, once turned on in Settings, runs as a Windows service; 'scoop uninstall' removes it too.",
+        "Instant search and opening folders from File Explorer, once turned on in Settings, are taken out by 'scoop uninstall' too.",
     ],
     architecture: {
         "64bit": {
@@ -114,6 +170,7 @@ const scoop = {
             "if ($cmd -eq 'uninstall' -and (Get-Service ShadUIRipgrepIndex -ErrorAction SilentlyContinue)) {",
             "    Start-Process \"$dir\\shadui-index.exe\" -ArgumentList uninstall -Verb RunAs -Wait",
             "}",
+            ...removeExplorerVerbs.trim().split("\n"),
         ],
     },
     shortcuts: [["Glint.exe", "Glint"]],

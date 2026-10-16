@@ -221,7 +221,7 @@ function FileExplorerRows() {
     };
     const { available = false, menu = false, byDefault = false } = state ?? {};
     const disabled = !available || working;
-    const installed = "Needs Glint installed with its setup program";
+    const installed = "Needs Glint installed with its setup program or Scoop";
     return (
         <>
             <SwitchRow
