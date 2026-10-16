@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
 import { decodeListing, type FileEntry, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
+import { frecency, fuzzyScore } from "./rank.ts";
 
 // Paths
 assert.equal(joinPath("C:\\", "Users"), "C:\\Users");
@@ -85,6 +86,19 @@ assert.deepEqual(
     ]
 );
 assert.deepEqual(decodeListing(encodeListing("D:\\", [], 0)).entries, []);
+
+// Command palette ranking: in-order letters, word starts and runs first; visits weighted by recency
+const best = (query: string, options: string[]) =>
+    options.map((o) => ({ o, s: fuzzyScore(query, o) })).filter((x) => x.s !== null).sort((a, b) => b.s! - a.s!).map((x) => x.o);
+assert.equal(fuzzyScore("xyz", "Downloads"), null);
+assert.equal(fuzzyScore("", "anything"), 0);
+assert.deepEqual(best("dl", ["Desktop", "Downloads", "Videos"]), ["Downloads"]);
+assert.deepEqual(best("doc", ["Dropbox config", "Documents", "src\\docs-old"]), ["Documents", "src\\docs-old", "Dropbox config"]);
+assert.deepEqual(best("nf", ["New folder", "Info notes"]), ["New folder", "Info notes"]);
+assert.deepEqual(best("sh", ["Refresh", "Search here", "Show hidden items"]), ["Show hidden items", "Search here", "Refresh"]);
+const now = 1_000_000_000_000;
+assert.ok(frecency({ count: 3, last: now - 60_000 }, now) > frecency({ count: 3, last: now - 3 * 86_400_000 }, now));
+assert.ok(frecency({ count: 10, last: now - 30 * 86_400_000 }, now) > frecency({ count: 1, last: now - 2 * 3_600_000 }, now));
 
 // Formatting
 assert.equal(formatSize(0), "0 B");

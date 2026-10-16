@@ -7,12 +7,18 @@ import { toast } from "sonner";
 import {
     AlertTriangle,
     AppWindow,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
     ClipboardCopy,
     ClipboardPaste,
     Code,
     Copy,
     ExternalLink,
+    Eye,
+    EyeOff,
     FilePlus,
+    Folder,
     FolderInput,
     FolderOpen,
     FolderPlus,
@@ -21,6 +27,9 @@ import {
     Info,
     ListChecks,
     Loader2,
+    Monitor,
+    Moon,
+    PanelRight,
     Pin,
     PenLine,
     PinOff,
@@ -28,8 +37,10 @@ import {
     Scissors,
     Search,
     SearchX,
+    Settings as SettingsIcon,
     Square,
     SquareTerminal,
+    Sun,
     TextSearch,
     Trash2,
     X,
@@ -44,6 +55,7 @@ import {
     dropFiles,
     goBack,
     goForward,
+    goTo,
     goUp,
     initExplorer,
     markShown,
@@ -65,17 +77,20 @@ import {
     useExplorer,
 } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
-import { openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
+import { driveName, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { baseName, samePath, THIS_PC } from "@/lib/paths";
+import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
 import { CommandBar } from "./CommandBar";
+import { type Command, CommandPalette } from "./CommandPalette";
 import { FileList } from "./FileList";
 import { FilePreview } from "./FilePreview";
-import { Sidebar } from "./Sidebar";
+import { QuickLook } from "./QuickLook";
+import { DRIVE_ICONS, KNOWN_ICONS, Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { ThisPC } from "./ThisPC";
 
@@ -108,10 +123,11 @@ interface ExplorerProps {
     active: boolean;
     /** Switch to text search (ripgrep) in `folder`. */
     onSearchText: (folder: string) => void;
+    onOpenSettings: () => void;
 }
 
-export function Explorer({ active, onSearchText }: ExplorerProps) {
-    const { path, listing, loading, find, filter, selection, focus, renaming, cut, sizes, dropTarget } = useExplorer(
+export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps) {
+    const { path, listing, loading, find, filter, selection, focus, renaming, cut, sizes, dropTarget, quickLook, palette } = useExplorer(
         useShallow((s) => ({
             path: s.path,
             listing: s.listing,
@@ -124,6 +140,8 @@ export function Explorer({ active, onSearchText }: ExplorerProps) {
             cut: s.cut,
             sizes: s.sizes[s.path],
             dropTarget: s.dropTarget,
+            quickLook: s.quickLook,
+            palette: s.palette,
         }))
     );
     const settings = useStore((s) => s.settings);
@@ -199,6 +217,11 @@ export function Explorer({ active, onSearchText }: ExplorerProps) {
 
     const focusIndex = useMemo(() => (focus ? rows.findIndex((r) => r.path === focus) : -1), [rows, focus]);
     const selected = useMemo(() => (selection.size ? rows.filter((r) => selection.has(r.path)) : NO_ENTRIES), [rows, selection]);
+    // Quick Look follows the cursor, so arrowing through the list flips through previews.
+    const looked = quickLook ? (rows[focusIndex] ?? selected[0]) : undefined;
+    useEffect(() => {
+        if (quickLook && !looked) useExplorer.setState({ quickLook: false });
+    }, [quickLook, looked]);
 
     useLayoutEffect(markShown, [listing]);
 
@@ -281,7 +304,8 @@ export function Explorer({ active, onSearchText }: ExplorerProps) {
                 End: () => rows.length - 1,
             };
 
-            if (e.altKey && !ctrl) {
+            if (s.quickLook && (key === "Escape" || key === " ")) useExplorer.setState({ quickLook: false });
+            else if (e.altKey && !ctrl) {
                 if (key === "ArrowLeft") goBack();
                 else if (key === "ArrowRight") goForward();
                 else if (key === "ArrowUp") goUp();
@@ -303,9 +327,13 @@ export function Explorer({ active, onSearchText }: ExplorerProps) {
                 else if ((key === "f" || key === "e") && !e.shiftKey) focusFind();
                 else if (key === "h") setSettings({ showHidden: !useStore.getState().settings.showHidden });
                 else if (key === "r") refresh();
+                else if (key === "k" || key === "p") useExplorer.setState({ palette: true });
                 else if (key === " " && s.focus) toggleSelected(s.focus);
                 else return;
-            } else if (key === "Enter") openSelected();
+            } else if (key === "Enter") {
+                useExplorer.setState({ quickLook: false });
+                openSelected();
+            } else if (key === " " && !e.shiftKey && (s.focus || s.selection.size)) useExplorer.setState({ quickLook: true });
             else if (key === "Backspace") goBack();
             else if (key === "Delete") deleteSelected(e.shiftKey);
             else if (key === "F2") startRename();
@@ -394,6 +422,7 @@ export function Explorer({ active, onSearchText }: ExplorerProps) {
         const paths = targets.map((t) => t.path);
         return [
             { label: one?.dir ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: one?.dir ? FolderOpen : ExternalLink, shortcut: "Enter", onSelect: openSelected },
+            one && { label: "Quick Look", icon: Eye, shortcut: "Space", onSelect: () => useExplorer.setState({ focus: one.path, quickLook: true }) },
             one && !one.dir && !!editorName && { label: `Open with ${editorName}`, icon: Code, onSelect: () => openPath(one.path, editorPath.trim()).catch(report("Couldn't open the file")) },
             one && !one.dir && { label: "Open with…", icon: AppWindow, onSelect: () => openWith(one.path).catch(report("Couldn't open the app picker")) },
             one?.dir && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
@@ -448,6 +477,54 @@ export function Explorer({ active, onSearchText }: ExplorerProps) {
     const onPlaceContextMenu = (e: React.MouseEvent, place: string) => {
         e.preventDefault();
         menu.open(e, folderMenu(place, false));
+    };
+
+    /** Everything the command palette offers: folders you use (most-used first) and every action. */
+    const paletteCommands = (): Command[] => {
+        const s = useExplorer.getState();
+        const { visits, settings: now } = useStore.getState();
+        const inFolder = s.path !== THIS_PC;
+        const seen = new Set<string>();
+        const folders: Command[] = [];
+        const addFolder = (folder: string, label: string, icon: Command["icon"], weight: number, iconClass?: string) => {
+            const key = folder.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            const visit = visits[folder];
+            folders.push({ id: `folder:${key}`, label, detail: folder, icon, iconClass, kind: "folder", weight: weight + (visit ? Math.log2(1 + frecency(visit)) : 0), run: () => navigate(folder) });
+        };
+        for (const p of pinned) addFolder(p, baseName(p), Pin, 1.5);
+        for (const k of s.known) addFolder(k.path, k.name, KNOWN_ICONS[k.id], 0.5);
+        for (const [folder] of Object.entries(visits).sort((a, b) => frecency(b[1]) - frecency(a[1])).slice(0, 60)) {
+            addFolder(folder, baseName(folder), Folder, 0, "fill-amber-400/80 text-amber-500");
+        }
+        for (const d of s.drives) addFolder(d.path, driveName(d), DRIVE_ICONS[d.kind], 0);
+
+        const action = (id: string, label: string, icon: Command["icon"], run: () => void, shortcut?: string): Command => ({ id, label, icon, run, shortcut, kind: "action" });
+        const isPinned = pinned.includes(s.path);
+        const actions: (Command | false)[] = [
+            inFolder && !s.find && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
+            inFolder && !s.find && action("new-file", "New text document", FilePlus, () => newItem(false)),
+            action("find", "Find files in this folder", Search, focusFind, "Ctrl+F"),
+            inFolder && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(s.path), "Ctrl+Shift+F"),
+            inFolder && !s.find && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
+            !!s.focus && action("quick-look", "Quick Look", Eye, () => useExplorer.setState({ quickLook: true }), "Space"),
+            action("hidden", now.showHidden ? "Hide hidden items" : "Show hidden items", now.showHidden ? EyeOff : Eye, () => setSettings({ showHidden: !now.showHidden }), "Ctrl+H"),
+            action("preview", now.showPreviewPane ? "Hide preview pane" : "Show preview pane", PanelRight, () => setSettings({ showPreviewPane: !now.showPreviewPane }), "Alt+P"),
+            action("refresh", "Refresh", RotateCw, refresh, "F5"),
+            s.back.length > 0 && action("back", "Back", ArrowLeft, goBack, "Alt+Left"),
+            s.forward.length > 0 && action("forward", "Forward", ArrowRight, goForward, "Alt+Right"),
+            inFolder && action("up", "Up one folder", ArrowUp, goUp, "Alt+Up"),
+            action("this-pc", "This PC", Monitor, () => navigate(THIS_PC)),
+            inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(s.path, "path")),
+            inFolder && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(s.path)),
+            inFolder && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(s.path).catch(report("Couldn't open File Explorer"))),
+            inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(s.path)),
+            inFolder && action("properties", "Properties", Info, () => properties(s.path), "Alt+Enter"),
+            action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
+            action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
+        ];
+        return [...folders, ...actions.filter((a): a is Command => !!a)];
     };
 
     const onSort = (key: SortKey) => setSettings({ sort: { key, desc: sort.key === key ? !sort.desc : key === "modified" || key === "size" } });
@@ -572,6 +649,10 @@ export function Explorer({ active, onSearchText }: ExplorerProps) {
                 </aside>
             )}
             {menu.element}
+            {looked && <QuickLook entry={looked} onClose={() => useExplorer.setState({ quickLook: false })} />}
+            {palette && (
+                <CommandPalette commands={paletteCommands()} onGoTo={(text) => goTo(text)} onClose={() => useExplorer.setState({ palette: false })} />
+            )}
         </div>
     );
 }

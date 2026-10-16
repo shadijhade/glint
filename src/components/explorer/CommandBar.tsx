@@ -1,4 +1,4 @@
-import { ClipboardPaste, Copy, Eye, EyeOff, FolderPlus, HardDrive, Loader2, type LucideIcon, PanelRight, PenLine, Scissors, SquareTerminal, TextSearch, Trash2 } from "lucide-react";
+import { ClipboardPaste, Command, Copy, Eye, EyeOff, FolderPlus, HardDrive, Loader2, type LucideIcon, PanelRight, PenLine, Scissors, SquareTerminal, TextSearch, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import type { FileEntry } from "@/lib/entries";
@@ -76,6 +76,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 <Divider />
                 <Tool icon={showHidden ? Eye : EyeOff} label="Show hidden items (Ctrl+H)" pressed={showHidden} onClick={() => setSettings({ showHidden: !showHidden })} />
                 <Tool icon={PanelRight} label="Preview pane (Alt+P)" pressed={showPreviewPane} onClick={() => setSettings({ showPreviewPane: !showPreviewPane })} />
+                <Tool icon={Command} label="Command palette (Ctrl+K)" onClick={() => useExplorer.setState({ palette: true })} />
             </div>
         </div>
     );
