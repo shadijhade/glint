@@ -20,7 +20,7 @@ On this machine (Intel Core Ultra 7 265K, NVMe C: with 2.89 million MFT records:
 | Search end to end over the pipe, all three drives | median 4.8 ms (`kernel32.dll`), 8.1 ms (`report`), 4.3 ms (no match), 31–33 ms (50 k results) |
 | Search in the app, Enter to every result listed | 6.5–7.5 ms (`kernel32.dll`), 14–15 ms (`report`), 155–186 ms (50 k results; most of it is handing 50 k rows to the webview) |
 | Folder sizes | 0.02–0.05 ms in the service, 0.4 ms in the app |
-| Disk-usage map, the 20,000 biggest items 4 to 32 levels down | 9–17 ms in the service, on a synthetic index of 2.86 million records shaped like C: |
+| Disk-usage map of C:, the 20,000 biggest items six levels down | 19 ms in the service; median 18.9 ms end to end over the pipe; 53 ms in the app from the click to the map on screen (C:\Users, 219 GB: 53 ms). On a synthetic index of 2.86 million records: 9–17 ms in the service, 4 to 32 levels down |
 | A file created, grown, renamed, moved, hard-linked or deleted | in the index within ~0.3 s (the journal is checked every 250 ms) |
 | The same name search with fd, home folder only (219 GB) | 8.09 s |
 
@@ -72,4 +72,4 @@ The NSIS installer accepts `/INSTANTSEARCH` to turn it on during a (silent) inst
 
 **Updates.** The app and the service share one version (`[workspace.package]` in `src-tauri/Cargo.toml`). When the app updates itself, the installer runs in update mode, so its uninstall hook leaves the service alone and it keeps running the version it had; the app then says *Instant search has an update* once, and Settings shows *Update* until it's done, which runs the same `install` (one administrator approval). See [releasing.md](releasing.md).
 
-Tested on a real install: turning it on and off from Settings, indexing, snapshot restarts, live changes, the fallbacks; and, with a test copy of the app, an in-app update that leaves the running service alone and then offers its update. Not yet exercised: the service update itself on a running service, and the installer hooks at install/uninstall time (the installer builds with them). Not indexed: ReFS, FAT and exFAT drives, removable drives, and volumes without a drive letter; fd covers them.
+Tested on a real install: turning it on and off from Settings, indexing, snapshot restarts, live changes, the fallbacks; and, with a test copy of the app, an in-app update that leaves the running service alone and then offers its update; and updating the running service in place (from the disk-usage map's *Update instant search*: one prompt, then it stopped, was replaced and was ready again from its snapshot in 0.28 s). Not yet exercised: the installer hooks at install/uninstall time (the installer builds with them). Not indexed: ReFS, FAT and exFAT drives, removable drives, and volumes without a drive letter; fd covers them.
