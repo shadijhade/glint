@@ -14,6 +14,8 @@ export interface Command {
     kind: "folder" | "action";
     /** Ranking boost, e.g. how often a folder is opened. */
     weight?: number;
+    /** Listed only once something's typed: one of a set (each tile size), which would crowd the full list. */
+    searchOnly?: boolean;
     run: () => void;
 }
 
@@ -33,7 +35,7 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
         if (!q) {
             // Nothing typed yet: the folders you use most, then every action.
             const folders = commands.filter((c) => c.kind === "folder").sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).slice(0, 6);
-            return [...folders, ...commands.filter((c) => c.kind === "action")];
+            return [...folders, ...commands.filter((c) => c.kind === "action" && !c.searchOnly)];
         }
         const scored = commands.flatMap((c) => {
             // A match in the label counts more than one only in a folder's path.

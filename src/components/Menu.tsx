@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import type { LucideIcon } from "lucide-react";
+import { Check, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type MenuItem =
-    | { label: string; icon?: LucideIcon; shortcut?: string; disabled?: boolean; danger?: boolean; onSelect: () => void }
+    /** `checked` makes it one of a set to choose from (a check mark in place of an icon). */
+    | { label: string; icon?: LucideIcon; shortcut?: string; disabled?: boolean; danger?: boolean; checked?: boolean; onSelect: () => void }
     | "separator"
     | false
     | null
@@ -48,7 +49,8 @@ export function useMenu() {
                     item && (
                         <button
                             key={i}
-                            role="menuitem"
+                            role={item.checked === undefined ? "menuitem" : "menuitemradio"}
+                            aria-checked={item.checked}
                             disabled={item.disabled}
                             className={cn(itemClass, item.danger ? "text-destructive [&_svg]:text-destructive" : "[&_svg]:text-muted-foreground")}
                             onClick={() => {
@@ -56,7 +58,7 @@ export function useMenu() {
                                 item.onSelect();
                             }}
                         >
-                            {item.icon && <item.icon />}
+                            {item.checked !== undefined ? <Check className={item.checked ? "text-primary!" : "invisible"} /> : item.icon && <item.icon />}
                             <span className="flex-1 truncate">{item.label}</span>
                             {item.shortcut && <span className="ml-6 text-xs text-muted-foreground">{item.shortcut}</span>}
                         </button>

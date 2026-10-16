@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import {
+    ChevronDown,
     ClipboardPaste,
     Columns2,
     Command,
@@ -21,6 +22,8 @@ import {
     SquareTerminal,
     TextSearch,
     Trash2,
+    ZoomIn,
+    ZoomOut,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
@@ -28,9 +31,11 @@ import { chooseView, toggleUsage, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { calcSizes, copyToClipboard, copyToOtherPane, newItem, paste, stopSizes, toggleDual, useExplorer, useTab, type ViewMode } from "@/lib/explorer";
 import { openTerminal } from "@/lib/fs";
+import { TILE_SIZES, type TileSize, zoomTiles } from "@/lib/grid";
 import { THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { useMenu } from "../Menu";
 import { Button } from "../ui/button";
 
 function Tool({ icon: Icon, label, pressed, className, ...props }: { icon: LucideIcon; label: string; pressed?: boolean } & React.ComponentProps<"button">) {
@@ -59,8 +64,12 @@ const VIEWS: { view: ViewMode; icon: LucideIcon; label: string }[] = [
     { view: "grid", icon: LayoutGrid, label: "Grid, with thumbnails (Ctrl+Shift+2)" },
 ];
 
-/** List or grid, for the tab on screen; while it shows its disk-usage map, neither is pressed and both go back to the files. */
-function ViewSwitch({ view, mapped, disabled, onChange }: { view: ViewMode; mapped: boolean; disabled: boolean; onChange: (view: ViewMode) => void }) {
+/**
+ * List or grid, for the tab on screen; while it shows its disk-usage map, neither is pressed and both go
+ * back to the files. The arrow after them opens the grid's tile sizes.
+ */
+function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { view: ViewMode; mapped: boolean; disabled: boolean; tileSize: TileSize; onChange: (view: ViewMode) => void; onSizes: (e: React.MouseEvent<HTMLButtonElement>) => void }) {
+    const sizes = `Tile size: ${TILE_SIZES.find((t) => t.size === tileSize)?.label ?? "Medium"} (Ctrl+wheel, Ctrl+= and Ctrl+- in the grid)`;
     return (
         <div role="group" aria-label="View" className="flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
             {VIEWS.map(({ view: v, icon: Icon, label }) => (
@@ -80,6 +89,17 @@ function ViewSwitch({ view, mapped, disabled, onChange }: { view: ViewMode; mapp
                     <Icon />
                 </button>
             ))}
+            <button
+                type="button"
+                title={sizes}
+                aria-label={sizes}
+                aria-haspopup="menu"
+                disabled={disabled}
+                onClick={onSizes}
+                className="grid h-7 w-5 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-35 [&_svg]:size-3.5"
+            >
+                <ChevronDown />
+            </button>
         </div>
     );
 }
@@ -138,12 +158,32 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             return { sizing: !!s.sizes[path]?.running, dual: s.dual, other: !!t?.ready && t.path !== THIS_PC && !t.find };
         })
     );
-    const { showHidden, showPreviewPane } = useStore(useShallow((s) => ({ showHidden: s.settings.showHidden, showPreviewPane: s.settings.showPreviewPane })));
+    const { showHidden, showPreviewPane, tileSize } = useStore(
+        useShallow((s) => ({ showHidden: s.settings.showHidden, showPreviewPane: s.settings.showPreviewPane, tileSize: s.settings.tileSize }))
+    );
     const setSettings = useStore((s) => s.setSettings);
     const inFolder = path !== THIS_PC;
     const paths = selected.map((e) => e.path);
     const terminal = () => openTerminal(path).catch((e) => toast.error("Couldn't open a terminal", { description: String(e) }));
     const [ref, fold] = useFold(dual);
+    const menu = useMenu();
+
+    /** The grid's tile sizes, under the arrow: choosing one shows the grid at it. */
+    const showSizes = (e: React.MouseEvent<HTMLButtonElement>) => {
+        const below = e.currentTarget.getBoundingClientRect();
+        const pick = (size: TileSize) => {
+            setSettings({ tileSize: size });
+            chooseView("grid", tab);
+        };
+        const bigger = zoomTiles(tileSize, 1);
+        const smaller = zoomTiles(tileSize, -1);
+        menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
+            { label: "Larger tiles", icon: ZoomIn, shortcut: "Ctrl+=", disabled: bigger === tileSize, onSelect: () => pick(bigger) },
+            { label: "Smaller tiles", icon: ZoomOut, shortcut: "Ctrl+-", disabled: smaller === tileSize, onSelect: () => pick(smaller) },
+            "separator",
+            ...TILE_SIZES.map(({ size, label }) => ({ label, checked: size === tileSize, shortcut: size === "medium" ? "Ctrl+0" : undefined, onSelect: () => pick(size) })),
+        ]);
+    };
 
     return (
         <div ref={ref} className="flex h-10 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-chrome px-2">
@@ -166,7 +206,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             <Tool icon={SquareTerminal} label="Open in Terminal" disabled={!inFolder} onClick={terminal} />
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
-                <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find} onChange={(v) => chooseView(v, tab)} />
+                <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find} tileSize={tileSize} onChange={(v) => chooseView(v, tab)} onSizes={showSizes} />
                 <Button
                     variant="ghost"
                     size="sm"
@@ -197,6 +237,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 <Tool icon={Columns2} label="Dual pane: two folders side by side (Ctrl+Shift+D)" pressed={dual} onClick={toggleDual} />
                 <Tool icon={Command} label="Command palette (Ctrl+K)" onClick={() => useExplorer.setState({ palette: true })} />
             </div>
+            {menu.element}
         </div>
     );
 }

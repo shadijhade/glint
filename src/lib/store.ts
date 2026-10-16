@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Sort } from './entries'
+import type { TileSize } from './grid'
 import { frecency, type Visit } from './rank'
 
 export interface HistoryItem {
@@ -47,6 +48,7 @@ export interface Settings {
     foldersFirst: boolean;
     showPreviewPane: boolean;
     listThumbnails: boolean; // small thumbnails of pictures and videos in the list's icon column
+    tileSize: TileSize; // how big the grid's tiles are, in every tab (Ctrl+wheel, Ctrl+= and Ctrl+-)
     confirmDelete: boolean; // ask before moving to the Recycle Bin (permanent deletes always ask)
     sort: Sort;
     // Find files (fd)
@@ -87,6 +89,7 @@ export const DEFAULT_SETTINGS: Settings = {
     foldersFirst: true,
     showPreviewPane: true,
     listThumbnails: true,
+    tileSize: 'medium',
     confirmDelete: false,
     sort: { key: 'name', desc: false },
     findRespectIgnore: false,

@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { FileEntry } from "@/lib/entries";
 import { kindOf } from "@/lib/fileTypes";
 import { thumbStep } from "@/lib/grid";
-import { useThumbnail } from "@/lib/thumbs";
+import { isHeld, useThumbnail } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 
 interface ThumbnailProps {
@@ -16,38 +16,76 @@ interface ThumbnailProps {
     /** Sits on the bottom of its square, as in Explorer, so names line up under pictures of any shape. */
     bottom?: boolean;
     iconClassName?: string;
+    /** The icon's size in CSS pixels, when it's not set by `iconClassName`. */
+    iconSize?: number;
+}
+
+/** A thumbnail once decoded: its file, and its natural size in CSS pixels for the square it was asked for. */
+interface Picture {
+    path: string;
+    url: string;
+    width: number;
+    height: number;
+    box: number;
+}
+
+/** The latest picture decoded of each file, at whatever size: shown while a tile's new size comes in. */
+const latest = new Map<string, Picture>();
+function decoded(picture: Picture) {
+    latest.delete(picture.path);
+    latest.set(picture.path, picture);
+    if (latest.size > 5000) latest.delete(latest.keys().next().value!);
+}
+
+/**
+ * How big to draw `picture` in a `box` square: one device pixel to one, so a small one isn't blown up,
+ * except a stand-in from another size that filled its square: it fills this one, as the new one will.
+ */
+function fit(picture: Picture, box: number, standIn: boolean) {
+    const long = Math.max(picture.width, picture.height);
+    const scale = standIn && long >= picture.box - 2 ? box / long : Math.min(1, box / picture.width, box / picture.height);
+    return { width: picture.width * scale, height: picture.height * scale };
 }
 
 /** A file's thumbnail from Windows' thumbnail cache, or its type icon. */
-export function Thumbnail({ entry, box, lane, enabled, bottom, iconClassName }: ThumbnailProps) {
+export function Thumbnail({ entry, box, lane, enabled, bottom, iconClassName, iconSize }: ThumbnailProps) {
     const url = useThumbnail(entry, thumbStep(box, devicePixelRatio), lane, enabled);
-    // The icon stays until the picture is decoded, so it never blinks out first. The picture is drawn
-    // one device pixel to one: a small one isn't blown up.
-    const [shown, setShown] = useState<{ url: string; width: number; height: number } | null>(null);
-    const drawn = url && shown?.url === url ? shown : null;
+    // The icon stays until the picture is decoded, so it never blinks out first: decoded here, or by any
+    // tile (the browser has it at hand then, as when a zoom or a resize makes the tiles anew). This tile
+    // keeps its own, whatever the other pane decodes of the file meanwhile.
+    const [own, setOwn] = useState<Picture | null>(null);
+    const mine = own?.path === entry.path ? own : undefined;
+    const last = enabled ? latest.get(entry.path) : undefined;
+    const drawn = url ? ([mine, last].find((p) => p?.url === url) ?? null) : null;
+    if (drawn && drawn !== own) setOwn(drawn);
+    // Until this size's is in and decoded, the picture of another size (zoomed from), unless it's far smaller.
+    const prior = !drawn && url !== null ? (mine ?? last) : undefined;
+    const standIn = prior && prior.box * 4 >= box && isHeld(prior.url) ? prior : null;
     const kind = kindOf(entry);
+    const place = cn("pointer-events-none absolute inset-x-0 mx-auto max-h-full max-w-full", bottom ? "bottom-0 rounded-[3px] shadow-sm" : "inset-y-0 my-auto");
     return (
         <>
-            {!drawn && <kind.icon className={cn("shrink-0", kind.tone, iconClassName)} />}
+            {!drawn && !standIn && <kind.icon className={cn("shrink-0", kind.tone, iconClassName)} style={iconSize ? { width: iconSize, height: iconSize } : undefined} />}
+            {standIn && <img key={standIn.url} src={standIn.url} alt="" draggable={false} style={fit(standIn, box, true)} className={place} />}
             {url && (
                 <img
+                    key={url}
                     src={url}
                     alt=""
                     draggable={false}
                     onLoad={(e) => {
+                        if (drawn) return;
                         const img = e.currentTarget;
-                        const [width, height] = [img.naturalWidth / devicePixelRatio, img.naturalHeight / devicePixelRatio];
-                        const fit = Math.min(1, box / width, box / height);
+                        const picture = { path: entry.path, url, width: img.naturalWidth / devicePixelRatio, height: img.naturalHeight / devicePixelRatio, box };
                         img.decode()
                             .catch(() => {})
-                            .finally(() => setShown({ url, width: width * fit, height: height * fit }));
+                            .finally(() => {
+                                decoded(picture);
+                                setOwn(picture);
+                            });
                     }}
-                    style={drawn ? { width: drawn.width, height: drawn.height } : undefined}
-                    className={cn(
-                        "pointer-events-none absolute inset-x-0 mx-auto max-h-full max-w-full",
-                        bottom ? "bottom-0 rounded-[3px] shadow-sm" : "inset-y-0 my-auto",
-                        !drawn && "invisible"
-                    )}
+                    style={drawn ? fit(drawn, box, false) : undefined}
+                    className={cn(place, !drawn && "invisible")}
                 />
             )}
         </>

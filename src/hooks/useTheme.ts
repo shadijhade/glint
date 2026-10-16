@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { tileLayout } from '@/lib/grid';
 import { useStore, Settings } from '@/lib/store';
 
 const FONT_PX: Record<Settings['fontSize'], number> = { small: 14, medium: 16, large: 18 };
@@ -9,16 +10,8 @@ export const rowHeight = (size: Settings['fontSize']) => Math.round(FONT_PX[size
 /** Pixels in a rem at the text size setting. */
 export const remPx = (size: Settings['fontSize']) => FONT_PX[size];
 
-/**
- * A grid tile, in CSS pixels: the narrowest it gets (tiles widen to fill the row), its height, the
- * square its thumbnail or icon fits in, and the grid's side padding. Scales with the text size.
- */
-export function gridTile(size: Settings['fontSize']) {
-    const rem = FONT_PX[size];
-    return { width: Math.round(rem * 7.5), height: Math.round(rem * 10.25), thumb: rem * 6, pad: rem * 0.5 };
-}
-
-export type GridTile = ReturnType<typeof gridTile>;
+/** A grid tile at the tile size setting, in CSS pixels (see `tileLayout`); scales with the text size too. */
+export const gridTile = (size: Settings['fontSize'], tiles: Settings['tileSize']) => tileLayout(FONT_PX[size], tiles);
 
 /** Applies the theme (incl. live system changes) and text size to <html>. */
 export function useTheme() {
