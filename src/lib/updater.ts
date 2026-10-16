@@ -7,8 +7,8 @@ import { operationsDone, operationsRunning } from "./explorer";
 import { stopTools } from "./fs";
 import { firstNotice } from "./utils";
 
-const RELEASES = "https://github.com/shadijhade/shadui-ripgrep/releases";
-const LATEST_RELEASE_API = "https://api.github.com/repos/shadijhade/shadui-ripgrep/releases/latest";
+const RELEASES = "https://github.com/shadijhade/glint/releases";
+const LATEST_RELEASE_API = "https://api.github.com/repos/shadijhade/glint/releases/latest";
 
 export interface AvailableUpdate {
     version: string;

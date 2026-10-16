@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please report security problems privately through [GitHub's vulnerability reporting](https://github.com/shadijhade/shadui-ripgrep/security/advisories/new), not in a public issue. Include the app version, what an attacker could do, and the steps to reproduce it. You'll get an answer as soon as possible, and credit in the release notes if you'd like.
+Please report security problems privately through [GitHub's vulnerability reporting](https://github.com/shadijhade/glint/security/advisories/new), not in a public issue. Include the app version, what an attacker could do, and the steps to reproduce it. You'll get an answer as soon as possible, and credit in the release notes if you'd like.
 
 Only the latest release gets security fixes.
 

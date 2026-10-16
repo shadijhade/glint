@@ -1,20 +1,20 @@
 # Contributing
 
-Thanks for helping make ShadUI Ripgrep faster and better! Bug reports, ideas, docs fixes and code are all welcome.
+Thanks for helping make Glint faster and better! Bug reports, ideas, docs fixes and code are all welcome.
 
 ## Before you start
 
 -   **Bugs:** open an issue with the bug template. The app version is in **Settings → About**.
 -   **Features:** open an issue first for anything bigger than a small fix, so we can agree on the approach before you spend time on it.
--   **Good first issues** are labelled [`good first issue`](https://github.com/shadijhade/shadui-ripgrep/labels/good%20first%20issue).
+-   **Good first issues** are labelled [`good first issue`](https://github.com/shadijhade/glint/labels/good%20first%20issue).
 
 ## Set up
 
 You need Windows 10 or 11, [Node.js](https://nodejs.org/) 22.18 or newer, and [Rust](https://www.rust-lang.org/tools/install) (stable, MSVC toolchain).
 
 ```bash
-git clone https://github.com/shadijhade/shadui-ripgrep.git
-cd shadui-ripgrep
+git clone https://github.com/shadijhade/glint.git
+cd glint
 npm install
 npm run tauri dev
 ```

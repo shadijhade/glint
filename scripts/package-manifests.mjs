@@ -3,8 +3,8 @@
 //
 // Usage: node scripts/package-manifests.mjs <version> [installer-setup.exe] [--out <dir>]
 // Without an installer it downloads the release's setup.exe from GitHub. The manifests land in
-// <out>/winget/manifests/s/shadijhade/ShadUIRipgrep/<version>/ (winget-pkgs' layout, ready for
-// `wingetcreate submit`) and <out>/scoop/shadui-ripgrep.json; <out> defaults to
+// <out>/winget/manifests/s/shadijhade/Glint/<version>/ (winget-pkgs' layout, ready for
+// `wingetcreate submit`) and <out>/scoop/glint.json; <out> defaults to
 // release/v<version>/package-manifests. docs/releasing.md says how to submit them.
 
 import { createHash } from "node:crypto";
@@ -21,10 +21,10 @@ if (!/^\d+\.\d+\.\d+$/.test(version ?? "") || (outIndex >= 0 && !outArg)) {
     process.exit(2);
 }
 
-const REPO = "https://github.com/shadijhade/shadui-ripgrep";
-const ID = "shadijhade.ShadUIRipgrep";
+const REPO = "https://github.com/shadijhade/glint";
+const ID = "shadijhade.Glint";
 const SHORT = "A fast file explorer for Windows: every folder's size, instant search across NTFS drives, and ripgrep search inside files.";
-const installerName = `shadui-ripgrep_${version}_x64-setup.exe`;
+const installerName = `Glint_${version}_x64-setup.exe`;
 const installerUrl = `${REPO}/releases/download/v${version}/${installerName}`;
 
 const installer = installerPath ? readFileSync(installerPath) : await download(installerUrl);
@@ -52,9 +52,9 @@ InstallModes:
 - silentWithProgress
 UpgradeBehavior: install
 AppsAndFeaturesEntries:
-- DisplayName: shadui-ripgrep
+- DisplayName: Glint
   Publisher: shado
-  ProductCode: shadui-ripgrep
+  ProductCode: Glint
 Installers:
 - Architecture: x64
   InstallerUrl: ${installerUrl}
@@ -65,17 +65,17 @@ Publisher: Shadi Sadi
 PublisherUrl: https://github.com/shadijhade
 PublisherSupportUrl: ${REPO}/issues
 Author: Shadi Sadi
-PackageName: ShadUI Ripgrep
+PackageName: Glint
 PackageUrl: ${REPO}
 License: MIT
 LicenseUrl: ${REPO}/blob/master/LICENSE
 ShortDescription: "${SHORT}"
 Description: |-
-  ShadUI Ripgrep is a file explorer for Windows that opens folders in milliseconds and shows the size of every folder.
+  Glint is a file explorer for Windows that opens folders in milliseconds and shows the size of every folder.
   Name searches use fd, or an opt-in NTFS index service (like Everything's) that finds any file on any drive in milliseconds.
   Text searches inside files use ripgrep, with regular expressions, replace and a syntax-highlighted preview.
   File operations go through Windows' own shell engine, so the Recycle Bin, conflicts and permissions work as in File Explorer.
-Moniker: shadui-ripgrep
+Moniker: glint
 Tags:
 - disk-usage
 - everything
@@ -98,7 +98,7 @@ const scoop = {
     homepage: REPO,
     license: "MIT",
     notes: [
-        "Update with 'scoop update shadui-ripgrep'; the app links to new versions but doesn't install them itself.",
+        "Update with 'scoop update glint'; the app links to new versions but doesn't install them itself.",
         "Instant search, once turned on in Settings, runs as a Windows service; 'scoop uninstall' removes it too.",
     ],
     architecture: {
@@ -116,21 +116,21 @@ const scoop = {
             "}",
         ],
     },
-    shortcuts: [["shadui-ripgrep.exe", "ShadUI Ripgrep"]],
+    shortcuts: [["Glint.exe", "Glint"]],
     checkver: "github",
     autoupdate: {
         architecture: {
             "64bit": {
-                url: `${REPO}/releases/download/v$version/shadui-ripgrep_$version_x64-setup.exe#/dl.7z`,
+                url: `${REPO}/releases/download/v$version/Glint_$version_x64-setup.exe#/dl.7z`,
             },
         },
     },
 };
 
-const wingetDir = join(out, "winget", "manifests", "s", "shadijhade", "ShadUIRipgrep", version);
+const wingetDir = join(out, "winget", "manifests", "s", "shadijhade", "Glint", version);
 const scoopDir = join(out, "scoop");
 mkdirSync(wingetDir, { recursive: true });
 mkdirSync(scoopDir, { recursive: true });
 for (const [name, text] of Object.entries(winget)) writeFileSync(join(wingetDir, name), text);
-writeFileSync(join(scoopDir, "shadui-ripgrep.json"), `${JSON.stringify(scoop, null, 4)}\n`);
-console.log(`${installerName} SHA-256 ${sha256}\nwinget: ${wingetDir}\nScoop:  ${join(scoopDir, "shadui-ripgrep.json")}`);
+writeFileSync(join(scoopDir, "glint.json"), `${JSON.stringify(scoop, null, 4)}\n`);
+console.log(`${installerName} SHA-256 ${sha256}\nwinget: ${wingetDir}\nScoop:  ${join(scoopDir, "glint.json")}`);
