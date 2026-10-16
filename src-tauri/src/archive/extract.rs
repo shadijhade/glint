@@ -21,8 +21,16 @@ use std::time::{Duration, SystemTime};
 /// Disk space left free on the drive an extraction writes to.
 pub const SPACE_MARGIN: u64 = 1 << 30;
 
+#[cfg(not(test))]
 fn root() -> PathBuf {
     std::env::temp_dir().join("Glint").join("archives")
+}
+
+/// Tests extract into a folder of the test process's own, never the app's, and it goes once no test
+/// is running (see `testing::Scratch`).
+#[cfg(test)]
+fn root() -> PathBuf {
+    std::env::temp_dir().join(format!("glint-archive-test-temp-{}", std::process::id()))
 }
 
 struct Session {
@@ -44,13 +52,14 @@ fn session() -> Result<&'static Path, Failure> {
     session.as_ref().map(|s| s.path.as_path()).map_err(|e| Failure::Io(e.clone()))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn lock_file(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
     fs::OpenOptions::new().write(true).create(true).truncate(true).share_mode(0).open(path)
 }
 
-#[cfg(not(windows))]
+/// Tests delete their whole temp folder when they're done, lock included.
+#[cfg(any(not(windows), test))]
 fn lock_file(path: &Path) -> io::Result<File> {
     File::create(path)
 }
@@ -251,19 +260,56 @@ pub fn inside(root: &Path, names: &[&str]) -> Result<PathBuf, Failure> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub mod testing {
+    use super::{remove_tree, root};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("glint-extract-test-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    /// How many tests are running with a `Scratch` folder: when the last one ends, what the test
+    /// process extracted goes too. One that starts meanwhile waits for that to finish.
+    static RUNNING: Mutex<usize> = Mutex::new(0);
+
+    /// A fresh folder for one test, deleted when the test ends, pass or fail.
+    pub struct Scratch(PathBuf);
+
+    impl Scratch {
+        pub fn new(name: &str) -> Scratch {
+            let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!("glint-archive-test-{name}-{}", std::process::id()));
+            remove_tree(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            *running += 1;
+            Scratch(dir)
+        }
     }
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            remove_tree(&self.0);
+            let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+            *running -= 1;
+            if *running == 0 {
+                remove_tree(&root());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::Scratch;
+    use super::*;
 
     #[test]
     fn writes_exactly_what_the_archive_declares() {
-        let dir = scratch("write");
+        let dir = Scratch::new("write");
         let dest = dir.join("sub").join("a.txt");
         let mut seen = 0;
         write_entry(&mut &b"hello"[..], &dest, 5, 1_700_000_000_000, true, &mut |n| {

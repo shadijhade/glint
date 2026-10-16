@@ -4,12 +4,9 @@ use std::fs;
 use std::io::Write;
 use zip::write::SimpleFileOptions;
 
-/// A fresh folder for one test.
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("glint-archive-test-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// A fresh folder for one test, deleted when it ends (and with the last one, what the tests extracted).
+fn scratch(name: &str) -> extract::testing::Scratch {
+    extract::testing::Scratch::new(name)
 }
 
 fn text(path: &Path) -> String {
