@@ -2,11 +2,12 @@ import { ReactNode, useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { toast } from "sonner";
 import { Archive, Binary, ExternalLink, Folder, Heart, Image, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
-import type { IndexVolume } from "@/lib/fs";
+import { type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration } from "@/lib/fs";
 import { DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
@@ -49,19 +50,20 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 }
 
 /** A labelled on/off row; the whole row toggles. */
-function SwitchRow({ label, hint, checked, onChange }: { label: string; hint?: string; checked: boolean; onChange: (value: boolean) => void }) {
+function SwitchRow({ label, hint, checked, disabled, onChange }: { label: string; hint?: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
     return (
-        <label className="flex cursor-pointer items-center justify-between gap-6 px-4 py-3">
+        <label className={cn("flex items-center justify-between gap-6 px-4 py-3", disabled ? "cursor-default" : "cursor-pointer")}>
             <div className="min-w-0">
-                <div className="text-sm">{label}</div>
+                <div className={cn("text-sm", disabled && "text-muted-foreground")}>{label}</div>
                 {hint && <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>}
             </div>
             <input
                 type="checkbox"
                 role="switch"
                 checked={checked}
+                disabled={disabled}
                 onChange={(e) => onChange(e.target.checked)}
-                className="relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full bg-input transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-4 before:rounded-full before:bg-white before:shadow-xs before:transition-transform checked:bg-primary checked:before:translate-x-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40"
+                className="relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full bg-input transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-4 before:rounded-full before:bg-white before:shadow-xs before:transition-transform checked:bg-primary checked:before:translate-x-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-default disabled:opacity-50"
             />
         </label>
     );
@@ -199,6 +201,46 @@ function InstantSearch() {
     );
 }
 
+/** File Explorer's "Open in Glint", and opening folders here when they're double-clicked. */
+function FileExplorerRows() {
+    const [state, setState] = useState<ExplorerIntegration | null>(null);
+    const [working, setWorking] = useState(false);
+    useEffect(() => {
+        explorerIntegration().then(setState).catch(() => {});
+    }, []);
+    const change = async (menu: boolean, byDefault: boolean) => {
+        setWorking(true);
+        try {
+            setState(await setExplorerIntegration(menu, byDefault));
+        } catch (e) {
+            toast.error("Couldn't change File Explorer's settings", { description: String(e) });
+        } finally {
+            setWorking(false);
+        }
+    };
+    const { available = false, menu = false, byDefault = false } = state ?? {};
+    const disabled = !available || working;
+    const installed = "Needs Glint installed with its setup program";
+    return (
+        <>
+            <SwitchRow
+                label="Open in Glint from File Explorer"
+                hint={available ? "On the right-click menu of folders, drives and empty space in a folder (Show more options on Windows 11)" : installed}
+                checked={menu}
+                disabled={disabled}
+                onChange={(on) => change(on, on && byDefault)}
+            />
+            <SwitchRow
+                label="Open folders in Glint by default"
+                hint={available ? "Double-clicking a folder in File Explorer or on the desktop opens it here. Drives, This PC, the Recycle Bin and libraries stay in File Explorer." : installed}
+                checked={byDefault}
+                disabled={disabled}
+                onChange={(on) => change(menu || on, on)}
+            />
+        </>
+    );
+}
+
 /** A new version with its Install button, or a way to look for one. */
 function UpdateRow() {
     const { available, status, error, progress } = useUpdater();
@@ -294,6 +336,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         checked={settings.confirmDelete}
                         onChange={(confirmDelete) => set({ confirmDelete })}
                     />
+                    <FileExplorerRows />
                 </Section>
 
                 <InstantSearch />

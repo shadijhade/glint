@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, Sparkles, TextSearch } from "lucide-react";
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
-import { currentPath, revealInApp } from "./lib/explorer";
+import { currentPath, openRequested, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
 import { toRegExp } from "./lib/text";
 import { checkForUpdates, useUpdater } from "./lib/updater";
@@ -103,6 +104,18 @@ function App() {
     return () => {
       clearInterval(timer);
       unlisten.current?.();
+    };
+  }, []);
+
+  // Folders handed over by File Explorer or a later launch of the app open in new tabs, in front of
+  // Text mode and Settings.
+  useEffect(() => {
+    const open = () => openRequested().then((opened) => opened && settingsRef.current?.close());
+    const stop = listen("open-requested", open);
+    // Any that came in before the listener was ready.
+    stop.then(open);
+    return () => {
+      stop.then((f) => f());
     };
   }, []);
 

@@ -1,11 +1,13 @@
 mod find;
 mod fsx;
 mod index;
+mod launch;
 mod proc;
 mod shell;
 mod sizes;
 mod thumbs;
 mod usage;
+mod verbs;
 mod watch;
 
 use fsx::blocking;
@@ -222,13 +224,29 @@ fn disable_browser_keys(app: &tauri::App) {
 /// manifest deletes the one 7-Zip extracts). Only those update themselves: a Scoop or portable copy, or
 /// a dev build, is updated by whatever put it there, so the app just links to the new release.
 #[cfg(desktop)]
-fn installed_by_setup() -> bool {
+pub(crate) fn installed_by_setup() -> bool {
     std::env::current_exe().is_ok_and(|exe| exe.with_file_name("uninstall.exe").exists())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Folders from File Explorer, a double-click or a terminal. What the app can't open goes to File
+    // Explorer before any window shows, and a launch with nothing left to open here ends there.
+    let request = launch::Request::from_env();
+    if !request.explorer.is_empty() {
+        launch::hand_to_explorer(&request.explorer);
+        if request.open.is_empty() {
+            return;
+        }
+    }
+
+    let builder = tauri::Builder::default();
+    // One copy runs at a time: a later launch hands its folders to it and quits. Not in debug builds,
+    // which would hand theirs to an installed Glint (they share its identifier).
+    #[cfg(all(desktop, not(debug_assertions)))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(launch::second_launch));
+    builder
+        .manage(launch::Pending::new(request.open))
         .manage(AppState::default())
         .manage(watch::FolderWatcher::default())
         .manage(thumbs::Thumbs::default())
@@ -267,6 +285,9 @@ pub fn run() {
             shell::open_terminal,
             shell::start_drag,
             watch::watch_dirs,
+            launch::take_launch_targets,
+            verbs::explorer_integration,
+            verbs::set_explorer_integration,
         ])
         .setup(|app| {
             #[cfg(all(windows, not(debug_assertions)))]
@@ -279,6 +300,8 @@ pub fn run() {
             if installed_by_setup() {
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             }
+            let handle = app.handle().clone();
+            std::thread::spawn(move || verbs::repair(&handle));
             Ok(())
         })
         .run(tauri::generate_context!())

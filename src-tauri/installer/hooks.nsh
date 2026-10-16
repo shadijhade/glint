@@ -93,9 +93,53 @@ Var OldDesktopShortcut
   ${EndIf}
 !macroend
 
-; Uninstalling the app removes the service and its index files too (an update keeps them).
+; File Explorer's "Open in Glint" entries and opening folders in Glint by default, which the app's
+; settings add under HKCU\Software\Classes (src-tauri/src/verbs.rs). Uninstalling removes them where
+; they run this copy and puts back what folders opened with, and the keys above them go once empty.
+!macro GLINT_REMOVE_VERB PLACE
+  ReadRegStr $R0 HKCU "Software\Classes\${PLACE}\${PRODUCTNAME}\command" ""
+  StrCpy $R0 $R0 $R2
+  ${If} $R0 == $R1
+    DeleteRegKey HKCU "Software\Classes\${PLACE}\${PRODUCTNAME}"
+  ${EndIf}
+!macroend
+
+!macro GLINT_REMOVE_EXPLORER_VERBS
+  ; Commands start with this copy's exe in quotes.
+  StrCpy $R1 '"$INSTDIR\${MAINBINARYNAME}.exe"'
+  StrLen $R2 $R1
+  ReadRegStr $R0 HKCU "Software\Classes\Directory\shell\${PRODUCTNAME}\command" ""
+  StrCpy $R0 $R0 $R2
+  ${If} $R0 == $R1
+    ReadRegStr $R0 HKCU "Software\Classes\Directory\shell" ""
+    ${If} $R0 == "${PRODUCTNAME}"
+      ClearErrors
+      ReadRegStr $R0 HKCU "Software\Classes\Directory\shell\${PRODUCTNAME}" "PreviousDefault"
+      ${If} ${Errors}
+        DeleteRegValue HKCU "Software\Classes\Directory\shell" ""
+      ${Else}
+        WriteRegStr HKCU "Software\Classes\Directory\shell" "" $R0
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  !insertmacro GLINT_REMOVE_VERB "Directory\shell"
+  !insertmacro GLINT_REMOVE_VERB "Directory\Background\shell"
+  !insertmacro GLINT_REMOVE_VERB "Drive\shell"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Directory\Background\shell"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Directory\Background"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Directory\shell"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Directory"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Drive\shell"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Drive"
+  ; SHCNE_ASSOCCHANGED: File Explorer reads them again.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+!macroend
+
+; Uninstalling the app removes File Explorer's entries for it, and the service and its index files
+; (an update keeps them all).
 !macro NSIS_HOOK_PREUNINSTALL
   ${If} $UpdateMode <> 1
+    !insertmacro GLINT_REMOVE_EXPLORER_VERBS
     nsExec::ExecToStack 'sc.exe query ShadUIRipgrepIndex'
     Pop $0
     Pop $1
