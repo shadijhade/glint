@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
 import { decodeListing, type FileEntry, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
-import { decodeThumb, gridColumns, gridMove, thumbStep } from "./grid.ts";
+import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
 import { BLOCK, decodeUsage, FRAME, hitTest, layoutUsage, NO_PARENT, pruneUsage, squarify, subUsage, usageEntries, type UsageMap } from "./usage.ts";
 
@@ -213,6 +213,29 @@ assert.equal(gridMove("ArrowDown", -1, 0, 4, 2), null);
 assert.deepEqual([gridColumns(1000, 120), gridColumns(100, 120), gridColumns(0, 120)], [8, 1, 1]);
 // Thumbnails are asked for in device pixels, one to one: 96 CSS pixels at 125% asks for 120.
 assert.deepEqual([thumbStep(96, 1), thumbStep(96, 1.25), thumbStep(96, 1.5), thumbStep(16, 1.25), thumbStep(14, 1.75), thumbStep(900, 2), thumbStep(4, 1)], [96, 120, 144, 20, 28, 1024, 16]);
+// Tile sizes: Ctrl+= and Ctrl+- step through them and stop at the ends; one this version doesn't know is medium.
+assert.deepEqual([zoomTiles("medium", 1), zoomTiles("medium", -1), zoomTiles("small", -1), zoomTiles("huge", 1), zoomTiles("small", 3), zoomTiles("huge", -9)], ["large", "small", "small", "huge", "xlarge", "small"]);
+assert.deepEqual([zoomTiles("enormous", 0), zoomTiles("enormous", 1)], ["medium", "large"]);
+// Medium is the tile the grid always had (120 × 164 at 16 px text); names and margins keep their room at every size.
+assert.deepEqual(tileLayout(16, "medium"), { width: 120, height: 164, thumb: 96, pad: 8 });
+assert.deepEqual([tileLayout(14, "medium").width, tileLayout(14, "medium").height, tileLayout(18, "medium").height], [105, 144, 185]);
+assert.deepEqual([tileLayout(16, "small"), tileLayout(16, "huge"), tileLayout(16, "?")], [{ width: 88, height: 132, thumb: 64, pad: 8 }, { width: 280, height: 324, thumb: 256, pad: 8 }, tileLayout(16, "medium")]);
+// Keeping its place as the tiles zoom: 4 to a row of 100 px, the view 300 px tall, scrolled to the top.
+const small = { cols: 4, rowHeight: 100 };
+const big = { cols: 2, rowHeight: 200 };
+// The focused tile (5, in the second row: its middle 150 px down) stays where it was.
+assert.equal(keepPlace(small, big, 0, 300, 10, 5), 2 * 200 - 50);
+// Zoomed out again, it stays put too.
+assert.equal(keepPlace(big, small, 350, 300, 3, 5), 0);
+// Off screen (or none focused): the tiles at the top stay at the top, as far into their row as before.
+assert.equal(keepPlace(small, big, 250, 300, 10, 40), (4 + 0.5) * 200);
+assert.equal(keepPlace(small, big, 250, 300, 10, -1), 900);
+// A tile taller than the view goes to its top; the view never goes past either end.
+assert.equal(keepPlace(small, { cols: 1, rowHeight: 500 }, 0, 300, 40, 2), 2 * 500);
+assert.equal(keepPlace(small, big, 0, 300, 2, 5), 100);
+assert.equal(keepPlace(big, small, 900, 300, 3, -1), 0);
+// A tab's place in its grid outlasts a zoom: the tiles at the top, and how far into their row.
+assert.deepEqual([placeOf(250, small), topOf(placeOf(250, small), small), topOf(8.5, big), topOf(8.5, { cols: 5, rowHeight: 100 }), placeOf(0, big)], [8.5, 250, 900, 150, 0]);
 // Answers from thumbs.rs: an 8-byte header, then the BMP
 const answer = new Uint8Array([0, 2, 0, 0, ...new Uint8Array(new Float32Array([2.5]).buffer), 66, 77]);
 const thumb = decodeThumb(answer.buffer);

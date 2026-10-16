@@ -28,8 +28,9 @@ import {
     takeLaunchTargets,
     watchDirs,
 } from "./fs";
+import { zoomTiles } from "./grid";
 import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
-import { type Session, useStore, type ViewMode } from "./store";
+import { DEFAULT_SETTINGS, type Session, useStore, type ViewMode } from "./store";
 import { dropThumbnails } from "./thumbs";
 import { firstNotice } from "./utils";
 
@@ -200,6 +201,13 @@ export const viewKey = (tab: Pick<TabState, "path" | "find">) => (tab.find ? `fi
 /** Shows a tab's items (the active tab's by default) as a list, or as a grid of thumbnails. */
 export function setView(view: ViewMode, tab = activeTabId()) {
     if (tabState(tab)?.view !== view) updateTab({ view }, tab);
+}
+
+/** Ctrl+wheel, Ctrl+= and Ctrl+- in a grid: bigger tiles (`steps` up) or smaller ones, in every grid; 0 for medium again. */
+export function zoomGrid(steps: number) {
+    const { settings, setSettings } = useStore.getState();
+    const tileSize = steps ? zoomTiles(settings.tileSize, steps) : DEFAULT_SETTINGS.tileSize;
+    if (tileSize !== settings.tileSize) setSettings({ tileSize });
 }
 
 /** "This PC", a drive's name, or the folder's. */

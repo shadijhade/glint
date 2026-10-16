@@ -32,7 +32,8 @@ export interface FileViewProps {
      * folder or search, in this view (`viewKey` and the view, as the status bar reads it). */
     lane: string;
     thumbScope: string;
-    /** Where to start scrolled to (where this view was left), and where it's scrolled since. */
+    /** Where to start scrolled to (where this view was left), and where it's scrolled since: pixels in the
+     * list, a place (`placeOf`) in the grid, whose layout may change meanwhile. */
     scrollTop?: number;
     onScrollTop?: (top: number) => void;
     onRowMouseDown: (e: React.MouseEvent, index: number) => void;

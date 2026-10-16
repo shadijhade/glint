@@ -15,10 +15,14 @@ interface Held {
     bytes: number;
 }
 
-/** Thumbnails on hand, least recently shown first. */
+/** Thumbnails on hand, least recently shown first, and their URLs. */
 const held = new Map<string, Held>();
+const heldUrls = new Set<string>();
 let heldBytes = 0;
-/** About a thousand tiles' worth; thumbnails on screen are always kept. */
+/**
+ * About 1,100 tiles' worth at the grid's medium size and 150 at its biggest, ten screenfuls or more
+ * either way (bigger tiles, fewer on screen). Thumbnails on screen are always kept.
+ */
 const HELD_BUDGET = 48 << 20;
 /** How many tiles and rows show each thumbnail right now. */
 const showing = new Map<string, number>();
@@ -47,15 +51,22 @@ function hold(key: string, url: string | null, bytes: number) {
     // A file without a thumbnail costs a little too, so a folder of them can't grow this forever.
     const cost = bytes || 64;
     held.set(key, { url, bytes: cost });
+    if (url) heldUrls.add(url);
     heldBytes += cost;
     for (const [old, thumb] of held) {
         if (heldBytes <= HELD_BUDGET) break;
         if (showing.has(old)) continue;
         held.delete(old);
         heldBytes -= thumb.bytes;
-        if (thumb.url) URL.revokeObjectURL(thumb.url);
+        if (thumb.url) {
+            heldUrls.delete(thumb.url);
+            URL.revokeObjectURL(thumb.url);
+        }
     }
 }
+
+/** Whether a thumbnail's URL still works: it's revoked once the thumbnail is let go of. */
+export const isHeld = (url: string) => heldUrls.has(url);
 
 /** A tile showing `key` from now on; `update` re-renders it once the thumbnail is in. Returns the let-go. */
 function watch(key: string, entry: FileEntry, size: number, lane: string, update: () => void) {
@@ -145,19 +156,20 @@ function failed(request: Request, error: string) {
 }
 
 /**
- * The thumbnail of `entry` at `size` device pixels for a tile in tab `lane`, once it's in: an object
- * URL, or null (none yet, none at all, or not `enabled`: the tile shows the file's icon).
+ * The thumbnail of `entry` at `size` device pixels for a tile in tab `lane`: an object URL once it's in,
+ * undefined until then (or while there may be one later), null for none (none at all, or not `enabled`):
+ * the tile shows the file's icon.
  */
-export function useThumbnail(entry: FileEntry, size: number, lane: string, enabled = true): string | null {
+export function useThumbnail(entry: FileEntry, size: number, lane: string, enabled = true): string | null | undefined {
     const key = enabled && !entry.dir ? thumbKey(entry, size) : "";
     const [, update] = useReducer((n: number) => n + 1, 0);
-    const url = key ? (held.get(key)?.url ?? null) : null;
+    const url = key ? (held.has(key) ? held.get(key)!.url : undefined) : null;
     // Asked for as the tile mounts, before the browser paints, so the request goes out at once.
     useLayoutEffect(() => {
         if (!key) return;
         const stop = watch(key, entry, size, lane, update);
         // It came in between the render and now.
-        if ((held.get(key)?.url ?? null) !== url) update();
+        if (held.has(key) && held.get(key)!.url !== url) update();
         return stop;
     }, [key, lane]);
     return url;

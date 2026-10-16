@@ -57,6 +57,8 @@ import {
     TextSearch,
     Trash2,
     X,
+    ZoomIn,
+    ZoomOut,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
@@ -113,10 +115,11 @@ import {
     useExplorer,
     useTab,
     viewKey,
+    zoomGrid,
 } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
 import { driveName, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
-import { gridMove } from "@/lib/grid";
+import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
@@ -317,6 +320,26 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const tabs = s.panes[s.activePane].tabs.length;
         const other = otherPaneFolder();
         const chosen = t.selection.size > 0;
+        const canGrid = inFolder || !!t.find;
+        const grid = canGrid && t.view === "grid" && !showsUsage(t.id);
+        // Each size, once something's typed ("large", "tiles"): the grid at that size.
+        const tileSizes = TILE_SIZES.map(
+            ({ size, label }) =>
+                canGrid &&
+                !(grid && size === now.tileSize) && {
+                    ...action(
+                        `tiles-${size}`,
+                        `${label} tiles`,
+                        LayoutGrid,
+                        () => {
+                            setSettings({ tileSize: size });
+                            chooseView("grid", t.id);
+                        },
+                        grid && size === "medium" ? "Ctrl+0" : undefined
+                    ),
+                    searchOnly: true,
+                }
+        );
         const actions: (Command | false)[] = [
             inFolder && !t.find && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
             inFolder && !t.find && action("new-file", "New text document", FilePlus, () => newItem(false)),
@@ -324,10 +347,13 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             inFolder && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
             inFolder && !t.find && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
             inFolder && !t.find && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
-            (inFolder || !!t.find) &&
-                (t.view === "grid" && !showsUsage(t.id)
+            canGrid &&
+                (grid
                     ? action("view-list", "Show as a list", List, () => chooseView("list", t.id), "Ctrl+Shift+6")
                     : action("view-grid", "Show as a grid, with thumbnails", LayoutGrid, () => chooseView("grid", t.id), "Ctrl+Shift+2")),
+            grid && zoomTiles(now.tileSize, 1) !== now.tileSize && action("zoom-in", "Zoom in: larger tiles", ZoomIn, () => zoomGrid(1), "Ctrl+="),
+            grid && zoomTiles(now.tileSize, -1) !== now.tileSize && action("zoom-out", "Zoom out: smaller tiles", ZoomOut, () => zoomGrid(-1), "Ctrl+-"),
+            ...tileSizes,
             !!t.focus && action("quick-look", "Quick Look", Eye, () => useExplorer.setState({ quickLook: true }), "Space"),
             action("hidden", now.showHidden ? "Hide hidden items" : "Show hidden items", now.showHidden ? EyeOff : Eye, () => setSettings({ showHidden: !now.showHidden }), "Ctrl+H"),
             action("preview", now.showPreviewPane ? "Hide preview pane" : "Show preview pane", PanelRight, () => setSettings({ showPreviewPane: !now.showPreviewPane }), "Alt+P"),
@@ -433,7 +459,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const { setSettings } = useStore.getState();
     const menu = useMenu();
     const height = rowHeight(settings.fontSize);
-    const tile = useMemo(() => gridTile(settings.fontSize), [settings.fontSize]);
+    const tile = useMemo(() => gridTile(settings.fontSize, settings.tileSize), [settings.fontSize, settings.tileSize]);
     const paneRef = useRef<HTMLDivElement>(null);
     // Handlers that outlive a render (drags, the rename box) act on the tab they started in.
     const tabRef = useRef(tabId);
@@ -587,6 +613,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 const paths = selectedNow().map((r) => r.path);
                 // As in Explorer: Ctrl+Shift+2 for large icons, Ctrl+Shift+6 for details.
                 if (e.shiftKey && (e.code === "Digit2" || e.code === "Digit6") && (s.path !== THIS_PC || s.find)) chooseView(e.code === "Digit2" ? "grid" : "list", tab);
+                // In the grid, as a browser zooms: Ctrl+= (or +) bigger tiles, Ctrl+- smaller, Ctrl+0 medium again.
+                else if (grid && !e.altKey && ["=", "+", "-", "_", "0"].includes(key)) zoomGrid(key === "0" ? 0 : key === "-" || key === "_" ? -1 : 1);
                 else if (key === "Tab") cycleTab(e.shiftKey ? -1 : 1);
                 else if (key === "t" && e.shiftKey) reopenClosedTab();
                 else if (key === "t") newTab();
@@ -885,7 +913,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 ) : mapRows ? (
                     <DiskUsage tab={tabId} onItemContextMenu={onRowContextMenu} onFolderContextMenu={onFolderContextMenu} />
                 ) : view === "grid" ? (
-                    <FileGrid key={`${tabId}:${placeKey}`} {...viewProps} pane={index} tile={tile} />
+                    <FileGrid key={`${tabId}:${placeKey}`} {...viewProps} pane={index} tile={tile} onZoom={zoomGrid} />
                 ) : (
                     <FileList key={`${tabId}:${placeKey}`} {...viewProps} rowHeight={height} thumbnails={settings.listThumbnails} iconBox={remPx(settings.fontSize)} />
                 )}
