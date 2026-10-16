@@ -56,7 +56,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Instant folders.** Each folder is read in one Win32 enumeration pass and sorted in Rust in natural order (`img9` before `img10`), then drawn as a virtual list. The status bar says how long it took: *read in 0.3 ms · shown in 6.3 ms*.
 -   **Find files by name.** Typing in the search box filters the folder as you type; **Enter** searches every subfolder too (from This PC, every drive). All words must match, `*` and `?` work like in Explorer, and `"quotes"` keep spaces. The status bar says who answered: *index · 18 found in 7.7 ms* or *fd · 304 found in 8.09 s*.
 -   **Folder sizes.** With instant search on, every folder shows its size as it opens, and search results show folder totals too. Otherwise one click measures them with dust.
--   **Disk usage map.** **Disk usage** (in the command bar, or `Ctrl+K`) draws the open folder as a squarified treemap, the way WizTree and WinDirStat do: folders nest six levels deep, files are colored by type, and the 20,000 biggest items are drawn, with everything smaller grouped in its folder. Hover for the name, path and size, click a folder to go into it (or a file to go to its folder), `Backspace` or `Alt+Up` to go back out, `Enter` to open, and right-click for the usual menu. With instant search on, the map comes from the index in one request: all of `C:\` is on screen 53 ms after the click. Otherwise dust measures the folder: going into a folder shows its part of the map while dust measures it, and going back out shows the map you left. Each tab has its own map, and the status bar shows which engine drew it and how long it took.
+-   **Disk usage map.** A treemap of the open folder, like WizTree's: see [Disk usage map](#disk-usage-map) below.
 -   **Preview pane and Quick Look.** Syntax-highlighted code and text, images, video, audio, PDFs and folder summaries, in the side pane (`Alt+P`) or full size on `Space`. Online-only OneDrive files are left alone, so nothing downloads by accident.
 -   **Command palette.** `Ctrl+K` finds any command, or a folder you've been to by typing a few of its letters (`dl` finds Downloads), with the folders you open most often and most recently first. Type a path, `~` or `%APPDATA%` to go there.
 -   **The usual explorer moves.** Back, forward and up, a breadcrumb address bar you can type into, Quick access, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folders and text documents, and hidden items on demand.
@@ -73,6 +73,14 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Dual pane.** `Ctrl+Shift+D` (or the toolbar button) shows two folders side by side, each pane with its own tabs. Click a pane or press `F6` to work in it. Drag files across, or use **Copy to other pane** and **Move to other pane**, which run on Windows' own file engine like every other file operation.
 -   **Both at full speed.** Each tab searches and sizes folders on its own, so a long search in one pane doesn't stop the other's, and both panes refresh when their folders change.
 
+### Disk usage map
+
+<img src="screenshots/disk-usage.png" alt="The disk usage map of C:\Windows: every folder and file as a block sized by how much space it takes, mapped from the index in 21 ms" width="100%">
+
+**Disk usage** (in the command bar, or `Ctrl+K`) draws the open folder as a squarified treemap, the way WizTree and WinDirStat do: folders nest six levels deep, files are colored by type, and the 20,000 biggest items are drawn, with everything smaller grouped in its folder. Hover for the name, path and size, click a folder to go into it (or a file to go to its folder), `Backspace` or `Alt+Up` to go back out, `Enter` to open, and right-click for the usual menu.
+
+With instant search on, the map comes from the index in one request: all of `C:\` is on screen 53 ms after the click. Otherwise dust measures the folder: going into a folder shows its part of the map while dust measures it, and going back out shows the map you left. Each tab has its own map, and the status bar shows which engine drew it and how long it took.
+
 <table>
 <tr>
 <td width="50%"><img src="screenshots/quick-look.png" alt="Quick Look showing a Rust file with syntax highlighting"></td>
@@ -86,7 +94,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 ### Instant search (NTFS index)
 
-<img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 30 ms" width="100%">
+<img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 37 ms" width="100%">
 
 It's off until you turn it on in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and dust take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
 
