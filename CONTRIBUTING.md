@@ -25,8 +25,8 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 
 | Path | What it is |
 | :--- | :--- |
-| `src/components/explorer/` | The Files mode UI: list, sidebar, address bar, preview, command bar |
-| `src/lib/explorer.ts` | Explorer state and actions (navigation, selection, search, file operations) |
+| `src/components/explorer/` | The Files mode UI: panes and tabs, list, sidebar, address bar, preview, command bar |
+| `src/lib/explorer.ts` | Explorer state and actions: tabs and panes, navigation, selection, search, file operations |
 | `src/lib/fs.ts` | Typed wrappers for every Rust command |
 | `src/components/Results.tsx`, `Search.tsx` | Text search (ripgrep) |
 | `src-tauri/src/fsx.rs` | Folder listing (Win32 `FindFirstFileExW`, binary transfer to the UI) |

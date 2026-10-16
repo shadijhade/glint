@@ -17,6 +17,13 @@ export interface SearchOptions {
 
 export type Mode = 'files' | 'text';
 
+/** The tabs open in each pane when the app closed, to reopen them. */
+export interface Session {
+    dual: boolean;
+    activePane: number;
+    panes: { paths: string[]; active: number }[];
+}
+
 export interface Settings {
     theme: 'dark' | 'light' | 'system';
     fontSize: 'small' | 'medium' | 'large';
@@ -31,6 +38,7 @@ export interface Settings {
     maxHistoryItems: number;
     // Files
     startFolder: 'home' | 'thispc' | 'last';
+    restoreTabs: boolean; // reopen last time's tabs and panes; startFolder when there are none
     showHidden: boolean;
     foldersFirst: boolean;
     showPreviewPane: boolean;
@@ -69,6 +77,7 @@ export const DEFAULT_SETTINGS: Settings = {
     saveSearchHistory: true,
     maxHistoryItems: 1000,
     startFolder: 'home',
+    restoreTabs: true,
     showHidden: false,
     foldersFirst: true,
     showPreviewPane: true,
@@ -88,6 +97,7 @@ interface AppState {
     mode: Mode;
     pinned: string[];
     lastFolder: string | null;
+    session: Session | null;
     /** Folders opened, for ranking in the command palette. */
     visits: Record<string, Visit>;
     setQuery: (query: string) => void;
@@ -100,6 +110,7 @@ interface AppState {
     setMode: (mode: Mode) => void;
     togglePin: (path: string) => void;
     setLastFolder: (path: string) => void;
+    setSession: (session: Session) => void;
     recordVisit: (path: string) => void;
 }
 
@@ -116,6 +127,7 @@ export const useStore = create<AppState>()(
             mode: 'files',
             pinned: [],
             lastFolder: null,
+            session: null,
             visits: {},
             setQuery: (query) => set({ query }),
             setPath: (path) => set({ path }),
@@ -142,6 +154,7 @@ export const useStore = create<AppState>()(
                 pinned: state.pinned.includes(path) ? state.pinned.filter(p => p !== path) : [...state.pinned, path]
             })),
             setLastFolder: (lastFolder) => set({ lastFolder }),
+            setSession: (session) => set({ session }),
             recordVisit: (path) => set((state) => {
                 const now = Date.now();
                 const visits = { ...state.visits, [path]: { count: (state.visits[path]?.count ?? 0) + 1, last: now } };

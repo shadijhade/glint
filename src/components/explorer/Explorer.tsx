@@ -1,4 +1,5 @@
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -9,11 +10,16 @@ import {
     AppWindow,
     ArrowLeft,
     ArrowRight,
+    ArrowRightLeft,
     ArrowUp,
+    ChevronLeft,
+    ChevronRight,
     ClipboardCopy,
     ClipboardPaste,
     Code,
+    Columns2,
     Copy,
+    CopyPlus,
     ExternalLink,
     Eye,
     EyeOff,
@@ -21,6 +27,7 @@ import {
     Folder,
     FolderInput,
     FolderOpen,
+    FolderOutput,
     FolderPlus,
     FolderSearch,
     HardDrive,
@@ -33,12 +40,15 @@ import {
     Pin,
     PenLine,
     PinOff,
+    Plus,
+    RotateCcw,
     RotateCw,
     Scissors,
     Search,
     SearchX,
     Settings as SettingsIcon,
     Square,
+    SquarePlus,
     SquareTerminal,
     Sun,
     TextSearch,
@@ -49,38 +59,62 @@ import { useShallow } from "zustand/react/shallow";
 import { type FileEntry, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     calcSizes,
+    canReopenTab,
     clearFind,
+    closeOtherTabs,
+    closeTab,
     copyToClipboard,
+    copyToOtherPane,
+    currentPath,
+    cycleTab,
     deletePaths,
     dropFiles,
+    duplicateTab,
+    focusPane,
     goBack,
     goForward,
     goTo,
     goUp,
     initExplorer,
     markShown,
+    moveTabToOtherPane,
     navigate,
     newItem,
+    newTab,
     openEntry,
+    openInNewTab,
+    otherPaneFolder,
+    PaneProvider,
     paste,
     refresh,
     refreshDrives,
     reload,
+    reloadFolder,
     renameEntry,
+    reopenClosedTab,
     revealInApp,
     runFind,
+    savedScroll,
+    saveScroll,
     selectAll,
     selectOnly,
     selectRange,
+    selectTab,
     stopFind,
+    switchPane,
+    tabState,
+    toggleDual,
     toggleSelected,
+    updateTab,
     useExplorer,
+    useTab,
 } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
 import { driveName, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
-import { baseName, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 import { rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
 import { Button } from "../ui/button";
@@ -92,6 +126,7 @@ import { FilePreview } from "./FilePreview";
 import { QuickLook } from "./QuickLook";
 import { DRIVE_ICONS, KNOWN_ICONS, Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
+import { TabStrip } from "./TabStrip";
 import { ThisPC } from "./ThisPC";
 
 const NO_ENTRIES: FileEntry[] = [];
@@ -119,6 +154,68 @@ function Centered({ children }: { children: React.ReactNode }) {
     );
 }
 
+/** What the active pane shows, for the toolbar and the preview pane, which sit outside the panes. */
+interface ActiveView {
+    selected: FileEntry[];
+    items: number;
+    folder: string;
+    total?: number;
+}
+const useActiveView = create<ActiveView>(() => ({ selected: NO_ENTRIES, items: 0, folder: THIS_PC }));
+
+/** What only a pane can do (it needs the pane's sorted, filtered rows), for the toolbar. */
+interface PaneActions {
+    startRename: () => void;
+    deleteSelected: (permanent: boolean) => void;
+}
+const paneActions: (PaneActions | undefined)[] = [];
+const activePaneActions = () => paneActions[useExplorer.getState().activePane];
+
+interface MenuContext {
+    pinned: string[];
+    togglePin: (path: string) => void;
+    onSearchText: (folder: string) => void;
+}
+
+/** For a folder: the one open in a pane (right-click on empty space, `current`), or a place in the sidebar. */
+function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: { find: boolean; selectAll: () => void }): MenuItem[] {
+    if (folder === THIS_PC) return [{ label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refreshDrives }];
+    const isPinned = ctx.pinned.includes(folder);
+    const find = !!view?.find;
+    return [
+        !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
+        !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
+        current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find, onSelect: () => newItem(true) },
+        current && { label: "New text document", icon: FilePlus, disabled: find, onSelect: () => newItem(false) },
+        "separator",
+        { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: current && find, onSelect: () => paste(folder) },
+        current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", onSelect: view.selectAll },
+        current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
+        "separator",
+        current && { label: "Folder sizes", icon: HardDrive, disabled: find, onSelect: calcSizes },
+        { label: "Search text here", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
+        { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
+        "separator",
+        { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
+        { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
+        { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
+        { label: "Properties", icon: Info, shortcut: current ? "Alt+Enter" : undefined, onSelect: () => properties(folder) },
+    ];
+}
+
+function tabMenu(id: string): MenuItem[] {
+    const s = useExplorer.getState();
+    const tabs = s.panes.find((p) => p.tabs.includes(id))?.tabs.length ?? 0;
+    return [
+        { label: "Duplicate tab", icon: Copy, onSelect: () => duplicateTab(id) },
+        s.dual && { label: "Move to other pane", icon: ArrowRightLeft, disabled: tabs < 2, onSelect: () => moveTabToOtherPane(id) },
+        "separator",
+        { label: "Close tab", icon: X, shortcut: "Ctrl+W", disabled: tabs < 2 && !s.dual, onSelect: () => closeTab(id) },
+        { label: "Close other tabs", icon: X, disabled: tabs < 2, onSelect: () => closeOtherTabs(id) },
+        { label: "Reopen closed tab", icon: RotateCcw, shortcut: "Ctrl+Shift+T", disabled: !canReopenTab(), onSelect: reopenClosedTab },
+    ];
+}
+
 interface ExplorerProps {
     active: boolean;
     /** Switch to text search (ripgrep) in `folder`. */
@@ -127,37 +224,19 @@ interface ExplorerProps {
 }
 
 export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps) {
-    const { path, listing, loading, find, filter, selection, focus, renaming, cut, sizes, dropTarget, quickLook, palette } = useExplorer(
-        useShallow((s) => ({
-            path: s.path,
-            listing: s.listing,
-            loading: s.loading,
-            find: s.find,
-            filter: s.filter,
-            selection: s.selection,
-            focus: s.focus,
-            renaming: s.renaming,
-            cut: s.cut,
-            sizes: s.sizes[s.path],
-            dropTarget: s.dropTarget,
-            quickLook: s.quickLook,
-            palette: s.palette,
-        }))
-    );
-    const settings = useStore((s) => s.settings);
-    const { sort, foldersFirst, showHidden, showPreviewPane, editorPath } = settings;
+    const { path, find } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find })));
+    const { dual, palette } = useExplorer(useShallow((s) => ({ dual: s.dual, palette: s.palette })));
+    const showPreviewPane = useStore((s) => s.settings.showPreviewPane);
+    const selected = useActiveView((v) => v.selected);
     const pinned = useStore((s) => s.pinned);
     const { setSettings, togglePin } = useStore.getState();
     const menu = useMenu();
-    const height = rowHeight(settings.fontSize);
+    const menuContext: MenuContext = { pinned, togglePin, onSearchText };
 
     useEffect(() => {
         initExplorer();
-        // Refresh when the open folder changes on disk; drives may come and go while we're away.
-        const unlisten = listen<string>("dir-changed", (event) => {
-            const s = useExplorer.getState();
-            if (!s.find && s.path !== THIS_PC && samePath(event.payload, s.path)) reload();
-        });
+        // Refresh the folders on screen when they change on disk; drives may come and go while we're away.
+        const unlisten = listen<string>("dir-changed", (event) => reloadFolder(event.payload));
         const onFocus = () => refreshDrives();
         window.addEventListener("focus", onFocus);
         return () => {
@@ -169,15 +248,18 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
     const activeRef = useRef(active);
     activeRef.current = active;
 
-    // Files dragged in from File Explorer or the desktop land on the folder row or sidebar place
-    // under the pointer, or else in the open folder.
+    // Files dragged in from File Explorer, the desktop or the other pane land on the folder row or
+    // sidebar place under the pointer, or else in the folder open in the pane under it.
     useEffect(() => {
         const targetAt = ({ x, y }: { x: number; y: number }) => {
-            const s = useExplorer.getState();
             const under = document.elementFromPoint(x / devicePixelRatio, y / devicePixelRatio);
             const place = under?.closest<HTMLElement>("[data-drop]")?.dataset.drop;
             if (place) return place;
-            return s.path !== THIS_PC && !s.find && under?.closest(".files") ? s.path : null;
+            const pane = under?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+            if (pane === undefined || !under?.closest(".files")) return null;
+            const s = useExplorer.getState();
+            const tab = s.panes[Number(pane)] && s.tabs[s.panes[Number(pane)].active];
+            return tab && tab.path !== THIS_PC && !tab.find ? tab.path : null;
         };
         const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
             const target = activeRef.current && payload.type !== "leave" ? targetAt(payload.position) : null;
@@ -189,6 +271,158 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             unlisten.then((stop) => stop());
         };
     }, []);
+
+    const searchTextHere = () => {
+        const folder = currentPath();
+        if (folder !== THIS_PC) onSearchText(folder);
+    };
+
+    const onPlaceContextMenu = (e: React.MouseEvent, place: string) => {
+        e.preventDefault();
+        menu.open(e, folderMenu(place, false, menuContext));
+    };
+
+    /** Everything the command palette offers: folders you use (most-used first) and every action. */
+    const paletteCommands = (): Command[] => {
+        const s = useExplorer.getState();
+        const t = tabState()!;
+        const { visits, settings: now } = useStore.getState();
+        const inFolder = t.path !== THIS_PC;
+        const seen = new Set<string>();
+        const folders: Command[] = [];
+        const addFolder = (folder: string, label: string, icon: Command["icon"], weight: number, iconClass?: string) => {
+            const key = folder.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            const visit = visits[folder];
+            folders.push({ id: `folder:${key}`, label, detail: folder, icon, iconClass, kind: "folder", weight: weight + (visit ? Math.log2(1 + frecency(visit)) : 0), run: () => navigate(folder) });
+        };
+        for (const p of pinned) addFolder(p, baseName(p), Pin, 1.5);
+        for (const k of s.known) addFolder(k.path, k.name, KNOWN_ICONS[k.id], 0.5);
+        for (const [folder] of Object.entries(visits).sort((a, b) => frecency(b[1]) - frecency(a[1])).slice(0, 60)) {
+            addFolder(folder, baseName(folder), Folder, 0, "fill-amber-400/80 text-amber-500");
+        }
+        for (const d of s.drives) addFolder(d.path, driveName(d), DRIVE_ICONS[d.kind], 0);
+
+        const action = (id: string, label: string, icon: Command["icon"], run: () => void, shortcut?: string): Command => ({ id, label, icon, run, shortcut, kind: "action" });
+        const isPinned = pinned.includes(t.path);
+        const tabs = s.panes[s.activePane].tabs.length;
+        const other = otherPaneFolder();
+        const chosen = t.selection.size > 0;
+        const actions: (Command | false)[] = [
+            inFolder && !t.find && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
+            inFolder && !t.find && action("new-file", "New text document", FilePlus, () => newItem(false)),
+            action("find", "Find files in this folder", Search, focusFind, "Ctrl+F"),
+            inFolder && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
+            inFolder && !t.find && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
+            !!t.focus && action("quick-look", "Quick Look", Eye, () => useExplorer.setState({ quickLook: true }), "Space"),
+            action("hidden", now.showHidden ? "Hide hidden items" : "Show hidden items", now.showHidden ? EyeOff : Eye, () => setSettings({ showHidden: !now.showHidden }), "Ctrl+H"),
+            action("preview", now.showPreviewPane ? "Hide preview pane" : "Show preview pane", PanelRight, () => setSettings({ showPreviewPane: !now.showPreviewPane }), "Alt+P"),
+            action("refresh", "Refresh", RotateCw, refresh, "F5"),
+            t.back.length > 0 && action("back", "Back", ArrowLeft, goBack, "Alt+Left"),
+            t.forward.length > 0 && action("forward", "Forward", ArrowRight, goForward, "Alt+Right"),
+            inFolder && action("up", "Up one folder", ArrowUp, goUp, "Alt+Up"),
+            action("this-pc", "This PC", Monitor, () => navigate(THIS_PC)),
+            action("new-tab", "New tab", Plus, () => newTab(), "Ctrl+T"),
+            (tabs > 1 || s.dual) && action("close-tab", "Close tab", X, () => closeTab(), "Ctrl+W"),
+            canReopenTab() && action("reopen-tab", "Reopen closed tab", RotateCcw, reopenClosedTab, "Ctrl+Shift+T"),
+            tabs > 1 && action("next-tab", "Next tab", ChevronRight, () => cycleTab(1), "Ctrl+Tab"),
+            tabs > 1 && action("previous-tab", "Previous tab", ChevronLeft, () => cycleTab(-1), "Ctrl+Shift+Tab"),
+            action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
+            s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
+            !!other && chosen && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
+            !!other && chosen && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
+            inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
+            inFolder && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
+            inFolder && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
+            inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
+            inFolder && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
+            action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
+            action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
+        ];
+        return [...folders, ...actions.filter((a): a is Command => !!a)];
+    };
+
+    return (
+        <div className={active ? "flex min-h-0 flex-1" : "hidden"}>
+            <Sidebar onContextMenu={onPlaceContextMenu} />
+            <div className="flex min-w-0 flex-1 flex-col">
+                <CommandBar
+                    selected={selected}
+                    onRename={() => activePaneActions()?.startRename()}
+                    onDelete={() => activePaneActions()?.deleteSelected(false)}
+                    onSearchText={searchTextHere}
+                />
+                <div className="flex min-h-0 flex-1">
+                    <Pane index={0} active={active} menuContext={menuContext} />
+                    {dual && <Pane index={1} active={active} menuContext={menuContext} />}
+                </div>
+            </div>
+            {showPreviewPane && (path !== THIS_PC || find) && <PreviewPane />}
+            {menu.element}
+            {palette && <CommandPalette commands={paletteCommands()} onGoTo={(text) => goTo(text)} onClose={() => useExplorer.setState({ palette: false })} />}
+        </div>
+    );
+}
+
+/** The selection (or the folder) of the pane the keyboard acts on. */
+function PreviewPane() {
+    const { selected, items, folder, total } = useActiveView();
+    return (
+        <aside className="hidden w-[min(28%,28rem)] min-w-[16rem] shrink-0 border-l lg:flex">
+            <FilePreview selected={selected} folder={{ path: folder, items, total }} />
+        </aside>
+    );
+}
+
+interface PaneProps {
+    index: number;
+    /** Files mode is on screen (keys are only handled then). */
+    active: boolean;
+    menuContext: MenuContext;
+}
+
+/** One side of the window: a tab strip over the list of the tab it shows, and that tab's status bar. */
+function Pane(props: PaneProps) {
+    return (
+        <PaneProvider value={props.index}>
+            <PaneView {...props} />
+        </PaneProvider>
+    );
+}
+
+function PaneView({ index, active, menuContext }: PaneProps) {
+    const { tabId, path, listing, loading, find, filter, selection, focus, renaming, cut, sizes, dropTarget, quickLook, current, dual } = useExplorer(
+        useShallow((s) => {
+            const t = s.tabs[(s.panes[index] ?? s.panes[0]).active];
+            return {
+                tabId: t.id,
+                path: t.path,
+                listing: t.listing,
+                loading: t.loading,
+                find: t.find,
+                filter: t.filter,
+                selection: t.selection,
+                focus: t.focus,
+                renaming: t.renaming,
+                cut: s.cut,
+                sizes: s.sizes[t.path],
+                dropTarget: s.dropTarget,
+                quickLook: s.quickLook,
+                current: s.activePane === index,
+                dual: s.dual,
+            };
+        })
+    );
+    const settings = useStore((s) => s.settings);
+    const { sort, foldersFirst, showHidden, editorPath } = settings;
+    const { setSettings } = useStore.getState();
+    const menu = useMenu();
+    const height = rowHeight(settings.fontSize);
+    const paneRef = useRef<HTMLDivElement>(null);
+    // Handlers that outlive a render (drags, the rename box) act on the tab they started in.
+    const tabRef = useRef(tabId);
+    tabRef.current = tabId;
 
     // Search results stream in; deferring them keeps typing and scrolling smooth while they do.
     const found = useDeferredValue(find?.entries ?? NO_ENTRIES);
@@ -218,26 +452,33 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
     const focusIndex = useMemo(() => (focus ? rows.findIndex((r) => r.path === focus) : -1), [rows, focus]);
     const selected = useMemo(() => (selection.size ? rows.filter((r) => selection.has(r.path)) : NO_ENTRIES), [rows, selection]);
     // Quick Look follows the cursor, so arrowing through the list flips through previews.
-    const looked = quickLook ? (rows[focusIndex] ?? selected[0]) : undefined;
+    const looked = quickLook && current ? (rows[focusIndex] ?? selected[0]) : undefined;
     useEffect(() => {
-        if (quickLook && !looked) useExplorer.setState({ quickLook: false });
-    }, [quickLook, looked]);
+        if (quickLook && current && !looked) useExplorer.setState({ quickLook: false });
+    }, [quickLook, current, looked]);
 
-    useLayoutEffect(markShown, [listing]);
+    useLayoutEffect(() => markShown(tabId), [tabId, listing]);
+
+    // The toolbar and the preview pane show what the active pane shows.
+    const folder = find?.scope ?? path;
+    const total = sizeRun?.total;
+    useLayoutEffect(() => {
+        if (current) useActiveView.setState({ selected, items: rows.length, folder, total });
+    }, [current, selected, rows.length, folder, total]);
 
     const rowsRef = useRef(rows);
     rowsRef.current = rows;
     const typeahead = useRef({ text: "", at: 0 });
 
     const selectedNow = () => {
-        const s = useExplorer.getState();
-        return rowsRef.current.filter((r) => s.selection.has(r.path));
+        const t = tabState(tabRef.current);
+        return t ? rowsRef.current.filter((r) => t.selection.has(r.path)) : NO_ENTRIES;
     };
 
     const startRename = (target?: string) => {
-        const s = useExplorer.getState();
-        const path = target ?? s.focus ?? [...s.selection][0];
-        if (path) useExplorer.setState({ renaming: path, selection: new Set([path]), focus: path, anchor: path });
+        const t = tabState(tabRef.current);
+        const path = target ?? t?.focus ?? (t ? [...t.selection][0] : undefined);
+        if (path) updateTab({ renaming: path, selection: new Set([path]), focus: path, anchor: path }, tabRef.current);
     };
 
     // Explorer selects the next item after a delete.
@@ -261,13 +502,21 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         files.forEach(openEntry);
     };
 
-    const searchTextHere = () => {
-        const s = useExplorer.getState();
-        if (s.path !== THIS_PC) onSearchText(s.path);
+    /** Ctrl+Enter: each selected folder in a new tab. */
+    const openSelectedInTabs = () => {
+        for (const entry of selectedNow()) if (entry.dir) openInNewTab(entry.path);
     };
 
     useEffect(() => {
-        if (!active) return;
+        paneActions[index] = { startRename: () => startRename(), deleteSelected };
+        return () => {
+            paneActions[index] = undefined;
+        };
+    });
+
+    useEffect(() => {
+        // Only the active pane listens; the other one waits for a click (or F6).
+        if (!active || !current) return;
         const onKey = (e: KeyboardEvent) => {
             if (e.defaultPrevented) return;
             const ctrl = e.ctrlKey || e.metaKey;
@@ -275,24 +524,26 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             const target = e.target instanceof Element ? e.target : null;
             // A focused button handles its own Enter and Space.
             if ((key === "Enter" || key === " ") && target?.closest("button, a")) return;
-            // Fields keep their keys, except that navigation also works from the search box, as in Explorer.
+            // Fields keep their keys, except that navigation (and tabs) also work from the search box, as in Explorer.
             if (target?.closest("input, textarea, select, [contenteditable=true], dialog, [popover]")) {
                 const navigation =
                     (e.altKey && !ctrl && ["ArrowLeft", "ArrowRight", "ArrowUp", "d"].includes(key)) ||
-                    (ctrl && !e.altKey && ["l", "f", "e"].includes(key)) ||
-                    ["F3", "F4", "F5"].includes(key);
+                    (ctrl && !e.altKey && ["l", "f", "e", "t", "w", "d", "Tab"].includes(key)) ||
+                    ["F3", "F4", "F5", "F6"].includes(key);
                 if (target.id !== FIND_BOX_ID || !navigation) return;
             }
             const rows = rowsRef.current;
-            const s = useExplorer.getState();
+            const tab = tabRef.current;
+            const s = tabState(tab);
+            if (!s) return;
             const at = s.focus ? rows.findIndex((r) => r.path === s.focus) : -1;
-            const page = Math.max(1, Math.floor((document.querySelector("[data-file-list]")?.clientHeight ?? 400) / height) - 1);
+            const page = Math.max(1, Math.floor((paneRef.current?.querySelector("[data-file-list]")?.clientHeight ?? 400) / height) - 1);
             // Arrows select; with Shift they extend from the anchor; with Ctrl they only move the cursor.
             const go = (to: number) => {
                 if (!rows.length) return;
                 const index = Math.max(0, Math.min(rows.length - 1, to));
                 if (e.shiftKey) selectRange(rows, index, ctrl);
-                else if (ctrl) useExplorer.setState({ focus: rows[index].path });
+                else if (ctrl) updateTab({ focus: rows[index].path }, tab);
                 else selectOnly(rows[index].path);
             };
             const moves: Record<string, () => number> = {
@@ -303,9 +554,13 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 Home: () => 0,
                 End: () => rows.length - 1,
             };
+            const { quickLook, dual } = useExplorer.getState();
 
-            if (s.quickLook && (key === "Escape" || key === " ")) useExplorer.setState({ quickLook: false });
-            else if (e.altKey && !ctrl) {
+            if (quickLook && (key === "Escape" || key === " ")) useExplorer.setState({ quickLook: false });
+            else if (key === "F6") {
+                if (!dual) return;
+                switchPane();
+            } else if (e.altKey && !ctrl) {
                 if (key === "ArrowLeft") goBack();
                 else if (key === "ArrowRight") goForward();
                 else if (key === "ArrowUp") goUp();
@@ -317,7 +572,14 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 go(moves[key]());
             } else if (ctrl) {
                 const paths = selectedNow().map((r) => r.path);
-                if (key === "a") selectAll(rows);
+                if (key === "Tab") cycleTab(e.shiftKey ? -1 : 1);
+                else if (key === "t" && e.shiftKey) reopenClosedTab();
+                else if (key === "t") newTab();
+                else if (key === "w") closeTab();
+                else if (key === "d" && e.shiftKey) toggleDual();
+                else if (/^[1-9]$/.test(key) && !e.shiftKey) selectTab(Number(key));
+                else if (key === "Enter") openSelectedInTabs();
+                else if (key === "a") selectAll(rows);
                 else if (key === "c" && e.shiftKey) paths.length && copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths");
                 else if (key === "c") copyToClipboard(paths, false);
                 else if (key === "x") copyToClipboard(paths, true);
@@ -364,15 +626,22 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [active, height]);
+    }, [active, current, height]);
 
-    // A press on a row can turn into dragging the selection out of the window. Like Explorer, pressing
-    // an item of a multi-selection keeps the selection until release, so all of it can be dragged.
+    // A press on a row can turn into dragging the selection out of the window (or into the other
+    // pane). Like Explorer, pressing an item of a multi-selection keeps the selection until release,
+    // so all of it can be dragged.
     const press = useRef<{ x: number; y: number; narrowTo: string | null } | null>(null);
 
     const onRowMouseDown = (e: React.MouseEvent, index: number) => {
         const entry = rows[index];
-        const { selection } = useExplorer.getState();
+        if (e.button === 1) {
+            // Middle-click: the folder in a new tab (and no autoscroll).
+            e.preventDefault();
+            if (entry.dir) openInNewTab(entry.path);
+            return;
+        }
+        const selection = tabState(tabRef.current)?.selection ?? new Set();
         const additive = e.ctrlKey || e.metaKey;
         if (e.button === 2) {
             if (!selection.has(entry.path)) selectOnly(entry.path);
@@ -380,7 +649,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             const keep = !e.shiftKey && !additive && selection.has(entry.path) && selection.size > 1;
             if (e.shiftKey) selectRange(rows, index, additive);
             else if (additive) toggleSelected(entry.path);
-            else if (keep) useExplorer.setState({ focus: entry.path, anchor: entry.path });
+            else if (keep) updateTab({ focus: entry.path, anchor: entry.path }, tabRef.current);
             else selectOnly(entry.path);
             press.current = { x: e.clientX, y: e.clientY, narrowTo: keep ? entry.path : null };
         }
@@ -396,9 +665,10 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 const paths = selectedNow().map((r) => r.path);
                 // Moved away (e.g. into another drive's folder in Explorer): show what's left.
                 if (!paths.length) return;
+                const from = tabRef.current;
                 startDrag(paths)
                     .then((effect) => {
-                        if (effect === "move") reload();
+                        if (effect === "move") reload(from);
                     })
                     .catch(report("Couldn't drag these items"));
             }
@@ -416,13 +686,30 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         };
     }, []);
 
+    const { pinned, togglePin, onSearchText } = menuContext;
     const editorName = baseName(editorPath.trim()).replace(/\.exe$/i, "");
     const itemMenu = (targets: FileEntry[]): MenuItem[] => {
         const one = targets.length === 1 ? targets[0] : null;
         const paths = targets.map((t) => t.path);
+        const folders = targets.filter((t) => t.dir);
+        const other = dual && !!otherPaneFolder();
         return [
             { label: one?.dir ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: one?.dir ? FolderOpen : ExternalLink, shortcut: "Enter", onSelect: openSelected },
-            one && { label: "Quick Look", icon: Eye, shortcut: "Space", onSelect: () => useExplorer.setState({ focus: one.path, quickLook: true }) },
+            folders.length > 0 && {
+                label: folders.length > 1 ? `Open ${folders.length} folders in new tabs` : "Open in new tab",
+                icon: SquarePlus,
+                shortcut: "Ctrl+Enter",
+                onSelect: () => folders.forEach((f) => openInNewTab(f.path)),
+            },
+            one && {
+                label: "Quick Look",
+                icon: Eye,
+                shortcut: "Space",
+                onSelect: () => {
+                    updateTab({ focus: one.path }, tabRef.current);
+                    useExplorer.setState({ quickLook: true });
+                },
+            },
             one && !one.dir && !!editorName && { label: `Open with ${editorName}`, icon: Code, onSelect: () => openPath(one.path, editorPath.trim()).catch(report("Couldn't open the file")) },
             one && !one.dir && { label: "Open with…", icon: AppWindow, onSelect: () => openWith(one.path).catch(report("Couldn't open the app picker")) },
             one?.dir && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
@@ -431,6 +718,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             "separator",
             { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", onSelect: () => copyToClipboard(paths, true) },
             { label: "Copy", icon: Copy, shortcut: "Ctrl+C", onSelect: () => copyToClipboard(paths, false) },
+            dual && { label: "Copy to other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
+            dual && { label: "Move to other pane", icon: FolderOutput, disabled: !other, onSelect: () => copyToOtherPane(true, paths) },
             one?.dir && { label: "Paste into folder", icon: ClipboardPaste, onSelect: () => paste(one.path) },
             { label: paths.length === 1 ? "Copy path" : "Copy paths", icon: ClipboardCopy, shortcut: "Ctrl+Shift+C", onSelect: () => copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths") },
             "separator",
@@ -443,30 +732,6 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         ];
     };
 
-    /** For the open folder (right-click on empty space) or a place in the sidebar. */
-    const folderMenu = (folder: string, current: boolean): MenuItem[] => {
-        if (folder === THIS_PC) return [{ label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refreshDrives }];
-        const isPinned = pinned.includes(folder);
-        return [
-            !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
-            current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: !!find, onSelect: () => newItem(true) },
-            current && { label: "New text document", icon: FilePlus, disabled: !!find, onSelect: () => newItem(false) },
-            "separator",
-            { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: current && !!find, onSelect: () => paste(folder) },
-            current && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", onSelect: () => selectAll(rowsRef.current) },
-            current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
-            "separator",
-            current && { label: "Folder sizes", icon: HardDrive, disabled: !!find, onSelect: calcSizes },
-            { label: "Search text here", icon: TextSearch, onSelect: () => onSearchText(folder) },
-            { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
-            "separator",
-            { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
-            { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
-            { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => togglePin(folder) },
-            { label: "Properties", icon: Info, shortcut: current ? "Alt+Enter" : undefined, onSelect: () => properties(folder) },
-        ];
-    };
-
     const onRowContextMenu = (e: React.MouseEvent, index: number) => {
         e.preventDefault();
         const entry = rows[index];
@@ -476,55 +741,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 
     const onPlaceContextMenu = (e: React.MouseEvent, place: string) => {
         e.preventDefault();
-        menu.open(e, folderMenu(place, false));
-    };
-
-    /** Everything the command palette offers: folders you use (most-used first) and every action. */
-    const paletteCommands = (): Command[] => {
-        const s = useExplorer.getState();
-        const { visits, settings: now } = useStore.getState();
-        const inFolder = s.path !== THIS_PC;
-        const seen = new Set<string>();
-        const folders: Command[] = [];
-        const addFolder = (folder: string, label: string, icon: Command["icon"], weight: number, iconClass?: string) => {
-            const key = folder.toLowerCase();
-            if (seen.has(key)) return;
-            seen.add(key);
-            const visit = visits[folder];
-            folders.push({ id: `folder:${key}`, label, detail: folder, icon, iconClass, kind: "folder", weight: weight + (visit ? Math.log2(1 + frecency(visit)) : 0), run: () => navigate(folder) });
-        };
-        for (const p of pinned) addFolder(p, baseName(p), Pin, 1.5);
-        for (const k of s.known) addFolder(k.path, k.name, KNOWN_ICONS[k.id], 0.5);
-        for (const [folder] of Object.entries(visits).sort((a, b) => frecency(b[1]) - frecency(a[1])).slice(0, 60)) {
-            addFolder(folder, baseName(folder), Folder, 0, "fill-amber-400/80 text-amber-500");
-        }
-        for (const d of s.drives) addFolder(d.path, driveName(d), DRIVE_ICONS[d.kind], 0);
-
-        const action = (id: string, label: string, icon: Command["icon"], run: () => void, shortcut?: string): Command => ({ id, label, icon, run, shortcut, kind: "action" });
-        const isPinned = pinned.includes(s.path);
-        const actions: (Command | false)[] = [
-            inFolder && !s.find && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
-            inFolder && !s.find && action("new-file", "New text document", FilePlus, () => newItem(false)),
-            action("find", "Find files in this folder", Search, focusFind, "Ctrl+F"),
-            inFolder && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(s.path), "Ctrl+Shift+F"),
-            inFolder && !s.find && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
-            !!s.focus && action("quick-look", "Quick Look", Eye, () => useExplorer.setState({ quickLook: true }), "Space"),
-            action("hidden", now.showHidden ? "Hide hidden items" : "Show hidden items", now.showHidden ? EyeOff : Eye, () => setSettings({ showHidden: !now.showHidden }), "Ctrl+H"),
-            action("preview", now.showPreviewPane ? "Hide preview pane" : "Show preview pane", PanelRight, () => setSettings({ showPreviewPane: !now.showPreviewPane }), "Alt+P"),
-            action("refresh", "Refresh", RotateCw, refresh, "F5"),
-            s.back.length > 0 && action("back", "Back", ArrowLeft, goBack, "Alt+Left"),
-            s.forward.length > 0 && action("forward", "Forward", ArrowRight, goForward, "Alt+Right"),
-            inFolder && action("up", "Up one folder", ArrowUp, goUp, "Alt+Up"),
-            action("this-pc", "This PC", Monitor, () => navigate(THIS_PC)),
-            inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(s.path, "path")),
-            inFolder && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(s.path)),
-            inFolder && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(s.path).catch(report("Couldn't open File Explorer"))),
-            inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(s.path)),
-            inFolder && action("properties", "Properties", Info, () => properties(s.path), "Alt+Enter"),
-            action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
-            action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
-        ];
-        return [...folders, ...actions.filter((a): a is Command => !!a)];
+        menu.open(e, folderMenu(place, false, menuContext));
     };
 
     const onSort = (key: SortKey) => setSettings({ sort: { key, desc: sort.key === key ? !sort.desc : key === "modified" || key === "size" } });
@@ -577,82 +794,80 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
     }
 
     const scopeName = find && (find.scope === THIS_PC ? "all drives" : baseName(find.scope));
+    const listKey = find ? `find:${find.id}` : `dir:${path}`;
 
     return (
-        <div className={active ? "flex min-h-0 flex-1" : "hidden"}>
-            <Sidebar onContextMenu={onPlaceContextMenu} />
-            <div className="relative flex min-w-0 flex-1 flex-col">
-                <CommandBar selected={selected} onRename={() => startRename()} onDelete={() => deleteSelected(false)} onSearchText={searchTextHere} />
-                {loading && <div className="absolute inset-x-0 top-10 z-10 h-0.5 animate-pulse bg-primary" />}
-                {find && (
-                    <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-primary/5 px-3 text-sm">
-                        {find.running ? <Loader2 className="size-4 shrink-0 animate-spin text-primary" /> : <Search className="size-4 shrink-0 text-primary" />}
-                        <span className="truncate">
-                            Results for <b className="font-semibold">“{find.query}”</b> in {scopeName}
-                            {find.scope !== THIS_PC && " and its subfolders"}
+        <div
+            ref={paneRef}
+            data-pane={index}
+            onMouseDownCapture={() => focusPane(index)}
+            className={cn("relative flex min-w-0 flex-1 basis-0 flex-col", index > 0 && "border-l")}
+        >
+            <TabStrip pane={index} onContextMenu={(e, id) => menu.open(e, tabMenu(id))} />
+            {loading && <div className="absolute inset-x-0 top-9 z-10 h-0.5 animate-pulse bg-primary" />}
+            {find && (
+                <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-primary/5 px-3 text-sm">
+                    {find.running ? <Loader2 className="size-4 shrink-0 animate-spin text-primary" /> : <Search className="size-4 shrink-0 text-primary" />}
+                    <span className="truncate">
+                        Results for <b className="font-semibold">“{find.query}”</b> in {scopeName}
+                        {find.scope !== THIS_PC && " and its subfolders"}
+                    </span>
+                    {find.limited && (
+                        <span className="shrink-0 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                            Stopped at {formatCount(settings.findMaxResults ?? 0)}
                         </span>
-                        {find.limited && (
-                            <span className="shrink-0 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
-                                Stopped at {formatCount(settings.findMaxResults ?? 0)}
-                            </span>
-                        )}
-                        <div className="ml-auto flex shrink-0 gap-1">
-                            {find.running && (
-                                <Button variant="ghost" size="sm" onClick={stopFind}>
-                                    <Square className="size-3! fill-current" /> Stop
-                                </Button>
-                            )}
-                            <Button variant="ghost" size="sm" onClick={clearFind} title="Back to the folder (Esc)">
-                                <X /> Close
-                            </Button>
-                        </div>
-                    </div>
-                )}
-                <div className="min-h-0 flex-1">
-                    {path === THIS_PC && !find ? (
-                        <ThisPC onContextMenu={onPlaceContextMenu} />
-                    ) : (
-                        <FileList
-                            key={find ? `find:${find.id}` : `dir:${path}`}
-                            rows={rows}
-                            rowHeight={height}
-                            search={!!find}
-                            scope={find?.scope ?? path}
-                            sizes={sizeRun}
-                            sort={sort}
-                            onSort={onSort}
-                            selection={selection}
-                            focusIndex={focusIndex}
-                            renaming={renaming}
-                            cut={cut}
-                            dropTarget={dropTarget}
-                            onRowMouseDown={onRowMouseDown}
-                            onRowContextMenu={onRowContextMenu}
-                            onOpen={openEntry}
-                            onBackgroundMouseDown={(e) => e.button === 0 && !e.ctrlKey && !e.shiftKey && selectOnly(null)}
-                            onBackgroundContextMenu={(e) => {
-                                e.preventDefault();
-                                selectOnly(null);
-                                menu.open(e, folderMenu(path, true));
-                            }}
-                            onRename={renameEntry}
-                            onCancelRename={() => useExplorer.setState({ renaming: null })}
-                            empty={empty}
-                        />
                     )}
+                    <div className="ml-auto flex shrink-0 gap-1">
+                        {find.running && (
+                            <Button variant="ghost" size="sm" onClick={stopFind}>
+                                <Square className="size-3! fill-current" /> Stop
+                            </Button>
+                        )}
+                        <Button variant="ghost" size="sm" onClick={clearFind} title="Back to the folder (Esc)">
+                            <X /> Close
+                        </Button>
+                    </div>
                 </div>
-                <StatusBar shown={rows.length} hidden={hidden} selected={selected} />
-            </div>
-            {showPreviewPane && (path !== THIS_PC || find) && (
-                <aside className="hidden w-[min(28%,28rem)] min-w-[16rem] shrink-0 border-l lg:flex">
-                    <FilePreview selected={selected} folder={{ path: find?.scope ?? path, items: rows.length, total: sizeRun?.total }} />
-                </aside>
             )}
+            <div className="min-h-0 flex-1">
+                {path === THIS_PC && !find ? (
+                    <ThisPC onContextMenu={onPlaceContextMenu} />
+                ) : (
+                    <FileList
+                        key={`${tabId}:${listKey}`}
+                        rows={rows}
+                        rowHeight={height}
+                        search={!!find}
+                        scope={find?.scope ?? path}
+                        sizes={sizeRun}
+                        sort={sort}
+                        onSort={onSort}
+                        selection={selection}
+                        focusIndex={focusIndex}
+                        renaming={renaming}
+                        cut={cut}
+                        dropTarget={dropTarget}
+                        inactive={dual && !current}
+                        scrollTop={savedScroll(tabId, listKey)}
+                        onScrollTop={(top) => saveScroll(tabId, listKey, top)}
+                        onRowMouseDown={onRowMouseDown}
+                        onRowContextMenu={onRowContextMenu}
+                        onOpen={openEntry}
+                        onBackgroundMouseDown={(e) => e.button === 0 && !e.ctrlKey && !e.shiftKey && selectOnly(null)}
+                        onBackgroundContextMenu={(e) => {
+                            e.preventDefault();
+                            selectOnly(null);
+                            menu.open(e, folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current) }));
+                        }}
+                        onRename={(entry, name) => renameEntry(entry, name, tabRef.current)}
+                        onCancelRename={() => updateTab({ renaming: null }, tabRef.current)}
+                        empty={empty}
+                    />
+                )}
+            </div>
+            <StatusBar shown={rows.length} hidden={hidden} selected={selected} />
             {menu.element}
             {looked && <QuickLook entry={looked} onClose={() => useExplorer.setState({ quickLook: false })} />}
-            {palette && (
-                <CommandPalette commands={paletteCommands()} onGoTo={(text) => goTo(text)} onClose={() => useExplorer.setState({ palette: false })} />
-            )}
         </div>
     );
 }

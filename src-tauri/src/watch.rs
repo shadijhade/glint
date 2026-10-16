@@ -1,41 +1,64 @@
-//! Watches the open folder so the list refreshes when files change elsewhere, like Explorer.
+//! Watches the folders on screen (one per visible pane) so their lists refresh when files change
+//! elsewhere, like Explorer.
 
 use crate::fsx::blocking;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{Emitter, State, Window};
 
+/// One watcher per folder, by its lowercase path.
 #[derive(Default)]
-pub struct FolderWatcher(Arc<Mutex<Option<RecommendedWatcher>>>);
+pub struct FolderWatcher(Arc<Mutex<HashMap<String, RecommendedWatcher>>>);
 
-/// Watches `path` (nothing when None), emitting "dir-changed" with the path at most every 200 ms.
+fn key(path: &str) -> String {
+    path.trim_end_matches(['\\', '/']).to_lowercase()
+}
+
+/// Watches exactly `paths`: folders no longer listed stop being watched, the rest keep their
+/// watcher. Each emits "dir-changed" with its path, at most every 200 ms.
 #[tauri::command]
-pub async fn watch_dir(window: Window, state: State<'_, FolderWatcher>, path: Option<String>) -> Result<(), String> {
-    let slot = state.0.clone();
+pub async fn watch_dirs(window: Window, state: State<'_, FolderWatcher>, paths: Vec<String>) -> Result<(), String> {
+    let watchers = state.0.clone();
     blocking(move || {
-        let mut current = slot.lock().unwrap_or_else(|e| e.into_inner());
-        *current = None;
-        let Some(path) = path else { return Ok(()) };
-        let pending = Arc::new(AtomicBool::new(false));
-        let changed = path.clone();
-        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            // A build writing thousands of files becomes one refresh, not thousands.
-            if event.is_ok() && !pending.swap(true, Ordering::SeqCst) {
-                let (window, path, pending) = (window.clone(), changed.clone(), pending.clone());
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(200));
-                    pending.store(false, Ordering::SeqCst);
-                    let _ = window.emit("dir-changed", path);
-                });
+        let mut watchers = watchers.lock().unwrap_or_else(|e| e.into_inner());
+        let wanted: HashSet<String> = paths.iter().map(|p| key(p)).collect();
+        watchers.retain(|k, _| wanted.contains(k));
+        let mut failed = Ok(());
+        for path in paths {
+            if watchers.contains_key(&key(&path)) {
+                continue;
             }
-        })
-        .map_err(|e| e.to_string())?;
-        watcher.watch(Path::new(&path), RecursiveMode::NonRecursive).map_err(|e| e.to_string())?;
-        *current = Some(watcher);
-        Ok(())
+            match watch(&window, &path) {
+                Ok(watcher) => {
+                    watchers.insert(key(&path), watcher);
+                }
+                Err(e) => failed = Err(e),
+            }
+        }
+        failed
     })
     .await
+}
+
+fn watch(window: &Window, path: &str) -> Result<RecommendedWatcher, String> {
+    let pending = Arc::new(AtomicBool::new(false));
+    let (window, changed) = (window.clone(), path.to_string());
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        // A build writing thousands of files becomes one refresh, not thousands.
+        if event.is_ok() && !pending.swap(true, Ordering::SeqCst) {
+            let (window, path, pending) = (window.clone(), changed.clone(), pending.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                pending.store(false, Ordering::SeqCst);
+                let _ = window.emit("dir-changed", path);
+            });
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    watcher.watch(Path::new(path), RecursiveMode::NonRecursive).map_err(|e| e.to_string())?;
+    Ok(watcher)
 }

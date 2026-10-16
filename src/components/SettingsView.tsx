@@ -243,7 +243,13 @@ export function SettingsView({ onClose, update }: SettingsViewProps) {
                 </Section>
 
                 <Section title="Files">
-                    <Row label="Open on start">
+                    <SwitchRow
+                        label="Reopen my tabs"
+                        hint="Each pane's tabs, as they were when the app closed"
+                        checked={settings.restoreTabs}
+                        onChange={(restoreTabs) => set({ restoreTabs })}
+                    />
+                    <Row label={settings.restoreTabs ? "Otherwise open" : "Open on start"}>
                         <Segmented value={settings.startFolder} onChange={(startFolder) => set({ startFolder })} options={[["home", "Home"], ["thispc", "This PC"], ["last", "Last folder"]]} />
                     </Row>
                     <SwitchRow label="Show hidden items" hint="Files and folders Windows marks as hidden · Ctrl+H" checked={settings.showHidden} onChange={(showHidden) => set({ showHidden })} />

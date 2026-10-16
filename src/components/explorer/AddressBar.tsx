@@ -1,7 +1,7 @@
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ArrowUp, ChevronRight, type LucideIcon, Monitor, RotateCw, Search as SearchIcon, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { clearFind, goBack, goForward, goTo, goUp, navigate, refresh, runFind, useExplorer } from "@/lib/explorer";
+import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName } from "@/lib/fs";
 import { crumbs, samePath, THIS_PC } from "@/lib/paths";
 import { cn } from "@/lib/utils";
@@ -54,11 +54,12 @@ function AddressInput({ path }: { path: string }) {
     );
 }
 
-/** Back/forward/up, the breadcrumb address bar (click it to type a path) and the search box. */
+/** Back/forward/up, the breadcrumb address bar (click it to type a path) and the search box, for the active tab. */
 export function AddressBar() {
-    const { path, back, forward, loading, drives, filter, find, editing } = useExplorer(
-        useShallow((s) => ({ path: s.path, back: s.back, forward: s.forward, loading: s.loading, drives: s.drives, filter: s.filter, find: s.find, editing: s.editingAddress }))
+    const { path, back, forward, loading, filter, find } = useTab(
+        useShallow((t) => ({ path: t.path, back: t.back.length > 0, forward: t.forward.length > 0, loading: t.loading, filter: t.filter, find: !!t.find }))
     );
+    const { drives, editing } = useExplorer(useShallow((s) => ({ drives: s.drives, editing: s.editingAddress })));
     const trailRef = useRef<HTMLDivElement>(null);
     const trail = crumbs(path);
 
@@ -72,7 +73,7 @@ export function AddressBar() {
         const drive = drives.find((d) => samePath(d.path, root));
         return drive ? driveName(drive) : root;
     };
-    const folderName = path === THIS_PC ? "This PC" : trail.length > 1 ? trail[trail.length - 1].name : rootName(path);
+    const folderName = tabName(path, drives);
     const startEditing = () => useExplorer.setState({ editingAddress: true });
 
     const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -94,8 +95,8 @@ export function AddressBar() {
     return (
         <div className="flex min-w-0 flex-1 items-center gap-2">
             <div className="flex shrink-0 items-center">
-                <NavButton icon={ArrowLeft} label="Back (Alt+Left)" onClick={goBack} disabled={!back.length} />
-                <NavButton icon={ArrowRight} label="Forward (Alt+Right)" onClick={goForward} disabled={!forward.length} />
+                <NavButton icon={ArrowLeft} label="Back (Alt+Left)" onClick={goBack} disabled={!back} />
+                <NavButton icon={ArrowRight} label="Forward (Alt+Right)" onClick={goForward} disabled={!forward} />
                 <NavButton icon={ArrowUp} label="Up (Alt+Up)" onClick={goUp} disabled={path === THIS_PC} />
                 <NavButton icon={RotateCw} label="Refresh (F5)" onClick={refresh} className={cn(loading && "[&_svg]:animate-spin")} />
             </div>
@@ -105,7 +106,7 @@ export function AddressBar() {
                     <AddressInput path={path} />
                 ) : (
                     <div ref={trailRef} className="flex h-full min-w-0 flex-1 items-center overflow-x-auto px-1 [scrollbar-width:none]">
-                        <button onClick={() => navigate(THIS_PC)} className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-sm hover:bg-accent" title="This PC">
+                        <button onClick={() => navigate(THIS_PC)} onMouseDown={middleClickOpens(THIS_PC)} className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-sm hover:bg-accent" title="This PC">
                             <Monitor className="size-4 text-muted-foreground" />
                             {path === THIS_PC && "This PC"}
                         </button>
@@ -114,6 +115,7 @@ export function AddressBar() {
                                 <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />
                                 <button
                                     onClick={() => navigate(crumb.path)}
+                                    onMouseDown={middleClickOpens(crumb.path)}
                                     className={cn("h-7 shrink-0 rounded-md px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
                                 >
                                     {i === 0 ? rootName(crumb.path) : crumb.name}
@@ -130,7 +132,7 @@ export function AddressBar() {
                 <input
                     id={FIND_BOX_ID}
                     value={filter}
-                    onChange={(e) => useExplorer.setState({ filter: e.target.value })}
+                    onChange={(e) => updateTab({ filter: e.target.value })}
                     onKeyDown={onFindKeyDown}
                     spellCheck={false}
                     placeholder={`Search ${folderName}`}
