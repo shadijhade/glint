@@ -178,6 +178,240 @@ export const showProperties = (path: string) => invoke("show_properties", { path
 export const openWith = (path: string) => invoke("open_with", { path });
 export const openTerminal = (path: string) => invoke("open_terminal", { path });
 
+export interface LockingProcess {
+    pid: number;
+    name: string;
+    service: string | null;
+    kind: "app" | "service" | "explorer" | "console" | "critical";
+    exe: string | null;
+    stoppable: boolean;
+    startTimeLow: number;
+    startTimeHigh: number;
+}
+
+export interface LockReport {
+    paths: string[];
+    processes: LockingProcess[];
+    filesChecked: number;
+    elapsedMs: number;
+}
+
+/** Queries Windows Restart Manager for processes holding open handles on `paths` (or files inside them). */
+export const whoLocks = (paths: string[]) => invoke<LockReport>("who_locks", { paths });
+/** Terminates a locking process after verifying its creation timestamp matches `startTimeLow`/`startTimeHigh`. */
+export const stopLockingProcess = (pid: number, startTimeLow: number, startTimeHigh: number) =>
+    invoke<void>("stop_locking_process", { pid, startTimeLow, startTimeHigh });
+
+export interface PeSection {
+    name: string;
+    virtualSize: number;
+    virtualAddress: number;
+    rawSize: number;
+    rawOffset: number;
+    flags: string[];
+}
+
+export interface PeImportModule {
+    module: string;
+    symbols: string[];
+    totalCount: number;
+}
+
+export interface PeExport {
+    ordinal: number;
+    name: string;
+    rva: number;
+}
+
+export interface PeInfo {
+    format: string;
+    machine: string;
+    subsystem: string;
+    isDll: boolean;
+    isDotnet: boolean;
+    isSigned: boolean;
+    timestampMs: number | null;
+    linkerVersion: string;
+    osVersion: string;
+    entryPoint: number;
+    imageBase: number;
+    checksum: number;
+    features: string[];
+    sections: PeSection[];
+    imports: PeImportModule[];
+    exportCount: number;
+    exports: PeExport[];
+    elapsedMs: number;
+}
+
+/** Zero-copy PE32/PE32+ binary inspection for .exe, .dll, .sys, .ocx, .cpl, .scr, .efi and .node files. */
+export const inspectPe = (path: string) => invoke<PeInfo>("inspect_pe", { path });
+
+export interface DuplicateFile {
+    path: string;
+    name: string;
+    modified: number;
+}
+
+export interface DuplicateGroup {
+    hash: string;
+    size: number;
+    wastedBytes: number;
+    files: DuplicateFile[];
+}
+
+export interface DedupReport {
+    root: string;
+    groups: DuplicateGroup[];
+    totalWastedBytes: number;
+    totalDuplicateFiles: number;
+    filesScanned: number;
+    sizeCandidates: number;
+    edgeCandidates: number;
+    hardlinksSkipped: number;
+    elapsedMs: number;
+}
+
+export interface HardlinkResult {
+    linked: number;
+    reclaimedBytes: number;
+    elapsedMs: number;
+}
+
+export const findDuplicates = (root: string, minBytes?: number) => invoke<DedupReport>("find_duplicates", { root, minBytes });
+export const cancelDedup = () => invoke<void>("cancel_dedup");
+export const hardlinkDuplicates = (keep: string, duplicates: string[]) => invoke<HardlinkResult>("hardlink_duplicates", { keep, duplicates });
+
+export interface LiveFsEvent {
+    path: string;
+    name: string;
+    kind: "created" | "modified" | "deleted";
+    timestampMs: number;
+    size: number | null;
+    dir: boolean;
+}
+
+export interface TimelineEntry {
+    path: string;
+    name: string;
+    folder: string;
+    size: number;
+    modified: number;
+}
+
+export interface HotSubfolder {
+    path: string;
+    name: string;
+    bytesChanged: number;
+    filesChanged: number;
+}
+
+export interface TimelineReport {
+    root: string;
+    windowMs: number;
+    entries: TimelineEntry[];
+    hotFolders: HotSubfolder[];
+    liveEvents: LiveFsEvent[];
+    totalBytesChanged: number;
+    totalFilesChanged: number;
+    filesScanned: number;
+    elapsedMs: number;
+}
+
+export const scanTimeline = (root: string, windowMs: number) => invoke<TimelineReport>("scan_timeline", { root, windowMs });
+
+export interface SqliteObject {
+    kind: "table" | "index" | "view" | "trigger";
+    name: string;
+    tableName: string;
+    rootPage: number;
+    sql: string;
+}
+
+export interface SqliteInfo {
+    pageSize: number;
+    pageCount: number;
+    freelistPages: number;
+    journalMode: string;
+    encoding: string;
+    sqliteVersion: string;
+    userVersion: number;
+    applicationId: number;
+    objects: SqliteObject[];
+    elapsedMs: number;
+}
+
+export interface TableColumn {
+    name: string;
+    kind: "number" | "boolean" | "text";
+}
+
+export interface TablePreview {
+    format: string;
+    delimiter: string;
+    columns: TableColumn[];
+    rows: string[][];
+    totalRowsSampled: number;
+    truncated: boolean;
+    elapsedMs: number;
+}
+
+export const inspectSqlite = (path: string) => invoke<SqliteInfo>("inspect_sqlite", { path });
+export const inspectTabular = (path: string, maxBytes = 256 * 1024) => invoke<TablePreview>("inspect_tabular", { path, maxBytes });
+
+export interface RenamePair {
+    from: string;
+    to: string;
+}
+
+export interface BatchRenameResult {
+    renamed: number;
+    undoOps: RenamePair[];
+    elapsedMs: number;
+}
+
+export const batchRename = (ops: RenamePair[]) => invoke<BatchRenameResult>("batch_rename", { ops });
+
+export interface NtfsStream {
+    name: string;
+    cleanName: string;
+    size: number;
+    preview: string | null;
+}
+
+export interface ZoneIdentifier {
+    zoneId: number;
+    zoneLabel: string;
+    hostUrl: string | null;
+    referrerUrl: string | null;
+}
+
+export interface FileXRayReport {
+    path: string;
+    logicalSize: number;
+    allocatedSize: number;
+    hardlinkCount: number;
+    fileIndex: string;
+    volumeSerial: string;
+    attributes: string[];
+    streams: NtfsStream[];
+    zoneInfo: ZoneIdentifier | null;
+    entropy: number;
+    entropyLabel: string;
+    byteSpectrum: number[];
+    nullBytePct: number;
+    asciiPct: number;
+    highBytePct: number;
+    sha256: string;
+    crc32: string;
+    hashesComplete: boolean;
+    elapsedMs: number;
+}
+
+/** Hashes the first 256 MB, or the whole file when `full`. */
+export const inspectFileXRay = (path: string, full = false) => invoke<FileXRayReport>("inspect_file_xray", { path, full });
+export const removeNtfsStream = (path: string, streamName: string) => invoke<void>("remove_ntfs_stream", { path, streamName });
+
 /** Watches exactly these folders (the ones on screen); changes arrive as "dir-changed" events carrying the folder's path. */
 export const watchDirs = (paths: string[]) => invoke("watch_dirs", { paths });
 

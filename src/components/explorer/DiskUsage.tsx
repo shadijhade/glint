@@ -1,14 +1,37 @@
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Loader2, Sparkles, Square, Zap } from "lucide-react";
+import { AlertTriangle, Flame, Layers, Loader2, Sparkles, Square, Zap } from "lucide-react";
 import { entriesOf, mapUsage, markUsageShown, refreshUsage, setUsage, stopUsage, type UsageRun, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { enableIndex, goUp, navigate, openEntry, selectOnly, tabName, updateTab, useExplorer } from "@/lib/explorer";
 import { TYPE_GROUPS, type TypeGroup, typeGroup, typeLabel } from "@/lib/fileTypes";
-import { formatCount, formatDuration, formatSize } from "@/lib/format";
+import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
 import { parentPath, samePath } from "@/lib/paths";
 import { BLOCK, FRAME, hitTest, isFolder, layoutUsage, type UsageLayout, type UsageMap } from "@/lib/usage";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+
+type ColorMode = "type" | "age";
+
+const DAY_MS = 86_400_000;
+
+/** Perceptual thermal spectrum from Hot (modified in the last 24h) to Frozen (untouched for >1 year). */
+const AGE_BANDS: (TypeGroup & { maxAgeMs: number })[] = [
+    { name: "Hot (<24h)", hue: 8, sat: 84, maxAgeMs: DAY_MS },
+    { name: "Recent (≤7d)", hue: 26, sat: 82, maxAgeMs: 7 * DAY_MS },
+    { name: "Warm (≤30d)", hue: 44, sat: 76, maxAgeMs: 30 * DAY_MS },
+    { name: "Cool (≤6m)", hue: 172, sat: 54, maxAgeMs: 180 * DAY_MS },
+    { name: "Cold (≤1y)", hue: 204, sat: 58, maxAgeMs: 365 * DAY_MS },
+    { name: "Frozen (>1y)", hue: 226, sat: 42, maxAgeMs: Infinity },
+];
+
+function ageBand(modified: number, now: number): TypeGroup {
+    if (!modified || modified <= 0) return AGE_BANDS[AGE_BANDS.length - 1];
+    const age = Math.max(0, now - modified);
+    for (const band of AGE_BANDS) {
+        if (age <= band.maxAgeMs) return band;
+    }
+    return AGE_BANDS[AGE_BANDS.length - 1];
+}
 
 interface Theme {
     background: string;
@@ -318,6 +341,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
     const [size, setSize] = useState({ w: 0, h: 0, dpr: devicePixelRatio });
     /** Where the pointer is over the map, in CSS pixels. */
     const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
+    const [colorMode, setColorMode] = useState<ColorMode>("type");
     const picked = useRef<string | null>(null);
     const dark = useDark();
     const theme = THEMES[dark ? "dark" : "light"];
@@ -333,7 +357,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
     const current = !!map && samePath(map.path, run.path);
 
     // Keys only a map has (the pane handles the rest, on the map's rows): Backspace goes back out, as
-    // Alt+Up does; F5 maps again; moving and type-ahead have nothing to move through.
+    // Alt+Up does; F5 maps again; T switches between file-type and thermal-age coloring.
     useEffect(() => {
         if (!keys) return;
         const onKey = (e: KeyboardEvent) => {
@@ -343,6 +367,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
             const plain = !ctrl && !e.altKey;
             if (e.key === "Backspace" && plain) goUp();
             else if (e.key === "F5" && plain) refreshUsage(tab);
+            else if (plain && e.key.toLowerCase() === "t") setColorMode((m) => (m === "type" ? "age" : "type"));
             else if (MOVES.has(e.key) && !e.altKey) {
                 // nothing to move to
             } else if (ctrl && !e.altKey && (e.key.toLowerCase() === "a" || e.key === " ")) {
@@ -382,8 +407,22 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
     }, []);
 
     const layout = useMemo(() => (map && size.w > 0 && size.h > 0 ? layoutUsage(map, size.w, size.h) : null), [map, size.w, size.h]);
-    const groups = useMemo(() => entries.map((e) => (e.dir ? null : typeGroup(e))), [entries]);
-    const fills = useMemo(() => entries.map((e, i) => (e.dir ? theme.folder : tileColor(e, groups[i]!, theme))), [entries, groups, theme]);
+    const now = useMemo(() => Date.now(), [map]);
+    const groups = useMemo(
+        () => entries.map((e) => (e.dir ? null : colorMode === "age" ? ageBand(e.modified, now) : typeGroup(e))),
+        [entries, colorMode, now]
+    );
+    const fills = useMemo(
+        () =>
+            entries.map((e, i) =>
+                e.dir
+                    ? theme.folder
+                    : colorMode === "age"
+                      ? `hsl(${groups[i]!.hue} ${groups[i]!.sat}% ${theme.lightness}%)`
+                      : tileColor(e, groups[i]!, theme)
+            ),
+        [entries, groups, theme, colorMode]
+    );
     const byPath = useMemo(() => new Map(map ? map.paths.map((p, i) => [p, i]) : []), [map]);
     // What's under the pointer, worked out again when the map changes beneath a pointer that stays put.
     const hover: Hover | null = useMemo(() => {
@@ -450,13 +489,16 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
 
     const title = tabName(run.path, drives);
 
-    // Bytes per kind of file among the files shown, biggest first: the legend.
+    // Bytes per kind (or thermal age band) among the files shown: the legend.
     const legend = useMemo(() => {
         if (!map) return [];
         const totals = new Map<TypeGroup, number>();
         groups.forEach((g, i) => g && totals.set(g, (totals.get(g) ?? 0) + map.size[i]));
+        if (colorMode === "age") {
+            return AGE_BANDS.filter((b) => totals.has(b)).map((b) => [b, totals.get(b)!] as [TypeGroup, number]);
+        }
         return [...totals].sort((a, b) => b[1] - a[1]).slice(0, 6);
-    }, [map, groups]);
+    }, [map, groups, colorMode]);
     const wholeFolders = useMemo(() => !!map && !!layout && layout.order.some((i) => layout.kind[i] === BLOCK && isFolder(map, i)), [map, layout]);
 
     let body: React.ReactNode = null;
@@ -513,6 +555,32 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                     {map && current && <span className="font-normal text-muted-foreground tabular-nums">{formatSize(map.size[0])}</span>}
                     {run.running && current && <Loader2 className="size-3 animate-spin text-primary" />}
                 </span>
+                <div role="group" aria-label="Color map by" className="flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
+                    <button
+                        type="button"
+                        aria-pressed={colorMode === "type"}
+                        onClick={() => setColorMode("type")}
+                        title="Color tiles by file type (T)"
+                        className={cn(
+                            "flex h-5 items-center gap-1 rounded-[4px] px-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:text-foreground",
+                            colorMode === "type" && "bg-background text-primary shadow-xs dark:bg-foreground/[0.12]"
+                        )}
+                    >
+                        <Layers className="size-3" /> Type
+                    </button>
+                    <button
+                        type="button"
+                        aria-pressed={colorMode === "age"}
+                        onClick={() => setColorMode("age")}
+                        title="Color tiles by when they last changed, from today (hot) to over a year ago (frozen) (T)"
+                        className={cn(
+                            "flex h-5 items-center gap-1 rounded-[4px] px-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:text-foreground",
+                            colorMode === "age" && "bg-background text-primary shadow-xs dark:bg-foreground/[0.12]"
+                        )}
+                    >
+                        <Flame className="size-3" /> Age
+                    </button>
+                </div>
                 {map && current && map.serviceTooOld && (
                     <button
                         onClick={enableIndex}
@@ -600,6 +668,7 @@ function Tooltip({ map, entry, node, rest }: { map: UsageMap; entry: FileEntry; 
                 {formatSize(map.size[node])} · {share(map.size[node], total)} · {folder ? "Folder" : typeLabel(entry)}
                 {map.size[node] >= 1024 && <span className="text-muted-foreground"> · {formatCount(map.size[node])} bytes</span>}
             </p>
+            {entry.modified > 0 && <p className="text-muted-foreground">Modified {formatDate(entry.modified)}</p>}
             {node !== 0 && <p className="text-muted-foreground">{folder ? "Click to map this folder" : deeper ? "Click to go to its folder" : "Double-click to open"}</p>}
         </>
     );

@@ -8,9 +8,12 @@ import {
     CopyPlus,
     Eye,
     EyeOff,
+    Files,
+    Fingerprint,
     FolderOutput,
     FolderPlus,
     HardDrive,
+    History,
     LayoutDashboard,
     LayoutGrid,
     List,
@@ -38,6 +41,10 @@ import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useMenu } from "../Menu";
 import { Button } from "../ui/button";
+import { inspectDuplicates } from "./DuplicatesDialog";
+import { inspectLocks } from "./LocksDialog";
+import { inspectTimeline } from "./TimelineDialog";
+import { inspectXRay } from "./XRayDialog";
 
 function Tool({ icon: Icon, label, pressed, className, ...props }: { icon: LucideIcon; label: string; pressed?: boolean } & React.ComponentProps<"button">) {
     return (
@@ -202,7 +209,12 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other || readOnly} onClick={() => copyToOtherPane(true, paths)} />
                 </>
             )}
-            <Tool icon={PenLine} label="Rename (F2)" disabled={selected.length !== 1 || readOnly} onClick={onRename} />
+            <Tool
+                icon={PenLine}
+                label={selected.length > 1 ? `Rename ${selected.length} items (F2)` : "Rename (F2) · Ctrl+Shift+R renames many"}
+                disabled={!selected.length || readOnly}
+                onClick={onRename}
+            />
             <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length || readOnly} onClick={onDelete} />
             <Divider />
             {/* In an archive, where Open in Terminal would be (there's no folder on disk to open it in): why the rest is greyed out. */}
@@ -217,7 +229,23 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     </span>
                 </span>
             ) : (
-                <Tool icon={SquareTerminal} label="Open in Terminal" disabled={!inFolder} onClick={terminal} />
+                <>
+                    <Tool icon={SquareTerminal} label="Open in Terminal" disabled={!inFolder} onClick={terminal} />
+                    <Tool
+                        icon={Fingerprint}
+                        label="File X-Ray: hashes and hidden streams"
+                        disabled={selected.length !== 1 || selected[0].dir}
+                        onClick={() => selected[0] && inspectXRay(selected[0].path)}
+                    />
+                    <Tool
+                        icon={Lock}
+                        label={paths.length ? "What's locking the selection?" : "What's locking this folder?"}
+                        disabled={!inFolder && !paths.length}
+                        onClick={() => inspectLocks(paths.length ? paths : [path])}
+                    />
+                    <Tool icon={History} label="Recent changes in this folder" disabled={!inFolder} onClick={() => inspectTimeline(path)} />
+                    <Tool icon={Files} label="Find duplicate files" disabled={!inFolder} onClick={() => inspectDuplicates(path)} />
+                </>
             )}
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">

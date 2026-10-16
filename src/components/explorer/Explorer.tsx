@@ -25,6 +25,8 @@ import {
     EyeOff,
     FileArchive,
     FilePlus,
+    Files,
+    Fingerprint,
     Folder,
     FolderInput,
     FolderOpen,
@@ -32,6 +34,7 @@ import {
     FolderPlus,
     FolderSearch,
     HardDrive,
+    History,
     Info,
     LayoutDashboard,
     LayoutGrid,
@@ -134,17 +137,22 @@ import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
+import { BatchRenameDialog, openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
 import { DiskUsage } from "./DiskUsage";
+import { DuplicatesDialog, inspectDuplicates } from "./DuplicatesDialog";
 import { FileGrid } from "./FileGrid";
 import { FileList } from "./FileList";
 import { FilePreview } from "./FilePreview";
+import { inspectLocks, LocksDialog } from "./LocksDialog";
 import { QuickLook } from "./QuickLook";
 import { DRIVE_ICONS, KNOWN_ICONS, Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { TabStrip } from "./TabStrip";
 import { ThisPC } from "./ThisPC";
+import { inspectTimeline, TimelineDialog } from "./TimelineDialog";
+import { inspectXRay, XRayDialog } from "./XRayDialog";
 
 const NO_ENTRIES: FileEntry[] = [];
 
@@ -187,6 +195,7 @@ const useActiveView = create<ActiveView>(() => ({ selected: NO_ENTRIES, items: 0
 /** What only a pane can do (it needs the pane's sorted, filtered rows), for the toolbar. */
 interface PaneActions {
     startRename: () => void;
+    startBatchRename: () => void;
     deleteSelected: (permanent: boolean) => void;
 }
 const paneActions: (PaneActions | undefined)[] = [];
@@ -218,6 +227,8 @@ function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: {
         current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
         "separator",
         current && { label: "Folder sizes", icon: HardDrive, disabled: find, onSelect: calcSizes },
+        !archive && { label: "Recent changes", icon: History, onSelect: () => inspectTimeline(folder) },
+        !archive && { label: "Find duplicates here", icon: Files, onSelect: () => inspectDuplicates(folder) },
         !archive && { label: "Search text here", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
         { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
         "separator",
@@ -226,6 +237,7 @@ function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: {
             : { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
         !archive && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
         { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
+        !archive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
         archive
             ? { label: "Archive properties", icon: Info, onSelect: () => properties(archive.outer) }
             : { label: "Properties", icon: Info, shortcut: current ? "Alt+Enter" : undefined, onSelect: () => properties(folder) },
@@ -399,6 +411,11 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!archive && action("explorer", "Show the archive in File Explorer", FileArchive, () => revealArchive(archive)),
             writable && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
+            writable && !t.find && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
+            !archive && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
+            writable && action("timeline", "Recent changes in this folder", History, () => inspectTimeline(t.path)),
+            writable && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
+            !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
             writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
             action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
@@ -425,6 +442,11 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             {showPreviewPane && (path !== THIS_PC || find) && <PreviewPane />}
             {menu.element}
             {palette && <CommandPalette commands={paletteCommands()} onGoTo={(text) => goTo(text)} onClose={() => useExplorer.setState({ palette: false })} />}
+            <LocksDialog />
+            <DuplicatesDialog />
+            <TimelineDialog />
+            <BatchRenameDialog />
+            <XRayDialog />
         </div>
     );
 }
@@ -544,9 +566,22 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         return t ? rowsRef.current.filter((r) => t.selection.has(r.path)) : NO_ENTRIES;
     };
 
+    const startBatchRename = () => {
+        if (tabState(tabRef.current)?.listing?.archive) return readOnlyNotice();
+        const chosen = selectedNow();
+        openBatchRename(chosen.length ? chosen : rowsRef.current, rowsRef.current);
+    };
+
     const startRename = (target?: string) => {
         const t = tabState(tabRef.current);
         if (t?.listing?.archive) return readOnlyNotice();
+        if (!target) {
+            const chosen = selectedNow();
+            if (chosen.length > 1) {
+                openBatchRename(chosen, rowsRef.current);
+                return;
+            }
+        }
         const path = target ?? t?.focus ?? (t ? [...t.selection][0] : undefined);
         if (path) updateTab({ renaming: path, selection: new Set([path]), focus: path, anchor: path }, tabRef.current);
     };
@@ -578,7 +613,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     };
 
     useEffect(() => {
-        paneActions[index] = { startRename: () => startRename(), deleteSelected };
+        paneActions[index] = { startRename: () => startRename(), startBatchRename, deleteSelected };
         return () => {
             paneActions[index] = undefined;
         };
@@ -661,6 +696,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "l") useExplorer.setState({ editingAddress: true });
                 else if ((key === "f" || key === "e") && !e.shiftKey) focusFind();
                 else if (key === "h") setSettings({ showHidden: !useStore.getState().settings.showHidden });
+                else if (key === "r" && e.shiftKey) startBatchRename();
                 else if (key === "r") refresh();
                 else if (key === "k" || key === "p") useExplorer.setState({ palette: true });
                 else if (key === " " && s.focus) toggleSelected(s.focus);
@@ -821,11 +857,18 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one?.dir && { label: "Paste into folder", icon: ClipboardPaste, disabled: !!archived, onSelect: () => paste(one.path) },
             { label: paths.length === 1 ? "Copy path" : "Copy paths", icon: ClipboardCopy, shortcut: "Ctrl+Shift+C", onSelect: () => copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths") },
             "separator",
-            one && { label: "Rename", icon: PenLine, shortcut: "F2", disabled: !!archived, onSelect: () => startRename(one.path) },
+            one
+                ? { label: "Rename", icon: PenLine, shortcut: "F2", disabled: !!archived, onSelect: () => startRename(one.path) }
+                : { label: `Rename ${targets.length} items…`, icon: PenLine, shortcut: "F2", disabled: !!archived, onSelect: () => openBatchRename(targets, rowsRef.current) },
+            one && !find && !archived && { label: "Rename items in this folder…", icon: PenLine, shortcut: "Ctrl+Shift+R", onSelect: () => openBatchRename(rowsRef.current, rowsRef.current) },
             { label: "Delete", icon: Trash2, shortcut: "Del", danger: !archived, disabled: !!archived, onSelect: () => deleteSelected(false) },
             "separator",
             one?.dir && { label: pinned.includes(one.path) ? "Unpin from sidebar" : "Pin to sidebar", icon: pinned.includes(one.path) ? PinOff : Pin, onSelect: () => togglePin(one.path) },
             one?.dir && !archived && { label: "Search text in folder", icon: TextSearch, onSelect: () => onSearchText(one.path) },
+            one?.dir && !archived && { label: "Recent changes in folder", icon: History, onSelect: () => inspectTimeline(one.path) },
+            one?.dir && !archived && { label: "Find duplicates in folder", icon: Files, onSelect: () => inspectDuplicates(one.path) },
+            one && !one.dir && !archived && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
+            !archived && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
             one && !archived && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
             !!archived && READ_ONLY_NOTE,
         ];
