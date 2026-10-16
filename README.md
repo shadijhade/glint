@@ -27,6 +27,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/
 -   **ripgrep for what's inside files**: regular expressions, whole words, replace across files, and a syntax-highlighted preview.
 -   **Thumbnails that never hold up the folder.** Switch to the grid (`Ctrl+Shift+2`) and a folder of 1,200 photos is still on screen in 9.3 ms, with the thumbnails filling in right after from Windows' own thumbnail cache (30 in 71 ms). Photos Windows hasn't seen yet are made on several threads at once, about 220 a second, where Windows' isolated thumbnail process manages about 50.
 -   **Zip and 7z archives open like folders.** Press Enter on one and browse it in the list or the grid, with folder sizes, previews and thumbnails: a zip of 50,000 files is on screen 57 ms after Enter, and nothing is extracted until something needs a file's bytes. Copy, Copy to other pane and drag out extract through Windows' file engine.
+-   **The tools File Explorer leaves out.** Find duplicate files by their content and recycle or hard-link the extra copies, see which program is holding a file open (and close it), list what changed in a folder lately, check a download against its published SHA-256, and rename many files at once with a live preview and Undo.
 -   **Space to Quick Look, Ctrl+K for everything else.** See any file full size without opening it and arrow through the folder. Jump to the folders you use most (ranked by frecency, like zoxide) or run any command by typing a few letters.
 -   **Tabs, and two panes side by side.** Each pane has its own tabs (Ctrl+T, or middle-click a folder), and Ctrl+Shift+D shows two folders at once to copy or move between. Your tabs are back the next time you start.
 -   **Still Windows.** Copy, move, delete and rename run on Windows' own file engine (progress, *Replace or Skip*, Recycle Bin, UAC). The clipboard and drag and drop work with File Explorer and every other app, and Properties, Open with and Open in Terminal are a right-click away.
@@ -150,6 +151,17 @@ In the command bar, a folder's or a file's right-click menu, and `Ctrl+K`:
 
 These work on files on disk, not inside archives.
 
+<table>
+<tr>
+<td width="50%"><img src="screenshots/file-xray.png" alt="The File X-Ray of a downloaded installer: its SHA-256 matches the published one, and Windows' downloaded-from-the-internet mark with Unblock"></td>
+<td width="50%"><img src="screenshots/batch-rename.png" alt="Batch rename of twelve photos to a date, a name and a number, with each new name previewed"></td>
+</tr>
+<tr>
+<td align="center"><b>File X-Ray</b>: check a download against its published SHA-256</td>
+<td align="center"><b>F2</b> on several items: rename them all, with a preview</td>
+</tr>
+</table>
+
 ### Instant search (NTFS index)
 
 <img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 37 ms" width="100%">
@@ -179,6 +191,10 @@ The service only runs once you opt in, with every privilege removed except the t
 | Preview | Preview pane | Preview pane, and Quick Look on `Space` |
 | Go to a folder | Quick access, address bar | Address bar, and `Ctrl+K` with your most-used folders |
 | Tabs and panes | Tabs (Windows 11) | Tabs in each pane, and two panes side by side |
+| Duplicate files | Not found | Found by size, then content; recycled or replaced with hard links |
+| A file in use | *The action can't be completed*, sometimes naming the program | The programs holding it open, and **End** to close one |
+| Renaming many files | One name for all, numbered (1), (2)… | Patterns, numbering, dates, find and replace, with a preview and Undo |
+| Checksums | Not shown (PowerShell's `Get-FileHash`) | SHA-256 and CRC32 in the File X-Ray, compared with one you paste |
 | Timing | Not shown | In the status bar, for every folder and search |
 
 ## Install
