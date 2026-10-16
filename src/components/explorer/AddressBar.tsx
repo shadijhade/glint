@@ -101,12 +101,13 @@ export function AddressBar() {
                 <NavButton icon={RotateCw} label="Refresh (F5)" onClick={refresh} className={cn(loading && "[&_svg]:animate-spin")} />
             </div>
 
-            <div className="flex h-9 min-w-0 flex-1 items-center rounded-lg border bg-background shadow-xs transition-shadow focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/15">
+            {/* In the title bar, but a click here types a path or picks a crumb rather than moving the window. */}
+            <div data-tauri-drag-region="false" className="fluent-field flex h-8 min-w-0 flex-1 items-center">
                 {editing ? (
                     <AddressInput path={path} />
                 ) : (
                     <div ref={trailRef} className="flex h-full min-w-0 flex-1 items-center overflow-x-auto px-1 [scrollbar-width:none]">
-                        <button onClick={() => navigate(THIS_PC)} onMouseDown={middleClickOpens(THIS_PC)} className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-sm hover:bg-accent" title="This PC">
+                        <button onClick={() => navigate(THIS_PC)} onMouseDown={middleClickOpens(THIS_PC)} className="flex h-6 shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 text-sm hover:bg-accent" title="This PC">
                             <Monitor className="size-4 text-muted-foreground" />
                             {path === THIS_PC && "This PC"}
                         </button>
@@ -116,7 +117,7 @@ export function AddressBar() {
                                 <button
                                     onClick={() => navigate(crumb.path)}
                                     onMouseDown={middleClickOpens(crumb.path)}
-                                    className={cn("h-7 shrink-0 rounded-md px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
+                                    className={cn("h-6 shrink-0 rounded-[4px] px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
                                 >
                                     {i === 0 ? rootName(crumb.path) : crumb.name}
                                 </button>
@@ -127,7 +128,7 @@ export function AddressBar() {
                 )}
             </div>
 
-            <div className="relative w-[clamp(11rem,22vw,19rem)] shrink-0">
+            <div data-tauri-drag-region="false" className="relative w-[clamp(11rem,22vw,19rem)] shrink-0">
                 <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <input
                     id={FIND_BOX_ID}
@@ -138,7 +139,7 @@ export function AddressBar() {
                     placeholder={`Search ${folderName}`}
                     aria-label={`Search ${folderName}. Typing filters; Enter searches subfolders too.`}
                     title="Typing filters this folder · Enter searches subfolders by name, with the instant search index or fd (* and ? work, words all must match)"
-                    className="h-9 w-full rounded-lg border bg-background pl-8 pr-8 text-sm shadow-xs outline-hidden transition-shadow placeholder:text-muted-foreground focus:border-ring/60 focus:ring-2 focus:ring-ring/15"
+                    className="fluent-field h-8 w-full pl-8 pr-8 text-sm outline-hidden placeholder:text-muted-foreground"
                 />
                 {(filter || find) && (
                     <button onClick={clearFind} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground" title="Clear (Esc)" aria-label="Clear search">

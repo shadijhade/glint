@@ -7,7 +7,7 @@ import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, 
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
-import { currentPath, navigate, revealInApp } from "./lib/explorer";
+import { currentPath, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
 import { toRegExp } from "./lib/text";
 import { checkForUpdates, useUpdater } from "./lib/updater";
@@ -17,6 +17,7 @@ import { SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
 import { SettingsView } from "./components/SettingsView";
 import { Home, HistoryPopover, HISTORY_POPOVER_ID } from "./components/History";
+import { WindowControls } from "./components/WindowControls";
 import { AddressBar } from "./components/explorer/AddressBar";
 import { Explorer } from "./components/explorer/Explorer";
 import { Button } from "./components/ui/button";
@@ -39,7 +40,7 @@ const MODES: { mode: Mode; icon: typeof FolderOpen; label: string; title: string
 
 function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }) {
   return (
-    <div role="tablist" aria-label="Mode" className="flex shrink-0 rounded-lg bg-muted p-0.5">
+    <div role="tablist" aria-label="Mode" className="flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
       {MODES.map(({ mode: m, icon: Icon, label, title }) => (
         <button
           key={m}
@@ -48,8 +49,8 @@ function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
           title={title}
           onClick={() => onChange(m)}
           className={cn(
-            "flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground [&_svg]:size-4",
-            mode === m && "bg-card text-foreground shadow-xs"
+            "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground [&_svg]:size-4",
+            mode === m && "bg-background font-medium text-foreground shadow-xs dark:bg-foreground/[0.12]"
           )}
         >
           <Icon className={mode === m ? "text-primary" : undefined} />
@@ -186,11 +187,8 @@ function App() {
     else stop();
   };
 
-  const goHome = () => {
-    if (mode === "files") {
-      navigate(THIS_PC);
-      return;
-    }
+  /** Back from text search results to the start screen (recent searches). */
+  const closeResults = () => {
     if (searching) cancelSearch();
     runId.current = "";
     unlisten.current?.();
@@ -268,49 +266,44 @@ function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className={cn("flex shrink-0 gap-2.5 border-b bg-card px-3 py-2.5", mode === "text" ? "items-start" : "items-center")}>
-        <button
-          onClick={goHome}
-          className="shrink-0 rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50"
-          title={mode === "files" ? "This PC" : "Start screen"}
-          aria-label={mode === "files" ? "This PC" : "Start screen"}
-        >
-          <img src={logo} alt="" className="size-9" />
-        </button>
-        <div className={cn("shrink-0", mode === "text" && "pt-0.5")}>
-          <ModeSwitch mode={mode} onChange={setMode} />
-        </div>
-        {mode === "files" ? (
-          <AddressBar />
-        ) : (
-          <SearchBar
-            searching={searching}
-            canReplace={!searching && matches.length > 0}
-            onSearch={searchCurrent}
-            onStop={cancelSearch}
-            onReplace={replaceAll}
-          />
-        )}
-        <div className={cn("flex shrink-0 items-center gap-0.5", mode === "text" && "pt-0.5")}>
+      {/* The window's title bar (it has no system one): drag it by any empty spot, double-click to maximize. */}
+      <header data-tauri-drag-region="deep" className="flex h-11 shrink-0 items-center gap-2 border-b bg-chrome pl-3">
+        <img src={logo} alt="" draggable={false} className="size-[18px] shrink-0" />
+        <ModeSwitch mode={mode} onChange={setMode} />
+        {mode === "files" ? <AddressBar /> : <div className="min-w-0 flex-1" />}
+        <div className="flex shrink-0 items-center gap-0.5">
           {update && (
             <Button variant="ghost" size="sm" className="text-primary hover:text-primary" onClick={openAbout} title={`Version ${update.version} is available`}>
               {updating ? <Loader2 className="animate-spin" /> : <Sparkles />} Update
             </Button>
           )}
           {mode === "text" && (
-            <Button variant="ghost" size="icon" popoverTarget={HISTORY_POPOVER_ID} title="Recent searches" aria-label="Recent searches">
+            <Button variant="ghost" size="icon" className="size-8" popoverTarget={HISTORY_POPOVER_ID} title="Recent searches" aria-label="Recent searches">
               <HistoryIcon />
             </Button>
           )}
-          <Button variant="ghost" size="icon" onClick={openSettings} title="Settings (Ctrl+,)" aria-label="Settings">
+          <Button variant="ghost" size="icon" className="size-8" onClick={openSettings} title="Settings (Ctrl+,)" aria-label="Settings">
             <SettingsIcon />
           </Button>
         </div>
+        <WindowControls />
       </header>
 
       <Explorer active={mode === "files"} onSearchText={searchText} onOpenSettings={openSettings} />
 
       <div className={mode === "text" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+        {/* Only while Text is on screen: its shortcuts (Ctrl+F, Ctrl+K, Ctrl+H) are Files' otherwise. */}
+        {mode === "text" && (
+          <div className="flex shrink-0 border-b bg-chrome px-3 py-2.5">
+            <SearchBar
+              searching={searching}
+              canReplace={!searching && matches.length > 0}
+              onSearch={searchCurrent}
+              onStop={cancelSearch}
+              onReplace={replaceAll}
+            />
+          </div>
+        )}
         {run ? (
           <Results
             key={run.id}
@@ -326,6 +319,7 @@ function App() {
             onOpen={openFile}
             onReveal={reveal}
             onShowAll={() => search(run.query, run.path, null)}
+            onClose={closeResults}
           />
         ) : (
           <Home onPick={pickHistory} />
@@ -336,7 +330,7 @@ function App() {
       <dialog
         ref={settingsRef}
         onClick={(e) => e.target === e.currentTarget && e.currentTarget.close()}
-        className="m-auto h-[min(85vh,46rem)] w-[min(92vw,44rem)] overflow-hidden rounded-xl border bg-background p-0 text-foreground shadow-2xl backdrop:bg-black/50"
+        className="m-auto h-[min(85vh,46rem)] w-[min(92vw,44rem)] overflow-hidden rounded-xl border bg-chrome p-0 text-foreground shadow-2xl backdrop:bg-black/50"
       >
         <SettingsView onClose={() => settingsRef.current?.close()} />
       </dialog>

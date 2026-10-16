@@ -44,11 +44,11 @@ function Section({ title, onTitleClick, active, children }: { title: string; onT
         <section>
             <h2 className="mb-1 px-2">
                 {onTitleClick ? (
-                    <button onClick={onTitleClick} className={cn("text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground", active && "text-primary")}>
+                    <button onClick={onTitleClick} className={cn("text-xs font-semibold text-muted-foreground hover:text-foreground", active && "text-foreground")}>
                         {title}
                     </button>
                 ) : (
-                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</span>
+                    <span className="text-xs font-semibold text-muted-foreground">{title}</span>
                 )}
             </h2>
             <div className="space-y-px">{children}</div>
@@ -78,12 +78,14 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
             title={title ?? path}
             aria-current={active ? "page" : undefined}
             className={cn(
-                "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-colors hover:bg-accent",
-                active && "bg-primary/10 text-foreground hover:bg-primary/15",
+                "relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-colors hover:bg-accent",
+                // Windows 11's navigation selection: a gray fill and a short accent pill at the left edge.
+                active &&
+                    "bg-accent text-foreground before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary",
                 dropping && "bg-primary/20 outline-2 -outline-offset-2 outline-primary"
             )}
         >
-            <Icon className={cn("size-4 shrink-0 text-muted-foreground", active && "text-primary", iconClass)} />
+            <Icon className={cn("size-4 shrink-0 text-muted-foreground", active && "text-foreground", iconClass)} />
             <div className="min-w-0 flex-1">
                 <div className="truncate">{label}</div>
                 {children}
@@ -99,7 +101,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
     const here = (p: string) => path !== THIS_PC && samePath(p, path);
 
     return (
-        <nav aria-label="Places" className="hidden w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-card/40 p-2 pt-3 md:flex">
+        <nav aria-label="Places" className="hidden w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r p-2 pt-3 md:flex">
             <Section title="Quick access">
                 {known.map((k) => (
                     <Place key={k.id} icon={KNOWN_ICONS[k.id]} label={k.name} path={k.path} active={here(k.path)} onContextMenu={onContextMenu} />

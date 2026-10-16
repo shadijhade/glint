@@ -12,7 +12,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
     const dropping = (path: string) => path === dropTarget && "border-primary bg-primary/15";
     return (
         <div className="h-full overflow-y-auto px-6 py-5">
-            <h2 className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Folders</h2>
+            <h2 className="mb-2.5 text-sm font-semibold">Folders</h2>
             <div className="grid grid-cols-[repeat(auto-fill,minmax(10.5rem,1fr))] gap-2">
                 {known.map((k) => {
                     const Icon = KNOWN_ICONS[k.id];
@@ -25,7 +25,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                 })}
             </div>
 
-            <h2 className="mb-2.5 mt-8 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Devices and drives</h2>
+            <h2 className="mb-2.5 mt-8 text-sm font-semibold">Devices and drives</h2>
             <div className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-3">
                 {drives.map((d) => {
                     const Icon = DRIVE_ICONS[d.kind];
