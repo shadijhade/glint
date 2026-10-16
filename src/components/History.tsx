@@ -110,7 +110,7 @@ export function Home({ onPick }: { onPick: (item: HistoryItem) => void }) {
                 {history.length > 0 && (
                     <section>
                         <div className="mb-1.5 flex items-center justify-between px-2.5">
-                            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Recent searches</h2>
+                            <h2 className="text-sm font-semibold">Recent searches</h2>
                             {history.length > 8 && (
                                 <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => document.getElementById(HISTORY_POPOVER_ID)?.showPopover()}>
                                     View all {history.length.toLocaleString()}

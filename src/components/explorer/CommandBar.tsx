@@ -94,7 +94,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
     const [ref, fold] = useFold(dual);
 
     return (
-        <div ref={ref} className="flex h-10 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-card/40 px-2">
+        <div ref={ref} className="flex h-10 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-chrome px-2">
             <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find} title="New folder (Ctrl+Shift+N)">
                 <FolderPlus /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>New folder</span>
             </Button>

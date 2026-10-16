@@ -82,7 +82,7 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
 
     return (
         <div className="flex min-w-0 flex-1 items-start gap-2">
-            <div className="min-w-0 flex-1 divide-y overflow-hidden rounded-lg border bg-background shadow-xs transition-shadow focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/15">
+            <div className="fluent-field min-w-0 flex-1 divide-y overflow-hidden">
                 <div className="flex items-start pr-1">
                     <SearchIcon className="ml-3 mt-2.5 size-4 shrink-0 text-muted-foreground" />
                     <textarea

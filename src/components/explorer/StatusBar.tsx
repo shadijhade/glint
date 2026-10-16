@@ -22,7 +22,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     const mapped = useUsage((s) => !!s[tab]) && !find;
     const { sizes, drives } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length })));
     if (path === THIS_PC && !find) {
-        return <div className="flex h-7 shrink-0 items-center border-t bg-card/40 px-3 text-xs text-muted-foreground">{`${drives} ${drives === 1 ? "drive" : "drives"}`}</div>;
+        return <div className="flex h-7 shrink-0 items-center border-t px-3 text-xs text-muted-foreground">{`${drives} ${drives === 1 ? "drive" : "drives"}`}</div>;
     }
     const selectedFiles = selected.filter((e) => !e.dir);
     const selectedBytes = selectedFiles.reduce((sum, e) => sum + e.size, 0);
@@ -54,7 +54,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     }
 
     return (
-        <div className="flex h-7 shrink-0 items-center gap-3 border-t bg-card/40 px-3 text-xs text-muted-foreground">
+        <div className="flex h-7 shrink-0 items-center gap-3 border-t px-3 text-xs text-muted-foreground">
             <span className="truncate">
                 {items(shown)}
                 {hidden > 0 && !mapped && ` · ${formatCount(hidden)} hidden`}
