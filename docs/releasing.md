@@ -80,7 +80,7 @@ Once releases are signed, take the SmartScreen note out of the README's Install 
 
 For later versions, submit the new folder the same way (or let `wingetcreate update shadijhade.Glint --version X.Y.Z --urls <installer url> --submit --token <token>` write it).
 
-**Scoop**: the manifest extracts the installer with 7-Zip instead of running it, so Scoop owns updates (`scoop update`) and the app only links to new versions. `scoop install .\glint.json` tries it locally (on a PC where instant search is on, `scoop uninstall` then asks to remove the service too). To publish it, either:
+**Scoop**: the manifest extracts the installer with 7-Zip instead of running it, so Scoop owns updates (`scoop update`) and the app only links to new versions. `scoop install .\glint.json` tries it locally (on a PC where instant search is on, `scoop uninstall` then asks to remove the service too, and it takes out File Explorer's *Open in Glint* entries if that copy turned them on). To publish it, either:
 
 -   open a pull request adding `bucket/glint.json` to [ScoopInstaller/Extras](https://github.com/ScoopInstaller/Extras) after reading its contributing guide (its bot then picks up new releases by itself through `checkver` and `autoupdate`), or
 -   keep it in a bucket of your own: a repository with the file at `bucket/glint.json`, added with `scoop bucket add shadijhade https://github.com/shadijhade/<repository>` and installed with `scoop install shadijhade/glint`. Update the file for each release.

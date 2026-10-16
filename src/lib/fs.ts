@@ -154,7 +154,7 @@ export const takeLaunchTargets = () => invoke<LaunchTarget[]>("take_launch_targe
 
 /** File Explorer's "Open in Glint", and opening folders here when they're double-clicked. */
 export interface ExplorerIntegration {
-    /** Only a copy the setup program installed can turn them on. */
+    /** Only a copy the setup program or Scoop installed can turn them on. */
     available: boolean;
     menu: boolean;
     byDefault: boolean;

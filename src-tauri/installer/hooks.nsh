@@ -96,6 +96,7 @@ Var OldDesktopShortcut
 ; File Explorer's "Open in Glint" entries and opening folders in Glint by default, which the app's
 ; settings add under HKCU\Software\Classes (src-tauri/src/verbs.rs). Uninstalling removes them where
 ; they run this copy and puts back what folders opened with, and the keys above them go once empty.
+; The Scoop manifest's uninstaller does the same for Scoop's copies (scripts/package-manifests.mjs).
 !macro GLINT_REMOVE_VERB PLACE
   ReadRegStr $R0 HKCU "Software\Classes\${PLACE}\${PRODUCTNAME}\command" ""
   StrCpy $R0 $R0 $R2
