@@ -2,9 +2,10 @@ import { Loader2, Zap } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
-import { useExplorer, useTab } from "@/lib/explorer";
+import { useExplorer, useTab, viewKey } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { THIS_PC } from "@/lib/paths";
+import { type ThumbRun, useThumbRuns } from "@/lib/thumbs";
 import { UsageWork } from "./DiskUsage";
 
 interface StatusBarProps {
@@ -15,12 +16,41 @@ interface StatusBarProps {
 
 const items = (n: number) => `${formatCount(n)} ${n === 1 ? "item" : "items"}`;
 
+/** How the thumbnails on screen came in: how many, how fast, and from where. */
+function ThumbWork({ run }: { run: ThumbRun }) {
+    const noun = run.found === 1 ? "thumbnail" : "thumbnails";
+    if (run.pending) {
+        return (
+            <span className="hidden items-center gap-1 @lg:flex">
+                · <Loader2 className="size-3 animate-spin text-primary" /> {formatCount(run.found)} {noun}…
+            </span>
+        );
+    }
+    const from = [
+        run.cache && `${formatCount(run.cache)} from Windows' thumbnail cache`,
+        run.made && `${formatCount(run.made)} made from their files (${formatDuration(run.madeMs / run.made)} each)`,
+        run.memory && `${formatCount(run.memory)} from memory`,
+    ].filter(Boolean);
+    const rate = run.elapsed > 0 ? Math.round(run.found / (run.elapsed / 1000)) : 0;
+    return (
+        <span
+            title={`Thumbnails of the items on screen, ${formatDuration(run.elapsed)} from the first request to the last${rate ? ` (${formatCount(rate)} a second)` : ""}: ${from.join(", ")}.`}
+            className="hidden @lg:inline"
+        >
+            · {formatCount(run.found)} {noun} in {formatDuration(run.elapsed)}
+        </span>
+    );
+}
+
 /** Counts on the left; on the right, which tool did the work and how long it took. */
 export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
-    const { tab, path, listing, find, shownIn } = useTab(useShallow((t) => ({ tab: t.id, path: t.path, listing: t.listing, find: t.find, shownIn: t.shownIn })));
+    const { tab, path, listing, find, shownIn, view } = useTab(useShallow((t) => ({ tab: t.id, path: t.path, listing: t.listing, find: t.find, shownIn: t.shownIn, view: t.view })));
     // A tab showing its disk-usage map tells how that was mapped; its rows are the map's items.
     const mapped = useUsage((s) => !!s[tab]) && !find;
     const { sizes, drives } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length })));
+    // The thumbnails of what this tab shows now, in the view it's in, once any came.
+    const thumbs = useThumbRuns((s) => s[tab]);
+    const thumbsHere = !mapped && thumbs?.scope === `${viewKey({ path, find })}:${view}` && thumbs.found > 0 ? thumbs : null;
     if (path === THIS_PC && !find) {
         return <div className="flex h-7 shrink-0 items-center border-t px-3 text-xs text-muted-foreground">{`${drives} ${drives === 1 ? "drive" : "drives"}`}</div>;
     }
@@ -45,23 +75,30 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
             </>
         );
     } else if (path !== THIS_PC && listing) {
+        const sized = sizes && `${sizes.engine} sized ${formatSize(sizes.total)} in ${formatDuration(sizes.elapsed)}`;
+        // A narrow pane (two side by side) keeps the time to screen, and says the rest on hover.
         work = (
-            <span title={`Rust read this folder in ${formatDuration(listing.elapsed)}; it was on screen ${formatDuration(shownIn)} after the click.`} className="flex items-center gap-1">
-                <Zap className="size-3 text-primary" /> read in {formatDuration(listing.elapsed)} · shown in {formatDuration(shownIn)}
-                {sizes && ` · ${sizes.engine} sized ${formatSize(sizes.total)} in ${formatDuration(sizes.elapsed)}`}
+            <span title={`Rust read this folder in ${formatDuration(listing.elapsed)}; it was on screen ${formatDuration(shownIn)} after the click.${sized ? ` The ${sized}.` : ""}`} className="flex items-center gap-1">
+                <Zap className="size-3 text-primary" />
+                <span className="hidden @lg:inline">read in {formatDuration(listing.elapsed)} ·</span>
+                <span>shown in {formatDuration(shownIn)}</span>
+                {sized && <span className="hidden @xl:inline">· {sized}</span>}
             </span>
         );
     }
 
     return (
-        <div className="flex h-7 shrink-0 items-center gap-3 border-t px-3 text-xs text-muted-foreground">
+        <div className="@container flex h-7 shrink-0 items-center gap-3 overflow-hidden border-t px-3 text-xs text-muted-foreground">
             <span className="truncate">
                 {items(shown)}
                 {hidden > 0 && !mapped && ` · ${formatCount(hidden)} hidden`}
                 {selected.length > 0 && ` · ${formatCount(selected.length)} selected`}
                 {selectedFiles.length > 0 && ` · ${formatSize(selectedBytes)}`}
             </span>
-            <span className="ml-auto flex shrink-0 items-center gap-1 tabular-nums">{work}</span>
+            <span className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap tabular-nums">
+                {work}
+                {thumbsHere && <ThumbWork run={thumbsHere} />}
+            </span>
         </div>
     );
 }

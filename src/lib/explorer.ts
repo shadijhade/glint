@@ -27,8 +27,11 @@ import {
     watchDirs,
 } from "./fs";
 import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
-import { type Session, useStore } from "./store";
+import { type Session, useStore, type ViewMode } from "./store";
+import { dropThumbnails } from "./thumbs";
 import { firstNotice } from "./utils";
+
+export type { ViewMode };
 
 export interface KnownFolder {
     id: "home" | "desktop" | "documents" | "downloads" | "pictures" | "music" | "videos";
@@ -81,6 +84,8 @@ export interface TabState {
     anchor: string | null;
     focus: string | null;
     renaming: string | null;
+    /** A list with columns, or a grid of thumbnails. */
+    view: ViewMode;
 }
 
 /** One side of the window: its tabs in order, and the one on screen. */
@@ -115,7 +120,7 @@ interface ExplorerState {
 let tabSeq = 0;
 const newTabId = () => `tab${++tabSeq}`;
 
-const blankTab = (id: string, path: string): TabState => ({
+const blankTab = (id: string, path: string, view: ViewMode = "list"): TabState => ({
     id,
     ready: false,
     path,
@@ -130,6 +135,7 @@ const blankTab = (id: string, path: string): TabState => ({
     anchor: null,
     focus: null,
     renaming: null,
+    view,
 });
 
 const firstTab = newTabId();
@@ -183,6 +189,14 @@ export const PaneProvider = PaneContext.Provider;
 export function useTab<T>(selector: (tab: TabState) => T): T {
     const pane = useContext(PaneContext);
     return useExplorer((s) => selector(shownTab(s, pane)));
+}
+
+/** What a tab shows: a folder, or a search's results. Scroll positions and thumbnail timings are kept by it, for each view. */
+export const viewKey = (tab: Pick<TabState, "path" | "find">) => (tab.find ? `find:${tab.find.id}` : `dir:${tab.path}`);
+
+/** Shows a tab's items (the active tab's by default) as a list, or as a grid of thumbnails. */
+export function setView(view: ViewMode, tab = activeTabId()) {
+    if (tabState(tab)?.view !== view) updateTab({ view }, tab);
 }
 
 /** "This PC", a drive's name, or the folder's. */
@@ -433,9 +447,9 @@ function restoreSession(session: Session) {
         .filter((p) => p.paths.length)
         .slice(0, 2)
         .map((p) => {
-            const ids = p.paths.map((path) => {
+            const ids = p.paths.map((path, i) => {
                 const id = newTabId();
-                tabs[id] = blankTab(id, path);
+                tabs[id] = blankTab(id, path, p.views?.[i] === "grid" ? "grid" : "list");
                 return id;
             });
             return { tabs: ids, active: ids[Math.min(Math.max(0, p.active), ids.length - 1)] };
@@ -468,7 +482,11 @@ function saveSession(s = get()) {
     const session: Session = {
         dual: s.dual,
         activePane: s.activePane,
-        panes: s.panes.map((p) => ({ paths: p.tabs.map((id) => s.tabs[id]?.path ?? THIS_PC), active: Math.max(0, p.tabs.indexOf(p.active)) })),
+        panes: s.panes.map((p) => ({
+            paths: p.tabs.map((id) => s.tabs[id]?.path ?? THIS_PC),
+            active: Math.max(0, p.tabs.indexOf(p.active)),
+            views: p.tabs.map((id) => s.tabs[id]?.view ?? "list"),
+        })),
     };
     const json = JSON.stringify(session);
     if (json === savedSession) return;
@@ -497,12 +515,12 @@ function syncWatches() {
 // Tabs and panes
 
 /** Closed tabs, newest last, for Ctrl+Shift+T. */
-const closedTabs: { path: string; pane: number; index: number }[] = [];
+const closedTabs: { path: string; view: ViewMode; pane: number; index: number }[] = [];
 /** Background tabs opened from one tab go after each other, as in a browser. */
 let openedFrom: { from: string; last: string } | null = null;
 
-/** Adds a tab for `path` to `pane`, after `after` (default: the pane's active tab). */
-function addTab(path: string, pane: number, after?: string) {
+/** Adds a tab for `path` to `pane`, after `after` (default: the pane's active tab), shown as `view` (default: the active tab's). */
+function addTab(path: string, pane: number, after?: string, view = tabState()?.view) {
     const id = newTabId();
     set((s) => {
         const p = s.panes[pane];
@@ -511,7 +529,7 @@ function addTab(path: string, pane: number, after?: string) {
         tabs.splice(at < 0 ? tabs.length : at + 1, 0, id);
         const panes = [...s.panes];
         panes[pane] = { ...p, tabs };
-        return { tabs: { ...s.tabs, [id]: blankTab(id, path) }, panes };
+        return { tabs: { ...s.tabs, [id]: blankTab(id, path, view) }, panes };
     });
     return id;
 }
@@ -568,7 +586,7 @@ export const middleClickOpens = (path: string) => (e: { button: number; preventD
 export function duplicateTab(id: string) {
     const t = tabState(id);
     const pane = paneOf(id);
-    if (t && pane >= 0) activateTab(addTab(t.path, pane, id));
+    if (t && pane >= 0) activateTab(addTab(t.path, pane, id, t.view));
 }
 
 /** Ctrl+Tab and Ctrl+Shift+Tab: the next or previous tab in the active pane. */
@@ -591,11 +609,12 @@ function forget(id: string, tab: TabState | undefined) {
     if (Object.values(get().sizes).some((run) => run.running && run.lane === id)) cancelFolderSizes(id);
     runtime.delete(id);
     scrolls.delete(id);
+    dropThumbnails(id);
 }
 
 function remember(tab: TabState | undefined, pane: number, index: number) {
     if (!tab) return;
-    closedTabs.push({ path: tab.path, pane, index });
+    closedTabs.push({ path: tab.path, view: tab.view, pane, index });
     if (closedTabs.length > 25) closedTabs.shift();
 }
 
@@ -665,7 +684,7 @@ export function reopenClosedTab() {
         tabs.splice(there ? Math.min(last.index, tabs.length) : tabs.indexOf(p.active) + 1, 0, id);
         const panes = [...st.panes];
         panes[pane] = { ...p, tabs };
-        return { tabs: { ...st.tabs, [id]: blankTab(id, last.path) }, panes };
+        return { tabs: { ...st.tabs, [id]: blankTab(id, last.path, last.view) }, panes };
     });
     activateTab(id);
 }
@@ -710,7 +729,7 @@ export function toggleDual() {
     } else if (s.panes.length < 2) {
         // A new right pane starts on the folder you're in.
         const id = newTabId();
-        set({ tabs: { ...s.tabs, [id]: blankTab(id, currentPath()) }, panes: [s.panes[0], { tabs: [id], active: id }], dual: true, activePane: 1, quickLook: false, editingAddress: false });
+        set({ tabs: { ...s.tabs, [id]: blankTab(id, currentPath(), tabState()?.view) }, panes: [s.panes[0], { tabs: [id], active: id }], dual: true, activePane: 1, quickLook: false, editingAddress: false });
         openTab(id);
     } else {
         set({ dual: true, activePane: 1, quickLook: false, editingAddress: false });

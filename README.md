@@ -25,6 +25,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/
 -   **Every folder shows its size.** File Explorer keeps them out of the list. Here they're in the Size column as the folder opens (all of `C:\Windows` sized in 0.4 ms from the index), or one click away with dust. Sort by size, or open **Disk usage** for a treemap like WizTree's, and you see what's filling your disk.
 -   **Any file on any drive, in milliseconds.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows the change journal. Every `kernel32.dll` on three drives (over 3 million names) is listed in about 8 ms. Without it, fd streams results as it finds them.
 -   **ripgrep for what's inside files**: regular expressions, whole words, replace across files, and a syntax-highlighted preview.
+-   **Thumbnails that never hold up the folder.** Switch to the grid (`Ctrl+Shift+2`) and a folder of 1,200 photos is still on screen in 9.3 ms, with the thumbnails filling in right after from Windows' own thumbnail cache (30 in 71 ms). Photos Windows hasn't seen yet are made on several threads at once, about 220 a second, where Windows' isolated thumbnail process manages about 50.
 -   **Space to Quick Look, Ctrl+K for everything else.** See any file full size without opening it and arrow through the folder. Jump to the folders you use most (ranked by frecency, like zoxide) or run any command by typing a few letters.
 -   **Tabs, and two panes side by side.** Each pane has its own tabs (Ctrl+T, or middle-click a folder), and Ctrl+Shift+D shows two folders at once to copy or move between. Your tabs are back the next time you start.
 -   **Still Windows.** Copy, move, delete and rename run on Windows' own file engine (progress, *Replace or Skip*, Recycle Bin, UAC). The clipboard and drag and drop work with File Explorer and every other app, and Properties, Open with and Open in Terminal are a right-click away.
@@ -42,10 +43,16 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/
 | Find files by name ¹ | `kernel32.dll` on all three drives | 18 files | 7.7 ms |
 | | `*.dll` in System32 and its subfolders | 5,015 files | 36 ms |
 | Search inside files | `DriverVer` in `C:\Windows\INF` (81 MB) | 1,313 matches in 838 files | 39 ms |
+| Open a folder in the grid | 1,200 photos | 1,200 items | 9.3 ms |
+| Show its thumbnails ² | from Windows' thumbnail cache | the 30 on screen | 71 ms |
+| | photos Windows hasn't seen yet | the 30 on screen | 242 ms |
+| | `C:\Windows\Web\touchkeyboard` | 8 wallpapers | 15 ms |
 
 Each time runs from pressing Enter until everything is on screen, as the app's status bar reports it: the median of 5 runs, with the files already in Windows' cache (as when you browse back and forth). Intel Core Ultra 7 265K, NVMe SSD, Windows 11, release build. The status bar shows the time for every folder and search, so you can check these numbers on your own machine.
 
 ¹ With [instant search](docs/instant-search.md) on. Without it, fd and dust do the work: fd on its own lists the same 5,015 DLLs in 0.1–0.3 s, and takes 8 s for a name search across a 219 GB home folder.
+
+² From the first thumbnail asked for to the last one in, as the status bar reports it (*30 thumbnails in 71 ms*), each run a fresh start of the app, so none came from its own memory. Asked for all at once, 1,200 photos come 1,100 a second from Windows' cache, and are made at 220 a second when Windows hasn't seen them.
 
 ## Features
 
@@ -56,6 +63,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Instant folders.** Each folder is read in one Win32 enumeration pass and sorted in Rust in natural order (`img9` before `img10`), then drawn as a virtual list. The status bar says how long it took: *read in 0.3 ms · shown in 6.3 ms*.
 -   **Find files by name.** Typing in the search box filters the folder as you type; **Enter** searches every subfolder too (from This PC, every drive). All words must match, `*` and `?` work like in Explorer, and `"quotes"` keep spaces. The status bar says who answered: *index · 18 found in 7.7 ms* or *fd · 304 found in 8.09 s*.
 -   **Folder sizes.** With instant search on, every folder shows its size as it opens, and search results show folder totals too. Otherwise one click measures them with dust.
+-   **Grid view and thumbnails.** Every folder (and every search) can show as a grid of Windows' own thumbnails: see [Grid view](#grid-view) below. In the list, pictures and videos get a small one in place of their icon.
 -   **Disk usage map.** A treemap of the open folder, like WizTree's: see [Disk usage map](#disk-usage-map) below.
 -   **Preview pane and Quick Look.** Syntax-highlighted code and text, images, video, audio, PDFs and folder summaries, in the side pane (`Alt+P`) or full size on `Space`. Online-only OneDrive files are left alone, so nothing downloads by accident.
 -   **Command palette.** `Ctrl+K` finds any command, or a folder you've been to by typing a few of its letters (`dl` finds Downloads), with the folders you open most often and most recently first. Type a path, `~` or `%APPDATA%` to go there.
@@ -72,6 +80,14 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Tabs.** `Ctrl+T` opens a tab on the folder you're in. A middle-click (or `Ctrl+Enter`) opens a folder in a new tab behind the current one, as in a browser. `Ctrl+Tab` and `Ctrl+1`…`Ctrl+9` switch, `Ctrl+W` closes, and `Ctrl+Shift+T` brings the last one back. Each tab keeps its own history, selection, search and scroll position, and your tabs come back when the app starts (Settings → Reopen my tabs).
 -   **Dual pane.** `Ctrl+Shift+D` (or the toolbar button) shows two folders side by side, each pane with its own tabs. Click a pane or press `F6` to work in it. Drag files across, or use **Copy to other pane** and **Move to other pane**, which run on Windows' own file engine like every other file operation.
 -   **Both at full speed.** Each tab searches and sizes folders on its own, so a long search in one pane doesn't stop the other's, and both panes refresh when their folders change.
+
+### Grid view
+
+<img src="screenshots/grid-view.png" alt="Every wallpaper under C:\Windows\Web found by name and shown as a grid of thumbnails, each with its folder under it" width="100%">
+
+The **List** and **Grid** buttons in the command bar (or `Ctrl+Shift+6` and `Ctrl+Shift+2`, as in Explorer, or `Ctrl+K`) switch the tab you're in; each tab keeps its own view, and new tabs start in the view of the tab they came from. The grid works like the list: click, `Ctrl` and `Shift` to select, arrow keys in all four directions, `Enter` to open, `Space` for Quick Look, `F2` to rename, drag and drop (into the other pane too), the right-click menu and folder sizes under each folder. Sort it from the bar above it.
+
+Thumbnails come from Windows' thumbnail cache, the one Explorer fills, so pictures you've seen in Explorer are there at once (30 in 71 ms). Only the tiles on screen ask for one, and they stop asking when you scroll past them or leave the folder. What Windows doesn't have yet is made on worker threads below normal priority: photos that Windows' own photo provider decodes with its built-in codecs (JPEG, PNG, GIF, TIFF, BMP) on several threads at once, and everything else (videos, documents, fonts, HEIC and RAW photos, or pictures another app took over) by its own handler, where Windows runs it, usually an isolated process. Windows caches the result, so next time it's instant, and online-only OneDrive files are only shown when Windows already has their thumbnail, so nothing downloads. The status bar says how many came, how fast and from where.
 
 ### Disk usage map
 
@@ -151,7 +167,8 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 | `Alt+Left` / `Backspace` · `Alt+Right` · `Alt+Up` | Back · Forward · Up |
 | `Ctrl+L` / `Alt+D` / `F4` | Type a path in the address bar |
 | `Ctrl+F` / `Ctrl+E` / `F3` | Search: typing filters, `Enter` searches subfolders, `Esc` clears |
-| `Arrows`, `Home`, `End`, `PageUp/Down` | Move (`Shift` extends the selection, `Ctrl` moves without selecting) |
+| `Ctrl+Shift+2` / `Ctrl+Shift+6` | Grid view (thumbnails) / list view |
+| `Arrows`, `Home`, `End`, `PageUp/Down` | Move: in the grid, `Left` and `Right` too (`Shift` extends the selection, `Ctrl` moves without selecting) |
 | `Ctrl+Space` | Add the focused item to the selection, or take it out |
 | Letters | Jump to the next name starting with them |
 | `Ctrl+A` | Select all |
@@ -196,6 +213,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 -   **Folders**: one `FindFirstFileExW` pass (basic info, large fetch) gets every name, size, date and attribute at once. Rust sorts them and hands the whole listing to the UI as a single binary buffer rather than JSON, and React draws only the rows on screen.
 -   **Name search**: the instant-search service when it covers the folder, otherwise fd, with results streamed into the list as they arrive.
 -   **Folder sizes**: the index's per-folder totals, otherwise dust.
+-   **Thumbnails**: Windows' thumbnail cache through `IShellItemImageFactory` (thumbnails only, from the cache only: about a millisecond each), on worker threads that are each a COM apartment of their own. What the cache doesn't have is made by the file type's thumbnail handler: Windows' photo provider runs on our own threads with `IThumbnailCache` and `WTS_EXTRACTINPROC` (220 a second with 8 threads, where the isolated process Windows uses for other handlers makes about 50 however many ask), and Windows caches each one as if Explorer had made it. Requests wait in their tab's queue, shared between panes showing the same file, and are dropped when the tiles asking for them scroll away. Each answer reaches the UI as one binary buffer, an uncompressed BMP, and both sides keep the latest ones in memory.
 -   **Disk usage map**: one request to the index returns the biggest files and folders six levels down (folders are walked biggest first, so nothing too small to draw is looked at), or dust's JSON tree when the index doesn't have the folder. Either way it reaches the UI as one binary buffer and is drawn on a canvas as a squarified treemap. For all of C: here (464 GB, 2.9 million MFT records) the service answers in 19 ms for the 20,000 biggest items six levels down, and the map is on screen 53 ms after the click; on a synthetic index of 2.86 million records it takes 9–17 ms, whether the map goes 4 or 32 levels down.
 -   **Text search**: ripgrep's JSON output, streamed in batches.
 -   **File operations**: Windows' `IFileOperation` (the engine Explorer uses), the clipboard formats Explorer reads, and OLE drag and drop.
@@ -239,7 +257,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 
 -   [x] Tabs and a dual-pane view
 -   [x] A disk-usage map (treemap) from the index
--   [ ] Thumbnails and a grid view
+-   [x] Thumbnails and a grid view
 -   [x] Auto-update, with signed update packages
 -   [ ] Code-signed installers, and winget and Scoop packages (`npm run release` is ready for them: [docs/releasing.md](docs/releasing.md))
 -   [ ] Zip and 7z archives opened like folders

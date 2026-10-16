@@ -1,10 +1,32 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { ClipboardPaste, Columns2, Command, Copy, CopyPlus, Eye, EyeOff, FolderOutput, FolderPlus, HardDrive, LayoutDashboard, Loader2, type LucideIcon, PanelRight, PenLine, Scissors, SquareTerminal, TextSearch, Trash2 } from "lucide-react";
+import {
+    ClipboardPaste,
+    Columns2,
+    Command,
+    Copy,
+    CopyPlus,
+    Eye,
+    EyeOff,
+    FolderOutput,
+    FolderPlus,
+    HardDrive,
+    LayoutDashboard,
+    LayoutGrid,
+    List,
+    Loader2,
+    type LucideIcon,
+    PanelRight,
+    PenLine,
+    Scissors,
+    SquareTerminal,
+    TextSearch,
+    Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
-import { toggleUsage, useUsage } from "@/lib/diskUsage";
+import { chooseView, toggleUsage, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
-import { calcSizes, copyToClipboard, copyToOtherPane, newItem, paste, stopSizes, toggleDual, useExplorer, useTab } from "@/lib/explorer";
+import { calcSizes, copyToClipboard, copyToOtherPane, newItem, paste, stopSizes, toggleDual, useExplorer, useTab, type ViewMode } from "@/lib/explorer";
 import { openTerminal } from "@/lib/fs";
 import { THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
@@ -31,6 +53,36 @@ function Tool({ icon: Icon, label, pressed, className, ...props }: { icon: Lucid
 }
 
 const Divider = () => <span className="mx-1 h-5 w-px shrink-0 bg-border" />;
+
+const VIEWS: { view: ViewMode; icon: LucideIcon; label: string }[] = [
+    { view: "list", icon: List, label: "List (Ctrl+Shift+6)" },
+    { view: "grid", icon: LayoutGrid, label: "Grid, with thumbnails (Ctrl+Shift+2)" },
+];
+
+/** List or grid, for the tab on screen; while it shows its disk-usage map, neither is pressed and both go back to the files. */
+function ViewSwitch({ view, mapped, disabled, onChange }: { view: ViewMode; mapped: boolean; disabled: boolean; onChange: (view: ViewMode) => void }) {
+    return (
+        <div role="group" aria-label="View" className="flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
+            {VIEWS.map(({ view: v, icon: Icon, label }) => (
+                <button
+                    key={v}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={!mapped && view === v}
+                    disabled={disabled}
+                    onClick={() => onChange(v)}
+                    className={cn(
+                        "grid h-7 w-8 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-35 [&_svg]:size-4",
+                        !mapped && view === v && "bg-background text-primary shadow-xs hover:text-primary dark:bg-foreground/[0.12]"
+                    )}
+                >
+                    <Icon />
+                </button>
+            ))}
+        </div>
+    );
+}
 
 /**
  * How many of the text buttons' labels must go (icons and tooltips stay) for the bar to fit: none,
@@ -77,7 +129,7 @@ interface CommandBarProps {
 
 /** Acts on the active pane (its tab and selection). */
 export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
-    const { path, find, tab } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find, tab: t.id })));
+    const { path, find, tab, view } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find, tab: t.id, view: t.view })));
     const mapped = useUsage((s) => !!s[tab]);
     const { sizing, dual, other } = useExplorer(
         useShallow((s) => {
@@ -114,6 +166,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             <Tool icon={SquareTerminal} label="Open in Terminal" disabled={!inFolder} onClick={terminal} />
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find} onChange={(v) => chooseView(v, tab)} />
                 <Button
                     variant="ghost"
                     size="sm"

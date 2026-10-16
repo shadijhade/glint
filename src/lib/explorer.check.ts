@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
 import { decodeListing, type FileEntry, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
+import { decodeThumb, gridColumns, gridMove, thumbStep } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
 import { BLOCK, decodeUsage, FRAME, hitTest, layoutUsage, NO_PARENT, pruneUsage, squarify, subUsage, usageEntries, type UsageMap } from "./usage.ts";
 
@@ -196,6 +197,29 @@ assert.deepEqual([...sub.parent], [NO_PARENT, 0, 0, 1]);
 assert.deepEqual([...sub.size], [600, 400, 50, 300]);
 assert.deepEqual([[...sub.first], [...sub.end]], [[1, 3, 0, 0], [3, 4, 0, 0]]);
 assert.deepEqual(subUsage(usage, 3).names, ["pagefile.sys"]);
+
+// Grid view: arrows move by tiles and rows (Left and Right only in a grid), never off the items
+// 0  1  2  3
+// 4  5  6  7
+// 8  9
+const move = (key: string, at: number, cols = 4, count = 10) => gridMove(key, at, count, cols, 2);
+assert.deepEqual([move("ArrowRight", 3), move("ArrowLeft", 4), move("ArrowRight", 9), move("ArrowLeft", 0)], [4, 3, 9, 0]);
+assert.deepEqual([move("ArrowDown", 1), move("ArrowDown", 5), move("ArrowDown", 6), move("ArrowDown", 9)], [5, 9, 9, 9], "into the short last row: its last item");
+assert.deepEqual([move("ArrowUp", 9), move("ArrowUp", 2), move("ArrowDown", -1), move("ArrowRight", -1)], [5, 2, 0, 0]);
+assert.deepEqual([move("PageDown", 1), move("PageDown", 4), move("PageUp", 9), move("Home", 6), move("End", 2)], [9, 9, 1, 0, 9]);
+assert.equal(move("Enter", 2), null);
+assert.deepEqual([move("ArrowRight", 2, 1), move("ArrowDown", 2, 1), move("ArrowUp", 0, 1), move("PageDown", -1, 1)], [null, 3, 0, 1], "the list: one column");
+assert.equal(gridMove("ArrowDown", -1, 0, 4, 2), null);
+assert.deepEqual([gridColumns(1000, 120), gridColumns(100, 120), gridColumns(0, 120)], [8, 1, 1]);
+// Thumbnails are asked for in device pixels, one to one: 96 CSS pixels at 125% asks for 120.
+assert.deepEqual([thumbStep(96, 1), thumbStep(96, 1.25), thumbStep(96, 1.5), thumbStep(16, 1.25), thumbStep(14, 1.75), thumbStep(900, 2), thumbStep(4, 1)], [96, 120, 144, 20, 28, 1024, 16]);
+// Answers from thumbs.rs: an 8-byte header, then the BMP
+const answer = new Uint8Array([0, 2, 0, 0, ...new Uint8Array(new Float32Array([2.5]).buffer), 66, 77]);
+const thumb = decodeThumb(answer.buffer);
+assert.deepEqual([thumb.source, thumb.ms, [...thumb.bmp!]], ["made", 2.5, [66, 77]]);
+const none = decodeThumb(new Uint8Array([1, 1, 1, 0, 0, 0, 0, 0]).buffer);
+assert.deepEqual([none.bmp, none.source, none.lasting], [null, "cache", true]);
+assert.equal(decodeThumb(new Uint8Array([1, 1, 0, 0, 0, 0, 0, 0]).buffer).lasting, false, "none yet: asked again later");
 
 // Command palette ranking: in-order letters, word starts and runs first; visits weighted by recency
 const best = (query: string, options: string[]) =>
