@@ -3,8 +3,9 @@
 //! answered in two steps, so a slow file never holds up a fast one:
 //!
 //! 1. Lookups: the thumbnail as Windows has it cached (SIIGBF_INCACHEONLY), about a millisecond each.
-//! 2. Making: for those Windows hasn't seen yet, the file type's thumbnail handler decodes the file
-//!    (20–30 ms for a photo), on lower-priority threads; Windows caches the result for next time.
+//! 2. Making: for those Windows hasn't seen yet (or has only at a smaller size), the file type's
+//!    thumbnail handler decodes the file (20–35 ms for a photo), on lower-priority threads; Windows
+//!    caches the result for next time.
 //!
 //! Both run on worker threads of their own (each a COM apartment), never on the UI thread or the async
 //! runtime. Requests wait in their tab's lane and are dropped when that tab scrolls them out of view or
@@ -24,9 +25,21 @@ const FROM_MEMORY: u8 = 0;
 const FROM_CACHE: u8 = 1;
 const MADE: u8 = 2;
 
-/// Thumbnails kept here once made, about a thousand: the UI keeps the latest ones too, and Windows'
-/// cache has them all a millisecond away.
+/// Thumbnails kept here once made: about 800 tiles' worth at the grid's medium size and 100 at its
+/// biggest, some ten screenfuls either way (bigger tiles, fewer on screen). The UI keeps the latest ones
+/// too, and Windows' cache has them all a few milliseconds away.
 const MEMORY_BUDGET: usize = 32 << 20;
+
+/// The sizes Windows' thumbnail cache keeps thumbnails at (thumbcache_16.db … thumbcache_2560.db).
+const CACHE_SIZES: [u32; 9] = [16, 32, 48, 96, 256, 768, 1280, 1920, 2560];
+
+/// Whether a lookup's answer is a smaller size Windows has cached in place of the one asked for. It
+/// answers from whichever size it has, the list's 32 px icon for a tile, say, and those come at exactly
+/// their cache size, so a picture that's small itself (it comes at its own size) isn't taken for one.
+fn from_smaller_size(width: u32, height: u32, asked: u32) -> bool {
+    let long = width.max(height);
+    long < asked && CACHE_SIZES.contains(&long)
+}
 
 /// A thumbnail of a file as it is now (a changed file gets a new one), at one size.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -90,6 +103,9 @@ struct Job<R> {
     phase: Phase,
     running: bool,
     waiters: Vec<Waiter<R>>,
+    /// The smaller one Windows has cached, while a thumbnail at the size asked is made: the answer if
+    /// that fails.
+    smaller: Option<Thumb>,
 }
 
 /// What a worker found.
@@ -98,6 +114,8 @@ enum Outcome {
     Found { bmp: Vec<u8>, ms: f32 },
     /// Windows doesn't have it cached (only from a lookup).
     NotCached,
+    /// Windows has it cached only at a smaller size (only from a lookup; see `from_smaller_size`).
+    Smaller { bmp: Vec<u8>, ms: f32 },
     /// No thumbnail; `lasting` unless it may work next time (a timeout, a busy surrogate).
     Nothing { lasting: bool },
 }
@@ -178,7 +196,7 @@ impl<R> Queue<R> {
         }
         let size = key.size;
         self.lookups.push_back(key.clone());
-        self.jobs.insert(key, Job { path, size, cached_only, phase: Phase::Lookup, running: false, waiters: vec![waiter] });
+        self.jobs.insert(key, Job { path, size, cached_only, phase: Phase::Lookup, running: false, waiters: vec![waiter], smaller: None });
     }
 
     /// The oldest lookup, or for a thread that makes thumbnails (`makes`), the oldest one to make
@@ -202,6 +220,14 @@ impl<R> Queue<R> {
     fn finish(&mut self, key: &Key, outcome: Outcome) -> Option<(Arc<Thumb>, Vec<R>)> {
         let job = self.jobs.get_mut(key)?;
         job.running = false;
+        if matches!(outcome, Outcome::NotCached | Outcome::Smaller { .. }) && !job.cached_only && !job.waiters.is_empty() {
+            if let Outcome::Smaller { bmp, ms } = outcome {
+                job.smaller = Some(Thumb { found: true, lasting: true, source: FROM_CACHE, ms, bmp });
+            }
+            job.phase = Phase::Make;
+            self.makes.push_back(key.clone());
+            return None;
+        }
         let thumb = match outcome {
             Outcome::Found { bmp, ms } => {
                 let source = if job.phase == Phase::Lookup { FROM_CACHE } else { MADE };
@@ -209,20 +235,27 @@ impl<R> Queue<R> {
                 self.memory.put(key.clone(), thumb.clone());
                 thumb
             }
-            Outcome::NotCached if !job.cached_only && !job.waiters.is_empty() => {
-                job.phase = Phase::Make;
-                self.makes.push_back(key.clone());
-                return None;
-            }
-            // Online-only files stay as they are until Windows has a thumbnail of them.
+            // Online-only files stay as they are until Windows has a thumbnail of them (making one would
+            // download the file), at whatever size it has; that's not kept for once they're downloaded.
+            Outcome::Smaller { bmp, ms } => Arc::new(Thumb { found: true, lasting: true, source: FROM_CACHE, ms, bmp }),
             Outcome::NotCached => Thumb::none(false),
-            Outcome::Nothing { lasting } => {
-                let none = Thumb::none(lasting);
-                if lasting {
-                    self.memory.put(key.clone(), none.clone());
+            // Making a bigger one failed: the smaller one Windows has will do (kept unless it may work later).
+            Outcome::Nothing { lasting } => match job.smaller.take() {
+                Some(smaller) => {
+                    let thumb = Arc::new(smaller);
+                    if lasting {
+                        self.memory.put(key.clone(), thumb.clone());
+                    }
+                    thumb
                 }
-                none
-            }
+                None => {
+                    let none = Thumb::none(lasting);
+                    if lasting {
+                        self.memory.put(key.clone(), none.clone());
+                    }
+                    none
+                }
+            },
         };
         let job = self.jobs.remove(key)?;
         Some((thumb, job.waiters.into_iter().map(|w| w.reply).collect()))
@@ -444,7 +477,7 @@ pub fn straighten_alpha(bgra: &mut [u8]) {
 
 #[cfg(windows)]
 mod win {
-    use super::{encode_bmp, straighten_alpha, Outcome, Pixels};
+    use super::{encode_bmp, from_smaller_size, straighten_alpha, Outcome, Pixels};
     use std::collections::HashMap;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
@@ -511,17 +544,20 @@ mod win {
         } else {
             from_shell(path, size, false)
         };
+        let ms = || (started.elapsed().as_secs_f64() * 1000.0) as f32;
         match made {
-            Ok(pixels) => Outcome::Found { bmp: encode_bmp(&pixels), ms: (started.elapsed().as_secs_f64() * 1000.0) as f32 },
+            Ok(pixels) if lookup && from_smaller_size(pixels.width, pixels.height, size) => Outcome::Smaller { bmp: encode_bmp(&pixels), ms: ms() },
+            Ok(pixels) => Outcome::Found { bmp: encode_bmp(&pixels), ms: ms() },
             Err(e) if lookup && NOT_CACHED.contains(&e.code()) => Outcome::NotCached,
             Err(e) => Outcome::Nothing { lasting: !TRANSIENT.contains(&e.code()) },
         }
     }
 
     /// The item's thumbnail through IShellItemImageFactory, at most `size` pixels on each side: only
-    /// from Windows' thumbnail cache with `cached_only` (a millisecond or two), otherwise made by the
-    /// file type's thumbnail handler where Windows runs it (an isolated process, usually, which makes
-    /// about 50 a second however many ask), and cached. Never an icon: the UI has its own for those.
+    /// from Windows' thumbnail cache with `cached_only` (a millisecond or two, at a smaller size when
+    /// that's all the cache has), otherwise made by the file type's thumbnail handler where Windows runs
+    /// it (an isolated process, usually, which makes about 50 a second however many ask), and cached.
+    /// Never an icon: the UI has its own for those.
     pub fn from_shell(path: &str, size: u32, cached_only: bool) -> windows::core::Result<Pixels> {
         unsafe {
             let factory: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(path), None::<&IBindCtx>)?;
@@ -718,6 +754,47 @@ mod tests {
         q.cancel("tab1", None, 2);
         q.finish(&task.key, found());
         assert!(q.memory.get(&key("b")).is_some());
+    }
+
+    #[test]
+    fn makes_what_windows_has_only_at_a_smaller_size() {
+        let mut q: Queue<u32> = Queue::new(1 << 20);
+        q.want(key("a"), "A".into(), false, waiter("tab1", 1, 1));
+        let task = q.next(false).unwrap();
+        // Windows has the list's little one: a tile's is made at its own size.
+        assert!(q.finish(&task.key, Outcome::Smaller { bmp: vec![9], ms: 1.0 }).is_none(), "on to be made");
+        let make = q.next(true).unwrap();
+        assert_eq!((make.path.as_str(), make.phase), ("A", Phase::Make));
+        let (thumb, replies) = q.finish(&make.key, found()).unwrap();
+        assert_eq!((thumb.source, thumb.bmp.as_slice(), replies), (MADE, &[1, 2, 3][..], vec![1]));
+        // Making it fails: the smaller one will do.
+        q.want(key("b"), "B".into(), false, waiter("tab1", 2, 2));
+        let task = q.next(false).unwrap();
+        q.finish(&task.key, Outcome::Smaller { bmp: vec![9], ms: 1.0 });
+        let make = q.next(true).unwrap();
+        let (thumb, _) = q.finish(&make.key, Outcome::Nothing { lasting: true }).unwrap();
+        assert_eq!((thumb.found, thumb.source, thumb.bmp.as_slice()), (true, FROM_CACHE, &[9][..]));
+        assert!(q.memory.get(&key("b")).is_some_and(|t| t.found));
+        // Online-only files aren't made (that would download them), and nothing's kept for later.
+        q.want(key("c"), "C".into(), true, waiter("tab1", 3, 3));
+        let task = q.next(false).unwrap();
+        let (thumb, replies) = q.finish(&task.key, Outcome::Smaller { bmp: vec![9], ms: 1.0 }).unwrap();
+        assert_eq!((thumb.found, thumb.source, replies), (true, FROM_CACHE, vec![3]));
+        assert!(q.memory.get(&key("c")).is_none());
+        // Nobody waits any more: not kept either, so the next tile to ask has it made.
+        q.want(key("d"), "D".into(), false, waiter("tab1", 4, 4));
+        let task = q.next(false).unwrap();
+        q.cancel("tab1", None, 4);
+        assert_eq!(q.finish(&task.key, Outcome::Smaller { bmp: vec![9], ms: 1.0 }).map(|(_, r)| r), Some(vec![]));
+        assert!(q.memory.get(&key("d")).is_none());
+    }
+
+    #[test]
+    fn tells_smaller_cached_sizes_from_small_pictures() {
+        // Windows' 32 and 256 px versions, for a 120 px tile and a 320 px one.
+        assert!(from_smaller_size(32, 20, 120) && from_smaller_size(256, 160, 320) && from_smaller_size(60, 96, 120));
+        // What was asked for, and pictures that are that small themselves.
+        assert!(!from_smaller_size(120, 75, 120) && !from_smaller_size(200, 150, 320) && !from_smaller_size(96, 60, 96));
     }
 
     #[test]

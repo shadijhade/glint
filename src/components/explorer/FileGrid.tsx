@@ -1,12 +1,11 @@
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Cloud } from "lucide-react";
 import { isHidden, isOnlineOnly } from "@/lib/entries";
 import { typeLabel } from "@/lib/fileTypes";
 import { formatFullDate, formatSize } from "@/lib/format";
-import { gridColumns } from "@/lib/grid";
+import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
-import type { GridTile } from "@/hooks/useTheme";
 import { VirtualList } from "../VirtualList";
 import { type FileViewProps, Header, relativeTo, RenameInput, sizeOf } from "./FileList";
 import { Thumbnail } from "./Thumbnail";
@@ -15,10 +14,15 @@ interface FileGridProps extends FileViewProps {
     /** The pane it's in: each pane's grid starts as wide as its last one was. */
     pane: number;
     tile: GridTile;
+    /** Ctrl+wheel over it: bigger tiles (steps up) or smaller ones (down). */
+    onZoom: (steps: number) => void;
 }
 
 /** How wide each pane's grid was last, so the next folder's grid has its columns in its first frame. */
 const lastWidth = new Map<number, number>();
+
+/** Wheel movement for one tile size: a mouse wheel's notch. Touchpads and fine-grained wheels add up to it. */
+const WHEEL_STEP = 100;
 
 /**
  * The items as tiles: Windows' thumbnail of each file (its icon until it's in, or when it has none),
@@ -29,9 +33,41 @@ export function FileGrid(props: FileGridProps) {
     const { rows, search, scope, sizes, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
     const [width, setWidth] = useState(() => lastWidth.get(pane) ?? 0);
     const cols = gridColumns(width - 2 * tile.pad, tile.width);
+    // Where the tab left this grid is kept as the tiles at its top, so it comes back there even if the
+    // tiles were zoomed meanwhile (in another tab, or the other pane).
+    const layout = { cols, rowHeight: tile.height };
     const focusPath = rows[focusIndex]?.path;
     const relative = relativeTo(scope);
     useLayoutEffect(() => timeThumbnails(lane, thumbScope), [lane, thumbScope]);
+
+    // Ctrl+wheel zooms the tiles. It's listened for here rather than with onWheel, which React makes
+    // passive: only an active listener can stop WebView2 zooming the whole window (and the grid scrolling).
+    const ref = useRef<HTMLDivElement>(null);
+    const zoom = useRef({ onZoom: props.onZoom, renaming });
+    zoom.current = { onZoom: props.onZoom, renaming };
+    useEffect(() => {
+        const grid = ref.current!;
+        let turned = 0;
+        let last = 0;
+        const onWheel = (e: WheelEvent) => {
+            if (!e.ctrlKey) return;
+            e.preventDefault();
+            // Tiles move to other rows as they zoom, which would make the rename box anew.
+            if (zoom.current.renaming) return;
+            const delta = e.deltaY * (e.deltaMode === WheelEvent.DOM_DELTA_LINE ? WHEEL_STEP / 3 : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? WHEEL_STEP : 1);
+            // A pause, or a turn the other way, starts over.
+            if (e.timeStamp - last > 400 || Math.sign(delta) !== Math.sign(turned)) turned = 0;
+            last = e.timeStamp;
+            turned += delta;
+            const steps = Math.trunc(turned / WHEEL_STEP);
+            if (!steps) return;
+            turned -= steps * WHEEL_STEP;
+            // Away from you (up) for bigger tiles, as in Explorer.
+            zoom.current.onZoom(-steps);
+        };
+        grid.addEventListener("wheel", onWheel, { passive: false });
+        return () => grid.removeEventListener("wheel", onWheel);
+    }, []);
 
     const renderTile = (i: number) => {
         const entry = rows[i];
@@ -57,7 +93,7 @@ export function FileGrid(props: FileGridProps) {
                 )}
             >
                 <div className="relative grid shrink-0 place-items-center" style={{ width: tile.thumb, height: tile.thumb }}>
-                    <Thumbnail entry={entry} box={tile.thumb} lane={lane} enabled={!entry.dir} bottom iconClassName={entry.dir ? "size-16 stroke-[1.1]" : "size-14 stroke-[1.1]"} />
+                    <Thumbnail entry={entry} box={tile.thumb} lane={lane} enabled={!entry.dir} bottom iconSize={tile.thumb * (entry.dir ? 2 / 3 : 7 / 12)} iconClassName="stroke-[1.1]" />
                     {isOnlineOnly(entry) && <Cloud className="absolute bottom-0.5 right-0.5 size-4 fill-background text-sky-500" aria-label="Online-only" />}
                 </div>
                 {renaming === entry.path ? (
@@ -86,7 +122,7 @@ export function FileGrid(props: FileGridProps) {
     };
 
     return (
-        <div className={cn("files flex h-full min-h-0 flex-col", dropTarget && dropTarget === scope && !search && "bg-primary/5 outline-2 -outline-offset-2 outline-dashed outline-primary/60")}>
+        <div ref={ref} className={cn("files flex h-full min-h-0 flex-col", dropTarget && dropTarget === scope && !search && "bg-primary/5 outline-2 -outline-offset-2 outline-dashed outline-primary/60")}>
             <div className="flex h-8 shrink-0 items-center gap-4 overflow-hidden border-b px-3 text-xs font-medium text-muted-foreground">
                 <span className="shrink-0">Sort by</span>
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
@@ -108,8 +144,10 @@ export function FileGrid(props: FileGridProps) {
                     overscan={2}
                     scrollToIndex={focusIndex < 0 ? -1 : Math.floor(focusIndex / cols)}
                     scrollKey={focusIndex}
-                    initialScrollTop={props.scrollTop}
-                    onScrollTop={props.onScrollTop}
+                    perRow={width > 0 ? cols : undefined}
+                    anchor={focusIndex}
+                    initialScrollTop={props.scrollTop && width ? topOf(props.scrollTop, layout) : 0}
+                    onScrollTop={(top) => props.onScrollTop?.(placeOf(top, layout))}
                     onWidth={(w) => {
                         lastWidth.set(pane, w);
                         setWidth(w);

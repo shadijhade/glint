@@ -8,6 +8,7 @@ import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration } from "@/lib/fs";
+import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
@@ -330,6 +331,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         checked={settings.listThumbnails}
                         onChange={(listThumbnails) => set({ listThumbnails })}
                     />
+                    <Row label="Tile size in the grid" hint="Ctrl+wheel, Ctrl+= and Ctrl+- in the grid">
+                        <Segmented value={settings.tileSize} onChange={(tileSize) => set({ tileSize })} options={TILE_SIZES.map(({ size, label }): [TileSize, string] => [size, label])} />
+                    </Row>
                     <SwitchRow
                         label="Ask before moving to the Recycle Bin"
                         hint="Deleting permanently (Shift+Del) always asks"
