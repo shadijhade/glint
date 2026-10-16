@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Cloud } from "lucide-react";
-import { isHidden, isOnlineOnly } from "@/lib/entries";
+import { Cloud, Lock } from "lucide-react";
+import { isHidden, isLocked, isOnlineOnly } from "@/lib/entries";
 import { typeLabel } from "@/lib/fileTypes";
 import { formatFullDate, formatSize } from "@/lib/format";
 import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { VirtualList } from "../VirtualList";
-import { type FileViewProps, Header, relativeTo, RenameInput, sizeOf } from "./FileList";
+import { dropPath, type FileViewProps, Header, lockReason, relativeTo, RenameInput, sizeOf } from "./FileList";
 import { Thumbnail } from "./Thumbnail";
 
 interface FileGridProps extends FileViewProps {
@@ -79,7 +79,7 @@ export function FileGrid(props: FileGridProps) {
             <div
                 key={entry.path}
                 data-row
-                data-drop={entry.dir ? entry.path : undefined}
+                data-drop={dropPath(entry)}
                 onMouseDown={(e) => props.onRowMouseDown(e, i)}
                 onDoubleClick={() => props.onOpen(entry)}
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
@@ -93,8 +93,9 @@ export function FileGrid(props: FileGridProps) {
                 )}
             >
                 <div className="relative grid shrink-0 place-items-center" style={{ width: tile.thumb, height: tile.thumb }}>
-                    <Thumbnail entry={entry} box={tile.thumb} lane={lane} enabled={!entry.dir} bottom iconSize={tile.thumb * (entry.dir ? 2 / 3 : 7 / 12)} iconClassName="stroke-[1.1]" />
+                    <Thumbnail entry={entry} box={tile.thumb} lane={lane} enabled={!entry.dir && !isLocked(entry)} bottom iconSize={tile.thumb * (entry.dir ? 2 / 3 : 7 / 12)} iconClassName="stroke-[1.1]" />
                     {isOnlineOnly(entry) && <Cloud className="absolute bottom-0.5 right-0.5 size-4 fill-background text-sky-500" aria-label="Online-only" />}
+                    {isLocked(entry) && <Lock className="absolute bottom-0.5 right-0.5 size-4 fill-background text-amber-600 dark:text-amber-500" aria-label={lockReason(entry)} />}
                 </div>
                 {renaming === entry.path ? (
                     <RenameInput

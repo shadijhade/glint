@@ -3,7 +3,7 @@ import type { FileEntry } from "./entries";
 import { activeTabId, indexed, reload, setView, tabState, updateTab, useExplorer, type ViewMode } from "./explorer";
 import { cancelDiskUsage, diskUsage, resolvePath } from "./fs";
 import { samePath, THIS_PC } from "./paths";
-import { pruneUsage, subUsage, type UsageMap, usageEntries } from "./usage";
+import { pruneUsage, subUsage, type UsageEngine, type UsageMap, usageEntries } from "./usage";
 
 /** How many levels down a map goes, and the most items it shows (the biggest; the rest are grouped). */
 const DEPTH = 6;
@@ -18,7 +18,7 @@ export interface UsageRun {
     map: UsageMap | null;
     running: boolean;
     /** Who answers (while running, who's expected to). */
-    engine: "index" | "dust";
+    engine: UsageEngine;
     error: string;
     /** performance.now() at the click or key that asked for it. */
     started: number;
@@ -110,7 +110,8 @@ export async function mapUsage(tab: string, path: string, started = inputTime(),
     const before = runs()[tab];
     if (!before || path === THIS_PC) return;
     const id = ++seq;
-    const engine = indexed(path) && !serviceTooOld ? "index" : "dust";
+    // A folder in an archive is mapped from the archive's own list of entries, at once.
+    const engine: UsageEngine = tabState(tab)?.listing?.archive?.format ?? (indexed(path) && !serviceTooOld ? "index" : "dust");
     const run: UsageRun = { id, path, map: before.map, running: true, engine, error: "", started, shownIn: 0, preview: false };
     if (engine === "dust") {
         const known = !again && dustMaps.get(path.toLowerCase());
@@ -165,7 +166,7 @@ function remapSoon(tab: string) {
         setTimeout(() => {
             const run = runs()[tab];
             const path = tabState(tab)?.path;
-            if (run && !run.running && run.map?.engine === "index" && path && samePath(run.path, path)) mapUsage(tab, path, performance.now());
+            if (run && !run.running && run.map && run.map.engine !== "dust" && path && samePath(run.path, path)) mapUsage(tab, path, performance.now());
         }, 1000)
     );
 }

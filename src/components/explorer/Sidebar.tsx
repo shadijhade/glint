@@ -71,7 +71,8 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
     const dropping = useExplorer((s) => s.dropTarget === path);
     return (
         <button
-            data-drop={path}
+            // A pinned folder in an archive takes no drops: archives are read-only.
+            data-drop={/\.(zip|7z)([\\/]|$)/i.test(path) ? undefined : path}
             onClick={() => navigate(path)}
             onMouseDown={middleClickOpens(path)}
             onContextMenu={(e) => onContextMenu(e, path)}

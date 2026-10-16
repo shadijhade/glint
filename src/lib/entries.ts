@@ -1,14 +1,20 @@
 import { joinPath } from "./paths.ts";
 
-/** Windows FILE_ATTRIBUTE_* bits the explorer cares about. */
+/** Windows FILE_ATTRIBUTE_* bits the explorer cares about, and two of Glint's own for archives (Windows doesn't use them). */
 export const ATTR = {
     readonly: 0x1,
     hidden: 0x2,
     system: 0x4,
     reparsePoint: 0x400,
     offline: 0x1000,
+    /** In an archive: password-protected. */
+    encrypted: 0x4000,
     recallOnOpen: 0x40000,
     recallOnDataAccess: 0x400000,
+    /** Compressed with a method Glint can't read. */
+    unreadable: 0x10000000,
+    /** In a zip or 7z archive: read-only, and extracted to be opened (see archive/tree.rs). */
+    inArchive: 0x40000000,
 };
 
 export interface FileEntry {
@@ -38,14 +44,33 @@ export function withDetails(raw: RawEntry, dir = ""): FileEntry {
     return entry;
 }
 
+/** Where a folder in an archive is: the archive opened like a folder. */
+export interface InArchive {
+    /** The archive's own path (an archive in an archive included), the start of the folder's. */
+    path: string;
+    /** The archive file on disk everything is in (the same, unless archives nest). */
+    outer: string;
+    format: "zip" | "7z";
+    /** Files and folders in the whole archive. */
+    entries: number;
+    /** Its list of entries was already in memory; otherwise it took `readMs` to read. */
+    cached: boolean;
+    readMs: number;
+}
+
 export interface Listing {
     path: string;
     entries: FileEntry[];
-    /** Milliseconds Rust spent enumerating and sorting. */
+    /** Milliseconds Rust spent enumerating and sorting (or reading the archive's list of entries). */
     elapsed: number;
+    /** Set for a folder in a zip or 7z archive (read-only). */
+    archive?: InArchive;
 }
 
 const utf8 = new TextDecoder();
+
+/** The header before a listing's arrays: counts and timings, and where an archive is in its path. */
+const HEADER = 40;
 
 /**
  * Reads the binary listing from `list_dir` (layout documented on `encode_listing` in fsx.rs):
@@ -56,11 +81,11 @@ export function decodeListing(buffer: ArrayBuffer): Listing {
     const count = view.getUint32(0, true);
     const pathBytes = view.getUint32(4, true);
     const elapsed = view.getFloat64(8, true);
-    const sizes = new Float64Array(buffer, 16, count);
-    const modified = new Float64Array(buffer, 16 + 8 * count, count);
-    const attrs = new Uint32Array(buffer, 16 + 16 * count, count);
-    const lengths = new Uint32Array(buffer, 16 + 20 * count, count);
-    const text = 16 + 24 * count;
+    const sizes = new Float64Array(buffer, HEADER, count);
+    const modified = new Float64Array(buffer, HEADER + 8 * count, count);
+    const attrs = new Uint32Array(buffer, HEADER + 16 * count, count);
+    const lengths = new Uint32Array(buffer, HEADER + 20 * count, count);
+    const text = HEADER + 24 * count;
     const path = utf8.decode(new Uint8Array(buffer, text, pathBytes));
     const names = utf8.decode(new Uint8Array(buffer, text + pathBytes));
     const entries = new Array<FileEntry>(count);
@@ -68,8 +93,36 @@ export function decodeListing(buffer: ArrayBuffer): Listing {
         const name = names.slice(at, (at += lengths[i]));
         entries[i] = withDetails({ name, dir: (attrs[i] & 0x10) !== 0, size: sizes[i], modified: modified[i], attrs: attrs[i] }, path);
     }
-    return { path, entries, elapsed };
+    const listing: Listing = { path, entries, elapsed };
+    const archiveUnits = view.getUint32(16, true);
+    if (archiveUnits) {
+        const archive = path.slice(0, archiveUnits);
+        listing.archive = {
+            path: archive,
+            outer: path.slice(0, view.getUint32(20, true)),
+            format: archiveFormat(archive) ?? "zip",
+            entries: view.getUint32(24, true),
+            cached: (view.getUint32(28, true) & 1) !== 0,
+            readMs: view.getFloat64(32, true),
+        };
+    }
+    return listing;
 }
+
+/** "zip" or "7z" for a name Glint opens like a folder (whatever's before it), else null. */
+export function archiveFormat(name: string): InArchive["format"] | null {
+    const lower = name.toLowerCase();
+    return lower.endsWith(".zip") ? "zip" : lower.endsWith(".7z") ? "7z" : null;
+}
+
+/** A zip or 7z file (on disk or in another archive): Enter opens it like a folder. */
+export const isArchiveFile = (e: FileEntry) => !e.dir && (e.ext === "zip" || e.ext === "7z");
+
+/** Something inside an archive: read-only, and extracted to be opened or copied. */
+export const isArchived = (e: FileEntry) => (e.attrs & ATTR.inArchive) !== 0;
+
+/** In an archive, but can't be extracted: password-protected, or compressed in a way Glint can't read. */
+export const isLocked = (e: FileEntry) => (e.attrs & (ATTR.encrypted | ATTR.unreadable)) !== 0;
 
 export const isHidden = (e: FileEntry) => (e.attrs & ATTR.hidden) !== 0;
 

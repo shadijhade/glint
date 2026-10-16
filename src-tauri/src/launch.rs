@@ -63,6 +63,10 @@ fn target(arg: &str, cwd: &Path) -> Result<Target, String> {
     if info.dir {
         return if fsx::can_list(&path) { Ok(Target { path, select: None }) } else { Err(path) };
     }
+    // A zip or 7z archive opens like a folder (when it's opened with Glint).
+    if crate::archive::is_archive_name(&path) {
+        return Ok(Target { path, select: None });
+    }
     // A file: its folder, with the file selected.
     let folder = Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     if !folder.is_empty() && fsx::can_list(&folder) {

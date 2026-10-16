@@ -282,6 +282,26 @@ pub async fn find_files(
         let mut out = Out { channel: &on_event, batch: Vec::new(), sent: Instant::now(), count: 0, started: false };
         let mut fd_roots = roots.clone();
         let mut limited = false;
+        // A folder in an archive: searched in the archive's own list of entries.
+        if let [root] = roots.as_slice() {
+            let searched = crate::archive::search(root, &query, options.hidden, &options.exclude, options.max_results, stop, &mut |entry| out.push(entry));
+            if let Some(searched) = searched {
+                match searched {
+                    Ok((engine, hit_limit)) => {
+                        out.started(engine);
+                        limited = hit_limit;
+                    }
+                    Err(message) => {
+                        out.flush();
+                        let _ = on_event.send(FindEvent::Error { message });
+                    }
+                }
+                out.flush();
+                let _ = on_event.send(FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited });
+                finds.finished(&lane, &run);
+                return;
+            }
+        }
         // .gitignore rules are fd's alone; anything else goes to the index first.
         if !options.respect_ignore {
             if let Some(answered) = search_index(&roots, &query, &options, stop, &mut out) {

@@ -1,5 +1,5 @@
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ArrowUp, ChevronRight, type LucideIcon, Monitor, RotateCw, Search as SearchIcon, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ArrowUp, ChevronRight, FileArchive, type LucideIcon, Monitor, RotateCw, Search as SearchIcon, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName } from "@/lib/fs";
@@ -56,9 +56,11 @@ function AddressInput({ path }: { path: string }) {
 
 /** Back/forward/up, the breadcrumb address bar (click it to type a path) and the search box, for the active tab. */
 export function AddressBar() {
-    const { path, back, forward, loading, filter, find } = useTab(
-        useShallow((t) => ({ path: t.path, back: t.back.length > 0, forward: t.forward.length > 0, loading: t.loading, filter: t.filter, find: !!t.find }))
+    const { path, back, forward, loading, filter, find, archive } = useTab(
+        useShallow((t) => ({ path: t.path, back: t.back.length > 0, forward: t.forward.length > 0, loading: t.loading, filter: t.filter, find: !!t.find, archive: t.listing?.archive }))
     );
+    // The archives on the way are marked, so it's clear where the folders on disk end.
+    const isArchive = (crumb: string) => !!archive && (samePath(crumb, archive.path) || samePath(crumb, archive.outer));
     const { drives, editing } = useExplorer(useShallow((s) => ({ drives: s.drives, editing: s.editingAddress })));
     const trailRef = useRef<HTMLDivElement>(null);
     const trail = crumbs(path);
@@ -117,8 +119,10 @@ export function AddressBar() {
                                 <button
                                     onClick={() => navigate(crumb.path)}
                                     onMouseDown={middleClickOpens(crumb.path)}
-                                    className={cn("h-6 shrink-0 rounded-[4px] px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
+                                    title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : undefined}
+                                    className={cn("flex h-6 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
                                 >
+                                    {isArchive(crumb.path) && <FileArchive className="size-3.5 text-amber-600 dark:text-amber-500" />}
                                     {i === 0 ? rootName(crumb.path) : crumb.name}
                                 </button>
                             </Fragment>

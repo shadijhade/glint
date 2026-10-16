@@ -15,6 +15,7 @@ import {
     LayoutGrid,
     List,
     Loader2,
+    Lock,
     type LucideIcon,
     PanelRight,
     PenLine,
@@ -149,13 +150,14 @@ interface CommandBarProps {
 
 /** Acts on the active pane (its tab and selection). */
 export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
-    const { path, find, tab, view } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find, tab: t.id, view: t.view })));
+    const { path, find, tab, view, readOnly } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find, tab: t.id, view: t.view, readOnly: !!t.listing?.archive })));
     const mapped = useUsage((s) => !!s[tab]);
     const { sizing, dual, other } = useExplorer(
         useShallow((s) => {
             const pane = s.dual ? s.panes[1 - s.activePane] : undefined;
             const t = pane && s.tabs[pane.active];
-            return { sizing: !!s.sizes[path]?.running, dual: s.dual, other: !!t?.ready && t.path !== THIS_PC && !t.find };
+            // An archive in the other pane is read-only: nothing goes into it.
+            return { sizing: !!s.sizes[path]?.running, dual: s.dual, other: !!t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive };
         })
     );
     const { showHidden, showPreviewPane, tileSize } = useStore(
@@ -165,7 +167,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
     const inFolder = path !== THIS_PC;
     const paths = selected.map((e) => e.path);
     const terminal = () => openTerminal(path).catch((e) => toast.error("Couldn't open a terminal", { description: String(e) }));
-    const [ref, fold] = useFold(dual);
+    const [ref, fold] = useFold(`${dual} ${readOnly}`);
     const menu = useMenu();
 
     /** The grid's tile sizes, under the arrow: choosing one shows the grid at it. */
@@ -187,23 +189,36 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
 
     return (
         <div ref={ref} className="flex h-10 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-chrome px-2">
-            <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find} title="New folder (Ctrl+Shift+N)">
+            <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find || readOnly} title="New folder (Ctrl+Shift+N)">
                 <FolderPlus /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>New folder</span>
             </Button>
             <Divider />
-            <Tool icon={Scissors} label="Cut (Ctrl+X)" disabled={!paths.length} onClick={() => copyToClipboard(paths, true)} />
-            <Tool icon={Copy} label="Copy (Ctrl+C)" disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
-            <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || find} onClick={() => paste()} />
+            <Tool icon={Scissors} label="Cut (Ctrl+X)" disabled={!paths.length || readOnly} onClick={() => copyToClipboard(paths, true)} />
+            <Tool icon={Copy} label={readOnly ? "Copy (Ctrl+C): extracted, to paste anywhere" : "Copy (Ctrl+C)"} disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
+            <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || find || readOnly} onClick={() => paste()} />
             {dual && (
                 <>
                     <Tool icon={CopyPlus} label="Copy to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(false, paths)} />
-                    <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(true, paths)} />
+                    <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other || readOnly} onClick={() => copyToOtherPane(true, paths)} />
                 </>
             )}
-            <Tool icon={PenLine} label="Rename (F2)" disabled={selected.length !== 1} onClick={onRename} />
-            <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length} onClick={onDelete} />
+            <Tool icon={PenLine} label="Rename (F2)" disabled={selected.length !== 1 || readOnly} onClick={onRename} />
+            <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length || readOnly} onClick={onDelete} />
             <Divider />
-            <Tool icon={SquareTerminal} label="Open in Terminal" disabled={!inFolder} onClick={terminal} />
+            {/* In an archive, where Open in Terminal would be (there's no folder on disk to open it in): why the rest is greyed out. */}
+            {readOnly ? (
+                <span
+                    title="Glint opens zip and 7z archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
+                    className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber-500/10 px-2 text-xs font-medium text-amber-700 dark:text-amber-400"
+                >
+                    <Lock className="size-3.5" />
+                    <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>
+                        Read-only archive
+                    </span>
+                </span>
+            ) : (
+                <Tool icon={SquareTerminal} label="Open in Terminal" disabled={!inFolder} onClick={terminal} />
+            )}
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
                 <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find} tileSize={tileSize} onChange={(v) => chooseView(v, tab)} onSizes={showSizes} />
@@ -228,7 +243,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 >
                     {sizing ? <Loader2 className="animate-spin" /> : <HardDrive />} <span data-fold="2" className={cn(fold >= 2 && "sr-only")}>{sizing ? "Stop" : "Folder sizes"}</span>
                 </Button>
-                <Button variant="ghost" size="sm" onClick={onSearchText} disabled={!inFolder} title="Search inside the files in this folder (ripgrep) · Ctrl+Shift+F" className="hidden lg:inline-flex">
+                <Button variant="ghost" size="sm" onClick={onSearchText} disabled={!inFolder || readOnly} title="Search inside the files in this folder (ripgrep) · Ctrl+Shift+F" className="hidden lg:inline-flex">
                     <TextSearch /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Search text</span>
                 </Button>
                 <Divider />
