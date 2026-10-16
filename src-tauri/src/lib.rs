@@ -180,6 +180,31 @@ fn run_ripgrep_batched(
     Ok(())
 }
 
+/// In release builds, WebView2's browser shortcuts would reload the whole app (F5, Ctrl+R), print it
+/// (Ctrl+P), open a find bar (Ctrl+F) or zoom it. This switches off the browser's handling of each
+/// key as it's pressed (the global setting only applies from the next page load), while the key
+/// still reaches the page, where Files uses F5 to refresh.
+#[cfg(all(windows, not(debug_assertions)))]
+fn disable_browser_keys(app: &tauri::App) {
+    use tauri::Manager;
+    use webview2_com::AcceleratorKeyPressedEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2AcceleratorKeyPressedEventArgs2;
+    use windows::core::Interface;
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.with_webview(|webview| unsafe {
+            let handler = AcceleratorKeyPressedEventHandler::create(Box::new(|_, args| {
+                if let Some(args) = args.and_then(|a| a.cast::<ICoreWebView2AcceleratorKeyPressedEventArgs2>().ok()) {
+                    let _ = args.SetIsBrowserAcceleratorKeyEnabled(false);
+                }
+                Ok(())
+            }));
+            let mut token = 0;
+            let _ = webview.controller().add_AcceleratorKeyPressed(&handler, &mut token);
+        });
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -213,8 +238,14 @@ pub fn run() {
             shell::show_properties,
             shell::open_with,
             shell::open_terminal,
+            shell::start_drag,
             watch::watch_dir,
         ])
+        .setup(|_app| {
+            #[cfg(all(windows, not(debug_assertions)))]
+            disable_browser_keys(_app);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
