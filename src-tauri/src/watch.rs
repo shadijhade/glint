@@ -49,13 +49,16 @@ fn watch(window: &Window, path: &str) -> Result<RecommendedWatcher, String> {
     let (window, changed) = (window.clone(), path.to_string());
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         // A build writing thousands of files becomes one refresh, not thousands.
-        if event.is_ok() && !pending.swap(true, Ordering::SeqCst) {
-            let (window, path, pending) = (window.clone(), changed.clone(), pending.clone());
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(200));
-                pending.store(false, Ordering::SeqCst);
-                let _ = window.emit("dir-changed", path);
-            });
+        if let Ok(ev) = event {
+            crate::timeline::record_notify_event(&ev);
+            if !pending.swap(true, Ordering::SeqCst) {
+                let (window, path, pending) = (window.clone(), changed.clone(), pending.clone());
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    pending.store(false, Ordering::SeqCst);
+                    let _ = window.emit("dir-changed", path);
+                });
+            }
         }
     })
     .map_err(|e| e.to_string())?;

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Cloud, Lock } from "lucide-react";
 import { ATTR, type FileEntry, isArchived, isHidden, isLocked, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
@@ -131,7 +131,18 @@ export const sizeOf = (entry: FileEntry, search: boolean, sizes?: SizeRun) => (e
 export function FileList(props: FileListProps) {
     const { rows, rowHeight, search, scope, sizes, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
     const focusPath = rows[focusIndex]?.path;
-    const relative = relativeTo(scope);
+    const relative = useMemo(() => relativeTo(scope), [scope]);
+    const maxSize = useMemo(() => {
+        let max = 0;
+        const limit = Math.min(rows.length, 4000);
+        for (let i = 0; i < limit; i++) {
+            const s = sizeOf(rows[i], search, sizes);
+            if (s !== undefined && s > max) max = s;
+        }
+        return max;
+    }, [rows, search, sizes]);
+    const nowMs = Date.now();
+
     useLayoutEffect(() => {
         if (thumbnails) timeThumbnails(lane, thumbScope);
     }, [thumbnails, lane, thumbScope]);
@@ -141,6 +152,8 @@ export function FileList(props: FileListProps) {
         // Folders found by the index come with their total; fd's come without one (0).
         const size = sizeOf(entry, search, sizes);
         const selected = selection.has(entry.path);
+        const sizePct = size && maxSize > 0 ? Math.max(3, Math.round((size / maxSize) * 100)) : 0;
+        const isHot = entry.modified > 0 && nowMs - entry.modified >= 0 && nowMs - entry.modified < 3_600_000;
         return (
             <div
                 data-row
@@ -150,7 +163,7 @@ export function FileList(props: FileListProps) {
                 onDoubleClick={() => props.onOpen(entry)}
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
                 className={cn(
-                    "file-row h-full cursor-default px-3 text-sm",
+                    "file-row h-full cursor-default px-3 text-sm transition-colors duration-75",
                     selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
                     entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary/40",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
@@ -174,12 +187,20 @@ export function FileList(props: FileListProps) {
                         {relative(entry.path)}
                     </span>
                 )}
-                <span className={cn("truncate text-xs tabular-nums text-muted-foreground", search ? "col-optional" : "col-narrow")} title={formatFullDate(entry.modified)}>
-                    {formatDate(entry.modified)}
+                <span className={cn("flex items-center gap-1.5 truncate text-xs tabular-nums text-muted-foreground", search ? "col-optional" : "col-narrow")} title={formatFullDate(entry.modified)}>
+                    {isHot && <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title="Modified within the last hour" />}
+                    <span className="truncate">{formatDate(entry.modified)}</span>
                 </span>
                 {!search && <span className="col-optional truncate text-xs text-muted-foreground">{typeLabel(entry)}</span>}
-                <span className="truncate text-right text-xs tabular-nums text-muted-foreground">
-                    {size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : ""}
+                <span className="relative flex h-5 items-center justify-end overflow-hidden rounded-[3px] px-1 text-right text-xs tabular-nums text-muted-foreground">
+                    {sizePct > 0 && (
+                        <span
+                            aria-hidden
+                            className="pointer-events-none absolute inset-y-0.5 right-0 rounded-[3px] bg-primary/12 dark:bg-primary/18"
+                            style={{ width: `${sizePct}%` }}
+                        />
+                    )}
+                    <span className="relative truncate">{size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : ""}</span>
                 </span>
             </div>
         );

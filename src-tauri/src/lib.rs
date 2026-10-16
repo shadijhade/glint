@@ -1,15 +1,22 @@
 mod archive;
+mod batch_rename;
+mod data_lens;
+mod dedup;
 mod find;
 mod fsx;
 mod index;
 mod launch;
+mod locks;
+mod pe;
 mod proc;
 mod shell;
 mod sizes;
 mod thumbs;
+mod timeline;
 mod usage;
 mod verbs;
 mod watch;
+mod xray;
 
 use fsx::blocking;
 use proc::{Lanes, Slot};
@@ -289,6 +296,18 @@ pub fn run() {
             archive::archive_stage,
             archive::cancel_archive_stage,
             archive::archive_unstage,
+            locks::who_locks,
+            locks::stop_locking_process,
+            pe::inspect_pe,
+            dedup::find_duplicates,
+            dedup::cancel_dedup,
+            dedup::hardlink_duplicates,
+            timeline::scan_timeline,
+            data_lens::inspect_sqlite,
+            data_lens::inspect_tabular,
+            batch_rename::batch_rename,
+            xray::inspect_file_xray,
+            xray::remove_ntfs_stream,
             watch::watch_dirs,
             launch::take_launch_targets,
             verbs::explorer_integration,

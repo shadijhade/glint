@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Cloud, Lock } from "lucide-react";
 import { isHidden, isLocked, isOnlineOnly } from "@/lib/entries";
 import { typeLabel } from "@/lib/fileTypes";
@@ -37,7 +37,7 @@ export function FileGrid(props: FileGridProps) {
     // tiles were zoomed meanwhile (in another tab, or the other pane).
     const layout = { cols, rowHeight: tile.height };
     const focusPath = rows[focusIndex]?.path;
-    const relative = relativeTo(scope);
+    const relative = useMemo(() => relativeTo(scope), [scope]);
     useLayoutEffect(() => timeThumbnails(lane, thumbScope), [lane, thumbScope]);
 
     // Ctrl+wheel zooms the tiles. It's listened for here rather than with onWheel, which React makes

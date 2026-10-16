@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Cloud, ExternalLink, FileArchive, Files, FolderOpen, HardDrive, Loader2, Lock, X } from "lucide-react";
+import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, HardDrive, Loader2, Lock, X } from "lucide-react";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, useExplorer } from "@/lib/explorer";
 import { isKnownType, kindOf, previewKind, typeLabel } from "@/lib/fileTypes";
@@ -13,6 +13,9 @@ import { baseName, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
+import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
+import { inspectXRay } from "./XRayDialog";
 
 const TEXT_BYTES = 256 * 1024;
 const TEXT_LINES = 2000;
@@ -276,8 +279,12 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     // In an archive, pictures, video, sound and PDFs are shown from a temp copy; text is read straight out of it.
     else if (kind === "image" || kind === "video" || kind === "audio" || kind === "pdf")
         body = archived ? <ArchivedMedia entry={entry} kind={kind} /> : <Media entry={entry} kind={kind} src={convertFileSrc(entry.path)} />;
+    // Databases and tables are read from disk, so not from inside an archive (there they show as text).
+    else if (!archived && isSqliteCandidate(entry)) body = <SqlitePreview entry={entry} />;
+    else if (!archived && isTabularCandidate(entry)) body = <TabularPreview entry={entry} />;
     // Unknown extensions get a text preview attempt; the backend spots binary files.
     else if (kind === "text" || !isKnownType(entry)) body = <TextPreview entry={entry} />;
+    else if (!archived && isPeCandidate(entry)) body = <BinaryPreview entry={entry} />;
     else body = <BigIcon entry={entry} />;
 
     const open = () => (archived || entry.dir ? openEntry(entry) : openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) })));
@@ -291,6 +298,11 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                     {entry.name}
                 </span>
                 <div className="ml-auto flex shrink-0">
+                    {!entry.dir && !archived && (
+                        <Button variant="ghost" size="icon" className="size-7" onClick={() => inspectXRay(entry.path)} title="File X-Ray: hashes and hidden streams">
+                            <Fingerprint />
+                        </Button>
+                    )}
                     <Button variant="ghost" size="icon" className="size-7" onClick={reveal} title={archive ? "Show the archive in File Explorer" : "Show in File Explorer"}>
                         <FolderOpen />
                     </Button>

@@ -1,4 +1,4 @@
-import { FileArchive, Loader2, Zap } from "lucide-react";
+import { FileArchive, Fingerprint, Loader2, PenLine, Zap } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
@@ -6,7 +6,9 @@ import { useExplorer, useTab, viewKey } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { baseName, THIS_PC } from "@/lib/paths";
 import { type ThumbRun, useThumbRuns } from "@/lib/thumbs";
+import { openBatchRename } from "./BatchRenameDialog";
 import { UsageWork } from "./DiskUsage";
+import { inspectXRay } from "./XRayDialog";
 
 interface StatusBarProps {
     shown: number;
@@ -104,13 +106,33 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     }
 
     return (
-        <div className="@container flex h-7 shrink-0 items-center gap-3 overflow-hidden border-t px-3 text-xs text-muted-foreground">
+        <div className="@container flex h-7 shrink-0 items-center gap-2 overflow-hidden border-t px-3 text-xs text-muted-foreground">
             <span className="truncate">
                 {items(shown)}
                 {hidden > 0 && !mapped && ` · ${formatCount(hidden)} hidden`}
                 {selected.length > 0 && ` · ${formatCount(selected.length)} selected`}
                 {selectedFiles.length > 0 && ` · ${formatSize(selectedBytes)}`}
             </span>
+            {!listing?.archive && selected.length === 1 && !selected[0].dir && (
+                <button
+                    type="button"
+                    onClick={() => inspectXRay(selected[0].path)}
+                    title="File X-Ray: hashes and hidden streams"
+                    className="hidden items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 @md:inline-flex"
+                >
+                    <Fingerprint className="size-3" /> X-Ray
+                </button>
+            )}
+            {!listing?.archive && selected.length > 1 && (
+                <button
+                    type="button"
+                    onClick={() => openBatchRename(selected, listing?.entries ?? selected)}
+                    title="Rename the selected items (F2)"
+                    className="hidden items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 @md:inline-flex"
+                >
+                    <PenLine className="size-3" /> Rename
+                </button>
+            )}
             <span className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap tabular-nums">
                 {work}
                 {thumbsHere && <ThumbWork run={thumbsHere} />}
