@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { FileEntry } from "./entries";
-import { activeTabId, indexed, reload, tabState, updateTab, useExplorer } from "./explorer";
+import { activeTabId, indexed, reload, setView, tabState, updateTab, useExplorer, type ViewMode } from "./explorer";
 import { cancelDiskUsage, diskUsage, resolvePath } from "./fs";
 import { samePath, THIS_PC } from "./paths";
 import { pruneUsage, subUsage, type UsageMap, usageEntries } from "./usage";
@@ -65,6 +65,12 @@ export function setUsage(tab: string, on: boolean) {
 
 /** The command bar's and the palette's Disk usage: map or list, for the active tab by default. */
 export const toggleUsage = (tab = activeTabId()) => setUsage(tab, !runs()[tab]);
+
+/** List or grid, chosen in the command bar, the palette or with a key: a tab showing its map shows its items again. */
+export function chooseView(view: ViewMode, tab = activeTabId()) {
+    setUsage(tab, false);
+    setView(view, tab);
+}
 
 /**
  * Maps dust measured lately, by folder: going back to one shows it again instead of measuring it

@@ -3,16 +3,18 @@ import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Cloud } from "lucide-react";
 import { type FileEntry, isHidden, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
 import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
-import { kindOf, typeLabel } from "@/lib/fileTypes";
+import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
 import { parentPath } from "@/lib/paths";
+import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { VirtualList } from "../VirtualList";
+import { Thumbnail } from "./Thumbnail";
 
-interface FileListProps {
+/** What the list and the grid both show, and how they report what's done to them. */
+export interface FileViewProps {
     rows: FileEntry[];
-    rowHeight: number;
-    /** Search results: a Folder column shows where each one is, relative to `scope`. */
+    /** Search results: each one shows where it is, relative to `scope`. */
     search: boolean;
     scope: string;
     sizes?: SizeRun;
@@ -26,7 +28,11 @@ interface FileListProps {
     dropTarget: string | null;
     /** In the pane the keyboard isn't acting on: the selection shows muted, as in an unfocused window. */
     inactive?: boolean;
-    /** Where to start scrolled to (where this list was left), and where it's scrolled since. */
+    /** The tab shown, which thumbnails are asked for in, and what its thumbnails are timed for: the
+     * folder or search, in this view (`viewKey` and the view, as the status bar reads it). */
+    lane: string;
+    thumbScope: string;
+    /** Where to start scrolled to (where this view was left), and where it's scrolled since. */
     scrollTop?: number;
     onScrollTop?: (top: number) => void;
     onRowMouseDown: (e: React.MouseEvent, index: number) => void;
@@ -39,7 +45,14 @@ interface FileListProps {
     empty: React.ReactNode;
 }
 
-function RenameInput({ entry, onCommit, onCancel }: { entry: FileEntry; onCommit: (name: string) => void; onCancel: () => void }) {
+interface FileListProps extends FileViewProps {
+    rowHeight: number;
+    /** Pictures and videos show a small thumbnail in place of their icon, `iconBox` CSS pixels square. */
+    thumbnails: boolean;
+    iconBox: number;
+}
+
+export function RenameInput({ entry, onCommit, onCancel, className }: { entry: FileEntry; onCommit: (name: string) => void; onCancel: () => void; className?: string }) {
     const ref = useRef<HTMLInputElement>(null);
     const done = useRef(false);
     useLayoutEffect(() => {
@@ -73,12 +86,12 @@ function RenameInput({ entry, onCommit, onCancel }: { entry: FileEntry; onCommit
                 }
             }}
             onBlur={() => finish(true)}
-            className="h-6 min-w-0 flex-1 rounded-sm border border-ring bg-background px-1 text-sm outline-hidden"
+            className={cn("h-6 min-w-0 flex-1 rounded-sm border border-ring bg-background px-1 text-sm outline-hidden", className)}
         />
     );
 }
 
-function Header({ sortKey, sort, onSort, className, children }: { sortKey: SortKey; sort: Sort; onSort: (key: SortKey) => void; className?: string; children: React.ReactNode }) {
+export function Header({ sortKey, sort, onSort, className, children }: { sortKey: SortKey; sort: Sort; onSort: (key: SortKey) => void; className?: string; children: React.ReactNode }) {
     const active = sort.key === sortKey;
     const Arrow = sort.desc ? ChevronDown : ChevronUp;
     return (
@@ -93,24 +106,33 @@ function Header({ sortKey, sort, onSort, className, children }: { sortKey: SortK
     );
 }
 
-export function FileList(props: FileListProps) {
-    const { rows, rowHeight, search, scope, sizes, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive } = props;
-    const focusPath = rows[focusIndex]?.path;
-    // Where a search result is, below the folder that was searched ("" when right in it).
+/** Where a search result is, below the folder that was searched ("" when right in it). */
+export function relativeTo(scope: string) {
     const base = scope.replace(/[\\/]+$/, "").toLowerCase();
-    const relative = (path: string) => {
+    return (path: string) => {
         const folder = parentPath(path);
         if (!scope) return folder;
         const lower = folder.replace(/[\\/]+$/, "").toLowerCase();
         if (lower === base) return "";
         return lower.startsWith(base + "\\") || lower.startsWith(base + "/") ? folder.slice(base.length + 1) : folder;
     };
+}
+
+/** A folder's size: the index's total for a search result, else its size measured here (folders sized as they open). */
+export const sizeOf = (entry: FileEntry, search: boolean, sizes?: SizeRun) => (entry.dir ? (search ? entry.size || undefined : sizes?.sizes.get(entry.name)) : entry.size);
+
+export function FileList(props: FileListProps) {
+    const { rows, rowHeight, search, scope, sizes, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    const focusPath = rows[focusIndex]?.path;
+    const relative = relativeTo(scope);
+    useLayoutEffect(() => {
+        if (thumbnails) timeThumbnails(lane, thumbScope);
+    }, [thumbnails, lane, thumbScope]);
 
     const renderRow = (i: number) => {
         const entry = rows[i];
-        const kind = kindOf(entry);
         // Folders found by the index come with their total; fd's come without one (0).
-        const size = entry.dir ? (search ? entry.size || undefined : sizes?.sizes.get(entry.name)) : entry.size;
+        const size = sizeOf(entry, search, sizes);
         const selected = selection.has(entry.path);
         return (
             <div
@@ -129,7 +151,9 @@ export function FileList(props: FileListProps) {
                 )}
             >
                 <div className="flex min-w-0 items-center gap-2" title={entry.name}>
-                    <kind.icon className={cn("size-4 shrink-0", kind.tone)} />
+                    <span className="relative grid size-4 shrink-0 place-items-center">
+                        <Thumbnail entry={entry} box={iconBox} lane={lane} enabled={thumbnails && isPictureOrVideo(entry)} iconClassName="size-4" />
+                    </span>
                     {renaming === entry.path ? (
                         <RenameInput entry={entry} onCommit={(name) => props.onRename(entry, name)} onCancel={props.onCancelRename} />
                     ) : (

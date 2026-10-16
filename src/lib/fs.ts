@@ -95,6 +95,29 @@ export const diskUsage = async (path: string, depth: number, maxItems: number, l
     decodeUsage(await invoke<ArrayBuffer>("disk_usage", { path, depth, maxItems, lane }));
 export const cancelDiskUsage = (lane: string) => invoke("cancel_disk_usage", { lane });
 
+export interface ThumbRequest {
+    path: string;
+    /** Device pixels, the most on either side. */
+    size: number;
+    /** The file's date and size from its listing: a file that changed gets a new thumbnail. */
+    modified: number;
+    bytes: number;
+    /** Only from Windows' cache (an online-only file, which making a thumbnail would download). */
+    cachedOnly: boolean;
+    /** The tab asking, and the request's number in it. */
+    lane: string;
+    seq: number;
+}
+
+/**
+ * One item's thumbnail from Windows' thumbnail cache, else made from the file, as binary (read it with
+ * `decodeThumb`). Rejects with "cancelled" once dropped by `cancelThumbnails`.
+ */
+export const thumbnail = (request: ThumbRequest) => invoke<ArrayBuffer>("thumbnail", { ...request });
+
+/** Drops a tab's thumbnail requests up to number `upTo`: for `paths`, or all of them (null). */
+export const cancelThumbnails = (lane: string, paths: string[] | null, upTo: number) => invoke("cancel_thumbnails", { lane, paths, upTo });
+
 /** Stops every running rg, fd and dust, in every tab (before an update replaces them). */
 export const stopTools = () => invoke("stop_tools");
 

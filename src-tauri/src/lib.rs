@@ -4,6 +4,7 @@ mod index;
 mod proc;
 mod shell;
 mod sizes;
+mod thumbs;
 mod usage;
 mod watch;
 
@@ -230,6 +231,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .manage(watch::FolderWatcher::default())
+        .manage(thumbs::Thumbs::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -249,6 +251,8 @@ pub fn run() {
             find::cancel_find,
             sizes::folder_sizes,
             sizes::cancel_folder_sizes,
+            thumbs::thumbnail,
+            thumbs::cancel_thumbnails,
             usage::disk_usage,
             usage::cancel_disk_usage,
             index::index_status,
@@ -267,6 +271,10 @@ pub fn run() {
         .setup(|app| {
             #[cfg(all(windows, not(debug_assertions)))]
             disable_browser_keys(app);
+            {
+                use tauri::Manager;
+                app.state::<thumbs::Thumbs>().warm_up();
+            }
             #[cfg(desktop)]
             if installed_by_setup() {
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
