@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { ClipboardPaste, Columns2, Command, Copy, CopyPlus, Eye, EyeOff, FolderOutput, FolderPlus, HardDrive, Loader2, type LucideIcon, PanelRight, PenLine, Scissors, SquareTerminal, TextSearch, Trash2 } from "lucide-react";
+import { ClipboardPaste, Columns2, Command, Copy, CopyPlus, Eye, EyeOff, FolderOutput, FolderPlus, HardDrive, LayoutDashboard, Loader2, type LucideIcon, PanelRight, PenLine, Scissors, SquareTerminal, TextSearch, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
+import { toggleUsage, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { calcSizes, copyToClipboard, copyToOtherPane, newItem, paste, stopSizes, toggleDual, useExplorer, useTab } from "@/lib/explorer";
 import { openTerminal } from "@/lib/fs";
@@ -76,7 +77,8 @@ interface CommandBarProps {
 
 /** Acts on the active pane (its tab and selection). */
 export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
-    const { path, find } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find })));
+    const { path, find, tab } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find, tab: t.id })));
+    const mapped = useUsage((s) => !!s[tab]);
     const { sizing, dual, other } = useExplorer(
         useShallow((s) => {
             const pane = s.dual ? s.panes[1 - s.activePane] : undefined;
@@ -112,6 +114,17 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             <Tool icon={SquareTerminal} label="Open in Terminal" disabled={!inFolder} onClick={terminal} />
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => toggleUsage(tab)}
+                    disabled={!inFolder || find}
+                    aria-pressed={mapped}
+                    title={mapped ? "Back to the file list" : "Disk usage: a map of what fills this folder, from the instant search index when it has it, otherwise measured with dust"}
+                    className={cn("hidden md:inline-flex", mapped && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary")}
+                >
+                    <LayoutDashboard /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Disk usage</span>
+                </Button>
                 <Button
                     variant="ghost"
                     size="sm"

@@ -25,12 +25,13 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 
 | Path | What it is |
 | :--- | :--- |
-| `src/components/explorer/` | The Files mode UI: panes and tabs, list, sidebar, address bar, preview, command bar |
+| `src/components/explorer/` | The Files mode UI: panes and tabs, list, disk-usage map, sidebar, address bar, preview, command bar |
 | `src/lib/explorer.ts` | Explorer state and actions: tabs and panes, navigation, selection, search, file operations |
 | `src/lib/fs.ts` | Typed wrappers for every Rust command |
+| `src/lib/usage.ts`, `diskUsage.ts` | Disk-usage maps: decoding and the squarified treemap layout; each tab's map |
 | `src/components/Results.tsx`, `Search.tsx` | Text search (ripgrep) |
 | `src-tauri/src/fsx.rs` | Folder listing (Win32 `FindFirstFileExW`, binary transfer to the UI) |
-| `src-tauri/src/find.rs`, `sizes.rs` | fd name search and dust folder sizes (or the index when it's on) |
+| `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, dust folder sizes and disk-usage maps (or the index when it's on) |
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop, Properties |
 | `src-tauri/index/` | The opt-in instant-search service (NTFS MFT + USN journal) |
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `dust` executables |

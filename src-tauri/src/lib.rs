@@ -4,6 +4,7 @@ mod index;
 mod proc;
 mod shell;
 mod sizes;
+mod usage;
 mod watch;
 
 use fsx::blocking;
@@ -17,12 +18,13 @@ use tauri::{Emitter, State, Window};
 use tauri_plugin_shell::ShellExt;
 
 /// The work in flight: the ripgrep text search, and each tab's file search (fd and the index) and
-/// dust folder sizes.
+/// dust measuring folder sizes or a disk-usage map.
 #[derive(Default)]
 pub struct AppState {
     pub search: Slot,
     pub finds: find::Finds,
     pub sizes: Lanes,
+    pub usage: Lanes,
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -67,13 +69,14 @@ fn cancel_search(state: State<AppState>) {
     state.search.kill();
 }
 
-/// Stops every sidecar that runs (the text search, and each tab's file search and folder sizes), so
-/// an update's installer can replace rg, fd and dust.
+/// Stops every sidecar that runs (the text search, and each tab's file search, folder sizes and
+/// disk-usage map), so an update's installer can replace rg, fd and dust.
 #[tauri::command]
 fn stop_tools(state: State<AppState>) {
     state.search.kill();
     state.finds.stop_all();
     state.sizes.close_all();
+    state.usage.close_all();
 }
 
 #[tauri::command]
@@ -246,6 +249,8 @@ pub fn run() {
             find::cancel_find,
             sizes::folder_sizes,
             sizes::cancel_folder_sizes,
+            usage::disk_usage,
+            usage::cancel_disk_usage,
             index::index_status,
             index::index_enable,
             index::index_disable,

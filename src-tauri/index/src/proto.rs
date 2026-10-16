@@ -1,12 +1,14 @@
 //! What the app and the service say over the pipe. One request per connection: a u32 length, then a
 //! JSON object. The answer is a series of frames, each a u32 length, a kind byte and a payload: JSON
-//! messages, and search results in a compact binary form (thousands of paths a frame).
+//! messages, and search results and disk-usage maps in a compact binary form (thousands of paths a
+//! frame).
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 pub const FRAME_JSON: u8 = 1;
 pub const FRAME_HITS: u8 = 2;
+pub const FRAME_USAGE: u8 = 3;
 /// Requests are small; anything bigger is refused before it's read.
 pub const MAX_REQUEST: usize = 1 << 20;
 pub const MAX_FRAME: usize = 64 << 20;
@@ -18,6 +20,8 @@ pub enum Request {
     Search(SearchRequest),
     /// Folder sizes: the folder's total and the total of each folder in it.
     Sizes { path: String },
+    /// A disk-usage map: the biggest files and folders below a folder, a few levels deep.
+    Usage(UsageRequest),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -34,6 +38,18 @@ pub struct SearchRequest {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRequest {
+    /// The folder to map.
+    pub path: String,
+    /// How many levels down to go: 1 is only what's right inside the folder.
+    pub depth: u32,
+    /// The most items to send. The biggest are sent, with the folders they're in; the rest only
+    /// count in their folders' sizes.
+    pub max_items: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Message {
     Status(Status),
@@ -43,6 +59,8 @@ pub enum Message {
     /// The search is complete. `elapsed` is the service's time in milliseconds.
     Done { count: u64, limited: bool, elapsed: f64 },
     Sizes(Sizes),
+    /// Follows a disk-usage map's frame.
+    Usage(UsageSummary),
     Error { message: String },
 }
 
@@ -85,6 +103,36 @@ pub struct Sizes {
     pub sizes: Vec<(String, u64)>,
     pub elapsed: f64,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSummary {
+    pub path: String,
+    /// Everything below the folder, in bytes.
+    pub total: u64,
+    /// Items in the map, the folder itself included.
+    pub items: u64,
+    /// Whether smaller items were left out (they still count in their folders' sizes).
+    pub limited: bool,
+    /// The service's time, in ms.
+    pub elapsed: f64,
+}
+
+/// One item of a disk-usage map. The folder mapped comes first; each item's folder comes before it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageNode {
+    /// Where the folder it's in is in the map; NO_PARENT for the folder mapped.
+    pub parent: u32,
+    pub name: String,
+    pub dir: bool,
+    /// Files: their size. Folders: everything below them.
+    pub size: u64,
+    /// Last write time, Unix milliseconds (0 when unknown).
+    pub modified: i64,
+    pub attrs: u32,
+}
+
+pub const NO_PARENT: u32 = u32::MAX;
 
 /// A search result.
 #[derive(Debug, Clone, PartialEq)]
@@ -137,6 +185,51 @@ pub fn decode_hits(mut bytes: &[u8]) -> Result<Vec<Hit>, String> {
         bytes = &bytes[23 + len..];
     }
     Ok(hits)
+}
+
+/// Appends one map item: its folder's place, flags, attributes, size, modified, then the name as
+/// length-prefixed UTF-8.
+pub fn encode_usage_node(out: &mut Vec<u8>, node: &UsageNode) {
+    out.extend_from_slice(&node.parent.to_le_bytes());
+    out.push(node.dir as u8);
+    out.extend_from_slice(&node.attrs.to_le_bytes());
+    out.extend_from_slice(&node.size.to_le_bytes());
+    out.extend_from_slice(&node.modified.to_le_bytes());
+    let name = &node.name.as_bytes()[..node.name.len().min(u16::MAX as usize)];
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(name);
+}
+
+/// Reads a map back, checking it's a tree: the folder mapped first, every other item after the
+/// folder it's in.
+pub fn decode_usage(mut bytes: &[u8]) -> Result<Vec<UsageNode>, String> {
+    let mut nodes: Vec<UsageNode> = Vec::new();
+    let bad = |what: &str| format!("disk-usage map {what}");
+    while !bytes.is_empty() {
+        if bytes.len() < 27 {
+            return Err(bad("truncated"));
+        }
+        let len = u16::from_le_bytes([bytes[25], bytes[26]]) as usize;
+        let name = bytes.get(27..27 + len).ok_or_else(|| bad("truncated"))?;
+        let node = UsageNode {
+            parent: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            dir: bytes[4] & 1 != 0,
+            attrs: u32::from_le_bytes(bytes[5..9].try_into().unwrap()),
+            size: u64::from_le_bytes(bytes[9..17].try_into().unwrap()),
+            modified: i64::from_le_bytes(bytes[17..25].try_into().unwrap()),
+            name: String::from_utf8(name.to_vec()).map_err(|_| bad("name isn't UTF-8"))?,
+        };
+        let placed = match nodes.get(node.parent as usize) {
+            Some(folder) => folder.dir,
+            None => nodes.is_empty() && node.parent == NO_PARENT && node.dir,
+        };
+        if !placed {
+            return Err(bad("out of order"));
+        }
+        nodes.push(node);
+        bytes = &bytes[27 + len..];
+    }
+    Ok(nodes)
 }
 
 pub fn write_frame<W: Write + ?Sized>(w: &mut W, kind: u8, payload: &[u8]) -> io::Result<()> {
@@ -223,6 +316,50 @@ mod tests {
         assert_eq!(serde_json::from_slice::<Message>(&json).unwrap(), Message::Done { count: 2, limited: false, elapsed: 1.5 });
         assert!(read_frame(&mut reader, MAX_FRAME).unwrap().is_none());
         assert!(decode_hits(&payload[..10]).is_err());
+    }
+
+    #[test]
+    fn usage_maps_round_trip() {
+        let request = Request::Usage(UsageRequest { path: r"C:\".into(), depth: 4, max_items: 20_000 });
+        let mut wire = Vec::new();
+        write_request(&mut wire, &request).unwrap();
+        assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
+        assert!(serde_json::to_string(&request).unwrap().contains(r#""op":"usage","path":"C:\\","depth":4,"maxItems":20000"#));
+
+        let nodes = vec![
+            UsageNode { parent: NO_PARENT, name: String::new(), dir: true, size: 3 << 40, modified: 0, attrs: 0x16 },
+            UsageNode { parent: 0, name: "Windows".into(), dir: true, size: 2 << 40, modified: 1_700_000_000_000, attrs: 0x10 },
+            UsageNode { parent: 0, name: "pagefile.sys".into(), dir: false, size: 1 << 34, modified: -1, attrs: 0x26 },
+            UsageNode { parent: 1, name: "Été😀.log".into(), dir: false, size: 7, modified: 5, attrs: 0x20 },
+        ];
+        let mut payload = Vec::new();
+        nodes.iter().for_each(|n| encode_usage_node(&mut payload, n));
+        let summary = UsageSummary { path: r"C:\".into(), total: 3 << 40, items: 4, limited: true, elapsed: 2.5 };
+        let mut wire = Vec::new();
+        write_frame(&mut wire, FRAME_USAGE, &payload).unwrap();
+        write_message(&mut wire, &Message::Usage(summary.clone())).unwrap();
+        let mut reader = wire.as_slice();
+        let (kind, payload) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
+        assert_eq!((kind, decode_usage(&payload).unwrap()), (FRAME_USAGE, nodes.clone()));
+        let (kind, json) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
+        assert_eq!((kind, serde_json::from_slice::<Message>(&json).unwrap()), (FRAME_JSON, Message::Usage(summary)));
+        assert!(read_frame(&mut reader, MAX_FRAME).unwrap().is_none());
+
+        // Damage is refused rather than handed to the UI.
+        assert!(decode_usage(&payload[..payload.len() - 1]).is_err());
+        assert!(decode_usage(&payload[..20]).is_err());
+        let mut orphan = Vec::new();
+        encode_usage_node(&mut orphan, &nodes[0]);
+        encode_usage_node(&mut orphan, &UsageNode { parent: 1, ..nodes[1].clone() });
+        assert!(decode_usage(&orphan).is_err());
+        let mut inside_a_file = Vec::new();
+        nodes[..3].iter().for_each(|n| encode_usage_node(&mut inside_a_file, n));
+        encode_usage_node(&mut inside_a_file, &UsageNode { parent: 2, ..nodes[3].clone() });
+        assert!(decode_usage(&inside_a_file).is_err());
+        let mut rootless = Vec::new();
+        encode_usage_node(&mut rootless, &nodes[1]);
+        assert!(decode_usage(&rootless).is_err());
+        assert_eq!(decode_usage(&[]).unwrap(), []);
     }
 
     #[test]

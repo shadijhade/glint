@@ -23,21 +23,27 @@ pub struct FolderSizes {
     pub engine: &'static str,
 }
 
-/// dust -j prints {"size":"123B","name":"C:\\dir","children":[…]} when sizes are in bytes (-o b).
+/// dust -j prints {"size":"123B","name":"C:\\dir","children":[…]} when sizes are in bytes (-o b);
+/// every name is a full path.
 #[derive(Deserialize)]
-struct Node {
-    size: String,
-    name: String,
+pub(crate) struct Node {
+    pub size: String,
+    pub name: String,
     #[serde(default)]
-    children: Vec<Node>,
+    pub children: Vec<Node>,
 }
 
-fn bytes(size: &str) -> u64 {
+pub(crate) fn bytes(size: &str) -> u64 {
     size.trim_end_matches('B').parse().unwrap_or(0)
 }
 
+/// dust's whole tree.
+pub(crate) fn parse_tree(json: &str) -> Result<Node, String> {
+    serde_json::from_str(json.trim()).map_err(|e| format!("Unexpected output from dust: {e}"))
+}
+
 fn parse(json: &str) -> Result<(u64, Vec<(String, u64)>), String> {
-    let root: Node = serde_json::from_str(json.trim()).map_err(|e| format!("Unexpected output from dust: {e}"))?;
+    let root = parse_tree(json)?;
     let sizes = root
         .children
         .iter()

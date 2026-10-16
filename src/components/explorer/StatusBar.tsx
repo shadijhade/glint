@@ -1,9 +1,11 @@
 import { Loader2, Zap } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { useExplorer, useTab } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { THIS_PC } from "@/lib/paths";
+import { UsageWork } from "./DiskUsage";
 
 interface StatusBarProps {
     shown: number;
@@ -15,7 +17,9 @@ const items = (n: number) => `${formatCount(n)} ${n === 1 ? "item" : "items"}`;
 
 /** Counts on the left; on the right, which tool did the work and how long it took. */
 export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
-    const { path, listing, find, shownIn } = useTab(useShallow((t) => ({ path: t.path, listing: t.listing, find: t.find, shownIn: t.shownIn })));
+    const { tab, path, listing, find, shownIn } = useTab(useShallow((t) => ({ tab: t.id, path: t.path, listing: t.listing, find: t.find, shownIn: t.shownIn })));
+    // A tab showing its disk-usage map tells how that was mapped; its rows are the map's items.
+    const mapped = useUsage((s) => !!s[tab]) && !find;
     const { sizes, drives } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length })));
     if (path === THIS_PC && !find) {
         return <div className="flex h-7 shrink-0 items-center border-t bg-card/40 px-3 text-xs text-muted-foreground">{`${drives} ${drives === 1 ? "drive" : "drives"}`}</div>;
@@ -24,7 +28,8 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     const selectedBytes = selectedFiles.reduce((sum, e) => sum + e.size, 0);
 
     let work: React.ReactNode = null;
-    if (find) {
+    if (mapped) work = <UsageWork tab={tab} />;
+    else if (find) {
         const engine = find.engine ? `${find.engine} · ` : "";
         work = find.running ? (
             <>
@@ -52,7 +57,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
         <div className="flex h-7 shrink-0 items-center gap-3 border-t bg-card/40 px-3 text-xs text-muted-foreground">
             <span className="truncate">
                 {items(shown)}
-                {hidden > 0 && ` · ${formatCount(hidden)} hidden`}
+                {hidden > 0 && !mapped && ` · ${formatCount(hidden)} hidden`}
                 {selected.length > 0 && ` · ${formatCount(selected.length)} selected`}
                 {selectedFiles.length > 0 && ` · ${formatSize(selectedBytes)}`}
             </span>

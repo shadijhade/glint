@@ -1,7 +1,8 @@
-//! Instant name search and folder sizes for whole NTFS drives, the way Everything and WizTree do it:
-//! an elevated service reads each volume's Master File Table once, keeps every name, size, date and
-//! attribute in memory, follows the USN change journal to stay current, and answers the app over a
-//! named pipe that only the users who turned it on (and administrators) can open.
+//! Instant name search, folder sizes and disk-usage maps for whole NTFS drives, the way Everything
+//! and WizTree do it: an elevated service reads each volume's Master File Table once, keeps every
+//! name, size, date and attribute in memory, follows the USN change journal to stay current, and
+//! answers the app over a named pipe that only the users who turned it on (and administrators) can
+//! open.
 //!
 //! The pure parts (record parsing, the index, queries, snapshots, the wire format) build and test on
 //! any OS; reading volumes, the service and the pipe are Windows-only.

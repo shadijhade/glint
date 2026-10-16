@@ -2,7 +2,7 @@
 //! things, and turning it on or off, which runs the service executable elevated behind the UAC prompt.
 
 use crate::pipe::PipeIo;
-use crate::proto::{self, Hit, Message, Request, SearchRequest, Sizes, Status, FRAME_HITS, FRAME_JSON, MAX_FRAME};
+use crate::proto::{self, Hit, Message, Request, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, FRAME_HITS, FRAME_JSON, FRAME_USAGE, MAX_FRAME};
 use crate::win::{self, os_error, wide, Handle};
 use std::fmt;
 use std::io;
@@ -134,6 +134,29 @@ pub(crate) fn sizes_on(pipe: Handle, path: &str) -> Result<Sizes, Error> {
         Message::Sizes(sizes) => Ok(sizes),
         _ => Err(unexpected()),
     }
+}
+
+/// A disk-usage map of a folder (see `UsageRequest`). An older service that doesn't know the request
+/// closes the pipe without an answer: an error like any other.
+pub fn usage(request: &UsageRequest) -> Result<(Vec<UsageNode>, UsageSummary), Error> {
+    usage_on(connect()?, request)
+}
+
+pub(crate) fn usage_on(pipe: Handle, request: &UsageRequest) -> Result<(Vec<UsageNode>, UsageSummary), Error> {
+    let pipe = ask(pipe, &Request::Usage(request.clone()))?;
+    let mut io = PipeIo(&pipe);
+    let mut nodes = None;
+    while let Some((kind, payload)) = proto::read_frame(&mut io, MAX_FRAME).map_err(Error::Io)? {
+        if kind == FRAME_USAGE {
+            nodes = Some(proto::decode_usage(&payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?);
+            continue;
+        }
+        return match (message(kind, &payload)?, nodes) {
+            (Message::Usage(summary), Some(nodes)) => Ok((nodes, summary)),
+            _ => Err(unexpected()),
+        };
+    }
+    Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection")))
 }
 
 pub enum Event {

@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { decodeListing, type FileEntry, type Listing, withDetails } from "./entries";
+import { decodeUsage, type UsageMap } from "./usage";
 
 export type { Listing };
 
@@ -84,6 +85,15 @@ export interface FolderSizes {
  */
 export const folderSizes = (path: string, lane: string, indexOnly = false) => invoke<FolderSizes>("folder_sizes", { path, indexOnly, lane });
 export const cancelFolderSizes = (lane: string) => invoke("cancel_folder_sizes", { lane });
+
+/**
+ * A disk-usage map of `path`: its biggest files and folders (at most `maxItems`), `depth` levels down,
+ * from the index when it has the folder, else measured by dust. Each tab maps in its own `lane`;
+ * rejects with "cancelled" when superseded there or stopped.
+ */
+export const diskUsage = async (path: string, depth: number, maxItems: number, lane: string): Promise<UsageMap> =>
+    decodeUsage(await invoke<ArrayBuffer>("disk_usage", { path, depth, maxItems, lane }));
+export const cancelDiskUsage = (lane: string) => invoke("cancel_disk_usage", { lane });
 
 /** Stops every running rg, fd and dust, in every tab (before an update replaces them). */
 export const stopTools = () => invoke("stop_tools");
