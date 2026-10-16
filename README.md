@@ -15,7 +15,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/
 
 **[Download for Windows](https://github.com/shadijhade/shadui-ripgrep/releases/latest)** · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
 
-<img src="screenshots/demo.gif" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes and the command palette" width="100%">
+<img src="screenshots/demo.gif" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes, the command palette and two panes side by side" width="100%">
 
 </div>
 
@@ -26,6 +26,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/
 -   **Any file on any drive, in milliseconds.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows the change journal. Every `kernel32.dll` on three drives (over 3 million names) is listed in about 8 ms. Without it, fd streams results as it finds them.
 -   **ripgrep for what's inside files**: regular expressions, whole words, replace across files, and a syntax-highlighted preview.
 -   **Space to Quick Look, Ctrl+K for everything else.** See any file full size without opening it and arrow through the folder. Jump to the folders you use most (ranked by frecency, like zoxide) or run any command by typing a few letters.
+-   **Tabs, and two panes side by side.** Each pane has its own tabs (Ctrl+T, or middle-click a folder), and Ctrl+Shift+D shows two folders at once to copy or move between. Your tabs are back the next time you start.
 -   **Still Windows.** Copy, move, delete and rename run on Windows' own file engine (progress, *Replace or Skip*, Recycle Bin, UAC). The clipboard and drag and drop work with File Explorer and every other app, and Properties, Open with and Open in Terminal are a right-click away.
 
 ## Benchmarks
@@ -61,6 +62,14 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Drag and drop.** Drag files out to File Explorer, the desktop, a mail or a chat, or drop them in from anywhere onto a folder, a sidebar place or the open folder. As in Explorer, dropping on the same drive moves and on another drive copies.
 -   **Live.** The open folder refreshes when files change elsewhere.
 -   **Explorer integration.** Properties, Open with…, Show in File Explorer and Open in Terminal.
+
+### Tabs and dual pane
+
+<img src="screenshots/dual-pane.png" alt="Two panes side by side, each with its own tabs: C:\Windows sorted by size, and a project's source folder" width="100%">
+
+-   **Tabs.** `Ctrl+T` opens a tab on the folder you're in. A middle-click (or `Ctrl+Enter`) opens a folder in a new tab behind the current one, as in a browser. `Ctrl+Tab` and `Ctrl+1`…`Ctrl+9` switch, `Ctrl+W` closes, and `Ctrl+Shift+T` brings the last one back. Each tab keeps its own history, selection, search and scroll position, and your tabs come back when the app starts (Settings → Reopen my tabs).
+-   **Dual pane.** `Ctrl+Shift+D` (or the toolbar button) shows two folders side by side, each pane with its own tabs. Click a pane or press `F6` to work in it. Drag files across, or use **Copy to other pane** and **Move to other pane**, which run on Windows' own file engine like every other file operation.
+-   **Both at full speed.** Each tab searches and sizes folders on its own, so a long search in one pane doesn't stop the other's, and both panes refresh when their folders change.
 
 <table>
 <tr>
@@ -100,6 +109,7 @@ The service only runs once you opt in, with every privilege removed except the t
 | Search inside files | Indexed places and file types | ripgrep in any folder, with regex and replace |
 | Preview | Preview pane | Preview pane, and Quick Look on `Space` |
 | Go to a folder | Quick access, address bar | Address bar, and `Ctrl+K` with your most-used folders |
+| Tabs and panes | Tabs (Windows 11) | Tabs in each pane, and two panes side by side |
 | Timing | Not shown | In the status bar, for every folder and search |
 
 ## Install
@@ -117,6 +127,12 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 | `Enter` | Open the selection |
 | `Space` | Quick Look: the focused item full size. Arrows move through the folder; `Space` or `Esc` closes |
 | `Ctrl+K` / `Ctrl+P` | Command palette: folders you use, paths and every command |
+| `Ctrl+T` / `Ctrl+W` | New tab on this folder / close the tab |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` · `Ctrl+1`…`Ctrl+9` | Next / previous tab · go to a tab (`Ctrl+9`: the last one) |
+| `Ctrl+Shift+T` | Reopen the last closed tab |
+| Middle-click a folder / `Ctrl+Enter` | Open it in a new tab |
+| `Ctrl+Shift+D` | Dual pane on or off |
+| `F6` | Switch to the other pane |
 | `Alt+Left` / `Backspace` · `Alt+Right` · `Alt+Up` | Back · Forward · Up |
 | `Ctrl+L` / `Alt+D` / `F4` | Type a path in the address bar |
 | `Ctrl+F` / `Ctrl+E` / `F3` | Search: typing filters, `Enter` searches subfolders, `Esc` clears |
@@ -156,7 +172,8 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 -   **Folder sizes**: the index's per-folder totals, otherwise dust.
 -   **Text search**: ripgrep's JSON output, streamed in batches.
 -   **File operations**: Windows' `IFileOperation` (the engine Explorer uses), the clipboard formats Explorer reads, and OLE drag and drop.
--   **Live folders**: [notify](https://github.com/notify-rs/notify) watches the open folder.
+-   **Live folders**: [notify](https://github.com/notify-rs/notify) watches the folders on screen (one per pane).
+-   **Tabs and panes**: every tab keeps its own state, and its name searches and dust runs go in a lane of their own in Rust, so tabs and panes never stop each other's work.
 -   **Instant search**: a Windows service in Rust ([`src-tauri/index`](src-tauri/index), built as `shadui-index.exe`) that reads each NTFS volume's Master File Table in one sequential pass and follows its USN journal. See [docs/instant-search.md](docs/instant-search.md).
 
 Built with [Tauri 2](https://tauri.app/) and the [windows](https://github.com/microsoft/windows-rs) crate on the Rust side, and [React](https://react.dev/), [Vite](https://vite.dev/), [Tailwind CSS](https://tailwindcss.com/), [shadcn/ui](https://ui.shadcn.com/), [Lucide](https://lucide.dev/) and [Zustand](https://github.com/pmndrs/zustand) in the UI. The bundled tools:
@@ -193,7 +210,7 @@ The index's tests (MFT record parsing, queries, folder totals under random chang
 
 ## Roadmap
 
--   [ ] Tabs and a dual-pane view
+-   [x] Tabs and a dual-pane view
 -   [ ] A disk-usage map (treemap) from the index
 -   [ ] Thumbnails and a grid view
 -   [ ] Signed releases, auto-update, and winget and Scoop packages

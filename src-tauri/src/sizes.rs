@@ -65,13 +65,15 @@ fn index_sizes(_: &str) -> Option<(u64, Vec<(String, u64)>)> {
 
 /// Sizes of every subfolder of `path`. With `index_only`, fails instead of running dust when the
 /// index can't answer (for sizing every folder as it opens, which only makes sense when it's instant).
+/// Each tab asks in its own `lane`, so sizing a folder in one pane doesn't stop the other's.
 #[tauri::command]
-pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: String, index_only: Option<bool>) -> Result<FolderSizes, String> {
+pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: String, index_only: Option<bool>, lane: String) -> Result<FolderSizes, String> {
     let started = Instant::now();
+    let slot = state.sizes.slot(&lane);
     let asked = path.clone();
     if let Some((total, sizes)) = blocking(move || Ok(index_sizes(&asked))).await? {
-        // A dust run still going is for a folder no longer wanted.
-        state.sizes.kill();
+        // A dust run still going in this tab is for a folder no longer wanted.
+        slot.kill();
         return Ok(FolderSizes { path, total, sizes, elapsed: ms_since(started), engine: "index" });
     }
     if index_only == Some(true) {
@@ -87,7 +89,6 @@ pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: Stri
         .stderr(Stdio::null());
     let mut child = command.spawn().map_err(|e| format!("Failed to start dust: {e}"))?;
     let mut stdout = child.stdout.take().ok_or("Failed to open dust's output")?;
-    let slot = state.sizes.clone();
     let pid = slot.replace(child);
     blocking(move || {
         let mut json = String::new();
@@ -101,9 +102,10 @@ pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: Stri
     .await
 }
 
+/// Stops the tab's sizing (Stop, or the tab closed).
 #[tauri::command]
-pub fn cancel_folder_sizes(state: State<AppState>) {
-    state.sizes.kill();
+pub fn cancel_folder_sizes(state: State<AppState>, lane: String) {
+    state.sizes.close(&lane);
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ import { FolderOpen, History as HistoryIcon, Settings as SettingsIcon, Sparkles,
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
-import { navigate, revealInApp, useExplorer } from "./lib/explorer";
+import { currentPath, navigate, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
 import { toRegExp } from "./lib/text";
 import { cn } from "./lib/utils";
@@ -83,7 +83,7 @@ function App() {
 
   /** Text search in `folder` (the open folder by default). */
   const searchText = (folder?: string) => {
-    const target = folder ?? useExplorer.getState().path;
+    const target = folder ?? currentPath();
     if (target && target !== THIS_PC) useStore.getState().setPath(target);
     setMode("text");
   };

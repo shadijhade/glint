@@ -24,6 +24,11 @@ interface FileListProps {
     cut: ReadonlySet<string>;
     /** Folder that files dragged in from outside would land in. */
     dropTarget: string | null;
+    /** In the pane the keyboard isn't acting on: the selection shows muted, as in an unfocused window. */
+    inactive?: boolean;
+    /** Where to start scrolled to (where this list was left), and where it's scrolled since. */
+    scrollTop?: number;
+    onScrollTop?: (top: number) => void;
     onRowMouseDown: (e: React.MouseEvent, index: number) => void;
     onRowContextMenu: (e: React.MouseEvent, index: number) => void;
     onOpen: (entry: FileEntry) => void;
@@ -89,7 +94,7 @@ function Header({ sortKey, sort, onSort, className, children }: { sortKey: SortK
 }
 
 export function FileList(props: FileListProps) {
-    const { rows, rowHeight, search, scope, sizes, sort, onSort, selection, focusIndex, renaming, cut, dropTarget } = props;
+    const { rows, rowHeight, search, scope, sizes, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive } = props;
     const focusPath = rows[focusIndex]?.path;
     // Where a search result is, below the folder that was searched ("" when right in it).
     const base = scope.replace(/[\\/]+$/, "").toLowerCase();
@@ -117,8 +122,8 @@ export function FileList(props: FileListProps) {
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
                 className={cn(
                     "file-row h-full cursor-default px-3 text-sm",
-                    selected ? "bg-primary/15 dark:bg-primary/20" : "hover:bg-accent/60",
-                    entry.path === focusPath && "outline -outline-offset-1 outline-primary/40",
+                    selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
+                    entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary/40",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
                     (isHidden(entry) || cut.has(entry.path)) && "opacity-55"
                 )}
@@ -137,7 +142,7 @@ export function FileList(props: FileListProps) {
                         {relative(entry.path)}
                     </span>
                 )}
-                <span className={cn("truncate text-xs tabular-nums text-muted-foreground", search && "col-optional")} title={formatFullDate(entry.modified)}>
+                <span className={cn("truncate text-xs tabular-nums text-muted-foreground", search ? "col-optional" : "col-narrow")} title={formatFullDate(entry.modified)}>
                     {formatDate(entry.modified)}
                 </span>
                 {!search && <span className="col-optional truncate text-xs text-muted-foreground">{typeLabel(entry)}</span>}
@@ -153,7 +158,7 @@ export function FileList(props: FileListProps) {
             <div data-search={search || undefined} className="file-row h-8 shrink-0 overflow-y-hidden border-b px-3 text-xs font-medium text-muted-foreground [scrollbar-gutter:stable]">
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
                 {search && <span className="truncate">Folder</span>}
-                <Header sortKey="modified" sort={sort} onSort={onSort} className={search ? "col-optional" : undefined}>
+                <Header sortKey="modified" sort={sort} onSort={onSort} className={search ? "col-optional" : "col-narrow"}>
                     Date modified
                 </Header>
                 {!search && (
@@ -171,6 +176,8 @@ export function FileList(props: FileListProps) {
                     count={rows.length}
                     rowHeight={rowHeight}
                     scrollToIndex={focusIndex}
+                    initialScrollTop={props.scrollTop}
+                    onScrollTop={props.onScrollTop}
                     className="[scrollbar-gutter:stable]"
                     onMouseDown={(e) => !(e.target as Element).closest("[data-row]") && props.onBackgroundMouseDown(e)}
                     onContextMenu={(e) => !(e.target as Element).closest("[data-row]") && props.onBackgroundContextMenu(e)}

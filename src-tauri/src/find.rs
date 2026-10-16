@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use shadui_index::query::terms;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
@@ -41,21 +42,54 @@ pub enum FindEvent {
     Finished { count: usize, elapsed: f64, limited: bool },
 }
 
-/// The search in flight, so a newer one (or Stop) can end it.
+/// The searches in flight, one per lane (each tab searches on its own), so a newer search in the
+/// same tab, or Stop, can end one.
 #[derive(Clone, Default)]
-pub struct Current(Arc<Mutex<Arc<AtomicBool>>>);
+pub struct Finds(Arc<Mutex<HashMap<String, Run>>>);
 
-impl Current {
-    /// Starts a search, telling the previous one to stop; returns the new one's stop flag.
-    fn start(&self) -> Arc<AtomicBool> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let previous = std::mem::replace(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()), stop.clone());
-        previous.store(true, Ordering::SeqCst);
-        stop
+/// One search: the flag that stops the index's answer, and fd's process.
+#[derive(Clone, Default)]
+struct Run {
+    stop: Arc<AtomicBool>,
+    fd: Slot,
+}
+
+impl Run {
+    fn end(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.fd.kill();
+    }
+}
+
+impl Finds {
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, Run>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn stop(&self) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::SeqCst);
+    /// Starts a search in `lane`, ending the one before it there.
+    fn start(&self, lane: &str) -> Run {
+        let run = Run::default();
+        let previous = self.lock().insert(lane.to_string(), run.clone());
+        if let Some(previous) = previous {
+            previous.end();
+        }
+        run
+    }
+
+    /// Ends the lane's search, if one runs.
+    fn stop(&self, lane: &str) {
+        let run = self.lock().remove(lane);
+        if let Some(run) = run {
+            run.end();
+        }
+    }
+
+    /// Forgets `run` once it's done, unless a newer search in the lane replaced it.
+    fn finished(&self, lane: &str, run: &Run) {
+        let mut runs = self.lock();
+        if runs.get(lane).is_some_and(|current| Arc::ptr_eq(&current.stop, &run.stop)) {
+            runs.remove(lane);
+        }
     }
 }
 
@@ -217,6 +251,8 @@ fn search_fd(window: &Window, slot: &Slot, roots: &[String], query: &str, option
     Ok(options.max_results.is_some_and(|max| max > 0 && found >= max))
 }
 
+/// Searches `roots` by name for the tab `lane`, stopping that tab's previous search (another tab's
+/// keeps going).
 #[tauri::command]
 pub async fn find_files(
     window: Window,
@@ -225,21 +261,22 @@ pub async fn find_files(
     query: String,
     options: FindOptions,
     on_event: Channel<FindEvent>,
+    lane: String,
 ) -> Result<(), String> {
     if terms(&query).is_empty() {
         return Err("Type part of a file name to search for".into());
     }
-    let stop = state.finding.start();
-    state.find.kill();
-    let slot = state.find.clone();
+    let run = state.finds.start(&lane);
+    let finds = state.finds.clone();
     thread::spawn(move || {
+        let (stop, slot) = (&run.stop, &run.fd);
         let started = Instant::now();
         let mut out = Out { channel: &on_event, batch: Vec::new(), sent: Instant::now(), count: 0, started: false };
         let mut fd_roots = roots.clone();
         let mut limited = false;
         // .gitignore rules are fd's alone; anything else goes to the index first.
         if !options.respect_ignore {
-            if let Some(answered) = search_index(&roots, &query, &options, &stop, &mut out) {
+            if let Some(answered) = search_index(&roots, &query, &options, stop, &mut out) {
                 (fd_roots, limited) = (answered.skipped, answered.limited);
             }
         }
@@ -247,7 +284,7 @@ pub async fn find_files(
         if !fd_roots.is_empty() && !stop.load(Ordering::SeqCst) && left != Some(0) {
             out.started("fd");
             let options = FindOptions { max_results: left, ..options };
-            match search_fd(&window, &slot, &fd_roots, &query, &options, &mut out) {
+            match search_fd(&window, slot, &fd_roots, &query, &options, &mut out) {
                 Ok(hit_limit) => limited |= hit_limit,
                 Err(message) => {
                     out.flush();
@@ -259,14 +296,15 @@ pub async fn find_files(
         }
         out.flush();
         let _ = on_event.send(FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited });
+        finds.finished(&lane, &run);
     });
     Ok(())
 }
 
+/// Stops the tab's search (Stop, a new folder, or the tab closed).
 #[tauri::command]
-pub fn cancel_find(state: State<AppState>) {
-    state.finding.stop();
-    state.find.kill();
+pub fn cancel_find(state: State<AppState>, lane: String) {
+    state.finds.stop(&lane);
 }
 
 #[cfg(test)]
@@ -294,12 +332,21 @@ mod tests {
     }
 
     #[test]
-    fn a_new_search_stops_the_last_one() {
-        let current = Current::default();
-        let first = current.start();
-        let second = current.start();
-        assert!(first.load(Ordering::SeqCst) && !second.load(Ordering::SeqCst));
-        current.stop();
-        assert!(second.load(Ordering::SeqCst));
+    fn a_new_search_stops_only_the_last_one_in_its_tab() {
+        let finds = Finds::default();
+        let stopped = |run: &Run| run.stop.load(Ordering::SeqCst);
+        let first = finds.start("left");
+        let other = finds.start("right");
+        let second = finds.start("left");
+        assert!(stopped(&first) && !stopped(&second) && !stopped(&other));
+
+        // A search that ended by itself is forgotten, but never one that replaced it.
+        finds.finished("left", &first);
+        finds.stop("left");
+        assert!(stopped(&second) && !stopped(&other));
+        finds.finished("right", &other);
+        assert!(finds.lock().is_empty());
+        finds.stop("right");
+        assert!(!stopped(&other));
     }
 }

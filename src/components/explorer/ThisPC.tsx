@@ -1,5 +1,5 @@
 import { useShallow } from "zustand/react/shallow";
-import { navigate, useExplorer } from "@/lib/explorer";
+import { middleClickOpens, navigate, useExplorer } from "@/lib/explorer";
 import { driveName } from "@/lib/fs";
 import { cn } from "@/lib/utils";
 import { CapacityBar, DRIVE_ICONS, freeOf, KNOWN_ICONS } from "./Sidebar";
@@ -17,7 +17,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                 {known.map((k) => {
                     const Icon = KNOWN_ICONS[k.id];
                     return (
-                        <button key={k.id} data-drop={k.path} className={cn(tile, dropping(k.path))} onClick={() => navigate(k.path)} onContextMenu={(e) => onContextMenu(e, k.path)} title={k.path}>
+                        <button key={k.id} data-drop={k.path} className={cn(tile, dropping(k.path))} onClick={() => navigate(k.path)} onMouseDown={middleClickOpens(k.path)} onContextMenu={(e) => onContextMenu(e, k.path)} title={k.path}>
                             <Icon className="size-5 shrink-0 text-primary" />
                             <span className="truncate text-sm">{k.name}</span>
                         </button>
@@ -30,7 +30,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                 {drives.map((d) => {
                     const Icon = DRIVE_ICONS[d.kind];
                     return (
-                        <button key={d.path} data-drop={d.path} className={cn(tile, "items-start", dropping(d.path))} onClick={() => navigate(d.path)} onContextMenu={(e) => onContextMenu(e, d.path)}>
+                        <button key={d.path} data-drop={d.path} className={cn(tile, "items-start", dropping(d.path))} onClick={() => navigate(d.path)} onMouseDown={middleClickOpens(d.path)} onContextMenu={(e) => onContextMenu(e, d.path)}>
                             <Icon className="mt-0.5 size-7 shrink-0 text-muted-foreground" />
                             <div className="min-w-0 flex-1">
                                 <div className="truncate text-sm font-medium">{driveName(d)}</div>
