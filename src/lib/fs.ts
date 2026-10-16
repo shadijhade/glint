@@ -93,6 +93,9 @@ export const clipboardSetFiles = (paths: string[], cut: boolean) => invoke("clip
 export const clipboardGetFiles = () => invoke<{ paths: string[]; cut: boolean } | null>("clipboard_get_files");
 export const clipboardClear = () => invoke("clipboard_clear");
 
+/** Drags files out to other apps; call while the mouse button is down. Resolves when dropped or cancelled. */
+export const startDrag = (paths: string[]) => invoke<"copy" | "move" | "link" | "none">("start_drag", { paths });
+
 export const showProperties = (path: string) => invoke("show_properties", { path });
 export const openWith = (path: string) => invoke("open_with", { path });
 export const openTerminal = (path: string) => invoke("open_terminal", { path });

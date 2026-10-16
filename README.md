@@ -13,6 +13,7 @@
 -   **Preview pane**: Syntax-highlighted code and text, images, video, audio, PDFs, and folder summaries. Online-only OneDrive files are left alone, so nothing downloads by accident.
 -   **The usual explorer moves**: Back/forward/up, a breadcrumb address bar you can type into (`%APPDATA%` and `~` work), Quick access folders, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folder, and hidden items on demand.
 -   **Windows-native file operations**: Copy, cut, paste, delete and rename go through Windows' own file engine, so progress, "Replace or Skip", the Recycle Bin and permission prompts behave exactly like Explorer. The clipboard is shared with Explorer: copy here, paste there, and the other way round.
+-   **Drag and drop**: Drag files out to File Explorer, the desktop, a mail or a chat, or drop them in from anywhere onto a folder, a sidebar place or the open folder. As in Explorer, dropping on the same drive moves and on another drive copies.
 -   **Live**: The open folder refreshes when files change elsewhere.
 -   **Explorer integration**: Properties, Open with…, Show in File Explorer, and Open in Terminal.
 

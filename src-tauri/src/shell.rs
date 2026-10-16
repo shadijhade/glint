@@ -86,6 +86,15 @@ pub async fn open_with(window: Window, path: String) -> Result<(), String> {
     blocking(move || imp::open_with(owner, path)).await
 }
 
+/// Drags files out of the window (into Explorer, a mail, a chat…) with the shell's own drag data,
+/// as Explorer does. Must start while the mouse button is down; resolves once the drop or cancel
+/// happens with "copy", "move", "link" or "none".
+#[tauri::command]
+pub async fn start_drag(window: Window, paths: Vec<String>) -> Result<String, String> {
+    let owner = owner(&window);
+    on_main(&window, move || imp::start_drag(owner, &paths)).await
+}
+
 /// Opens Windows Terminal in `path`, or a Command Prompt where Terminal isn't installed.
 #[tauri::command]
 pub async fn open_terminal(path: String) -> Result<(), String> {
@@ -107,7 +116,7 @@ mod imp {
     use windows::core::{w, BOOL, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{GlobalFree, ERROR_CANCELLED, HANDLE, HGLOBAL, HWND, LPARAM, POINT};
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, IBindCtx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, IBindCtx, IDataObject, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
         COINIT_DISABLE_OLE1DDE,
     };
     use windows::Win32::System::DataExchange::{
@@ -115,14 +124,19 @@ mod imp {
         RegisterClipboardFormatW, SetClipboardData,
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-    use windows::Win32::System::Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
+    use windows::Win32::System::Ole::{IDropSource, CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
-        DragQueryFileW, FileOperation, IFileOperation, IFileOperationProgressSink, IShellItem,
-        SHCreateItemFromParsingName, SHObjectProperties, SHOpenWithDialog, DROPFILES, FILEOPERATION_FLAGS,
+        DragQueryFileW, FileOperation, IFileOperation, IFileOperationProgressSink, ILCreateFromPathW, ILFree, IShellItem,
+        SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHObjectProperties,
+        SHOpenWithDialog, BHID_DataObject, DROPFILES, FILEOPERATION_FLAGS,
         FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
         FOF_WANTNUKEWARNING, HDROP, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SHOP_FILEPATH,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetSystemMetrics, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, SM_SWAPBUTTON,
+    };
 
     /// HRESULT for "cancelled" from the copy engine's progress dialog.
     const COPYENGINE_E_USER_CANCELLED: i32 = 0x8027_0000_u32 as i32;
@@ -376,6 +390,45 @@ mod imp {
         })
     }
 
+    /// Runs on the UI thread (OLE is initialized there and the drag loop needs it).
+    pub fn start_drag(owner: isize, paths: &[String]) -> Result<String, String> {
+        unsafe {
+            // The drag drops wherever the pointer is once the button is up, so if it was released while
+            // this request was on its way, don't start: that would drop at once, under the pointer.
+            let primary = if GetSystemMetrics(SM_SWAPBUTTON) != 0 { VK_RBUTTON } else { VK_LBUTTON };
+            if GetAsyncKeyState(primary.0 as i32) >= 0 {
+                return Ok("none".into());
+            }
+            let pidls: Vec<*mut ITEMIDLIST> = paths.iter().map(|p| ILCreateFromPathW(&HSTRING::from(p.as_str()))).collect();
+            let dragged = (|| {
+                if pidls.iter().any(|p| p.is_null()) {
+                    return Err("Some of these items no longer exist".to_string());
+                }
+                let list: Vec<*const ITEMIDLIST> = pidls.iter().map(|&p| p as *const _).collect();
+                // The shell's data object carries every format Explorer offers (file list, shell IDs…).
+                let data: IDataObject = SHCreateShellItemArrayFromIDLists(&list)
+                    .and_then(|items| items.BindToHandler(None::<&IBindCtx>, &BHID_DataObject))
+                    .map_err(message)?;
+                let effect = SHDoDragDrop(Some(hwnd(owner)), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK)
+                    .map_err(message)?;
+                Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
+                    "move"
+                } else if effect.0 & DROPEFFECT_COPY.0 != 0 {
+                    "copy"
+                } else if effect.0 & DROPEFFECT_LINK.0 != 0 {
+                    "link"
+                } else {
+                    "none"
+                }
+                .to_string())
+            })();
+            for pidl in pidls.into_iter().filter(|p| !p.is_null()) {
+                ILFree(Some(pidl as *const _));
+            }
+            dragged
+        }
+    }
+
     pub fn open_terminal(path: &str) -> Result<(), String> {
         const CREATE_NEW_CONSOLE: u32 = 0x10;
         if Command::new("wt.exe").arg("-d").arg(path).spawn().is_ok() {
@@ -431,6 +484,10 @@ mod imp {
     }
 
     pub fn open_with(_: isize, _: String) -> Result<(), String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn start_drag(_: isize, _: &[String]) -> Result<String, String> {
         Err(WINDOWS_ONLY.into())
     }
 

@@ -65,7 +65,7 @@ import {
     useExplorer,
 } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
-import { openTerminal, openWith, showProperties } from "@/lib/fs";
+import { openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { baseName, samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { rowHeight } from "@/hooks/useTheme";
@@ -338,16 +338,55 @@ export function Explorer({ active, onSearchText }: ExplorerProps) {
         return () => window.removeEventListener("keydown", onKey);
     }, [active, height]);
 
+    // A press on a row can turn into dragging the selection out of the window. Like Explorer, pressing
+    // an item of a multi-selection keeps the selection until release, so all of it can be dragged.
+    const press = useRef<{ x: number; y: number; narrowTo: string | null } | null>(null);
+
     const onRowMouseDown = (e: React.MouseEvent, index: number) => {
         const entry = rows[index];
+        const { selection } = useExplorer.getState();
+        const additive = e.ctrlKey || e.metaKey;
         if (e.button === 2) {
-            if (!useExplorer.getState().selection.has(entry.path)) selectOnly(entry.path);
+            if (!selection.has(entry.path)) selectOnly(entry.path);
         } else if (e.button === 0) {
-            if (e.shiftKey) selectRange(rows, index, e.ctrlKey || e.metaKey);
-            else if (e.ctrlKey || e.metaKey) toggleSelected(entry.path);
+            const keep = !e.shiftKey && !additive && selection.has(entry.path) && selection.size > 1;
+            if (e.shiftKey) selectRange(rows, index, additive);
+            else if (additive) toggleSelected(entry.path);
+            else if (keep) useExplorer.setState({ focus: entry.path, anchor: entry.path });
             else selectOnly(entry.path);
+            press.current = { x: e.clientX, y: e.clientY, narrowTo: keep ? entry.path : null };
         }
     };
+
+    useEffect(() => {
+        const onMove = (e: MouseEvent) => {
+            const start = press.current;
+            if (!start) return;
+            if (!(e.buttons & 1)) press.current = null;
+            else if (Math.hypot(e.clientX - start.x, e.clientY - start.y) >= 6) {
+                press.current = null;
+                const paths = selectedNow().map((r) => r.path);
+                // Moved away (e.g. into another drive's folder in Explorer): show what's left.
+                if (!paths.length) return;
+                startDrag(paths)
+                    .then((effect) => {
+                        if (effect === "move") reload();
+                    })
+                    .catch(report("Couldn't drag these items"));
+            }
+        };
+        const onUp = () => {
+            const start = press.current;
+            press.current = null;
+            if (start?.narrowTo) selectOnly(start.narrowTo);
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+        return () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+        };
+    }, []);
 
     const editorName = baseName(editorPath.trim()).replace(/\.exe$/i, "");
     const itemMenu = (targets: FileEntry[]): MenuItem[] => {
