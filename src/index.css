@@ -124,6 +124,17 @@
     }
   }
 
+  /* A narrow pane (dual-pane view on a small window): names and sizes only. */
+  @container (max-width: 26rem) {
+    .file-row {
+      grid-template-columns: minmax(0, 1fr) 5.5rem;
+    }
+
+    .col-narrow {
+      display: none !important;
+    }
+  }
+
   .hl-line {
     background: hsl(var(--primary) / 0.14);
     box-shadow: inset 2px 0 hsl(var(--primary));

@@ -1,6 +1,6 @@
 import { Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Server, Usb } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { type KnownFolder, navigate, useExplorer } from "@/lib/explorer";
+import { type KnownFolder, middleClickOpens, navigate, useExplorer, useTab } from "@/lib/explorer";
 import { type Drive, driveName } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
 import { baseName, samePath, THIS_PC } from "@/lib/paths";
@@ -73,6 +73,7 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
         <button
             data-drop={path}
             onClick={() => navigate(path)}
+            onMouseDown={middleClickOpens(path)}
             onContextMenu={(e) => onContextMenu(e, path)}
             title={title ?? path}
             aria-current={active ? "page" : undefined}
@@ -92,7 +93,8 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
 }
 
 export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent, path: string) => void }) {
-    const { path, known, drives } = useExplorer(useShallow((s) => ({ path: s.path, known: s.known, drives: s.drives })));
+    const path = useTab((t) => t.path);
+    const { known, drives } = useExplorer(useShallow((s) => ({ known: s.known, drives: s.drives })));
     const pinned = useStore((s) => s.pinned);
     const here = (p: string) => path !== THIS_PC && samePath(p, path);
 

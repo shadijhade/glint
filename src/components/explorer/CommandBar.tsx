@@ -1,8 +1,9 @@
-import { ClipboardPaste, Command, Copy, Eye, EyeOff, FolderPlus, HardDrive, Loader2, type LucideIcon, PanelRight, PenLine, Scissors, SquareTerminal, TextSearch, Trash2 } from "lucide-react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { ClipboardPaste, Columns2, Command, Copy, CopyPlus, Eye, EyeOff, FolderOutput, FolderPlus, HardDrive, Loader2, type LucideIcon, PanelRight, PenLine, Scissors, SquareTerminal, TextSearch, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import type { FileEntry } from "@/lib/entries";
-import { calcSizes, copyToClipboard, newItem, paste, stopSizes, useExplorer } from "@/lib/explorer";
+import { calcSizes, copyToClipboard, copyToOtherPane, newItem, paste, stopSizes, toggleDual, useExplorer, useTab } from "@/lib/explorer";
 import { openTerminal } from "@/lib/fs";
 import { THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
@@ -30,6 +31,42 @@ function Tool({ icon: Icon, label, pressed, className, ...props }: { icon: Lucid
 
 const Divider = () => <span className="mx-1 h-5 w-px shrink-0 bg-border" />;
 
+/**
+ * How many of the text buttons' labels must go (icons and tooltips stay) for the bar to fit: none,
+ * the `data-fold="1"` ones, or all of them. Measured, so it holds at any text size; `buttons`
+ * changes when the set of buttons does, so the widths are measured again.
+ */
+function useFold(buttons: unknown) {
+    const ref = useRef<HTMLDivElement>(null);
+    const [fold, setFold] = useState(0);
+    const needs = useRef([0, 0]);
+    const measuredFor = useRef(buttons);
+    useLayoutEffect(() => {
+        const bar = ref.current!;
+        if (measuredFor.current !== buttons) {
+            measuredFor.current = buttons;
+            needs.current = [0, 0];
+        }
+        const check = () => {
+            if (fold === 0) {
+                // Every label on screen: what the bar needs with them, and without the first to go.
+                const first = [...bar.querySelectorAll<HTMLElement>("[data-fold='1']")].reduce(
+                    (sum, label) => sum + label.offsetWidth + (parseFloat(getComputedStyle(label.parentElement!).columnGap) || 0),
+                    0
+                );
+                needs.current = [bar.scrollWidth, bar.scrollWidth - first];
+            }
+            const [all, some] = needs.current;
+            setFold(bar.clientWidth >= all ? 0 : bar.clientWidth >= some ? 1 : 2);
+        };
+        check();
+        const observer = new ResizeObserver(check);
+        observer.observe(bar);
+        return () => observer.disconnect();
+    }, [fold, buttons]);
+    return [ref, fold] as const;
+}
+
 interface CommandBarProps {
     selected: FileEntry[];
     onRename: () => void;
@@ -37,23 +74,38 @@ interface CommandBarProps {
     onSearchText: () => void;
 }
 
+/** Acts on the active pane (its tab and selection). */
 export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
-    const { path, find, sizing } = useExplorer(useShallow((s) => ({ path: s.path, find: s.find, sizing: !!s.sizes[s.path]?.running })));
+    const { path, find } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find })));
+    const { sizing, dual, other } = useExplorer(
+        useShallow((s) => {
+            const pane = s.dual ? s.panes[1 - s.activePane] : undefined;
+            const t = pane && s.tabs[pane.active];
+            return { sizing: !!s.sizes[path]?.running, dual: s.dual, other: !!t?.ready && t.path !== THIS_PC && !t.find };
+        })
+    );
     const { showHidden, showPreviewPane } = useStore(useShallow((s) => ({ showHidden: s.settings.showHidden, showPreviewPane: s.settings.showPreviewPane })));
     const setSettings = useStore((s) => s.setSettings);
     const inFolder = path !== THIS_PC;
     const paths = selected.map((e) => e.path);
     const terminal = () => openTerminal(path).catch((e) => toast.error("Couldn't open a terminal", { description: String(e) }));
+    const [ref, fold] = useFold(dual);
 
     return (
-        <div className="flex h-10 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-card/40 px-2">
-            <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || !!find} title="New folder (Ctrl+Shift+N)">
-                <FolderPlus /> New folder
+        <div ref={ref} className="flex h-10 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-card/40 px-2">
+            <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find} title="New folder (Ctrl+Shift+N)">
+                <FolderPlus /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>New folder</span>
             </Button>
             <Divider />
             <Tool icon={Scissors} label="Cut (Ctrl+X)" disabled={!paths.length} onClick={() => copyToClipboard(paths, true)} />
             <Tool icon={Copy} label="Copy (Ctrl+C)" disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
-            <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || !!find} onClick={() => paste()} />
+            <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || find} onClick={() => paste()} />
+            {dual && (
+                <>
+                    <Tool icon={CopyPlus} label="Copy to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(false, paths)} />
+                    <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(true, paths)} />
+                </>
+            )}
             <Tool icon={PenLine} label="Rename (F2)" disabled={selected.length !== 1} onClick={onRename} />
             <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length} onClick={onDelete} />
             <Divider />
@@ -64,18 +116,19 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     variant="ghost"
                     size="sm"
                     onClick={sizing ? stopSizes : calcSizes}
-                    disabled={!inFolder || !!find}
+                    disabled={!inFolder || find}
                     title={sizing ? "Stop calculating" : "Size every folder here: from the instant search index when it has them, otherwise measured with dust"}
                     className="hidden sm:inline-flex"
                 >
-                    {sizing ? <Loader2 className="animate-spin" /> : <HardDrive />} {sizing ? "Stop" : "Folder sizes"}
+                    {sizing ? <Loader2 className="animate-spin" /> : <HardDrive />} <span data-fold="2" className={cn(fold >= 2 && "sr-only")}>{sizing ? "Stop" : "Folder sizes"}</span>
                 </Button>
                 <Button variant="ghost" size="sm" onClick={onSearchText} disabled={!inFolder} title="Search inside the files in this folder (ripgrep) · Ctrl+Shift+F" className="hidden lg:inline-flex">
-                    <TextSearch /> Search text
+                    <TextSearch /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Search text</span>
                 </Button>
                 <Divider />
                 <Tool icon={showHidden ? Eye : EyeOff} label="Show hidden items (Ctrl+H)" pressed={showHidden} onClick={() => setSettings({ showHidden: !showHidden })} />
                 <Tool icon={PanelRight} label="Preview pane (Alt+P)" pressed={showPreviewPane} onClick={() => setSettings({ showPreviewPane: !showPreviewPane })} />
+                <Tool icon={Columns2} label="Dual pane: two folders side by side (Ctrl+Shift+D)" pressed={dual} onClick={toggleDual} />
                 <Tool icon={Command} label="Command palette (Ctrl+K)" onClick={() => useExplorer.setState({ palette: true })} />
             </div>
         </div>

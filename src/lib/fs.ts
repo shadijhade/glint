@@ -53,17 +53,20 @@ export type FindEvent =
     | { type: "error"; message: string }
     | { type: "finished"; count: number; elapsed: number; limited: boolean };
 
-/** Searches file names under `roots` (with the index when it runs, else fd), streaming results with metadata. */
-export async function findFiles(roots: string[], query: string, options: FindOptions, onEvent: (event: FindEvent) => void) {
+/**
+ * Searches file names under `roots` (with the index when it runs, else fd), streaming results with
+ * metadata. Each tab searches in its own `lane`: a new search stops only that tab's last one.
+ */
+export async function findFiles(roots: string[], query: string, options: FindOptions, lane: string, onEvent: (event: FindEvent) => void) {
     const channel = new Channel<FindEvent>();
     channel.onmessage = (event) => {
         if (event.type === "entries") for (const entry of event.entries) withDetails(entry);
         onEvent(event);
     };
-    await invoke("find_files", { roots, query, options, onEvent: channel });
+    await invoke("find_files", { roots, query, options, onEvent: channel, lane });
 }
 
-export const cancelFind = () => invoke("cancel_find");
+export const cancelFind = (lane: string) => invoke("cancel_find", { lane });
 
 export interface FolderSizes {
     path: string;
@@ -76,10 +79,11 @@ export interface FolderSizes {
 
 /**
  * Sizes of every subfolder: from the index when it has the folder, else calculated by dust (unless
- * `indexOnly`, which rejects instead). Rejects with "cancelled" when superseded or stopped.
+ * `indexOnly`, which rejects instead). Rejects with "cancelled" when superseded in its `lane` (the
+ * tab asking) or stopped.
  */
-export const folderSizes = (path: string, indexOnly = false) => invoke<FolderSizes>("folder_sizes", { path, indexOnly });
-export const cancelFolderSizes = () => invoke("cancel_folder_sizes");
+export const folderSizes = (path: string, lane: string, indexOnly = false) => invoke<FolderSizes>("folder_sizes", { path, indexOnly, lane });
+export const cancelFolderSizes = (lane: string) => invoke("cancel_folder_sizes", { lane });
 
 export type FileOp =
     | { kind: "copy" | "move"; sources: string[]; dest: string }
@@ -100,8 +104,8 @@ export const showProperties = (path: string) => invoke("show_properties", { path
 export const openWith = (path: string) => invoke("open_with", { path });
 export const openTerminal = (path: string) => invoke("open_terminal", { path });
 
-/** Watches one folder (or none); changes arrive as "dir-changed" events carrying its path. */
-export const watchDir = (path: string | null) => invoke("watch_dir", { path });
+/** Watches exactly these folders (the ones on screen); changes arrive as "dir-changed" events carrying the folder's path. */
+export const watchDirs = (paths: string[]) => invoke("watch_dirs", { paths });
 
 /** One drive in the instant search index. */
 export interface IndexVolume {

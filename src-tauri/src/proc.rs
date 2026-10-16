@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::process::Child;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-/// Holds the one running sidecar of a kind (text search, file search, folder sizes):
+/// Holds one running sidecar (the text search, or a tab's file search or folder sizing):
 /// starting a new run stops the previous one.
 #[derive(Clone, Default)]
 pub struct Slot(Arc<Mutex<Option<Child>>>);
@@ -43,6 +44,30 @@ impl Slot {
         }
         let _ = current.take().unwrap().wait();
         true
+    }
+}
+
+/// A [`Slot`] per lane, for work each tab runs on its own (folder sizes): a new run stops only the
+/// previous one in the same lane.
+#[derive(Clone, Default)]
+pub struct Lanes(Arc<Mutex<HashMap<String, Slot>>>);
+
+impl Lanes {
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, Slot>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The lane's slot, made on first use.
+    pub fn slot(&self, lane: &str) -> Slot {
+        self.lock().entry(lane.to_string()).or_default().clone()
+    }
+
+    /// Stops what runs in the lane and forgets it (a later run makes it again).
+    pub fn close(&self, lane: &str) {
+        let slot = self.lock().remove(lane);
+        if let Some(slot) = slot {
+            slot.kill();
+        }
     }
 }
 

@@ -7,7 +7,7 @@ mod sizes;
 mod watch;
 
 use fsx::blocking;
-use proc::Slot;
+use proc::{Lanes, Slot};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
@@ -16,13 +16,13 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, State, Window};
 use tauri_plugin_shell::ShellExt;
 
-/// The work in flight: ripgrep text search, file search (fd and the index) and dust folder sizes.
+/// The work in flight: the ripgrep text search, and each tab's file search (fd and the index) and
+/// dust folder sizes.
 #[derive(Default)]
 pub struct AppState {
     pub search: Slot,
-    pub find: Slot,
-    pub finding: find::Current,
-    pub sizes: Slot,
+    pub finds: find::Finds,
+    pub sizes: Lanes,
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -239,7 +239,7 @@ pub fn run() {
             shell::open_with,
             shell::open_terminal,
             shell::start_drag,
-            watch::watch_dir,
+            watch::watch_dirs,
         ])
         .setup(|_app| {
             #[cfg(all(windows, not(debug_assertions)))]

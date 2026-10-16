@@ -4,7 +4,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 import { Cloud, ExternalLink, Files, FolderOpen, HardDrive, X } from "lucide-react";
 import { type FileEntry, isOnlineOnly } from "@/lib/entries";
-import { calcSizes, navigate, useExplorer } from "@/lib/explorer";
+import { calcSizes, currentPath, navigate, useExplorer } from "@/lib/explorer";
 import { isKnownType, kindOf, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize } from "@/lib/format";
 import { listDir, readTextPreview } from "@/lib/fs";
@@ -122,7 +122,7 @@ function FolderPreview({ entry }: { entry: FileEntry }) {
                     <b className="font-semibold">{formatSize(size)}</b> in total
                 </p>
             ) : (
-                parentPath(entry.path) === useExplorer.getState().path && (
+                parentPath(entry.path) === currentPath() && (
                     <Button variant="outline" size="sm" onClick={calcSizes}>
                         <HardDrive /> Calculate folder sizes
                     </Button>
