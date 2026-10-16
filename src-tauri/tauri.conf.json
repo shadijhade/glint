@@ -46,6 +46,10 @@
       "binaries/fd",
       "binaries/dust"
     ],
+    "resources": {
+      "../LICENSE": "LICENSE.txt",
+      "../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "installer/hooks.nsh",

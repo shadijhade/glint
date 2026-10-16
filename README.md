@@ -1,184 +1,128 @@
+<div align="center">
+
+<img src="src/assets/logo.svg" width="96" alt="ShadUI Ripgrep logo">
+
 # ShadUI Ripgrep
 
-**ShadUI Ripgrep** is a blazing fast file explorer and search app for Windows, built with [Tauri](https://tauri.app/). It's a modern UI on top of the fastest Rust command-line tools: [fd](https://github.com/sharkdp/fd) finds files by name, [dust](https://github.com/bootandy/dust) measures folder sizes and [ripgrep](https://github.com/BurntSushi/ripgrep) searches inside files, while folders themselves are read straight from Win32 in Rust. Turn on [instant search](#-instant-search-ntfs-index) and an index of your NTFS drives finds any file name on any drive in milliseconds and sizes every folder as it opens. The goal: a file explorer that's orders of magnitude faster than the one Windows ships with.
+**A file explorer for Windows that opens folders in milliseconds, shows the size of every folder, and finds any file on any drive in an instant.**
 
-![App Screenshot](screenshots/screenshot-search-result-dark.png)
+Built in Rust on [fd](https://github.com/sharkdp/fd), [dust](https://github.com/bootandy/dust) and [ripgrep](https://github.com/BurntSushi/ripgrep), with an NTFS index like Everything's.
 
-## 🚀 Features
+[![CI](https://github.com/shadijhade/shadui-ripgrep/actions/workflows/ci.yml/badge.svg)](https://github.com/shadijhade/shadui-ripgrep/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/shadijhade/shadui-ripgrep?label=release)](https://github.com/shadijhade/shadui-ripgrep/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/shadijhade/shadui-ripgrep/total)](https://github.com/shadijhade/shadui-ripgrep/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 
-### Files: a fast explorer
--   **Instant folders**: Each folder is read with one Win32 enumeration pass (names, sizes, dates and attributes all at once) and sorted in Rust, then drawn as a virtual list. The status bar shows how long it took, e.g. *read in 0.3 ms · shown in 19 ms*.
--   **Find files by name**: Typing in the search box filters the folder as you type; **Enter** searches every subfolder too (from This PC: every drive). With [instant search](#-instant-search-ntfs-index) on, the index answers in milliseconds; otherwise fd streams results as it finds them. All words must match, `*` and `?` work like in Explorer, and `"quotes"` keep spaces. The status bar says who answered: *index · 18 found in 6.5 ms* or *fd · 304 found in 8.09 s*.
--   **Folder sizes**: Explorer never shows them. With instant search on, every folder shows its subfolders' sizes as it opens (*index sized 219 GB in 0.4 ms*), and search results show folder totals too; otherwise one click measures them with dust. Sort by size to find what's filling your disk.
--   **Preview pane**: Syntax-highlighted code and text, images, video, audio, PDFs, and folder summaries. Online-only OneDrive files are left alone, so nothing downloads by accident.
--   **The usual explorer moves**: Back/forward/up, a breadcrumb address bar you can type into (`%APPDATA%` and `~` work), Quick access folders, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folder, and hidden items on demand.
--   **Windows-native file operations**: Copy, cut, paste, delete and rename go through Windows' own file engine, so progress, "Replace or Skip", the Recycle Bin and permission prompts behave exactly like Explorer. The clipboard is shared with Explorer: copy here, paste there, and the other way round.
--   **Drag and drop**: Drag files out to File Explorer, the desktop, a mail or a chat, or drop them in from anywhere onto a folder, a sidebar place or the open folder. As in Explorer, dropping on the same drive moves and on another drive copies.
--   **Live**: The open folder refreshes when files change elsewhere.
--   **Explorer integration**: Properties, Open with…, Show in File Explorer, and Open in Terminal.
+**[Download for Windows](https://github.com/shadijhade/shadui-ripgrep/releases/latest)** · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
+
+<img src="screenshots/demo.gif" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes and the command palette" width="100%">
+
+</div>
+
+## Why
+
+-   **Folders open in milliseconds.** System32's 5,092 items are on screen 12 ms after you press Enter, and a folder of 100,000 files takes 114 ms. One Win32 pass reads names, sizes, dates and attributes together, Rust sorts them, and the list draws only the rows you can see.
+-   **Every folder shows its size.** File Explorer keeps them out of the list. Here they're in the Size column as the folder opens (all of `C:\Windows` sized in 0.4 ms from the index), or one click away with dust. Sort by size and you see what's filling your disk.
+-   **Any file on any drive, in milliseconds.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows the change journal. Every `kernel32.dll` on three drives (over 3 million names) is listed in about 8 ms. Without it, fd streams results as it finds them.
+-   **ripgrep for what's inside files**: regular expressions, whole words, replace across files, and a syntax-highlighted preview.
+-   **Space to Quick Look, Ctrl+K for everything else.** See any file full size without opening it and arrow through the folder. Jump to the folders you use most (ranked by frecency, like zoxide) or run any command by typing a few letters.
+-   **Still Windows.** Copy, move, delete and rename run on Windows' own file engine (progress, *Replace or Skip*, Recycle Bin, UAC). The clipboard and drag and drop work with File Explorer and every other app, and Properties, Open with and Open in Terminal are a right-click away.
+
+## Benchmarks
+
+| Task | Where | Found | Time |
+| :--- | :--- | ---: | ---: |
+| Open a folder | `C:\Windows` | 108 items | 6.3 ms |
+| | `C:\Windows\System32` | 5,092 items | 12 ms |
+| | `C:\Windows\WinSxS` | 21,650 items | 73 ms |
+| | a test folder | 100,000 files | 114 ms |
+| Size every folder ¹ | `C:\Windows` | 56 GB | 0.4 ms |
+| Find files by name ¹ | `kernel32.dll` on all three drives | 18 files | 7.7 ms |
+| | `*.dll` in System32 and its subfolders | 5,015 files | 36 ms |
+| Search inside files | `DriverVer` in `C:\Windows\INF` (81 MB) | 1,313 matches in 838 files | 39 ms |
+
+Each time runs from pressing Enter until everything is on screen, as the app's status bar reports it: the median of 5 runs, with the files already in Windows' cache (as when you browse back and forth). Intel Core Ultra 7 265K, NVMe SSD, Windows 11, release build. The status bar shows the time for every folder and search, so you can check these numbers on your own machine.
+
+¹ With [instant search](docs/instant-search.md) on. Without it, fd and dust do the work: fd on its own lists the same 5,015 DLLs in 0.1–0.3 s, and takes 8 s for a name search across a 219 GB home folder.
+
+## Features
+
+<img src="screenshots/folder-sizes.png" alt="C:\Windows sorted by size, with the size of every folder" width="100%">
+
+### Files
+
+-   **Instant folders.** Each folder is read in one Win32 enumeration pass and sorted in Rust in natural order (`img9` before `img10`), then drawn as a virtual list. The status bar says how long it took: *read in 0.3 ms · shown in 6.3 ms*.
+-   **Find files by name.** Typing in the search box filters the folder as you type; **Enter** searches every subfolder too (from This PC, every drive). All words must match, `*` and `?` work like in Explorer, and `"quotes"` keep spaces. The status bar says who answered: *index · 18 found in 7.7 ms* or *fd · 304 found in 8.09 s*.
+-   **Folder sizes.** With instant search on, every folder shows its size as it opens, and search results show folder totals too. Otherwise one click measures them with dust.
+-   **Preview pane and Quick Look.** Syntax-highlighted code and text, images, video, audio, PDFs and folder summaries, in the side pane (`Alt+P`) or full size on `Space`. Online-only OneDrive files are left alone, so nothing downloads by accident.
+-   **Command palette.** `Ctrl+K` finds any command, or a folder you've been to by typing a few of its letters (`dl` finds Downloads), with the folders you open most often and most recently first. Type a path, `~` or `%APPDATA%` to go there.
+-   **The usual explorer moves.** Back, forward and up, a breadcrumb address bar you can type into, Quick access, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folders and text documents, and hidden items on demand.
+-   **Windows-native file operations.** Copy, cut, paste, delete and rename go through Windows' own file engine, so progress, *Replace or Skip*, the Recycle Bin and permission prompts behave exactly like Explorer. The clipboard is shared with Explorer: copy here, paste there, and the other way round.
+-   **Drag and drop.** Drag files out to File Explorer, the desktop, a mail or a chat, or drop them in from anywhere onto a folder, a sidebar place or the open folder. As in Explorer, dropping on the same drive moves and on another drive copies.
+-   **Live.** The open folder refreshes when files change elsewhere.
+-   **Explorer integration.** Properties, Open with…, Show in File Explorer and Open in Terminal.
+
+<table>
+<tr>
+<td width="50%"><img src="screenshots/quick-look.png" alt="Quick Look showing a Rust file with syntax highlighting"></td>
+<td width="50%"><img src="screenshots/command-palette.png" alt="The command palette with recent folders and commands"></td>
+</tr>
+<tr>
+<td align="center"><b>Space</b>: Quick Look</td>
+<td align="center"><b>Ctrl+K</b>: the folders you use, and every command</td>
+</tr>
+</table>
+
+### Instant search (NTFS index)
+
+<img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 30 ms" width="100%">
+
+It's off until you turn it on in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches and folder sizes then answer from memory. fd and dust take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
+
+The service only runs once you opt in, with every privilege removed except the three it needs. It answers only you and administrators, over a named pipe no other program can pose as. It knows the names of all files on the indexed drives, including ones your account can't open, so on a shared PC turn it on only for accounts that may see every file name. Measurements, how it works and the full security model are in **[docs/instant-search.md](docs/instant-search.md)**.
 
 ### Text: search inside files (ripgrep)
--   **Blazing Fast Search**: Leverages the power of `ripgrep` to search through large codebases in milliseconds.
--   **Search & Replace**: Find text and replace it across multiple files with confidence.
--   **Real-time Preview**: Instantly view the file content and context of any search result with syntax highlighting.
--   **Regex, case, whole word, exclusions**: Full regular expressions, case sensitivity, whole words, and patterns to skip (e.g. `node_modules`, `.git`).
--   **Connected to Files**: **Search text** (Ctrl+Shift+F) searches the folder you're in; **Show in folder** on a result opens it in Files with the file selected.
 
-### Modern User Interface
--   **Beautiful Design**: Built with Shadcn UI and Tailwind CSS for a sleek, modern look.
--   **Dark/Light Mode**: Fully supports system theme syncing, or manually toggle between Dark and Light modes.
--   **Search History**: Quickly access and re-run your previous text searches.
--   **Keyboard first**: Everything has a shortcut (see below).
+<img src="screenshots/text-search.png" alt="ripgrep results with a syntax-highlighted preview" width="100%">
 
----
+-   **ripgrep speed.** Results stream in as rg finds them.
+-   **Search and replace** across many files at once.
+-   **Regex, case, whole word, exclusions.** Full regular expressions (multi-line with `Shift+Enter`), case sensitivity, whole words, and patterns to skip (`node_modules`, `.git`…).
+-   **Preview, history and export.** A syntax-highlighted preview of every result, recent searches one click away, and results exported to CSV or JSON.
+-   **Connected to Files.** **Search text** (`Ctrl+Shift+F`) searches the folder you're in; **Show in folder** on a result opens it in Files with the file selected.
 
-## ⚡ Instant search (NTFS index)
+## Compared with File Explorer
 
-Off until you turn it on in **Settings → Instant search**. Windows then asks for administrator approval once, and a small service (`ShadUI Ripgrep instant search`) starts indexing your fixed NTFS drives. From then on:
-
--   **Name searches** on indexed drives answer from memory: the same query rules as fd (every word must match, `*` and `?` match the whole name, case-insensitive, same exclusions and hidden-file setting), results streamed into the same list with size, date and attributes.
--   **Folder sizes** for every folder come from the index, kept current as files change.
--   **Fallbacks are automatic.** fd answers whatever the index can't: drives that aren't indexed (network shares, FAT/exFAT USB sticks, a drive still being read), folders behind junctions, and searches with *Skip what .gitignore lists* on (only fd reads .gitignore). From This PC, indexed drives and the rest are searched together (*index + fd*). dust sizes folders the index doesn't have.
-
-### Measured
-
-On this machine (Intel Core Ultra 7 265K, NVMe C: with 2.89 million MFT records: 2.33 M files, 509 k folders, 3.0 M names; plus a SATA SSD with D: and E:), release build:
-
-| | |
-| :--- | :--- |
-| Indexing C: from scratch (one read of the whole MFT, 2.9 GB) | **2.3–2.5 s** to ready (E:, 343 k records: 0.1–0.5 s) |
-| Restart (load the 214 MB snapshot, replay the journal) | **0.25 s** to ready |
-| Memory for C: | 296 MB |
-| Search inside the service, C: | 2.5 ms (`kernel32.dll`), 4.4 ms (`report`), 2.7 ms (no match), 14 ms (`*.dll`: 108 k matches, 50 k returned) |
-| Search end to end over the pipe, all three drives | median 4.8 ms (`kernel32.dll`), 8.1 ms (`report`), 4.3 ms (no match), 31–33 ms (50 k results) |
-| Search in the app, Enter to every result listed | 6.5–7.5 ms (`kernel32.dll`), 14–15 ms (`report`), 155–186 ms (50 k results; most of it is handing 50 k rows to the webview) |
-| Folder sizes | 0.02–0.05 ms in the service, 0.4 ms in the app |
-| A file created, grown, renamed, moved, hard-linked or deleted | in the index within ~0.3 s (the journal is checked every 250 ms) |
-| The same name search with fd, home folder only (219 GB) | 8.09 s |
-
-Measure your own with `shadui-index bench C:` (administrator) and `shadui-index search kernel32.dll --repeat 21`.
-
-### How it works
-
--   **One read of the MFT.** The service reads each volume's Master File Table straight off the disk in 8 MB sequential chunks (parsed in parallel while the next chunk is read), the way Everything and WizTree do. One pass gives every name (hard links included), its folder, size, last-write time and attributes; `FSCTL_ENUM_USN_DATA` alone would give names but no sizes or dates.
--   **The USN journal** keeps it current: every 250 ms the service reads new journal records and re-reads each file record they touched through NTFS itself (`FSCTL_GET_NTFS_FILE_RECORD`), so creates, renames, moves, size changes, hard links and deletes converge on what's really on disk however late or often a change is seen. Folder totals are updated along each changed file's folder chain. If the journal wraps while the service isn't running, it reads the MFT again (seconds).
--   **Snapshots** of each volume's index are saved after indexing, every 30 minutes if anything changed, and when the service stops, so a restart is a load plus a short journal replay.
--   **The index** keeps, per volume, a record per MFT entry (size, date, attributes) and a link per name to its parent folder, with names in one UTF-8 arena (a lowercase copy only for names that aren't ASCII). A search is a parallel scan over every name, then a walk up each match's folders for the scope, hidden and exclusion rules.
-
-### Security model
-
--   **Nothing runs elevated unless you turn it on.** Turning it on runs the bundled `shadui-index.exe install` behind the UAC prompt; turning it off runs `shadui-index.exe uninstall` the same way. Uninstalling the app removes the service too (one more prompt, only if it was on).
--   **Where it runs.** Reading a raw volume requires administrator rights, so the service runs as LocalSystem, but with every privilege removed except `SeChangeNotify`, `SeBackup` and `SeManageVolume`. It's copied to `C:\Program Files\ShadUI Ripgrep\`, which only administrators can change (a LocalSystem service must never run a file its users could swap), and registered with a quoted path, delayed start, and restart on failure. It only reads volumes; the one change it can make is turning on a drive's change journal if it was off (Windows' default size, 32 MB), as Everything does.
--   **Who can ask it.** It answers on the named pipe `\\.\pipe\shadui-ripgrep-index-v1`, whose ACL lets in only SYSTEM, administrators and the accounts that turned it on, and refuses remote clients. Even those accounts can't create an instance of the pipe, so no other program can pose as the service, and the app also refuses a pipe not owned by SYSTEM or Administrators (a program could otherwise take the name while the service is stopped and feed the app made-up results).
--   **What it exposes.** Like Everything, the index knows the name, size, date and attributes of every file on the indexed drives, **including files your account can't open** (other users' profiles, `System Volume Information`…), and anyone allowed on the pipe can search them. It never reads or returns file contents. On a shared PC, only turn it on for accounts that may see all file names. Its snapshots hold the same names, so they live in LocalSystem's own profile (`%SystemRoot%\System32\config\systemprofile\AppData\Local\ShadUI Ripgrep\Index`), readable only by SYSTEM and administrators, and are deleted when it's turned off.
--   **Installing per user.** The app installs per user by default, so the copy of `shadui-index.exe` the UAC prompt runs sits in your own folder, where a program running as you could swap it before you click. Install the app per machine if that matters to you.
-
-### Why our own service
-
-Before writing it, these were evaluated (October 2026):
-
-| Option | What it offers | Why not |
+| | File Explorer | ShadUI Ripgrep |
 | :--- | :--- | :--- |
-| [goz](https://github.com/mustafaahci/goz) (MIT): daemon `gozd` + `goz --json` client over a named pipe | Fast, multi-volume, live journal tailing, sizes and dates via `FSCTL_QUERY_FILE_LAYOUT`, a careful pipe ACL | No folder-size totals, pipe open to every authenticated user, no snapshot (re-enumerates on each start), ~20 ms per query to spawn its CLI or a dependency on its internal wire format, and a three-month-old project to run as LocalSystem |
-| [everyfind](https://github.com/kyo5uke/everyfind) (MIT/Apache-2.0): `efd` + `ef` | Snapshots, disk usage from the index | One volume per daemon, no dates, allocated rather than real sizes, terminal-first |
-| [UFFS](https://github.com/skyllc-ai/UltraFastFileSearch) (MPL-2.0) | Raw MFT reading, daemon, 40+ filters | Very large, a separate access-broker service, its own clients in mind |
-| [usn-journal-rs](https://crates.io/crates/usn-journal-rs) / [ntfs-reader](https://crates.io/crates/ntfs-reader) crates | Journal reading; a full raw-MFT reader | `FSCTL_ENUM_USN_DATA` has no sizes or dates; ntfs-reader keeps the whole MFT in memory (~1 KiB per record, ~3 GB here) or reads it twice |
+| Folder sizes | In Properties or a tooltip | In the list, for every folder |
+| Find a file by name | Windows Search where it indexes, otherwise a walk through every folder | An index of every NTFS drive (opt-in), otherwise fd |
+| Search inside files | Indexed places and file types | ripgrep in any folder, with regex and replace |
+| Preview | Preview pane | Preview pane, and Quick Look on `Space` |
+| Go to a folder | Quick access, address bar | Address bar, and `Ctrl+K` with your most-used folders |
+| Timing | Not shown | In the status bar, for every folder and search |
 
-What the app needed (folder totals, its exact query rules, results streamed with metadata, a pipe only the opting-in user can open, fast restarts, few dependencies in a SYSTEM service) came out simpler as a purpose-built service of about 4,000 lines of Rust (plus 850 of tests) in [`src-tauri/index`](src-tauri/index), with ideas taken from those projects: goz's pipe ACL and server-owner check, everyfind's snapshot and polling tail, Everything's single MFT pass.
+## Install
 
-### For admins and developers
+1.  Download `shadui-ripgrep_<version>_x64-setup.exe` from the [latest release](https://github.com/shadijhade/shadui-ripgrep/releases/latest).
+2.  Run it. It installs for your account without administrator rights, and ripgrep, fd and dust come with it.
 
-```text
-shadui-index status                      what the running service has indexed
-shadui-index search QUERY [--in PATH]... [--max N] [--hidden] [--repeat N] [--print | --long]
-shadui-index sizes PATH
-shadui-index install [--allow-sid SID]   (administrator) install or update, and allow a user
-shadui-index uninstall                   (administrator) remove it with its snapshots
-shadui-index run [--volume C:]...        (administrator) run in a console instead, logging to it
-shadui-index bench [C:]...               (administrator) index drives in-process and time everything
-```
+Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen may show *Windows protected your PC*; choose **More info → Run anyway**.
 
-The NSIS installer accepts `/INSTANTSEARCH` to turn it on during a (silent) install. The service logs to `service.log` next to its snapshots.
-
-Tested on a real install: turning it on and off from Settings, indexing, snapshot restarts, live changes, the fallbacks. Not yet exercised: updating a running service in place (Settings offers *Update* when the app is newer than the service; it runs the same `install`), and the installer hooks at install/uninstall time (the installer builds with them). Not indexed: ReFS, FAT and exFAT drives, removable drives, and volumes without a drive letter; fd covers them.
-
----
-
-## 📥 Installation
-
-### For Users (Noob Friendly)
-1.  Go to the [Releases](https://github.com/shadijhade/shadui-ripgrep/releases) page.
-2.  Download the latest `.exe` installer for Windows.
-3.  Run the installer and you're good to go! ripgrep, fd and dust are bundled with the app, so there's nothing else to install.
-
-### For Developers (Pro)
-If you want to build the app from source or contribute, follow these steps:
-
-#### Prerequisites
--   [Node.js](https://nodejs.org/) (v18+)
--   [Rust](https://www.rust-lang.org/) (latest stable)
--   The Windows x64 binaries of ripgrep, fd and dust ship in `src-tauri/binaries/`. On other platforms, add binaries named `rg-<target-triple>`, `fd-<target-triple>` and `dust-<target-triple>` there.
-
-#### Build Instructions
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/shadijhade/shadui-ripgrep.git
-    cd shadui-ripgrep
-    ```
-
-2.  **Install dependencies**:
-    ```bash
-    npm install
-    ```
-
-3.  **Run in development mode**:
-    ```bash
-    npm run tauri dev
-    ```
-
-4.  **Build for production**:
-    ```bash
-    npm run tauri build
-    ```
-    The executable will be located in `src-tauri/target/release/bundle/nsis/`.
-
-#### Checks
-```bash
-cd src-tauri && cargo test --workspace
-node src/lib/explorer.check.ts
-node src/lib/text.check.ts
-```
-The index's tests (MFT record parsing, queries, folder totals under random changes, snapshots, the wire format, and a real named-pipe round trip with its ACL) run without administrator rights.
-
----
-
-## 🛠️ Tech Stack
-
--   **Frontend**: [React](https://react.dev/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/)
--   **UI Library**: [Shadcn UI](https://ui.shadcn.com/), [Lucide React](https://lucide.dev/)
--   **Backend**: [Tauri](https://tauri.app/) (Rust), with the [windows](https://github.com/microsoft/windows-rs) crate for Win32 and the shell, and [notify](https://github.com/notify-rs/notify) for folder watching
--   **Instant search**: a Windows service in Rust (`src-tauri/index`, built as `shadui-index.exe` and bundled with the app) reading the NTFS MFT and USN journal, with [rayon](https://github.com/rayon-rs/rayon) and [memchr](https://github.com/BurntSushi/memchr)
--   **State Management**: [Zustand](https://github.com/pmndrs/zustand)
--   **Bundled tools**:
-
-    | Tool | Version | Used for | License |
-    | :--- | :--- | :--- | :--- |
-    | [ripgrep](https://github.com/BurntSushi/ripgrep) | 15.2.0 | Searching inside files | MIT or Unlicense |
-    | [fd](https://github.com/sharkdp/fd) | 10.5.0 | Finding files by name | MIT or Apache-2.0 |
-    | [dust](https://github.com/bootandy/dust) | 1.2.6 | Folder sizes | Apache-2.0 |
-
----
-
-## ⌨️ Keyboard Shortcuts
+## Keyboard shortcuts
 
 ### Files
 | Key | Action |
 | :--- | :--- |
 | `Enter` | Open the selection |
+| `Space` | Quick Look: the focused item full size. Arrows move through the folder; `Space` or `Esc` closes |
+| `Ctrl+K` / `Ctrl+P` | Command palette: folders you use, paths and every command |
 | `Alt+Left` / `Backspace` · `Alt+Right` · `Alt+Up` | Back · Forward · Up |
 | `Ctrl+L` / `Alt+D` / `F4` | Type a path in the address bar |
 | `Ctrl+F` / `Ctrl+E` / `F3` | Search: typing filters, `Enter` searches subfolders, `Esc` clears |
 | `Arrows`, `Home`, `End`, `PageUp/Down` | Move (`Shift` extends the selection, `Ctrl` moves without selecting) |
+| `Ctrl+Space` | Add the focused item to the selection, or take it out |
 | Letters | Jump to the next name starting with them |
 | `Ctrl+A` | Select all |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (works with File Explorer too) |
@@ -206,8 +150,68 @@ The index's tests (MFT record parsing, queries, folder totals under random chang
 
 `Ctrl+,` opens Settings from anywhere.
 
----
+## How it works
 
-## 📝 License
+-   **Folders**: one `FindFirstFileExW` pass (basic info, large fetch) gets every name, size, date and attribute at once. Rust sorts them and hands the whole listing to the UI as a single binary buffer rather than JSON, and React draws only the rows on screen.
+-   **Name search**: the instant-search service when it covers the folder, otherwise fd, with results streamed into the list as they arrive.
+-   **Folder sizes**: the index's per-folder totals, otherwise dust.
+-   **Text search**: ripgrep's JSON output, streamed in batches.
+-   **File operations**: Windows' `IFileOperation` (the engine Explorer uses), the clipboard formats Explorer reads, and OLE drag and drop.
+-   **Live folders**: [notify](https://github.com/notify-rs/notify) watches the open folder.
+-   **Instant search**: a Windows service in Rust ([`src-tauri/index`](src-tauri/index), built as `shadui-index.exe`) that reads each NTFS volume's Master File Table in one sequential pass and follows its USN journal. See [docs/instant-search.md](docs/instant-search.md).
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. The bundled tools keep their own licenses (see the table above).
+Built with [Tauri 2](https://tauri.app/) and the [windows](https://github.com/microsoft/windows-rs) crate on the Rust side, and [React](https://react.dev/), [Vite](https://vite.dev/), [Tailwind CSS](https://tailwindcss.com/), [shadcn/ui](https://ui.shadcn.com/), [Lucide](https://lucide.dev/) and [Zustand](https://github.com/pmndrs/zustand) in the UI. The bundled tools:
+
+| Tool | Version | Used for | License |
+| :--- | :--- | :--- | :--- |
+| [ripgrep](https://github.com/BurntSushi/ripgrep) | 15.2.0 | Searching inside files | MIT or Unlicense |
+| [fd](https://github.com/sharkdp/fd) | 10.5.0 | Finding files by name | MIT or Apache-2.0 |
+| [dust](https://github.com/bootandy/dust) | 1.2.6 | Folder sizes | Apache-2.0 |
+
+## Build from source
+
+You need Windows 10 or 11, [Node.js](https://nodejs.org/) 22.18 or newer, [Rust](https://www.rust-lang.org/tools/install) (stable, MSVC toolchain) and the [Tauri prerequisites](https://tauri.app/start/prerequisites/).
+
+```bash
+git clone https://github.com/shadijhade/shadui-ripgrep.git
+cd shadui-ripgrep
+npm install
+npm run tauri dev
+```
+
+`npm run tauri build` makes the installer in `src-tauri/target/release/bundle/nsis/`. The Windows x64 builds of ripgrep, fd and dust ship in `src-tauri/binaries/`; on other platforms, add binaries named `rg-<target-triple>`, `fd-<target-triple>` and `dust-<target-triple>` there.
+
+The checks CI runs:
+
+```bash
+npm run build
+node src/lib/explorer.check.ts
+node src/lib/text.check.ts
+cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+```
+
+The index's tests (MFT record parsing, queries, folder totals under random changes, snapshots, the wire format, and a real named-pipe round trip with its ACL) run without administrator rights.
+
+## Roadmap
+
+-   [ ] Tabs and a dual-pane view
+-   [ ] A disk-usage map (treemap) from the index
+-   [ ] Thumbnails and a grid view
+-   [ ] Signed releases, auto-update, and winget and Scoop packages
+-   [ ] Zip and 7z archives opened like folders
+
+Missing something? [Open an issue](https://github.com/shadijhade/shadui-ripgrep/issues/new/choose). If the app saves you time, a star helps other people find it.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup, where things are in the code, and the checks. To report a security issue, see [SECURITY.md](SECURITY.md).
+
+## Acknowledgments
+
+-   [fd](https://github.com/sharkdp/fd), [dust](https://github.com/bootandy/dust) and [ripgrep](https://github.com/BurntSushi/ripgrep), which do the heavy lifting and ship inside the app.
+-   [Everything](https://www.voidtools.com/) and [WizTree](https://diskanalyzer.com/), which showed that reading the MFT directly is the fast way, and [goz](https://github.com/mustafaahci/goz) and [everyfind](https://github.com/kyo5uke/everyfind), whose ideas the index service borrows.
+-   [zoxide](https://github.com/ajeetdsouza/zoxide) for frecency, and macOS for Quick Look.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The bundled ripgrep, fd and dust keep their own licenses; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
