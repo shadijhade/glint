@@ -33,6 +33,7 @@ import {
     FolderOutput,
     FolderPlus,
     FolderSearch,
+    GitCompareArrows,
     HardDrive,
     History,
     Info,
@@ -67,7 +68,7 @@ import {
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { type FileEntry, type InArchive, isArchived, isArchiveFile, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { compareEntries, type DiffStatus, type FileEntry, type InArchive, isArchived, isArchiveFile, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     archiveOf,
     calcSizes,
@@ -118,6 +119,8 @@ import {
     stopFind,
     switchPane,
     tabState,
+    toggleComparePanes,
+    toggleDiffOnly,
     toggleDual,
     toggleSelected,
     updateTab,
@@ -403,6 +406,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             tabs > 1 && action("next-tab", "Next tab", ChevronRight, () => cycleTab(1), "Ctrl+Tab"),
             tabs > 1 && action("previous-tab", "Previous tab", ChevronLeft, () => cycleTab(-1), "Ctrl+Shift+Tab"),
             action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
+            action("compare-panes", s.dual && s.comparePanes ? "Stop comparing panes" : "Compare panes: highlight differences between both panes", GitCompareArrows, toggleComparePanes, "Ctrl+Shift+M"),
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
             !!other && chosen && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
             !!other && chosen && !archive && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
@@ -478,9 +482,34 @@ function Pane(props: PaneProps) {
 }
 
 function PaneView({ index, active, menuContext }: PaneProps) {
-    const { tabId, path, listing, loading, find, filter, selection, focus, renaming, view, cut, sizes, dropTarget, quickLook, current, dual } = useExplorer(
+    const {
+        tabId,
+        path,
+        listing,
+        loading,
+        find,
+        filter,
+        selection,
+        focus,
+        renaming,
+        view,
+        cut,
+        sizes,
+        dropTarget,
+        quickLook,
+        current,
+        dual,
+        comparePanes,
+        diffOnly,
+        otherListing,
+        otherSizes,
+        otherWritable,
+    } = useExplorer(
         useShallow((s) => {
             const t = s.tabs[(s.panes[index] ?? s.panes[0]).active];
+            const otherPane = s.dual && s.comparePanes ? s.panes[1 - index] : undefined;
+            const otherTab = otherPane ? s.tabs[otherPane.active] : undefined;
+            const otherReady = !!otherTab?.ready && otherTab.path !== THIS_PC && !otherTab.find;
             return {
                 tabId: t.id,
                 path: t.path,
@@ -498,6 +527,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 quickLook: s.quickLook,
                 current: s.activePane === index,
                 dual: s.dual,
+                comparePanes: s.comparePanes,
+                diffOnly: s.diffOnly,
+                otherListing: otherReady ? otherTab.listing : null,
+                otherSizes: otherReady ? s.sizes[otherTab.path] : undefined,
+                otherWritable: otherReady && !otherTab.listing?.archive,
             };
         })
     );
@@ -522,20 +556,64 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         return sortEntries(source, sort, foldersFirst, source === listing?.entries, sizeOf);
     }, [source, listing, sort, foldersFirst, sizeRun]);
 
+    const comparison = useMemo(() => {
+        if (!dual || !comparePanes || find || path === THIS_PC || !listing || !otherListing) return null;
+        const otherMap = new Map<string, FileEntry>();
+        for (const e of otherListing.entries) {
+            if (showHidden || !isHidden(e)) otherMap.set(e.lower, e);
+        }
+        const diffs = new Map<string, DiffStatus>();
+        let unique = 0;
+        let newer = 0;
+        let differ = 0;
+        let older = 0;
+        let same = 0;
+        const diffPaths: string[] = [];
+        const syncPaths: string[] = [];
+        for (const e of sorted) {
+            if (!showHidden && isHidden(e)) continue;
+            const other = otherMap.get(e.lower);
+            const ownDirSize = e.dir ? sizeRun?.sizes.get(e.name) : undefined;
+            const otherDirSize = other?.dir ? otherSizes?.sizes.get(other.name) : undefined;
+            const status = compareEntries(e, other, ownDirSize, otherDirSize);
+            diffs.set(e.lower, status);
+            if (status === "unique") {
+                unique++;
+                diffPaths.push(e.path);
+                syncPaths.push(e.path);
+            } else if (status === "newer") {
+                newer++;
+                diffPaths.push(e.path);
+                syncPaths.push(e.path);
+            } else if (status === "differ") {
+                differ++;
+                diffPaths.push(e.path);
+            } else if (status === "older") {
+                older++;
+                diffPaths.push(e.path);
+            } else {
+                same++;
+            }
+        }
+        return { diffs, unique, newer, differ, older, same, diffPaths, syncPaths };
+    }, [dual, comparePanes, find, path, listing, otherListing, sorted, showHidden, sizeRun, otherSizes]);
+
     const deferredFilter = useDeferredValue(filter);
     const { rows: listRows, hidden } = useMemo(() => {
         const match = matcher(deferredFilter);
-        if (!match && showHidden) return { rows: sorted, hidden: 0 };
+        const filterDiffs = !!comparison && diffOnly;
+        if (!match && showHidden && !filterDiffs) return { rows: sorted, hidden: 0 };
         let hidden = 0;
         const rows = sorted.filter((e) => {
             if (!showHidden && isHidden(e)) {
                 hidden++;
                 return false;
             }
+            if (filterDiffs && comparison.diffs.get(e.lower) === "same") return false;
             return !match || match(e);
         });
         return { rows, hidden };
-    }, [sorted, deferredFilter, showHidden]);
+    }, [sorted, deferredFilter, showHidden, comparison, diffOnly]);
     // A tab showing its disk-usage map has the map's items as rows.
     const mapRows = useMapRows(tabId);
     const rows = mapRows ?? listRows;
@@ -685,6 +763,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "t") newTab();
                 else if (key === "w") closeTab();
                 else if (key === "d" && e.shiftKey) toggleDual();
+                else if (key === "m" && e.shiftKey) toggleComparePanes();
                 else if (/^[1-9]$/.test(key) && !e.shiftKey) selectTab(Number(key));
                 else if (key === "Enter") openSelectedInTabs();
                 else if (key === "a") selectAll(rows);
@@ -930,6 +1009,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     <Search /> Search subfolders too
                 </Button>
             </Centered>
+        ) : comparison && diffOnly && comparison.same > 0 ? (
+            <Centered>
+                <GitCompareArrows className="size-6 text-emerald-500" />
+                <p className="font-medium text-foreground">No differences in this pane</p>
+                <p>All {formatCount(comparison.same)} items match the other pane.</p>
+                <Button variant="outline" size="sm" onClick={toggleDiffOnly}>
+                    Show identical items
+                </Button>
+            </Centered>
         ) : listing.entries.length ? (
             <Centered>
                 <p>This folder only has hidden items.</p>
@@ -951,6 +1039,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         search: !!find,
         scope: find?.scope ?? path,
         sizes: sizeRun,
+        diffs: comparison?.diffs,
         sort,
         onSort,
         selection,
@@ -971,6 +1060,18 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         onRename: (entry: FileEntry, name: string) => renameEntry(entry, name, tabRef.current),
         onCancelRename: () => updateTab({ renaming: null }, tabRef.current),
         empty,
+    };
+
+    const selectDiffs = () => {
+        if (!comparison?.diffPaths.length) return;
+        const first = comparison.diffPaths[0];
+        updateTab({ selection: new Set(comparison.diffPaths), focus: first, anchor: first }, tabRef.current);
+    };
+
+    const syncToOther = () => {
+        if (!comparison?.syncPaths.length) return;
+        focusPane(index);
+        void copyToOtherPane(false, comparison.syncPaths);
     };
 
     return (
@@ -1004,6 +1105,93 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                             <X /> Close
                         </Button>
                     </div>
+                </div>
+            )}
+            {dual && comparePanes && !find && path !== THIS_PC && (
+                <div className="flex h-8 shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-primary/5 px-2.5 text-xs [scrollbar-width:none]">
+                    <GitCompareArrows className="size-3.5 shrink-0 text-primary" />
+                    {comparison ? (
+                        <>
+                            {comparison.unique > 0 && (
+                                <span className="shrink-0 rounded-[4px] bg-emerald-500/15 px-1.5 py-0.5 font-medium text-emerald-700 dark:text-emerald-300">
+                                    {formatCount(comparison.unique)} only here
+                                </span>
+                            )}
+                            {comparison.newer > 0 && (
+                                <span className="shrink-0 rounded-[4px] bg-sky-500/15 px-1.5 py-0.5 font-medium text-sky-700 dark:text-sky-300">
+                                    {formatCount(comparison.newer)} newer
+                                </span>
+                            )}
+                            {comparison.differ > 0 && (
+                                <span className="shrink-0 rounded-[4px] bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+                                    {formatCount(comparison.differ)} differs
+                                </span>
+                            )}
+                            {comparison.older > 0 && (
+                                <span className="shrink-0 rounded-[4px] bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
+                                    {formatCount(comparison.older)} older
+                                </span>
+                            )}
+                            {comparison.diffPaths.length === 0 && (
+                                <span className="shrink-0 font-medium text-emerald-600 dark:text-emerald-400">All match</span>
+                            )}
+                            <span className="shrink-0 text-muted-foreground">· {formatCount(comparison.same)} same</span>
+                            <div className="ml-auto flex shrink-0 items-center gap-1">
+                                <button
+                                    type="button"
+                                    aria-pressed={diffOnly}
+                                    onClick={toggleDiffOnly}
+                                    title="Hide identical items in both panes"
+                                    className={cn(
+                                        "rounded-[4px] px-1.5 py-0.5 font-medium transition-colors",
+                                        diffOnly ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                                    )}
+                                >
+                                    Diffs only
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={!comparison.diffPaths.length}
+                                    onClick={selectDiffs}
+                                    title="Select all items that differ in this pane"
+                                    className="rounded-[4px] px-1.5 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                                >
+                                    Select ({formatCount(comparison.diffPaths.length)})
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={!otherWritable || !comparison.syncPaths.length}
+                                    onClick={syncToOther}
+                                    title="Copy unique and newer items from this pane to the other pane"
+                                    className="rounded-[4px] bg-primary/15 px-1.5 py-0.5 font-medium text-primary transition-colors hover:bg-primary/25 disabled:pointer-events-none disabled:opacity-40"
+                                >
+                                    {index === 0 ? `Sync ${formatCount(comparison.syncPaths.length)} →` : `← Sync ${formatCount(comparison.syncPaths.length)}`}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={toggleComparePanes}
+                                    title="Stop comparing panes (Ctrl+Shift+M)"
+                                    aria-label="Stop comparing panes"
+                                    className="grid size-5 place-items-center rounded-[4px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                                >
+                                    <X className="size-3.5" />
+                                </button>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <span className="truncate text-muted-foreground">Open a folder in the other pane to compare</span>
+                            <button
+                                type="button"
+                                onClick={toggleComparePanes}
+                                title="Stop comparing panes (Ctrl+Shift+M)"
+                                aria-label="Stop comparing panes"
+                                className="ml-auto grid size-5 shrink-0 place-items-center rounded-[4px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                            >
+                                <X className="size-3.5" />
+                            </button>
+                        </>
+                    )}
                 </div>
             )}
             <div className="min-h-0 flex-1">
