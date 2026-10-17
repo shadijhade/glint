@@ -112,6 +112,10 @@ interface ExplorerState {
     /** The pane the keyboard, toolbar and address bar act on. */
     activePane: number;
     dual: boolean;
+    /** Highlights unique, newer, older, and size-different items across the two dual panes. */
+    comparePanes: boolean;
+    /** When comparing panes, hides identical items so only differences remain on screen. */
+    diffOnly: boolean;
     drives: Drive[];
     known: KnownFolder[];
     editingAddress: boolean;
@@ -157,6 +161,8 @@ export const useExplorer = create<ExplorerState>(() => ({
     panes: [{ tabs: [firstTab], active: firstTab }],
     activePane: 0,
     dual: false,
+    comparePanes: false,
+    diffOnly: false,
     drives: [],
     known: [],
     editingAddress: false,
@@ -838,7 +844,7 @@ export const switchPane = () => focusPane(1 - get().activePane);
 export function toggleDual() {
     const s = get();
     if (s.dual) {
-        set({ dual: false, activePane: 0, quickLook: false, editingAddress: false });
+        set({ dual: false, comparePanes: false, diffOnly: false, activePane: 0, quickLook: false, editingAddress: false });
     } else if (s.panes.length < 2) {
         // A new right pane starts on the folder you're in.
         const id = newTabId();
@@ -850,6 +856,21 @@ export function toggleDual() {
     }
     syncWatches();
     useStore.getState().setLastFolder(currentPath());
+}
+
+/** Ctrl+Shift+M: compares the two panes side by side, turning on dual-pane view first if needed. */
+export function toggleComparePanes() {
+    const s = get();
+    if (!s.dual) {
+        toggleDual();
+        set({ comparePanes: true, diffOnly: false });
+    } else {
+        set({ comparePanes: !s.comparePanes, diffOnly: false });
+    }
+}
+
+export function toggleDiffOnly() {
+    set((s) => ({ diffOnly: !s.diffOnly }));
 }
 
 /** The folder open in the other pane, when there's one to copy or move into (an archive isn't one). */

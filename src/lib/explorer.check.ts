@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
-import { archiveFormat, ATTR, decodeListing, type FileEntry, isArchived, isArchiveFile, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
+import { archiveFormat, ATTR, compareEntries, decodeListing, type FileEntry, isArchived, isArchiveFile, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
@@ -41,6 +41,14 @@ assert.equal(names(sortEntries(presorted, { key: "size", desc: true }, true, tru
 assert.equal(names(sortEntries(presorted, { key: "modified", desc: false }, false, true)), "b,c.md,B.txt,a.txt");
 assert.equal(names(sortEntries(presorted, { key: "type", desc: false }, true, true)), "b,c.md,a.txt,B.txt");
 assert.equal(names(sortEntries(presorted, { key: "size", desc: true }, true, true, (e) => (e.dir ? 100 : e.size))), "b,a.txt,B.txt,c.md");
+
+// Dual-pane comparison
+assert.equal(compareEntries(entry("a.txt", { size: 10, modified: 5000 }), undefined), "unique");
+assert.equal(compareEntries(entry("a.txt", { size: 10, modified: 8000 }), entry("a.txt", { size: 10, modified: 5000 })), "newer");
+assert.equal(compareEntries(entry("a.txt", { size: 10, modified: 5000 }), entry("a.txt", { size: 10, modified: 8000 })), "older");
+assert.equal(compareEntries(entry("a.txt", { size: 20, modified: 5000 }), entry("a.txt", { size: 10, modified: 5000 })), "differ");
+assert.equal(compareEntries(entry("a.txt", { size: 10, modified: 5000 }), entry("a.txt", { size: 10, modified: 5500 })), "same");
+assert.equal(compareEntries(entry("sub/"), entry("sub/"), 100, 200), "differ");
 
 // Matching mirrors fd's: all terms, case-insensitive, globs anchor to the whole name
 assert.deepEqual(terms(`report "q3 final"  pdf`), ["report", "q3 final", "pdf"]);

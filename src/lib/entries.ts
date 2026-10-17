@@ -221,3 +221,23 @@ export function matcher(query: string): ((e: FileEntry) => boolean) | null {
     });
     return (e) => tests.every((test) => test(e));
 }
+
+export type DiffStatus = "unique" | "newer" | "older" | "differ" | "same";
+
+/**
+ * Compares an item in one pane with the matching name in the other pane (`other`).
+ * Allows a 2-second timestamp tolerance for FAT/archive rounding when sizes match.
+ */
+export function compareEntries(own: FileEntry, other: FileEntry | undefined, ownDirSize?: number, otherDirSize?: number): DiffStatus {
+    if (!other || other.dir !== own.dir) return "unique";
+    if (own.dir) {
+        if (ownDirSize !== undefined && otherDirSize !== undefined && ownDirSize !== otherDirSize) return "differ";
+        return "same";
+    }
+    if (own.modified > 0 && other.modified > 0 && Math.abs(own.modified - other.modified) > 2000) {
+        return own.modified > other.modified ? "newer" : "older";
+    }
+    if (own.size !== other.size) return "differ";
+    return "same";
+}
+
