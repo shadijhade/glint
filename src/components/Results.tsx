@@ -3,13 +3,33 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { AlertTriangle, Copy, Download, ExternalLink, FileText, FolderOpen, FolderSearch, Loader2, Search as SearchIcon, SearchX, X } from "lucide-react";
+import {
+    AlertTriangle,
+    ChevronRight,
+    ChevronsDownUp,
+    ChevronsUpDown,
+    Copy,
+    Download,
+    ExternalLink,
+    FileText,
+    Fingerprint,
+    FolderOpen,
+    FolderSearch,
+    Loader2,
+    Lock,
+    Search as SearchIcon,
+    SearchX,
+    X,
+} from "lucide-react";
+import { formatCount } from "@/lib/format";
 import { RgMatch } from "@/lib/ripgrep";
 import { useStore } from "@/lib/store";
 import { segments } from "@/lib/text";
 import { rowHeight } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 import type { SearchRun } from "@/App";
+import { inspectLocks } from "./explorer/LocksDialog";
+import { inspectXRay } from "./explorer/XRayDialog";
 import { VirtualList } from "./VirtualList";
 import { Preview } from "./Preview";
 import { Button } from "./ui/button";
@@ -18,7 +38,7 @@ type Row =
     | { type: "file"; path: string; count: number; first: number }
     | { type: "match"; index: number };
 
-const fmt = (n: number) => n.toLocaleString();
+const fmt = formatCount;
 const basename = (path: string) => path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
 const extOf = (path: string) => {
     const name = basename(path);
@@ -53,13 +73,20 @@ export function Results({ active, run, matches, searching, error, duration, file
     const fontSize = useStore((s) => s.settings.fontSize);
     const [filter, setFilter] = useState("");
     const [activeExts, setActiveExts] = useState<string[]>([]);
+    const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
     const deferredFilter = useDeferredValue(filter.toLowerCase());
 
+    useEffect(() => {
+        setCollapsed(new Set());
+    }, [run]);
+
     // Group contiguous matches by file (rg emits each file's matches together) and apply filters.
-    const { rows, fileCount, exts } = useMemo(() => {
+    const { rows, fileCount, exts, filePaths, maxCount } = useMemo(() => {
         const rows: Row[] = [];
         const extCounts = new Map<string, number>();
+        const filePaths: string[] = [];
         let fileCount = 0;
+        let maxCount = 0;
         let lastPath = "";
         let ext = "";
         let header: Extract<Row, { type: "file" }> | null = null;
@@ -76,13 +103,31 @@ export function Results({ active, run, matches, searching, error, duration, file
             if (header?.path !== path) {
                 header = { type: "file", path, count: 0, first: index };
                 rows.push(header);
+                filePaths.push(path);
             }
             header.count++;
-            rows.push({ type: "match", index });
+            if (header.count > maxCount) maxCount = header.count;
+            if (!collapsed.has(path)) {
+                rows.push({ type: "match", index });
+            }
         });
         const exts = [...extCounts].sort((a, b) => b[1] - a[1]).slice(0, 4);
-        return { rows, fileCount, exts };
-    }, [matches, activeExts, deferredFilter]);
+        return { rows, fileCount, exts, filePaths, maxCount };
+    }, [matches, activeExts, deferredFilter, collapsed]);
+
+    const toggleFile = (path: string) => {
+        setCollapsed((prev) => {
+            const next = new Set(prev);
+            if (next.has(path)) next.delete(path);
+            else next.add(path);
+            return next;
+        });
+    };
+
+    const allCollapsed = filePaths.length > 0 && collapsed.size >= filePaths.length;
+    const toggleCollapseAll = () => {
+        setCollapsed(allCollapsed ? new Set() : new Set(filePaths));
+    };
 
     const selectedRow = useMemo(() => rows.findIndex((r) => r.type === "match" && r.index === selected), [rows, selected]);
     const selectedMatch = matches[selected];
@@ -149,20 +194,35 @@ export function Results({ active, run, matches, searching, error, duration, file
     const renderRow = (i: number) => {
         const row = rows[i];
         if (row.type === "file") {
+            const isCollapsed = collapsed.has(row.path);
+            const pct = maxCount > 0 ? Math.max(8, Math.round((row.count / maxCount) * 100)) : 0;
             return (
                 <div
-                    onClick={() => onSelect(row.first)}
+                    onClick={() => {
+                        toggleFile(row.path);
+                        onSelect(row.first);
+                    }}
                     onDoubleClick={() => onOpen(row.path)}
                     onContextMenu={(e) => openMenu(e, row.path)}
-                    className="flex h-full cursor-default items-center gap-2 bg-muted/50 pl-3 pr-3 hover:bg-accent"
-                    title={row.path}
+                    className="flex h-full cursor-default items-center gap-1.5 bg-muted/50 pl-2 pr-3 hover:bg-accent"
+                    title={`${row.path}\nClick to ${isCollapsed ? "expand" : "collapse"} matches · Double-click to open`}
                 >
+                    <ChevronRight className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150", !isCollapsed && "rotate-90")} />
                     <FileText className="size-4 shrink-0 text-muted-foreground" />
                     <span className="truncate text-sm">
                         <span className="font-medium">{basename(row.path)}</span>
                         <span className="ml-2 text-xs text-muted-foreground">{relative(row.path).slice(0, -basename(row.path).length)}</span>
                     </span>
-                    <span className="ml-auto shrink-0 rounded-full bg-background px-1.5 text-xs tabular-nums text-muted-foreground">{row.count}</span>
+                    <span className="relative ml-auto flex h-5 min-w-9 shrink-0 items-center justify-end overflow-hidden rounded-full bg-background px-2 text-xs tabular-nums text-muted-foreground">
+                        {pct > 0 && (
+                            <span
+                                aria-hidden
+                                className="pointer-events-none absolute inset-y-0 right-0 bg-primary/15 dark:bg-primary/20"
+                                style={{ width: `${pct}%` }}
+                            />
+                        )}
+                        <span className="relative">{fmt(row.count)}</span>
+                    </span>
                 </div>
             );
         }
@@ -200,6 +260,9 @@ export function Results({ active, run, matches, searching, error, duration, file
             <div className="-mx-1 my-1 h-px bg-border" />
             <button role="menuitem" className={menuItem} onClick={menuAction(() => copy(menuTarget.path, "path"))}><Copy /> Copy path</button>
             <button role="menuitem" className={menuItem} disabled={menuTarget.line === undefined} onClick={menuAction(() => copy(menuTarget.line ?? "", "line"))}><Copy /> Copy line</button>
+            <div className="-mx-1 my-1 h-px bg-border" />
+            <button role="menuitem" className={menuItem} onClick={menuAction(() => inspectXRay(menuTarget.path))}><Fingerprint /> File X-Ray</button>
+            <button role="menuitem" className={menuItem} onClick={menuAction(() => inspectLocks([menuTarget.path]))}><Lock /> What's locking this?</button>
         </div>
     );
 
@@ -282,6 +345,18 @@ export function Results({ active, run, matches, searching, error, duration, file
                             </button>
                         )}
                     </div>
+                    {filePaths.length > 1 && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7"
+                            onClick={toggleCollapseAll}
+                            title={allCollapsed ? "Expand all files" : "Collapse all files"}
+                            aria-label={allCollapsed ? "Expand all files" : "Collapse all files"}
+                        >
+                            {allCollapsed ? <ChevronsUpDown /> : <ChevronsDownUp />}
+                        </Button>
+                    )}
                     <Button variant="ghost" size="icon" className="size-7" onClick={exportResults} disabled={!rows.length} title="Export results (CSV or JSON)">
                         <Download />
                     </Button>

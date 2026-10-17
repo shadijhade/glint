@@ -7,7 +7,7 @@ import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { VirtualList } from "../VirtualList";
-import { dropPath, type FileViewProps, Header, lockReason, relativeTo, RenameInput, sizeOf } from "./FileList";
+import { DIFF_BADGE, dropPath, type FileViewProps, Header, lockReason, relativeTo, RenameInput, sizeOf } from "./FileList";
 import { Thumbnail } from "./Thumbnail";
 
 interface FileGridProps extends FileViewProps {
@@ -30,7 +30,7 @@ const WHEEL_STEP = 100;
  * driven by the same handlers, so selection, keys, menus, rename and drag and drop work alike.
  */
 export function FileGrid(props: FileGridProps) {
-    const { rows, search, scope, sizes, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
+    const { rows, search, scope, sizes, diffs, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
     const [width, setWidth] = useState(() => lastWidth.get(pane) ?? 0);
     const cols = gridColumns(width - 2 * tile.pad, tile.width);
     // Where the tab left this grid is kept as the tiles at its top, so it comes back there even if the
@@ -75,6 +75,8 @@ export function FileGrid(props: FileGridProps) {
         const where = search ? relative(entry.path) : "";
         const selected = selection.has(entry.path);
         const sizeText = size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : "";
+        const diff = diffs?.get(entry.lower);
+        const badge = diff && diff !== "same" ? DIFF_BADGE[diff] : undefined;
         return (
             <div
                 key={entry.path}
@@ -89,11 +91,20 @@ export function FileGrid(props: FileGridProps) {
                     selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
                     entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary/40",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
-                    (isHidden(entry) || cut.has(entry.path)) && "opacity-55"
+                    (isHidden(entry) || cut.has(entry.path)) && "opacity-55",
+                    diff === "same" && !selected && "opacity-60"
                 )}
             >
                 <div className="relative grid shrink-0 place-items-center" style={{ width: tile.thumb, height: tile.thumb }}>
                     <Thumbnail entry={entry} box={tile.thumb} lane={lane} enabled={!entry.dir && !isLocked(entry)} bottom iconSize={tile.thumb * (entry.dir ? 2 / 3 : 7 / 12)} iconClassName="stroke-[1.1]" />
+                    {badge && (
+                        <span
+                            title={badge.title}
+                            className={cn(" absolute top-0.5 right-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[9px] font-medium leading-tight shadow-xs backdrop-blur-xs", badge.className)}
+                        >
+                            {badge.label}
+                        </span>
+                    )}
                     {isOnlineOnly(entry) && <Cloud className="absolute bottom-0.5 right-0.5 size-4 fill-background text-sky-500" aria-label="Online-only" />}
                     {isLocked(entry) && <Lock className="absolute bottom-0.5 right-0.5 size-4 fill-background text-amber-600 dark:text-amber-500" aria-label={lockReason(entry)} />}
                 </div>

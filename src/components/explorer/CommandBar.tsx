@@ -12,6 +12,7 @@ import {
     Fingerprint,
     FolderOutput,
     FolderPlus,
+    GitCompareArrows,
     HardDrive,
     History,
     LayoutDashboard,
@@ -33,7 +34,7 @@ import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { chooseView, toggleUsage, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
-import { calcSizes, copyToClipboard, copyToOtherPane, newItem, paste, stopSizes, toggleDual, useExplorer, useTab, type ViewMode } from "@/lib/explorer";
+import { calcSizes, copyToClipboard, copyToOtherPane, newItem, paste, stopSizes, toggleComparePanes, toggleDual, useExplorer, useTab, type ViewMode } from "@/lib/explorer";
 import { openTerminal } from "@/lib/fs";
 import { TILE_SIZES, type TileSize, zoomTiles } from "@/lib/grid";
 import { THIS_PC } from "@/lib/paths";
@@ -159,12 +160,17 @@ interface CommandBarProps {
 export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
     const { path, find, tab, view, readOnly } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find, tab: t.id, view: t.view, readOnly: !!t.listing?.archive })));
     const mapped = useUsage((s) => !!s[tab]);
-    const { sizing, dual, other } = useExplorer(
+    const { sizing, dual, comparePanes, other } = useExplorer(
         useShallow((s) => {
             const pane = s.dual ? s.panes[1 - s.activePane] : undefined;
             const t = pane && s.tabs[pane.active];
             // An archive in the other pane is read-only: nothing goes into it.
-            return { sizing: !!s.sizes[path]?.running, dual: s.dual, other: !!t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive };
+            return {
+                sizing: !!s.sizes[path]?.running,
+                dual: s.dual,
+                comparePanes: s.comparePanes,
+                other: !!t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive,
+            };
         })
     );
     const { showHidden, showPreviewPane, tileSize } = useStore(
@@ -278,6 +284,12 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 <Tool icon={showHidden ? Eye : EyeOff} label="Show hidden items (Ctrl+H)" pressed={showHidden} onClick={() => setSettings({ showHidden: !showHidden })} />
                 <Tool icon={PanelRight} label="Preview pane (Alt+P)" pressed={showPreviewPane} onClick={() => setSettings({ showPreviewPane: !showPreviewPane })} />
                 <Tool icon={Columns2} label="Dual pane: two folders side by side (Ctrl+Shift+D)" pressed={dual} onClick={toggleDual} />
+                <Tool
+                    icon={GitCompareArrows}
+                    label="Compare panes: highlight differences between both panes (Ctrl+Shift+M)"
+                    pressed={dual && comparePanes}
+                    onClick={toggleComparePanes}
+                />
                 <Tool icon={Command} label="Command palette (Ctrl+K)" onClick={() => useExplorer.setState({ palette: true })} />
             </div>
             {menu.element}
