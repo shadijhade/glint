@@ -13,6 +13,8 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,7 +72,7 @@ jobs:
           if-no-files-found: error
 
       - name: Sign inner binaries with SignPath
-        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        if: env.HAS_SIGNPATH == 'true'
         uses: signpath/github-action-submit-signing-request@v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -83,7 +85,7 @@ jobs:
           output-artifact-directory: ${{ runner.temp }}/signed-binaries
 
       - name: Repackage NSIS installer with signed inner binaries
-        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        if: env.HAS_SIGNPATH == 'true'
         shell: pwsh
         run: |
           Expand-Archive -Path "$env:RUNNER_TEMP\signed-binaries\glint-binaries.zip" -DestinationPath "src-tauri\target\release" -Force
@@ -98,7 +100,7 @@ jobs:
           if-no-files-found: error
 
       - name: Sign NSIS installer with SignPath
-        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        if: env.HAS_SIGNPATH == 'true'
         uses: signpath/github-action-submit-signing-request@v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -120,7 +122,7 @@ jobs:
           New-Item -ItemType Directory -Path $outDir -Force | Out-Null
           $nsisInstaller = "src-tauri\target\release\bundle\nsis\$($env:INSTALLER_NAME)"
 
-          if ("${{ secrets.SIGNPATH_API_TOKEN }}" -ne "") {
+          if ($env:HAS_SIGNPATH -eq "true") {
             $signedExe = "$env:RUNNER_TEMP\signed-installer\$($env:INSTALLER_NAME)"
             foreach ($f in @($signedExe, "src-tauri\target\release\Glint.exe", "src-tauri\target\release\shadui-index.exe")) {
               $sig = Get-AuthenticodeSignature $f
@@ -134,7 +136,7 @@ jobs:
             # Bundle with a signCommand that preserves the SignPath-signed installer so Tauri signs those exact bytes for .sig
             $useSignedCmd = "$env:RUNNER_TEMP\use-signed.cmd"
             $overlayJson = "$env:RUNNER_TEMP\updater-overlay.json"
-            if ("${{ secrets.SIGNPATH_API_TOKEN }}" -ne "") {
+            if ($env:HAS_SIGNPATH -eq "true") {
               Set-Content -Path $useSignedCmd -Value "@echo off`r`nif /I `"%~nx1`"==`"$($env:INSTALLER_NAME)`" copy /Y `"$env:RUNNER_TEMP\signed-installer\$($env:INSTALLER_NAME)`" `"%~1`" >nul`r`n"
               $cfg = @{ bundle = @{ createUpdaterArtifacts = $true; windows = @{ signCommand = @{ cmd = $useSignedCmd; args = @("%1") } } } }
             } else {
