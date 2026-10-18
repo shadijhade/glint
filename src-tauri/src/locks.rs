@@ -410,10 +410,14 @@ mod imp {
         fn detects_process_locking_file() {
             let dir = std::env::temp_dir().join(format!("glint-lock-test-{}", std::process::id()));
             let _ = fs::create_dir_all(&dir);
-            let file = dir.join("locked.txt");
-            fs::write(&file, b"glint lock test").unwrap();
+            let raw_file = dir.join("locked.txt");
+            fs::write(&raw_file, b"glint lock test").unwrap();
+            // Resolve 8.3 short names (e.g. RUNNER~1 on GitHub Actions) to a full Win32 path for Restart Manager.
+            let file = fs::canonicalize(&raw_file)
+                .map(|p| PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\")))
+                .unwrap_or(raw_file);
 
-            // Spawn a child powershell/cmd process that holds an open handle to `locked.txt`.
+            // Spawn a child powershell process that holds an open handle to `locked.txt`.
             let child = Command::new("powershell.exe")
                 .args([
                     "-NoProfile",
@@ -431,9 +435,9 @@ mod imp {
 
             if let Ok(mut child) = child {
                 let child_pid = child.id();
-                // Poll briefly until the child opens the file handle.
+                // Poll until the child opens the file handle (allow up to 10s for cold CLR startup on CI VMs).
                 let mut found = false;
-                for _ in 0..25 {
+                for _ in 0..125 {
                     let report = who_locks(vec![file.to_string_lossy().into_owned()]).unwrap();
                     if report.processes.iter().any(|p| p.pid == child_pid) {
                         found = true;
