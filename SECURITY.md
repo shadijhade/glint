@@ -16,3 +16,12 @@ The parts of the app worth a closer look:
 -   **Bundled tools.** `rg`, `fd` and `dust` are unmodified official releases, checked against their published SHA-256 digests (see [CONTRIBUTING](CONTRIBUTING.md#updating-a-bundled-tool)); a code-signed release adds its signature to the copies in the installer, nothing else. The app builds their arguments itself, so the UI can't pass arbitrary flags to them.
 -   **Previews.** Images, video, audio and PDFs are shown through the app's local asset protocol. HTML files are shown as text, never rendered.
 -   **Archives.** Zip and 7z files are parsed in-process (pure-Rust readers, every read under `catch_unwind`). Extraction keeps every path inside its target folder, cuts each entry off at its declared size, refuses likely zip bombs and checks free space first; nothing is ever written into an archive. The limits are in [docs/archives.md](docs/archives.md#safety).
+
+## Code signing and privacy policy
+
+Free code signing is provided by [SignPath.io](https://signpath.io/), and the code-signing certificate is provided by the [SignPath Foundation](https://signpath.org/).
+
+-   **Team roles (committers, reviewers and approvers):** [Shadi Sadi (`@shadijhade`)](https://github.com/shadijhade) is the sole maintainer, reviewer and release approver.
+-   **Scope of signing:** Only binaries built from this repository's source code (`Glint.exe`, `shadui-index.exe` and the NSIS installer) are signed with the project's certificate; bundled third-party tools (`rg.exe`, `fd.exe`, `dust.exe`) are included unmodified from their official upstream releases.
+-   **Privacy policy:** Glint does not collect telemetry, analytics or personal data, and will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. Its only network requests are checking GitHub Releases (`github.com/shadijhade/glint`) for application updates and downloading an update when the user chooses to install one.
+
