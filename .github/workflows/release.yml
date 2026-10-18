@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check version consistency and run checks
+        shell: pwsh
+        run: |
+          $pkg = (Get-Content package.json | ConvertFrom-Json).version
+          $tauri = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          if ($pkg -ne $tauri) { throw "Version mismatch: package.json ($pkg) != tauri.conf.json ($tauri)" }
+          echo "VERSION=$tauri" >> $env:GITHUB_ENV
+          echo "INSTALLER_NAME=Glint_${tauri}_x64-setup.exe" >> $env:GITHUB_ENV
+          npm run build
+          node src/lib/explorer.check.ts
+          node src/lib/text.check.ts
+          cargo test --workspace --manifest-path src-tauri/Cargo.toml
+
+      - name: Build unsigned binaries and NSIS installer
+        shell: pwsh
+        run: |
+          npx tauri build --bundles nsis
+
+      - name: Stage unsigned binaries for SignPath
+        id: stage-unsigned
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\unsigned-binaries" -Force | Out-Null
+          Copy-Item "src-tauri\target\release\Glint.exe" "$env:RUNNER_TEMP\unsigned-binaries\Glint.exe"
+          Copy-Item "src-tauri\target\release\shadui-index.exe" "$env:RUNNER_TEMP\unsigned-binaries\shadui-index.exe"
+          Compress-Archive -Path "$env:RUNNER_TEMP\unsigned-binaries\*" -DestinationPath "$env:RUNNER_TEMP\glint-binaries.zip" -Force
+
+      - name: Upload unsigned binaries artifact
+        id: upload-binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-binaries
+          path: ${{ runner.temp }}/glint-binaries.zip
+          if-no-files-found: error
+
+      - name: Sign inner binaries with SignPath
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: "glint"
+          signing-policy-slug: "release-signing"
+          artifact-configuration-slug: "zip"
+          github-artifact-id: ${{ steps.upload-binaries.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}/signed-binaries
+
+      - name: Repackage NSIS installer with signed inner binaries
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          Expand-Archive -Path "$env:RUNNER_TEMP\signed-binaries\glint-binaries.zip" -DestinationPath "src-tauri\target\release" -Force
+          npx tauri bundle --bundles nsis
+
+      - name: Upload unsigned NSIS installer artifact
+        id: upload-installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: src-tauri/target/release/bundle/nsis/${{ env.INSTALLER_NAME }}
+          if-no-files-found: error
+
+      - name: Sign NSIS installer with SignPath
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: "glint"
+          signing-policy-slug: "release-signing"
+          artifact-configuration-slug: "exe"
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}/signed-installer
+
+      - name: Generate Tauri updater signature (.sig and latest.json) and package manifests
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $outDir = "release\v$($env:VERSION)"
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+          $nsisInstaller = "src-tauri\target\release\bundle\nsis\$($env:INSTALLER_NAME)"
+
+          if ("${{ secrets.SIGNPATH_API_TOKEN }}" -ne "") {
+            $signedExe = "$env:RUNNER_TEMP\signed-installer\$($env:INSTALLER_NAME)"
+            foreach ($f in @($signedExe, "src-tauri\target\release\Glint.exe", "src-tauri\target\release\shadui-index.exe")) {
+              $sig = Get-AuthenticodeSignature $f
+              Write-Host "$($sig.Status)  $(Split-Path $f -Leaf)  $($sig.SignerCertificate.Subject)"
+              if ($sig.Status -ne "Valid") { throw "Invalid Authenticode signature on $f" }
+            }
+            Copy-Item $signedExe $nsisInstaller -Force
+          }
+
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+            # Bundle with a signCommand that preserves the SignPath-signed installer so Tauri signs those exact bytes for .sig
+            $useSignedCmd = "$env:RUNNER_TEMP\use-signed.cmd"
+            $overlayJson = "$env:RUNNER_TEMP\updater-overlay.json"
+            if ("${{ secrets.SIGNPATH_API_TOKEN }}" -ne "") {
+              Set-Content -Path $useSignedCmd -Value "@echo off`r`nif /I `"%~nx1`"==`"$($env:INSTALLER_NAME)`" copy /Y `"$env:RUNNER_TEMP\signed-installer\$($env:INSTALLER_NAME)`" `"%~1`" >nul`r`n"
+              $cfg = @{ bundle = @{ createUpdaterArtifacts = $true; windows = @{ signCommand = @{ cmd = $useSignedCmd; args = @("%1") } } } }
+            } else {
+              $cfg = @{ bundle = @{ createUpdaterArtifacts = $true } }
+            }
+            Set-Content -Path $overlayJson -Value ($cfg | ConvertTo-Json -Depth 6)
+            npx tauri bundle --bundles nsis --config $overlayJson
+
+            Copy-Item "$nsisInstaller.sig" "$outDir\$($env:INSTALLER_NAME).sig" -Force
+            $manifest = @{
+              version = $env:VERSION
+              notes = "https://github.com/shadijhade/glint/releases/tag/v$($env:VERSION)"
+              pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+              platforms = @{
+                "windows-x86_64" = @{
+                  signature = (Get-Content "$nsisInstaller.sig" -Raw).Trim()
+                  url = "https://github.com/shadijhade/glint/releases/download/v$($env:VERSION)/$($env:INSTALLER_NAME)"
+                }
+              }
+            }
+            Set-Content -Path "$outDir\latest.json" -Value (($manifest | ConvertTo-Json -Depth 5) + "`n") -NoNewline
+            node scripts/verify-update.mjs "$outDir\latest.json" $nsisInstaller
+          }
+
+          Copy-Item $nsisInstaller "$outDir\$($env:INSTALLER_NAME)" -Force
+          node scripts/package-manifests.mjs $env:VERSION "$outDir\$($env:INSTALLER_NAME)" --out "$outDir\package-manifests"
+
+      - name: Upload release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-v${{ env.VERSION }}
+          path: release/v${{ env.VERSION }}/
+          if-no-files-found: error
+
+      - name: Create draft GitHub Release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $assets = Get-ChildItem "release\v$($env:VERSION)\*" -File | ForEach-Object { $_.FullName }
+          gh release create $env:GITHUB_REF_NAME @assets --draft --title "Glint v$($env:VERSION)" --generate-notes
