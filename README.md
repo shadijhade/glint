@@ -214,7 +214,7 @@ Glint was called ShadUI Ripgrep before 0.3.1. Installing Glint replaces ShadUI R
 
 Copies installed with the setup program update themselves: when a new version is out, the app says so, and **Install** (in that notice or in **Settings → About**) downloads it, checks its signature and restarts into it in a few seconds.
 
-Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen may show *Windows protected your PC*; choose **More info → Run anyway** (see [Code signing and privacy policy](SECURITY.md#code-signing-and-privacy-policy)).
+Windows 10 or 11, 64-bit. Free code signing is provided by [SignPath.io](https://signpath.io/), and the code-signing certificate is provided by the [SignPath Foundation](https://signpath.org/) (see [Code signing and privacy policy](SECURITY.md#code-signing-and-privacy-policy); while `v0.4.0` predates the certificate, if SmartScreen shows *Windows protected your PC*, choose **More info → Run anyway**).
 
 ## Keyboard shortcuts
 
