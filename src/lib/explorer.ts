@@ -17,7 +17,8 @@ import {
     createEntry,
     type Drive,
     driveName,
-    fileOp,
+    type FileOp,
+    fileOp as performFileOp,
     findFiles,
     folderSizes,
     indexDisable,
@@ -1232,6 +1233,55 @@ export function openEntry(entry: FileEntry) {
     return openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) }));
 }
 
+// Undo (Ctrl+Z): the last file operations, newest last, each with what takes it back.
+
+export interface UndoStep {
+    /** "move of 3 items", as in "Undid the move of 3 items". */
+    label: string;
+    run: () => Promise<unknown>;
+}
+const undoSteps: UndoStep[] = [];
+
+/** Keeps how to take back what was just done, for Ctrl+Z (the newest 50 steps). */
+export function rememberUndo(label: string, run: () => Promise<unknown>): UndoStep {
+    const step = { label, run };
+    undoSteps.push(step);
+    if (undoSteps.length > 50) undoSteps.shift();
+    return step;
+}
+
+/**
+ * A copy, move, rename or delete through Windows' file engine that Ctrl+Z can take back. False when
+ * the person cancelled in one of its dialogs; what was done by then can still be undone.
+ */
+export async function fileOp(op: FileOp): Promise<boolean> {
+    const { completed, items } = await performFileOp(op);
+    const done = items.flatMap((i) => (i.to ? [{ from: i.from, to: i.to }] : []));
+    const what = plural(done.length, "item");
+    if (done.length) {
+        // Taking back a copy recycles it rather than deleting it for good.
+        if (op.kind === "copy") rememberUndo(`copy of ${what}`, () => performFileOp({ kind: "delete", paths: done.map((i) => i.to), permanent: false, confirm: false }));
+        else if (op.kind === "move") rememberUndo(`move of ${what}`, () => performFileOp({ kind: "moveBack", items: done.map((i) => ({ path: i.to, folder: parentPath(i.from), name: baseName(i.from) })) }));
+        else if (op.kind === "rename") rememberUndo(`rename to “${baseName(done[0].to)}”`, () => performFileOp({ kind: "rename", path: done[0].to, name: baseName(done[0].from) }));
+        else if (op.kind === "delete") rememberUndo(`deletion of ${what}`, () => performFileOp({ kind: "restore", items: done.map((i) => ({ path: i.to, folder: parentPath(i.from), name: baseName(i.from) })) }));
+    }
+    return completed;
+}
+
+/** Takes back the last copy, move, rename, deletion or new item (Ctrl+Z), or `step` if it's still to undo. */
+export async function undo(step = undoSteps[undoSteps.length - 1]) {
+    const at = step ? undoSteps.lastIndexOf(step) : -1;
+    if (!step || at < 0) return void toast.message("Nothing to undo", { id: "undo" });
+    undoSteps.splice(at, 1);
+    try {
+        await busy(`Undoing the ${step.label}…`, step.run());
+        toast.success(`Undid the ${step.label}`, { id: "undo" });
+    } catch (e) {
+        toast.error(`Couldn't undo the ${step.label}`, { description: String(e), id: "undo" });
+    }
+    reload();
+}
+
 /** Shows a file (e.g. a text search result) in its folder here, in Files. */
 export function revealInApp(path: string) {
     useStore.getState().setMode("files");
@@ -1394,6 +1444,7 @@ export async function newItem(dir: boolean) {
     if (archiveOf(tab)) return readOnlyNotice();
     try {
         const created = await createEntry(path, dir ? "New folder" : "New Text Document.txt", dir);
+        rememberUndo(`new ${dir ? "folder" : "file"} “${baseName(created)}”`, () => performFileOp({ kind: "delete", paths: [created], permanent: false, confirm: false }));
         if (tabState(tab)?.find?.running) cancelFind(tab);
         updateTab({ find: null, filter: "" }, tab);
         await navigate(path, { history: false, quiet: true, select: created, tab });

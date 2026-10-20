@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, PenLine, Regex, RotateCcw, Sparkles, X } from "lucide-react";
 import type { FileEntry } from "@/lib/entries";
-import { refresh } from "@/lib/explorer";
+import { refresh, rememberUndo, undo, type UndoStep } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
 import { batchRename, type RenamePair } from "@/lib/fs";
 import { baseName, joinPath, parentPath } from "@/lib/paths";
@@ -16,7 +16,8 @@ interface BatchRenameState {
     open: boolean;
     items: FileEntry[];
     existingNames: Set<string>;
-    lastUndo: RenamePair[] | null;
+    /** The last batch, while Undo can still take it back (Ctrl+Z does too). */
+    lastUndo: UndoStep | null;
 }
 
 const useBatchRenameStore = create<BatchRenameState>(() => ({
@@ -228,23 +229,14 @@ export function BatchRenameDialog() {
         setRunning(true);
         try {
             const res = await batchRename(ops);
-            useBatchRenameStore.setState({ open: false, lastUndo: res.undoOps });
+            const what = `${formatCount(res.renamed)} ${res.renamed === 1 ? "item" : "items"}`;
+            const step = res.undoOps.length
+                ? rememberUndo(`rename of ${what}`, () => batchRename(res.undoOps).finally(() => useBatchRenameStore.setState({ lastUndo: null })))
+                : null;
+            useBatchRenameStore.setState({ open: false, lastUndo: step });
             refresh();
-            toast.success(`Renamed ${formatCount(res.renamed)} ${res.renamed === 1 ? "item" : "items"} in ${res.elapsedMs.toFixed(1)} ms`, {
-                action: res.undoOps.length
-                    ? {
-                          label: "Undo",
-                          onClick: () => {
-                              batchRename(res.undoOps)
-                                  .then((u) => {
-                                      useBatchRenameStore.setState({ lastUndo: null });
-                                      refresh();
-                                      toast.success(`Reverted ${formatCount(u.renamed)} names`);
-                                  })
-                                  .catch((e) => toast.error("Couldn't undo batch rename", { description: String(e) }));
-                          },
-                      }
-                    : undefined,
+            toast.success(`Renamed ${what} in ${res.elapsedMs.toFixed(1)} ms`, {
+                action: step ? { label: "Undo", onClick: () => void undo(step) } : undefined,
             });
         } catch (e) {
             toast.error("Batch rename failed", { description: String(e) });
@@ -254,18 +246,11 @@ export function BatchRenameDialog() {
     };
 
     const undoPrevious = async () => {
-        if (!lastUndo?.length) return;
+        if (!lastUndo) return;
         setRunning(true);
-        try {
-            const res = await batchRename(lastUndo);
-            useBatchRenameStore.setState({ open: false, lastUndo: null });
-            refresh();
-            toast.success(`Reverted ${formatCount(res.renamed)} names in ${res.elapsedMs.toFixed(1)} ms`);
-        } catch (e) {
-            toast.error("Couldn't undo previous batch", { description: String(e) });
-        } finally {
-            setRunning(false);
-        }
+        useBatchRenameStore.setState({ open: false });
+        await undo(lastUndo);
+        setRunning(false);
     };
 
     return (
@@ -292,9 +277,9 @@ export function BatchRenameDialog() {
                             Every item is renamed, or none is, and Undo puts the names back
                         </p>
                     </div>
-                    {lastUndo && lastUndo.length > 0 && (
-                        <Button variant="outline" size="sm" onClick={undoPrevious} disabled={running} title="Undo the last batch rename">
-                            <RotateCcw className="size-3.5" /> Undo last batch ({lastUndo.length})
+                    {lastUndo && (
+                        <Button variant="outline" size="sm" onClick={undoPrevious} disabled={running} title={`Undo the ${lastUndo.label} (Ctrl+Z)`}>
+                            <RotateCcw className="size-3.5" /> Undo last batch
                         </Button>
                     )}
                     <Button variant="ghost" size="sm" onClick={resetRules} disabled={running}>
