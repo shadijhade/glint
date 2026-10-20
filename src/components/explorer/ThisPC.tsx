@@ -18,7 +18,8 @@ const tile =
 function InstantSearchCard() {
     const index = useExplorer((s) => s.index);
     const [working, setWorking] = useState(false);
-    if (!index || index.state === "unsupported") return null;
+    // Settings explains the states this card can't fix with a click (another account's service, an impostor).
+    if (!index || ["unsupported", "noAccess", "untrusted"].includes(index.state)) return null;
     const volumes = index.volumes ?? [];
     const scanning = volumes.filter((v) => v.state === "scanning");
     const failed = volumes.filter((v) => v.state === "error");
@@ -44,7 +45,8 @@ function InstantSearchCard() {
         <div className="mt-8 flex items-center gap-3 rounded-lg border bg-primary/5 px-4 py-3">
             {on && (scanning.length || !volumes.length) ? <Loader2 className="size-4 shrink-0 animate-spin text-primary" /> : <Zap className="size-4 shrink-0 text-primary" />}
             <span className="min-w-0 flex-1 text-sm">{text}</span>
-            {(!on || failed.length > 0) && (
+            {/* Retry restarts the service, and with it a drive that's still being read. */}
+            {(!on || (failed.length > 0 && !scanning.length)) && (
                 <Button size="sm" disabled={working} onClick={turnOn} title="Windows asks for administrator approval">
                     {working ? <Loader2 className="animate-spin" /> : <ShieldCheck />} {on ? "Retry" : "Turn on instant search"}
                 </Button>
@@ -129,7 +131,12 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                             data-drop={d.path}
                             className={cn(tile, "items-start cursor-pointer", dropping(d.path))}
                             onClick={() => navigate(d.path)}
-                            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && navigate(d.path)}
+                            onKeyDown={(e) => {
+                                // Its own buttons (map, recent changes, duplicates) take their Enter and Space.
+                                if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                                e.preventDefault();
+                                navigate(d.path);
+                            }}
                             onMouseDown={middleClickOpens(d.path)}
                             onContextMenu={(e) => onContextMenu(e, d.path)}
                         >
@@ -166,7 +173,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                                         {freeOf(d) || (d.fs ? d.fs : "Not ready")}
                                     </span>
                                     {d.total > 0 && (
-                                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
                                             <button
                                                 type="button"
                                                 title="Map disk usage"

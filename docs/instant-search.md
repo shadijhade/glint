@@ -1,6 +1,6 @@
 # Instant search (NTFS index)
 
-Off until you turn it on in **Settings → Instant search**. Windows then asks for administrator approval once, and a small service (`Glint instant search`) starts indexing your fixed NTFS drives. From then on:
+Off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows then asks for administrator approval once, and a small service (`Glint instant search`) starts indexing your fixed NTFS drives. From then on:
 
 -   **Name searches** on indexed drives answer from memory: the same query rules as fd (every word must match, `*` and `?` match the whole name, case-insensitive, same exclusions and hidden-file setting), results streamed into the same list with size, date and attributes.
 -   **Folder sizes** for every folder come from the index, kept current as files change.

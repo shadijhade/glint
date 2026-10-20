@@ -12,7 +12,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Instant;
 use tauri::ipc::Response;
-use tauri::{State, Window};
+use tauri::State;
 
 const ENGINE_INDEX: u32 = 0;
 const ENGINE_DUST: u32 = 1;
@@ -56,7 +56,7 @@ fn index_usage(_: &str, _: u32, _: u32) -> Indexed {
 /// buffer (see `encode_map`). Each tab maps in its own `lane`, so one pane's dust run doesn't stop the
 /// other's. Rejects with "cancelled" when a newer map in the lane, or Stop, ended its dust run.
 #[tauri::command]
-pub async fn disk_usage(window: Window, state: State<'_, AppState>, path: String, depth: u32, max_items: u32, lane: String) -> Result<Response, String> {
+pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, max_items: u32, lane: String) -> Result<Response, String> {
     let started = Instant::now();
     let (depth, max_items) = (depth.clamp(1, 32), max_items.clamp(1, 500_000));
     let slot = state.usage.slot(&lane);
@@ -77,7 +77,7 @@ pub async fn disk_usage(window: Window, state: State<'_, AppState>, path: String
         Indexed::TooOld => SERVICE_TOO_OLD,
         Indexed::No => 0,
     };
-    let mut command = crate::proc::tool(&window, "dust")?;
+    let mut command = crate::proc::tool("dust")?;
     // Files and folders, `depth` levels, the biggest `max_items`, apparent sizes in exact bytes.
     command
         .args(["-j", "-s", "-o", "b", "-P", "-d", &depth.to_string(), "-n", &max_items.to_string(), "--"])
@@ -91,7 +91,7 @@ pub async fn disk_usage(window: Window, state: State<'_, AppState>, path: String
     blocking(move || {
         let mut json = String::new();
         let _ = stdout.read_to_string(&mut json);
-        if !slot.finish(pid) {
+        if slot.finish(pid).is_none() {
             return Err("cancelled".into());
         }
         let mut nodes = dust_nodes(sizes::parse_tree(&json)?);

@@ -2,7 +2,7 @@ import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState } from
 import { AlertTriangle, Flame, Layers, Loader2, Sparkles, Square, Zap } from "lucide-react";
 import { entriesOf, mapUsage, markUsageShown, refreshUsage, setUsage, stopUsage, type UsageRun, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
-import { enableIndex, goUp, navigate, openEntry, selectOnly, tabName, updateTab, useExplorer } from "@/lib/explorer";
+import { enableIndex, goUp, modalOpen, navigate, openEntry, selectOnly, tabName, updateTab, useExplorer } from "@/lib/explorer";
 import { TYPE_GROUPS, type TypeGroup, typeGroup, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
 import { parentPath, samePath } from "@/lib/paths";
@@ -362,7 +362,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
         if (!keys) return;
         const onKey = (e: KeyboardEvent) => {
             const target = e.target instanceof Element ? e.target : null;
-            if (e.defaultPrevented || !boxRef.current?.offsetParent || target?.closest("input, textarea, select, [contenteditable=true], dialog, [popover]")) return;
+            if (e.defaultPrevented || modalOpen() || !boxRef.current?.offsetParent || target?.closest("input, textarea, select, [contenteditable=true], dialog, [popover]")) return;
             const ctrl = e.ctrlKey || e.metaKey;
             const plain = !ctrl && !e.altKey;
             if (e.key === "Backspace" && plain) goUp();

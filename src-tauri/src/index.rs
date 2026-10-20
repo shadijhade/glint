@@ -54,7 +54,9 @@ pub async fn index_status() -> Result<IndexInfo, String> {
     blocking(|| Ok(info())).await
 }
 
-/// The service executable that ships next to the app's own, or in a sibling build / installed folder.
+/// The service executable that ships next to the app's own. A dev build (`tauri dev` builds only the
+/// app) also takes one from the other build profile's folder. Whatever this returns is installed as a
+/// LocalSystem service, so release builds never look anywhere else.
 #[cfg(windows)]
 fn bundled() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -62,18 +64,9 @@ fn bundled() -> Result<std::path::PathBuf, String> {
     if service.exists() {
         return Ok(service);
     }
-    if let Some(dir) = exe.parent() {
-        for rel in ["..\\release", "..\\debug", "binaries", "..\\..\\binaries"] {
-            let candidate = dir.join(rel).join(shadui_index::SERVICE_EXE);
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
-    }
-    if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        let installed = std::path::PathBuf::from(program_files).join("Glint\\Index").join(shadui_index::SERVICE_EXE);
-        if installed.exists() {
-            return Ok(installed);
+    if cfg!(debug_assertions) {
+        if let Some(other) = ["..\\release", "..\\debug"].iter().map(|rel| exe.with_file_name(rel).join(shadui_index::SERVICE_EXE)).find(|p| p.exists()) {
+            return Ok(other);
         }
     }
     Err(format!("{} is missing next to the app; reinstall the app", shadui_index::SERVICE_EXE))

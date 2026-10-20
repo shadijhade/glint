@@ -64,7 +64,41 @@ async fn read_file_chunk(path: String, start_line: usize, end_line: usize) -> Re
 
 #[tauri::command]
 async fn write_file_content(path: String, content: String) -> Result<(), String> {
-    blocking(move || fs::write(path, content).map_err(|e| e.to_string())).await
+    blocking(move || replace_contents(std::path::Path::new(&path), content.as_bytes()).map_err(|e| e.to_string())).await
+}
+
+/// Writes a temp file next to `path` and swaps it in (ReplaceFileW keeps the original's attributes,
+/// permissions and streams), so a write cut short by a full disk or a dropped share leaves the file
+/// as it was. A folder that doesn't allow a new file gets a plain write.
+fn replace_contents(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().ok_or_else(|| std::io::Error::other("not a file"))?.to_string_lossy();
+    let temp = path.with_file_name(format!(".{name}.{}.glint-tmp", std::process::id()));
+    let mut file = match fs::File::create_new(&temp) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return fs::write(path, content),
+        Err(e) => return Err(e),
+    };
+    let written = file.write_all(content).and_then(|()| file.sync_all());
+    drop(file);
+    #[cfg(windows)]
+    let written = written.and_then(|()| unsafe {
+        use windows::core::{HSTRING, PCWSTR};
+        use windows::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_IGNORE_MERGE_ERRORS};
+        ReplaceFileW(&HSTRING::from(path), &HSTRING::from(temp.as_path()), PCWSTR::null(), REPLACEFILE_IGNORE_MERGE_ERRORS, None, None).map_err(std::io::Error::from)
+    });
+    #[cfg(not(windows))]
+    let written = written.and_then(|()| fs::rename(&temp, path));
+    if written.is_err() {
+        if path.exists() {
+            let _ = fs::remove_file(&temp);
+        } else {
+            // ReplaceFileW took the original but couldn't move the copy into its place
+            // (ERROR_UNABLE_TO_MOVE_REPLACEMENT): the copy is all there is, so it's kept.
+            let _ = fs::rename(&temp, path);
+        }
+    }
+    written
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -89,25 +123,64 @@ fn stop_tools(state: State<AppState>) {
     state.usage.close_all();
 }
 
+/// A text search as Text mode asks for it. ripgrep's arguments are built here from these, never
+/// passed through from the UI (a flag like `--pre` would run a program).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TextSearch {
+    query: String,
+    path: String,
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
+    exclusions: Vec<String>,
+}
+
+fn rg_args(search: &TextSearch, folder: &str) -> Vec<String> {
+    // --no-messages hides per-file errors (e.g. Access Denied); pattern errors still reach stderr.
+    // The total result limit is enforced while reading (--max-count is per file).
+    // --crlf: $ also ends a line before CRLF, as most files on Windows have them.
+    let mut args: Vec<String> = ["--json", "--no-messages", "--stats", "--crlf"].map(String::from).into();
+    args.push(if search.case_sensitive { "--case-sensitive" } else { "--smart-case" }.into());
+    if search.whole_word {
+        args.push("--word-regexp".into());
+    }
+    let mut query = search.query.clone();
+    if query.contains('\n') {
+        args.extend(["--multiline".into(), "--multiline-dotall".into()]);
+        // Textareas normalize to \n but files may use \r\n, so literal searches match both.
+        if !search.regex {
+            let escaped: String = query.chars().flat_map(|c| ".*+?^${}()|[]\\".contains(c).then_some('\\').into_iter().chain([c])).collect();
+            query = escaped.replace('\n', "\\r?\\n");
+        }
+    } else if !search.regex {
+        args.push("--fixed-strings".into());
+    }
+    for exclusion in &search.exclusions {
+        args.extend(["--glob".into(), format!("!{exclusion}")]);
+    }
+    // "--" so queries starting with "-" aren't parsed as flags.
+    args.extend(["--".into(), query, folder.into()]);
+    args
+}
+
+/// Starts a text search; its results arrive as `search-event`s. Returns the folder as searched
+/// (absolute, with %VARS% and ~ expanded), which the results show their paths relative to.
 #[tauri::command]
 fn run_ripgrep_batched(
     window: Window,
-    mut args: Vec<String>,
+    request: TextSearch,
     search_id: String,
     max_results: Option<usize>,
     state: State<AppState>,
-) -> Result<(), String> {
-    if let Some(last) = args.last_mut() {
-        let normalized = fsx::normalize(last)?;
-        if std::fs::metadata(&normalized).is_err() {
-            return Err(format!("Can't find “{normalized}”. Check the folder path and try again."));
-        }
-        *last = normalized;
+) -> Result<String, String> {
+    let folder = fsx::normalize(&request.path)?;
+    if std::fs::metadata(&folder).is_err() {
+        return Err(format!("Can't find “{folder}”. Check the folder path and try again."));
     }
-    // Prefer the bundled sidecar, falling back to ripgrep on PATH or standard install locations.
-    let mut command = proc::tool(&window, "rg")?;
+    let mut command = proc::tool("rg")?;
     command
-        .args(&args)
+        .args(rg_args(&request, &folder))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -206,7 +279,7 @@ fn run_ripgrep_batched(
         );
     });
 
-    Ok(())
+    Ok(folder)
 }
 
 /// In release builds, WebView2's browser shortcuts would reload the whole app (F5, Ctrl+R), print it
@@ -264,7 +337,6 @@ pub fn run() {
         .manage(AppState::default())
         .manage(watch::FolderWatcher::default())
         .manage(thumbs::Thumbs::default())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -343,4 +415,39 @@ pub fn run() {
                 archive::finish();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn search(query: &str, regex: bool) -> TextSearch {
+        TextSearch { query: query.into(), path: String::new(), case_sensitive: false, whole_word: true, regex, exclusions: vec!["*.min.js".into()] }
+    }
+
+    #[test]
+    fn builds_ripgrep_arguments_from_typed_options() {
+        let args = rg_args(&search("--pre=calc", false), r"C:\src");
+        assert!(args.contains(&"--fixed-strings".into()) && args.contains(&"--smart-case".into()) && args.contains(&"--word-regexp".into()));
+        assert!(args.contains(&"--crlf".into()));
+        assert!(args.ends_with(&["--glob".into(), "!*.min.js".into(), "--".into(), "--pre=calc".into(), r"C:\src".into()]));
+        // A literal query over lines is escaped and matches CRLF files too.
+        let args = rg_args(&search("a.b\n(c)", false), r"C:\src");
+        assert!(args.contains(&"--multiline".into()) && !args.contains(&"--fixed-strings".into()));
+        assert!(args.contains(&r"a\.b\r?\n\(c\)".into()));
+        assert!(!rg_args(&search("a.b", true), "C:\\").contains(&"--fixed-strings".into()));
+    }
+
+    #[test]
+    fn replaces_contents_without_leaving_a_temp_file() {
+        let dir = std::env::temp_dir().join(format!("glint-replace-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("notes.txt");
+        fs::write(&file, "old text").unwrap();
+        replace_contents(&file, b"new text").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new text");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "the temp file is gone");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
