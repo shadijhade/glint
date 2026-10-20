@@ -244,24 +244,34 @@ impl Engine {
                 };
                 self.log.line(&format!("{}: read the MFT in {:.0} ms", slot.letter, ms(started)));
                 *slot.tree.write().unwrap() = tree;
-                // The whole journal is replayed from its current start (0), but only recent changes are reread.
-                (0, Some(since), "scan")
+                // The whole journal is replayed, but only recent changes are reread.
+                (journal.first_usn, Some(since), "scan")
             }
         };
 
         let mut page = vec![0u8; 1 << 20];
         let mut replayed = 0;
         loop {
-            match self.apply(&volume, slot, &mut cursor, journal.id, since, &mut page)? {
-                0 => break,
-                read => replayed += read,
+            let read = match self.apply(&volume, slot, &mut cursor, journal.id, since, &mut page) {
+                // A busy drive's journal can drop its oldest records while the drive is read. What's
+                // left is enough if it still reaches back to where the journal was when the read
+                // began: every change the read could have missed comes after that.
+                Err(Restart::Rescan(why)) if since.is_some() => match volume.journal() {
+                    Ok(Some(now)) if now.id == journal.id && now.first_usn > cursor && now.first_usn <= journal.next_usn => {
+                        cursor = now.first_usn;
+                        continue;
+                    }
+                    _ => return Err(Restart::Rescan(why)),
+                },
+                read => read?,
+            };
+            if read == 0 {
+                break;
             }
+            replayed += read;
             if self.stop.is_set() {
                 return Ok(());
             }
-        }
-        if cursor == 0 {
-            cursor = journal.next_usn;
         }
         let build_ms = ms(started);
         {
@@ -349,21 +359,10 @@ impl Engine {
     /// Reads the next page of the journal and brings every record it touched up to date. Returns
     /// how many journal records it read: 0 once caught up.
     fn apply(&self, volume: &Volume, slot: &Slot, cursor: &mut i64, journal: u64, since: Option<i64>, page: &mut [u8]) -> Result<usize, Restart> {
-        let len = match volume.read_journal(*cursor, journal, page) {
-            Ok(len) => len,
-            // During post-scan replay (since.is_some()), we only need recent changes near the head of
-            // the journal; if the oldest tail chunk was trimmed while scanning/reading an active C:
-            // drive, jump to the current FirstUsn (0) instead of throwing away the finished scan.
-            Err(JournalError::Lost) if since.is_some() && *cursor != 0 => {
-                *cursor = 0;
-                volume.read_journal(0, journal, page).map_err(|e| match e {
-                    JournalError::Lost => Restart::Rescan("the change journal no longer goes back far enough".into()),
-                    JournalError::Io(e) => Restart::Retry(format!("can't read the change journal: {e}")),
-                })?
-            }
-            Err(JournalError::Lost) => return Err(Restart::Rescan("the change journal no longer goes back far enough".into())),
-            Err(JournalError::Io(e)) => return Err(Restart::Retry(format!("can't read the change journal: {e}"))),
-        };
+        let len = volume.read_journal(*cursor, journal, page).map_err(|e| match e {
+            JournalError::Lost => Restart::Rescan("the change journal no longer goes back far enough".into()),
+            JournalError::Io(e) => Restart::Retry(format!("can't read the change journal: {e}")),
+        })?;
         let Some((next, records)) = usn::parse_page(&page[..len]) else { return Ok(0) };
         if records.is_empty() {
             *cursor = next.max(*cursor);

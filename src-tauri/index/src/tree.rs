@@ -805,7 +805,10 @@ impl Builder {
     pub fn new(records: usize) -> Self {
         // About 25 bytes of name per record on a typical system drive.
         let mut recs = vec![Rec::default(); records];
+        // The root is there even if its record can't be read, so the drive's top folders keep their
+        // parent: record 5, sequence 5 on every NTFS volume.
         if let Some(root) = recs.get_mut(ROOT as usize) {
+            root.seq = ROOT as u16;
             root.attrs = FILE_ATTRIBUTE_DIRECTORY;
             root.flags = REC_USED | REC_DIR;
         }
@@ -813,12 +816,13 @@ impl Builder {
         Builder { tree, pending: Vec::with_capacity(records) }
     }
 
+    /// Record `n`, if it's one of the records scanned: an extension record naming a base record
+    /// beyond them (a damaged disk) must not make room for billions of records.
     fn slot(&mut self, n: u32) -> Option<&mut Rec> {
         if n < FIRST_USER_RECORD && n != ROOT {
             return None;
         }
-        self.tree.ensure(n);
-        Some(&mut self.tree.recs[n as usize])
+        self.tree.recs.get_mut(n as usize)
     }
 
     /// A base record in use.
@@ -1217,7 +1221,10 @@ mod tests {
 
     #[test]
     fn builder_links_names_once_all_records_are_known() {
-        let mut builder = Builder::new(8);
+        let mut builder = Builder::new(32);
+        // A damaged extension record naming a base record far past the scan is ignored, not made room for.
+        builder.name(1 << 30, make_ref(20, 1), "far.txt");
+        builder.size(1 << 30, 1);
         // Children before their folder, and a name from an extension record.
         builder.record(30, 1, false, 0x20, 7);
         builder.size(30, 300);
