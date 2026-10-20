@@ -62,6 +62,7 @@ import {
     Sun,
     TextSearch,
     Trash2,
+    Undo2,
     X,
     ZoomIn,
     ZoomOut,
@@ -124,6 +125,7 @@ import {
     toggleDiffOnly,
     toggleDual,
     toggleSelected,
+    undo,
     updateTab,
     useExplorer,
     useTab,
@@ -426,6 +428,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
             writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
             action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
+            action("undo", "Undo", Undo2, () => undo(), "Ctrl+Z"),
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
         ];
         return [...folders, ...actions.filter((a): a is Command => !!a)];
@@ -769,6 +772,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "c") copyToClipboard(paths, false);
                 else if (key === "x") copyToClipboard(paths, true);
                 else if (key === "v") paste();
+                else if (key === "z" && !e.shiftKey) undo();
                 else if (key === "n" && e.shiftKey) newItem(true);
                 else if (key === "l") useExplorer.setState({ editingAddress: true });
                 else if ((key === "f" || key === "e") && !e.shiftKey) focusFind();

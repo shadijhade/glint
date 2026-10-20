@@ -14,6 +14,32 @@ pub enum FileOp {
     Move { sources: Vec<String>, dest: String },
     Delete { paths: Vec<String>, permanent: bool, confirm: bool },
     Rename { path: String, name: String },
+    /// Undoing a move: each item back into `folder` as `name`.
+    MoveBack { items: Vec<Back> },
+    /// Undoing a delete: Recycle Bin items (as [`Done::to`] names them) back where they came from.
+    Restore { items: Vec<Back> },
+}
+
+#[derive(Deserialize)]
+pub struct Back {
+    pub path: String,
+    pub folder: String,
+    pub name: String,
+}
+
+/// What became of one of the items asked for: where it is now (the copy, the item moved or renamed,
+/// or its Recycle Bin entry); None when it's gone for good or was skipped.
+#[derive(Serialize, Debug)]
+pub struct Done {
+    pub from: String,
+    pub to: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct Performed {
+    /// False when the person cancelled in one of Windows' dialogs; what was done before stays done.
+    pub completed: bool,
+    pub items: Vec<Done>,
 }
 
 #[derive(Serialize)]
@@ -46,17 +72,18 @@ where
     blocking(move || rx.recv().map_err(|e| e.to_string())?).await
 }
 
-/// Returns false when the person cancelled in one of Windows' dialogs. Nothing is written into a zip
-/// or 7z archive, or taken out of one this way (Windows' own zip folders would): archives open
-/// read-only, and what's copied out of them is extracted first (`archive::archive_stage`).
+/// Says what became of each item, for undoing it. Nothing is written into a zip or 7z archive, or
+/// taken out of one this way (Windows' own zip folders would): archives open read-only, and what's
+/// copied out of them is extracted first (`archive::archive_stage`).
 #[tauri::command]
-pub async fn file_op(window: Window, op: FileOp) -> Result<bool, String> {
+pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
     let owner = owner(&window);
     blocking(move || {
         let touches_archive = match &op {
             FileOp::Copy { sources, dest } | FileOp::Move { sources, dest } => archive::is_read_only(dest) || sources.iter().any(|s| archive::is_inside(s)),
             FileOp::Delete { paths, .. } => paths.iter().any(|p| archive::is_inside(p)),
             FileOp::Rename { path, .. } => archive::is_inside(path),
+            FileOp::MoveBack { items } | FileOp::Restore { items } => items.iter().any(|b| archive::is_inside(&b.path) || archive::is_read_only(&b.folder)),
         };
         if touches_archive {
             return Err(crate::fsx::READ_ONLY.into());
@@ -124,7 +151,8 @@ pub async fn open_terminal(path: String) -> Result<(), String> {
 
 #[cfg(windows)]
 mod imp {
-    use super::{ClipboardFiles, FileOp};
+    use super::{ClipboardFiles, Done, FileOp, Performed};
+    use std::cell::RefCell;
     use std::collections::HashSet;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -134,10 +162,10 @@ mod imp {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
-    use windows::core::{w, BOOL, HSTRING, PCWSTR};
+    use windows::core::{implement, w, ComObject, Ref, BOOL, HRESULT, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{GlobalFree, ERROR_CANCELLED, HANDLE, HGLOBAL, HWND, LPARAM, POINT};
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, IBindCtx, IDataObject, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IDataObject, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
         COINIT_DISABLE_OLE1DDE,
     };
     use windows::Win32::System::DataExchange::{
@@ -148,7 +176,8 @@ mod imp {
     use windows::Win32::System::Ole::{IDropSource, CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
-        DragQueryFileW, FileOperation, IFileOperation, IFileOperationProgressSink, ILCreateFromPathW, ILFree, IShellItem,
+        DragQueryFileW, FileOperation, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, ILCreateFromPathW, ILFree, IShellItem,
+        SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
         SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHObjectProperties,
         SHOpenWithDialog, BHID_DataObject, DROPFILES, FILEOPERATION_FLAGS,
         FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
@@ -231,18 +260,129 @@ mod imp {
             .is_some_and(|p| p.to_string_lossy().trim_end_matches('\\').eq_ignore_ascii_case(dir.trim_end_matches('\\')))
     }
 
-    pub fn file_op(owner: isize, op: FileOp) -> Result<bool, String> {
+    pub fn file_op(owner: isize, op: FileOp) -> Result<Performed, String> {
         in_sta(move || unsafe { perform(owner, op) })
     }
 
-    unsafe fn perform(owner: isize, op: FileOp) -> Result<bool, String> {
+    /// Hears from the copy engine what became of each item: where the copy, the moved or renamed
+    /// item or the Recycle Bin entry ended up (after "Keep both" or a "- Copy" name, too).
+    #[implement(IFileOperationProgressSink)]
+    #[derive(Default)]
+    struct Track {
+        done: RefCell<Vec<Done>>,
+    }
+
+    impl Track {
+        fn note(&self, item: Ref<IShellItem>, hr: HRESULT, created: Ref<IShellItem>, name: SIGDN) {
+            if hr.is_err() {
+                return;
+            }
+            if let Some(from) = item.as_ref().and_then(|i| display(i, SIGDN_FILESYSPATH)) {
+                self.done.borrow_mut().push(Done { from, to: created.as_ref().and_then(|i| display(i, name)) });
+            }
+        }
+    }
+
+    #[allow(non_snake_case)]
+    impl IFileOperationProgressSink_Impl for Track_Impl {
+        fn StartOperations(&self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn FinishOperations(&self, _: HRESULT) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PreRenameItem(&self, _: u32, _: Ref<IShellItem>, _: &PCWSTR) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostRenameItem(&self, _: u32, item: Ref<IShellItem>, _: &PCWSTR, hr: HRESULT, created: Ref<IShellItem>) -> windows::core::Result<()> {
+            self.note(item, hr, created, SIGDN_FILESYSPATH);
+            Ok(())
+        }
+        fn PreMoveItem(&self, _: u32, _: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostMoveItem(&self, _: u32, item: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR, hr: HRESULT, created: Ref<IShellItem>) -> windows::core::Result<()> {
+            self.note(item, hr, created, SIGDN_FILESYSPATH);
+            Ok(())
+        }
+        fn PreCopyItem(&self, _: u32, _: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostCopyItem(&self, _: u32, item: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR, hr: HRESULT, created: Ref<IShellItem>) -> windows::core::Result<()> {
+            self.note(item, hr, created, SIGDN_FILESYSPATH);
+            Ok(())
+        }
+        fn PreDeleteItem(&self, _: u32, _: Ref<IShellItem>) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostDeleteItem(&self, _: u32, item: Ref<IShellItem>, hr: HRESULT, created: Ref<IShellItem>) -> windows::core::Result<()> {
+            // A recycled item lives on in the Recycle Bin, which only its shell name reaches.
+            self.note(item, hr, created, SIGDN_DESKTOPABSOLUTEPARSING);
+            Ok(())
+        }
+        fn PreNewItem(&self, _: u32, _: Ref<IShellItem>, _: &PCWSTR) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostNewItem(&self, _: u32, _: Ref<IShellItem>, _: &PCWSTR, _: &PCWSTR, _: u32, _: HRESULT, _: Ref<IShellItem>) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn UpdateProgress(&self, _: u32, _: u32) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn ResetTimer(&self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PauseTimer(&self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn ResumeTimer(&self) -> windows::core::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn display(item: &IShellItem, name: SIGDN) -> Option<String> {
+        unsafe {
+            let text = item.GetDisplayName(name).ok()?;
+            let owned = text.to_string().ok();
+            CoTaskMemFree(Some(text.0 as *const _));
+            owned
+        }
+    }
+
+    /// A recycled item is `$R…` in the Recycle Bin's folder, with its original path and deletion time
+    /// in `$I…` next to it: once the `$R` file is back, that record goes too, as Restore does.
+    fn forget_recycled(recycled: &str) {
+        let path = Path::new(recycled);
+        let in_bin = recycled.to_ascii_lowercase().contains("\\$recycle.bin\\");
+        if let (true, Some(name)) = (in_bin, path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("$R"))) {
+            let _ = std::fs::remove_file(path.with_file_name(format!("$I{name}")));
+        }
+    }
+
+    unsafe fn perform(owner: isize, op: FileOp) -> Result<Performed, String> {
+        let restoring = matches!(op, FileOp::Restore { .. });
         let fo: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL).map_err(message)?;
         if owner != 0 {
             fo.SetOwnerWindow(hwnd(owner)).map_err(message)?;
         }
+        let track = ComObject::new(Track::default());
+        let cookie = fo.Advise(&track.to_interface::<IFileOperationProgressSink>()).map_err(message)?;
         let sink = None::<&IFileOperationProgressSink>;
         let none = FILEOPERATION_FLAGS(0);
+        // The items asked for: the engine reports what's inside folders too.
+        let asked: Vec<String> = match &op {
+            FileOp::Copy { sources, .. } | FileOp::Move { sources, .. } => sources.clone(),
+            FileOp::Delete { paths, .. } => paths.clone(),
+            FileOp::Rename { path, .. } => vec![path.clone()],
+            FileOp::MoveBack { items } | FileOp::Restore { items } => items.iter().map(|b| b.path.clone()).collect(),
+        };
         match op {
+            FileOp::MoveBack { items } | FileOp::Restore { items } => {
+                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).map_err(message)?;
+                for back in &items {
+                    fo.MoveItem(&item(&back.path)?, &item(&back.folder)?, &HSTRING::from(back.name.as_str()), sink).map_err(message)?;
+                }
+            }
             FileOp::Copy { sources, dest } => {
                 // Pasting into the folder the files came from makes "name - Copy" duplicates, like Explorer.
                 let duplicate = sources.iter().all(|s| parent_is(s, &dest));
@@ -256,7 +396,8 @@ mod imp {
             FileOp::Move { sources, dest } => {
                 let sources: Vec<String> = sources.into_iter().filter(|s| !parent_is(s, &dest)).collect();
                 if sources.is_empty() {
-                    return Ok(true);
+                    let _ = fo.Unadvise(cookie);
+                    return Ok(Performed { completed: true, items: Vec::new() });
                 }
                 fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).map_err(message)?;
                 let folder = item(&dest)?;
@@ -286,11 +427,18 @@ mod imp {
         let performed = fo.PerformOperations();
         busy.store(false, Ordering::Relaxed);
         let _ = raiser.join();
-        match performed {
-            Ok(()) => Ok(!fo.GetAnyOperationsAborted().is_ok_and(|aborted| aborted.as_bool())),
-            Err(e) if e.code() == ERROR_CANCELLED.to_hresult() || e.code().0 == COPYENGINE_E_USER_CANCELLED => Ok(false),
-            Err(e) => Err(message(e)),
+        let _ = fo.Unadvise(cookie);
+        let completed = match performed {
+            Ok(()) => !fo.GetAnyOperationsAborted().is_ok_and(|aborted| aborted.as_bool()),
+            Err(e) if e.code() == ERROR_CANCELLED.to_hresult() || e.code().0 == COPYENGINE_E_USER_CANCELLED => false,
+            Err(e) => return Err(message(e)),
+        };
+        let same = |a: &str, b: &str| a.trim_end_matches('\\').eq_ignore_ascii_case(b.trim_end_matches('\\'));
+        let items: Vec<Done> = track.done.take().into_iter().filter(|d| asked.iter().any(|a| same(a, &d.from))).collect();
+        if restoring {
+            items.iter().filter(|d| d.to.is_some()).for_each(|d| forget_recycled(&d.from));
         }
+        Ok(Performed { completed, items })
     }
 
     unsafe fn open_clipboard(owner: isize) -> Result<(), String> {
@@ -466,11 +614,11 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{ClipboardFiles, FileOp};
+    use super::{ClipboardFiles, FileOp, Performed};
 
     const WINDOWS_ONLY: &str = "This is only available on Windows";
 
-    pub fn file_op(_: isize, op: FileOp) -> Result<bool, String> {
+    pub fn file_op(_: isize, op: FileOp) -> Result<Performed, String> {
         let result = match op {
             FileOp::Rename { path, name } => {
                 let to = std::path::Path::new(&path).with_file_name(name);
@@ -485,7 +633,7 @@ mod imp {
             }),
             _ => return Err(WINDOWS_ONLY.into()),
         };
-        result.map(|_| true).map_err(|e| e.to_string())
+        result.map(|_| Performed { completed: true, items: Vec::new() }).map_err(|e| e.to_string())
     }
 
     pub fn set_clipboard_files(_: isize, _: &[String], _: bool) -> Result<(), String> {

@@ -132,10 +132,24 @@ export const stopTools = () => invoke("stop_tools");
 export type FileOp =
     | { kind: "copy" | "move"; sources: string[]; dest: string }
     | { kind: "delete"; paths: string[]; permanent: boolean; confirm: boolean }
-    | { kind: "rename"; path: string; name: string };
+    | { kind: "rename"; path: string; name: string }
+    /** Undoing a move: each item back into `folder` as `name`. */
+    | { kind: "moveBack"; items: { path: string; folder: string; name: string }[] }
+    /** Undoing a delete: Recycle Bin items (as a deletion's `to` names them) back where they were. */
+    | { kind: "restore"; items: { path: string; folder: string; name: string }[] };
 
-/** Runs through Windows' own file engine (progress, conflicts, Recycle Bin). False if cancelled. */
-export const fileOp = (op: FileOp) => invoke<boolean>("file_op", { op });
+/**
+ * What became of each item asked for: where it is now (the copy, the item moved or renamed, its
+ * Recycle Bin entry), or null when it's gone for good or was skipped. `completed` is false when the
+ * person cancelled in one of Windows' dialogs.
+ */
+export interface Performed {
+    completed: boolean;
+    items: { from: string; to: string | null }[];
+}
+
+/** Runs through Windows' own file engine (progress, conflicts, Recycle Bin). */
+export const fileOp = (op: FileOp) => invoke<Performed>("file_op", { op });
 
 export const clipboardSetFiles = (paths: string[], cut: boolean) => invoke("clipboard_set_files", { paths, cut });
 export const clipboardGetFiles = () => invoke<{ paths: string[]; cut: boolean } | null>("clipboard_get_files");

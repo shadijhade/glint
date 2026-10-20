@@ -57,6 +57,8 @@ tauri-plugin-single-instance = "2.5"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
+# What windows' #[implement] expands to (the file engine's progress sink, for Undo); already in the build.
+windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Globalization",
