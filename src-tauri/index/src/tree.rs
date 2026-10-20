@@ -2,7 +2,7 @@
 //! number, every name (hard links included) as a link from a record to its parent folder, and the
 //! total size below every folder, kept current as changes come in.
 
-use crate::query::{fold, is_hidden, Excludes, NameMatcher};
+use crate::query::{fold, is_hidden, Excludes, Filters, NameMatcher};
 use rayon::prelude::*;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -106,6 +106,9 @@ pub struct Tree {
 /// A name search over one volume.
 pub struct Search<'a> {
     pub matcher: &'a NameMatcher,
+    /// ext:, size:, dm:, file: and folder:, with `now` (a FILETIME) the time ages count from.
+    pub filters: &'a Filters,
+    pub now: i64,
     /// The folder to search below; ROOT for the whole volume.
     pub scope: u32,
     /// Include hidden files and folders (and everything inside hidden folders).
@@ -694,6 +697,12 @@ impl Tree {
                     if !search.matcher.matches(name, folded) {
                         continue;
                     }
+                    if !search.filters.is_empty() {
+                        let rec = &self.recs[link.rec as usize];
+                        if !search.filters.accepts(name, folded, rec.dir(), rec.size, (search.now - rec.modified) / 10_000_000) {
+                            continue;
+                        }
+                    }
                     let id = (chunk * CHUNK + i) as u32;
                     if !search.hidden && is_hidden(self.recs[link.rec as usize].attrs, name) {
                         continue;
@@ -954,11 +963,14 @@ mod tests {
     }
 
     fn find(tree: &Tree, query: &str, scope: u32, hidden: bool, excludes: &[&str]) -> Vec<String> {
-        let matcher = NameMatcher::new(query).unwrap();
+        let (names, filters) = crate::query::parse(query).unwrap();
+        let matcher = NameMatcher::from_terms(names);
+        // 2026-01-01 as a FILETIME, for dm:.
+        let now = 134_116_992_000_000_000;
         let excludes = Excludes::new(&excludes.iter().map(|e| e.to_string()).collect::<Vec<_>>());
         let mut cache = HashMap::new();
         let mut paths: Vec<String> = tree
-            .search(&Search { matcher: &matcher, scope, hidden, excludes: &excludes })
+            .search(&Search { matcher: &matcher, filters: &filters, now, scope, hidden, excludes: &excludes })
             .into_iter()
             .map(|id| tree.path(id, &mut cache).unwrap())
             .collect();
@@ -1240,6 +1252,11 @@ mod tests {
         assert_eq!((size(&tree, 20), size(&tree, ROOT)), (300, 300));
         assert_eq!(find(&tree, "txt", ROOT, true, &[]), [r"Folder\late.txt"]);
         assert_eq!(tree.stats().files, 1);
+        // Filters, from the records themselves: late.txt has 300 bytes, from 1601.
+        assert_eq!(find(&tree, "ext:TXT size:>100 dm:>1y", ROOT, true, &[]), [r"Folder\late.txt"]);
+        assert!(find(&tree, "size:>1kb", ROOT, true, &[]).is_empty());
+        assert!(find(&tree, "late dm:7d", ROOT, true, &[]).is_empty());
+        assert_eq!(find(&tree, "folder:", ROOT, true, &[]), ["Folder"]);
     }
 
     #[test]

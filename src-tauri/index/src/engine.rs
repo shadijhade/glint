@@ -2,7 +2,7 @@
 //! the journal, then follow it), and the answers to the app's requests.
 
 use crate::proto::{self, unix_ms, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_HITS, FRAME_USAGE, NO_PARENT};
-use crate::query::{Excludes, NameMatcher};
+use crate::query::{self, Excludes, NameMatcher};
 use crate::snapshot::{self, Meta};
 use crate::tree::{Search, Tree, NONE, ROOT};
 use crate::usn;
@@ -408,9 +408,15 @@ impl Engine {
     /// Answers a name search: a plan, result frames, then a summary.
     pub fn search(&self, request: &SearchRequest, out: &mut dyn Write) -> io::Result<()> {
         let started = Instant::now();
-        let Some(matcher) = NameMatcher::new(&request.query) else {
-            return proto::write_message(out, &Message::Error { message: "Type part of a file name to search for".into() });
+        let (names, filters) = match query::parse(&request.query) {
+            Ok(parsed) => parsed,
+            Err(message) => return proto::write_message(out, &Message::Error { message }),
         };
+        if names.is_empty() && filters.is_empty() {
+            return proto::write_message(out, &Message::Error { message: "Type part of a file name to search for".into() });
+        }
+        let matcher = NameMatcher::from_terms(names);
+        let now = now_ms() * 10_000 + 116_444_736_000_000_000;
         let excludes = Excludes::new(&request.exclude);
         let (mut targets, mut indexed, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
         for root in &request.roots {
@@ -439,7 +445,7 @@ impl Engine {
             // Results are encoded under the lock (ids are only valid until the next change), then sent.
             let (frames, found) = {
                 let tree = slot.tree.read().unwrap();
-                let search = Search { matcher: &matcher, scope, hidden: request.hidden, excludes: &excludes };
+                let search = Search { matcher: &matcher, filters: &filters, now, scope, hidden: request.hidden, excludes: &excludes };
                 collect_hits(&tree, slot.letter, &search, max - count)
             };
             let taken = found.min(max - count);
