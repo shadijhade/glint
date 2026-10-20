@@ -157,13 +157,15 @@ pub fn unix_ms(filetime: i64) -> i64 {
 
 /// Appends one hit: flags, attributes, size, modified, then the path as length-prefixed UTF-8.
 pub fn encode_hit(out: &mut Vec<u8>, hit: &Hit) {
+    // A path too long for its 16-bit length (deep \\?\ folders) is left out: cut mid-character, it
+    // would make the app drop the whole batch.
+    let Ok(len) = u16::try_from(hit.path.len()) else { return };
     out.push(hit.dir as u8);
     out.extend_from_slice(&hit.attrs.to_le_bytes());
     out.extend_from_slice(&hit.size.to_le_bytes());
     out.extend_from_slice(&hit.modified.to_le_bytes());
-    let path = &hit.path.as_bytes()[..hit.path.len().min(u16::MAX as usize)];
-    out.extend_from_slice(&(path.len() as u16).to_le_bytes());
-    out.extend_from_slice(path);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(hit.path.as_bytes());
 }
 
 pub fn decode_hits(mut bytes: &[u8]) -> Result<Vec<Hit>, String> {
