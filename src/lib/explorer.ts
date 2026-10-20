@@ -5,7 +5,9 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { type FileEntry, type InArchive, isArchived, isArchiveFile, withDetails } from "./entries";
 import {
+    archiveCompress,
     archiveExtract,
+    archiveExtractHere,
     archiveStage,
     archiveUnstage,
     cancelArchiveStage,
@@ -26,6 +28,7 @@ import {
     type IndexInfo,
     indexStatus,
     type LaunchTarget,
+    type Progress,
     listDir,
     listDrives,
     type Listing,
@@ -927,17 +930,25 @@ export async function copyToOtherPane(move: boolean, paths = [...(tabState()?.se
  * moment and a Stop button, then runs `then` on the copies. Says which files couldn't be extracted.
  * Resolves undefined when it was stopped or failed (and said so).
  */
-async function extracting<T>(paths: string[], purpose: "copy" | "out", then: (staged: Staged) => Promise<T>): Promise<T | undefined> {
-    const lane = activeTabId();
+function extracting<T>(paths: string[], purpose: "copy" | "out", then: (staged: Staged) => Promise<T>): Promise<T | undefined> {
     const what = plural(paths.length, "item");
+    return staging({ doing: `Extracting ${what} from the archive`, failed: `Couldn't extract ${what}`, skipped: "extracted" }, (lane, p) => archiveStage(paths, purpose, lane, p), then);
+}
+
+/**
+ * Archive work with a progress toast (and Stop) once it takes a moment: extracting, compressing.
+ * Reports the files it had to leave out, then hands over what it made.
+ */
+async function staging<T>(say: { doing: string; failed: string; skipped: string }, run: (lane: string, onProgress: Progress) => Promise<Staged>, then: (staged: Staged) => Promise<T>): Promise<T | undefined> {
+    const lane = activeTabId();
     let shown: string | number | undefined;
     let percent = -1;
-    const label = (p: number) => `Extracting ${what} from the archive…${p >= 0 ? ` ${p}%` : ""}`;
+    const label = (p: number) => `${say.doing}…${p >= 0 ? ` ${p}%` : ""}`;
     const show = () => (shown = toast.loading(label(percent), { action: { label: "Stop", onClick: () => cancelArchiveStage(lane) }, duration: Infinity }));
     const timer = setTimeout(show, 400);
     working++;
     try {
-        const staged = await archiveStage(paths, purpose, lane, (done, total) => {
+        const staged = await run(lane, (done, total) => {
             const next = total ? Math.floor((100 * done) / total) : 0;
             if (next === percent) return;
             percent = next;
@@ -948,17 +959,53 @@ async function extracting<T>(paths: string[], purpose: "copy" | "out", then: (st
         if (staged.skipped.length) {
             const names = staged.skipped.slice(0, 3).map((s) => `“${baseName(s.path)}”`).join(", ");
             const more = staged.skipped.length > 3 ? ` and ${staged.skipped.length - 3} more` : "";
-            toast.warning(`${plural(staged.skipped.length, "file")} couldn't be extracted`, { description: `${names}${more}: ${staged.skipped[0].reason}`, duration: 10_000 });
+            toast.warning(`${plural(staged.skipped.length, "file")} couldn't be ${say.skipped}`, { description: `${names}${more}: ${staged.skipped[0].reason}`, duration: 10_000 });
         }
         return await then(staged);
     } catch (e) {
         clearTimeout(timer);
         if (shown !== undefined) toast.dismiss(shown);
-        if (String(e) !== "cancelled") toast.error(`Couldn't extract ${what}`, { description: String(e) });
+        if (String(e) !== "cancelled") toast.error(say.failed, { description: String(e) });
         return undefined;
     } finally {
         if (--working === 0) idle.splice(0).forEach((resolve) => resolve());
     }
+}
+
+/**
+ * Compress to zip: `entries` (on disk) into a zip next to them, named after the first one as
+ * Explorer does, then renamed in place like a new folder. Ctrl+Z takes it back.
+ */
+export function compressEntries(entries: FileEntry[]) {
+    const tab = activeTabId();
+    if (!entries.length) return;
+    if (entries.some(isArchived)) return readOnlyNotice();
+    const first = entries[0];
+    const folder = parentPath(first.path);
+    const name = `${first.dir || !first.name.includes(".") ? first.name : first.name.slice(0, first.name.lastIndexOf("."))}.zip`;
+    const what = entries.length === 1 ? `“${first.name}”` : plural(entries.length, "item");
+    return staging({ doing: `Compressing ${what}`, failed: `Couldn't compress ${what}`, skipped: "added" }, (lane, p) => archiveCompress(entries.map((e) => e.path), folder, name, lane, p), async (staged) => {
+        const zip = staged.paths[0];
+        rememberUndo(`compression into “${baseName(zip)}”`, () => performFileOp({ kind: "delete", paths: [zip], permanent: false, confirm: false }));
+        const t = tabState(tab);
+        if (t && !t.find && samePath(t.path, folder)) {
+            await navigate(folder, { history: false, quiet: true, select: zip, tab });
+            updateTab({ renaming: tabState(tab)?.focus ?? null }, tab);
+        } else toast.success(`Compressed ${what} into “${baseName(zip)}”`);
+    });
+}
+
+/** Extract here: a zip or 7z on disk into a new folder next to it, named after it (Explorer's Extract All). Ctrl+Z takes it back. */
+export function extractHere(entry: FileEntry) {
+    const tab = activeTabId();
+    if (isArchived(entry)) return readOnlyNotice();
+    const what = `“${entry.name}”`;
+    return staging({ doing: `Extracting ${what}`, failed: `Couldn't extract ${what}`, skipped: "extracted" }, (lane, p) => archiveExtractHere(entry.path, lane, p), async (staged) => {
+        rememberUndo(`extraction of ${what}`, () => performFileOp({ kind: "delete", paths: [staged.folder], permanent: false, confirm: false }));
+        const t = tabState(tab);
+        if (t && !t.find && samePath(t.path, parentPath(entry.path))) await navigate(t.path, { history: false, quiet: true, select: staged.folder, tab });
+        else toast.success(`Extracted ${what} into “${baseName(staged.folder)}”`);
+    });
 }
 
 /** Copy to the other pane, out of an archive: extracted, copied by Windows' file engine (progress, *Replace or Skip*), then the extracted copies go. */
