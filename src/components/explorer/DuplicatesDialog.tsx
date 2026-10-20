@@ -15,9 +15,9 @@ import {
     X,
     Zap,
 } from "lucide-react";
-import { reload, revealInApp } from "@/lib/explorer";
+import { fileOp, reload, revealInApp } from "@/lib/explorer";
 import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
-import { cancelDedup, type DedupReport, type DuplicateGroup, fileOp, findDuplicates, hardlinkDuplicates } from "@/lib/fs";
+import { cancelDedup, type DedupReport, type DuplicateGroup, findDuplicates, hardlinkDuplicates } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
