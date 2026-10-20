@@ -6,6 +6,8 @@ export function QuickLook({ entry, onClose }: { entry: FileEntry; onClose: () =>
     return (
         <div
             aria-modal="true"
+            // The list underneath keeps its arrow keys (see modalOpen).
+            data-quicklook
             aria-label={`Quick Look: ${entry.name}`}
             role="dialog"
             className="fixed inset-0 z-40 flex items-center justify-center bg-black/55 p-4 sm:p-8"

@@ -1162,8 +1162,17 @@ function noticeServiceUpdate() {
     });
 }
 
-/** Turns instant search on (or updates it, or allows this user); Windows asks for administrator approval. */
-export async function enableIndex() {
+let enabling: Promise<void> | undefined;
+
+/**
+ * Turns instant search on (or updates it, or allows this user); Windows asks for administrator
+ * approval. Clicking again meanwhile (the card, the status bar, Settings) waits for the same run.
+ */
+export function enableIndex() {
+    return (enabling ??= turnOnIndex().finally(() => (enabling = undefined)));
+}
+
+async function turnOnIndex() {
     const updating = serviceOutdated(get().index);
     try {
         set({ index: await busy(updating ? "Updating instant search…" : "Turning on instant search…", indexEnable()) });
@@ -1223,8 +1232,18 @@ export function openEntry(entry: FileEntry) {
     return openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) }));
 }
 
-/** Shows a file (e.g. a text search result) in its folder here. */
-export const revealInApp = (path: string) => navigate(parentPath(path), { select: path });
+/** Shows a file (e.g. a text search result) in its folder here, in Files. */
+export function revealInApp(path: string) {
+    useStore.getState().setMode("files");
+    return navigate(parentPath(path), { select: path });
+}
+
+/**
+ * A dialog over the panes (batch rename, duplicates, X-Ray…) is open, so their keys mustn't reach the
+ * list underneath: Delete there would recycle the selection. Quick Look is the exception, as its
+ * arrows move through the list.
+ */
+export const modalOpen = () => !!document.querySelector('[aria-modal="true"]:not([data-quicklook])');
 
 /** Opens what someone typed: "This PC", a folder, or a file (its folder, with it selected). */
 export async function goTo(text: string) {

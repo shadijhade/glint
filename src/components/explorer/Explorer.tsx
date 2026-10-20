@@ -92,6 +92,7 @@ import {
     initExplorer,
     markShown,
     moveTabToOtherPane,
+    modalOpen,
     navigate,
     newItem,
     newTab,
@@ -132,7 +133,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { driveName, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, samePath, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -140,22 +141,22 @@ import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
-import { BatchRenameDialog, openBatchRename } from "./BatchRenameDialog";
+import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
 import { DiskUsage } from "./DiskUsage";
-import { DuplicatesDialog, inspectDuplicates } from "./DuplicatesDialog";
+import { inspectDuplicates } from "./DuplicatesDialog";
 import { FileGrid } from "./FileGrid";
 import { FileList } from "./FileList";
 import { FilePreview } from "./FilePreview";
-import { inspectLocks, LocksDialog } from "./LocksDialog";
+import { inspectLocks } from "./LocksDialog";
 import { QuickLook } from "./QuickLook";
 import { DRIVE_ICONS, KNOWN_ICONS, Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { TabStrip } from "./TabStrip";
 import { ThisPC } from "./ThisPC";
-import { inspectTimeline, TimelineDialog } from "./TimelineDialog";
-import { inspectXRay, XRayDialog } from "./XRayDialog";
+import { inspectTimeline } from "./TimelineDialog";
+import { inspectXRay } from "./XRayDialog";
 
 const NO_ENTRIES: FileEntry[] = [];
 
@@ -219,28 +220,30 @@ function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: {
     const isPinned = ctx.pinned.includes(folder);
     const find = !!view?.find;
     const archive = view?.archive;
+    // A pinned folder can be inside an archive too.
+    const inArchive = !!archive || inArchivePath(folder);
     return [
         !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
         !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
         current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find || !!archive, onSelect: () => newItem(true) },
         current && { label: "New text document", icon: FilePlus, disabled: find || !!archive, onSelect: () => newItem(false) },
         "separator",
-        { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: current && (find || !!archive), onSelect: () => paste(folder) },
+        { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: (current && find) || inArchive, onSelect: () => paste(folder) },
         current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", onSelect: view.selectAll },
         current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
         "separator",
         current && { label: "Folder sizes", icon: HardDrive, disabled: find, onSelect: calcSizes },
-        !archive && { label: "Recent changes", icon: History, onSelect: () => inspectTimeline(folder) },
-        !archive && { label: "Find duplicates here", icon: Files, onSelect: () => inspectDuplicates(folder) },
-        !archive && { label: "Search text here", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
+        !inArchive && { label: "Recent changes", icon: History, onSelect: () => inspectTimeline(folder) },
+        !inArchive && { label: "Find duplicates here", icon: Files, onSelect: () => inspectDuplicates(folder) },
+        !inArchive && { label: "Search text here", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
         { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
         "separator",
         archive
             ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archive) }
             : { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
-        !archive && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
+        !inArchive && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
         { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
-        !archive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
+        !inArchive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
         archive
             ? { label: "Archive properties", icon: Info, onSelect: () => properties(archive.outer) }
             : { label: "Properties", icon: Info, shortcut: current ? "Alt+Enter" : undefined, onSelect: () => properties(folder) },
@@ -446,11 +449,6 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             {showPreviewPane && (path !== THIS_PC || find) && <PreviewPane />}
             {menu.element}
             {palette && <CommandPalette commands={paletteCommands()} onGoTo={(text) => goTo(text)} onClose={() => useExplorer.setState({ palette: false })} />}
-            <LocksDialog />
-            <DuplicatesDialog />
-            <TimelineDialog />
-            <BatchRenameDialog />
-            <XRayDialog />
         </div>
     );
 }
@@ -701,7 +699,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         // Only the active pane listens; the other one waits for a click (or F6).
         if (!active || !current) return;
         const onKey = (e: KeyboardEvent) => {
-            if (e.defaultPrevented) return;
+            if (e.defaultPrevented || modalOpen()) return;
             const ctrl = e.ctrlKey || e.metaKey;
             const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
             const target = e.target instanceof Element ? e.target : null;

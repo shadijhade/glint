@@ -81,7 +81,39 @@ function Media({ entry, kind, src }: { entry: FileEntry; kind: MediaKind; src: s
                 <audio src={src} controls className="w-full max-w-sm" />
             </Centered>
         );
-    return <iframe src={src} title={entry.name} className="h-full w-full bg-white" />;
+    return <PdfPreview entry={entry} src={src} />;
+}
+
+/**
+ * A PDF in WebView2's viewer, from a copy in memory that is one: the asset protocol serves a file as
+ * what its bytes look like, so a ".pdf" that's really a web page would run its scripts, which could
+ * read any file.
+ */
+function PdfPreview({ entry, src }: { entry: FileEntry; src: string }) {
+    const [pdf, setPdf] = useState<{ url: string } | { error: string } | null>(null);
+    // ponytail: the copy is whole in memory, so a huge scan isn't previewed; streaming it would need
+    // a check that can't change between reads (a network share can answer differently each time).
+    const tooBig = entry.size > 256 * 1024 * 1024;
+    useEffect(() => {
+        if (tooBig) return;
+        let stale = false;
+        let url = "";
+        fetch(src)
+            .then(async (res) => {
+                if (!res.headers.get("content-type")?.startsWith("application/pdf")) throw new Error("This file isn't a PDF inside, so it isn't shown.");
+                const blob = await res.blob();
+                if (!stale) setPdf({ url: (url = URL.createObjectURL(blob)) });
+            })
+            .catch((e) => !stale && setPdf({ error: e instanceof Error ? e.message : String(e) }));
+        return () => {
+            stale = true;
+            if (url) URL.revokeObjectURL(url);
+        };
+    }, [src, tooBig]);
+    if (tooBig) return <BigIcon entry={entry} note="Too big to preview here: open it to read it." />;
+    if (!pdf) return null;
+    if ("error" in pdf) return <BigIcon entry={entry} note={pdf.error} />;
+    return <iframe src={pdf.url} title={entry.name} className="h-full w-full bg-white" />;
 }
 
 /** Media in an archive: shown from a temp copy extracted for the preview (once, and within a size budget). */

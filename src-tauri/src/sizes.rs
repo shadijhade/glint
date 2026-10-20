@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Instant;
-use tauri::{State, Window};
+use tauri::State;
 
 #[derive(Serialize)]
 pub struct FolderSizes {
@@ -72,7 +72,7 @@ fn index_sizes(_: &str) -> Option<(u64, Vec<(String, u64)>)> {
 /// index can't answer (for sizing every folder as it opens, which only makes sense when it's instant).
 /// Each tab asks in its own `lane`, so sizing a folder in one pane doesn't stop the other's.
 #[tauri::command]
-pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: String, index_only: Option<bool>, lane: String) -> Result<FolderSizes, String> {
+pub async fn folder_sizes(state: State<'_, AppState>, path: String, index_only: Option<bool>, lane: String) -> Result<FolderSizes, String> {
     let started = Instant::now();
     let slot = state.sizes.slot(&lane);
     let asked = path.clone();
@@ -91,7 +91,7 @@ pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: Stri
     if index_only == Some(true) {
         return Err("not indexed".into());
     }
-    let mut command = crate::proc::tool(&window, "dust")?;
+    let mut command = crate::proc::tool("dust")?;
     // One level deep, folders only, apparent sizes (what Explorer's Properties calls "Size") in exact bytes.
     command
         .args(["-j", "-d", "1", "-D", "-s", "-o", "b", "-P", "-n", "1000000", "--"])
@@ -105,7 +105,7 @@ pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: Stri
     blocking(move || {
         let mut json = String::new();
         let _ = stdout.read_to_string(&mut json);
-        if !slot.finish(pid) {
+        if slot.finish(pid).is_none() {
             return Err("cancelled".into());
         }
         let (total, sizes) = parse(&json)?;

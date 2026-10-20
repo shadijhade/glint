@@ -8,9 +8,9 @@ import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, 
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
-import { archiveOf, currentPath, defaultTextSearchFolder, openRequested, revealInApp } from "./lib/explorer";
+import { archiveOf, currentPath, defaultTextSearchFolder, openRequested, refreshIndex, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
-import { toRegExp } from "./lib/text";
+import { replaceText, toRegExp } from "./lib/text";
 import { checkForUpdates, useUpdater } from "./lib/updater";
 import { cn } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
@@ -20,7 +20,12 @@ import { SettingsView } from "./components/SettingsView";
 import { Home, HistoryPopover, HISTORY_POPOVER_ID } from "./components/History";
 import { WindowControls } from "./components/WindowControls";
 import { AddressBar } from "./components/explorer/AddressBar";
+import { BatchRenameDialog } from "./components/explorer/BatchRenameDialog";
+import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
 import { Explorer } from "./components/explorer/Explorer";
+import { LocksDialog } from "./components/explorer/LocksDialog";
+import { TimelineDialog } from "./components/explorer/TimelineDialog";
+import { XRayDialog } from "./components/explorer/XRayDialog";
 import { Button } from "./components/ui/button";
 
 export interface SearchRun {
@@ -77,12 +82,15 @@ function App() {
   const update = useUpdater((s) => s.available);
   const updating = useUpdater((s) => s.progress !== null);
   const runId = useRef("");
+  const replacing = useRef(false);
   const unlisten = useRef<(() => void) | undefined>(undefined);
   const settingsRef = useRef<HTMLDialogElement>(null);
 
   const openSettings = () => {
     const dialog = settingsRef.current;
     if (dialog && !dialog.open) dialog.showModal();
+    // The service may have stopped, restarted or finished a drive since the last look.
+    refreshIndex();
   };
 
   /** Settings at About, where an available update installs. */
@@ -110,6 +118,7 @@ function App() {
   };
 
   const switchMode = (next: Mode) => {
+    if (next === mode) return;
     if (next === "text") {
       const cur = currentPath();
       const state = useStore.getState();
@@ -190,7 +199,7 @@ function App() {
       setDuration(elapsed || performance.now() - started);
     };
 
-    const stop = await searchBatched(
+    const { stop, folder } = await searchBatched(
       query,
       path,
       id,
@@ -221,8 +230,10 @@ function App() {
       { ...options, exclusions: settings.exclusions, maxResults: limit }
     );
     // A newer search may have started while this one was spinning up.
-    if (isCurrent()) unlisten.current = stop;
-    else stop();
+    if (!isCurrent()) return stop();
+    unlisten.current = stop;
+    // Paths show relative to the folder as searched (c:/proj\ or %USERPROFILE% typed in the box).
+    if (folder && folder !== path) setRun((r) => (r?.id === id ? { ...r, path: folder } : r));
   };
 
   /** Back from text search results to the start screen (recent searches). */
@@ -261,52 +272,51 @@ function App() {
   const openFile = (path: string) =>
     openPath(path, settings.editorPath.trim() || undefined).catch((e) => toast.error("Couldn't open the file", { description: String(e) }));
 
-  // Text search results open their folder here, with the file selected.
-  const reveal = (path: string) => {
-    setMode("files");
-    revealInApp(path);
-  };
-
   const replaceAll = async (replacement: string) => {
-    if (!run || searching) return;
+    // One at a time: a second Enter mid-way would replace in what the first just wrote.
+    if (!run || searching || replacing.current) return;
     const files = [...new Set(matches.map((m) => m.data.path?.text ?? ""))].filter(Boolean);
     if (!files.length) return;
 
-    let pattern: RegExp;
     try {
-      pattern = toRegExp(run.query, run.options);
+      toRegExp(run.query, run.options);
     } catch (e) {
       toast.error("This pattern can't be used for replacing", { description: String(e) });
       return;
     }
-    const confirmed = !settings.confirmBeforeReplace || await confirm(
-      `Replace every match of “${run.query}” with “${replacement}” in ${files.length} ${files.length === 1 ? "file" : "files"}?\n\nThis can't be undone.`,
-      { title: "Replace all", kind: "warning" }
-    );
-    if (!confirmed) return;
+    replacing.current = true;
+    try {
+      const confirmed = !settings.confirmBeforeReplace || await confirm(
+        `Replace every match of “${run.query}” with “${replacement}” in ${files.length} ${files.length === 1 ? "file" : "files"}?\n\nThis can't be undone.`,
+        { title: "Replace all", kind: "warning" }
+      );
+      if (!confirmed) return;
 
-    const toastId = toast.loading(`Replacing in ${files.length} files…`);
-    let changed = 0;
-    let failed = 0;
-    for (const path of files) {
-      try {
-        const content = await invoke<string>("read_file_content", { path });
-        // Literal searches insert the replacement verbatim; regex searches allow $1-style groups.
-        const next = run.options.regex ? content.replace(pattern, replacement) : content.replace(pattern, () => replacement);
-        if (next !== content) {
-          await invoke("write_file_content", { path, content: next });
-          changed++;
+      const toastId = toast.loading(`Replacing in ${files.length} files…`);
+      let changed = 0;
+      let failed = 0;
+      for (const path of files) {
+        try {
+          const content = await invoke<string>("read_file_content", { path });
+          const next = replaceText(content, run.query, run.options, replacement);
+          if (next !== content) {
+            await invoke("write_file_content", { path, content: next });
+            changed++;
+          }
+        } catch (e) {
+          console.error(`Replace failed in ${path}`, e);
+          failed++;
         }
-      } catch (e) {
-        console.error(`Replace failed in ${path}`, e);
-        failed++;
       }
+      toast.dismiss(toastId);
+      const summary = `Replaced in ${changed} ${changed === 1 ? "file" : "files"}`;
+      if (failed) toast.error(`${summary}, ${failed} failed`);
+      else toast.success(summary);
+    } finally {
+      replacing.current = false;
     }
-    toast.dismiss(toastId);
-    const summary = `Replaced in ${changed} ${changed === 1 ? "file" : "files"}`;
-    if (failed) toast.error(`${summary}, ${failed} failed`);
-    else toast.success(summary);
-    search(run.query, run.path, run.limit);
+    // What's left to replace, unless a newer search started meanwhile.
+    if (runId.current === run.id) search(run.query, run.path, run.limit);
   };
 
   // With auto-preview on, the first result is shown until the user picks another.
@@ -365,7 +375,7 @@ function App() {
             selected={current}
             onSelect={setSelected}
             onOpen={openFile}
-            onReveal={reveal}
+            onReveal={revealInApp}
             onShowAll={() => search(run.query, run.path, null)}
             onClose={closeResults}
           />
@@ -374,6 +384,12 @@ function App() {
         )}
       </div>
 
+      {/* Over either mode: Text's results open X-Ray and the locks dialog too. */}
+      <LocksDialog />
+      <DuplicatesDialog />
+      <TimelineDialog />
+      <BatchRenameDialog />
+      <XRayDialog />
       <HistoryPopover onPick={pickHistory} />
       <dialog
         ref={settingsRef}

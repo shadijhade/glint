@@ -3,6 +3,9 @@ export const THIS_PC = "";
 
 const SEPARATORS = /[\\/]+$/;
 
+/** In a zip or 7z archive (or the archive itself): read-only, and not on disk for other tools. */
+export const inArchivePath = (path: string) => /\.(zip|7z)([\\/]|$)/i.test(path);
+
 /** "C:\", "C:", "\\server\share" and "/" are roots. */
 export function isRoot(path: string) {
     return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/";
