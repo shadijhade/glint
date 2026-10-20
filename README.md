@@ -166,7 +166,7 @@ These work on files on disk, not inside archives.
 
 <img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 37 ms" width="100%">
 
-It's off until you turn it on in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and dust take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
+It's off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and dust take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
 
 The service only runs once you opt in, with every privilege removed except the three it needs. It answers only you and administrators, over a named pipe no other program can pose as. It knows the names of all files on the indexed drives, including ones your account can't open, so on a shared PC turn it on only for accounts that may see every file name. Measurements, how it works and the full security model are in **[docs/instant-search.md](docs/instant-search.md)**.
 
@@ -311,7 +311,7 @@ npm install
 npm run tauri dev
 ```
 
-`npm run tauri build` makes the installer in `src-tauri/target/release/bundle/nsis/`. The Windows x64 builds of ripgrep, fd and dust ship in `src-tauri/binaries/`; on other platforms, add binaries named `rg-<target-triple>`, `fd-<target-triple>` and `dust-<target-triple>` there. `npm run release` builds a release on top of that: the update package the app installs, code signing, and the winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)).
+`npm run tauri build` makes the installer in `src-tauri/target/release/bundle/nsis/`. The Windows x64 builds of ripgrep, fd and dust ship in `src-tauri/binaries/`; on other platforms, add binaries named `rg-<target-triple>`, `fd-<target-triple>` and `dust-<target-triple>` there. `npm run release`, or the release workflow when a version tag is pushed, builds a release on top of that: the update package the app installs, code signing, and the winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)).
 
 The checks to run before you commit:
 
@@ -332,7 +332,8 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] A disk-usage map (treemap) from the index
 -   [x] Thumbnails and a grid view
 -   [x] Auto-update, with signed update packages
--   [ ] Code-signed installers, and winget and Scoop packages (`npm run release` is ready for them: [docs/releasing.md](docs/releasing.md))
+-   [x] A Scoop package
+-   [ ] Code-signed installers (SignPath, through the release workflow) and the winget package ([microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306))
 -   [x] Zip and 7z archives opened like folders (read-only for now)
 
 Missing something? [Open an issue](https://github.com/shadijhade/glint/issues/new/choose). If the app saves you time, a star helps other people find it.

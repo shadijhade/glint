@@ -8,7 +8,23 @@ export function toRegExp(query: string, options: SearchOptions) {
     let source = options.regex ? query : escapeRegex(query).replace(/\n/g, "\\r?\\n");
     if (options.wholeWord) source = `\\b(?:${source})\\b`;
     const ignoreCase = !options.caseSensitive && query === query.toLowerCase();
-    return new RegExp(source, "g" + (ignoreCase ? "i" : "") + (query.includes("\n") ? "s" : ""));
+    // Over several lines, ^ and $ still mean a line's start and end, as they do in rg.
+    return new RegExp(source, "g" + (ignoreCase ? "i" : "") + (query.includes("\n") ? "ms" : ""));
+}
+
+/**
+ * Replace All in one file's text, the way rg found the matches: line by line, so ^, $ and \s stay
+ * within a line and line ends never change, unless the query itself spans lines.
+ */
+export function replaceText(content: string, query: string, options: SearchOptions, replacement: string) {
+    const pattern = toRegExp(query, options);
+    // Literal searches insert the replacement verbatim; regex searches allow $1-style groups.
+    const replace = (text: string) => (options.regex ? text.replace(pattern, replacement) : text.replace(pattern, () => replacement));
+    if (query.includes("\n")) return replace(content);
+    return content
+        .split(/(\r?\n)/)
+        .map((part, i) => (i % 2 ? part : replace(part)))
+        .join("");
 }
 
 const encoder = new TextEncoder();

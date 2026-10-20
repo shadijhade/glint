@@ -754,8 +754,13 @@ pub async fn archive_stage(paths: Vec<String>, purpose: String, lane: String, on
     if let Some(previous) = state().stages.insert(lane.clone(), cancel.clone()) {
         previous.store(true, Ordering::SeqCst);
     }
+    let ours = cancel.clone();
     let result = fsx::blocking(move || stage(&paths, &purpose, &cancel, &on_progress).map_err(|e| e.message())).await;
-    state().stages.remove(&lane);
+    // Unless a newer copy in the tab took its place (its Cancel must keep working).
+    let mut guard = state();
+    if guard.stages.get(&lane).is_some_and(|current| Arc::ptr_eq(current, &ours)) {
+        guard.stages.remove(&lane);
+    }
     result
 }
 

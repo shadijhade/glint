@@ -29,7 +29,7 @@ pub async fn watch_dirs(window: Window, state: State<'_, FolderWatcher>, paths: 
         watchers.retain(|k, _| wanted.contains(k));
         let mut failed = Ok(());
         for path in paths {
-            if watchers.contains_key(&key(&path)) {
+            if watchers.contains_key(&key(&path)) || removable(&path) {
                 continue;
             }
             match watch(&window, &path) {
@@ -42,6 +42,22 @@ pub async fn watch_dirs(window: Window, state: State<'_, FolderWatcher>, paths: 
         failed
     })
     .await
+}
+
+/// A folder on a USB stick or memory card isn't watched: the open handle would keep Windows from
+/// ejecting it ("This device is currently in use"). F5 refreshes it, and Glint's own changes show anyway.
+/// ponytail: USB hard drives report as fixed, so they're still watched; closing handles on
+/// DBT_DEVICEQUERYREMOVE would cover them too.
+fn removable(path: &str) -> bool {
+    #[cfg(windows)]
+    if let Some(drive) = path.get(..2).filter(|d| d.ends_with(':')) {
+        use windows::core::HSTRING;
+        use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+        const DRIVE_REMOVABLE: u32 = 2;
+        return unsafe { GetDriveTypeW(&HSTRING::from(format!("{drive}\\"))) } == DRIVE_REMOVABLE;
+    }
+    let _ = path;
+    false
 }
 
 fn watch(window: &Window, path: &str) -> Result<RecommendedWatcher, String> {

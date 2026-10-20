@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { escapeRegex } from "./text";
 
 export interface RgMatch {
     type: "match" | "context" | "begin" | "end" | "summary";
@@ -39,36 +38,7 @@ export async function searchBatched(
     onFinished: () => void,
     onError: (error: string) => void,
     options: SearchOptions = {}
-) {
-    // --no-messages hides per-file errors (e.g. Access Denied); pattern errors still reach stderr.
-    // The total result limit is enforced Rust-side (--max-count is per file).
-    const args: string[] = ["--json", "--no-messages", "--stats"];
-
-    args.push(options.caseSensitive ? "--case-sensitive" : "--smart-case");
-
-    if (options.wholeWord) {
-        args.push("--word-regexp");
-    }
-
-    let finalQuery = query;
-
-    if (query.includes('\n')) {
-        args.push("--multiline", "--multiline-dotall");
-        // Textareas normalize to \n but files may use \r\n, so literal searches match both.
-        if (!options.regex) {
-            finalQuery = escapeRegex(query).replace(/\n/g, '\\r?\\n');
-        }
-    } else if (!options.regex) {
-        args.push("--fixed-strings");
-    }
-
-    for (const exclusion of options.exclusions ?? []) {
-        args.push("--glob", `!${exclusion}`);
-    }
-
-    // "--" so queries starting with "-" aren't parsed as flags.
-    args.push("--", finalQuery, path);
-
+): Promise<{ stop: () => void; folder?: string }> {
     const unlisten = await listen<{ id: string; type: string; lines: string[] }>("search-event", (event) => {
         const { id, type, lines } = event.payload;
         if (id !== searchId) return;
@@ -83,12 +53,14 @@ export async function searchBatched(
     });
 
     try {
-        await invoke("run_ripgrep_batched", { args, searchId, maxResults: options.maxResults });
+        // ripgrep's arguments are built in Rust from these options. The folder comes back as searched.
+        const request = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions: options.exclusions ?? [] };
+        const folder = await invoke<string>("run_ripgrep_batched", { request, searchId, maxResults: options.maxResults });
+        return { stop: unlisten, folder };
     } catch (e) {
         onError(String(e));
     }
-
-    return unlisten;
+    return { stop: unlisten };
 }
 
 export async function cancelSearch() {

@@ -264,6 +264,8 @@ export function AddressBar() {
     const showHidden = useStore((s) => s.settings.showHidden);
     const trailRef = useRef<HTMLDivElement>(null);
     const flyoutRef = useRef<HTMLDivElement>(null);
+    // The flyout opened last: a slow folder's list mustn't replace the one asked for after it.
+    const flyoutSeq = useRef(0);
     const flyoutFilterRef = useRef<HTMLInputElement>(null);
     const [flyout, setFlyout] = useState<FlyoutTarget | null>(null);
     const [flyoutItems, setFlyoutItems] = useState<Suggestion[]>([]);
@@ -286,6 +288,7 @@ export function AddressBar() {
 
     const openFlyout = async (e: React.MouseEvent<HTMLButtonElement>, folder: string, activeChild?: string) => {
         e.stopPropagation();
+        const seq = ++flyoutSeq.current;
         const rect = e.currentTarget.getBoundingClientRect();
         const popover = flyoutRef.current;
         setFlyout({ folder, activeChild, left: rect.left, top: rect.bottom + 4 });
@@ -325,14 +328,10 @@ export function AddressBar() {
         }
 
         setFlyoutLoading(true);
-        try {
-            const res = await listDir(folder);
-            setFlyoutItems(toSuggestions(res.entries));
-        } catch {
-            setFlyoutItems([]);
-        } finally {
-            setFlyoutLoading(false);
-        }
+        const items = await listDir(folder).then((res) => toSuggestions(res.entries), () => []);
+        if (seq !== flyoutSeq.current) return;
+        setFlyoutItems(items);
+        setFlyoutLoading(false);
     };
 
     useLayoutEffect(() => {

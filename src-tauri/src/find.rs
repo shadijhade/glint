@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
-use tauri::{State, Window};
+use tauri::State;
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -219,9 +219,9 @@ fn search_index(_: &[String], _: &str, _: &FindOptions, _: &AtomicBool, _: &mut 
 }
 
 /// Searches `roots` with fd, streaming what it finds. Returns whether it hit `options.max_results`.
-fn search_fd(window: &Window, slot: &Slot, roots: &[String], query: &str, options: &FindOptions, out: &mut Out) -> Result<bool, String> {
+fn search_fd(slot: &Slot, roots: &[String], query: &str, options: &FindOptions, out: &mut Out) -> Result<bool, String> {
     let args = fd_args(query, roots, options)?;
-    let mut command = crate::proc::tool(window, "fd")?;
+    let mut command = crate::proc::tool("fd")?;
     command
         .args(&args)
         // fd prints "/" separators when it thinks it runs under MSYS (e.g. a dev build started from Git Bash).
@@ -251,15 +251,10 @@ fn search_fd(window: &Window, slot: &Slot, roots: &[String], query: &str, option
     }
     let found = out.count - before;
     let errors = stderr_reader.join().unwrap_or_default();
-    // Ignore per-folder traversal warnings (`[fd error]: ... Access is denied`) when walking roots like C:\.
-    let fatal: Vec<&str> = errors
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with("[fd error]:"))
-        .collect();
-    // A stopped search ends quietly; only a run that finished by itself reports fd's fatal complaints.
-    if slot.finish(pid) && found == 0 && !fatal.is_empty() {
-        return Err(fatal.join("\n"));
+    // A stopped search ends quietly, and so do warnings about folders fd can't open (it still exits
+    // 0); only a run that failed (a missing folder, a bad pattern) reports what fd said.
+    if slot.finish(pid).is_some_and(|status| !status.success()) && found == 0 && !errors.trim().is_empty() {
+        return Err(errors.trim().to_string());
     }
     Ok(options.max_results.is_some_and(|max| max > 0 && found >= max))
 }
@@ -268,7 +263,6 @@ fn search_fd(window: &Window, slot: &Slot, roots: &[String], query: &str, option
 /// keeps going).
 #[tauri::command]
 pub async fn find_files(
-    window: Window,
     state: State<'_, AppState>,
     roots: Vec<String>,
     query: String,
@@ -317,7 +311,7 @@ pub async fn find_files(
         if !fd_roots.is_empty() && !stop.load(Ordering::SeqCst) && left != Some(0) {
             out.started("fd");
             let options = FindOptions { max_results: left, ..options };
-            match search_fd(&window, slot, &fd_roots, &query, &options, &mut out) {
+            match search_fd(slot, &fd_roots, &query, &options, &mut out) {
                 Ok(hit_limit) => limited |= hit_limit,
                 Err(message) => {
                     out.flush();

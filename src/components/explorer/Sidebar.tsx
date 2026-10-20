@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { type KnownFolder, middleClickOpens, navigate, useExplorer, useTab } from "@/lib/explorer";
 import { type Drive, driveName } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
-import { baseName, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -72,7 +72,7 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
     return (
         <button
             // A pinned folder in an archive takes no drops: archives are read-only.
-            data-drop={/\.(zip|7z)([\\/]|$)/i.test(path) ? undefined : path}
+            data-drop={inArchivePath(path) ? undefined : path}
             onClick={() => navigate(path)}
             onMouseDown={middleClickOpens(path)}
             onContextMenu={(e) => onContextMenu(e, path)}
