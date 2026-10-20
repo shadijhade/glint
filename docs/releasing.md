@@ -1,6 +1,6 @@
 # Releasing
 
-Releases are built on the maintainer's PC with `npm run release` and uploaded to GitHub by hand; there's no CI. This page covers what to set up once and what to do for each release.
+Releases are built one of two ways: by the release workflow on GitHub when a `vX.Y.Z` tag is pushed (the only way to get them signed by SignPath), or on the maintainer's PC with `npm run release`. Both make the same files. This page covers what to set up once and what to do for each release.
 
 ## How it works
 
@@ -15,7 +15,7 @@ Copies that the setup program didn't install (Scoop, a portable copy, a dev buil
 
 ### 1. The updater key (needed for auto-update)
 
-Updates are signed with a minisign key pair. The public key is compiled into the app; the private key stays on your PC and signs each release. Set this up **before the first release that has the updater** (the first one after v0.2.0): every update after it must be signed with the matching private key. v0.2.0 itself predates the updater, so its users get a link to that release and install it by hand once.
+Updates are signed with a minisign key pair. The public key is compiled into the app; the private key signs each release, on your PC or as a secret of the release workflow. Set this up **before the first release that has the updater** (the first one after v0.2.0): every update after it must be signed with the matching private key. v0.2.0 itself predates the updater, so its users get a link to that release and install it by hand once.
 
 1.  Generate the pair and choose a password when asked:
 
@@ -27,13 +27,15 @@ Updates are signed with a minisign key pair. The public key is compiled into the
 2.  Paste the contents of `shadui-ripgrep.key.pub` into `src-tauri/tauri.conf.json` as `plugins.updater.pubkey`, and commit it. It's public.
 3.  Keep a copy of the private key and its password in a password manager. **If they're lost**, installed copies can't verify new updates: you'd need a new pair, and everyone would have to download the next version by hand once (the app still tells them it exists). **If they leak**, rotate the same way.
 
+The release workflow needs the key's contents and its password as the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (**Settings → Secrets and variables → Actions**). Without them a tag push fails rather than publish a release the app can't install by itself.
+
 `npm run release` needs `TAURI_SIGNING_PRIVATE_KEY` set to the key file's path (or its contents), and asks for the password unless `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is set. It refuses to build with only one half (a key without a public key in `tauri.conf.json`, or the other way round); with neither, it builds without auto-update files and says so.
 
 The app sets `requireSignedVersion`: a signature must name the version it was signed for (`tauri build` records it), so a tampered `latest.json` can't pass off an older, validly signed installer as new. Updates never go backwards either.
 
 ### 2. Code signing (optional, recommended)
 
-Unsigned installers work, but Windows SmartScreen shows *Windows protected your PC* until a file has a reputation, and the UAC prompt for instant search shows *Unknown publisher*. Signing puts a verified name on the installer, the app, the service, the bundled tools and the uninstaller. Reputation still builds with downloads; since 2024 even EV certificates don't skip that.
+Unsigned installers work, but Windows SmartScreen shows *Windows protected your PC* until a file has a reputation, and the UAC prompt for instant search shows *Unknown publisher*. Signing puts a verified name on the installer, the app and the service (a build signed on your PC also signs the bundled tools and the uninstaller). Reputation still builds with downloads; since 2024 even EV certificates don't skip that.
 
 Since June 2023 a publicly trusted code-signing key must live in hardware (a smartcard, a token or a cloud HSM), so a `.pfx` file is no longer an option for new certificates. What's left for an open-source project:
 
@@ -42,7 +44,7 @@ Since June 2023 a publicly trusted code-signing key must live in hardware (a sma
 | [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/quickstart) (formerly Trusted Signing) | About $10 a month (Basic) | Organizations in the US, Canada, the EU, the UK, Australia, New Zealand, Japan, South Korea, Singapore, Switzerland, Norway and Israel; individual developers in the US and Canada | Your verified name | Built in: three environment variables |
 | [Certum](https://shop.certum.eu/code-signing.html): *Open Source Code Signing* (with a smartcard and reader) or *Standard Code Signing* in the cloud (SimplySign) | About €69 or from €49 | Individuals and companies Certum validates, in most countries | Your name | `--sign-config` with the certificate's thumbprint |
 | Another CA with a hardware or cloud key (SSL.com eSigner, DigiCert KeyLocker, Sectigo…) | Roughly €200 to €500 a year | Anyone the CA validates | Your name | `--sign-config` with its signing tool |
-| [SignPath Foundation](https://signpath.org/) | Free for open source | OSI-licensed projects with no proprietary parts | SignPath Foundation | Not available: it only signs builds made on GitHub-hosted runners |
+| [SignPath Foundation](https://signpath.org/) | Free for open source | OSI-licensed projects with no proprietary parts | SignPath Foundation | Not available: it only signs builds made on GitHub-hosted runners, so it's the release workflow's (below) |
 
 **Azure Artifact Signing.** `npm run release` fetches Microsoft's Artifact Signing client for `signtool` (pinned by its SHA-256) into `release/.tools`, has Tauri run it on every executable it bundles and then on the installer (before the update signature, since signing changes the file), and checks the signatures afterwards.
 
@@ -60,6 +62,8 @@ Since June 2023 a publicly trusted code-signing key must live in hardware (a sma
 and run `npm run release -- --sign-config %USERPROFILE%\.tauri\sign.json`. For a provider whose tool isn't `signtool` (SSL.com's CodeSignTool, DigiCert's `smctl`), put a `signCommand` there instead: `{ "cmd": "<tool>", "args": [..., "%1"] }`, where `%1` is the file to sign.
 
 Tauri signs rg, fd and dust where they are, in `src-tauri/binaries`; `npm run release` puts the official files back after the build, so only the installer carries the signed copies. (If a signed build is cut short and `git status` shows them changed, `git checkout -- src-tauri/binaries`.)
+
+**SignPath Foundation** (the release workflow). Once the project is approved, set the repository secrets `SIGNPATH_API_TOKEN` and `SIGNPATH_ORGANIZATION_ID`. The workflow submits the app and the service (artifact configuration `zip`), then the installer (`exe`), to project `glint` with signing policy `release-signing`, and waits up to an hour for each request to be approved on SignPath. It checks the signatures before anything is uploaded. Without the secrets it builds unsigned.
 
 Once releases are signed, take the SmartScreen note out of the README's Install section.
 
@@ -105,6 +109,17 @@ Once a package is live, add its install command to the README's Install section.
 4.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads the `-setup.exe`, its `.sig` and `latest.json`, and the tag is made at your commit when you publish.
 5.  **On GitHub**, write the release notes (the app's *What's new* opens this page), try the installer, and **publish**. Running copies find the update within 12 hours or at their next start.
 6.  **Submit** `release/vX.Y.Z/package-manifests` to winget and Scoop.
+
+### With the release workflow
+
+Steps 1 and 2 as above, then:
+
+3.  **Try it** (optional): **Actions → Release → Run workflow** on `master` runs every check and builds (and signs) the installer without making a release; its files are in the run's `release-vX.Y.Z` artifact.
+4.  **Tag and push**: `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The workflow checks that the three versions and the tag agree, runs the checks, signs with SignPath when it's set up (approve the requests there), signs the update, and creates a draft release with the `-setup.exe`, its `.sig` and `latest.json`.
+5.  **On GitHub**, as in step 5 above.
+6.  **Submit** the manifests from the run's `release-vX.Y.Z` artifact (`package-manifests/`) to winget and Scoop.
+
+Use one way per release: publishing a draft made by `npm run release` creates its tag, and the workflow then leaves that release as it is.
 
 If a release turns out broken, publish a fixed one with a higher version: the updater never installs an older version.
 

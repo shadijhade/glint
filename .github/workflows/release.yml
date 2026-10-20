@@ -15,21 +15,27 @@ jobs:
     runs-on: windows-latest
     env:
       HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      # Only whether it's set: the key itself stays in the one step that signs.
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
+      # Actions are pinned to commits: this job holds the signing secrets.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: "src-tauri -> target"
 
@@ -39,14 +45,22 @@ jobs:
       - name: Check version consistency and run checks
         shell: pwsh
         run: |
-          $pkg = (Get-Content package.json | ConvertFrom-Json).version
+          # Any failing command fails the step, not just the last one.
+          $PSNativeCommandUseErrorActionPreference = $true
+          # One version everywhere: the app and the instant search service share Cargo's (the app
+          # offers to update the service when the two differ), and a tag names it.
           $tauri = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
-          if ($pkg -ne $tauri) { throw "Version mismatch: package.json ($pkg) != tauri.conf.json ($tauri)" }
+          $all = @((Get-Content package.json | ConvertFrom-Json).version) + (cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | ConvertFrom-Json).packages.version
+          if ($all | Where-Object { $_ -ne $tauri }) { throw "Versions differ from tauri.conf.json ($tauri): $($all -join ', ')" }
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$tauri") { throw "Tag $env:GITHUB_REF_NAME doesn't match version $tauri" }
+          # Without the updater key there's no latest.json, and installed copies couldn't update themselves.
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:HAS_UPDATER_KEY -ne "true") { throw "Set the TAURI_SIGNING_PRIVATE_KEY secret: a release without latest.json can't be installed by the in-app updater" }
           echo "VERSION=$tauri" >> $env:GITHUB_ENV
           echo "INSTALLER_NAME=Glint_${tauri}_x64-setup.exe" >> $env:GITHUB_ENV
           npm run build
           node src/lib/explorer.check.ts
           node src/lib/text.check.ts
+          cargo clippy --workspace --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
           cargo test --workspace --manifest-path src-tauri/Cargo.toml
 
       - name: Build unsigned binaries and NSIS installer
@@ -65,7 +79,7 @@ jobs:
 
       - name: Upload unsigned binaries artifact
         id: upload-binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-binaries
           path: ${{ runner.temp }}/glint-binaries.zip
@@ -73,7 +87,7 @@ jobs:
 
       - name: Sign inner binaries with SignPath
         if: env.HAS_SIGNPATH == 'true'
-        uses: signpath/github-action-submit-signing-request@v3
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
@@ -82,6 +96,8 @@ jobs:
           artifact-configuration-slug: "zip"
           github-artifact-id: ${{ steps.upload-binaries.outputs.artifact-id }}
           wait-for-completion: true
+          # Release signing waits for a manual approval on SignPath.
+          wait-for-completion-timeout-in-seconds: 3600
           output-artifact-directory: ${{ runner.temp }}/signed-binaries
 
       - name: Repackage NSIS installer with signed inner binaries
@@ -93,7 +109,7 @@ jobs:
 
       - name: Upload unsigned NSIS installer artifact
         id: upload-installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-installer
           path: src-tauri/target/release/bundle/nsis/${{ env.INSTALLER_NAME }}
@@ -101,7 +117,7 @@ jobs:
 
       - name: Sign NSIS installer with SignPath
         if: env.HAS_SIGNPATH == 'true'
-        uses: signpath/github-action-submit-signing-request@v3
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
@@ -110,6 +126,7 @@ jobs:
           artifact-configuration-slug: "exe"
           github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
           wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
           output-artifact-directory: ${{ runner.temp }}/signed-installer
 
       - name: Generate Tauri updater signature (.sig and latest.json) and package manifests
@@ -118,6 +135,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           $outDir = "release\v$($env:VERSION)"
           New-Item -ItemType Directory -Path $outDir -Force | Out-Null
           $nsisInstaller = "src-tauri\target\release\bundle\nsis\$($env:INSTALLER_NAME)"
@@ -162,10 +180,12 @@ jobs:
           }
 
           Copy-Item $nsisInstaller "$outDir\$($env:INSTALLER_NAME)" -Force
+          # The last bundle must have kept SignPath's signature on what gets uploaded.
+          if ($env:HAS_SIGNPATH -eq "true" -and (Get-AuthenticodeSignature "$outDir\$($env:INSTALLER_NAME)").Status -ne "Valid") { throw "The installer to upload isn't validly signed" }
           node scripts/package-manifests.mjs $env:VERSION "$outDir\$($env:INSTALLER_NAME)" --out "$outDir\package-manifests"
 
       - name: Upload release bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-v${{ env.VERSION }}
           path: release/v${{ env.VERSION }}/
@@ -177,5 +197,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
+          # Publishing a draft made by `npm run release` creates the tag too: that release stays as it is.
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Host "::warning::Release $env:GITHUB_REF_NAME already exists; its assets are left alone"; exit 0 }
           $assets = Get-ChildItem "release\v$($env:VERSION)\*" -File | ForEach-Object { $_.FullName }
           gh release create $env:GITHUB_REF_NAME @assets --draft --title "Glint v$($env:VERSION)" --generate-notes
