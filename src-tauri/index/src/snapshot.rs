@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(loaded.resolve("üsers"), Some(20));
         let matcher = NameMatcher::new("txt").unwrap();
         let excludes = Excludes::default();
-        let found = loaded.search(&Search { matcher: &matcher, scope: ROOT, hidden: true, excludes: &excludes });
+        let found = loaded.search(&Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: true, excludes: &excludes });
         assert_eq!(found.iter().map(|&id| loaded.path(id, &mut HashMap::new()).unwrap()).collect::<Vec<_>>(), [r"Üsers\a.txt"]);
         assert_eq!(loaded.rec(20).unwrap().size, 42);
 

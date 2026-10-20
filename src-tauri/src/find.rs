@@ -7,7 +7,7 @@ use crate::fsx::{entry_for_path, ms_since, Entry};
 use crate::proc::Slot;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
-use shadui_index::query::terms;
+use shadui_index::query::{parse, Kind};
 use std::io::{BufRead, BufReader, Read};
 use std::process::Stdio;
 use std::collections::HashMap;
@@ -103,11 +103,12 @@ impl Finds {
 /// fd arguments for a query: every term must match the file name (like Everything), case-insensitively.
 /// Terms with * or ? are globs over the whole name; the rest match anywhere in it.
 fn fd_args(query: &str, roots: &[String], options: &FindOptions) -> Result<Vec<String>, String> {
-    let terms = terms(query);
-    if terms.is_empty() {
+    let (terms, filters) = parse(query)?;
+    if terms.is_empty() && filters.is_empty() {
         return Err("Type part of a file name to search for".into());
     }
-    let glob = terms.iter().any(|t| t.contains(['*', '?']));
+    // Filters alone search every name.
+    let glob = terms.is_empty() || terms.iter().any(|t| t.contains(['*', '?']));
     let mut patterns = terms.into_iter().map(|t| if glob && !t.contains(['*', '?']) { format!("*{t}*") } else { t });
 
     let mut args: Vec<String> = ["--color=never", "--absolute-path", "--ignore-case"].map(String::from).into();
@@ -124,7 +125,18 @@ fn fd_args(query: &str, roots: &[String], options: &FindOptions) -> Result<Vec<S
     if let Some(max) = options.max_results.filter(|&n| n > 0) {
         args.push(format!("--max-results={max}"));
     }
-    let first = patterns.next().unwrap();
+    // The index's filters as fd's flags: its --size counts files only, as the index does.
+    args.extend(filters.exts.iter().map(|ext| format!("--extension={ext}")));
+    args.extend(filters.min_size.map(|min| format!("--size=+{min}b")));
+    args.extend(filters.max_size.map(|max| format!("--size=-{max}b")));
+    args.extend(filters.newer_than.map(|secs| format!("--changed-within={secs}s")));
+    args.extend(filters.older_than.map(|secs| format!("--changed-before={secs}s")));
+    if filters.files_only() {
+        args.push("--type=file".into());
+    } else if filters.kind == Some(Kind::Folders) {
+        args.push("--type=directory".into());
+    }
+    let first = patterns.next().unwrap_or_else(|| "*".into());
     args.extend(patterns.map(|p| format!("--and={p}")));
     args.push("--".into());
     args.push(first);
@@ -213,6 +225,17 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
     answered
 }
 
+/// Whether the running service is this app's version (so it reads every filter this app knows).
+#[cfg(windows)]
+fn same_service() -> bool {
+    shadui_index::client::status().is_ok_and(|status| status.version == shadui_index::VERSION)
+}
+
+#[cfg(not(windows))]
+fn same_service() -> bool {
+    false
+}
+
 #[cfg(not(windows))]
 fn search_index(_: &[String], _: &str, _: &FindOptions, _: &AtomicBool, _: &mut Out) -> Option<Answered> {
     None
@@ -270,9 +293,13 @@ pub async fn find_files(
     on_event: Channel<FindEvent>,
     lane: String,
 ) -> Result<(), String> {
-    if terms(&query).is_empty() {
+    let (terms, filters) = parse(&query)?;
+    if terms.is_empty() && filters.is_empty() {
         return Err("Type part of a file name to search for".into());
     }
+    // An older service would read ext: and the like as part of a name, and find nothing: until it's
+    // updated, fd answers queries with filters.
+    let index_reads_filters = filters.is_empty() || same_service();
     let run = state.finds.start(&lane);
     let finds = state.finds.clone();
     thread::spawn(move || {
@@ -302,7 +329,7 @@ pub async fn find_files(
             }
         }
         // .gitignore rules are fd's alone; anything else goes to the index first.
-        if !options.respect_ignore {
+        if !options.respect_ignore && index_reads_filters {
             if let Some(answered) = search_index(&roots, &query, &options, stop, &mut out) {
                 (fd_roots, limited) = (answered.skipped, answered.limited);
             }
@@ -356,6 +383,14 @@ mod tests {
         assert!(args.contains(&"--glob".into()));
         assert!(args.ends_with(&["--and=*-draft*".into(), "--".into(), "*.pdf".into(), r"C:\Users".into()]));
         assert!(fd_args("  ", &roots, &options()).is_err());
+
+        let args = fd_args("ext:pdf size:>1kb dm:7d", &roots, &options()).unwrap();
+        for flag in ["--glob", "--extension=pdf", "--size=+1025b", "--changed-within=604800s", "--type=file"] {
+            assert!(args.contains(&flag.into()), "{flag}");
+        }
+        assert!(args.ends_with(&["--".into(), "*".into(), r"C:\Users".into()]));
+        assert!(fd_args("report folder: dm:>1y", &roots, &options()).unwrap().contains(&"--type=directory".into()));
+        assert!(fd_args("size:huge", &roots, &options()).is_err());
     }
 
     #[test]

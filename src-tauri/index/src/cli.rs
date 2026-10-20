@@ -298,7 +298,7 @@ fn bench(args: &[String]) -> i32 {
         let queries = ["kernel32.dll", "report", ".pdf", "*.dll", "budget 2026", "zzqxjv", "résumé", "e"];
         for query in queries {
             let matcher = NameMatcher::new(query).unwrap();
-            let search = Search { matcher: &matcher, scope: ROOT, hidden: false, excludes: &excludes };
+            let search = Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &excludes };
             let mut times = Vec::new();
             let mut found = 0;
             for round in 0..24 {

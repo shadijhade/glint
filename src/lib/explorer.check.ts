@@ -60,6 +60,15 @@ assert.equal(match("b"), "b,B.txt");
 assert.equal(match("?.txt"), "a.txt,B.txt");
 assert.equal(match("*.t"), "");
 assert.equal(matcher("   "), null);
+// Filters, as the index and fd read them: a.txt is 30 B, B.txt 20 B, c.md 10 B; b is a folder.
+assert.equal(match("ext:TXT"), "a.txt,B.txt");
+assert.equal(match("size:>=20 ext:txt;md"), "a.txt,B.txt");
+assert.equal(match("size:<20"), "c.md");
+assert.equal(match("folder:"), "b");
+assert.equal(match("file: b"), "B.txt");
+assert.equal(match("dm:>1y"), "b,a.txt,c.md,B.txt");
+assert.equal(match("dm:7d"), "");
+assert.equal(match("size:big"), "");
 
 // Binary listings: built here with the layout fsx.rs's encode_listing writes (its test checks the offsets)
 type Item = { name: string; dir: boolean; size: number; modified: number; attrs: number };

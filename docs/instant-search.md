@@ -2,7 +2,7 @@
 
 Off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows then asks for administrator approval once, and a small service (`Glint instant search`) starts indexing your fixed NTFS drives. From then on:
 
--   **Name searches** on indexed drives answer from memory: the same query rules as fd (every word must match, `*` and `?` match the whole name, case-insensitive, same exclusions and hidden-file setting), results streamed into the same list with size, date and attributes.
+-   **Name searches** on indexed drives answer from memory: the same query rules as fd (every word must match, `*` and `?` match the whole name, case-insensitive, same exclusions and hidden-file setting) and the same filters (`ext:`, `size:`, `dm:`, `file:`, `folder:`, which the app turns into fd's `--extension`, `--size`, `--changed-within`/`--changed-before` and `--type`; until an older service is updated, fd answers queries with filters), results streamed into the same list with size, date and attributes.
 -   **Folder sizes** for every folder come from the index, kept current as files change.
 -   **Disk usage maps** of any folder on an indexed drive come from the index in one request: its 20,000 biggest files and folders, six levels down, with their sizes.
 -   **Fallbacks are automatic.** fd answers whatever the index can't: drives that aren't indexed (network shares, FAT/exFAT USB sticks, a drive still being read), folders behind junctions, and searches with *Skip what .gitignore lists* on (only fd reads .gitignore). From This PC, indexed drives and the rest are searched together (*index + fd*). dust sizes and maps folders the index doesn't have.

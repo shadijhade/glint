@@ -24,7 +24,7 @@ pub use read::Format;
 use read::{ItemIndex, Source};
 use serde::Serialize;
 use shadui_index::proto::{UsageNode, NO_PARENT};
-use shadui_index::query::{fold, is_hidden, Excludes, NameMatcher};
+use shadui_index::query::{fold, is_hidden, parse, Excludes, NameMatcher};
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -572,7 +572,10 @@ pub fn search(root: &str, query: &str, hidden: bool, exclude: &[String], max: Op
         found
             .and_then(|spot| {
                 let (archive, start) = if spot.node().dir { (spot.archive.clone(), spot.node) } else { (guarded(|| enter(&spot.archive, spot.node))?.0, ROOT) };
-                let matcher = NameMatcher::new(query).ok_or(Failure::NotFound)?;
+                // find_files has checked the query: it reads, and asks for something.
+                let (names, filters) = parse(query).map_err(Failure::Unsupported)?;
+                let matcher = NameMatcher::from_terms(names);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
                 let excludes = Excludes::new(exclude);
                 let max = max.filter(|&m| m > 0).unwrap_or(usize::MAX);
                 let base = root.trim_end_matches(['\\', '/']);
@@ -590,7 +593,7 @@ pub fn search(root: &str, query: &str, hidden: bool, exclude: &[String], max: Op
                             continue;
                         }
                         let full = format!("{path}\\{}", c.name);
-                        if matcher.matches(c.name.as_bytes(), folded) {
+                        if matcher.matches(c.name.as_bytes(), folded) && filters.accepts(c.name.as_bytes(), folded, c.dir, c.size, (now - c.modified) / 1000) {
                             if found == max {
                                 return Ok((archive.format.label(), true));
                             }
