@@ -222,6 +222,18 @@ pub fn data_dir() -> io::Result<PathBuf> {
     Ok(PathBuf::from(profile).join("AppData").join("Local").join("ShadUI Ripgrep").join("Index"))
 }
 
+/// From the registry: GetVersionEx answers for compatibility, and ProductName still says
+/// "Windows 10" on Windows 11.
+pub fn windows_version() -> String {
+    let Ok(key) = Key::create(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", false) else { return "Windows".into() };
+    let get = |name: &str| key.string(name).unwrap_or_default();
+    let build = get("CurrentBuild");
+    let release = if build.parse::<u32>().is_ok_and(|b| b >= 22000) { "11" } else { "10" };
+    let product = get("ProductName");
+    let edition = product.trim_start_matches("Windows 10 ").trim_start_matches("Windows 11 ");
+    format!("Windows {release} {edition} {} (build {build})", get("DisplayVersion"))
+}
+
 /// Expands %VARIABLES% the way Windows does.
 fn expand(text: &str) -> String {
     use windows::Win32::System::Environment::ExpandEnvironmentStringsW;

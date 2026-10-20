@@ -101,6 +101,61 @@ fn replace_contents(path: &std::path::Path, content: &[u8]) -> std::io::Result<(
     written
 }
 
+/// What a bug report needs (Settings → About → Copy diagnostics): versions, where the tools come
+/// from, and instant search's state. No file names, beyond what an error may quote.
+#[tauri::command]
+async fn diagnostics(app: tauri::AppHandle) -> Result<String, String> {
+    use std::fmt::Write;
+    let version = app.package_info().version.to_string();
+    blocking(move || {
+        let kind = if cfg!(debug_assertions) { "dev build" } else if installed_by_setup() { "installed by the setup" } else { "Scoop or portable" };
+        let mut out = format!("Glint {version} ({kind})\n");
+        #[cfg(windows)]
+        let _ = writeln!(out, "{} · WebView2 {}", shadui_index::windows_version(), tauri::webview_version().unwrap_or_default());
+        for name in ["rg", "fd", "dust"] {
+            let said = proc::tool(name).ok().and_then(|mut c| c.arg("--version").stdin(Stdio::null()).output().ok());
+            let said = said.map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or_default().to_string()).unwrap_or_default();
+            let from = match proc::locate(name) {
+                None => "missing".to_string(),
+                Some((_, true)) => "bundled".to_string(),
+                Some((path, false)) => path.display().to_string(),
+            };
+            let _ = writeln!(out, "{name}: {said} ({from})");
+        }
+        let index = index::info();
+        let _ = write!(out, "Instant search: {}", index.state);
+        if let Some(service) = &index.version {
+            let _ = write!(out, " (service {service})");
+        }
+        if let Some(error) = &index.error {
+            let _ = write!(out, ": {error}");
+        }
+        out.push('\n');
+        for v in &index.volumes {
+            let _ = write!(out, "  {} {}", v.volume, v.state);
+            match v.state.as_str() {
+                "ready" => {
+                    let _ = write!(out, ", {} items from the {} in {:.0} ms, {} MB", v.files + v.folders, v.source, v.build_ms, v.memory >> 20);
+                }
+                "scanning" => {
+                    let _ = write!(out, " {} of {} records", v.progress, v.progress_total);
+                }
+                _ => {}
+            }
+            if let Some(error) = &v.error {
+                let _ = write!(out, ": {error}");
+            }
+            out.push('\n');
+        }
+        #[cfg(windows)]
+        if let Some(log) = shadui_index::log_path() {
+            let _ = writeln!(out, "Service log (administrators can open it): {}", log.display());
+        }
+        Ok(out)
+    })
+    .await
+}
+
 #[derive(Clone, serde::Serialize)]
 struct SearchEvent {
     id: String,
@@ -346,6 +401,7 @@ pub fn run() {
             run_ripgrep_batched,
             proc::ripgrep_status,
             proc::install_ripgrep,
+            diagnostics,
             cancel_search,
             stop_tools,
             fsx::list_dir,

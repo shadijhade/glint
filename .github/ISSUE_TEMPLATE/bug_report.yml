@@ -41,6 +41,12 @@ body:
         - "Off"
         - "On"
   - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Settings → About → Diagnostics → Copy puts the versions, the tools and instant search's state on the clipboard; paste them here.
+      render: text
+  - type: textarea
     id: details
     attributes:
       label: Screenshots, logs or anything else
