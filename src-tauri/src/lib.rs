@@ -344,6 +344,8 @@ pub fn run() {
             read_file_chunk,
             write_file_content,
             run_ripgrep_batched,
+            proc::ripgrep_status,
+            proc::install_ripgrep,
             cancel_search,
             stop_tools,
             fsx::list_dir,
