@@ -36,6 +36,8 @@ export const resolvePath = (path: string) => invoke<{ path: string; dir: boolean
 /** Where Text search's ripgrep comes from: next to the app, installed on the PC, or nowhere. */
 export const ripgrepStatus = () => invoke<"bundled" | "installed" | "missing">("ripgrep_status");
 export const installRipgrep = () => invoke<void>("install_ripgrep");
+/** Versions, tools and instant search's state, as text for a bug report. */
+export const diagnostics = () => invoke<string>("diagnostics");
 
 export const readTextPreview = (path: string, maxBytes: number) =>
     invoke<{ text: string; truncated: boolean; binary: boolean }>("read_text_preview", { path, maxBytes });

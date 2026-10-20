@@ -20,7 +20,7 @@ pub struct IndexInfo {
 }
 
 #[cfg(windows)]
-fn info() -> IndexInfo {
+pub(crate) fn info() -> IndexInfo {
     use shadui_index::client::{self, Error};
     let mut info = IndexInfo { app_version: shadui_index::VERSION, ..Default::default() };
     match client::status() {
@@ -45,7 +45,7 @@ fn info() -> IndexInfo {
 }
 
 #[cfg(not(windows))]
-fn info() -> IndexInfo {
+pub(crate) fn info() -> IndexInfo {
     IndexInfo { state: "unsupported", app_version: shadui_index::VERSION, ..Default::default() }
 }
 

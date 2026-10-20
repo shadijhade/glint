@@ -3,11 +3,11 @@ import { getVersion } from "@tauri-apps/api/app";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Archive, Binary, ExternalLink, Folder, Heart, Image, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
+import { Archive, Binary, ClipboardCopy, ExternalLink, Folder, Heart, Image, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
-import { type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration } from "@/lib/fs";
+import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
@@ -132,6 +132,14 @@ function PatternEditor({ value, onChange, placeholder }: { value: string[]; onCh
         </>
     );
 }
+
+const copyDiagnostics = () =>
+    diagnostics()
+        .then((text) => navigator.clipboard.writeText(text))
+        .then(
+            () => toast.success("Diagnostics copied", { description: "Paste them into your bug report." }),
+            (e) => toast.error("Couldn't copy diagnostics", { description: String(e) })
+        );
 
 function describeVolume(v: IndexVolume) {
     if (v.state === "scanning") return `${v.volume} reading${v.progressTotal ? ` ${Math.floor((100 * v.progress) / v.progressTotal)}%` : ""}…`;
@@ -431,7 +439,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         <div className="min-w-0 flex-1">
                             <div className="font-semibold">Glint</div>
                             <div className="text-xs text-muted-foreground">
-                                {version && `Version ${version} · `}Made with <Heart className="inline size-3 fill-pink-500 text-pink-500" /> by Shadi Sadi
+                                {version && `Version ${version} · `}Made with <Heart className="inline size-3 fill-pink-500 text-pink-500" /> by Shadi Saadi
                             </div>
                             <div className="text-xs text-muted-foreground">Powered by ripgrep, fd, dust and an NTFS index</div>
                         </div>
@@ -440,6 +448,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         </Button>
                     </div>
                     <UpdateRow />
+                    <Row label="Diagnostics" hint="Versions, tools and instant search's state, to paste into a bug report">
+                        <Button variant="outline" size="sm" onClick={copyDiagnostics}>
+                            <ClipboardCopy /> Copy
+                        </Button>
+                    </Row>
                     <Row label="Reset settings" hint="Restore every option above to its default">
                         <Button variant="outline" size="sm" onClick={reset}>
                             <RotateCcw /> Reset
