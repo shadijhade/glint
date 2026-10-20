@@ -61,10 +61,10 @@ Installers:
   InstallerSha256: ${sha256}
 ${footer("installer")}`,
     [`${ID}.locale.en-US.yaml`]: `${header("defaultLocale")}PackageLocale: en-US
-Publisher: Shadi Sadi
+Publisher: Shadi Saadi
 PublisherUrl: https://github.com/shadijhade
 PublisherSupportUrl: ${REPO}/issues
-Author: Shadi Sadi
+Author: Shadi Saadi
 PackageName: Glint
 PackageUrl: ${REPO}
 License: MIT

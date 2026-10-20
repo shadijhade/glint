@@ -51,7 +51,8 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     const mapped = useUsage((s) => !!s[tab]) && !find;
     const { sizes, drives, index } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length, index: s.index })));
     const scanning = index?.state === "on" ? index.volumes.find((v) => v.state === "scanning") : undefined;
-    const indexBadge =
+    // Offered on This PC only; a drive being read shows in every folder.
+    const turnOn =
         index && (index.state === "off" || index.state === "stopped") ? (
             <button
                 type="button"
@@ -61,12 +62,13 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
             >
                 <Zap className="size-3" /> Turn on instant search
             </button>
-        ) : scanning ? (
-            <span className="inline-flex shrink-0 items-center gap-1">
-                <Loader2 className="size-3 animate-spin text-primary" /> Indexing {scanning.volume}
-                {scanning.progressTotal ? ` ${Math.floor((100 * scanning.progress) / scanning.progressTotal)}%` : ""}…
-            </span>
         ) : null;
+    const indexing = scanning ? (
+        <span className="inline-flex shrink-0 items-center gap-1">
+            <Loader2 className="size-3 animate-spin text-primary" /> Indexing {scanning.volume}
+            {scanning.progressTotal ? ` ${Math.floor((100 * scanning.progress) / scanning.progressTotal)}%` : ""}…
+        </span>
+    ) : null;
     // The thumbnails of what this tab shows now, in the view it's in, once any came.
     const thumbs = useThumbRuns((s) => s[tab]);
     const thumbsHere = !mapped && thumbs?.scope === `${viewKey({ path, find })}:${view}` && thumbs.found > 0 ? thumbs : null;
@@ -74,7 +76,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
         return (
             <div className="flex h-7 shrink-0 items-center gap-2 border-t px-3 text-xs text-muted-foreground">
                 <span>{`${drives} ${drives === 1 ? "drive" : "drives"}`}</span>
-                <span className="ml-auto">{indexBadge}</span>
+                <span className="ml-auto">{turnOn ?? indexing}</span>
             </div>
         );
     }
@@ -156,7 +158,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                 </button>
             )}
             <span className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap tabular-nums">
-                {indexBadge && <span className="hidden @md:inline-flex">{indexBadge}</span>}
+                {indexing && <span className="hidden @md:inline-flex">{indexing}</span>}
                 {work}
                 {thumbsHere && <ThumbWork run={thumbsHere} />}
             </span>
