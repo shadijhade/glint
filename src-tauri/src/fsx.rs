@@ -618,34 +618,36 @@ pub fn decode_text(bytes: &[u8], truncated: bool) -> TextPreview {
 /// Creates a folder or an empty file in `parent`, numbering the name like Explorer ("New folder (2)") if it's taken.
 #[tauri::command]
 pub async fn create_entry(parent: String, name: String, dir: bool) -> Result<String, String> {
-    blocking(move || {
-        if name.is_empty() || name.contains(['\\', '/', ':']) || name == "." || name == ".." {
-            return Err("That name isn't allowed".into());
-        }
-        if crate::archive::is_read_only(&parent) {
-            return Err(READ_ONLY.into());
-        }
-        let (stem, ext) = match name.rfind('.') {
-            Some(dot) if !dir && dot > 0 => name.split_at(dot),
-            _ => (name.as_str(), ""),
+    blocking(move || create_numbered(&parent, &name, dir)).await
+}
+
+/// What [`create_entry`] does, for Compress (a zip) and Extract here (a folder) too.
+pub fn create_numbered(parent: &str, name: &str, dir: bool) -> Result<String, String> {
+    if name.is_empty() || name.contains(['\\', '/', ':']) || name == "." || name == ".." {
+        return Err("That name isn't allowed".into());
+    }
+    if crate::archive::is_read_only(parent) {
+        return Err(READ_ONLY.into());
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if !dir && dot > 0 => name.split_at(dot),
+        _ => (name, ""),
+    };
+    for n in 1..10_000 {
+        let candidate = if n == 1 { name.to_string() } else { format!("{stem} ({n}){ext}") };
+        let path = Path::new(parent).join(candidate);
+        let created = if dir {
+            std::fs::create_dir(&path)
+        } else {
+            std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map(|_| ())
         };
-        for n in 1..10_000 {
-            let candidate = if n == 1 { name.clone() } else { format!("{stem} ({n}){ext}") };
-            let path = Path::new(&parent).join(candidate);
-            let created = if dir {
-                std::fs::create_dir(&path)
-            } else {
-                std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map(|_| ())
-            };
-            match created {
-                Ok(()) => return Ok(path.to_string_lossy().into_owned()),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e.to_string()),
-            }
+        match created {
+            Ok(()) => return Ok(path.to_string_lossy().into_owned()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
         }
-        Err("Couldn't find a free name".into())
-    })
-    .await
+    }
+    Err("Couldn't find a free name".into())
 }
 
 #[cfg(test)]

@@ -430,6 +430,8 @@ pub fn run() {
             shell::start_drag,
             archive::archive_extract,
             archive::archive_stage,
+            archive::archive_compress,
+            archive::archive_extract_here,
             archive::cancel_archive_stage,
             archive::archive_unstage,
             locks::who_locks,

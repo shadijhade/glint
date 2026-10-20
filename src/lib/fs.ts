@@ -184,11 +184,24 @@ export interface Staged {
  * deletes those once they're off the clipboard). Each tab extracts in its own `lane`; rejects with
  * "cancelled" when stopped.
  */
-export async function archiveStage(paths: string[], purpose: "copy" | "out", lane: string, onProgress: (done: number, total: number) => void) {
+export type Progress = (done: number, total: number) => void;
+
+function progressChannel(onProgress: Progress) {
     const channel = new Channel<{ done: number; total: number }>();
     channel.onmessage = ({ done, total }) => onProgress(done, total);
-    return invoke<Staged>("archive_stage", { paths, purpose, lane, onProgress: channel });
+    return channel;
 }
+
+export const archiveStage = (paths: string[], purpose: "copy" | "out", lane: string, onProgress: Progress) =>
+    invoke<Staged>("archive_stage", { paths, purpose, lane, onProgress: progressChannel(onProgress) });
+
+/** Compress to zip: the zip, numbered if `name` is taken in `folder`, is `paths[0]` of what comes back. */
+export const archiveCompress = (paths: string[], folder: string, name: string, lane: string, onProgress: Progress) =>
+    invoke<Staged>("archive_compress", { paths, folder, name, lane, onProgress: progressChannel(onProgress) });
+
+/** Extract here: into a new folder next to the archive, named after it; it's `folder` of what comes back. */
+export const archiveExtractHere = (path: string, lane: string, onProgress: Progress) =>
+    invoke<Staged>("archive_extract_here", { path, lane, onProgress: progressChannel(onProgress) });
 
 export const cancelArchiveStage = (lane: string) => invoke("cancel_archive_stage", { lane });
 export const archiveUnstage = (folder: string) => invoke("archive_unstage", { folder });

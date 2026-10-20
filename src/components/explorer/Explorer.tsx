@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import {
     AlertTriangle,
     AppWindow,
+    ArchiveRestore,
     ArrowLeft,
     ArrowRight,
     ArrowRightLeft,
@@ -76,9 +77,11 @@ import {
     canReopenTab,
     clearFind,
     closeOtherTabs,
+    compressEntries,
     closeTab,
     copyToClipboard,
     copyToOtherPane,
+    extractHere,
     currentPath,
     cycleTab,
     deletePaths,
@@ -937,6 +940,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             dual && { label: "Move to other pane", icon: FolderOutput, disabled: !other || !!archived, onSelect: () => copyToOtherPane(true, paths) },
             one?.dir && { label: "Paste into folder", icon: ClipboardPaste, disabled: !!archived, onSelect: () => paste(one.path) },
             { label: paths.length === 1 ? "Copy path" : "Copy paths", icon: ClipboardCopy, shortcut: "Ctrl+Shift+C", onSelect: () => copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths") },
+            !archived && { label: "Compress to zip file", icon: FileArchive, onSelect: () => compressEntries(targets) },
+            one && isArchiveFile(one) && !archived && { label: "Extract here", icon: ArchiveRestore, onSelect: () => extractHere(one) },
             "separator",
             one
                 ? { label: "Rename", icon: PenLine, shortcut: "F2", disabled: !!archived, onSelect: () => startRename(one.path) }

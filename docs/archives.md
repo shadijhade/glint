@@ -2,7 +2,7 @@
 
 Glint opens zip and 7z archives like folders. Press `Enter` on one (or double-click it, or middle-click to open it in a new tab), and its folders show in the list or the grid like any others, in either pane and in any tab. Go into its folders, go back up out of it, and use Back, Forward and the address bar as anywhere else: the path goes on into the archive, as in `C:\Downloads\photos.zip\2024\summer`, and the archive shows in the address bar with an archive icon. Type or paste such a path and it opens; tabs in archives come back when Glint starts. An archive inside an archive opens the same way (`backup.zip\old\photos.7z\2019`).
 
-Archives are **read-only**. New folder, Cut, Paste, Rename, Delete, Move to other pane and Open in Terminal are greyed out, a *Read-only archive* badge takes Open in Terminal's place in the command bar, and their keys only say why. Nothing can be dropped into an archive. To change what's in one, copy it out first.
+Archives are **read-only** inside. New folder, Cut, Paste, Rename, Delete, Move to other pane and Open in Terminal are greyed out, a *Read-only archive* badge takes Open in Terminal's place in the command bar, and their keys only say why. Nothing can be dropped into an archive. To change what's in one, copy it out first.
 
 ## What works in an archive
 
@@ -14,6 +14,8 @@ Archives are **read-only**. New folder, Cut, Paste, Rename, Delete, Move to othe
 -   **Name search** (`Enter` in the search box) searches the archive's folders from its list of entries, with the same rules as everywhere else; the status bar says *zip · 13 found in 10 ms*.
 -   **Folder sizes and the disk usage map** come from the archive's own list of entries, at once.
 -   **Live.** An archive that changes on disk while it's open (a download finishing, a backup tool rewriting it) is read again.
+-   **Extract here** (right-click a zip or 7z on disk) extracts all of it, with every check below, straight into a new folder next to it named after it (`photos` for `photos.zip`, `photos (2)` if that's taken). It shows its progress and can be stopped; stopped or failed, the folder goes. Files that can't be extracted are left out and named.
+-   **Compress to zip file** (right-click files and folders on disk) writes a zip next to them, named after the first one: Deflate, the files' dates, zip64 only for an entry that needs it, junctions and symlinked folders not followed. Progress and stopping work the same; a file that can't be read is left out and named. `Ctrl+Z` takes back either.
 
 ## How it's read
 
@@ -56,9 +58,10 @@ The status bar shows it for every folder in an archive: *zip · 54,001 items rea
 
 ## In the code
 
--   `src-tauri/src/archive/mod.rs`: where a path goes into an archive (`locate`), the archives read (`opened`, by path, size and date), the commands (`archive_extract`, `archive_stage`, `cancel_archive_stage`, `archive_unstage`), and what `list_dir`, `resolve_path`, `read_text_preview`, `folder_sizes`, `disk_usage`, `find_files` and `thumbnail` ask of an archive.
+-   `src-tauri/src/archive/mod.rs`: where a path goes into an archive (`locate`), the archives read (`opened`, by path, size and date), the commands (`archive_extract`, `archive_stage`, `archive_extract_here`, `archive_compress`, `cancel_archive_stage`, `archive_unstage`), and what `list_dir`, `resolve_path`, `read_text_preview`, `folder_sizes`, `disk_usage`, `find_files` and `thumbnail` ask of an archive.
 -   `read.rs`: zip and 7z behind one interface (`Source`), the 7z header check, names and dates.
 -   `tree.rs`: safe names, the folder tree, totals and natural order.
 -   `extract.rs`: temp folders and their cleanup, and writing an entry within its declared size.
+-   `compress.rs`: writing a zip (Compress to zip file).
 -   `tests.rs` and `fixtures/` (made with 7-Zip 26.04: encrypted zips and 7z files, a solid 7z and a zip with non-ASCII names, a zip with names in the OEM code page): listings, nesting, previews, staging, zip slip, bombs, encrypted, damaged and real-world archives. `cargo test --release -- --ignored --nocapture lists_50000` times a 50,000-entry zip.
 -   The UI reads a listing's archive (`Listing.archive` in `src/lib/entries.ts`: where it is in the path, its format, its entry count, how long reading it took) and the `ATTR.inArchive`, `ATTR.encrypted` and `ATTR.unreadable` bits of its entries. `src/lib/explorer.ts` has the read-only guards, copying out (`extracting`, `copyOutOfArchive`, `dragFromArchive`) and opening (`openFromArchive`).

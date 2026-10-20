@@ -139,6 +139,8 @@ Glint reads only the archive's own list of entries (the zip central directory, t
 
 Archives are read-only: what would change one is greyed out, with a *Read-only archive* badge in the command bar. **Copy**, **Copy to other pane** and dragging out extract the selection, folders and all, then let Windows' own file engine copy it, so progress and *Replace or Skip* are Windows' own. Paths can't escape the folder they're extracted to (no zip slip), entries are cut off at their declared size, zip bombs (huge expansion ratios, overlapping entries, oversized 7z headers) are refused, password-protected entries say so, and a damaged archive is an error, never a crash. Methods, limits and the temp folders: [docs/archives.md](docs/archives.md).
 
+Right-click **Extract here** on a zip or 7z unpacks all of it, with the same checks, into a new folder next to it named after it, as Explorer's *Extract All* does. **Compress to zip file** packs the selection into a zip next to it (Deflate, with the files' dates), named after the first item and ready to rename. Both show progress, can be stopped, leave nothing behind when they fail, and `Ctrl+Z` takes them back.
+
 ### Tools
 
 In the command bar, a folder's or a file's right-click menu, and `Ctrl+K`:
@@ -335,7 +337,8 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] Auto-update, with signed update packages
 -   [x] A Scoop package
 -   [ ] Code-signed installers (SignPath, through the release workflow) and the winget package ([microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306))
--   [x] Zip and 7z archives opened like folders (read-only for now)
+-   [x] Zip and 7z archives opened like folders, Extract here, and Compress to zip
+-   [x] Undo (`Ctrl+Z`) for copies, moves, renames, deletes and new items
 
 Missing something? [Open an issue](https://github.com/shadijhade/glint/issues/new/choose). If the app saves you time, a star helps other people find it.
 
