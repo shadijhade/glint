@@ -76,6 +76,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Tools.** Find duplicates, see what's locking a file, the recent changes in a folder, a file's checksums and hidden streams, and batch rename: see [Tools](#tools) below.
 -   **Preview pane and Quick Look.** Syntax-highlighted code and text, images, video, audio, PDFs and folder summaries, in the side pane (`Alt+P`) or full size on `Space`. CSV, TSV and JSON-lines files show as tables with their column types, SQLite databases as their tables, indexes and views, and programs and DLLs with their architecture, security features, sections, imports and exports. Online-only OneDrive files are left alone, so nothing downloads by accident.
 -   **Command palette.** `Ctrl+K` finds any command, or a folder you've been to by typing a few of its letters (`dl` finds Downloads), with the folders you open most often and most recently first. Type a path, `~` or `%APPDATA%` to go there.
+-   **An address bar that gets you there.** The arrow after each part of the path lists that folder's subfolders and archives, with a filter box and arrow keys; the first one lists drives and places. Typing a path (`Ctrl+L`) suggests what's in the folder you're typing in, folders first: `Tab` completes, `Enter` opens.
 -   **The usual explorer moves.** Back, forward and up, a breadcrumb address bar you can type into, Quick access, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folders and text documents, and hidden items on demand.
 -   **Windows-native file operations.** Copy, cut, paste, delete and rename go through Windows' own file engine, so progress, *Replace or Skip*, the Recycle Bin and permission prompts behave exactly like Explorer. The clipboard is shared with Explorer: copy here, paste there, and the other way round. `Ctrl+Z` takes back the last copy, move, rename, Recycle Bin delete, new folder or batch rename, with the names Windows actually gave (*Keep both*, *- Copy*), and steps further back on each press.
 -   **Drag and drop.** Drag files out to File Explorer, the desktop, a mail or a chat, or drop them in from anywhere onto a folder, a sidebar place or the open folder. As in Explorer, dropping on the same drive moves and on another drive copies.
@@ -88,6 +89,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 -   **Tabs.** `Ctrl+T` opens a tab on the folder you're in. A middle-click (or `Ctrl+Enter`) opens a folder in a new tab behind the current one, as in a browser. `Ctrl+Tab` and `Ctrl+1`…`Ctrl+9` switch, `Ctrl+W` closes, and `Ctrl+Shift+T` brings the last one back. Each tab keeps its own history, selection, search and scroll position, and your tabs come back when the app starts (Settings → Reopen my tabs). A folder opened from File Explorer or a terminal (`Glint.exe C:\Projects`) gets a new tab in the window that's open: Glint runs once.
 -   **Dual pane.** `Ctrl+Shift+D` (or the toolbar button) shows two folders side by side, each pane with its own tabs. Click a pane or press `F6` to work in it. Drag files across, or use **Copy to other pane** and **Move to other pane**, which run on Windows' own file engine like every other file operation.
+-   **Compare the panes.** `Ctrl+Shift+M` (or the toolbar button) opens the second pane if it's closed and marks each item that's only in one pane, newer, older, or the same date with a different size; the matches are dimmed. **Diffs only** hides them, **Select** picks every difference, and **Sync** copies what's only here or newer into the other pane through Windows' file engine (`Ctrl+Z` takes it back). Dates within 2 seconds count as equal, and folders compare by size once both are measured.
 -   **Both at full speed.** Each tab searches and sizes folders on its own, so a long search in one pane doesn't stop the other's, and both panes refresh when their folders change.
 
 ### Grid view
@@ -177,7 +179,8 @@ The service only runs once you opt in, with every privilege removed except the t
 <img src="screenshots/text-search.png" alt="ripgrep results with a syntax-highlighted preview" width="100%">
 
 -   **ripgrep speed.** Results stream in as rg finds them.
--   **Search and replace** across many files at once.
+-   **Search and replace** across many files at once, matching line by line as ripgrep searched (`^` and `$` mean a line's start and end, CRLF files included), each file written safely: a write cut short leaves it as it was.
+-   **Results that fold.** Click a file to fold its matches away, or collapse them all at once; a bar on each file shows which have the most matches.
 -   **Regex, case, whole word, exclusions.** Full regular expressions (multi-line with `Shift+Enter`), case sensitivity, whole words, and patterns to skip (`node_modules`, `.git`…).
 -   **Preview, history and export.** A syntax-highlighted preview of every result, recent searches one click away, and results exported to CSV or JSON.
 -   **Connected to Files.** **Search text** (`Ctrl+Shift+F`) searches the folder you're in; **Show in folder** on a result opens it in Files with the file selected.
@@ -231,6 +234,7 @@ Windows 10 or 11, 64-bit. Free code signing is provided by [SignPath.io](https:/
 | `Ctrl+Shift+T` | Reopen the last closed tab |
 | Middle-click a folder / `Ctrl+Enter` | Open it in a new tab |
 | `Ctrl+Shift+D` | Dual pane on or off |
+| `Ctrl+Shift+M` | Compare the two panes |
 | `F6` | Switch to the other pane |
 | `Alt+Left` / `Backspace` · `Alt+Right` · `Alt+Up` | Back · Forward · Up |
 | `Ctrl+L` / `Alt+D` / `F4` | Type a path in the address bar |
