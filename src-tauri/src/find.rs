@@ -9,7 +9,7 @@ use crate::AppState;
 use serde::{Deserialize, Serialize};
 use shadui_index::query::terms;
 use std::io::{BufRead, BufReader, Read};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -17,7 +17,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
 use tauri::{State, Window};
-use tauri_plugin_shell::ShellExt;
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -222,7 +221,7 @@ fn search_index(_: &[String], _: &str, _: &FindOptions, _: &AtomicBool, _: &mut 
 /// Searches `roots` with fd, streaming what it finds. Returns whether it hit `options.max_results`.
 fn search_fd(window: &Window, slot: &Slot, roots: &[String], query: &str, options: &FindOptions, out: &mut Out) -> Result<bool, String> {
     let args = fd_args(query, roots, options)?;
-    let mut command: Command = window.shell().sidecar("fd").map_err(|e| e.to_string())?.into();
+    let mut command = crate::proc::tool(window, "fd")?;
     command
         .args(&args)
         // fd prints "/" separators when it thinks it runs under MSYS (e.g. a dev build started from Git Bash).
@@ -252,9 +251,15 @@ fn search_fd(window: &Window, slot: &Slot, roots: &[String], query: &str, option
     }
     let found = out.count - before;
     let errors = stderr_reader.join().unwrap_or_default();
-    // A stopped search ends quietly; only a run that finished by itself reports fd's complaints.
-    if slot.finish(pid) && found == 0 && !errors.trim().is_empty() {
-        return Err(errors.trim().to_string());
+    // Ignore per-folder traversal warnings (`[fd error]: ... Access is denied`) when walking roots like C:\.
+    let fatal: Vec<&str> = errors
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("[fd error]:"))
+        .collect();
+    // A stopped search ends quietly; only a run that finished by itself reports fd's fatal complaints.
+    if slot.finish(pid) && found == 0 && !fatal.is_empty() {
+        return Err(fatal.join("\n"));
     }
     Ok(options.max_results.is_some_and(|max| max > 0 && found >= max))
 }

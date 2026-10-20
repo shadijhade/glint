@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { CaseSensitive, FolderOpen, Regex, Replace, Search as SearchIcon, Square, WholeWord } from "lucide-react";
+import { defaultTextSearchFolder } from "@/lib/explorer";
 import { SearchOptions, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
@@ -37,14 +38,17 @@ interface SearchBarProps {
 }
 
 export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }: SearchBarProps) {
-    const { query, setQuery, path, setPath, options, setOption, history, settings } = useStore();
+    const { query, setQuery, path, setPath, options, setOption, history } = useStore();
     const [replaceOpen, setReplaceOpen] = useState(false);
     const [replacement, setReplacement] = useState("");
     const queryRef = useRef<HTMLTextAreaElement>(null);
     const recentPaths = useMemo(() => [...new Set(history.map((h) => h.path))].slice(0, 20), [history]);
 
     useEffect(() => {
-        if (!path && settings.defaultSearchPath) setPath(settings.defaultSearchPath);
+        if (!path.trim()) {
+            const fallback = defaultTextSearchFolder();
+            if (fallback) setPath(fallback);
+        }
         // Ctrl+F / Ctrl+K focus the query, Ctrl+H toggles replace — from anywhere.
         const onKey = (e: KeyboardEvent) => {
             if (!(e.ctrlKey || e.metaKey)) return;
@@ -152,7 +156,7 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                     <Square className="fill-current size-3!" /> Stop
                 </Button>
             ) : (
-                <Button onClick={onSearch} disabled={!query || !path} title="Search (Enter)">
+                <Button onClick={onSearch} disabled={!query} title="Search (Enter)">
                     <SearchIcon /> Search
                 </Button>
             )}

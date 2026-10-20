@@ -22,11 +22,10 @@ use fsx::blocking;
 use proc::{Lanes, Slot};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, State, Window};
-use tauri_plugin_shell::ShellExt;
 
 /// The work in flight: the ripgrep text search, and each tab's file search (fd and the index) and
 /// dust measuring folder sizes or a disk-usage map.
@@ -93,13 +92,20 @@ fn stop_tools(state: State<AppState>) {
 #[tauri::command]
 fn run_ripgrep_batched(
     window: Window,
-    args: Vec<String>,
+    mut args: Vec<String>,
     search_id: String,
     max_results: Option<usize>,
     state: State<AppState>,
 ) -> Result<(), String> {
-    // The bundled sidecar, so users don't need ripgrep on PATH (it also sets CREATE_NO_WINDOW).
-    let mut command: Command = window.shell().sidecar("rg").map_err(|e| e.to_string())?.into();
+    if let Some(last) = args.last_mut() {
+        let normalized = fsx::normalize(last)?;
+        if std::fs::metadata(&normalized).is_err() {
+            return Err(format!("Can't find “{normalized}”. Check the folder path and try again."));
+        }
+        *last = normalized;
+    }
+    // Prefer the bundled sidecar, falling back to ripgrep on PATH or standard install locations.
+    let mut command = proc::tool(&window, "rg")?;
     command
         .args(&args)
         .stdin(Stdio::null())

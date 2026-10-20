@@ -6,10 +6,9 @@ use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Instant;
 use tauri::{State, Window};
-use tauri_plugin_shell::ShellExt;
 
 #[derive(Serialize)]
 pub struct FolderSizes {
@@ -92,7 +91,7 @@ pub async fn folder_sizes(window: Window, state: State<'_, AppState>, path: Stri
     if index_only == Some(true) {
         return Err("not indexed".into());
     }
-    let mut command: Command = window.shell().sidecar("dust").map_err(|e| e.to_string())?.into();
+    let mut command = crate::proc::tool(&window, "dust")?;
     // One level deep, folders only, apparent sizes (what Explorer's Properties calls "Size") in exact bytes.
     command
         .args(["-j", "-d", "1", "-D", "-s", "-o", "b", "-P", "-n", "1000000", "--"])

@@ -8,7 +8,7 @@ import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, 
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
-import { archiveOf, currentPath, openRequested, revealInApp } from "./lib/explorer";
+import { archiveOf, currentPath, defaultTextSearchFolder, openRequested, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
 import { toRegExp } from "./lib/text";
 import { checkForUpdates, useUpdater } from "./lib/updater";
@@ -99,8 +99,28 @@ function App() {
       return;
     }
     const target = folder ?? currentPath();
-    if (target && target !== THIS_PC) useStore.getState().setPath(target);
+    const state = useStore.getState();
+    if (target && target !== THIS_PC) {
+      state.setPath(target);
+    } else if (!state.path.trim()) {
+      const fallback = defaultTextSearchFolder();
+      if (fallback) state.setPath(fallback);
+    }
     setMode("text");
+  };
+
+  const switchMode = (next: Mode) => {
+    if (next === "text") {
+      const cur = currentPath();
+      const state = useStore.getState();
+      if (cur && cur !== THIS_PC && !archiveOf()) {
+        state.setPath(cur);
+      } else if (!state.path.trim()) {
+        const fallback = defaultTextSearchFolder();
+        if (fallback) state.setPath(fallback);
+      }
+    }
+    setMode(next);
   };
 
   useEffect(() => {
@@ -217,8 +237,18 @@ function App() {
   };
 
   const searchCurrent = () => {
-    const { query, path } = useStore.getState();
-    search(query, path);
+    const { query, path, setPath } = useStore.getState();
+    if (!query) return;
+    let target = path.trim();
+    if (!target) {
+      target = defaultTextSearchFolder();
+      if (target) setPath(target);
+    }
+    if (!target) {
+      toast.message("Choose a folder to search in");
+      return;
+    }
+    search(query, target);
   };
 
   const pickHistory = (item: HistoryItem) => {
@@ -287,7 +317,7 @@ function App() {
       {/* The window's title bar (it has no system one): drag it by any empty spot, double-click to maximize. */}
       <header data-tauri-drag-region="deep" className="flex h-11 shrink-0 items-center gap-2 border-b bg-chrome pl-3">
         <img src={logo} alt="" draggable={false} className="size-[18px] shrink-0" />
-        <ModeSwitch mode={mode} onChange={setMode} />
+        <ModeSwitch mode={mode} onChange={switchMode} />
         {mode === "files" ? <AddressBar /> : <div className="min-w-0 flex-1" />}
         <div className="flex shrink-0 items-center gap-0.5">
           {update && (
