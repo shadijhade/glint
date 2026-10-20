@@ -15,6 +15,7 @@
 //! fit on the drive don't start; encrypted entries and unknown methods get a clear message; and a
 //! damaged archive is an error, never a crash (every read runs under `catch_unwind`).
 
+mod compress;
 mod extract;
 mod read;
 mod tree;
@@ -753,18 +754,75 @@ struct Job {
 /// and reported; fails when nothing could be.
 #[tauri::command]
 pub async fn archive_stage(paths: Vec<String>, purpose: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
+    in_lane(lane, move |cancel| stage(&paths, &purpose, cancel, &on_progress).map_err(|e| e.message())).await
+}
+
+/// Runs `work` with a Cancel of its own for the tab `lane` (`cancel_archive_stage`); a newer run in
+/// the tab cancels it.
+async fn in_lane<T: Send + 'static>(lane: String, work: impl FnOnce(&AtomicBool) -> Result<T, String> + Send + 'static) -> Result<T, String> {
     let cancel = Arc::new(AtomicBool::new(false));
     if let Some(previous) = state().stages.insert(lane.clone(), cancel.clone()) {
         previous.store(true, Ordering::SeqCst);
     }
     let ours = cancel.clone();
-    let result = fsx::blocking(move || stage(&paths, &purpose, &cancel, &on_progress).map_err(|e| e.message())).await;
-    // Unless a newer copy in the tab took its place (its Cancel must keep working).
+    let result = fsx::blocking(move || work(&cancel)).await;
+    // Unless a newer run in the tab took its place (its Cancel must keep working).
     let mut guard = state();
     if guard.stages.get(&lane).is_some_and(|current| Arc::ptr_eq(current, &ours)) {
         guard.stages.remove(&lane);
     }
     result
+}
+
+/// Compress to zip: `paths` (files and folders on disk) into a new zip in `folder` named `name`,
+/// numbered like Explorer's if it's taken ("photos (2).zip"), with progress. Cancel (the tab `lane`)
+/// or a failure leaves nothing behind; files that can't be read are left out and reported. The
+/// zip is `paths[0]` of what comes back.
+#[tauri::command]
+pub async fn archive_compress(paths: Vec<String>, folder: String, name: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
+    if is_read_only(&folder) || paths.iter().any(|p| is_inside(p)) {
+        return Err(fsx::READ_ONLY.into());
+    }
+    in_lane(lane, move |cancel| {
+        let zip = fsx::create_numbered(&folder, &name, false)?;
+        match compress::compress(&paths, Path::new(&zip), cancel, &mut |done, total| {
+            let _ = on_progress.send(StageProgress { done, total });
+        }) {
+            Ok((bytes, skipped)) => Ok(Staged { folder, paths: vec![zip], skipped, bytes }),
+            Err(e) => {
+                let _ = std::fs::remove_file(&zip);
+                Err(e)
+            }
+        }
+    })
+    .await
+}
+
+/// Extract here: a whole archive on disk into a new folder next to it named after it, as Explorer's
+/// Extract All does ("photos" for photos.zip, numbered if taken), with the same limits and checks
+/// as every extraction, and progress. Cancel (the tab `lane`) or a failure leaves nothing behind;
+/// files that can't be extracted are left out and reported. The folder is `folder` of what comes back.
+#[tauri::command]
+pub async fn archive_extract_here(path: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
+    in_lane(lane, move |cancel| {
+        let archive = Path::new(&path);
+        let (Some(parent), Some(stem)) = (archive.parent(), archive.file_stem()) else { return Err(Failure::NotFound.message()) };
+        let spot = spot(&path).ok_or_else(|| Failure::NotFound.message())?.map_err(|e| e.message())?;
+        let tree = &spot.archive.tree;
+        let tops: Vec<String> = tree.node(spot.node).children.iter().map(|&c| format!("{path}\\{}", tree.node(c).name)).collect();
+        let folder = fsx::create_numbered(&parent.to_string_lossy(), &stem.to_string_lossy(), true)?;
+        match guarded(|| stage_into(Path::new(&folder), &tops, cancel, &on_progress)) {
+            Ok(staged) if !staged.paths.is_empty() => Ok(Staged { folder, ..staged }),
+            other => {
+                let _ = std::fs::remove_dir_all(&folder);
+                Err(match other {
+                    Ok(staged) => staged.skipped.into_iter().next().map_or_else(|| "The archive is empty".into(), |s| s.reason),
+                    Err(e) => e.message(),
+                })
+            }
+        }
+    })
+    .await
 }
 
 fn stage(paths: &[String], purpose: &str, cancel: &AtomicBool, progress: &Channel<StageProgress>) -> Result<Staged, Failure> {
