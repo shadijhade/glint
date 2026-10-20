@@ -14,7 +14,7 @@ import { replaceText, toRegExp } from "./lib/text";
 import { checkForUpdates, useUpdater } from "./lib/updater";
 import { cn } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
-import { SearchBar } from "./components/Search";
+import { RipgrepCard, SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
 import { SettingsView } from "./components/SettingsView";
 import { Home, HistoryPopover, HISTORY_POPOVER_ID } from "./components/History";
@@ -348,6 +348,7 @@ function App() {
             />
           </div>
         )}
+        {mode === "text" && <RipgrepCard />}
         {run ? (
           <Results
             key={run.id}

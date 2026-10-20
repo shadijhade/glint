@@ -33,6 +33,9 @@ export const listDrives = () => invoke<Drive[]>("list_drives");
 
 /** Checks a typed location; a file resolves too, so its folder can be opened with it selected. */
 export const resolvePath = (path: string) => invoke<{ path: string; dir: boolean }>("resolve_path", { path });
+/** Where Text search's ripgrep comes from: next to the app, installed on the PC, or nowhere. */
+export const ripgrepStatus = () => invoke<"bundled" | "installed" | "missing">("ripgrep_status");
+export const installRipgrep = () => invoke<void>("install_ripgrep");
 
 export const readTextPreview = (path: string, maxBytes: number) =>
     invoke<{ text: string; truncated: boolean; binary: boolean }>("read_text_preview", { path, maxBytes });
