@@ -804,7 +804,12 @@ pub struct Builder {
 impl Builder {
     pub fn new(records: usize) -> Self {
         // About 25 bytes of name per record on a typical system drive.
-        let tree = Tree { recs: vec![Rec::default(); records], names: Vec::with_capacity(records * 25), ..Default::default() };
+        let mut recs = vec![Rec::default(); records];
+        if let Some(root) = recs.get_mut(ROOT as usize) {
+            root.attrs = FILE_ATTRIBUTE_DIRECTORY;
+            root.flags = REC_USED | REC_DIR;
+        }
+        let tree = Tree { recs, names: Vec::with_capacity(records * 25), ..Default::default() };
         Builder { tree, pending: Vec::with_capacity(records) }
     }
 

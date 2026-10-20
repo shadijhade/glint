@@ -135,7 +135,7 @@ function PatternEditor({ value, onChange, placeholder }: { value: string[]; onCh
 
 function describeVolume(v: IndexVolume) {
     if (v.state === "scanning") return `${v.volume} reading${v.progressTotal ? ` ${Math.floor((100 * v.progress) / v.progressTotal)}%` : ""}…`;
-    if (v.state === "error") return `${v.volume} unavailable`;
+    if (v.state === "error") return `${v.volume} unavailable${v.error ? ` (${v.error})` : ""}`;
     return `${v.volume} ${formatCount(v.files + v.folders)} items`;
 }
 
