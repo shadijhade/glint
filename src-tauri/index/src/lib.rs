@@ -31,6 +31,18 @@ mod volume;
 #[cfg(windows)]
 mod win;
 
+/// Windows as a bug report names it, e.g. "Windows 11 Home 25H2 (build 26300)".
+#[cfg(windows)]
+pub fn windows_version() -> String {
+    win::windows_version()
+}
+
+/// The service's log, in LocalSystem's profile (administrators can open it).
+#[cfg(windows)]
+pub fn log_path() -> Option<std::path::PathBuf> {
+    win::data_dir().ok().map(|dir| dir.join("service.log"))
+}
+
 /// The Windows service's name (as `sc query` shows it).
 pub const SERVICE_NAME: &str = "ShadUIRipgrepIndex";
 /// What Services and Task Manager call it.
