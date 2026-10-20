@@ -4,6 +4,9 @@
 //!
 //! Names are matched as UTF-8 bytes. ASCII names (the vast majority) are compared without folding;
 //! the index keeps a lowercase copy of every other name, so matching never allocates.
+//!
+//! Filters narrow the matches Everything-style ([`parse`]): `ext:`, `size:`, `dm:`, `file:` and
+//! `folder:`. The index applies them itself, and the app turns them into fd's flags.
 
 /// Splits a query into terms; "double quotes" keep spaces in one term.
 pub fn terms(query: &str) -> Vec<String> {
@@ -164,7 +167,13 @@ pub struct NameMatcher {
 impl NameMatcher {
     /// None when the query has no terms.
     pub fn new(query: &str) -> Option<Self> {
-        let terms: Vec<Term> = terms(query)
+        let matcher = NameMatcher::from_terms(terms(query));
+        (!matcher.terms.is_empty()).then_some(matcher)
+    }
+
+    /// Every term must match; with none, every name does (a query of filters only).
+    pub fn from_terms(terms: Vec<String>) -> Self {
+        let terms = terms
             .into_iter()
             .map(|t| {
                 if t.contains(['*', '?']) {
@@ -175,7 +184,7 @@ impl NameMatcher {
                 }
             })
             .collect();
-        (!terms.is_empty()).then_some(NameMatcher { terms })
+        NameMatcher { terms }
     }
 
     /// `name` is the name as stored; `folded` its lowercase form, given when the name isn't ASCII.
@@ -188,6 +197,129 @@ impl NameMatcher {
             Term::Glob(glob) => glob.matches(name, folded),
         })
     }
+}
+
+/// What a query asks of items besides their names: `ext:pdf` (or `ext:jpg;png`), `size:>10mb`
+/// (`>`, `>=`, `<`, `<=` or exactly; b, kb, mb, gb, tb in 1024s, as Explorer counts), `dm:7d` (modified
+/// in the last 7 days; h, d, w, y) or `dm:>1y` (before that), and `file:` or `folder:`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Filters {
+    /// Lowercase extensions without the dot; a name needs one of them.
+    pub exts: Vec<String>,
+    /// Files only, of at least and at most this many bytes.
+    pub min_size: Option<u64>,
+    pub max_size: Option<u64>,
+    /// Modified less than, or more than, this many seconds ago.
+    pub newer_than: Option<u64>,
+    pub older_than: Option<u64>,
+    pub kind: Option<Kind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Kind {
+    Files,
+    Folders,
+}
+
+impl Filters {
+    pub fn is_empty(&self) -> bool {
+        self == &Filters::default()
+    }
+
+    /// `file:`, or a size, which only files have.
+    pub fn files_only(&self) -> bool {
+        self.kind == Some(Kind::Files) || self.min_size.is_some() || self.max_size.is_some()
+    }
+
+    /// Whether an item passes. `folded` is its name's lowercase form when the name isn't ASCII, and
+    /// `age` how many seconds ago it was modified.
+    pub fn accepts(&self, name: &[u8], folded: Option<&[u8]>, dir: bool, size: u64, age: i64) -> bool {
+        if (dir && self.files_only()) || (!dir && self.kind == Some(Kind::Folders)) {
+            return false;
+        }
+        let name = folded.unwrap_or(name);
+        let ext = |ext: &String| name.len() > ext.len() && name[name.len() - ext.len() - 1] == b'.' && name[name.len() - ext.len()..].eq_ignore_ascii_case(ext.as_bytes());
+        (self.exts.is_empty() || self.exts.iter().any(ext))
+            && self.min_size.is_none_or(|min| size >= min)
+            && self.max_size.is_none_or(|max| size <= max)
+            && self.newer_than.is_none_or(|secs| age < secs as i64)
+            && self.older_than.is_none_or(|secs| age > secs as i64)
+    }
+}
+
+/// A query's name terms and its filters. A `word:` term that isn't a filter stays a name term (which
+/// can't match: names can't hold a colon); a filter that doesn't read right is an error saying how
+/// it goes.
+pub fn parse(query: &str) -> Result<(Vec<String>, Filters), String> {
+    let mut names = Vec::new();
+    let mut filters = Filters::default();
+    for term in terms(query) {
+        let Some((key, value)) = term.split_once(':') else {
+            names.push(term);
+            continue;
+        };
+        match key.to_ascii_lowercase().as_str() {
+            "ext" => filters.exts.extend(value.split([';', ',']).map(|e| e.trim().trim_start_matches('.').to_lowercase()).filter(|e| !e.is_empty())),
+            "size" => {
+                let (op, amount) = split_op(value);
+                let bytes = size(amount).ok_or_else(|| format!("“{term}”: a size goes like size:>10mb or size:<=1gb"))?;
+                match op {
+                    ">" => filters.min_size = Some(bytes.saturating_add(1)),
+                    ">=" => filters.min_size = Some(bytes),
+                    "<" => filters.max_size = Some(bytes.saturating_sub(1)),
+                    "<=" => filters.max_size = Some(bytes),
+                    _ => (filters.min_size, filters.max_size) = (Some(bytes), Some(bytes)),
+                }
+            }
+            "dm" => {
+                let (op, amount) = split_op(value);
+                let secs = duration(amount).ok_or_else(|| format!("“{term}”: a time goes like dm:7d (the last 7 days) or dm:>1y (before that)"))?;
+                if op.starts_with('>') {
+                    filters.older_than = Some(secs);
+                } else {
+                    filters.newer_than = Some(secs);
+                }
+            }
+            "file" | "files" if value.is_empty() => filters.kind = Some(Kind::Files),
+            "folder" | "folders" if value.is_empty() => filters.kind = Some(Kind::Folders),
+            _ => names.push(term),
+        }
+    }
+    Ok((names, filters))
+}
+
+/// `>=10mb` → (">=", "10mb").
+fn split_op(value: &str) -> (&str, &str) {
+    value.split_at(value.find(|c: char| !matches!(c, '<' | '>' | '=')).unwrap_or(value.len()))
+}
+
+/// "10mb", "1.5gb" or "300" (bytes), in bytes.
+fn size(text: &str) -> Option<u64> {
+    let at = text.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(text.len());
+    let number: f64 = text[..at].parse().ok()?;
+    let unit: u64 = match text[at..].to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" => 1 << 10,
+        "m" | "mb" => 1 << 20,
+        "g" | "gb" => 1 << 30,
+        "t" | "tb" => 1 << 40,
+        _ => return None,
+    };
+    Some((number * unit as f64) as u64)
+}
+
+/// "12h", "7d", "2w" or "1y", in seconds.
+fn duration(text: &str) -> Option<u64> {
+    let at = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
+    let number: u64 = text[..at].parse().ok()?;
+    let unit = match text[at..].to_ascii_lowercase().as_str() {
+        "h" => 3600,
+        "d" => 86_400,
+        "w" => 7 * 86_400,
+        "y" => 365 * 86_400,
+        _ => return None,
+    };
+    number.checked_mul(unit)
 }
 
 /// What fd's `--exclude` skips: a pattern without a separator is a glob over whole names, and a
@@ -241,6 +373,27 @@ mod tests {
     fn matches(query: &str, name: &str) -> bool {
         let folded = (!name.is_ascii()).then(|| fold(name));
         NameMatcher::new(query).unwrap().matches(name.as_bytes(), folded.as_deref().map(str::as_bytes))
+    }
+
+    #[test]
+    fn reads_filters_and_applies_them() {
+        let (names, f) = parse("report ext:PDF;.docx size:>10mb dm:7d").unwrap();
+        assert_eq!(names, ["report"]);
+        assert_eq!(f.exts, ["pdf", "docx"]);
+        assert_eq!((f.min_size, f.max_size, f.newer_than), (Some((10 << 20) + 1), None, Some(7 * 86_400)));
+        assert!(f.accepts(b"Q3.PDF", None, false, 11 << 20, 3600));
+        assert!(!f.accepts(b"Q3.pdf", None, false, 10 << 20, 3600), "not bigger than 10 MB");
+        assert!(!f.accepts(b"Q3.pdf", None, false, 11 << 20, 8 * 86_400), "too old");
+        assert!(!f.accepts(b"Q3.pdf", None, true, 11 << 20, 3600), "a size means files");
+        assert!(!f.accepts(b"Q3.pdfx", None, false, 11 << 20, 3600));
+        let (names, f) = parse("folder: dm:>1y size:<=1.5gb").unwrap();
+        assert!(names.is_empty());
+        assert_eq!((f.kind, f.older_than, f.max_size), (Some(Kind::Folders), Some(365 * 86_400), Some(3 << 29)));
+        // A size makes it files only, so folder: and size: together match nothing.
+        assert!(!f.accepts(b"old", None, true, 0, 400 * 86_400));
+        assert_eq!(parse("C:x \"a:b\"").unwrap().0, ["C:x", "a:b"], "not filters: names");
+        assert!(parse("size:big").is_err() && parse("dm:7").is_err() && parse("size:").is_err());
+        assert!(parse("ext: file:").unwrap().1 == Filters { kind: Some(Kind::Files), ..Default::default() });
     }
 
     #[test]

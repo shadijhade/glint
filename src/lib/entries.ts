@@ -207,14 +207,51 @@ function globToRegExp(glob: string) {
     return new RegExp(`^${source}$`);
 }
 
+const SIZE_UNITS: Record<string, number> = { "": 1, b: 1, k: 2 ** 10, kb: 2 ** 10, m: 2 ** 20, mb: 2 ** 20, g: 2 ** 30, gb: 2 ** 30, t: 2 ** 40, tb: 2 ** 40 };
+const AGE_UNITS: Record<string, number> = { h: 3600, d: 86400, w: 7 * 86400, y: 365 * 86400 };
+
+/**
+ * A filter term (ext:, size:, dm:, file:, folder:) as the index and fd read it (shadui_index::query::parse),
+ * for what's on screen; undefined for a name term. One that doesn't read right matches nothing here
+ * (the search says what's wrong with it).
+ */
+function filterTest(term: string): ((e: FileEntry) => boolean) | undefined {
+    const [, key, value] = /^(ext|size|dm|files?|folders?):(.*)$/.exec(term) ?? [];
+    if (!key) return undefined;
+    if (key === "ext") {
+        const exts = value.split(/[;,]/).map((x) => x.trim().replace(/^\.+/, "")).filter(Boolean);
+        return (e) => !exts.length || exts.some((x) => e.lower.endsWith(`.${x}`));
+    }
+    if (key.startsWith("file")) return value ? undefined : (e) => !e.dir;
+    if (key.startsWith("folder")) return value ? undefined : (e) => e.dir;
+    const [, op, amount] = /^([<>=]*)(.*)$/.exec(value)!;
+    if (key === "size") {
+        const [, number, unit] = /^([\d.]+)([a-z]*)$/.exec(amount) ?? [];
+        const bytes = Math.floor(Number(number) * SIZE_UNITS[unit]);
+        if (!number || Number.isNaN(bytes)) return () => false;
+        const tests: Record<string, (size: number) => boolean> = { ">": (s) => s > bytes, ">=": (s) => s >= bytes, "<": (s) => s < bytes, "<=": (s) => s <= bytes };
+        const fits = tests[op] ?? ((s: number) => s === bytes);
+        // Only files have a size of their own.
+        return (e) => !e.dir && fits(e.size);
+    }
+    const [, count, unit] = /^(\d+)([a-z]+)$/.exec(amount) ?? [];
+    if (!count || !AGE_UNITS[unit]) return () => false;
+    const ms = Number(count) * AGE_UNITS[unit] * 1000;
+    const now = Date.now();
+    return op.startsWith(">") ? (e) => now - e.modified > ms : (e) => now - e.modified < ms;
+}
+
 /**
  * The same matching fd does for a search, applied to what's on screen: every term must match the
- * name, case-insensitively; terms with * or ? match the whole name, others any part of it.
+ * name, case-insensitively; terms with * or ? match the whole name, others any part of it. Filters
+ * (ext:pdf, size:>10mb, dm:7d, file:, folder:) narrow it as the index does.
  */
 export function matcher(query: string): ((e: FileEntry) => boolean) | null {
     const parts = terms(query.toLowerCase());
     if (!parts.length) return null;
     const tests = parts.map((term) => {
+        const filter = filterTest(term);
+        if (filter) return filter;
         if (!/[*?]/.test(term)) return (e: FileEntry) => e.lower.includes(term);
         const re = globToRegExp(term);
         return (e: FileEntry) => re.test(e.lower);
