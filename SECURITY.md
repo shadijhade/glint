@@ -21,7 +21,7 @@ The parts of the app worth a closer look:
 
 Free code signing is provided by [SignPath.io](https://signpath.io/), and the code-signing certificate is provided by the [SignPath Foundation](https://signpath.org/).
 
--   **Team roles (committers, reviewers and approvers):** [Shadi Sadi (`@shadijhade`)](https://github.com/shadijhade) is the sole maintainer, reviewer and release approver.
+-   **Team roles (committers, reviewers and approvers):** [Shadi Saadi (`@shadijhade`)](https://github.com/shadijhade) is the sole maintainer, reviewer and release approver.
 -   **Scope of signing:** Only binaries built from this repository's source code (`Glint.exe`, `shadui-index.exe` and the NSIS installer) are signed with the project's certificate; bundled third-party tools (`rg.exe`, `fd.exe`, `dust.exe`) are included unmodified from their official upstream releases.
 -   **Privacy policy:** Glint does not collect telemetry, analytics or personal data, and will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. Its only network requests are checking GitHub Releases (`github.com/shadijhade/glint`) for application updates and downloading an update when the user chooses to install one.
 
