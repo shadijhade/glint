@@ -201,7 +201,9 @@ impl Volume {
                 pending.retain(|&number| {
                     if let Ok(Some(mut ext)) = self.file_record(number) {
                         if record::apply_fixups(&mut ext, false) {
-                            extents.extend(record::data_extents(&ext));
+                            if extends_mft(&ext) {
+                                extents.extend(record::data_extents(&ext));
+                            }
                             return false;
                         }
                     }
@@ -223,7 +225,7 @@ impl Volume {
                         let aligned = offset - offset % unit;
                         let Ok(buf) = self.read_clusters(aligned, (offset - aligned) + record_size as u64) else { return true };
                         let mut ext = buf[(offset - aligned) as usize..][..record_size].to_vec();
-                        if record::apply_fixups(&mut ext, true) {
+                        if record::apply_fixups(&mut ext, true) && extends_mft(&ext) {
                             extents.extend(record::data_extents(&ext));
                         }
                         false
@@ -236,12 +238,19 @@ impl Volume {
         }
         extents.sort_by_key(|e| e.0);
         let bytes = self.byte_extents(&extents);
-        let size = extents
-            .iter()
-            .find_map(|e| e.1)
-            .or_else(|| (self.mft_valid > 0).then_some(self.mft_valid))
-            .or_else(|| bytes.iter().map(|&(at, _, len)| at + len).max())
-            .ok_or_else(|| io::Error::other("the $MFT has no size"))?;
+        let size = extents.iter().find_map(|e| e.1).ok_or_else(|| io::Error::other("the $MFT has no size"))?;
+        // Every record must be mapped: a hole would leave its records out of the index without a word.
+        let wanted = size.min(if self.mft_valid > 0 { self.mft_valid } else { size });
+        let mut mapped = 0;
+        for &(at, _, len) in &bytes {
+            if at > mapped {
+                break;
+            }
+            mapped = mapped.max(at + len);
+        }
+        if mapped < wanted {
+            return Err(io::Error::other("part of the $MFT can't be found"));
+        }
         Ok((bytes, size))
     }
 
@@ -299,6 +308,9 @@ impl Volume {
         let piece = (CHUNK / unit).max(1) * unit;
         let pieces: Vec<(u64, u64)> = (0..end.div_ceil(piece)).map(|i| (i * piece, (end - i * piece).min(piece))).collect();
         let mut builder = Builder::new(total as usize);
+        // Records with the FILE signature that didn't parse (torn mid-write on a busy drive), reread
+        // through the file system once the pass is done.
+        let mut torn = Vec::new();
 
         std::thread::scope(|scope| {
             let (full_tx, full_rx) = mpsc::sync_channel::<io::Result<(u64, AlignedBuf, usize)>>(2);
@@ -327,13 +339,7 @@ impl Volume {
                     if let Some(parsed) = parsed {
                         merge(&mut builder, number, parsed);
                     } else if buf.get(i * record_size as usize..i * record_size as usize + 4) == Some(b"FILE") {
-                        // A record being written on an active drive (like C:) can have a torn fixup on raw disk;
-                        // ask the NTFS driver for its clean copy so folders like C:\Users are never dropped.
-                        if let Ok(Some(mut clean)) = self.file_record(number) {
-                            if let Some(parsed) = record::parse(&mut clean, false) {
-                                merge(&mut builder, number, parsed);
-                            }
-                        }
+                        torn.push(number);
                     }
                 }
                 let _ = free_tx.send(buf);
@@ -343,6 +349,12 @@ impl Volume {
             }
             Ok::<(), io::Error>(())
         })?;
+        // ponytail: a damaged $MFT can have many; past 10,000 the rest stay out (each costs a read).
+        for number in torn.into_iter().take(10_000) {
+            if let Some(parsed) = self.file_record(number).ok().flatten().and_then(|mut clean| record::parse(&mut clean, false)) {
+                merge(&mut builder, number, parsed);
+            }
+        }
         Ok(builder.finish())
     }
 
@@ -396,14 +408,20 @@ impl Volume {
 
     /// The bytes of a non-resident attribute.
     fn read_runs(&self, runs: &[Run], size: u64) -> io::Result<Vec<u8>> {
+        // Only attribute lists are read this way, and NTFS keeps those under 256 KiB.
+        if size > 256 << 10 {
+            return Err(io::Error::other("an attribute list is too big"));
+        }
         let mut out = Vec::new();
         for run in runs {
             if out.len() as u64 >= size || run.clusters > (64 << 20) / self.cluster() {
                 break;
             }
+            let len = (run.clusters * self.cluster()) as usize;
             match run.lcn {
-                Some(lcn) => out.extend_from_slice(&self.read_clusters(lcn * self.cluster(), run.clusters * self.cluster())?),
-                None => out.resize(out.len() + (run.clusters * self.cluster()) as usize, 0),
+                // Reads come in whole 4 KiB units; only the run's own bytes belong to the attribute.
+                Some(lcn) => out.extend_from_slice(&self.read_clusters(lcn * self.cluster(), len as u64)?[..len]),
+                None => out.resize(out.len() + len, 0),
             }
         }
         out.truncate(size as usize);
@@ -460,6 +478,12 @@ impl Volume {
             _ => JournalError::Io(e),
         })
     }
+}
+
+/// Whether an extension record belongs to the $MFT itself (record 0), so its $DATA runs are the
+/// $MFT's: a damaged attribute list mustn't map in some other file's.
+fn extends_mft(record: &[u8]) -> bool {
+    record::header(record).is_some_and(|h| split_ref(h.base).0 == 0)
 }
 
 /// Adds one scanned record to the index being built: a base record as itself, an extension record's
