@@ -478,6 +478,17 @@ async function loadKnownFolders() {
 
 const homeFolder = () => get().known.find((k) => k.id === "home")?.path ?? THIS_PC;
 
+/** A folder on disk to search in when Text mode has none yet: Default search folder, the open folder, Home, or the first drive. */
+export function defaultTextSearchFolder(): string {
+    const { settings } = useStore.getState();
+    if (settings.defaultSearchPath.trim()) return settings.defaultSearchPath.trim();
+    const cur = currentPath();
+    if (cur && cur !== THIS_PC && !archiveOf()) return cur;
+    const home = homeFolder();
+    if (home && home !== THIS_PC) return home;
+    return get().drives[0]?.path ?? "";
+}
+
 let initialized: Promise<void> | undefined;
 /** The session is saved only once startup has restored it, so starting can't overwrite it. */
 let restored = false;
@@ -1117,7 +1128,13 @@ export async function refreshIndex() {
         shown.forEach((t, i) => {
             if (!before[i] && tabState(t.id)?.path === t.path && indexed(t.path)) autoSizes(t.id);
         });
-        if (index.state === "on" && index.volumes.some((v) => v.state === "scanning")) indexPoll = setTimeout(refreshIndex, 1000);
+        if (index.state === "on") {
+            if (!index.volumes.length || index.volumes.some((v) => v.state === "scanning")) {
+                indexPoll = setTimeout(refreshIndex, 1000);
+            } else if (index.volumes.some((v) => v.state === "error")) {
+                indexPoll = setTimeout(refreshIndex, 5000);
+            }
+        }
     } catch {
         // keep what we knew
     }

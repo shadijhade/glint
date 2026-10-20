@@ -2,7 +2,7 @@ import { FileArchive, Fingerprint, Loader2, PenLine, Zap } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
-import { useExplorer, useTab, viewKey } from "@/lib/explorer";
+import { enableIndex, useExplorer, useTab, viewKey } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { baseName, THIS_PC } from "@/lib/paths";
 import { type ThumbRun, useThumbRuns } from "@/lib/thumbs";
@@ -49,12 +49,34 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     const { tab, path, listing, find, shownIn, view } = useTab(useShallow((t) => ({ tab: t.id, path: t.path, listing: t.listing, find: t.find, shownIn: t.shownIn, view: t.view })));
     // A tab showing its disk-usage map tells how that was mapped; its rows are the map's items.
     const mapped = useUsage((s) => !!s[tab]) && !find;
-    const { sizes, drives } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length })));
+    const { sizes, drives, index } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length, index: s.index })));
+    const scanning = index?.state === "on" ? index.volumes.find((v) => v.state === "scanning") : undefined;
+    const indexBadge =
+        index && (index.state === "off" || index.state === "stopped") ? (
+            <button
+                type="button"
+                onClick={() => void enableIndex()}
+                title="Find files on every drive in milliseconds (Windows asks for administrator approval)"
+                className="inline-flex shrink-0 items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"
+            >
+                <Zap className="size-3" /> Turn on instant search
+            </button>
+        ) : scanning ? (
+            <span className="inline-flex shrink-0 items-center gap-1">
+                <Loader2 className="size-3 animate-spin text-primary" /> Indexing {scanning.volume}
+                {scanning.progressTotal ? ` ${Math.floor((100 * scanning.progress) / scanning.progressTotal)}%` : ""}…
+            </span>
+        ) : null;
     // The thumbnails of what this tab shows now, in the view it's in, once any came.
     const thumbs = useThumbRuns((s) => s[tab]);
     const thumbsHere = !mapped && thumbs?.scope === `${viewKey({ path, find })}:${view}` && thumbs.found > 0 ? thumbs : null;
     if (path === THIS_PC && !find) {
-        return <div className="flex h-7 shrink-0 items-center border-t px-3 text-xs text-muted-foreground">{`${drives} ${drives === 1 ? "drive" : "drives"}`}</div>;
+        return (
+            <div className="flex h-7 shrink-0 items-center gap-2 border-t px-3 text-xs text-muted-foreground">
+                <span>{`${drives} ${drives === 1 ? "drive" : "drives"}`}</span>
+                <span className="ml-auto">{indexBadge}</span>
+            </div>
+        );
     }
     const selectedFiles = selected.filter((e) => !e.dir);
     const selectedBytes = selectedFiles.reduce((sum, e) => sum + e.size, 0);
@@ -134,6 +156,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                 </button>
             )}
             <span className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap tabular-nums">
+                {indexBadge && <span className="hidden @md:inline-flex">{indexBadge}</span>}
                 {work}
                 {thumbsHere && <ThumbWork run={thumbsHere} />}
             </span>

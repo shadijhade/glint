@@ -1,7 +1,9 @@
-import { Files, History, LayoutDashboard } from "lucide-react";
+import { useState } from "react";
+import { Files, History, LayoutDashboard, Loader2, ShieldCheck, Zap } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { toggleUsage, useUsage } from "@/lib/diskUsage";
-import { middleClickOpens, navigate, useExplorer, useTab } from "@/lib/explorer";
+import { enableIndex, middleClickOpens, navigate, useExplorer, useTab } from "@/lib/explorer";
+import { Button } from "../ui/button";
 import { formatSize } from "@/lib/format";
 import { driveName } from "@/lib/fs";
 import { cn } from "@/lib/utils";
@@ -11,6 +13,45 @@ import { inspectTimeline } from "./TimelineDialog";
 
 const tile =
     "group relative flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-all duration-150 hover:border-primary/40 hover:bg-accent/60 hover:shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50";
+
+/** Instant search, offered where first-time users see it: off, starting, reading a drive, or a drive that failed. */
+function InstantSearchCard() {
+    const index = useExplorer((s) => s.index);
+    const [working, setWorking] = useState(false);
+    if (!index || index.state === "unsupported") return null;
+    const volumes = index.volumes ?? [];
+    const scanning = volumes.filter((v) => v.state === "scanning");
+    const failed = volumes.filter((v) => v.state === "error");
+    const on = index.state === "on";
+    if (on && !scanning.length && !failed.length && volumes.length) return null;
+    const turnOn = async () => {
+        setWorking(true);
+        try {
+            await enableIndex();
+        } finally {
+            setWorking(false);
+        }
+    };
+    let text: string;
+    if (!on) text = "Turn on instant search to find files on every drive in milliseconds and see folder sizes as they open.";
+    else if (!volumes.length) text = "Instant search is starting…";
+    else
+        text = [
+            ...scanning.map((v) => `Indexing ${v.volume}${v.progressTotal ? ` ${Math.floor((100 * v.progress) / v.progressTotal)}%` : ""}…`),
+            ...failed.map((v) => `${v.volume} couldn't be indexed${v.error ? `: ${v.error}` : ""}`),
+        ].join(" · ");
+    return (
+        <div className="mt-8 flex items-center gap-3 rounded-lg border bg-primary/5 px-4 py-3">
+            {on && (scanning.length || !volumes.length) ? <Loader2 className="size-4 shrink-0 animate-spin text-primary" /> : <Zap className="size-4 shrink-0 text-primary" />}
+            <span className="min-w-0 flex-1 text-sm">{text}</span>
+            {(!on || failed.length > 0) && (
+                <Button size="sm" disabled={working} onClick={turnOn} title="Windows asks for administrator approval">
+                    {working ? <Loader2 className="animate-spin" /> : <ShieldCheck />} {on ? "Retry" : "Turn on instant search"}
+                </Button>
+            )}
+        </div>
+    );
+}
 
 /** The root view: known folders, and every drive with its free space and quick actions. */
 export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent, path: string) => void }) {
@@ -57,6 +98,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                 })}
             </div>
 
+            <InstantSearchCard />
             <div className="mb-3 mt-8 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold">Devices and drives</h2>
                 {totalCapacity > 0 && (

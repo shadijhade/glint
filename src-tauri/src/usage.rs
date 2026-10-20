@@ -9,11 +9,10 @@ use shadui_index::proto::{UsageNode, NO_PARENT};
 use std::collections::VecDeque;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Instant;
 use tauri::ipc::Response;
 use tauri::{State, Window};
-use tauri_plugin_shell::ShellExt;
 
 const ENGINE_INDEX: u32 = 0;
 const ENGINE_DUST: u32 = 1;
@@ -78,7 +77,7 @@ pub async fn disk_usage(window: Window, state: State<'_, AppState>, path: String
         Indexed::TooOld => SERVICE_TOO_OLD,
         Indexed::No => 0,
     };
-    let mut command: Command = window.shell().sidecar("dust").map_err(|e| e.to_string())?.into();
+    let mut command = crate::proc::tool(&window, "dust")?;
     // Files and folders, `depth` levels, the biggest `max_items`, apparent sizes in exact bytes.
     command
         .args(["-j", "-s", "-o", "b", "-P", "-d", &depth.to_string(), "-n", &max_items.to_string(), "--"])

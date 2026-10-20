@@ -161,7 +161,8 @@ impl Volume {
 
     /// Reads whole clusters: `bytes` rounded up, at a cluster-aligned `offset`.
     fn read_clusters(&self, offset: u64, bytes: u64) -> io::Result<AlignedBuf> {
-        let len = bytes.div_ceil(self.cluster()) * self.cluster();
+        let unit = self.cluster().max(4096);
+        let len = bytes.div_ceil(unit) * unit;
         let mut buf = AlignedBuf::new(len as usize);
         self.read_at(offset, &mut buf[..len as usize])?;
         Ok(buf)
@@ -173,34 +174,75 @@ impl Volume {
         let start = self.geometry.mft_lcn * self.cluster();
         let mut first = self.read_clusters(start, record_size as u64)?[..record_size].to_vec();
         if !record::apply_fixups(&mut first, true) {
-            return Err(io::Error::other("the $MFT's own record is damaged"));
+            if let Ok(Some(mut fs_first)) = self.file_record(0) {
+                if record::apply_fixups(&mut fs_first, false) {
+                    first = fs_first;
+                } else {
+                    return Err(io::Error::other("the $MFT's own record is damaged"));
+                }
+            } else {
+                return Err(io::Error::other("the $MFT's own record is damaged"));
+            }
         }
         let mut extents = record::data_extents(&first);
         // A very fragmented $MFT continues its run list in extension records named by its
-        // attribute list; those records lie in the part of the $MFT already mapped.
+        // attribute list; those records lie in the part of the $MFT already mapped (or are read
+        // directly through the file system driver).
         if let Some(parsed) = record::parse(&mut first.clone(), false) {
-            match parsed.attribute_list {
-                Some(record::AttributeList::Resident(list)) => {
-                    for number in record::extension_records(&list, 0) {
-                        let layout = self.byte_extents(&extents);
+            let list = match parsed.attribute_list {
+                Some(record::AttributeList::Resident(list)) => Some(list),
+                Some(record::AttributeList::NonResident { runs, size }) => Some(self.read_runs(&runs, size)?),
+                None => None,
+            };
+            if let Some(list) = list {
+                let mut pending = record::extension_records(&list, 0);
+                // First try reading each extension record via the NTFS driver, which works even when
+                // the base $DATA extent itself was moved into an extension record (e.g. record 15).
+                pending.retain(|&number| {
+                    if let Ok(Some(mut ext)) = self.file_record(number) {
+                        if record::apply_fixups(&mut ext, false) {
+                            extents.extend(record::data_extents(&ext));
+                            return false;
+                        }
+                    }
+                    true
+                });
+                // Fallback for records not returned by the driver: resolve iteratively as extents grow.
+                loop {
+                    let before = pending.len();
+                    let layout = self.byte_extents(&extents);
+                    pending.retain(|&number| {
                         let at = number * record_size as u64;
-                        let Some(&(from, disk, _)) = layout.iter().find(|&&(from, _, len)| at >= from && at < from + len) else { continue };
-                        let offset = disk + (at - from);
-                        let aligned = offset - offset % self.cluster();
-                        let buf = self.read_clusters(aligned, (offset - aligned) + record_size as u64)?;
+                        let disk_offset = layout
+                            .iter()
+                            .find(|&&(from, _, len)| at >= from && at < from + len)
+                            .map(|&(from, disk, _)| disk + (at - from))
+                            .or_else(|| (number < 16).then_some(start + at));
+                        let Some(offset) = disk_offset else { return true };
+                        let unit = self.cluster().max(4096);
+                        let aligned = offset - offset % unit;
+                        let Ok(buf) = self.read_clusters(aligned, (offset - aligned) + record_size as u64) else { return true };
                         let mut ext = buf[(offset - aligned) as usize..][..record_size].to_vec();
                         if record::apply_fixups(&mut ext, true) {
                             extents.extend(record::data_extents(&ext));
                         }
+                        false
+                    });
+                    if pending.is_empty() || pending.len() == before {
+                        break;
                     }
                 }
-                Some(record::AttributeList::NonResident { .. }) => return Err(io::Error::other("the $MFT's attribute list is too big to follow")),
-                None => {}
             }
         }
         extents.sort_by_key(|e| e.0);
-        let size = extents.iter().find_map(|e| e.1).ok_or_else(|| io::Error::other("the $MFT has no size"))?;
-        Ok((self.byte_extents(&extents), size))
+        let bytes = self.byte_extents(&extents);
+        let size = extents
+            .iter()
+            .find_map(|e| e.1)
+            .or_else(|| (self.mft_valid > 0).then_some(self.mft_valid))
+            .or_else(|| bytes.iter().map(|&(at, _, len)| at + len).max())
+            .ok_or_else(|| io::Error::other("the $MFT has no size"))?;
+        Ok((bytes, size))
     }
 
     fn byte_extents(&self, extents: &[(u64, Option<u64>, Vec<Run>)]) -> Vec<Extent> {
@@ -229,7 +271,17 @@ impl Volume {
         for &(at, disk, len) in layout {
             let (from, to) = (at.max(start), (at + len).min(end));
             if from < to {
-                self.read_at(disk + (from - at), &mut buf[(from - start) as usize..(to - start) as usize])?;
+                let offset = disk + (from - at);
+                let dst = &mut buf[(from - start) as usize..(to - start) as usize];
+                // Unbuffered reads on 4Kn drives require 4096-byte buffer, offset, and length alignment.
+                if (from - start).is_multiple_of(4096) && dst.len().is_multiple_of(4096) && offset.is_multiple_of(4096) {
+                    self.read_at(offset, dst)?;
+                } else {
+                    let unit = self.cluster().max(4096);
+                    let aligned = offset - offset % unit;
+                    let scratch = self.read_clusters(aligned, (offset - aligned) + dst.len() as u64)?;
+                    dst.copy_from_slice(&scratch[(offset - aligned) as usize..][..dst.len()]);
+                }
             }
         }
         Ok(())
@@ -243,7 +295,8 @@ impl Volume {
         let record_size = self.geometry.record_size as u64;
         let total = size.min(if self.mft_valid > 0 { self.mft_valid } else { size }) / record_size;
         let end = total * record_size;
-        let piece = (CHUNK / self.cluster().max(record_size)).max(1) * self.cluster().max(record_size);
+        let unit = self.cluster().max(record_size).max(4096);
+        let piece = (CHUNK / unit).max(1) * unit;
         let pieces: Vec<(u64, u64)> = (0..end.div_ceil(piece)).map(|i| (i * piece, (end - i * piece).min(piece))).collect();
         let mut builder = Builder::new(total as usize);
 
@@ -257,7 +310,7 @@ impl Volume {
             scope.spawn(move || {
                 for (start, len) in pieces {
                     let Ok(mut buf) = free_rx.recv() else { return };
-                    let read = len.div_ceil(self.cluster()) * self.cluster();
+                    let read = len.div_ceil(unit) * unit;
                     let result = self.read_mft(layout, start, &mut buf[..read as usize]).map(|()| (start, buf, len as usize));
                     let failed = result.is_err();
                     if full_tx.send(result).is_err() || failed {
@@ -270,8 +323,17 @@ impl Volume {
                 let first = start / record_size;
                 let parsed: Vec<Option<Parsed>> = buf[..len].par_chunks_mut(record_size as usize).map(|r| record::parse(r, true)).collect();
                 for (i, parsed) in parsed.into_iter().enumerate() {
+                    let number = first + i as u64;
                     if let Some(parsed) = parsed {
-                        merge(&mut builder, first + i as u64, parsed);
+                        merge(&mut builder, number, parsed);
+                    } else if buf.get(i * record_size as usize..i * record_size as usize + 4) == Some(b"FILE") {
+                        // A record being written on an active drive (like C:) can have a torn fixup on raw disk;
+                        // ask the NTFS driver for its clean copy so folders like C:\Users are never dropped.
+                        if let Ok(Some(mut clean)) = self.file_record(number) {
+                            if let Some(parsed) = record::parse(&mut clean, false) {
+                                merge(&mut builder, number, parsed);
+                            }
+                        }
                     }
                 }
                 let _ = free_tx.send(buf);
