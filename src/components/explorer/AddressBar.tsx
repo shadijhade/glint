@@ -290,20 +290,22 @@ export function AddressBar() {
     // A path too long for the bar keeps its end, as the window narrows too: the crumbs are laid out
     // from the end (wrapping onto a line out of view), so it's the folders above the ones that fit that
     // go, into a "…" menu before them, as in Explorer.
-    const [hidden, setHidden] = useState(0);
+    const [folded, setFolded] = useState(0);
+    // Counted for the path before, until it's counted again for this one (never all of it).
+    const hidden = Math.max(0, Math.min(folded, trail.length - 1));
     useLayoutEffect(() => {
         const [bar, box] = [trailRef.current, crumbsRef.current];
         if (!bar || !box) return;
         const count = () => {
             const top = box.getBoundingClientRect().top + 1;
-            setHidden([...box.children].filter((el) => el.getBoundingClientRect().top > top).length);
+            setFolded([...box.children].filter((el) => el.getBoundingClientRect().top > top).length);
         };
         count();
         // The bar's width follows the window's, not the "…" coming and going.
         const observer = new ResizeObserver(count);
         observer.observe(bar);
         return () => observer.disconnect();
-    }, [path, drives, editing, hidden]);
+    }, [path, drives, editing, folded]);
 
     const rootName = (root: string) => {
         const drive = drives.find((d) => samePath(d.path, root));
