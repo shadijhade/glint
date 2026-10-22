@@ -446,12 +446,13 @@ export function AddressBar() {
                 {editing ? (
                     <AddressInput path={path} />
                 ) : (
-                    <div ref={trailRef} className="flex h-full min-w-0 flex-1 items-center overflow-hidden px-1">
+                    // A narrow bar leaves This PC out, for the folder you're in.
+                    <div ref={trailRef} className="@container flex h-full min-w-0 flex-1 items-center overflow-hidden px-1">
                         <button
                             type="button"
                             onClick={() => navigate(THIS_PC)}
                             onMouseDown={middleClickOpens(THIS_PC)}
-                            className="flex h-6 shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 text-sm hover:bg-accent"
+                            className={cn("flex h-6 shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 text-sm hover:bg-accent", path !== THIS_PC && "@max-[16rem]:hidden")}
                             title="This PC"
                         >
                             <Monitor className="size-4 text-muted-foreground" />
@@ -462,12 +463,16 @@ export function AddressBar() {
                             onClick={(e) => void openFlyout(e, THIS_PC, trail[0]?.path)}
                             title="Drives and places"
                             aria-label="Drives and places"
-                            className="grid size-5 shrink-0 place-items-center rounded-[4px] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+                            className={cn(
+                                "grid size-5 shrink-0 place-items-center rounded-[4px] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground",
+                                path !== THIS_PC && "@max-[16rem]:hidden"
+                            )}
                         >
                             <ChevronRight className="size-3.5" />
                         </button>
                         {hidden > 0 && (
-                            <>
+                            // Narrower still, only the folder you're in.
+                            <div className="flex shrink-0 items-center @max-[9rem]:hidden">
                                 <button
                                     type="button"
                                     onClick={(e) => void openFlyout(e, "", undefined, trail.slice(0, hidden).map(crumbItem))}
@@ -478,9 +483,9 @@ export function AddressBar() {
                                     <Ellipsis className="size-4" />
                                 </button>
                                 {chevron(hidden - 1)}
-                            </>
+                            </div>
                         )}
-                        <div ref={crumbsRef} className="flex h-6 min-w-0 flex-row-reverse flex-wrap justify-end overflow-hidden">
+                        <div ref={crumbsRef} className="flex h-6 min-w-12 flex-row-reverse flex-wrap justify-end overflow-hidden">
                             {trail.map((crumb, i) => (
                                 // Laid out from the end; in the page (and to Tab), from the root.
                                 <div key={crumb.path} style={{ order: trail.length - i }} className={cn("flex items-center", i === trail.length - 1 ? "min-w-0 max-w-full" : "shrink-0", i < hidden && "invisible")}>
@@ -498,7 +503,7 @@ export function AddressBar() {
                                 </div>
                             ))}
                         </div>
-                        <div onClick={startEditing} className="h-full min-w-10 flex-1 cursor-text" title="Type a path (Ctrl+L)" />
+                        <div onClick={startEditing} className="h-full min-w-4 flex-1 cursor-text" title="Type a path (Ctrl+L)" />
                     </div>
                 )}
             </div>
