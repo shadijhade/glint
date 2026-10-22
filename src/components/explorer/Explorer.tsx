@@ -505,7 +505,11 @@ function PreviewPane() {
     const width = useStore((s) => s.settings.previewWidth);
     const drag = useRef({ from: 0, now: 0, pane: null as HTMLElement | null });
     return (
-        <aside className="relative flex w-[min(28%,28rem)] min-w-[16rem] max-w-[60%] shrink-0 border-l" style={width ? { width } : undefined}>
+        // A narrow window narrows it first: the list keeps 16rem beside the sidebar (3rem as a rail, 14rem from md).
+        <aside
+            className="relative flex w-[min(28%,28rem)] min-w-[min(16rem,100%_-_19rem)] max-w-[min(60%,100%_-_19rem)] shrink-0 border-l md:min-w-[min(16rem,100%_-_30rem)] md:max-w-[min(60%,100%_-_30rem)]"
+            style={width ? { width } : undefined}
+        >
             <ResizeHandle
                 label="Preview pane width"
                 className="-left-1"

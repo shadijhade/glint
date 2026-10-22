@@ -57,12 +57,13 @@ function Section({ title, action, children }: { title: string; action?: ReactNod
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
     return (
-        <div className="flex items-center justify-between gap-6 px-4 py-3">
-            <div className="min-w-0">
+        // In a narrow window, what's chosen goes under the label rather than squeezing it.
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3">
+            <div className="min-w-48 flex-1">
                 <div className="text-sm">{label}</div>
                 {hint && <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>}
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">{children}</div>
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">{children}</div>
         </div>
     );
 }

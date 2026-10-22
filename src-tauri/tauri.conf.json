@@ -16,8 +16,8 @@
         "title": "Glint",
         "width": 1280,
         "height": 800,
-        "minWidth": 720,
-        "minHeight": 480,
+        "minWidth": 500,
+        "minHeight": 360,
         "center": true,
         "decorations": false,
         "visible": false
