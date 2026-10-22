@@ -42,6 +42,7 @@ import {
     takeLaunchTargets,
     watchDirs,
 } from "./fs";
+import { plural } from "./format";
 import { zoomTiles } from "./grid";
 import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
@@ -192,7 +193,6 @@ export const useExplorer = create<ExplorerState>(() => ({
 
 const get = useExplorer.getState;
 const set = useExplorer.setState;
-const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
 
 // Tabs
 
@@ -324,7 +324,7 @@ export async function navigate(target: string, { select, history = true, quiet =
             if (seq === r.navSeq) {
                 updateTab({ loading: false }, tab);
                 // File Explorer can ask for access where Glint was refused.
-                const denied = /denied/i.test(String(e));
+                const denied = /denied|permission/i.test(String(e));
                 if (!silent)
                     toast.error(`Can't open “${baseName(target)}”`, {
                         description: String(e),
@@ -1431,7 +1431,10 @@ export async function fileOp(op: FileOp): Promise<boolean> {
     if (done.length) {
         // Taking back a copy recycles it rather than deleting it for good.
         // Moves and deletions say so with Undo; a copy or a rename shows where it happened.
-        if (op.kind === "copy" || op.kind === "copyInto") rememberUndo(`copy of ${what}`, () => performFileOp({ kind: "delete", paths: done.map((i) => i.to), permanent: false, confirm: false }));
+        const recycle = () => performFileOp({ kind: "delete", paths: done.map((i) => i.to), permanent: false, confirm: false });
+        if (op.kind === "copy") rememberUndo(`copy of ${what}`, recycle);
+        // Sync's copies land in subfolders, out of sight: it says so.
+        else if (op.kind === "copyInto") offerUndo(`Synced ${what}`, rememberUndo(`sync of ${what}`, recycle));
         else if (op.kind === "move")
             offerUndo(
                 `Moved ${what} to “${baseName(op.dest)}”`,
