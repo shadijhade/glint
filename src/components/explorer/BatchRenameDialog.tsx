@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, PenLine, Regex, RotateCcw, Sparkles, X } from "lucide-react";
@@ -120,18 +120,6 @@ export function BatchRenameDialog() {
     const [stepNum, setStepNum] = useState(1);
     const [running, setRunning] = useState(false);
 
-    useEffect(() => {
-        if (!open) return;
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                closeBatchRename();
-            }
-        };
-        window.addEventListener("keydown", onKey, true);
-        return () => window.removeEventListener("keydown", onKey, true);
-    }, [open]);
 
     const resetRules = () => {
         setFindText("");

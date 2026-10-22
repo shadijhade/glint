@@ -84,18 +84,6 @@ export function TimelineDialog() {
     const [query, setQuery] = useState("");
     const [folderFilter, setFolderFilter] = useState<string | null>(null);
 
-    useEffect(() => {
-        if (!open) return;
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                closeTimeline();
-            }
-        };
-        window.addEventListener("keydown", onKey, true);
-        return () => window.removeEventListener("keydown", onKey, true);
-    }, [open]);
 
     useEffect(() => {
         setFolderFilter(null);

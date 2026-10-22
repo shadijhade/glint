@@ -83,11 +83,7 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
 
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                onClose();
-            } else if (e.key === "F5" && !busy) {
+            if (e.key === "F5" && !busy) {
                 e.preventDefault();
                 e.stopPropagation();
                 scan();
@@ -95,7 +91,7 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
         };
         window.addEventListener("keydown", onKeyDown, true);
         return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [onClose, scan, busy]);
+    }, [scan, busy]);
 
     const keptFor = (group: DuplicateGroup) => {
         const chosen = keptByGroup[group.hash];

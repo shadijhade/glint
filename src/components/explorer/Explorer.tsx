@@ -225,6 +225,8 @@ interface PaneActions {
     startRename: () => void;
     startBatchRename: () => void;
     deleteSelected: (permanent: boolean) => void;
+    /** The keyboard's right-click (the menu key, Shift+F10). */
+    keyboardMenu: () => void;
 }
 const paneActions: (PaneActions | undefined)[] = [];
 const activePaneActions = () => paneActions[useExplorer.getState().activePane];
@@ -438,6 +440,9 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("this-pc", "This PC", Monitor, () => navigate(THIS_PC)),
             action("new-tab", "New tab", Plus, () => newTab(), "Ctrl+T"),
             (tabs > 1 || s.dual) && action("close-tab", "Close tab", X, () => closeTab(), "Ctrl+W"),
+            tabs > 1 && action("close-other-tabs", "Close the other tabs", X, () => closeOtherTabs(t.id)),
+            action("duplicate-tab", "Duplicate tab", Copy, () => duplicateTab(t.id)),
+            s.dual && tabs > 1 && action("move-tab", "Move the tab to the other pane", ArrowRightLeft, () => moveTabToOtherPane(t.id)),
             canReopenTab() && action("reopen-tab", "Reopen closed tab", RotateCcw, reopenClosedTab, "Ctrl+Shift+T"),
             tabs > 1 && action("next-tab", "Next tab", ChevronRight, () => cycleTab(1), "Ctrl+Tab"),
             tabs > 1 && action("previous-tab", "Previous tab", ChevronLeft, () => cycleTab(-1), "Ctrl+Shift+Tab"),
@@ -767,7 +772,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     };
 
     useEffect(() => {
-        paneActions[index] = { startRename: () => startRename(), startBatchRename, deleteSelected };
+        paneActions[index] = { startRename: () => startRename(), startBatchRename, deleteSelected, keyboardMenu };
         return () => {
             paneActions[index] = undefined;
         };
@@ -814,6 +819,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             else if (key === "F6") {
                 if (!dual) return;
                 switchPane();
+            } else if (key === "ContextMenu" || (key === "F10" && e.shiftKey && !ctrl && !e.altKey)) {
+                paneActions[index]?.keyboardMenu();
             } else if (e.altKey && !ctrl) {
                 if (key === "ArrowLeft") goBack();
                 else if (key === "ArrowRight") goForward();
@@ -1047,11 +1054,27 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         menu.open(e, folderMenu(place, false, menuContext));
     };
 
-    /** Right-click where the open folder shows but none of its items does. */
+    const backgroundMenu = () => folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive });
+
+    /**
+     * The keyboard's right-click (the menu key, Shift+F10): what's selected gets its menu, at the item
+     * with the focus, else the folder gets its own, as in Explorer.
+     */
+    const keyboardMenu = () => {
+        const list = paneRef.current?.querySelector<HTMLElement>("[data-file-list], [data-file-grid]");
+        const focused = document.getElementById(list?.getAttribute("aria-activedescendant") ?? "")?.getBoundingClientRect();
+        const box = focused ?? list?.getBoundingClientRect();
+        const at = box ? { clientX: box.left + 24, clientY: focused ? box.bottom : box.top + 8 } : { clientX: innerWidth / 2, clientY: innerHeight / 3 };
+        const chosen = selectedNow();
+        menu.open(at, chosen.length ? itemMenu(chosen) : backgroundMenu());
+    };
+
+    /** Right-click where the open folder shows but none of its items does (or the keyboard's, on the list). */
     const onFolderContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
+        if (e.button !== 2) return keyboardMenu();
         selectOnly(null);
-        menu.open(e, folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive }));
+        menu.open(e, backgroundMenu());
     };
 
     const onSort = (key: SortKey) => setSettings({ sort: { key, desc: sort.key === key ? !sort.desc : key === "modified" || key === "size" } });

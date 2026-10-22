@@ -129,12 +129,18 @@ function App() {
   // at start (it stays taken), and every time it's chosen in Settings.
   const { quickShortcut, keepInTray, startWithWindows } = settings;
   const configured = useRef(false);
+  // The shortcut another app holds, which Settings notes on its row.
+  const [quickTaken, setQuickTaken] = useState<string | null>(null);
   useEffect(() => {
     const atStart = !configured.current;
     configured.current = true;
-    quickConfigure(quickShortcut, keepInTray).catch((e) => {
-      if (!atStart || firstNotice("quick-shortcut-taken", quickShortcut ?? "")) toast.error("Couldn't set the quick search shortcut", { description: String(e) });
-    });
+    quickConfigure(quickShortcut, keepInTray).then(
+      () => setQuickTaken(null),
+      (e) => {
+        setQuickTaken(quickShortcut);
+        if (!atStart || firstNotice("quick-shortcut-taken", quickShortcut ?? "")) toast.error("Couldn't set the quick search shortcut", { description: String(e) });
+      }
+    );
   }, [quickShortcut, keepInTray]);
   useEffect(() => {
     // Not without the tray: Glint would start where nothing shows it.
@@ -177,6 +183,8 @@ function App() {
         cancelSearch();
       } else if (e.key === "F1" || (ctrl && e.key === "/")) {
         e.preventDefault();
+        // In front of everything, Settings included.
+        settingsRef.current?.close();
         openShortcuts();
       } else if (ctrl && e.key === ",") {
         e.preventDefault();
@@ -420,7 +428,7 @@ function App() {
         onClick={(e) => e.target === e.currentTarget && e.currentTarget.close()}
         className="m-auto h-[min(85vh,46rem)] w-[min(92vw,54rem)] overflow-hidden rounded-xl border bg-chrome p-0 text-foreground shadow-2xl backdrop:bg-black/50"
       >
-        <SettingsView onClose={() => settingsRef.current?.close()} />
+        <SettingsView onClose={() => settingsRef.current?.close()} quickTaken={quickTaken} />
         {/* The dialog sits above everything else, toasts included: its own show them over it. */}
         <Toaster theme={settings.theme} position="bottom-right" richColors />
       </dialog>

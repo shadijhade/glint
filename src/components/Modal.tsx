@@ -1,13 +1,15 @@
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 
+/** Fields typed in, which Esc leaves before it closes the dialog. */
+const TYPED = "input:not([type=checkbox], [type=radio], [type=range], [type=button], [type=submit]), textarea";
 const FOCUSABLE = "button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
 
 /**
  * A dialog over the panes, as the tool dialogs share it: focus moves into it (to what asks for it,
- * else the dialog itself), Tab stays inside, and focus goes back where it was when it closes. A click
- * on the backdrop closes it; each dialog handles Esc itself. With `onSubmit` it's a form: Enter in a
- * field submits it.
+ * else the dialog itself), Tab stays inside, and focus goes back where it was when it closes. Esc
+ * leaves a field with something typed in it first (what's typed stays), then closes the dialog, as
+ * does a click on the backdrop. With `onSubmit` it's a form: Enter in a field submits it.
  */
 export function Modal({ label, onClose, onSubmit, className, children }: { label: string; onClose: () => void; onSubmit?: () => void; className?: string; children: React.ReactNode }) {
     const ref = useRef<HTMLElement>(null);
@@ -19,6 +21,21 @@ export function Modal({ label, onClose, onSubmit, className, children }: { label
         if (!box.contains(document.activeElement)) box.focus();
         return () => before?.focus();
     }, []);
+
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            const box = ref.current;
+            // A menu open in it closes on its own.
+            if (e.key !== "Escape" || !box || box.querySelector(":popover-open")) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const field = document.activeElement;
+            if (field instanceof HTMLElement && box.contains(field) && field.matches(TYPED) && (field as HTMLInputElement).value) return box.focus();
+            onClose();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [onClose]);
 
     const onKeyDown = (e: React.KeyboardEvent) => {
         if (e.key !== "Tab") return;

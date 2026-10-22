@@ -296,9 +296,11 @@ function UpdateRow() {
 
 interface SettingsViewProps {
     onClose: () => void;
+    /** The quick search shortcut, when another app holds it. */
+    quickTaken: string | null;
 }
 
-export function SettingsView({ onClose }: SettingsViewProps) {
+export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
     const { settings, setSettings: set, history } = useStore();
     const visited = useStore((s) => Object.keys(s.visits).length);
     const [version, setVersion] = useState("");
@@ -419,7 +421,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 </Section>
 
                 <Section title="Quick search">
-                    <Row label="Shortcut" hint="From anywhere: a search box over every drive. Enter opens, Alt+Enter shows it in Glint">
+                    <Row
+                        label="Shortcut"
+                        hint={
+                            quickTaken && quickTaken === settings.quickShortcut
+                                ? `Another app already uses ${quickTaken}, so it doesn't open quick search: pick another`
+                                : "From anywhere: a search box over every drive. Enter opens, Alt+Enter shows it in Glint"
+                        }
+                    >
                         <Segmented
                             value={settings.quickShortcut}
                             onChange={(quickShortcut) => set({ quickShortcut })}

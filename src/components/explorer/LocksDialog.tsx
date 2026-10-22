@@ -109,11 +109,7 @@ function LocksModal({ paths, onClose }: { paths: string[]; onClose: () => void }
 
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                onClose();
-            } else if (e.key === "F5") {
+            if (e.key === "F5") {
                 e.preventDefault();
                 e.stopPropagation();
                 scan();
@@ -121,7 +117,7 @@ function LocksModal({ paths, onClose }: { paths: string[]; onClose: () => void }
         };
         window.addEventListener("keydown", onKeyDown, true);
         return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [onClose, scan]);
+    }, [scan]);
 
     const stopOne = async (proc: LockingProcess) => {
         const ok = await confirm(

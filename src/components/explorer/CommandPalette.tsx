@@ -28,7 +28,12 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
     const [active, setActive] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
-    useLayoutEffect(() => inputRef.current?.focus(), []);
+    // Focus back where it was once it closes.
+    useLayoutEffect(() => {
+        const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        inputRef.current?.focus();
+        return () => before?.focus();
+    }, []);
 
     const results = useMemo(() => {
         const q = query.trim();
@@ -73,6 +78,9 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
         } else if (e.key === "Escape") {
             e.preventDefault();
             onClose();
+        } else if (e.key === "Tab") {
+            // The box keeps the keyboard; the arrows move through the list.
+            e.preventDefault();
         }
     };
 
@@ -89,11 +97,15 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                         spellCheck={false}
                         placeholder="Type a folder, a path or a command…"
                         aria-label="Command or folder"
+                        role="combobox"
+                        aria-expanded
+                        aria-controls="palette-results"
+                        aria-activedescendant={results.length ? `palette-${active}` : undefined}
                         className="h-12 min-w-0 flex-1 bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
                     />
                     <kbd className="rounded-sm border bg-card px-1.5 py-0.5 font-sans text-[0.6875rem] text-muted-foreground">Esc</kbd>
                 </div>
-                <div ref={listRef} role="listbox" className="max-h-[min(60vh,26rem)] overflow-y-auto p-1.5">
+                <div ref={listRef} id="palette-results" role="listbox" aria-label="Results" className="max-h-[min(60vh,26rem)] overflow-y-auto p-1.5">
                     {results.map((c, i) => (
                         <Fragment key={c.id}>
                         {/* Before anything's typed: where to go, then what to do. */}
@@ -104,6 +116,8 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                         )}
                         <button
                             data-index={i}
+                            id={`palette-${i}`}
+                            tabIndex={-1}
                             role="option"
                             aria-selected={i === active}
                             onMouseMove={() => i !== active && setActive(i)}

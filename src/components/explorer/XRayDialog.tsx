@@ -102,18 +102,6 @@ export function XRayDialog() {
         if (open) setExpectedHash("");
     }, [open, path]);
 
-    useEffect(() => {
-        if (!open) return;
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                closeXRay();
-            }
-        };
-        window.addEventListener("keydown", onKey, true);
-        return () => window.removeEventListener("keydown", onKey, true);
-    }, [open]);
 
     if (!open) return null;
 
