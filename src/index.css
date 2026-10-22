@@ -214,6 +214,45 @@
     color: hsl(var(--foreground) / 0.4);
   }
 
+  /* Motion, as Windows 11's flyouts and dialogs have it: menus drop in, dialogs rise, what's behind
+     them dims. None for those who turned animations off. */
+  @media (prefers-reduced-motion: no-preference) {
+    [popover]:popover-open,
+    .glint-pop {
+      animation: glint-pop 120ms cubic-bezier(0.2, 0, 0, 1);
+    }
+
+    dialog[open],
+    .glint-rise {
+      animation: glint-rise 170ms cubic-bezier(0.2, 0, 0, 1);
+    }
+
+    dialog[open]::backdrop,
+    .glint-fade {
+      animation: glint-fade 170ms ease-out;
+    }
+  }
+
+  @keyframes glint-pop {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+
+  @keyframes glint-rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.98);
+    }
+  }
+
+  @keyframes glint-fade {
+    from {
+      opacity: 0;
+    }
+  }
+
   .hl-line {
     background: hsl(var(--primary) / 0.14);
     box-shadow: inset 2px 0 hsl(var(--primary));

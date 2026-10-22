@@ -104,7 +104,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
             <div className="mb-3 mt-8 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold">Devices and drives</h2>
                 {totalCapacity > 0 && (
-                    <div className="flex items-center gap-2.5 rounded-full border bg-muted/30 px-3 py-1 text-xs text-muted-foreground">
+                    <div className="flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-full border bg-muted/30 px-3 py-1 text-xs text-muted-foreground">
                         <span>
                             Total: <b className="font-semibold text-foreground">{formatSize(totalUsed)}</b> used of{" "}
                             <b className="font-semibold text-foreground">{formatSize(totalCapacity)}</b>
