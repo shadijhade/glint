@@ -12,7 +12,8 @@ import { archiveOf, currentPath, defaultTextSearchFolder, openRequested, refresh
 import { THIS_PC } from "./lib/paths";
 import { replaceText, toRegExp } from "./lib/text";
 import { checkForUpdates, useUpdater } from "./lib/updater";
-import { cn } from "./lib/utils";
+import { quickConfigure, setStartWithWindows } from "./lib/fs";
+import { cn, firstNotice } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
 import { RipgrepCard, SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
@@ -116,6 +117,22 @@ function App() {
     }
     setMode("text");
   };
+
+  // Settings → Quick search, at start and on every change. A shortcut another app took is said once
+  // at start (it stays taken), and every time it's chosen in Settings.
+  const { quickShortcut, keepInTray, startWithWindows } = settings;
+  const configured = useRef(false);
+  useEffect(() => {
+    const atStart = !configured.current;
+    configured.current = true;
+    quickConfigure(quickShortcut, keepInTray).catch((e) => {
+      if (!atStart || firstNotice("quick-shortcut-taken", quickShortcut ?? "")) toast.error("Couldn't set the quick search shortcut", { description: String(e) });
+    });
+  }, [quickShortcut, keepInTray]);
+  useEffect(() => {
+    // Not without the tray: Glint would start where nothing shows it.
+    setStartWithWindows(startWithWindows && keepInTray).catch(() => {});
+  }, [startWithWindows, keepInTray]);
 
   useEffect(() => {
     checkForUpdates();
@@ -384,6 +401,8 @@ function App() {
         className="m-auto h-[min(85vh,46rem)] w-[min(92vw,44rem)] overflow-hidden rounded-xl border bg-chrome p-0 text-foreground shadow-2xl backdrop:bg-black/50"
       >
         <SettingsView onClose={() => settingsRef.current?.close()} />
+        {/* The dialog sits above everything else, toasts included: its own show them over it. */}
+        <Toaster theme={settings.theme} position="bottom-right" richColors />
       </dialog>
       <Toaster theme={settings.theme} position="bottom-right" richColors />
     </div>

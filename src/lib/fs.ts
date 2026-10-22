@@ -74,6 +74,14 @@ export async function findFiles(roots: string[], query: string, options: FindOpt
 
 export const cancelFind = (lane: string) => invoke("cancel_find", { lane });
 
+/** Settings → Quick search: the shortcut (null: off) and whether closing the window keeps Glint in the tray. */
+export const quickConfigure = (shortcut: string | null, trayIcon: boolean) => invoke("quick_configure", { shortcut, trayIcon });
+/** From the quick search window: shows the item in Glint (a folder opened, a file selected) in a new tab. */
+export const quickReveal = (path: string, dir: boolean) => invoke("quick_reveal", { path, dir });
+export const quickHide = () => invoke("quick_hide");
+/** Starts Glint in the tray when this user signs in, or stops doing so. */
+export const setStartWithWindows = (enabled: boolean) => invoke("set_start_with_windows", { enabled });
+
 /** Who measured a folder: the index, dust, or (in an archive) the archive's own list of entries. */
 export type SizeEngine = "index" | "dust" | "zip" | "7z";
 
