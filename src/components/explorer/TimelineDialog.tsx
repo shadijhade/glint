@@ -13,7 +13,6 @@ import {
     FolderInput,
     FolderOpen,
     Loader2,
-    RotateCw,
     Search,
     X,
 } from "lucide-react";
@@ -23,7 +22,7 @@ import { cancelTimeline, scanTimeline, type TimelineReport } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
-import { Modal, pressable } from "../Modal";
+import { Modal, ModalHeader, pressable } from "../Modal";
 
 interface TimelineState {
     open: boolean;
@@ -112,18 +111,7 @@ export function TimelineDialog() {
 
     return (
         <Modal label="Recent changes" onClose={closeTimeline} className="max-h-[86vh] max-w-4xl">
-            {/* Header */}
-            <div className="flex items-center gap-2.5 border-b px-4 py-3">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                    <FileClock className="size-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                    <h2 className="truncate text-sm font-semibold">Recent changes in “{baseName(root) || root}”</h2>
-                    <p className="truncate text-xs text-muted-foreground" title={root}>
-                        {root}
-                    </p>
-                </div>
-
+            <ModalHeader icon={FileClock} title={`Recent changes in “${baseName(root) || root}”`} subtitle={root} onClose={closeTimeline} onRefresh={() => inspectTimeline(root, windowMs)} refreshing={loading}>
                 {/* Time-horizon scrubbers */}
                 <div className="flex items-center gap-0.5 rounded-md border bg-muted/40 p-0.5">
                     {TIME_WINDOWS.map((w) => (
@@ -143,14 +131,7 @@ export function TimelineDialog() {
                         </button>
                     ))}
                 </div>
-
-                <Button variant="ghost" size="icon" className="size-7" onClick={() => inspectTimeline(root, windowMs)} disabled={loading} title="Rescan">
-                    <RotateCw className={cn("size-3.5", loading && "animate-spin")} />
-                </Button>
-                <Button variant="ghost" size="icon" className="size-7" onClick={closeTimeline} title="Close (Esc)">
-                    <X className="size-4" />
-                </Button>
-            </div>
+            </ModalHeader>
 
             {/* Mode tabs & filter bar */}
             <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-4 py-2 text-xs">

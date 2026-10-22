@@ -13,18 +13,16 @@ import {
     HardDrive,
     Layers,
     Loader2,
-    RotateCw,
     ShieldAlert,
     ShieldCheck,
     Trash2,
-    X,
 } from "lucide-react";
 import { formatCount, formatSize } from "@/lib/format";
 import { cancelXRay, type FileXRayReport, inspectFileXRay, removeNtfsStream } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
-import { Modal } from "../Modal";
+import { Modal, ModalHeader } from "../Modal";
 
 interface XRayState {
     open: boolean;
@@ -141,29 +139,9 @@ export function XRayDialog() {
 
     return (
         <Modal label="File X-Ray" onClose={closeXRay} className="max-h-[88vh] max-w-3xl">
-            {/* Header */}
-            <div className="flex items-center gap-2.5 border-b px-4 py-3">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                    <Fingerprint className="size-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                    <h2 className="truncate text-sm font-semibold">File X-Ray — {baseName(path) || path}</h2>
-                    <p className="truncate font-mono text-[0.6875rem] text-muted-foreground" title={path}>
-                        {path}
-                    </p>
-                </div>
-                {report && (
-                    <span className="font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
-                        {report.elapsedMs.toFixed(1)} ms
-                    </span>
-                )}
-                <Button variant="ghost" size="icon" className="size-7" onClick={() => inspectXRay(path)} disabled={loading} title="Rescan">
-                    <RotateCw className={cn("size-3.5", loading && "animate-spin")} />
-                </Button>
-                <Button variant="ghost" size="icon" className="size-7" onClick={closeXRay} title="Close (Esc)">
-                    <X className="size-4" />
-                </Button>
-            </div>
+            <ModalHeader icon={Fingerprint} title={`File X-Ray: ${baseName(path) || path}`} subtitle={path} onClose={closeXRay} onRefresh={() => inspectXRay(path)} refreshing={loading}>
+                {report && <span className="text-xs text-muted-foreground tabular-nums">{report.elapsedMs.toFixed(1)} ms</span>}
+            </ModalHeader>
 
             {/* Body */}
             <div className="min-h-[18rem] flex-1 space-y-4 overflow-y-auto p-4 text-xs select-text">
