@@ -166,6 +166,18 @@
     }
   }
 
+  /* Narrower still (two panes in a window half a small screen wide): the names alone. */
+  @container (max-width: 15rem) {
+    .file-row,
+    .file-row[data-search] {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .file-row > :not(:first-child) {
+      display: none !important;
+    }
+  }
+
   /* A Fluent text field: a subtle box with a darker bottom edge, which turns into a 2 px accent line
      while typing. */
   .fluent-field {

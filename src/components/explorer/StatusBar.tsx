@@ -129,7 +129,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
         );
     }
 
-    // The counts stay whole; what did the work and how long it took gives way first.
+    // The counts stay whole; what did the work and how long it took gives way first (all of it in a narrow pane).
     return (
         <div className="@container flex h-7 shrink-0 items-center gap-2 overflow-hidden border-t px-3 text-xs text-muted-foreground">
             <span className="shrink-0">
@@ -158,7 +158,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                     <PenLine className="size-3" /> Rename
                 </button>
             )}
-            <span className="ml-auto flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap tabular-nums">
+            <span className="ml-auto hidden min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap tabular-nums @2xs:flex">
                 {indexing && <span className="hidden @md:inline-flex">{indexing}</span>}
                 {work}
                 {thumbsHere && <ThumbWork run={thumbsHere} />}

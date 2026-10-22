@@ -43,7 +43,7 @@ function NavButton({ icon: Icon, label, className, ...props }: { icon: LucideIco
             title={label}
             aria-label={label}
             className={cn(
-                "grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4",
+                "grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40 max-sm:size-7 [&_svg]:size-4",
                 className
             )}
             {...props}
@@ -438,7 +438,8 @@ export function AddressBar() {
         <div className="flex min-w-0 flex-1 items-center gap-2">
             <div className="flex shrink-0 items-center">
                 <NavButton icon={ArrowLeft} label="Back (Alt+Left)" onClick={goBack} disabled={!back} />
-                <NavButton icon={ArrowRight} label="Forward (Alt+Right)" onClick={goForward} disabled={!forward} />
+                {/* A narrow window shows Forward only when there's somewhere to go. */}
+                <NavButton icon={ArrowRight} label="Forward (Alt+Right)" onClick={goForward} disabled={!forward} className={cn(!forward && "max-sm:hidden")} />
                 <NavButton icon={ArrowUp} label="Up (Alt+Up)" onClick={goUp} disabled={path === THIS_PC} />
                 <NavButton icon={RotateCw} label="Refresh (F5)" onClick={refresh} className={cn("hidden md:grid", loading && "[&_svg]:animate-spin")} />
             </div>
@@ -569,7 +570,14 @@ export function AddressBar() {
                 </div>
             </div>
 
-            <div data-tauri-drag-region="false" className="relative w-[clamp(8rem,22vw,19rem)] shrink-0">
+            {/* In a narrow window, just its magnifier until it's clicked into or holds a search. */}
+            <div
+                data-tauri-drag-region="false"
+                className={cn(
+                    "relative w-[clamp(8rem,22vw,19rem)] shrink-0 transition-[width] duration-150 max-sm:w-[calc(2rem+2px)] max-sm:focus-within:w-[min(16rem,50vw)]",
+                    (filter || find) && "max-sm:w-[min(16rem,50vw)]"
+                )}
+            >
                 <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <input
                     id={FIND_BOX_ID}
@@ -582,7 +590,7 @@ export function AddressBar() {
                     placeholder={`Search ${folderName}`}
                     aria-label={`Search ${folderName}. Typing filters; Enter searches subfolders too.`}
                     title="Typing filters this folder · Enter searches subfolders by name, with the instant search index or fd (* and ? work, words all must match). Filters: ext:pdf, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:"
-                    className="fluent-field h-8 w-full pl-8 pr-8 text-sm outline-hidden placeholder:text-muted-foreground"
+                    className={cn("fluent-field h-8 w-full pl-8 text-sm outline-hidden placeholder:text-muted-foreground", filter || find ? "pr-8" : "pr-8 max-sm:pr-0 max-sm:focus:pr-2")}
                 />
                 {(filter || find) && (
                     <button onClick={clearFind} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground" title="Clear (Esc)" aria-label="Clear search">
