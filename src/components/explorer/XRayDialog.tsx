@@ -148,12 +148,12 @@ export function XRayDialog() {
                 </div>
                 <div className="min-w-0 flex-1">
                     <h2 className="truncate text-sm font-semibold">File X-Ray — {baseName(path) || path}</h2>
-                    <p className="truncate font-mono text-[11px] text-muted-foreground" title={path}>
+                    <p className="truncate font-mono text-[0.6875rem] text-muted-foreground" title={path}>
                         {path}
                     </p>
                 </div>
                 {report && (
-                    <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                    <span className="font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
                         {report.elapsedMs.toFixed(1)} ms
                     </span>
                 )}
@@ -193,12 +193,12 @@ export function XRayDialog() {
                                         Marked as downloaded · {report.zoneInfo.zoneLabel}
                                     </div>
                                     {report.zoneInfo.hostUrl && (
-                                        <p className="max-w-lg truncate font-mono text-[11px] text-muted-foreground" title={report.zoneInfo.hostUrl}>
+                                        <p className="max-w-lg truncate font-mono text-[0.6875rem] text-muted-foreground" title={report.zoneInfo.hostUrl}>
                                             Source URL: {report.zoneInfo.hostUrl}
                                         </p>
                                     )}
                                     {report.zoneInfo.referrerUrl && (
-                                        <p className="max-w-lg truncate font-mono text-[11px] text-muted-foreground" title={report.zoneInfo.referrerUrl}>
+                                        <p className="max-w-lg truncate font-mono text-[0.6875rem] text-muted-foreground" title={report.zoneInfo.referrerUrl}>
                                             Referrer: {report.zoneInfo.referrerUrl}
                                         </p>
                                     )}
@@ -227,7 +227,7 @@ export function XRayDialog() {
                                     <Fingerprint className="size-3.5 text-primary" />
                                     Checksums
                                     {!report.hashesComplete && (
-                                        <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-normal text-amber-600 dark:text-amber-400">
+                                        <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[0.625rem] font-normal text-amber-600 dark:text-amber-400">
                                             Of the first 256 MB ·{" "}
                                             <button type="button" onClick={() => inspectXRay(path, true)} className="font-medium underline underline-offset-2 hover:text-amber-700 dark:hover:text-amber-300">
                                                 Hash the whole file
@@ -241,7 +241,7 @@ export function XRayDialog() {
                                         value={expectedHash}
                                         onChange={(e) => setExpectedHash(e.target.value)}
                                         placeholder="Paste a SHA-256 or CRC32 to compare"
-                                        className="h-6 w-64 rounded border bg-background px-2 font-mono text-[11px] outline-none focus:border-primary"
+                                        className="h-6 w-64 rounded border bg-background px-2 font-mono text-[0.6875rem] outline-none focus:border-primary"
                                     />
                                     {cleanExpected &&
                                         (matchedAlgo ? (
@@ -260,7 +260,7 @@ export function XRayDialog() {
                                 </div>
                             </div>
 
-                            <div className="divide-y rounded-md border bg-muted/15 font-mono text-[11px]">
+                            <div className="divide-y rounded-md border bg-muted/15 font-mono text-[0.6875rem]">
                                 {[
                                     { label: "SHA-256", value: report.sha256 },
                                     { label: "CRC32", value: report.crc32 },
@@ -292,13 +292,13 @@ export function XRayDialog() {
                                     <Activity className="size-3.5 text-primary" />
                                     Entropy and byte values
                                 </div>
-                                <span className="rounded-md bg-primary/10 px-2 py-0.5 font-mono text-[11px] font-semibold text-primary tabular-nums">
+                                <span className="rounded-md bg-primary/10 px-2 py-0.5 font-mono text-[0.6875rem] font-semibold text-primary tabular-nums">
                                     H = {report.entropy.toFixed(3)} / 8.000 bits/B
                                 </span>
                             </div>
 
                             <div className="space-y-1">
-                                <div className="flex justify-between text-[11px]">
+                                <div className="flex justify-between text-[0.6875rem]">
                                     <span className="font-medium text-foreground">{report.entropyLabel}</span>
                                     <span className="text-muted-foreground tabular-nums">
                                         {Math.round((report.entropy / 8) * 100)}% of the maximum
@@ -330,7 +330,7 @@ export function XRayDialog() {
                                         );
                                     })}
                                 </div>
-                                <div className="flex justify-between px-1 font-mono text-[10px] text-muted-foreground">
+                                <div className="flex justify-between px-1 font-mono text-[0.625rem] text-muted-foreground">
                                     <span>0x00 (NUL)</span>
                                     <span>0x20–0x7E (ASCII: {report.asciiPct.toFixed(1)}%)</span>
                                     <span>0x80–0xFF (High: {report.highBytePct.toFixed(1)}%)</span>
@@ -345,7 +345,7 @@ export function XRayDialog() {
                                     <HardDrive className="size-3.5 text-primary" />
                                     Size on disk
                                 </div>
-                                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+                                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[0.6875rem]">
                                     <dt className="text-muted-foreground">Logical size</dt>
                                     <dd className="text-right font-mono tabular-nums">
                                         {formatSize(report.logicalSize)} ({formatCount(report.logicalSize)} B)
@@ -364,7 +364,7 @@ export function XRayDialog() {
                                     <Cpu className="size-3.5 text-primary" />
                                     File record
                                 </div>
-                                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+                                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[0.6875rem]">
                                     <dt className="text-muted-foreground">MFT File ID</dt>
                                     <dd className="text-right font-mono tabular-nums">{report.fileIndex}</dd>
                                     <dt className="text-muted-foreground">Volume Serial</dt>
@@ -384,11 +384,11 @@ export function XRayDialog() {
                                     <Layers className="size-3.5 text-primary" />
                                     Hidden streams ({report.streams.length})
                                 </div>
-                                <span className="text-[11px] text-muted-foreground">NTFS alternate data streams</span>
+                                <span className="text-[0.6875rem] text-muted-foreground">NTFS alternate data streams</span>
                             </div>
 
                             {report.streams.length === 0 ? (
-                                <p className="py-2 text-[11px] text-muted-foreground">
+                                <p className="py-2 text-[0.6875rem] text-muted-foreground">
                                     None: the file has only its own content.
                                 </p>
                             ) : (
@@ -397,7 +397,7 @@ export function XRayDialog() {
                                         <div key={s.name} className="space-y-1.5 p-2.5">
                                             <div className="flex items-center gap-2">
                                                 <span className="font-mono font-semibold text-foreground">:{s.cleanName}</span>
-                                                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground tabular-nums">
+                                                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground tabular-nums">
                                                     {formatSize(s.size)}
                                                 </span>
                                                 <Button
@@ -405,7 +405,7 @@ export function XRayDialog() {
                                                     size="sm"
                                                     disabled={removingStream !== null}
                                                     onClick={() => handleRemoveStream(s.cleanName)}
-                                                    className="ml-auto h-6 px-2 text-[11px] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                                    className="ml-auto h-6 px-2 text-[0.6875rem] text-destructive hover:bg-destructive/10 hover:text-destructive"
                                                     title={`Delete the stream :${s.cleanName}`}
                                                 >
                                                     {removingStream === s.cleanName ? (
@@ -417,7 +417,7 @@ export function XRayDialog() {
                                                 </Button>
                                             </div>
                                             {s.preview && (
-                                                <pre className="max-h-28 overflow-auto rounded border bg-background/70 p-2 font-mono text-[10px] text-muted-foreground">
+                                                <pre className="max-h-28 overflow-auto rounded border bg-background/70 p-2 font-mono text-[0.625rem] text-muted-foreground">
                                                     {s.preview}
                                                 </pre>
                                             )}

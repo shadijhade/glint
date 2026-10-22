@@ -277,3 +277,32 @@
   .token.tag, .token.selector { color: var(--tk-tag); }
   .token.attr-name, .token.variable, .token.deleted { color: var(--tk-attr); }
 }
+
+/* Windows' high contrast themes drop the tints that show what's selected, on or picked: those get the
+   theme's highlight instead, and the switches an outline. (Outside the layers, to win over utilities.) */
+@media (forced-colors: active) {
+  :is([aria-selected="true"], [aria-pressed="true"], [aria-checked="true"]:not(input, [role^="menuitem"]), [aria-current]:not([aria-current="false"])),
+  :is([aria-selected="true"], [aria-pressed="true"], [aria-checked="true"]:not(input, [role^="menuitem"]), [aria-current]:not([aria-current="false"])) * {
+    /* Its own colors, without the backplate Windows puts behind text (it would hide it). */
+    forced-color-adjust: none;
+    background-color: Highlight;
+    color: HighlightText;
+  }
+
+  input[role="switch"] {
+    border: 1px solid CanvasText;
+  }
+
+  input[role="switch"]::before {
+    background-color: CanvasText;
+  }
+
+  input[role="switch"]:checked {
+    border-color: Highlight;
+    background-color: Highlight;
+  }
+
+  input[role="switch"]:checked::before {
+    background-color: HighlightText;
+  }
+}

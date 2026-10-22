@@ -2,39 +2,25 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, HardDrive, Loader2, X } from "lucide-react";
+import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, HardDrive, X } from "lucide-react";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, useExplorer } from "@/lib/explorer";
-import { isKnownType, kindOf, previewKind, typeLabel } from "@/lib/fileTypes";
+import { isKnownType, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, listDir, readTextPreview } from "@/lib/fs";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
-import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
 import { ShellPreview } from "./ShellPreview";
+import { BigIcon, Centered, Waiting } from "./PreviewState";
 import { inspectXRay } from "./XRayDialog";
 
 const TEXT_BYTES = 256 * 1024;
 const TEXT_LINES = 2000;
-
-function Centered({ children, className }: { children: React.ReactNode; className?: string }) {
-    return <div className={cn("flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground", className)}>{children}</div>;
-}
-
-function BigIcon({ entry, note }: { entry: FileEntry; note?: string }) {
-    const kind = kindOf(entry);
-    return (
-        <Centered>
-            <kind.icon className={cn("size-16 stroke-[1.25]", kind.tone)} />
-            {note && <p>{note}</p>}
-        </Centered>
-    );
-}
 
 function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
     const [dimensions, setDimensions] = useState("");
@@ -53,16 +39,6 @@ function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
             {dimensions && <span className="text-xs tabular-nums">{dimensions} pixels</span>}
         </Centered>
     );
-}
-
-/** True once `ms` have passed: a spinner only for what takes a moment. */
-function useLater(ms: number) {
-    const [late, setLate] = useState(false);
-    useEffect(() => {
-        const timer = setTimeout(() => setLate(true), ms);
-        return () => clearTimeout(timer);
-    }, [ms]);
-    return late;
 }
 
 type MediaKind = "image" | "video" | "audio" | "pdf";
@@ -113,7 +89,7 @@ function PdfPreview({ entry, src }: { entry: FileEntry; src: string }) {
         };
     }, [src, tooBig]);
     if (tooBig) return <BigIcon entry={entry} note="Too big to preview here: open it to read it." />;
-    if (!pdf) return null;
+    if (!pdf) return <Waiting />;
     if ("error" in pdf) return <BigIcon entry={entry} note={pdf.error} />;
     return <iframe src={pdf.url} title={entry.name} className="h-full w-full bg-white" />;
 }
@@ -121,7 +97,6 @@ function PdfPreview({ entry, src }: { entry: FileEntry; src: string }) {
 /** Media in an archive: shown from a temp copy extracted for the preview (once, and within a size budget). */
 function ArchivedMedia({ entry, kind }: { entry: FileEntry; kind: MediaKind }) {
     const [copy, setCopy] = useState<{ path: string } | { error: string } | null>(null);
-    const late = useLater(300);
     useEffect(() => {
         let stale = false;
         archiveExtract(entry.path, "preview").then(
@@ -132,14 +107,7 @@ function ArchivedMedia({ entry, kind }: { entry: FileEntry; kind: MediaKind }) {
             stale = true;
         };
     }, [entry.path, entry.modified]);
-    if (!copy) {
-        return late ? (
-            <Centered>
-                <Loader2 className="size-5 animate-spin text-primary" />
-                <p>Extracting from the archive…</p>
-            </Centered>
-        ) : null;
-    }
+    if (!copy) return <Waiting what="Extracting from the archive…" />;
     if ("error" in copy) return <BigIcon entry={entry} note={copy.error} />;
     return <Media entry={entry} kind={kind} src={convertFileSrc(copy.path)} />;
 }
@@ -197,8 +165,8 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
         };
     }, [entry.path, entry.modified]);
 
-    if (!state) return null;
-    if ("error" in state) return <p className="p-4 text-sm text-destructive">{state.error}</p>;
+    if (!state) return <Waiting />;
+    if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
     if (state.binary)
         return isArchived(entry) ? (
             <BigIcon entry={entry} note="No preview for this kind of file" />

@@ -217,7 +217,7 @@ function AddressInput({ path }: { path: string }) {
                     data-overlay
                     className="glint-pop absolute inset-x-0 top-[calc(100%+4px)] z-50 max-h-72 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-lg"
                 >
-                    <div className="flex items-center justify-between px-2 py-1 text-[11px] text-muted-foreground">
+                    <div className="flex items-center justify-between px-2 py-1 text-[0.6875rem] text-muted-foreground">
                         <span>Path suggestions</span>
                         <span>Tab to complete · Enter to open</span>
                     </div>
@@ -560,7 +560,7 @@ export function AddressBar() {
                                 >
                                     <Icon className={cn("size-4 shrink-0 text-muted-foreground", item.iconClass)} />
                                     <span className="flex-1 truncate">{item.name}</span>
-                                    {item.detail && <span className="text-[11px] text-muted-foreground">{item.detail}</span>}
+                                    {item.detail && <span className="text-[0.6875rem] text-muted-foreground">{item.detail}</span>}
                                     {active && <Check className="size-3.5 shrink-0 text-primary" />}
                                 </button>
                             );
@@ -596,7 +596,7 @@ export function AddressBar() {
                         <div className="mt-1.5 flex flex-col">
                             {FILTERS.map(([start, example, meaning]) => (
                                 <button key={start} type="button" tabIndex={-1} onClick={() => updateTab({ filter: start })} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
-                                    <code className="shrink-0 font-mono text-[11px] text-primary">{example}</code>
+                                    <code className="shrink-0 font-mono text-[0.6875rem] text-primary">{example}</code>
                                     <span className="truncate text-muted-foreground">{meaning}</span>
                                 </button>
                             ))}
