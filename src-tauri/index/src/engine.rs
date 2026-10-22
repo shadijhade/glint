@@ -27,7 +27,7 @@ const RETRY_AFTER: Duration = Duration::from_secs(30);
 /// Results per frame.
 const BATCH: usize = 4096;
 /// Even a search with no limit stops here: more than any list can show.
-pub const MAX_HITS: usize = 1_000_000;
+pub const MAX_HITS: usize = 500_000;
 /// Disk-usage maps go at most this deep and hold at most this many items: far more than a screen
 /// can show.
 const MAX_USAGE_DEPTH: u32 = 32;
@@ -221,7 +221,12 @@ impl Engine {
                 volume.journal().map_err(|e| retry("can't read the change journal", e))?.ok_or_else(|| Restart::Retry("no change journal".into()))?
             }
         };
-        let path = self.data.join(format!("{:016X}.idx", volume.serial));
+        // By serial and letter: a cloned disk next to its original has the same serial (and journal).
+        let path = self.data.join(format!("{:016X}-{}.idx", volume.serial, slot.letter));
+        let legacy = self.data.join(format!("{:016X}.idx", volume.serial));
+        if !path.exists() && legacy.exists() {
+            let _ = fs::rename(&legacy, &path);
+        }
         let started = Instant::now();
         let saved = if rescan { None } else { self.load(slot.letter, &path, &volume, &journal) };
         let (mut cursor, since, source) = match saved {
