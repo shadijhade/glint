@@ -362,26 +362,24 @@ fn run_ripgrep_batched(
 /// In release builds, WebView2's browser shortcuts would reload the whole app (F5, Ctrl+R), print it
 /// (Ctrl+P), open a find bar (Ctrl+F) or zoom it. This switches off the browser's handling of each
 /// key as it's pressed (the global setting only applies from the next page load), while the key
-/// still reaches the page, where Files uses F5 to refresh.
+/// still reaches the page, where Files uses F5 to refresh. Called for each window: the main one at
+/// start, the quick search window when it's made.
 #[cfg(all(windows, not(debug_assertions)))]
-fn disable_browser_keys(app: &tauri::App) {
-    use tauri::Manager;
+pub(crate) fn disable_browser_keys(window: &tauri::WebviewWindow) {
     use webview2_com::AcceleratorKeyPressedEventHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2AcceleratorKeyPressedEventArgs2;
     use windows::core::Interface;
 
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.with_webview(|webview| unsafe {
-            let handler = AcceleratorKeyPressedEventHandler::create(Box::new(|_, args| {
-                if let Some(args) = args.and_then(|a| a.cast::<ICoreWebView2AcceleratorKeyPressedEventArgs2>().ok()) {
-                    let _ = args.SetIsBrowserAcceleratorKeyEnabled(false);
-                }
-                Ok(())
-            }));
-            let mut token = 0;
-            let _ = webview.controller().add_AcceleratorKeyPressed(&handler, &mut token);
-        });
-    }
+    let _ = window.with_webview(|webview| unsafe {
+        let handler = AcceleratorKeyPressedEventHandler::create(Box::new(|_, args| {
+            if let Some(args) = args.and_then(|a| a.cast::<ICoreWebView2AcceleratorKeyPressedEventArgs2>().ok()) {
+                let _ = args.SetIsBrowserAcceleratorKeyEnabled(false);
+            }
+            Ok(())
+        }));
+        let mut token = 0;
+        let _ = webview.controller().add_AcceleratorKeyPressed(&handler, &mut token);
+    });
 }
 
 /// Whether the setup program installed this copy (it leaves `uninstall.exe` next to the app; the Scoop
@@ -495,7 +493,9 @@ pub fn run() {
         ])
         .setup(move |app| {
             #[cfg(all(windows, not(debug_assertions)))]
-            disable_browser_keys(app);
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                disable_browser_keys(&window);
+            }
             // Made hidden: it shows once the page has painted (app_ready), or after a few seconds if the
             // page never says so, and not at all when Glint started in the tray.
             if !in_tray {
