@@ -7,10 +7,10 @@ use crate::proto::{self, Message, Request};
 use crate::win::{self, os_error, wide, Handle, SecurityDescriptor};
 use std::io::{self, Read, Write};
 use std::os::windows::io::AsRawHandle;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
@@ -19,7 +19,7 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
@@ -94,8 +94,19 @@ fn instance(name: &str, sd: &SecurityDescriptor, first: bool) -> io::Result<Hand
 }
 
 pub fn serve(engine: Arc<Engine>, allowed: &[String]) -> io::Result<Server> {
-    serve_on(crate::PIPE_NAME, engine, &sddl(allowed))
+    let sddl = sddl(allowed);
+    serve_on(crate::PIPE_NAME, engine.clone(), &sddl).or_else(|e| {
+        engine.log.line(&format!("can't serve under the protected prefix ({e}); serving on {}", crate::LEGACY_PIPE_NAME));
+        serve_on(crate::LEGACY_PIPE_NAME, engine, &sddl)
+    })
 }
+
+/// Connections answered at once. More (a stuck or hostile local program opening many) are told the
+/// service is busy instead of each getting a thread.
+const MAX_CLIENTS: usize = 16;
+
+/// How long a client has to send its request once connected.
+const REQUEST_WAIT: Duration = Duration::from_secs(10);
 
 /// Serves `name` with the given DACL. Each connection gets a fresh pipe instance, which takes
 /// FILE_CREATE_PIPE_INSTANCE: SYSTEM and administrators have it, users never do.
@@ -105,6 +116,7 @@ pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str) -> io::Resul
     let pipe_name = name.to_string();
     let stopping = Arc::new(AtomicBool::new(false));
     let stop = stopping.clone();
+    let active = Arc::new(AtomicUsize::new(0));
     let thread = thread::spawn(move || loop {
         if stop.load(Ordering::SeqCst) {
             return;
@@ -123,10 +135,20 @@ pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str) -> io::Resul
                 }
             }
         };
-        if client {
-            let engine = engine.clone();
-            thread::spawn(move || answer(pipe, &engine));
+        if !client {
+            continue;
         }
+        if active.load(Ordering::SeqCst) >= MAX_CLIENTS {
+            // Small enough for the pipe's buffer, so this never waits on the client.
+            let _ = proto::write_message(&mut PipeIo(&pipe), &Message::Error { message: "The instant search service is busy; try again".into() });
+            continue;
+        }
+        active.fetch_add(1, Ordering::SeqCst);
+        let (engine, active) = (engine.clone(), active.clone());
+        thread::spawn(move || {
+            answer(pipe, &engine);
+            active.fetch_sub(1, Ordering::SeqCst);
+        });
     });
     Ok(Server { name: name.to_string(), stopping, thread: Some(thread) })
 }
@@ -151,8 +173,34 @@ impl Server {
     }
 }
 
+/// Whether the client sends something within `limit`: one that connects and stays silent mustn't
+/// hold a connection for good. Checks at once, then ever less often (requests come right away).
+/// ponytail: a client that asks and then never reads its (large) answer still holds one until it
+/// goes; MAX_CLIENTS bounds them, overlapped writes with a timeout would free them too.
+fn request_arrives(pipe: &Handle, limit: Duration) -> bool {
+    let started = Instant::now();
+    let mut pause = Duration::from_millis(1);
+    loop {
+        let mut available = 0u32;
+        if unsafe { PeekNamedPipe(pipe.0, None, 0, None, Some(&mut available), None) }.is_err() {
+            return false;
+        }
+        if available > 0 {
+            return true;
+        }
+        if started.elapsed() >= limit {
+            return false;
+        }
+        thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(50));
+    }
+}
+
 /// Serves one connection: one request, its answer, then the pipe is closed.
 fn answer(pipe: Handle, engine: &Engine) {
+    if !request_arrives(&pipe, REQUEST_WAIT) {
+        return;
+    }
     let mut io = PipeIo(&pipe);
     let Ok(request) = proto::read_request(&mut io) else { return };
     let result = match request {
