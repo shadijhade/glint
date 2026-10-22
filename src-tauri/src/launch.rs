@@ -129,6 +129,11 @@ impl Pending {
     fn lock(&self) -> MutexGuard<'_, Vec<Target>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// One more folder to open, in a new tab (the UI takes it on the next "open-requested").
+    pub fn push(&self, target: Target) {
+        self.lock().push(target);
+    }
 }
 
 /// The folders waiting to open, each in a new tab. The UI asks at start, and again on every
@@ -155,13 +160,16 @@ pub fn second_launch(app: &AppHandle, args: Vec<String>, cwd: String) {
     });
 }
 
-#[cfg_attr(debug_assertions, allow(dead_code))]
-fn bring_to_front(app: &AppHandle) {
+pub(crate) fn bring_to_front(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else { return };
     let _ = window.unminimize();
     let _ = window.show();
-    // SetForegroundWindow rather than window.set_focus(), which presses Alt when Windows says no.
-    // The launch handing over its folders allowed this process to come forward.
+    bring_forward(&window);
+}
+
+/// SetForegroundWindow rather than window.set_focus(), which presses Alt when Windows says no. What
+/// asked for it (a launch handing over its folders, the shortcut, the tray) allowed this process to come forward.
+pub(crate) fn bring_forward(window: &tauri::WebviewWindow) {
     #[cfg(windows)]
     if let Ok(hwnd) = window.hwnd() {
         use windows::Win32::Foundation::HWND;

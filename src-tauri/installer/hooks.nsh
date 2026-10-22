@@ -136,11 +136,19 @@ Var OldDesktopShortcut
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
 
-; Uninstalling the app removes File Explorer's entries for it, and the service and its index files
-; (an update keeps them all).
+; Uninstalling the app removes File Explorer's entries for it, starting with Windows, and the service
+; and its index files (an update keeps them all).
 !macro NSIS_HOOK_PREUNINSTALL
   ${If} $UpdateMode <> 1
     !insertmacro GLINT_REMOVE_EXPLORER_VERBS
+    ; Starting with Windows (Settings > Quick search), where it starts this copy.
+    StrCpy $R1 '"$INSTDIR\${MAINBINARYNAME}.exe"'
+    StrLen $R2 $R1
+    ReadRegStr $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    StrCpy $R0 $R0 $R2
+    ${If} $R0 == $R1
+      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    ${EndIf}
     nsExec::ExecToStack 'sc.exe query ShadUIRipgrepIndex'
     Pop $0
     Pop $1

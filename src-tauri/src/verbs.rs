@@ -51,6 +51,10 @@ pub fn repair(app: &AppHandle) {
     imp::repair(app);
 }
 
+/// The current user's registry and the exe its entries run, for the Run key too (Start with Windows).
+#[cfg(windows)]
+pub(crate) use imp::{installed_exe, reg};
+
 #[cfg(windows)]
 mod imp {
     use super::Integration;
@@ -210,7 +214,7 @@ mod imp {
     /// The exe the entries can run for as long as this copy is installed: the one the setup program
     /// installed, or a Scoop copy's through its `current` link. A portable copy or a dev build has
     /// none, as it could be moved or deleted with nothing to take the entries out.
-    fn installed_exe() -> Option<PathBuf> {
+    pub(crate) fn installed_exe() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
         if crate::installed_by_setup() {
             Some(exe)
@@ -247,7 +251,7 @@ mod imp {
     }
 
     /// The registry under HKEY_CURRENT_USER, by path.
-    mod reg {
+    pub(crate) mod reg {
         use std::io;
         use windows::core::{HSTRING, PCWSTR};
         use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, WIN32_ERROR};

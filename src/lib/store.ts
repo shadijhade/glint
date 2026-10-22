@@ -55,6 +55,10 @@ export interface Settings {
     findRespectIgnore: boolean;
     findMaxResults: number | null;
     findExclusions: string[];
+    // Quick search: a shortcut from anywhere (null: off), the tray, and starting with Windows
+    quickShortcut: string | null;
+    keepInTray: boolean;
+    startWithWindows: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -95,6 +99,9 @@ export const DEFAULT_SETTINGS: Settings = {
     findRespectIgnore: false,
     findMaxResults: 50000,
     findExclusions: ['node_modules', '.git'],
+    quickShortcut: 'Ctrl+Alt+F',
+    keepInTray: false,
+    startWithWindows: false,
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */

@@ -147,6 +147,12 @@ if ($cmd -eq 'uninstall') {
         [GlintScoop.Shell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
     }
     $classes.Close()
+    # Starting with Windows (Settings > Quick search), where it starts this copy.
+    $run = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)
+    if ($run) {
+        if ("$($run.GetValue($verb))".StartsWith($exe, 'OrdinalIgnoreCase')) { $run.DeleteValue($verb) }
+        $run.Close()
+    }
 }`;
 const scoop = {
     version,
@@ -155,7 +161,7 @@ const scoop = {
     license: "MIT",
     notes: [
         "Update with 'scoop update glint'; the app links to new versions but doesn't install them itself.",
-        "Instant search and opening folders from File Explorer, once turned on in Settings, are taken out by 'scoop uninstall' too.",
+        "Instant search, opening folders from File Explorer and starting with Windows, once turned on in Settings, are taken out by 'scoop uninstall' too.",
     ],
     architecture: {
         "64bit": {
