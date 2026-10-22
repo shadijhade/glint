@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { Loader2, Search } from "lucide-react";
@@ -7,7 +7,8 @@ import { type FileEntry, isHidden } from "@/lib/entries";
 import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { cancelFind, findFiles, listDrives, quickHide, quickReveal } from "@/lib/fs";
-import { parentPath } from "@/lib/paths";
+import { baseName, parentPath } from "@/lib/paths";
+import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -102,6 +103,7 @@ export function QuickSearch() {
             setFound([]);
             setStatus("");
             setBusy(false);
+            setActive(0);
             return;
         }
         let current = true;
@@ -144,7 +146,7 @@ export function QuickSearch() {
     }, [query]);
 
     useEffect(() => {
-        list.current?.children[active]?.scrollIntoView({ block: "nearest" });
+        list.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
     }, [active]);
 
     // Folders open in Glint; files with their app, or in Glint with Alt.
@@ -155,11 +157,23 @@ export function QuickSearch() {
         openPath(entry.path).catch(() => quickReveal(entry.path, false));
     };
 
+    // Nothing typed yet: the folders you use most, as the command palette ranks them.
+    const visits = useStore((s) => s.visits);
+    const recent = useMemo(
+        () =>
+            Object.entries(visits)
+                .sort((a, b) => frecency(b[1]) - frecency(a[1]))
+                .slice(0, 8)
+                .map(([path]): FileEntry => ({ name: baseName(path) || path, path, dir: true, size: 0, modified: 0, attrs: 0, lower: path.toLowerCase(), ext: "" })),
+        [visits]
+    );
+    const shown = query.trim() ? found : recent;
+
     const onKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === "Escape") void quickHide();
-        else if (e.key === "ArrowDown") setActive((i) => Math.min(i + 1, found.length - 1));
+        else if (e.key === "ArrowDown") setActive((i) => Math.min(i + 1, shown.length - 1));
         else if (e.key === "ArrowUp") setActive((i) => Math.max(i - 1, 0));
-        else if (e.key === "Enter") open(found[active], e.altKey);
+        else if (e.key === "Enter") open(shown[active], e.altKey);
         else return;
         e.preventDefault();
     };
@@ -189,11 +203,13 @@ export function QuickSearch() {
                 />
             </div>
             <div ref={list} role="listbox" aria-label="Results" className="min-h-0 flex-1 overflow-y-auto p-1.5">
-                {found.map((entry, i) => {
+                {!query.trim() && recent.length > 0 && <p className="px-3 pb-1 pt-1.5 text-xs font-semibold text-muted-foreground">Folders you use most</p>}
+                {shown.map((entry, i) => {
                     const kind = kindOf(entry);
                     return (
                         <button
                             key={entry.path}
+                            data-index={i}
                             role="option"
                             aria-selected={i === active}
                             tabIndex={-1}
@@ -212,7 +228,7 @@ export function QuickSearch() {
                         </button>
                     );
                 })}
-                {!found.length && (
+                {!shown.length && (
                     <p className="px-3 py-8 text-center text-sm text-muted-foreground">
                         {query.trim() ? (busy ? "Searching…" : status || "Nothing found") : "Type part of a name. Filters work too: ext:pdf, size:>10mb, dm:7d"}
                     </p>
