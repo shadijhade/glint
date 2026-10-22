@@ -31,6 +31,28 @@ export const useUpdater = create<UpdaterState>(() => ({ available: null, status:
 const get = useUpdater.getState;
 const set = useUpdater.setState;
 
+/**
+ * The first start after an update says so once, with the release's notes a click away. A fresh
+ * install has no earlier settings and says nothing; versions before 0.6 kept no version, so an
+ * update from one of them counts by its settings.
+ */
+export async function greetUpdate() {
+    const version = await getVersion().catch(() => "");
+    let before: string | null = null;
+    try {
+        before = localStorage.getItem("last-version") ?? ("returning" in document.documentElement.dataset ? "earlier" : null);
+        localStorage.setItem("last-version", version);
+    } catch {
+        return;
+    }
+    if (!version || !before || before === version) return;
+    toast.success(`Updated to Glint ${version}`, {
+        description: "See what's new in this version.",
+        action: { label: "What's new", onClick: () => void openUrl(`${RELEASES}/tag/v${version}`) },
+        duration: 10_000,
+    });
+}
+
 /** A newer version, from the latest release's update manifest (latest.json), or else from GitHub's latest-release API. */
 async function findUpdate(): Promise<AvailableUpdate | null> {
     try {

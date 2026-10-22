@@ -3,7 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Archive, Binary, ClipboardCopy, ExternalLink, Folder, Heart, Image, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
+import { Archive, Binary, ClipboardCopy, ExternalLink, Folder, Heart, Image, Keyboard, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
@@ -12,6 +12,7 @@ import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { clearWithUndo, DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
+import { openShortcuts } from "./ShortcutsDialog";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -305,7 +306,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     const content = useRef<HTMLDivElement>(null);
     const [current, setCurrent] = useState(SECTIONS[0][0]);
     const onScroll = () => {
-        const top = content.current!.getBoundingClientRect().top + 40;
+        const box = content.current!;
+        // Scrolled to the end: the last section, which may never reach the top.
+        if (box.scrollTop + box.clientHeight >= box.scrollHeight - 2) return setCurrent(SECTIONS[SECTIONS.length - 1][0]);
+        const top = box.getBoundingClientRect().top + 40;
         const passed = SECTIONS.filter(([title]) => (document.getElementById(sectionId(title))?.getBoundingClientRect().top ?? Infinity) <= top);
         setCurrent((passed[passed.length - 1] ?? SECTIONS[0])[0]);
     };
@@ -341,7 +345,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         key={title}
                         type="button"
                         aria-current={current === title || undefined}
-                        onClick={() => document.getElementById(sectionId(title))?.scrollIntoView({ block: "start", behavior: "smooth" })}
+                        onClick={() => {
+                            document.getElementById(sectionId(title))?.scrollIntoView({ block: "start", behavior: "smooth" });
+                            setCurrent(title);
+                        }}
                         className={cn(
                             "rounded-md px-2.5 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                             current === title && "bg-accent font-medium text-foreground"
@@ -493,7 +500,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     <Row label="Keep up to">
                         <Segmented value={settings.maxHistoryItems} onChange={(maxHistoryItems) => set({ maxHistoryItems })} options={[[100, "100"], [500, "500"], [1000, "1,000"], [5000, "5,000"]]} />
                     </Row>
-                    <Row label={`${history.length.toLocaleString()} saved ${history.length === 1 ? "search" : "searches"}`}>
+                    <Row label={`${history.length.toLocaleString()} ${history.length === 1 ? "search" : "searches"} in the history`}>
                         <Button variant="outline" size="sm" onClick={() => clearWithUndo("history")} disabled={!history.length}>Clear history</Button>
                     </Row>
                     <Row label={`${visited.toLocaleString()} ${visited === 1 ? "folder" : "folders"} remembered`} hint="The command palette (Ctrl+K) offers the folders you use most first">
@@ -516,6 +523,19 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         </Button>
                     </div>
                     <UpdateRow />
+                    <Row label="Keyboard shortcuts" hint="Every one on a sheet: F1 or Ctrl+/ anywhere">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                                // Settings sits above everything: it goes first.
+                                onClose();
+                                openShortcuts();
+                            }}
+                        >
+                            <Keyboard /> Show
+                        </Button>
+                    </Row>
                     <Row label="Diagnostics" hint="Versions, tools and instant search's state, to paste into a bug report">
                         <Button variant="outline" size="sm" onClick={copyDiagnostics}>
                             <ClipboardCopy /> Copy
