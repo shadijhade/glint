@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import {
+    ArchiveRestore,
     ChevronDown,
     ClipboardPaste,
     Columns2,
@@ -8,13 +9,13 @@ import {
     CopyPlus,
     Eye,
     EyeOff,
+    FileClock,
     Files,
     Fingerprint,
     FolderOutput,
     FolderPlus,
     GitCompareArrows,
     HardDrive,
-    History,
     LayoutDashboard,
     LayoutGrid,
     List,
@@ -23,10 +24,13 @@ import {
     type LucideIcon,
     PanelRight,
     PenLine,
+    PencilOff,
     Scissors,
+    SlidersHorizontal,
     SquareTerminal,
     TextSearch,
     Trash2,
+    Wrench,
     ZoomIn,
     ZoomOut,
 } from "lucide-react";
@@ -34,10 +38,10 @@ import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { chooseView, toggleUsage, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
-import { calcSizes, copyToClipboard, copyToOtherPane, newItem, paste, stopSizes, toggleComparePanes, toggleDual, useExplorer, useTab, type ViewMode } from "@/lib/explorer";
+import { calcSizes, copyToClipboard, copyToOtherPane, extractHere, newItem, paste, stopSizes, toggleComparePanes, toggleDual, useExplorer, useTab, type ViewMode } from "@/lib/explorer";
 import { openTerminal } from "@/lib/fs";
 import { TILE_SIZES, type TileSize, zoomTiles } from "@/lib/grid";
-import { THIS_PC } from "@/lib/paths";
+import { samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useMenu } from "../Menu";
@@ -114,20 +118,21 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
 }
 
 /**
- * How many of the text buttons' labels must go (icons and tooltips stay) for the bar to fit: none,
- * the `data-fold="1"` ones, or all of them. Measured, so it holds at any text size; `buttons`
- * changes when the set of buttons does, so the widths are measured again.
+ * How far the bar folds to fit: 0 shows every label; 1 hides the `data-fold="1"` ones (icons and
+ * tooltips stay); 2 hides them all; 3 also puts the view toggles in a menu. Measured, so it holds at
+ * any text size; `buttons` changes when the set of buttons does, so the widths are measured again.
  */
 function useFold(buttons: unknown) {
     const ref = useRef<HTMLDivElement>(null);
     const [fold, setFold] = useState(0);
-    const needs = useRef([0, 0]);
+    // What the bar needs at folds 0, 1 and 2: measured at 0, and at 2 when even that overflows.
+    const needs = useRef([0, 0, 0]);
     const measuredFor = useRef(buttons);
     useLayoutEffect(() => {
         const bar = ref.current!;
         if (measuredFor.current !== buttons) {
             measuredFor.current = buttons;
-            needs.current = [0, 0];
+            needs.current = [0, 0, 0];
         }
         const check = () => {
             if (fold === 0) {
@@ -136,10 +141,10 @@ function useFold(buttons: unknown) {
                     (sum, label) => sum + label.offsetWidth + (parseFloat(getComputedStyle(label.parentElement!).columnGap) || 0),
                     0
                 );
-                needs.current = [bar.scrollWidth, bar.scrollWidth - first];
-            }
-            const [all, some] = needs.current;
-            setFold(bar.clientWidth >= all ? 0 : bar.clientWidth >= some ? 1 : 2);
+                needs.current = [bar.scrollWidth, bar.scrollWidth - first, 0];
+            } else if (fold === 2 && bar.scrollWidth > bar.clientWidth) needs.current[2] = bar.scrollWidth;
+            const [all, some, none] = needs.current;
+            setFold(bar.clientWidth >= all ? 0 : bar.clientWidth >= some ? 1 : bar.clientWidth >= none ? 2 : 3);
         };
         check();
         const observer = new ResizeObserver(check);
@@ -158,7 +163,20 @@ interface CommandBarProps {
 
 /** Acts on the active pane (its tab and selection). */
 export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
-    const { path, find, tab, view, readOnly } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find, tab: t.id, view: t.view, readOnly: !!t.listing?.archive })));
+    const { path, find, tab, view, readOnly, wholeArchive } = useTab(
+        useShallow((t) => {
+            const archive = t.listing?.archive;
+            return {
+                path: t.path,
+                find: !!t.find,
+                tab: t.id,
+                view: t.view,
+                readOnly: !!archive,
+                // At the top of an archive on disk (not one inside another): it can be extracted whole.
+                wholeArchive: archive && samePath(t.path, archive.path) && samePath(archive.path, archive.outer) ? archive.outer : undefined,
+            };
+        })
+    );
     const mapped = useUsage((s) => !!s[tab]);
     const { sizing, dual, comparePanes, other } = useExplorer(
         useShallow((s) => {
@@ -200,6 +218,31 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
         ]);
     };
 
+    /** The tools for this folder or the selection, in one menu so the bar fits beside the preview pane. */
+    const showTools = (e: React.MouseEvent<HTMLButtonElement>) => {
+        const below = e.currentTarget.getBoundingClientRect();
+        const file = selected.length === 1 && !selected[0].dir ? selected[0] : undefined;
+        menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
+            { label: "Open in Terminal", icon: SquareTerminal, disabled: !inFolder, onSelect: terminal },
+            "separator",
+            { label: "File X-Ray: hashes and hidden streams", icon: Fingerprint, disabled: !file, onSelect: () => file && inspectXRay(file.path) },
+            { label: paths.length ? "What's locking the selection?" : "What's locking this folder?", icon: Lock, disabled: !inFolder && !paths.length, onSelect: () => inspectLocks(paths.length ? paths : [path]) },
+            { label: "Recent changes in this folder", icon: FileClock, disabled: !inFolder, onSelect: () => inspectTimeline(path) },
+            { label: "Find duplicate files in this folder", icon: Files, disabled: !inFolder, onSelect: () => inspectDuplicates(path) },
+        ]);
+    };
+
+    /** When even the icons don't fit, the view toggles in a menu. */
+    const showToggles = (e: React.MouseEvent<HTMLButtonElement>) => {
+        const below = e.currentTarget.getBoundingClientRect();
+        menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
+            { label: "Show hidden items", toggle: true, checked: showHidden, shortcut: "Ctrl+H", onSelect: () => setSettings({ showHidden: !showHidden }) },
+            { label: "Preview pane", toggle: true, checked: showPreviewPane, shortcut: "Alt+P", onSelect: () => setSettings({ showPreviewPane: !showPreviewPane }) },
+            { label: "Dual pane", toggle: true, checked: dual, shortcut: "Ctrl+Shift+D", onSelect: toggleDual },
+            { label: "Compare panes", toggle: true, checked: dual && comparePanes, shortcut: "Ctrl+Shift+M", onSelect: toggleComparePanes },
+        ]);
+    };
+
     return (
         <div ref={ref} className="flex h-10 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-chrome px-2">
             <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find || readOnly} title="New folder (Ctrl+Shift+N)">
@@ -223,35 +266,29 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             />
             <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length || readOnly} onClick={onDelete} />
             <Divider />
-            {/* In an archive, where Open in Terminal would be (there's no folder on disk to open it in): why the rest is greyed out. */}
+            {/* In an archive, where the tools would be (they're for folders on disk): why the rest is greyed out. */}
             {readOnly ? (
-                <span
-                    title="Glint opens zip and 7z archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
-                    className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber-500/10 px-2 text-xs font-medium text-amber-700 dark:text-amber-400"
-                >
-                    <Lock className="size-3.5" />
-                    <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>
-                        Read-only archive
-                    </span>
-                </span>
-            ) : (
                 <>
-                    <Tool icon={SquareTerminal} label="Open in Terminal" disabled={!inFolder} onClick={terminal} />
-                    <Tool
-                        icon={Fingerprint}
-                        label="File X-Ray: hashes and hidden streams"
-                        disabled={selected.length !== 1 || selected[0].dir}
-                        onClick={() => selected[0] && inspectXRay(selected[0].path)}
-                    />
-                    <Tool
-                        icon={Lock}
-                        label={paths.length ? "What's locking the selection?" : "What's locking this folder?"}
-                        disabled={!inFolder && !paths.length}
-                        onClick={() => inspectLocks(paths.length ? paths : [path])}
-                    />
-                    <Tool icon={History} label="Recent changes in this folder" disabled={!inFolder} onClick={() => inspectTimeline(path)} />
-                    <Tool icon={Files} label="Find duplicate files" disabled={!inFolder} onClick={() => inspectDuplicates(path)} />
+                    <span
+                        title="Glint opens zip and 7z archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
+                        className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber-500/10 px-2 text-xs font-medium text-amber-800 dark:text-amber-400"
+                    >
+                        <PencilOff className="size-3.5" />
+                        <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>
+                            Read-only archive
+                        </span>
+                    </span>
+                    {wholeArchive && (
+                        <Button variant="ghost" size="sm" onClick={() => extractHere(wholeArchive)} title="Extract all: everything into a folder next to the archive">
+                            <ArchiveRestore /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Extract all</span>
+                        </Button>
+                    )}
                 </>
+            ) : (
+                <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showTools} title="Tools: Terminal, File X-Ray, what's locking, recent changes, duplicate files">
+                    <Wrench /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Tools</span>
+                    <ChevronDown className="-ml-1 size-3.5! opacity-70" />
+                </Button>
             )}
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
@@ -280,17 +317,26 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 <Button variant="ghost" size="sm" onClick={onSearchText} disabled={!inFolder || readOnly} title="Search inside the files in this folder (ripgrep) · Ctrl+Shift+F" className="hidden lg:inline-flex">
                     <TextSearch /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Search text</span>
                 </Button>
-                <Divider />
-                <Tool icon={showHidden ? Eye : EyeOff} label="Show hidden items (Ctrl+H)" pressed={showHidden} onClick={() => setSettings({ showHidden: !showHidden })} />
-                <Tool icon={PanelRight} label="Preview pane (Alt+P)" pressed={showPreviewPane} onClick={() => setSettings({ showPreviewPane: !showPreviewPane })} />
-                <Tool icon={Columns2} label="Dual pane: two folders side by side (Ctrl+Shift+D)" pressed={dual} onClick={toggleDual} />
-                <Tool
-                    icon={GitCompareArrows}
-                    label="Compare panes: highlight differences between both panes (Ctrl+Shift+M)"
-                    pressed={dual && comparePanes}
-                    onClick={toggleComparePanes}
-                />
                 <Tool icon={Command} label="Command palette (Ctrl+K)" onClick={() => useExplorer.setState({ palette: true })} />
+                <Divider />
+                {fold < 3 ? (
+                    <>
+                        <Tool icon={showHidden ? Eye : EyeOff} label="Show hidden items (Ctrl+H)" pressed={showHidden} onClick={() => setSettings({ showHidden: !showHidden })} />
+                        <Tool icon={PanelRight} label="Preview pane (Alt+P)" pressed={showPreviewPane} onClick={() => setSettings({ showPreviewPane: !showPreviewPane })} />
+                        <Tool icon={Columns2} label="Dual pane: two folders side by side (Ctrl+Shift+D)" pressed={dual} onClick={toggleDual} />
+                        <Tool
+                            icon={GitCompareArrows}
+                            label="Compare panes: highlight differences between both panes (Ctrl+Shift+M)"
+                            pressed={dual && comparePanes}
+                            onClick={toggleComparePanes}
+                        />
+                    </>
+                ) : (
+                    <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showToggles} title="View: hidden items, preview pane, dual pane, compare panes">
+                        <SlidersHorizontal />
+                        <ChevronDown className="-ml-1 size-3.5! opacity-70" />
+                    </Button>
+                )}
             </div>
             {menu.element}
         </div>

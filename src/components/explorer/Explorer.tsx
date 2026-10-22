@@ -9,12 +9,12 @@ import {
     AlertTriangle,
     AppWindow,
     ArchiveRestore,
-    Bookmark,
-    BookmarkCheck,
     ArrowLeft,
     ArrowRight,
     ArrowRightLeft,
     ArrowUp,
+    Bookmark,
+    BookmarkCheck,
     ChevronLeft,
     ChevronRight,
     ClipboardCopy,
@@ -27,6 +27,7 @@ import {
     Eye,
     EyeOff,
     FileArchive,
+    FileClock,
     FilePlus,
     Files,
     Fingerprint,
@@ -38,7 +39,6 @@ import {
     FolderSearch,
     GitCompareArrows,
     HardDrive,
-    History,
     Info,
     LayoutDashboard,
     LayoutGrid,
@@ -49,8 +49,9 @@ import {
     Monitor,
     Moon,
     PanelRight,
-    Pin,
     PenLine,
+    PencilOff,
+    Pin,
     PinOff,
     Plus,
     RotateCcw,
@@ -102,6 +103,7 @@ import {
     navigate,
     newItem,
     newTab,
+    nextUndo,
     openEntry,
     openArchivedWith,
     openInNewTab,
@@ -179,7 +181,12 @@ const properties = (path: string) => showProperties(path).catch(report("Couldn't
 /** File Explorer, with the archive file selected: what's inside it isn't a place File Explorer can show here. */
 const revealArchive = (archive: InArchive) => revealItemInDir(archive.outer).catch(report("Couldn't open File Explorer"));
 /** A menu's last line in an archive: why the commands that change things are greyed out. */
-const READ_ONLY_NOTE = { label: "Read-only: inside an archive", icon: Lock, disabled: true, onSelect: () => {} };
+const READ_ONLY_NOTE = { label: "Read-only: inside an archive", icon: PencilOff, disabled: true, onSelect: () => {} };
+/** Undo, saying what it takes back (the background menu, the palette). */
+const undoLabel = () => {
+    const step = nextUndo();
+    return step ? `Undo the ${step.label}` : "Undo";
+};
 const terminal = (path: string) => openTerminal(path).catch(report("Couldn't open a terminal"));
 const focusFind = () => {
     const box = document.getElementById(FIND_BOX_ID) as HTMLInputElement | null;
@@ -237,13 +244,14 @@ function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: {
         current && { label: "New text document", icon: FilePlus, disabled: find || !!archive, onSelect: () => newItem(false) },
         "separator",
         { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: (current && find) || inArchive, onSelect: () => paste(folder) },
+        current && { label: undoLabel(), icon: Undo2, shortcut: "Ctrl+Z", disabled: !nextUndo(), onSelect: () => void undo() },
         current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", onSelect: view.selectAll },
         current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
         "separator",
         current && { label: "Folder sizes", icon: HardDrive, disabled: find, onSelect: calcSizes },
-        !inArchive && { label: "Recent changes", icon: History, onSelect: () => inspectTimeline(folder) },
-        !inArchive && { label: "Find duplicates here", icon: Files, onSelect: () => inspectDuplicates(folder) },
-        !inArchive && { label: "Search text here", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
+        !inArchive && { label: "Search text", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
+        !inArchive && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
+        !inArchive && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
         { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
         "separator",
         archive
@@ -265,7 +273,7 @@ function tabMenu(id: string): MenuItem[] {
     const tabs = s.panes.find((p) => p.tabs.includes(id))?.tabs.length ?? 0;
     return [
         { label: "Duplicate tab", icon: Copy, onSelect: () => duplicateTab(id) },
-        s.dual && { label: "Move to other pane", icon: ArrowRightLeft, disabled: tabs < 2, onSelect: () => moveTabToOtherPane(id) },
+        s.dual && { label: "Move to the other pane", icon: ArrowRightLeft, disabled: tabs < 2, onSelect: () => moveTabToOtherPane(id) },
         "separator",
         { label: "Close tab", icon: X, shortcut: "Ctrl+W", disabled: tabs < 2 && !s.dual, onSelect: () => closeTab(id) },
         { label: "Close other tabs", icon: X, disabled: tabs < 2, onSelect: () => closeOtherTabs(id) },
@@ -393,6 +401,9 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         );
         const archive = t.listing?.archive;
         const writable = inFolder && !archive;
+        const chosenEntries = useActiveView.getState().selected;
+        const oneArchive = chosenEntries.length === 1 && isArchiveFile(chosenEntries[0]) && !archive ? chosenEntries[0] : undefined;
+        const step = nextUndo();
         const actions: (Command | false)[] = [
             writable && !t.find && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
             writable && !t.find && action("new-file", "New text document", FilePlus, () => newItem(false)),
@@ -423,6 +434,9 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
             action("compare-panes", s.dual && s.comparePanes ? "Stop comparing panes" : "Compare panes: highlight differences between both panes", GitCompareArrows, toggleComparePanes, "Ctrl+Shift+M"),
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
+            !archive && chosenEntries.length > 0 && action("compress", "Compress the selection to a zip file", FileArchive, () => compressEntries(chosenEntries)),
+            !!oneArchive && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
+            !!archive && samePath(t.path, archive.path) && samePath(archive.path, archive.outer) && action("extract-all", "Extract all: everything into a folder next to the archive", ArchiveRestore, () => extractHere(archive.outer)),
             !!other && chosen && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
             !!other && chosen && !archive && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
@@ -432,13 +446,13 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
             writable && !t.find && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
             !archive && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
-            writable && action("timeline", "Recent changes in this folder", History, () => inspectTimeline(t.path)),
+            writable && action("timeline", "Recent changes in this folder", FileClock, () => inspectTimeline(t.path)),
             writable && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
             !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
             writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
             action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
-            action("undo", "Undo", Undo2, () => undo(), "Ctrl+Z"),
+            !!step && action("undo", `Undo the ${step.label}`, Undo2, () => undo(), "Ctrl+Z"),
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
         ];
         return [...folders, ...actions.filter((a): a is Command => !!a)];
@@ -470,7 +484,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 function PreviewPane() {
     const { selected, items, folder, total } = useActiveView();
     return (
-        <aside className="hidden w-[min(28%,28rem)] min-w-[16rem] shrink-0 border-l lg:flex">
+        <aside className="flex w-[min(28%,28rem)] min-w-[16rem] shrink-0 border-l">
             <FilePreview selected={selected} folder={{ path: folder, items, total }} />
         </aside>
     );
@@ -903,18 +917,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         // Inside an archive, nothing changes: what would is greyed out, and opening a file extracts it.
         const archived = targets.some(isArchived) ? archiveOf(tabRef.current) : undefined;
         const browses = !!one && (one.dir || isArchiveFile(one));
+        // Open, then the clipboard and the other pane, archives, renaming and deleting, tools, properties.
         return [
             { label: browses ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: browses ? (one!.dir ? FolderOpen : FileArchive) : ExternalLink, shortcut: "Enter", onSelect: openSelected },
+            one && isArchiveFile(one) && !archived && { label: "Extract here", icon: ArchiveRestore, onSelect: () => extractHere(one.path) },
             folders.length > 0 && {
                 label: folders.length > 1 ? `Open ${folders.length} folders in new tabs` : "Open in new tab",
                 icon: SquarePlus,
                 shortcut: "Ctrl+Enter",
                 onSelect: () => folders.forEach((f) => openInNewTab(f.path)),
-            },
-            one && isArchiveFile(one) && {
-                label: "Open with its app",
-                icon: AppWindow,
-                onSelect: () => (archived ? openArchivedWith(one, (p) => openPath(p)) : openPath(one.path).catch(report("Couldn't open the file"))),
             },
             one && {
                 label: "Quick Look",
@@ -924,6 +935,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     updateTab({ focus: one.path }, tabRef.current);
                     useExplorer.setState({ quickLook: true });
                 },
+            },
+            one && isArchiveFile(one) && {
+                label: "Open with its app",
+                icon: AppWindow,
+                onSelect: () => (archived ? openArchivedWith(one, (p) => openPath(p)) : openPath(one.path).catch(report("Couldn't open the file"))),
             },
             one && !one.dir && !!editorName && {
                 label: `Open with ${editorName}`,
@@ -943,12 +959,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             "separator",
             { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", disabled: !!archived, onSelect: () => copyToClipboard(paths, true) },
             { label: "Copy", icon: Copy, shortcut: "Ctrl+C", onSelect: () => copyToClipboard(paths, false) },
-            dual && { label: "Copy to other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
-            dual && { label: "Move to other pane", icon: FolderOutput, disabled: !other || !!archived, onSelect: () => copyToOtherPane(true, paths) },
             one?.dir && { label: "Paste into folder", icon: ClipboardPaste, disabled: !!archived, onSelect: () => paste(one.path) },
             { label: paths.length === 1 ? "Copy path" : "Copy paths", icon: ClipboardCopy, shortcut: "Ctrl+Shift+C", onSelect: () => copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths") },
+            dual && { label: "Copy to the other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
+            dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || !!archived, onSelect: () => copyToOtherPane(true, paths) },
+            "separator",
             !archived && { label: "Compress to zip file", icon: FileArchive, onSelect: () => compressEntries(targets) },
-            one && isArchiveFile(one) && !archived && { label: "Extract here", icon: ArchiveRestore, onSelect: () => extractHere(one) },
             "separator",
             one
                 ? { label: "Rename", icon: PenLine, shortcut: "F2", disabled: !!archived, onSelect: () => startRename(one.path) }
@@ -957,11 +973,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             { label: "Delete", icon: Trash2, shortcut: "Del", danger: !archived, disabled: !!archived, onSelect: () => deleteSelected(false) },
             "separator",
             one?.dir && { label: pinned.includes(one.path) ? "Unpin from sidebar" : "Pin to sidebar", icon: pinned.includes(one.path) ? PinOff : Pin, onSelect: () => togglePin(one.path) },
-            one?.dir && !archived && { label: "Search text in folder", icon: TextSearch, onSelect: () => onSearchText(one.path) },
-            one?.dir && !archived && { label: "Recent changes in folder", icon: History, onSelect: () => inspectTimeline(one.path) },
-            one?.dir && !archived && { label: "Find duplicates in folder", icon: Files, onSelect: () => inspectDuplicates(one.path) },
+            one?.dir && !archived && { label: "Search text", icon: TextSearch, onSelect: () => onSearchText(one.path) },
+            one?.dir && !archived && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(one.path) },
+            one?.dir && !archived && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(one.path) },
             one && !one.dir && !archived && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
             !archived && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
+            "separator",
             one && !archived && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
             !!archived && READ_ONLY_NOTE,
         ];
@@ -993,8 +1010,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         empty = (
             <Centered>
                 <AlertTriangle className="size-6 text-destructive" />
-                <p className="font-medium text-foreground">Search failed</p>
+                <p className="font-medium text-foreground">The search failed</p>
                 <pre className="max-w-full select-text whitespace-pre-wrap font-mono text-xs">{find.error}</pre>
+                <Button variant="outline" size="sm" onClick={() => runFind(find.query, { scope: find.scope })}>
+                    <RotateCw /> Try again
+                </Button>
             </Centered>
         );
     } else if (find?.running && !rows.length) {
@@ -1004,14 +1024,40 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             </Centered>
         );
     } else if (find && !rows.length) {
+        // Each thing the search left out, with a button to look there too.
         empty = (
             <Centered>
                 <SearchX className="size-6" />
                 <p className="font-medium text-foreground">Nothing named like “{find.query}”</p>
                 <p className="max-w-sm">
-                    {settings.findExclusions.length ? `Skipped: ${settings.findExclusions.join(", ")}. ` : ""}
-                    {showHidden ? "" : "Hidden files aren't searched. "}You can change this in Settings.
+                    {find.skipped.length ? `Skipped: ${find.skipped.join(", ")}. ` : ""}
+                    {showHidden ? "" : "Hidden files weren't searched. "}
+                    Filters work too: ext:pdf, size:&gt;10mb, dm:7d.
                 </p>
+                <div className="flex flex-wrap justify-center gap-2">
+                    {!showHidden && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                                setSettings({ showHidden: true });
+                                void runFind(find.query, { scope: find.scope });
+                            }}
+                        >
+                            <Eye /> Include hidden files
+                        </Button>
+                    )}
+                    {find.skipped.length > 0 && (
+                        <Button variant="outline" size="sm" onClick={() => runFind(find.query, { scope: find.scope, skipNothing: true })}>
+                            <FolderSearch /> Search skipped folders too
+                        </Button>
+                    )}
+                    {find.scope !== THIS_PC && (
+                        <Button variant="outline" size="sm" onClick={() => runFind(find.query, { scope: THIS_PC })}>
+                            <HardDrive /> Search every drive
+                        </Button>
+                    )}
+                </div>
             </Centered>
         );
     } else if (listing && !rows.length) {
@@ -1107,8 +1153,16 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                         {find.scope !== THIS_PC && " and its subfolders"}
                     </span>
                     {find.limited && (
-                        <span className="shrink-0 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                        <span className="flex shrink-0 items-center gap-1.5 rounded-md bg-amber-500/10 py-0.5 pl-2 pr-0.5 text-xs font-medium text-amber-800 dark:text-amber-400">
                             Stopped at {formatCount(settings.findMaxResults ?? 0)}
+                            <button
+                                type="button"
+                                onClick={() => runFind(find.query, { scope: find.scope, unlimited: true })}
+                                title="Search again without the limit (Settings → Find files)"
+                                className="rounded-[4px] px-1.5 hover:bg-amber-500/15"
+                            >
+                                Show all
+                            </button>
                         </span>
                     )}
                     <div className="ml-auto flex shrink-0 gap-1">
@@ -1132,7 +1186,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </div>
             )}
             {dual && comparePanes && !find && path !== THIS_PC && (
-                <div className="flex h-8 shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-primary/5 px-2.5 text-xs [scrollbar-width:none]">
+                <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-1.5 border-b bg-primary/5 px-2.5 py-1 text-xs">
                     <GitCompareArrows className="size-3.5 shrink-0 text-primary" />
                     {comparison ? (
                         <>
@@ -1148,7 +1202,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                             )}
                             {comparison.differ > 0 && (
                                 <span className="shrink-0 rounded-[4px] bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
-                                    {formatCount(comparison.differ)} differs
+                                    {formatCount(comparison.differ)} different
                                 </span>
                             )}
                             {comparison.older > 0 && (
@@ -1157,7 +1211,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                 </span>
                             )}
                             {comparison.diffPaths.length === 0 && (
-                                <span className="shrink-0 font-medium text-emerald-600 dark:text-emerald-400">All match</span>
+                                <span className="shrink-0 font-medium text-emerald-700 dark:text-emerald-400">All match</span>
                             )}
                             <span className="shrink-0 text-muted-foreground">· {formatCount(comparison.same)} same</span>
                             <div className="ml-auto flex shrink-0 items-center gap-1">

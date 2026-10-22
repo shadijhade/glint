@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp, Cloud, Lock } from "lucide-react";
+import { ChevronDown, ChevronUp, Cloud, FileX, KeyRound } from "lucide-react";
 import { ATTR, type DiffStatus, type FileEntry, isArchived, isHidden, isLocked, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
 import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
@@ -118,6 +118,13 @@ export function Header({ sortKey, sort, onSort, className, children }: { sortKey
 
 /** Why an item in an archive can't be opened, for its lock icon. */
 export const lockReason = (entry: FileEntry) => (entry.attrs & ATTR.encrypted ? "Password-protected" : "Compressed in a way Glint can't read");
+/** A key for a password, or a crossed-out file for what Glint can't read. */
+export const lockIcon = (entry: FileEntry) => (entry.attrs & ATTR.encrypted ? KeyRound : FileX);
+
+export function LockMark({ entry, className }: { entry: FileEntry; className: string }) {
+    const Icon = lockIcon(entry);
+    return <Icon className={className} aria-label={lockReason(entry)} />;
+}
 
 /** A folder that files dragged in can be dropped on: not one in an archive, which is read-only. */
 export const dropPath = (entry: FileEntry) => (entry.dir && !isArchived(entry) ? entry.path : undefined);
@@ -176,7 +183,7 @@ export function FileList(props: FileListProps) {
                 className={cn(
                     "file-row h-full cursor-default px-3 text-sm transition-colors duration-75",
                     selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
-                    entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary/40",
+                    entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
                     (isHidden(entry) || cut.has(entry.path)) && "opacity-55",
                     diff === "same" && !selected && "opacity-60"
@@ -197,7 +204,7 @@ export function FileList(props: FileListProps) {
                         </span>
                     )}
                     {isOnlineOnly(entry) && <Cloud className="size-3.5 shrink-0 text-sky-500" aria-label="Online-only" />}
-                    {isLocked(entry) && <Lock className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" aria-label={lockReason(entry)} />}
+                    {isLocked(entry) && <LockMark entry={entry} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
                 </div>
                 {search && (
                     <span className="truncate text-xs text-muted-foreground" title={parentPath(entry.path)}>

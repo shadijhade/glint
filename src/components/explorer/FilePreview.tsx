@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, HardDrive, Loader2, Lock, X } from "lucide-react";
+import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, HardDrive, Loader2, X } from "lucide-react";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, useExplorer } from "@/lib/explorer";
 import { isKnownType, kindOf, previewKind, typeLabel } from "@/lib/fileTypes";
@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
+import { LockMark } from "./FileList";
 import { inspectXRay } from "./XRayDialog";
 
 const TEXT_BYTES = 256 * 1024;
@@ -301,7 +302,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     else if (isLocked(entry))
         body = (
             <Centered>
-                <Lock className="size-14 stroke-[1.25] text-amber-600 dark:text-amber-500" />
+                <LockMark entry={entry} className="size-14 stroke-[1.25] text-amber-600 dark:text-amber-500" />
                 <p className="max-w-sm">
                     {entry.attrs & ATTR.encrypted ? "This file is password-protected, and Glint can't open encrypted files in archives yet." : "This file is compressed in a way Glint can't read."}
                 </p>
