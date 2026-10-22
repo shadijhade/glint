@@ -59,7 +59,7 @@ function Tool({ icon: Icon, label, pressed, className, ...props }: { icon: Lucid
             aria-label={label}
             aria-pressed={pressed}
             className={cn(
-                "grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35 [&_svg]:size-4",
+                "grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4",
                 pressed && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
                 className
             )}
@@ -95,7 +95,7 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
                     disabled={disabled}
                     onClick={() => onChange(v)}
                     className={cn(
-                        "grid h-7 w-8 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-35 [&_svg]:size-4",
+                        "grid h-7 w-8 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4",
                         !mapped && view === v && "bg-background text-primary shadow-xs hover:text-primary dark:bg-foreground/[0.12]"
                     )}
                 >
@@ -109,7 +109,7 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
                 aria-haspopup="menu"
                 disabled={disabled}
                 onClick={onSizes}
-                className="grid h-7 w-5 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-35 [&_svg]:size-3.5"
+                className="grid h-7 w-5 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-3.5"
             >
                 <ChevronDown />
             </button>

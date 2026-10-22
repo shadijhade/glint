@@ -165,7 +165,7 @@ export function TimelineDialog() {
                     )}
                 >
                     <Clock className="size-3.5" />
-                    Modified in window
+                    Changed files
                     {report && (
                         <span className="rounded-full bg-primary/20 px-1.5 py-0.2 text-[0.625rem] font-semibold tabular-nums">
                             {formatCount(report.totalFilesChanged)}
@@ -210,7 +210,7 @@ export function TimelineDialog() {
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="Filter files by name or path…"
-                        className="h-7 w-full rounded-md border bg-background pl-7 pr-2 text-xs outline-none focus:border-primary"
+                        className="h-7 w-full rounded-md border bg-background pl-7 pr-2 text-xs outline-hidden focus:border-primary"
                     />
                 </div>
             </div>
@@ -353,7 +353,7 @@ export function TimelineDialog() {
                                                         closeTimeline();
                                                         revealInApp(item.path);
                                                     }}
-                                                    title="Reveal in Glint"
+                                                    title="Open file location"
                                                 >
                                                     <FolderInput className="size-3.5" />
                                                 </Button>
@@ -429,7 +429,7 @@ export function TimelineDialog() {
                                                         closeTimeline();
                                                         revealInApp(ev.path);
                                                     }}
-                                                    title="Reveal in Glint"
+                                                    title="Open file location"
                                                 >
                                                     <FolderInput className="size-3.5" />
                                                 </Button>

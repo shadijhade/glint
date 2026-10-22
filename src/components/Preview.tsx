@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ExternalLink, FileSearch, FolderOpen } from "lucide-react";
+import { ExternalLink, FileSearch, FolderInput } from "lucide-react";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { RgMatch } from "@/lib/ripgrep";
 import { useStore } from "@/lib/store";
@@ -65,8 +65,8 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
                     <span className="text-muted-foreground"> · line {line}</span>
                 </span>
                 <div className="ml-auto flex shrink-0">
-                    <Button variant="ghost" size="icon" className="size-7" onClick={() => onReveal(path)} title="Show in folder">
-                        <FolderOpen />
+                    <Button variant="ghost" size="icon" className="size-7" onClick={() => onReveal(path)} title="Show in Files" aria-label="Show in Files">
+                        <FolderInput />
                     </Button>
                     <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpen(path)} title="Open file (Enter)">
                         <ExternalLink />

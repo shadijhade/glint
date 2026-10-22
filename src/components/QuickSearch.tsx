@@ -11,6 +11,7 @@ import { baseName, parentPath } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { Kbd } from "./ui/kbd";
 
 const LANE = "quick";
 /** Shown; more are asked for, so the best can be picked from them. */
@@ -190,7 +191,7 @@ export function QuickSearch() {
 
     const hint = (keys: string, what: string) => (
         <span className="shrink-0">
-            <kbd className="rounded border bg-muted px-1 font-sans text-[0.6875rem]">{keys}</kbd> {what}
+            <Kbd>{keys}</Kbd> {what}
         </span>
     );
 

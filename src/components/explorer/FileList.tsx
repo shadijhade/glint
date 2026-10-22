@@ -16,7 +16,7 @@ import { Thumbnail } from "./Thumbnail";
 export const DIFF_BADGE: Record<Exclude<DiffStatus, "same">, { label: string; title: string; className: string }> = {
     unique: { label: "Only here", title: "Does not exist in the other pane", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
     newer: { label: "Newer", title: "Modified more recently than in the other pane", className: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
-    differ: { label: "Differs", title: "Different size from the item in the other pane", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
+    differ: { label: "Different", title: "Not the same as in the other pane: another size, or compared deeper, other contents or something different inside", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
     older: { label: "Older", title: "Modified earlier than in the other pane", className: "bg-muted text-muted-foreground" },
 };
 

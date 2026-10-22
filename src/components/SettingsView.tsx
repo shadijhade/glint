@@ -284,7 +284,9 @@ function UpdateRow() {
             </Row>
         );
     }
-    const hint = { idle: undefined, checking: "Checking…", latest: "You have the latest version", failed: `Couldn't check: ${error}` }[status];
+    // Offline, a fetch fails with words like "Failed to fetch": say that plainly.
+    const offline = /fetch|network|sending request|dns|timed? ?out|connect/i.test(error ?? "");
+    const hint = { idle: undefined, checking: "Checking…", latest: "You have the latest version", failed: offline ? "Couldn't reach GitHub to check. Are you online?" : `Couldn't check: ${error}` }[status];
     return (
         <Row label="Updates" hint={hint}>
             <Button variant="outline" size="sm" disabled={status === "checking"} onClick={() => checkForUpdates(true)}>
@@ -326,7 +328,7 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
     };
 
     const reset = async () => {
-        if (await confirm("Reset all settings to their defaults? Your search history is kept.", { title: "Reset settings", kind: "warning" })) {
+        if (await confirm("Reset all settings to their defaults? Your search history is kept.", { title: "Reset settings", kind: "warning", okLabel: "Reset", cancelLabel: "Cancel" })) {
             set(DEFAULT_SETTINGS);
         }
     };

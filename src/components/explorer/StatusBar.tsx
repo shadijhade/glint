@@ -106,7 +106,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
         const name = baseName(archive.path);
         const title = archive.cached
             ? `Glint already had the list of what's in ${name} (${formatCount(archive.entries)} files and folders) in memory, and listed this folder from it in ${formatDuration(listing.elapsed)}; it was on screen ${formatDuration(shownIn)} after the click. The archive is read-only.`
-            : `Rust read the list of what's in ${name} (${formatCount(archive.entries)} files and folders) in ${formatDuration(archive.readMs)}, without extracting anything; this folder was on screen ${formatDuration(shownIn)} after the click. The archive is read-only.`;
+            : `Glint read the list of what's in ${name} (${formatCount(archive.entries)} files and folders) in ${formatDuration(archive.readMs)}, without extracting anything; this folder was on screen ${formatDuration(shownIn)} after the click. The archive is read-only.`;
         work = (
             <span title={title} className="flex items-center gap-1">
                 <FileArchive className="size-3 text-amber-600 dark:text-amber-500" />
@@ -120,7 +120,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
         const sized = sizes && `${sizes.engine} sized ${formatSize(sizes.total)} in ${formatDuration(sizes.elapsed)}`;
         // A narrow pane (two side by side) keeps the time to screen, and says the rest on hover.
         work = (
-            <span title={`Rust read this folder in ${formatDuration(listing.elapsed)}; it was on screen ${formatDuration(shownIn)} after the click.${sized ? ` The ${sized}.` : ""}`} className="flex items-center gap-1">
+            <span title={`Glint read this folder in ${formatDuration(listing.elapsed)}; it was on screen ${formatDuration(shownIn)} after the click.${sized ? ` The ${sized}.` : ""}`} className="flex items-center gap-1">
                 <Zap className="size-3 text-primary" />
                 <span className="hidden @lg:inline">read in {formatDuration(listing.elapsed)} ·</span>
                 <span>shown in {formatDuration(shownIn)}</span>

@@ -3,6 +3,7 @@ import { History as HistoryIcon, X } from "lucide-react";
 import { clearWithUndo, HistoryItem, useStore } from "@/lib/store";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { Kbd } from "./ui/kbd";
 
 export const HISTORY_POPOVER_ID = "history-popover";
 
@@ -125,7 +126,7 @@ export function Home({ onPick }: { onPick: (item: HistoryItem) => void }) {
                     {SHORTCUTS.map(([keys, label]) => (
                         <div key={label} className="contents">
                             <dt className="text-right">
-                                <kbd className="rounded-sm border bg-card px-1.5 py-0.5 font-sans text-[0.6875rem] text-foreground">{keys}</kbd>
+                                <Kbd className="text-foreground">{keys}</Kbd>
                             </dt>
                             <dd>{label}</dd>
                         </div>

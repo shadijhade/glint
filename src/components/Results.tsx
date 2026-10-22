@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -13,7 +13,7 @@ import {
     ExternalLink,
     FileText,
     Fingerprint,
-    FolderOpen,
+    FolderInput,
     FolderSearch,
     Loader2,
     Lock,
@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils";
 import type { SearchRun } from "@/App";
 import { inspectLocks } from "./explorer/LocksDialog";
 import { inspectXRay } from "./explorer/XRayDialog";
+import { useMenu } from "./Menu";
 import { VirtualList } from "./VirtualList";
 import { Preview } from "./Preview";
 import { Button } from "./ui/button";
@@ -178,21 +179,22 @@ export function Results({ active, run, matches, searching, error, duration, file
     const limited = !searching && run.limit !== null && matches.length >= run.limit;
     const relative = (path: string) => (path.startsWith(run.path) ? path.slice(run.path.length).replace(/^[\\/]/, "") : path);
 
-    // One shared right-click menu: a native popover positioned at the cursor (light-dismiss and Esc for free).
-    const menuRef = useRef<HTMLDivElement>(null);
-    const [menuTarget, setMenuTarget] = useState<{ path: string; line?: string }>({ path: "" });
+    // The right-click menu Files has too.
+    const menu = useMenu();
     const openMenu = (e: React.MouseEvent, path: string, match?: RgMatch) => {
         e.preventDefault();
-        setMenuTarget({ path, line: match?.data.lines?.text.trim() });
-        const menu = menuRef.current!;
-        if (!menu.matches(":popover-open")) menu.showPopover();
-        const { width, height } = menu.getBoundingClientRect();
-        menu.style.left = `${Math.min(e.clientX, window.innerWidth - width - 4)}px`;
-        menu.style.top = `${Math.min(e.clientY, window.innerHeight - height - 4)}px`;
-    };
-    const menuAction = (action: () => void) => () => {
-        menuRef.current?.hidePopover();
-        action();
+        const line = match?.data.lines?.text.trim();
+        menu.open(e, [
+            { label: "Open file", icon: ExternalLink, onSelect: () => onOpen(path) },
+            { label: "Show in Files", icon: FolderInput, onSelect: () => onReveal(path) },
+            { label: "Show in File Explorer", icon: FolderSearch, onSelect: () => void revealItemInDir(path).catch((e) => toast.error("Couldn't open File Explorer", { description: String(e) })) },
+            "separator",
+            { label: "Copy path", icon: Copy, onSelect: () => copy(path, "path") },
+            { label: "Copy line", icon: Copy, disabled: line === undefined, onSelect: () => copy(line ?? "", "line") },
+            "separator",
+            { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(path) },
+            { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([path]) },
+        ]);
     };
     const copy = (text: string, what: string) =>
         navigator.clipboard.writeText(text).then(() => toast.success(`Copied ${what}`), () => toast.error(`Couldn't copy ${what}`));
@@ -257,20 +259,6 @@ export function Results({ active, run, matches, searching, error, duration, file
         );
     };
 
-    const menuItem = "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4 [&_svg]:text-muted-foreground";
-    const menu = (
-        <div ref={menuRef} popover="auto" role="menu" className="fixed inset-auto m-0 min-w-[12rem] rounded-md border bg-popover p-1 text-popover-foreground shadow-lg">
-            <button role="menuitem" className={menuItem} onClick={menuAction(() => onOpen(menuTarget.path))}><ExternalLink /> Open file</button>
-            <button role="menuitem" className={menuItem} onClick={menuAction(() => onReveal(menuTarget.path))}><FolderOpen /> Show in folder</button>
-            <button role="menuitem" className={menuItem} onClick={menuAction(() => revealItemInDir(menuTarget.path).catch((e) => toast.error("Couldn't open File Explorer", { description: String(e) })))}><FolderSearch /> Show in File Explorer</button>
-            <div className="-mx-1 my-1 h-px bg-border" />
-            <button role="menuitem" className={menuItem} onClick={menuAction(() => copy(menuTarget.path, "path"))}><Copy /> Copy path</button>
-            <button role="menuitem" className={menuItem} disabled={menuTarget.line === undefined} onClick={menuAction(() => copy(menuTarget.line ?? "", "line"))}><Copy /> Copy line</button>
-            <div className="-mx-1 my-1 h-px bg-border" />
-            <button role="menuitem" className={menuItem} onClick={menuAction(() => inspectXRay(menuTarget.path))}><Fingerprint /> File X-Ray</button>
-            <button role="menuitem" className={menuItem} onClick={menuAction(() => inspectLocks([menuTarget.path]))}><Lock /> What's locking this?</button>
-        </div>
-    );
 
     let body: React.ReactNode;
     if (error) {
@@ -381,7 +369,7 @@ export function Results({ active, run, matches, searching, error, duration, file
 
             <div className="flex min-h-0 flex-1">
                 <div className="min-w-0 flex-1">{body}</div>
-                {menu}
+                {menu.element}
                 {matches.length > 0 && (
                     <div className="hidden min-w-0 flex-1 border-l md:flex">
                         <Preview match={selectedMatch} onOpen={onOpen} onReveal={onReveal} />
