@@ -3635,7 +3635,7 @@ dependencies = [
 
 [[package]]
 name = "shadui-index"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "memchr",
  "rayon",
@@ -3646,7 +3646,7 @@ dependencies = [
 
 [[package]]
 name = "shadui-ripgrep"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crc32fast",
  "notify",
