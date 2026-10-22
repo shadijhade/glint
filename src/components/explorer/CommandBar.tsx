@@ -119,20 +119,22 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
 
 /**
  * How far the bar folds to fit: 0 shows every label; 1 hides the `data-fold="1"` ones (icons and
- * tooltips stay); 2 hides them all; 3 also puts the view toggles in a menu. Measured, so it holds at
- * any text size; `buttons` changes when the set of buttons does, so the widths are measured again.
+ * tooltips stay); 2 hides them all; 3 also puts the view toggles in a menu; 4 puts Disk usage,
+ * Folder sizes and Search text in the Tools menu too. Measured, so it holds at any text size;
+ * `buttons` changes when the set of buttons does, so the widths are measured again.
  */
 function useFold(buttons: unknown) {
     const ref = useRef<HTMLDivElement>(null);
     const [fold, setFold] = useState(0);
-    // What the bar needs at folds 0, 1 and 2: measured at 0, and at 2 when even that overflows.
-    const needs = useRef([0, 0, 0]);
+    // What the bar needs at each fold: 0 and 1 measured at 0, the others at that fold when even it
+    // overflows (0 until then: as far as anyone knows, it fits).
+    const needs = useRef([0, 0, 0, 0]);
     const measuredFor = useRef(buttons);
     useLayoutEffect(() => {
         const bar = ref.current!;
         if (measuredFor.current !== buttons) {
             measuredFor.current = buttons;
-            needs.current = [0, 0, 0];
+            needs.current = [0, 0, 0, 0];
         }
         const check = () => {
             if (fold === 0) {
@@ -141,10 +143,10 @@ function useFold(buttons: unknown) {
                     (sum, label) => sum + label.offsetWidth + (parseFloat(getComputedStyle(label.parentElement!).columnGap) || 0),
                     0
                 );
-                needs.current = [bar.scrollWidth, bar.scrollWidth - first, 0];
-            } else if (fold === 2 && bar.scrollWidth > bar.clientWidth) needs.current[2] = bar.scrollWidth;
-            const [all, some, none] = needs.current;
-            setFold(bar.clientWidth >= all ? 0 : bar.clientWidth >= some ? 1 : bar.clientWidth >= none ? 2 : 3);
+                needs.current = [bar.scrollWidth, bar.scrollWidth - first, 0, 0];
+            } else if (fold >= 2 && fold < 4 && bar.scrollWidth > bar.clientWidth) needs.current[fold] = bar.scrollWidth;
+            const fits = needs.current.findIndex((need) => bar.clientWidth >= need);
+            setFold(fits < 0 ? 4 : fits);
         };
         check();
         const observer = new ResizeObserver(check);
@@ -223,6 +225,15 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
         const below = e.currentTarget.getBoundingClientRect();
         const file = selected.length === 1 && !selected[0].dir ? selected[0] : undefined;
         menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
+            // Folded in from the bar, when it's that narrow.
+            ...(fold >= 4
+                ? [
+                      { label: mapped ? "Back to the file list" : "Disk usage", icon: LayoutDashboard, disabled: !inFolder || find, onSelect: () => toggleUsage(tab) },
+                      { label: sizing ? "Stop calculating folder sizes" : "Folder sizes", icon: HardDrive, disabled: !inFolder || find, onSelect: sizing ? stopSizes : calcSizes },
+                      { label: "Search text in this folder", icon: TextSearch, shortcut: "Ctrl+Shift+F", disabled: !inFolder || readOnly, onSelect: onSearchText },
+                      "separator" as const,
+                  ]
+                : []),
             { label: "Open in Terminal", icon: SquareTerminal, disabled: !inFolder, onSelect: terminal },
             "separator",
             { label: "File X-Ray: hashes and hidden streams", icon: Fingerprint, disabled: !file, onSelect: () => file && inspectXRay(file.path) },
@@ -293,6 +304,8 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
                 <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find} tileSize={tileSize} onChange={(v) => chooseView(v, tab)} onSizes={showSizes} />
+                {fold < 4 && (
+                <>
                 <Button
                     variant="ghost"
                     size="sm"
@@ -300,7 +313,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     disabled={!inFolder || find}
                     aria-pressed={mapped}
                     title={mapped ? "Back to the file list" : "Disk usage: a map of what fills this folder, from the instant search index when it has it, otherwise measured with dust"}
-                    className={cn("hidden md:inline-flex", mapped && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary")}
+                    className={cn(mapped && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary")}
                 >
                     <LayoutDashboard /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Disk usage</span>
                 </Button>
@@ -310,13 +323,14 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     onClick={sizing ? stopSizes : calcSizes}
                     disabled={!inFolder || find}
                     title={sizing ? "Stop calculating" : "Size every folder here: from the instant search index when it has them, otherwise measured with dust"}
-                    className="hidden sm:inline-flex"
                 >
                     {sizing ? <Loader2 className="animate-spin" /> : <HardDrive />} <span data-fold="2" className={cn(fold >= 2 && "sr-only")}>{sizing ? "Stop" : "Folder sizes"}</span>
                 </Button>
-                <Button variant="ghost" size="sm" onClick={onSearchText} disabled={!inFolder || readOnly} title="Search inside the files in this folder (ripgrep) · Ctrl+Shift+F" className="hidden lg:inline-flex">
+                <Button variant="ghost" size="sm" onClick={onSearchText} disabled={!inFolder || readOnly} title="Search inside the files in this folder (ripgrep) · Ctrl+Shift+F">
                     <TextSearch /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Search text</span>
                 </Button>
+                </>
+                )}
                 <Tool icon={Command} label="Command palette (Ctrl+K)" onClick={() => useExplorer.setState({ palette: true })} />
                 <Divider />
                 {fold < 3 ? (
