@@ -60,6 +60,9 @@ export interface Settings {
     quickShortcut: string | null;
     keepInTray: boolean;
     startWithWindows: boolean;
+    // Compare panes: what's inside subfolders too, and files' contents
+    compareSubfolders: boolean;
+    compareContents: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -103,6 +106,8 @@ export const DEFAULT_SETTINGS: Settings = {
     quickShortcut: 'Ctrl+Alt+F',
     keepInTray: false,
     startWithWindows: false,
+    compareSubfolders: false,
+    compareContents: false,
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */
