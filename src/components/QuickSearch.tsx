@@ -205,11 +205,15 @@ export function QuickSearch() {
                     onKeyDown={onKeyDown}
                     spellCheck={false}
                     aria-label="Search file names on every drive"
+                    role="combobox"
+                    aria-expanded
+                    aria-controls="quick-results"
+                    aria-activedescendant={shown.length ? `quick-${active}` : undefined}
                     placeholder="Search every drive…"
                     className="h-14 min-w-0 flex-1 bg-transparent text-lg outline-hidden placeholder:text-muted-foreground"
                 />
             </div>
-            <div ref={list} role="listbox" aria-label="Results" className="min-h-0 flex-1 overflow-y-auto p-1.5">
+            <div ref={list} id="quick-results" role="listbox" aria-label="Results" className="min-h-0 flex-1 overflow-y-auto p-1.5">
                 {!query.trim() && recent.length > 0 && <p className="px-3 pb-1 pt-1.5 text-xs font-semibold text-muted-foreground">Folders you use most</p>}
                 {shown.map((entry, i) => {
                     const kind = kindOf(entry);
@@ -217,6 +221,7 @@ export function QuickSearch() {
                         <button
                             key={entry.path}
                             data-index={i}
+                            id={`quick-${i}`}
                             role="option"
                             aria-selected={i === active}
                             tabIndex={-1}

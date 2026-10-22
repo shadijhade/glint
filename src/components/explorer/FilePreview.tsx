@@ -253,7 +253,9 @@ function FolderPreview({ entry }: { entry: FileEntry }) {
                     <p>{counts.error}</p>
                 ) : (
                     <p>
-                        {formatCount(counts.folders)} {counts.folders === 1 ? "folder" : "folders"}, {formatCount(counts.files)} {counts.files === 1 ? "file" : "files"}
+                        {counts.folders + counts.files === 0
+                            ? "Empty"
+                            : [counts.folders > 0 && plural(counts.folders, "folder"), counts.files > 0 && plural(counts.files, "file")].filter(Boolean).join(", ")}
                         {counts.files > 0 && <span className="block text-xs">{formatSize(counts.bytes)} in files directly inside</span>}
                     </p>
                 ))}
