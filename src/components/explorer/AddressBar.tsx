@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
     ArrowLeft,
     ArrowRight,
     ArrowUp,
     Check,
     ChevronRight,
+    Ellipsis,
     File,
     FileArchive,
     Folder,
@@ -273,6 +274,7 @@ export function AddressBar() {
     const { drives, known, editing } = useExplorer(useShallow((s) => ({ drives: s.drives, known: s.known, editing: s.editingAddress })));
     const showHidden = useStore((s) => s.settings.showHidden);
     const trailRef = useRef<HTMLDivElement>(null);
+    const crumbsRef = useRef<HTMLDivElement>(null);
     const flyoutRef = useRef<HTMLDivElement>(null);
     // The flyout opened last: a slow folder's list mustn't replace the one asked for after it.
     const flyoutSeq = useRef(0);
@@ -285,30 +287,41 @@ export function AddressBar() {
     const [findFocused, setFindFocused] = useState(false);
     const trail = crumbs(path);
 
-    // Long paths keep their end in view, as the window narrows too; the start scrolls away to the left
-    // and fades out there.
-    const [cut, setCut] = useState(false);
+    // A path too long for the bar keeps its end, as the window narrows too: the crumbs are laid out
+    // from the end (wrapping onto a line out of view), so it's the folders above the ones that fit that
+    // go, into a "…" menu before them, as in Explorer.
+    const [hidden, setHidden] = useState(0);
     useLayoutEffect(() => {
-        const el = trailRef.current;
-        if (!el) return;
-        const toEnd = () => {
-            el.scrollLeft = el.scrollWidth;
-            setCut(el.scrollLeft > 0);
+        const [bar, box] = [trailRef.current, crumbsRef.current];
+        if (!bar || !box) return;
+        const count = () => {
+            const top = box.getBoundingClientRect().top + 1;
+            setHidden([...box.children].filter((el) => el.getBoundingClientRect().top > top).length);
         };
-        toEnd();
-        const observer = new ResizeObserver(toEnd);
-        observer.observe(el);
+        count();
+        // The bar's width follows the window's, not the "…" coming and going.
+        const observer = new ResizeObserver(count);
+        observer.observe(bar);
         return () => observer.disconnect();
-    }, [path, drives, editing]);
+    }, [path, drives, editing, hidden]);
 
     const rootName = (root: string) => {
         const drive = drives.find((d) => samePath(d.path, root));
         return drive ? driveName(drive) : root;
     };
+    const crumbName = (i: number) => (i === 0 ? rootName(trail[0].path) : trail[i].name);
+    /** A crumb in the "…" menu: the drive's own icon for the first. */
+    const crumbItem = (crumb: { path: string }, i: number): Suggestion => {
+        const drive = i === 0 ? drives.find((d) => samePath(d.path, crumb.path)) : undefined;
+        if (drive) return { name: crumbName(i), path: crumb.path, dir: true, icon: DRIVE_ICONS[drive.kind] };
+        if (isArchive(crumb.path)) return { name: crumbName(i), path: crumb.path, dir: true, archive: true, icon: FileArchive, iconClass: "text-amber-600 dark:text-amber-500" };
+        return { name: crumbName(i), path: crumb.path, dir: true, icon: Folder, iconClass: "fill-amber-400/80 text-amber-500" };
+    };
     const folderName = tabName(path, drives);
     const startEditing = () => useExplorer.setState({ editingAddress: true });
 
-    const openFlyout = async (e: React.MouseEvent<HTMLButtonElement>, folder: string, activeChild?: string) => {
+    /** The subfolders of `folder`, or with `given`, those (the folders the "…" stands for). */
+    const openFlyout = async (e: React.MouseEvent<HTMLButtonElement>, folder: string, activeChild?: string, given?: Suggestion[]) => {
         e.stopPropagation();
         const seq = ++flyoutSeq.current;
         const rect = e.currentTarget.getBoundingClientRect();
@@ -318,6 +331,12 @@ export function AddressBar() {
 
         if (popover && !popover.matches(":popover-open")) {
             popover.showPopover();
+        }
+
+        if (given) {
+            setFlyoutLoading(false);
+            setFlyoutItems(given);
+            return;
         }
 
         if (folder === THIS_PC) {
@@ -375,6 +394,18 @@ export function AddressBar() {
         return flyoutItems.filter((i) => i.name.toLowerCase().includes(q));
     }, [flyoutItems, flyoutFilter]);
 
+    const chevron = (i: number) => (
+        <button
+            type="button"
+            onClick={(e) => void openFlyout(e, trail[i].path, trail[i + 1]?.path)}
+            title={`Subfolders of ${crumbName(i)}`}
+            aria-label={`Subfolders of ${crumbName(i)}`}
+            className="grid size-5 shrink-0 place-items-center rounded-[4px] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+        >
+            <ChevronRight className="size-3.5" />
+        </button>
+    );
+
     const onFlyoutKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
         if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
         e.preventDefault();
@@ -415,11 +446,7 @@ export function AddressBar() {
                 {editing ? (
                     <AddressInput path={path} />
                 ) : (
-                    <div
-                        ref={trailRef}
-                        onScroll={(e) => setCut(e.currentTarget.scrollLeft > 0)}
-                        className={cn("flex h-full min-w-0 flex-1 items-center overflow-x-auto px-1 [scrollbar-width:none]", cut && "[mask-image:linear-gradient(to_right,transparent,black_2.5rem)]")}
-                    >
+                    <div ref={trailRef} className="flex h-full min-w-0 flex-1 items-center overflow-hidden px-1">
                         <button
                             type="button"
                             onClick={() => navigate(THIS_PC)}
@@ -439,29 +466,38 @@ export function AddressBar() {
                         >
                             <ChevronRight className="size-3.5" />
                         </button>
-                        {trail.map((crumb, i) => (
-                            <Fragment key={crumb.path}>
+                        {hidden > 0 && (
+                            <>
                                 <button
                                     type="button"
-                                    onClick={() => navigate(crumb.path)}
-                                    onMouseDown={middleClickOpens(crumb.path)}
-                                    title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : crumb.path}
-                                    className={cn("flex h-6 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
+                                    onClick={(e) => void openFlyout(e, "", undefined, trail.slice(0, hidden).map(crumbItem))}
+                                    title="Folders above"
+                                    aria-label="Folders above"
+                                    className="grid h-6 shrink-0 place-items-center rounded-[4px] px-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
                                 >
-                                    {isArchive(crumb.path) && <FileArchive className="size-3.5 text-amber-600 dark:text-amber-500" />}
-                                    {i === 0 ? rootName(crumb.path) : crumb.name}
+                                    <Ellipsis className="size-4" />
                                 </button>
-                                <button
-                                    type="button"
-                                    onClick={(e) => void openFlyout(e, crumb.path, trail[i + 1]?.path)}
-                                    title={`Subfolders of ${i === 0 ? rootName(crumb.path) : crumb.name}`}
-                                    aria-label={`Subfolders of ${i === 0 ? rootName(crumb.path) : crumb.name}`}
-                                    className="grid size-5 shrink-0 place-items-center rounded-[4px] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
-                                >
-                                    <ChevronRight className="size-3.5" />
-                                </button>
-                            </Fragment>
-                        ))}
+                                {chevron(hidden - 1)}
+                            </>
+                        )}
+                        <div ref={crumbsRef} className="flex h-6 min-w-0 flex-row-reverse flex-wrap justify-end overflow-hidden">
+                            {trail.map((crumb, i) => (
+                                // Laid out from the end; in the page (and to Tab), from the root.
+                                <div key={crumb.path} style={{ order: trail.length - i }} className={cn("flex items-center", i === trail.length - 1 ? "min-w-0 max-w-full" : "shrink-0", i < hidden && "invisible")}>
+                                    <button
+                                        type="button"
+                                        onClick={() => navigate(crumb.path)}
+                                        onMouseDown={middleClickOpens(crumb.path)}
+                                        title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : crumb.path}
+                                        className={cn("flex h-6 min-w-0 items-center gap-1 rounded-[4px] px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
+                                    >
+                                        {isArchive(crumb.path) && <FileArchive className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
+                                        <span className="truncate">{crumbName(i)}</span>
+                                    </button>
+                                    {chevron(i)}
+                                </div>
+                            ))}
+                        </div>
                         <div onClick={startEditing} className="h-full min-w-10 flex-1 cursor-text" title="Type a path (Ctrl+L)" />
                     </div>
                 )}
