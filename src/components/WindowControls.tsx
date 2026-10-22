@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** Segoe Fluent Icons (Windows 11) and Segoe MDL2 Assets (Windows 10) glyphs: Windows' own caption buttons use them. */
@@ -10,6 +12,9 @@ const GLYPHS = { minimize: "", maximize: "", restore: "", close: "" 
  */
 export function WindowControls() {
     const [maximized, setMaximized] = useState(false);
+    const maximize = useRef<HTMLButtonElement>(null);
+    // The pointer on the maximize button, which Windows' snap layouts take over (see snap.rs): "hover", "press" or "".
+    const [snap, setSnap] = useState("");
 
     useEffect(() => {
         const win = getCurrentWindow();
@@ -18,9 +23,30 @@ export function WindowControls() {
         const unlisten = [
             win.onResized(update),
             win.onFocusChanged(({ payload: focused }) => document.documentElement.toggleAttribute("data-window-inactive", !focused)),
+            listen<string>("snap-button", ({ payload }) => setSnap(payload)),
         ];
         return () => {
             for (const stop of unlisten) stop.then((f) => f());
+        };
+    }, []);
+
+    // Windows' snap layouts window goes over the button, in physical pixels: again as the window or its scale changes.
+    useEffect(() => {
+        const button = maximize.current!;
+        const place = () => {
+            const r = button.getBoundingClientRect();
+            const k = window.devicePixelRatio;
+            const [x, y] = [Math.round(r.left * k), Math.round(r.top * k)];
+            invoke("snap_place", { rect: { x, y, width: Math.round(r.right * k) - x, height: Math.round(r.bottom * k) - y } }).catch(() => {});
+        };
+        place();
+        const observer = new ResizeObserver(place);
+        observer.observe(button, { box: "device-pixel-content-box" });
+        window.addEventListener("resize", place);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener("resize", place);
+            invoke("snap_place", { rect: null }).catch(() => {});
         };
     }, []);
 
@@ -32,8 +58,10 @@ export function WindowControls() {
                 {GLYPHS.minimize}
             </button>
             <button
+                ref={maximize}
                 type="button"
                 tabIndex={-1}
+                data-snap={snap || undefined}
                 className="caption-button"
                 onClick={() => win.toggleMaximize()}
                 title={maximized ? "Restore down" : "Maximize"}
