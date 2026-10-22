@@ -37,10 +37,10 @@ export function Modal({ label, onClose, onSubmit, className, children }: { label
         "aria-label": label,
         tabIndex: -1,
         onKeyDown,
-        className: cn("flex w-full flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl outline-hidden", className),
+        className: cn("glint-rise flex w-full flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl outline-hidden", className),
     } as const;
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+        <div className="glint-fade fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
             {onSubmit ? (
                 <form
                     ref={ref as React.Ref<HTMLFormElement>}

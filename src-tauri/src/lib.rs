@@ -104,6 +104,18 @@ fn replace_contents(path: &std::path::Path, content: &[u8]) -> std::io::Result<(
     written
 }
 
+/// Started with Windows (Settings → Quick search): in the tray, the window not shown.
+static IN_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The page has painted: the window shows now, so it never flashes white first (but not when Glint
+/// started in the tray). Setup shows it anyway if this never comes.
+#[tauri::command]
+fn app_ready(window: tauri::WebviewWindow) {
+    if window.label() == "main" && !IN_TRAY.load(std::sync::atomic::Ordering::Relaxed) && !window.is_visible().unwrap_or(true) {
+        let _ = window.show();
+    }
+}
+
 /// What a bug report needs (Settings → About → Copy diagnostics): versions, where the tools come
 /// from, and instant search's state. No file names, beyond what an error may quote.
 #[tauri::command]
@@ -392,8 +404,8 @@ pub fn run() {
         }
     }
 
-    // Started with Windows (Settings → Quick search): in the tray, without showing the window.
     let in_tray = std::env::args().any(|arg| arg == "--tray");
+    IN_TRAY.store(in_tray, std::sync::atomic::Ordering::Relaxed);
     let builder = tauri::Builder::default();
     // One copy runs at a time: a later launch hands its folders to it and quits. Not in debug builds,
     // which would hand theirs to an installed Glint (they share its identifier).
@@ -424,6 +436,7 @@ pub fn run() {
             quick::quick_hide,
             quick::set_start_with_windows,
             diagnostics,
+            app_ready,
             cancel_search,
             stop_tools,
             fsx::list_dir,
@@ -483,12 +496,19 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(all(windows, not(debug_assertions)))]
             disable_browser_keys(app);
-            // Made hidden, so starting in the tray doesn't flash it.
+            // Made hidden: it shows once the page has painted (app_ready), or after a few seconds if the
+            // page never says so, and not at all when Glint started in the tray.
             if !in_tray {
                 use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                }
+                let handle = app.handle().clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_secs(3));
+                    if let Some(window) = handle.get_webview_window("main") {
+                        if !window.is_visible().unwrap_or(true) {
+                            let _ = window.show();
+                        }
+                    }
+                });
             }
             {
                 use tauri::Manager;
