@@ -16,6 +16,7 @@ import { Button } from "../ui/button";
 import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
+import { ShellPreview } from "./ShellPreview";
 import { inspectXRay } from "./XRayDialog";
 
 const TEXT_BYTES = 256 * 1024;
@@ -182,7 +183,7 @@ function ArchivePreview({ entry }: { entry: FileEntry }) {
     );
 }
 
-function TextPreview({ entry }: { entry: FileEntry }) {
+function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
     const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
     const [state, setState] = useState<{ text: string; truncated: boolean; binary: boolean } | { error: string } | null>(null);
     useEffect(() => {
@@ -198,7 +199,14 @@ function TextPreview({ entry }: { entry: FileEntry }) {
 
     if (!state) return null;
     if ("error" in state) return <p className="p-4 text-sm text-destructive">{state.error}</p>;
-    if (state.binary) return <BigIcon entry={entry} note="No preview for this kind of file" />;
+    if (state.binary)
+        return isArchived(entry) ? (
+            <BigIcon entry={entry} note="No preview for this kind of file" />
+        ) : (
+            <ShellPreview entry={entry} over={over}>
+                <BigIcon entry={entry} note="No preview for this kind of file" />
+            </ShellPreview>
+        );
     if (!state.text) return <Centered>This file is empty.</Centered>;
     const lines = state.text.split("\n");
     const cut = lines.length > TEXT_LINES;
@@ -316,8 +324,15 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     else if (!archived && isSqliteCandidate(entry)) body = <SqlitePreview entry={entry} />;
     else if (!archived && isTabularCandidate(entry)) body = <TabularPreview entry={entry} />;
     // Unknown extensions get a text preview attempt; the backend spots binary files.
-    else if (kind === "text" || !isKnownType(entry)) body = <TextPreview entry={entry} />;
+    else if (kind === "text" || !isKnownType(entry)) body = <TextPreview entry={entry} over={!!onClose} />;
     else if (!archived && isPeCandidate(entry)) body = <BinaryPreview entry={entry} />;
+    // Word, Excel, PowerPoint, fonts…: Windows' own previewer, where there's one.
+    else if (!archived)
+        body = (
+            <ShellPreview entry={entry} over={!!onClose}>
+                <BigIcon entry={entry} />
+            </ShellPreview>
+        );
     else body = <BigIcon entry={entry} />;
 
     const open = () => (archived || entry.dir ? openEntry(entry) : openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) })));

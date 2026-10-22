@@ -379,6 +379,23 @@ export const compareFolders = (left: string, right: string, subfolders: boolean,
     invoke<FolderDiff>("compare_folders", { left, right, subfolders, contents, hidden, exclude });
 export const cancelCompare = () => invoke<void>("cancel_compare");
 
+/** Windows' own previewer for a file type, drawn over the preview pane (native_preview.rs). */
+export type NativePreviewEvent = { type: "ready" } | { type: "unavailable"; reason: string };
+/** A rectangle of the window, in physical pixels. */
+export interface PixelRect {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+export const nativePreviewShow = (id: number, path: string, rect: PixelRect | null, dark: boolean, onEvent: (event: NativePreviewEvent) => void) => {
+    const channel = new Channel<NativePreviewEvent>();
+    channel.onmessage = onEvent;
+    return invoke("native_preview_show", { id, path, rect, dark, onEvent: channel });
+};
+export const nativePreviewPlace = (id: number, rect: PixelRect | null) => invoke("native_preview_place", { id, rect });
+export const nativePreviewClose = (id: number) => invoke("native_preview_close", { id });
+
 export interface SqliteObject {
     kind: "table" | "index" | "view" | "trigger";
     name: string;

@@ -232,6 +232,13 @@ fn list_streams(_path: &str) -> Vec<NtfsStream> {
     Vec::new()
 }
 
+/// The zone Windows marked a downloaded file with (3: the internet, 4: restricted sites), if it was;
+/// a mark that can't be read counts as the internet.
+pub(crate) fn zone_of(path: &str) -> Option<u32> {
+    let bytes = fs::read(format!("{path}:Zone.Identifier")).ok()?;
+    Some(parse_zone_identifier(&String::from_utf8_lossy(&bytes)).map_or(3, |z| z.zone_id))
+}
+
 fn parse_zone_identifier(text: &str) -> Option<ZoneIdentifier> {
     let mut zone_id = None;
     let mut host_url = None;

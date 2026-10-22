@@ -213,6 +213,7 @@ function AddressInput({ path }: { path: string }) {
             {suggestions.length > 0 && (
                 <div
                     onMouseDown={(e) => e.preventDefault()}
+                    data-overlay
                     className="absolute inset-x-0 top-[calc(100%+4px)] z-50 max-h-72 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-lg"
                 >
                     <div className="flex items-center justify-between px-2 py-1 text-[11px] text-muted-foreground">
@@ -533,7 +534,7 @@ export function AddressBar() {
                 )}
                 {findFocused && !filter && !find && (
                     // Mouse down keeps the focus in the box, which each filter starts.
-                    <div className="absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
+                    <div data-overlay className="absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
                         <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too.</p>
                         <div className="mt-1.5 flex flex-col">
                             {FILTERS.map(([start, example, meaning]) => (
