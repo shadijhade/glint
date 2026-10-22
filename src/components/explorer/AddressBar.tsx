@@ -595,7 +595,7 @@ export function AddressBar() {
                         <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too.</p>
                         <div className="mt-1.5 flex flex-col">
                             {FILTERS.map(([start, example, meaning]) => (
-                                <button key={start} type="button" onClick={() => updateTab({ filter: start })} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
+                                <button key={start} type="button" tabIndex={-1} onClick={() => updateTab({ filter: start })} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
                                     <code className="shrink-0 font-mono text-[11px] text-primary">{example}</code>
                                     <span className="truncate text-muted-foreground">{meaning}</span>
                                 </button>

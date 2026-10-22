@@ -1,6 +1,6 @@
-import { useEffect } from "react";
 import { create } from "zustand";
 import { Keyboard, X } from "lucide-react";
+import { useStore } from "@/lib/store";
 import { Modal } from "./Modal";
 import { Button } from "./ui/button";
 
@@ -10,7 +10,8 @@ const useShortcuts = create<{ open: boolean }>(() => ({ open: false }));
 export const openShortcuts = () => useShortcuts.setState({ open: true });
 const close = () => useShortcuts.setState({ open: false });
 
-const GROUPS: [string, [string, string][]][] = [
+/** The sheet's groups, with the quick search shortcut chosen in Settings (none when it's off). */
+const groups = (quick: string | null): [string, [string, string][]][] => [
     [
         "Files",
         [
@@ -21,15 +22,19 @@ const GROUPS: [string, [string, string][]][] = [
             ["Ctrl+L", "Type a path"],
             ["Alt+← → ↑", "Back, forward, up"],
             ["F2", "Rename (several selected: all at once)"],
+            ["Ctrl+Shift+R", "Rename several, with find and replace"],
             ["Delete", "To the Recycle Bin (Shift: for good)"],
             ["Ctrl+Z", "Undo"],
+            ["Ctrl+A", "Select all"],
             ["Ctrl+C X V", "Copy, cut, paste"],
             ["Ctrl+Shift+C", "Copy the path"],
             ["Ctrl+Shift+N", "New folder"],
+            ["Shift+F10", "The menu of what's selected (or the menu key)"],
             ["Alt+Enter", "Properties"],
             ["Ctrl+H", "Hidden items"],
             ["Alt+P", "Preview pane"],
             ["Ctrl+Shift+2 / 6", "Grid / list"],
+            ["Ctrl+= − 0", "Grid: larger tiles, smaller, the usual size"],
             ["F5", "Refresh"],
         ],
     ],
@@ -48,11 +53,22 @@ const GROUPS: [string, [string, string][]][] = [
         ],
     ],
     [
-        "Search and more",
+        "Text",
+        [
+            ["Enter", "Search, or open the result picked"],
+            ["↓ ↑", "From the search box on through the results"],
+            ["Shift+Enter", "A new line: search for several lines at once"],
+            ["Alt+C / W / R", "Match case, whole words, regular expression"],
+            ["Ctrl+H", "Replace"],
+            ["Esc", "Leave the search box; again, stop the search"],
+        ],
+    ],
+    [
+        "Anywhere",
         [
             ["Ctrl+Shift+F", "Search inside the files here"],
             ["Ctrl+Shift+E", "Back to Files from Text"],
-            ["Ctrl+Alt+F", "Quick search, from any app"],
+            ...(quick ? ([[quick, "Quick search, from any app"]] as [string, string][]) : []),
             ["Ctrl+,", "Settings"],
             ["F1", "This sheet"],
         ],
@@ -61,16 +77,7 @@ const GROUPS: [string, [string, string][]][] = [
 
 export function ShortcutsDialog() {
     const open = useShortcuts((s) => s.open);
-    useEffect(() => {
-        if (!open) return;
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key !== "Escape") return;
-            e.stopPropagation();
-            close();
-        };
-        window.addEventListener("keydown", onKey, true);
-        return () => window.removeEventListener("keydown", onKey, true);
-    }, [open]);
+    const quick = useStore((s) => s.settings.quickShortcut);
     if (!open) return null;
     return (
         <Modal label="Keyboard shortcuts" onClose={close} className="max-h-[86vh] max-w-4xl">
@@ -82,8 +89,8 @@ export function ShortcutsDialog() {
                 </Button>
             </div>
             <div className="grid gap-x-8 gap-y-6 overflow-y-auto p-5 md:grid-cols-[3fr_2fr]">
-                {GROUPS.map(([title, keys], i) => (
-                    <section key={title} className={i === 0 ? "md:row-span-2" : undefined}>
+                {groups(quick).map(([title, keys], i) => (
+                    <section key={title} className={i === 0 ? "md:row-span-3" : undefined}>
                         <h3 className="mb-2 text-xs font-semibold text-muted-foreground">{title}</h3>
                         <dl className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-1.5 text-sm">
                             {keys.map(([key, what]) => (
