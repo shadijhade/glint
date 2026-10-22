@@ -841,6 +841,27 @@ export function reopenClosedTab() {
     activateTab(id);
 }
 
+/**
+ * A tab dragged to `index` among pane `to`'s tabs (counted with it still where it was): along its own
+ * pane, or into the other one (not a pane's only tab).
+ */
+export function placeTab(id: string, to: number, index: number) {
+    const s = get();
+    const from = paneOf(id, s);
+    if (from < 0 || !shownPanes(s)[to] || (from !== to && s.panes[from].tabs.length < 2)) return;
+    const panes = s.panes.map((p) => ({ ...p, tabs: [...p.tabs] }));
+    const source = panes[from];
+    const at = source.tabs.indexOf(id);
+    source.tabs.splice(at, 1);
+    const where = from === to && at < index ? index - 1 : index;
+    panes[to].tabs.splice(Math.max(0, Math.min(where, panes[to].tabs.length)), 0, id);
+    const leaving = from !== to && source.active === id;
+    if (leaving) source.active = source.tabs[Math.min(at, source.tabs.length - 1)];
+    set({ panes });
+    if (leaving) showTab(source.active);
+    if (from !== to) activateTab(id);
+}
+
 /** Dual-pane view: moves a tab to the other pane (not a pane's only tab). */
 export function moveTabToOtherPane(id: string) {
     const s = get();

@@ -350,18 +350,19 @@ pub fn analyze_file(path: &str, full: bool, cancel: &AtomicBool) -> Result<FileX
         high_byte_pct = (high_count as f64 / total) * 100.0;
     }
 
+    // What a reading usually means, in so many words: compressed and encrypted data look alike.
     let entropy_label = if entropy_sampled == 0 {
-        "Empty (0.00 bits/B)"
+        "Empty"
     } else if entropy < 3.5 {
-        "Low Entropy — Repetitive / Sparse Data"
+        "Low: repetitive or mostly empty"
     } else if entropy < 5.3 {
-        "Medium Entropy — Plain Text / Source Code"
+        "Medium: likely text or source code"
     } else if entropy < 6.8 {
-        "Structured Binary — Native Executable / Database"
+        "Structured: programs, databases and other binary formats"
     } else if entropy < 7.85 {
-        "High Entropy — Compressed Media / Archive"
+        "High: likely compressed (pictures, video, archives)"
     } else {
-        "Maximum Entropy — Encrypted / Random Stream"
+        "Very high: compressed or encrypted (they look alike)"
     };
 
     Ok(FileXRayReport {

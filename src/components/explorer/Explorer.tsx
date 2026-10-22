@@ -60,6 +60,7 @@ import {
     Search,
     SearchX,
     Settings as SettingsIcon,
+    SlidersHorizontal,
     Square,
     SquarePlus,
     SquareTerminal,
@@ -1129,7 +1130,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </Button>
             </Centered>
         ) : (
-            <Centered>{listing.archive && samePath(listing.archive.path, path) ? "This archive is empty." : "This folder is empty."}</Centered>
+            <Centered>
+                <FolderOpen className="size-8 stroke-[1.25] text-muted-foreground/60" />
+                <p className="font-medium text-foreground">{listing.archive && samePath(listing.archive.path, path) ? "This archive is empty" : "This folder is empty"}</p>
+                {!listing.archive && <p className="text-xs">Drop files here, or paste them with Ctrl+V.</p>}
+            </Centered>
         );
     }
 
@@ -1180,8 +1185,18 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         if (deepSync) void syncInto(deepSync);
         else if (comparison?.syncPaths.length) void copyToOtherPane(false, comparison.syncPaths);
     };
-    const compareChip = (on: boolean) =>
-        cn("rounded-[4px] px-1.5 py-0.5 font-medium transition-colors", on ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground");
+    /** How the panes compare, in a menu so the bar stays one line in a narrow pane. */
+    const compareOptions = (e: React.MouseEvent<HTMLButtonElement>) => {
+        const below = e.currentTarget.getBoundingClientRect();
+        const skipping = settings.findExclusions.length ? ` (skipping ${settings.findExclusions.join(", ")})` : "";
+        menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
+            { label: `Subfolders too${skipping}`, toggle: true, checked: settings.compareSubfolders, onSelect: () => setSettings({ compareSubfolders: !settings.compareSubfolders }) },
+            { label: "File contents, not only sizes and dates", toggle: true, checked: settings.compareContents, onSelect: () => setSettings({ compareContents: !settings.compareContents }) },
+            "separator",
+            { label: "Only the differences", toggle: true, checked: diffOnly, onSelect: toggleDiffOnly },
+        ]);
+    };
+    const comparingMore = settings.compareSubfolders || settings.compareContents || diffOnly;
 
     return (
         <div
@@ -1267,27 +1282,20 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                     Couldn't compare deeper
                                 </span>
                             )}
-                            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
+                            <div className="ml-auto flex shrink-0 items-center gap-1">
                                 <button
                                     type="button"
-                                    aria-pressed={settings.compareSubfolders}
-                                    onClick={() => setSettings({ compareSubfolders: !settings.compareSubfolders })}
-                                    title={`Compare what's in subfolders too: a folder differs when anything in it does, and Sync copies what's missing or newer inside${settings.findExclusions.length ? ` (skipping ${settings.findExclusions.join(", ")})` : ""}`}
-                                    className={compareChip(settings.compareSubfolders)}
+                                    aria-haspopup="menu"
+                                    onClick={compareOptions}
+                                    title="Compare subfolders too, file contents, or show only the differences"
+                                    aria-label="Compare options"
+                                    className={cn(
+                                        "relative grid size-5 place-items-center rounded-[4px] transition-colors hover:bg-accent hover:text-foreground",
+                                        comparingMore ? "text-primary" : "text-muted-foreground"
+                                    )}
                                 >
-                                    Subfolders
-                                </button>
-                                <button
-                                    type="button"
-                                    aria-pressed={settings.compareContents}
-                                    onClick={() => setSettings({ compareContents: !settings.compareContents })}
-                                    title="Compare files' contents, not only their sizes and dates: files of the same size are read on both sides"
-                                    className={compareChip(settings.compareContents)}
-                                >
-                                    Contents
-                                </button>
-                                <button type="button" aria-pressed={diffOnly} onClick={toggleDiffOnly} title="Hide identical items in both panes" className={compareChip(diffOnly)}>
-                                    Diffs only
+                                    <SlidersHorizontal className="size-3.5" />
+                                    {comparingMore && <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-primary" />}
                                 </button>
                                 <button
                                     type="button"

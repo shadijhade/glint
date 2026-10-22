@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { File, Folder, Loader2, Search } from "lucide-react";
+import { Loader2, Search } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
-import type { FileEntry } from "@/lib/entries";
+import { type FileEntry, isHidden } from "@/lib/entries";
+import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { cancelFind, findFiles, listDrives, quickHide, quickReveal } from "@/lib/fs";
 import { parentPath } from "@/lib/paths";
@@ -11,7 +12,54 @@ import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 const LANE = "quick";
+/** Shown; more are asked for, so the best can be picked from them. */
 const LIMIT = 100;
+const ASKED = 1000;
+
+/** Windows' own folders, and caches: what a search for your files rarely means. */
+const SYSTEM = /\\(windows\\(winsxs|servicing|assembly|installer|system32|syswow64|softwaredistribution|systemapps|immersivecontrolpanel)|programdata|\$recycle\.bin|appdata\\local\\(temp|packages|microsoft)|node_modules|\.git)\\/i;
+
+/** The words typed, without filters (ext:pdf…) and wildcards. */
+const wordsOf = (query: string) =>
+    query
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w && !w.includes(":"))
+        .map((w) => w.replace(/[*?"]/g, ""))
+        .filter(Boolean);
+
+/**
+ * Best first: a name that is what was typed, then one that starts with it, then one with a word that
+ * does; then what's outside Windows' own folders and not hidden; then the shorter path.
+ */
+function rank(entries: FileEntry[], words: string[]) {
+    const first = words[0] ?? "";
+    const wordStart = new RegExp(`(^|[\\s._-])${first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+    const score = (e: FileEntry) => {
+        const stem = e.lower.replace(/\.[^.]*$/, "");
+        const match = !first || stem === first || e.lower === first ? 0 : e.lower.startsWith(first) ? 1 : wordStart.test(e.lower) ? 2 : 3;
+        return match * 4 + (SYSTEM.test(e.path) ? 2 : 0) + (isHidden(e) ? 1 : 0);
+    };
+    return entries
+        .map((e) => ({ e, s: score(e) }))
+        .sort((a, b) => a.s - b.s || a.e.path.length - b.e.path.length)
+        .map((x) => x.e);
+}
+
+/** The name, with the part that matched what was typed marked. */
+function Name({ name, words }: { name: string; words: string[] }) {
+    const lower = name.toLowerCase();
+    const word = words.find((w) => lower.includes(w));
+    if (!word) return <>{name}</>;
+    const at = lower.indexOf(word);
+    return (
+        <>
+            {name.slice(0, at)}
+            <mark className="bg-transparent font-semibold text-primary">{name.slice(at, at + word.length)}</mark>
+            {name.slice(at + word.length)}
+        </>
+    );
+}
 
 const searchable = () => listDrives().then((drives) => drives.filter((d) => d.kind === "fixed" || d.kind === "removable").map((d) => d.path));
 
@@ -60,25 +108,26 @@ export function QuickSearch() {
         const timer = setTimeout(async () => {
             const { settings } = useStore.getState();
             const entries: FileEntry[] = [];
+            const words = wordsOf(text);
             let engine = "";
             setBusy(true);
             setActive(0);
             try {
                 if (!roots.current.length) roots.current = await searchable();
-                const options = { hidden: settings.showHidden, respectIgnore: false, exclude: settings.findExclusions, maxResults: LIMIT };
+                const options = { hidden: settings.showHidden, respectIgnore: false, exclude: settings.findExclusions, maxResults: ASKED };
                 await findFiles(roots.current, text, options, LANE, (event) => {
                     if (!current) return;
                     if (event.type === "started") engine = event.engine;
                     else if (event.type === "entries") {
                         entries.push(...event.entries);
-                        setFound(entries.slice());
+                        setFound(rank(entries, words).slice(0, LIMIT));
                     } else if (event.type === "error") {
                         setBusy(false);
                         setStatus(event.message);
                     } else if (event.type === "finished") {
                         setBusy(false);
-                        setFound(entries.slice());
-                        setStatus(`${engine} · ${formatCount(event.count)}${event.limited ? "+" : ""} found in ${formatDuration(event.elapsed)}`);
+                        setFound(rank(entries, words).slice(0, LIMIT));
+                        setStatus(`${engine} · ${formatCount(event.count)}${event.limited ? "+" : ""} found in ${formatDuration(event.elapsed)}${event.count > LIMIT ? ` · the best ${LIMIT} shown` : ""}`);
                     }
                 });
             } catch (e) {
@@ -115,6 +164,9 @@ export function QuickSearch() {
         e.preventDefault();
     };
 
+    // What the names are marked with.
+    const words = wordsOf(query);
+
     const hint = (keys: string, what: string) => (
         <span className="shrink-0">
             <kbd className="rounded border bg-muted px-1 font-sans text-[11px]">{keys}</kbd> {what}
@@ -137,24 +189,29 @@ export function QuickSearch() {
                 />
             </div>
             <div ref={list} role="listbox" aria-label="Results" className="min-h-0 flex-1 overflow-y-auto p-1.5">
-                {found.map((entry, i) => (
-                    <button
-                        key={entry.path}
-                        role="option"
-                        aria-selected={i === active}
-                        tabIndex={-1}
-                        onMouseMove={() => setActive(i)}
-                        onClick={(e) => open(entry, e.altKey)}
-                        className={cn("flex w-full items-center gap-3 rounded-md px-3 py-1.5 text-left", i === active && "bg-accent")}
-                    >
-                        {entry.dir ? <Folder className="size-4 shrink-0 fill-amber-400/80 text-amber-500" /> : <File className="size-4 shrink-0 text-muted-foreground" />}
-                        <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm">{entry.name}</span>
-                            <span className="block truncate text-xs text-muted-foreground">{parentPath(entry.path)}</span>
-                        </span>
-                        {!entry.dir && <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{formatSize(entry.size)}</span>}
-                    </button>
-                ))}
+                {found.map((entry, i) => {
+                    const kind = kindOf(entry);
+                    return (
+                        <button
+                            key={entry.path}
+                            role="option"
+                            aria-selected={i === active}
+                            tabIndex={-1}
+                            onMouseMove={() => setActive(i)}
+                            onClick={(e) => open(entry, e.altKey)}
+                            className={cn("flex w-full items-center gap-3 rounded-md px-3 py-1.5 text-left", i === active && "bg-accent")}
+                        >
+                            <kind.icon className={cn("size-4 shrink-0", entry.dir ? "fill-amber-400/80 text-amber-500" : kind.tone)} />
+                            <span className="min-w-0 flex-1">
+                                <span className="block truncate text-sm">
+                                    <Name name={entry.name} words={words} />
+                                </span>
+                                <span className="block truncate text-xs text-muted-foreground">{parentPath(entry.path)}</span>
+                            </span>
+                            {!entry.dir && <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{formatSize(entry.size)}</span>}
+                        </button>
+                    );
+                })}
                 {!found.length && (
                     <p className="px-3 py-8 text-center text-sm text-muted-foreground">
                         {query.trim() ? (busy ? "Searching…" : status || "Nothing found") : "Type part of a name. Filters work too: ext:pdf, size:>10mb, dm:7d"}

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CornerDownLeft, type LucideIcon, Search } from "lucide-react";
 import { fuzzyScore } from "@/lib/rank";
 import { cn } from "@/lib/utils";
@@ -53,7 +53,7 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
 
     useEffect(() => setActive(0), [query]);
     useEffect(() => {
-        listRef.current?.children[active]?.scrollIntoView({ block: "nearest" });
+        listRef.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
     }, [active]);
 
     const run = (command: Command | undefined) => {
@@ -95,8 +95,15 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                 </div>
                 <div ref={listRef} role="listbox" className="max-h-[min(60vh,26rem)] overflow-y-auto p-1.5">
                     {results.map((c, i) => (
+                        <Fragment key={c.id}>
+                        {/* Before anything's typed: where to go, then what to do. */}
+                        {!query.trim() && (i === 0 || results[i - 1].kind !== c.kind) && (
+                            <div role="presentation" className="px-2.5 pb-1 pt-2.5 text-xs font-semibold text-muted-foreground first:pt-1">
+                                {c.kind === "folder" ? "Go to" : "Commands"}
+                            </div>
+                        )}
                         <button
-                            key={c.id}
+                            data-index={i}
                             role="option"
                             aria-selected={i === active}
                             onMouseMove={() => i !== active && setActive(i)}
@@ -108,6 +115,7 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                             {c.detail && <span className="min-w-0 truncate text-xs text-muted-foreground">{c.detail}</span>}
                             {c.shortcut && <span className="ml-auto shrink-0 pl-4 text-xs text-muted-foreground">{c.shortcut}</span>}
                         </button>
+                        </Fragment>
                     ))}
                     {!results.length && <p className="px-3 py-6 text-center text-sm text-muted-foreground">Nothing matches “{query}”</p>}
                 </div>
