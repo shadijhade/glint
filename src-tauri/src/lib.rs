@@ -13,6 +13,7 @@ mod pe;
 mod proc;
 mod quick;
 mod shell;
+mod snap;
 mod sizes;
 mod thumbs;
 mod timeline;
@@ -484,6 +485,7 @@ pub fn run() {
             native_preview::native_preview_show,
             native_preview::native_preview_place,
             native_preview::native_preview_close,
+            snap::snap_place,
             xray::cancel_xray,
             xray::remove_ntfs_stream,
             watch::watch_dirs,
