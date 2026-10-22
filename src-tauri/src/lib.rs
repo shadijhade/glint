@@ -8,6 +8,7 @@ mod fsx;
 mod index;
 mod launch;
 mod locks;
+mod native_preview;
 mod pe;
 mod proc;
 mod quick;
@@ -469,6 +470,9 @@ pub fn run() {
             data_lens::inspect_tabular,
             batch_rename::batch_rename,
             xray::inspect_file_xray,
+            native_preview::native_preview_show,
+            native_preview::native_preview_place,
+            native_preview::native_preview_close,
             xray::cancel_xray,
             xray::remove_ntfs_stream,
             watch::watch_dirs,

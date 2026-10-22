@@ -90,6 +90,17 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
         if touches_archive {
             return Err(crate::fsx::READ_ONLY.into());
         }
+        // A preview handler may hold the file open: what's moved, renamed or deleted goes from the preview first.
+        let leaving: Vec<String> = match &op {
+            FileOp::Move { sources, .. } => sources.clone(),
+            FileOp::Delete { paths, .. } => paths.clone(),
+            FileOp::Rename { path, .. } => vec![path.clone()],
+            FileOp::MoveBack { items } => items.iter().map(|b| b.path.clone()).collect(),
+            FileOp::Copy { .. } | FileOp::Restore { .. } | FileOp::CopyInto { .. } => Vec::new(),
+        };
+        if !leaving.is_empty() {
+            crate::native_preview::release(&leaving);
+        }
         imp::file_op(owner, op)
     })
     .await
