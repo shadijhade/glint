@@ -97,6 +97,12 @@ export const DEFAULT_SETTINGS: Settings = {
     findExclusions: ['node_modules', '.git'],
 };
 
+/** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */
+export interface SavedSearch {
+    query: string;
+    folder: string;
+}
+
 interface AppState {
     query: string;
     path: string;
@@ -105,6 +111,7 @@ interface AppState {
     settings: Settings;
     mode: Mode;
     pinned: string[];
+    savedSearches: SavedSearch[];
     lastFolder: string | null;
     session: Session | null;
     /** Folders opened, for ranking in the command palette. */
@@ -118,6 +125,8 @@ interface AppState {
     setSettings: (settings: Partial<Settings>) => void;
     setMode: (mode: Mode) => void;
     togglePin: (path: string) => void;
+    /** Keeps the search in the sidebar, or takes it out if it's there. */
+    toggleSavedSearch: (search: SavedSearch) => void;
     setLastFolder: (path: string) => void;
     setSession: (session: Session) => void;
     recordVisit: (path: string) => void;
@@ -135,6 +144,7 @@ export const useStore = create<AppState>()(
             settings: DEFAULT_SETTINGS,
             mode: 'files',
             pinned: [],
+            savedSearches: [],
             lastFolder: null,
             session: null,
             visits: {},
@@ -162,6 +172,10 @@ export const useStore = create<AppState>()(
             togglePin: (path) => set((state) => ({
                 pinned: state.pinned.includes(path) ? state.pinned.filter(p => p !== path) : [...state.pinned, path]
             })),
+            toggleSavedSearch: (search) => set((state) => {
+                const same = (s: SavedSearch) => s.query === search.query && s.folder.toLowerCase() === search.folder.toLowerCase();
+                return { savedSearches: state.savedSearches.some(same) ? state.savedSearches.filter((s) => !same(s)) : [...state.savedSearches, search] };
+            }),
             setLastFolder: (lastFolder) => set({ lastFolder }),
             setSession: (session) => set({ session }),
             recordVisit: (path) => set((state) => {

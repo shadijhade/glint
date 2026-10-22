@@ -9,6 +9,8 @@ import {
     AlertTriangle,
     AppWindow,
     ArchiveRestore,
+    Bookmark,
+    BookmarkCheck,
     ArrowLeft,
     ArrowRight,
     ArrowRightLeft,
@@ -115,6 +117,7 @@ import {
     reopenClosedTab,
     revealInApp,
     runFind,
+    runSavedSearch,
     savedScroll,
     saveScroll,
     selectAll,
@@ -358,6 +361,10 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             addFolder(folder, baseName(folder), Folder, 0, "fill-amber-400/80 text-amber-500");
         }
         for (const d of s.drives) addFolder(d.path, driveName(d), DRIVE_ICONS[d.kind], 0);
+        for (const saved of useStore.getState().savedSearches) {
+            const where = saved.folder || "every drive";
+            folders.push({ id: `search:${where}\n${saved.query}`, label: saved.query, detail: `Saved search in ${where}`, icon: Search, kind: "folder", weight: 1.5, run: () => void runSavedSearch(saved) });
+        }
 
         const action = (id: string, label: string, icon: Command["icon"], run: () => void, shortcut?: string): Command => ({ id, label, icon, run, shortcut, kind: "action" });
         const isPinned = pinned.includes(t.path);
@@ -1038,6 +1045,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     }
 
     const scopeName = find && (find.scope === THIS_PC ? "all drives" : baseName(find.scope));
+    const toggleSavedSearch = useStore((s) => s.toggleSavedSearch);
+    const searchSaved = useStore((s) => !!find && s.savedSearches.some((x) => x.query === find.query && x.folder.toLowerCase() === find.scope.toLowerCase()));
     const listKey = viewKey({ path, find });
     // Each view keeps its own place in the folder: a list's scroll position means nothing to the grid.
     const placeKey = `${listKey}:${view}`;
@@ -1103,6 +1112,14 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                         </span>
                     )}
                     <div className="ml-auto flex shrink-0 gap-1">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => toggleSavedSearch({ query: find.query, folder: find.scope })}
+                            title={searchSaved ? "Take this search out of the sidebar" : "Keep this search in the sidebar, to run it again with one click"}
+                        >
+                            {searchSaved ? <BookmarkCheck className="text-primary" /> : <Bookmark />} {searchSaved ? "Saved" : "Save"}
+                        </Button>
                         {find.running && (
                             <Button variant="ghost" size="sm" onClick={stopFind}>
                                 <Square className="size-3! fill-current" /> Stop
