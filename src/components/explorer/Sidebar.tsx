@@ -1,10 +1,10 @@
-import { Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Server, Usb } from "lucide-react";
+import { Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Search, Server, Usb, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { type KnownFolder, middleClickOpens, navigate, useExplorer, useTab } from "@/lib/explorer";
+import { type KnownFolder, middleClickOpens, navigate, runSavedSearch, useExplorer, useTab } from "@/lib/explorer";
 import { type Drive, driveName } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
 import { baseName, inArchivePath, samePath, THIS_PC } from "@/lib/paths";
-import { useStore } from "@/lib/store";
+import { type SavedSearch, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const KNOWN_ICONS: Record<KnownFolder["id"], LucideIcon> = {
@@ -67,6 +67,8 @@ interface PlaceProps {
     children?: React.ReactNode;
 }
 
+const PLACE = "relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-colors hover:bg-accent";
+
 function Place({ icon: Icon, iconClass, label, path, active, title, onContextMenu, children }: PlaceProps) {
     const dropping = useExplorer((s) => s.dropTarget === path);
     return (
@@ -79,7 +81,7 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
             title={title ?? path}
             aria-current={active ? "page" : undefined}
             className={cn(
-                "relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-colors hover:bg-accent",
+                PLACE,
                 // Windows 11's navigation selection: a gray fill and a short accent pill at the left edge.
                 active &&
                     "bg-accent text-foreground before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary",
@@ -95,10 +97,35 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
     );
 }
 
+/** A saved search: one click runs it again; the cross takes it out of the sidebar. */
+function SavedSearchItem({ search }: { search: SavedSearch }) {
+    const toggle = useStore((s) => s.toggleSavedSearch);
+    return (
+        <div className="group relative">
+            <button onClick={() => void runSavedSearch(search)} title={`Search for “${search.query}” in ${search.folder || "every drive"}`} className={cn(PLACE, "pr-7")}>
+                <Search className="size-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                    <div className="truncate">{search.query}</div>
+                    <div className="truncate text-xs text-muted-foreground">{search.folder === THIS_PC ? "All drives" : baseName(search.folder)}</div>
+                </div>
+            </button>
+            <button
+                onClick={() => toggle(search)}
+                title="Remove from the sidebar"
+                aria-label={`Remove the saved search “${search.query}”`}
+                className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+            >
+                <X className="size-3.5" />
+            </button>
+        </div>
+    );
+}
+
 export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent, path: string) => void }) {
     const path = useTab((t) => t.path);
     const { known, drives } = useExplorer(useShallow((s) => ({ known: s.known, drives: s.drives })));
     const pinned = useStore((s) => s.pinned);
+    const saved = useStore((s) => s.savedSearches);
     const here = (p: string) => path !== THIS_PC && samePath(p, path);
 
     return (
@@ -112,6 +139,13 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                 <Section title="Pinned">
                     {pinned.map((p) => (
                         <Place key={p} icon={Folder} iconClass="fill-amber-400/80 text-amber-500" label={baseName(p)} path={p} active={here(p)} onContextMenu={onContextMenu} />
+                    ))}
+                </Section>
+            )}
+            {saved.length > 0 && (
+                <Section title="Searches">
+                    {saved.map((s) => (
+                        <SavedSearchItem key={`${s.folder}\n${s.query}`} search={s} />
                     ))}
                 </Section>
             )}
