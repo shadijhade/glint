@@ -206,7 +206,7 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
             <div className="flex h-11 shrink-0 items-center gap-2.5 border-b px-3.5">
                 <Files className="size-4 shrink-0 text-primary" />
                 <span className="min-w-0 flex-1 truncate text-sm font-medium" title={root}>
-                    Duplicates in “{folderTitle}”
+                    Duplicate files in “{folderTitle}”
                 </span>
                 {report && report.totalWastedBytes > 0 && (
                     <span className="shrink-0 rounded-md bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-400">

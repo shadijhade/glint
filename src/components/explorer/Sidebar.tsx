@@ -42,7 +42,7 @@ export const freeOf = (drive: Drive) => (drive.total ? `${formatSize(drive.free)
 function Section({ title, onTitleClick, active, children }: { title: string; onTitleClick?: () => void; active?: boolean; children: React.ReactNode }) {
     return (
         <section>
-            <h2 className="mb-1 px-2">
+            <h2 className="mb-1 hidden px-2 md:block">
                 {onTitleClick ? (
                     <button onClick={onTitleClick} className={cn("text-xs font-semibold text-muted-foreground hover:text-foreground", active && "text-foreground")}>
                         {title}
@@ -67,7 +67,11 @@ interface PlaceProps {
     children?: React.ReactNode;
 }
 
-const PLACE = "relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-colors hover:bg-accent";
+// Below md, icons only: the sidebar is a rail, each place's name in its tooltip.
+const PLACE = "relative flex w-full items-center justify-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-colors hover:bg-accent md:justify-start";
+
+// Windows 11's navigation selection: a gray fill and a short accent pill at the left edge.
+const ACTIVE = "bg-accent text-foreground before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary";
 
 function Place({ icon: Icon, iconClass, label, path, active, title, onContextMenu, children }: PlaceProps) {
     const dropping = useExplorer((s) => s.dropTarget === path);
@@ -78,18 +82,17 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
             onClick={() => navigate(path)}
             onMouseDown={middleClickOpens(path)}
             onContextMenu={(e) => onContextMenu(e, path)}
-            title={title ?? path}
+            title={`${label}\n${title ?? path}`}
+            aria-label={label}
             aria-current={active ? "page" : undefined}
             className={cn(
                 PLACE,
-                // Windows 11's navigation selection: a gray fill and a short accent pill at the left edge.
-                active &&
-                    "bg-accent text-foreground before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary",
+                active && ACTIVE,
                 dropping && "bg-primary/20 outline-2 -outline-offset-2 outline-primary"
             )}
         >
             <Icon className={cn("size-4 shrink-0 text-muted-foreground", active && "text-foreground", iconClass)} />
-            <div className="min-w-0 flex-1">
+            <div className="hidden min-w-0 flex-1 md:block">
                 <div className="truncate">{label}</div>
                 {children}
             </div>
@@ -102,9 +105,9 @@ function SavedSearchItem({ search }: { search: SavedSearch }) {
     const toggle = useStore((s) => s.toggleSavedSearch);
     return (
         <div className="group relative">
-            <button onClick={() => void runSavedSearch(search)} title={`Search for “${search.query}” in ${search.folder || "every drive"}`} className={cn(PLACE, "pr-7")}>
+            <button onClick={() => void runSavedSearch(search)} title={`Search for “${search.query}” in ${search.folder || "every drive"}`} className={cn(PLACE, "md:pr-7")}>
                 <Search className="size-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
+                <div className="hidden min-w-0 flex-1 md:block">
                     <div className="truncate">{search.query}</div>
                     <div className="truncate text-xs text-muted-foreground">{search.folder === THIS_PC ? "All drives" : baseName(search.folder)}</div>
                 </div>
@@ -113,7 +116,7 @@ function SavedSearchItem({ search }: { search: SavedSearch }) {
                 onClick={() => toggle(search)}
                 title="Remove from the sidebar"
                 aria-label={`Remove the saved search “${search.query}”`}
-                className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 md:block"
             >
                 <X className="size-3.5" />
             </button>
@@ -129,7 +132,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
     const here = (p: string) => path !== THIS_PC && samePath(p, path);
 
     return (
-        <nav aria-label="Places" className="hidden w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r p-2 pt-3 md:flex">
+        <nav aria-label="Places" className="flex w-12 shrink-0 flex-col gap-4 overflow-y-auto border-r p-1.5 pt-3 md:w-56 md:p-2 md:pt-3">
             <Section title="Quick access">
                 {known.map((k) => (
                     <Place key={k.id} icon={KNOWN_ICONS[k.id]} label={k.name} path={k.path} active={here(k.path)} onContextMenu={onContextMenu} />
@@ -150,6 +153,16 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                 </Section>
             )}
             <Section title="This PC" onTitleClick={() => navigate(THIS_PC)} active={path === THIS_PC}>
+                {/* The rail's way to This PC, where the section's title isn't shown. */}
+                <button
+                    onClick={() => navigate(THIS_PC)}
+                    title="This PC"
+                    aria-label="This PC"
+                    aria-current={path === THIS_PC ? "page" : undefined}
+                    className={cn(PLACE, "md:hidden", path === THIS_PC && ACTIVE)}
+                >
+                    <Monitor className="size-4 shrink-0 text-muted-foreground" />
+                </button>
                 {drives.map((d) => (
                     <Place key={d.path} icon={DRIVE_ICONS[d.kind]} label={driveName(d)} path={d.path} active={here(d.path)} title={freeOf(d) || d.path} onContextMenu={onContextMenu}>
                         <CapacityBar drive={d} className="mt-1" />

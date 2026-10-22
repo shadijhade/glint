@@ -317,17 +317,8 @@ export function XRayDialog() {
                                     </span>
                                 </div>
                                 <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-                                    <div
-                                        className={cn(
-                                            "h-full transition-all",
-                                            report.entropy > 7.5
-                                                ? "bg-rose-500"
-                                                : report.entropy > 6.2
-                                                  ? "bg-amber-500"
-                                                  : "bg-emerald-500"
-                                        )}
-                                        style={{ width: `${Math.min(100, (report.entropy / 8) * 100)}%` }}
-                                    />
+                                    {/* One color: a reading isn't good or bad. */}
+                                    <div className="h-full bg-primary/70 transition-all" style={{ width: `${Math.min(100, (report.entropy / 8) * 100)}%` }} />
                                 </div>
                             </div>
 

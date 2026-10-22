@@ -88,12 +88,12 @@ export function HistoryPopover({ onPick }: { onPick: (item: HistoryItem) => void
 }
 
 const SHORTCUTS = [
-    ["Enter", "search"],
-    ["↑ ↓", "browse results"],
-    ["Enter", "open file"],
-    ["Ctrl F", "focus search"],
-    ["Alt C / W / R", "toggle options"],
-    ["Esc", "stop"],
+    ["Enter", "Search, or open the result picked"],
+    ["↓ ↑", "From the search box on through the results"],
+    ["Shift+Enter", "A new line: search for several lines at once"],
+    ["Alt+C / W / R", "Match case, whole words, regular expression"],
+    ["Ctrl+H", "Replace"],
+    ["Esc", "Leave the search box; again, stop the search"],
 ];
 
 /** Start screen: recent searches and a keyboard cheat sheet. */
@@ -121,14 +121,16 @@ export function Home({ onPick }: { onPick: (item: HistoryItem) => void }) {
                     </section>
                 )}
 
-                <div className="flex flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+                <dl className="mx-auto grid w-fit grid-cols-[auto_auto] items-center gap-x-3 gap-y-2 text-xs text-muted-foreground">
                     {SHORTCUTS.map(([keys, label]) => (
-                        <span key={label}>
-                            <kbd className="mr-1.5 rounded-sm border bg-card px-1.5 py-0.5 font-sans text-[0.6875rem] text-foreground">{keys}</kbd>
-                            {label}
-                        </span>
+                        <div key={label} className="contents">
+                            <dt className="text-right">
+                                <kbd className="rounded-sm border bg-card px-1.5 py-0.5 font-sans text-[0.6875rem] text-foreground">{keys}</kbd>
+                            </dt>
+                            <dd>{label}</dd>
+                        </div>
                     ))}
-                </div>
+                </dl>
             </div>
         </div>
     );
