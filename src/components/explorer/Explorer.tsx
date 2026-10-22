@@ -84,6 +84,7 @@ import {
     closeTab,
     copyToClipboard,
     copyToOtherPane,
+    deepKey,
     extractHere,
     currentPath,
     cycleTab,
@@ -118,6 +119,7 @@ import {
     renameEntry,
     reopenClosedTab,
     revealInApp,
+    runDeepCompare,
     runFind,
     runSavedSearch,
     savedScroll,
@@ -126,8 +128,10 @@ import {
     selectOnly,
     selectRange,
     selectTab,
+    stopDeepCompare,
     stopFind,
     switchPane,
+    syncInto,
     tabState,
     toggleComparePanes,
     toggleDiffOnly,
@@ -135,6 +139,7 @@ import {
     toggleSelected,
     undo,
     updateTab,
+    useDeepCompare,
     useExplorer,
     useTab,
     viewKey,
@@ -527,6 +532,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         comparePanes,
         diffOnly,
         otherListing,
+        otherPath,
         otherSizes,
         otherWritable,
     } = useExplorer(
@@ -555,6 +561,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 comparePanes: s.comparePanes,
                 diffOnly: s.diffOnly,
                 otherListing: otherReady ? otherTab.listing : null,
+                otherPath: otherReady ? otherTab.path : null,
                 otherSizes: otherReady ? s.sizes[otherTab.path] : undefined,
                 otherWritable: otherReady && !otherTab.listing?.archive,
             };
@@ -581,6 +588,20 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         return sortEntries(source, sort, foldersFirst, source === listing?.entries, sizeOf);
     }, [source, listing, sort, foldersFirst, sizeRun]);
 
+    // Compared deeper (the compare bar's Subfolders and Contents): Rust's answer for these two folders, once it's in.
+    const deep = useDeepCompare();
+    const pair = otherPath ? (index === 0 ? [path, otherPath] : [otherPath, path]) : null;
+    const deepResult = pair && deep.result && deep.key === deepKey(pair[0], pair[1]) ? deep.result : null;
+    const deepStatuses = deepResult ? (index === 0 ? deepResult.left : deepResult.right) : undefined;
+    const deepSync = deepResult ? (index === 0 ? deepResult.toRight : deepResult.toLeft) : null;
+    // The left pane asks for it, when both show folders on disk.
+    const deepOn = settings.compareSubfolders || settings.compareContents;
+    const asks = index === 0 && dual && comparePanes && deepOn && !find && path !== THIS_PC && !!listing && !listing.archive && otherWritable && !!otherPath;
+    useEffect(() => {
+        if (asks) void runDeepCompare(path, otherPath!);
+        else if (index === 0 && useDeepCompare.getState().key) stopDeepCompare();
+    }, [asks, index, path, otherPath, listing, otherListing, settings.compareSubfolders, settings.compareContents, showHidden, settings.findExclusions]);
+
     const comparison = useMemo(() => {
         if (!dual || !comparePanes || find || path === THIS_PC || !listing || !otherListing) return null;
         const otherMap = new Map<string, FileEntry>();
@@ -600,7 +621,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             const other = otherMap.get(e.lower);
             const ownDirSize = e.dir ? sizeRun?.sizes.get(e.name) : undefined;
             const otherDirSize = other?.dir ? otherSizes?.sizes.get(other.name) : undefined;
-            const status = compareEntries(e, other, ownDirSize, otherDirSize);
+            const status = deepStatuses?.[e.lower] ?? compareEntries(e, other, ownDirSize, otherDirSize);
             diffs.set(e.lower, status);
             if (status === "unique") {
                 unique++;
@@ -621,7 +642,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             }
         }
         return { diffs, unique, newer, differ, older, same, diffPaths, syncPaths };
-    }, [dual, comparePanes, find, path, listing, otherListing, sorted, showHidden, sizeRun, otherSizes]);
+    }, [dual, comparePanes, find, path, listing, otherListing, sorted, showHidden, sizeRun, otherSizes, deepStatuses]);
 
     const deferredFilter = useDeferredValue(filter);
     const { rows: listRows, hidden } = useMemo(() => {
@@ -1130,11 +1151,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         updateTab({ selection: new Set(comparison.diffPaths), focus: first, anchor: first }, tabRef.current);
     };
 
+    // Deeper, what's missing or newer inside subfolders too, each into its folder.
+    const syncCount = deepSync ? deepSync.length : (comparison?.syncPaths.length ?? 0);
     const syncToOther = () => {
-        if (!comparison?.syncPaths.length) return;
         focusPane(index);
-        void copyToOtherPane(false, comparison.syncPaths);
+        if (deepSync) void syncInto(deepSync);
+        else if (comparison?.syncPaths.length) void copyToOtherPane(false, comparison.syncPaths);
     };
+    const compareChip = (on: boolean) =>
+        cn("rounded-[4px] px-1.5 py-0.5 font-medium transition-colors", on ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground");
 
     return (
         <div
@@ -1214,17 +1239,32 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                 <span className="shrink-0 font-medium text-emerald-700 dark:text-emerald-400">All match</span>
                             )}
                             <span className="shrink-0 text-muted-foreground">· {formatCount(comparison.same)} same</span>
-                            <div className="ml-auto flex shrink-0 items-center gap-1">
+                            {deep.running && <Loader2 className="size-3 shrink-0 animate-spin text-primary" aria-label="Comparing deeper" />}
+                            {deep.error && (
+                                <span className="shrink-0 text-destructive" title={deep.error}>
+                                    Couldn't compare deeper
+                                </span>
+                            )}
+                            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
                                 <button
                                     type="button"
-                                    aria-pressed={diffOnly}
-                                    onClick={toggleDiffOnly}
-                                    title="Hide identical items in both panes"
-                                    className={cn(
-                                        "rounded-[4px] px-1.5 py-0.5 font-medium transition-colors",
-                                        diffOnly ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                                    )}
+                                    aria-pressed={settings.compareSubfolders}
+                                    onClick={() => setSettings({ compareSubfolders: !settings.compareSubfolders })}
+                                    title={`Compare what's in subfolders too: a folder differs when anything in it does, and Sync copies what's missing or newer inside${settings.findExclusions.length ? ` (skipping ${settings.findExclusions.join(", ")})` : ""}`}
+                                    className={compareChip(settings.compareSubfolders)}
                                 >
+                                    Subfolders
+                                </button>
+                                <button
+                                    type="button"
+                                    aria-pressed={settings.compareContents}
+                                    onClick={() => setSettings({ compareContents: !settings.compareContents })}
+                                    title="Compare files' contents, not only their sizes and dates: files of the same size are read on both sides"
+                                    className={compareChip(settings.compareContents)}
+                                >
+                                    Contents
+                                </button>
+                                <button type="button" aria-pressed={diffOnly} onClick={toggleDiffOnly} title="Hide identical items in both panes" className={compareChip(diffOnly)}>
                                     Diffs only
                                 </button>
                                 <button
@@ -1238,12 +1278,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                 </button>
                                 <button
                                     type="button"
-                                    disabled={!otherWritable || !comparison.syncPaths.length}
+                                    disabled={!otherWritable || !syncCount}
                                     onClick={syncToOther}
-                                    title="Copy unique and newer items from this pane to the other pane"
+                                    title={deepSync ? "Copy what's missing or newer here, in subfolders too, to the other pane" : "Copy unique and newer items from this pane to the other pane"}
                                     className="rounded-[4px] bg-primary/15 px-1.5 py-0.5 font-medium text-primary transition-colors hover:bg-primary/25 disabled:pointer-events-none disabled:opacity-40"
                                 >
-                                    {index === 0 ? `Sync ${formatCount(comparison.syncPaths.length)} →` : `← Sync ${formatCount(comparison.syncPaths.length)}`}
+                                    {index === 0 ? `Sync ${formatCount(syncCount)} →` : `← Sync ${formatCount(syncCount)}`}
                                 </button>
                                 <button
                                     type="button"

@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { decodeListing, type FileEntry, type Listing, withDetails } from "./entries";
+import { decodeListing, type DiffStatus, type FileEntry, type Listing, withDetails } from "./entries";
 import { decodeUsage, type UsageMap } from "./usage";
 
 export type { Listing };
@@ -144,7 +144,9 @@ export type FileOp =
     /** Undoing a move: each item back into `folder` as `name`. */
     | { kind: "moveBack"; items: { path: string; folder: string; name: string }[] }
     /** Undoing a delete: Recycle Bin items (as a deletion's `to` names them) back where they were. */
-    | { kind: "restore"; items: { path: string; folder: string; name: string }[] };
+    | { kind: "restore"; items: { path: string; folder: string; name: string }[] }
+    /** Sync in compare panes: each item copied into `folder` as `name`. */
+    | { kind: "copyInto"; items: { path: string; folder: string; name: string }[] };
 
 /**
  * What became of each item asked for: where it is now (the copy, the item moved or renamed, its
@@ -362,6 +364,20 @@ export interface TimelineReport {
 
 export const scanTimeline = (root: string, windowMs: number) => invoke<TimelineReport>("scan_timeline", { root, windowMs });
 export const cancelTimeline = () => invoke<void>("cancel_timeline");
+
+/** Compare panes, deeper: each top-level item's status (by lowercase name) on either side, and what Sync copies each way. */
+export interface FolderDiff {
+    left: Record<string, DiffStatus>;
+    right: Record<string, DiffStatus>;
+    toRight: { path: string; folder: string }[];
+    toLeft: { path: string; folder: string }[];
+    files: number;
+    elapsedMs: number;
+}
+
+export const compareFolders = (left: string, right: string, subfolders: boolean, contents: boolean, hidden: boolean, exclude: string[]) =>
+    invoke<FolderDiff>("compare_folders", { left, right, subfolders, contents, hidden, exclude });
+export const cancelCompare = () => invoke<void>("cancel_compare");
 
 export interface SqliteObject {
     kind: "table" | "index" | "view" | "trigger";

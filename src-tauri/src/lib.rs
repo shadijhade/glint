@@ -1,5 +1,6 @@
 mod archive;
 mod batch_rename;
+mod compare;
 mod data_lens;
 mod dedup;
 mod find;
@@ -459,6 +460,8 @@ pub fn run() {
             pe::inspect_pe,
             dedup::find_duplicates,
             dedup::cancel_dedup,
+            compare::compare_folders,
+            compare::cancel_compare,
             dedup::hardlink_duplicates,
             timeline::scan_timeline,
             timeline::cancel_timeline,
