@@ -36,7 +36,8 @@
     --card: 0 0% 100%;
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 11%;
-    --primary: 330 81% 60%;
+    /* Pink-600 here, pink-500 in the dark: at least 4.5:1 as text and under white text. */
+    --primary: 333 71% 51%;
     --primary-foreground: 0 0% 100%;
     --muted: 0 0% 94%;
     --muted-foreground: 0 0% 38%;
@@ -44,7 +45,7 @@
     --destructive: 0 72% 51%;
     --border: 0 0% 89%;
     --input: 0 0% 82%;
-    --ring: 330 81% 60%;
+    --ring: 333 71% 51%;
     /* Text fields: their fill, the fill while typing, and the darker bottom edge Fluent gives them. */
     --field: 0 0% 100%;
     --field-focus: 0 0% 100%;
@@ -62,6 +63,10 @@
 
   .dark {
     color-scheme: dark;
+    /* Dark text on the accent, as Windows 11 has in the dark. */
+    --primary: 330 81% 60%;
+    --primary-foreground: 0 0% 7%;
+    --ring: 330 81% 60%;
     --background: 0 0% 11%;
     --foreground: 0 0% 95%;
     --chrome: 0 0% 12.5%;

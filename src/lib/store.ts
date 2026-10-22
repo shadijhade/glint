@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { toast } from 'sonner'
 import type { Sort } from './entries'
 import type { TileSize } from './grid'
 import { frecency, type Visit } from './rank'
@@ -127,7 +128,6 @@ interface AppState {
     setPath: (path: string) => void;
     addToHistory: (query: string, path: string) => void;
     removeFromHistory: (query: string, path: string) => void;
-    clearHistory: () => void;
     setOption: (key: keyof SearchOptions, value: boolean) => void;
     setSettings: (settings: Partial<Settings>) => void;
     setMode: (mode: Mode) => void;
@@ -168,7 +168,6 @@ export const useStore = create<AppState>()(
             removeFromHistory: (query, path) => set((state) => ({
                 history: state.history.filter(h => h.query !== query || h.path !== path)
             })),
-            clearHistory: () => set({ history: [] }),
             setOption: (key, value) => set((state) => ({
                 options: { ...state.options, [key]: value }
             })),
@@ -207,3 +206,12 @@ export const useStore = create<AppState>()(
         }
     )
 )
+
+/** Clears the searches kept for Home, or the folders the command palette ranks, with Undo. */
+export function clearWithUndo(what: 'history' | 'visits') {
+    const before = useStore.getState()[what]
+    useStore.setState(what === 'history' ? { history: [] } : { visits: {} })
+    toast.success(what === 'history' ? 'Cleared the search history' : 'Cleared the folders remembered', {
+        action: { label: 'Undo', onClick: () => useStore.setState({ [what]: before }) },
+    })
+}

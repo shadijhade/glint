@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { History as HistoryIcon, X } from "lucide-react";
-import { HistoryItem, useStore } from "@/lib/store";
+import { clearWithUndo, HistoryItem, useStore } from "@/lib/store";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -40,7 +40,7 @@ function HistoryList({ items, onPick }: { items: HistoryItem[]; onPick: (item: H
 
 /** Full, filterable history in a native popover anchored under the header button. */
 export function HistoryPopover({ onPick }: { onPick: (item: HistoryItem) => void }) {
-    const { history, clearHistory } = useStore();
+    const history = useStore((s) => s.history);
     const [filter, setFilter] = useState("");
     const ref = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -80,7 +80,7 @@ export function HistoryPopover({ onPick }: { onPick: (item: HistoryItem) => void
             {history.length > 0 && (
                 <div className="mt-2 flex items-center justify-between border-t pt-2 text-xs text-muted-foreground">
                     <span className="pl-1">{history.length.toLocaleString()} saved</span>
-                    <Button variant="ghost" size="sm" onClick={clearHistory}>Clear history</Button>
+                    <Button variant="ghost" size="sm" onClick={() => clearWithUndo("history")}>Clear history</Button>
                 </div>
             )}
         </div>

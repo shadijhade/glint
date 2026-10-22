@@ -10,6 +10,7 @@ use crate::fsx::{self, blocking};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -59,6 +60,8 @@ pub struct TimelineReport {
     pub total_bytes_changed: u64,
     pub total_files_changed: usize,
     pub files_scanned: usize,
+    /// It stopped at MAX_SCAN_FILES: the folder has more files than it looked at.
+    pub stopped_early: bool,
     pub elapsed_ms: f64,
 }
 
@@ -119,12 +122,21 @@ pub fn record_notify_event(event: &notify::Event) {
     }
 }
 
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// Closing Recent changes stops its scan.
 #[tauri::command]
-pub async fn scan_timeline(root: String, window_ms: i64) -> Result<TimelineReport, String> {
-    blocking(move || build_timeline(&root, window_ms)).await
+pub fn cancel_timeline() {
+    CANCEL.store(true, Ordering::Relaxed);
 }
 
-pub fn build_timeline(root: &str, window_ms: i64) -> Result<TimelineReport, String> {
+#[tauri::command]
+pub async fn scan_timeline(root: String, window_ms: i64) -> Result<TimelineReport, String> {
+    CANCEL.store(false, Ordering::Relaxed);
+    blocking(move || build_timeline(&root, window_ms, &CANCEL)).await
+}
+
+pub fn build_timeline(root: &str, window_ms: i64, cancel: &AtomicBool) -> Result<TimelineReport, String> {
     let start = Instant::now();
     if !Path::new(root).exists() {
         return Err("Folder does not exist".into());
@@ -145,6 +157,9 @@ pub fn build_timeline(root: &str, window_ms: i64) -> Result<TimelineReport, Stri
     let mut by_folder: HashMap<String, (String, u64, usize)> = HashMap::new();
 
     while let Some(dir) = queue.pop_front() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
         if files_scanned >= MAX_SCAN_FILES {
             break;
         }
@@ -230,6 +245,7 @@ pub fn build_timeline(root: &str, window_ms: i64) -> Result<TimelineReport, Stri
         total_bytes_changed,
         total_files_changed,
         files_scanned,
+        stopped_early: files_scanned >= MAX_SCAN_FILES,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
 }
@@ -246,7 +262,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("app.log"), vec![b'x'; 4096]).unwrap();
 
-        let report = build_timeline(&dir.to_string_lossy(), 3_600_000).unwrap();
+        let report = build_timeline(&dir.to_string_lossy(), 3_600_000, &AtomicBool::new(false)).unwrap();
         assert_eq!(report.total_files_changed, 1);
         assert_eq!(report.total_bytes_changed, 4096);
         assert_eq!(report.entries[0].name, "app.log");

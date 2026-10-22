@@ -24,6 +24,7 @@ import { type LockReport, type LockingProcess, stopLockingProcess, whoLocks } fr
 import { baseName } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+import { Modal } from "../Modal";
 
 interface LocksState {
     paths: string[] | null;
@@ -176,138 +177,130 @@ function LocksModal({ paths, onClose }: { paths: string[]; onClose: () => void }
     const stoppableCount = report?.processes.filter(endable).length ?? 0;
 
     return (
-        <div
-            role="dialog"
-            aria-modal="true"
-            aria-label={title}
-            className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4"
-            onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-        >
-            <div className="flex max-h-[min(80vh,34rem)] w-full max-w-[40rem] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl">
-                <div className="flex h-11 shrink-0 items-center gap-2.5 border-b px-3.5">
-                    <Lock className="size-4 shrink-0 text-primary" />
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium" title={paths.join("\n")}>
-                        {title}
-                    </span>
-                    <Button variant="ghost" size="icon" className="size-7" onClick={scan} disabled={loading} title="Refresh (F5)" aria-label="Refresh">
-                        <RotateCw className={cn("size-3.5", loading && "animate-spin")} />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Esc)" aria-label="Close">
-                        <X className="size-4" />
-                    </Button>
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                    {loading && !report ? (
-                        <div className="flex flex-col items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-                            <Loader2 className="size-5 animate-spin text-primary" />
-                            <span>Checking Windows kernel handles…</span>
-                        </div>
-                    ) : error ? (
-                        <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm">
-                            <AlertTriangle className="size-6 text-destructive" />
-                            <p className="font-medium text-foreground">Couldn't inspect locks</p>
-                            <p className="max-w-md text-xs text-muted-foreground">{error}</p>
-                        </div>
-                    ) : report && report.processes.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm text-muted-foreground">
-                            <LockOpen className="size-8 stroke-[1.5] text-emerald-500" />
-                            <p className="font-medium text-foreground">No locking processes found</p>
-                            <p className="max-w-sm text-xs">
-                                {report.filesChecked === 0
-                                    ? "Nothing to check inside the selected location."
-                                    : `No other process currently holds an open handle across ${formatCount(report.filesChecked)} checked ${report.filesChecked === 1 ? "file" : "files"}.`}
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="flex flex-col gap-1.5">
-                            {report?.processes.map((proc) => (
-                                <div
-                                    key={proc.pid}
-                                    className="flex items-center gap-3 rounded-lg border bg-card/60 px-3 py-2.5 transition-colors hover:bg-accent/40"
-                                >
-                                    <ProcessIcon kind={proc.kind} />
-                                    <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-2">
-                                            <span className="truncate text-sm font-medium text-foreground">{proc.name}</span>
-                                            <span className="shrink-0 rounded-sm border bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem] text-muted-foreground">
-                                                PID {proc.pid}
-                                            </span>
-                                            <span className="shrink-0 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-primary">
-                                                {kindBadge(proc)}
-                                            </span>
-                                        </div>
-                                        {proc.exe && (
-                                            <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={proc.exe}>
-                                                {proc.exe}
-                                            </p>
-                                        )}
-                                    </div>
-                                    <div className="flex shrink-0 items-center gap-1">
-                                        {proc.exe && (
-                                            <>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    className="size-7"
-                                                    title="Reveal executable in Glint"
-                                                    onClick={() => {
-                                                        onClose();
-                                                        revealInApp(proc.exe!);
-                                                    }}
-                                                >
-                                                    <FolderInput className="size-3.5" />
-                                                </Button>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    className="size-7"
-                                                    title="Copy executable path"
-                                                    onClick={() => copyInfo(proc.exe!, "executable path")}
-                                                >
-                                                    <ClipboardCopy className="size-3.5" />
-                                                </Button>
-                                            </>
-                                        )}
-                                        {proc.stoppable && (
-                                            <Button
-                                                variant="outline"
-                                                size="sm"
-                                                disabled={stoppingPid !== null}
-                                                onClick={() => stopOne(proc)}
-                                                className="h-7 gap-1 border-destructive/30 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-                                                title={`End ${proc.name} (PID ${proc.pid})`}
-                                            >
-                                                {stoppingPid === proc.pid ? <Loader2 className="size-3 animate-spin" /> : <OctagonX className="size-3" />}
-                                                End
-                                            </Button>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-
-                <div className="flex h-9 shrink-0 items-center justify-between border-t bg-chrome px-3.5 text-xs text-muted-foreground">
-                    <span className="truncate">
-                        {report
-                            ? `${formatCount(report.processes.length)} ${report.processes.length === 1 ? "program" : "programs"} · ${formatCount(report.filesChecked)} ${report.filesChecked === 1 ? "file" : "files"} checked in ${formatDuration(report.elapsedMs)}`
-                            : ""}
-                    </span>
-                    {stoppableCount > 1 && (
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={stoppingPid !== null}
-                            onClick={stopAll}
-                            className="h-6 gap-1 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        >
-                            <OctagonX className="size-3" /> End all ({stoppableCount})
-                        </Button>
-                    )}
-                </div>
+        <Modal label={title} onClose={onClose} className="max-h-[min(80vh,34rem)] max-w-[40rem]">
+            <div className="flex h-11 shrink-0 items-center gap-2.5 border-b px-3.5">
+                <Lock className="size-4 shrink-0 text-primary" />
+                <span className="min-w-0 flex-1 truncate text-sm font-medium" title={paths.join("\n")}>
+                    {title}
+                </span>
+                <Button variant="ghost" size="icon" className="size-7" onClick={scan} disabled={loading} title="Refresh (F5)" aria-label="Refresh">
+                    <RotateCw className={cn("size-3.5", loading && "animate-spin")} />
+                </Button>
+                <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Esc)" aria-label="Close">
+                    <X className="size-4" />
+                </Button>
             </div>
-        </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                {loading && !report ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+                        <Loader2 className="size-5 animate-spin text-primary" />
+                        <span>Checking Windows kernel handles…</span>
+                    </div>
+                ) : error ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm">
+                        <AlertTriangle className="size-6 text-destructive" />
+                        <p className="font-medium text-foreground">Couldn't inspect locks</p>
+                        <p className="max-w-md text-xs text-muted-foreground">{error}</p>
+                    </div>
+                ) : report && report.processes.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm text-muted-foreground">
+                        <LockOpen className="size-8 stroke-[1.5] text-emerald-500" />
+                        <p className="font-medium text-foreground">No locking processes found</p>
+                        <p className="max-w-sm text-xs">
+                            {report.filesChecked === 0
+                                ? "Nothing to check inside the selected location."
+                                : `No other process currently holds an open handle across ${formatCount(report.filesChecked)} checked ${report.filesChecked === 1 ? "file" : "files"}.`}
+                        </p>
+                    </div>
+                ) : (
+                    <div className="flex flex-col gap-1.5">
+                        {report?.processes.map((proc) => (
+                            <div
+                                key={proc.pid}
+                                className="flex items-center gap-3 rounded-lg border bg-card/60 px-3 py-2.5 transition-colors hover:bg-accent/40"
+                            >
+                                <ProcessIcon kind={proc.kind} />
+                                <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-2">
+                                        <span className="truncate text-sm font-medium text-foreground">{proc.name}</span>
+                                        <span className="shrink-0 rounded-sm border bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem] text-muted-foreground">
+                                            PID {proc.pid}
+                                        </span>
+                                        <span className="shrink-0 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-primary">
+                                            {kindBadge(proc)}
+                                        </span>
+                                    </div>
+                                    {proc.exe && (
+                                        <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={proc.exe}>
+                                            {proc.exe}
+                                        </p>
+                                    )}
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1">
+                                    {proc.exe && (
+                                        <>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="size-7"
+                                                title="Reveal executable in Glint"
+                                                onClick={() => {
+                                                    onClose();
+                                                    revealInApp(proc.exe!);
+                                                }}
+                                            >
+                                                <FolderInput className="size-3.5" />
+                                            </Button>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="size-7"
+                                                title="Copy executable path"
+                                                onClick={() => copyInfo(proc.exe!, "executable path")}
+                                            >
+                                                <ClipboardCopy className="size-3.5" />
+                                            </Button>
+                                        </>
+                                    )}
+                                    {proc.stoppable && (
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={stoppingPid !== null}
+                                            onClick={() => stopOne(proc)}
+                                            className="h-7 gap-1 border-destructive/30 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                            title={`End ${proc.name} (PID ${proc.pid})`}
+                                        >
+                                            {stoppingPid === proc.pid ? <Loader2 className="size-3 animate-spin" /> : <OctagonX className="size-3" />}
+                                            End
+                                        </Button>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            <div className="flex h-9 shrink-0 items-center justify-between border-t bg-chrome px-3.5 text-xs text-muted-foreground">
+                <span className="truncate">
+                    {report
+                        ? `${formatCount(report.processes.length)} ${report.processes.length === 1 ? "program" : "programs"} · ${formatCount(report.filesChecked)} ${report.filesChecked === 1 ? "file" : "files"} checked in ${formatDuration(report.elapsedMs)}`
+                        : ""}
+                </span>
+                {stoppableCount > 1 && (
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={stoppingPid !== null}
+                        onClick={stopAll}
+                        className="h-6 gap-1 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    >
+                        <OctagonX className="size-3" /> End all ({stoppableCount})
+                    </Button>
+                )}
+            </div>
+        </Modal>
     );
 }

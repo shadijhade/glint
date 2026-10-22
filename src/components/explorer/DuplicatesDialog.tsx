@@ -11,6 +11,7 @@ import {
     Loader2,
     RotateCw,
     Sparkles,
+    Square,
     Trash2,
     X,
     Zap,
@@ -21,6 +22,7 @@ import { cancelDedup, type DedupReport, type DuplicateGroup, findDuplicates, har
 import { baseName } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+import { Modal, pressable } from "../Modal";
 
 interface DedupState {
     root: string | null;
@@ -50,12 +52,14 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [stopped, setStopped] = useState(false);
     /** Per group hash, which file path is chosen as the master to keep (defaults to the first/oldest). */
     const [keptByGroup, setKeptByGroup] = useState<Record<string, string>>({});
 
     const scan = useCallback(() => {
         setLoading(true);
         setError(null);
+        setStopped(false);
         findDuplicates(root, 1).then(
             (res) => {
                 setReport(res);
@@ -63,7 +67,8 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
             },
             (e) => {
                 const msg = String(e);
-                if (msg !== "cancelled") setError(msg);
+                if (msg === "cancelled") setStopped(true);
+                else setError(msg);
                 setLoading(false);
             }
         );
@@ -197,199 +202,204 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
     };
 
     return (
-        <div
-            role="dialog"
-            aria-modal="true"
-            aria-label={`Duplicates in ${folderTitle}`}
-            className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4"
-            onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-        >
-            <div className="flex max-h-[min(84vh,42rem)] w-full max-w-[48rem] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl">
-                <div className="flex h-11 shrink-0 items-center gap-2.5 border-b px-3.5">
-                    <Files className="size-4 shrink-0 text-primary" />
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium" title={root}>
-                        Duplicates in “{folderTitle}”
+        <Modal label={`Duplicate files in ${folderTitle}`} onClose={onClose} className="max-h-[min(84vh,42rem)] max-w-[48rem]">
+            <div className="flex h-11 shrink-0 items-center gap-2.5 border-b px-3.5">
+                <Files className="size-4 shrink-0 text-primary" />
+                <span className="min-w-0 flex-1 truncate text-sm font-medium" title={root}>
+                    Duplicates in “{folderTitle}”
+                </span>
+                {report && report.totalWastedBytes > 0 && (
+                    <span className="shrink-0 rounded-md bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-400">
+                        {formatSize(report.totalWastedBytes)} reclaimable
                     </span>
-                    {report && report.totalWastedBytes > 0 && (
-                        <span className="shrink-0 rounded-md bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
-                            {formatSize(report.totalWastedBytes)} reclaimable
-                        </span>
-                    )}
-                    <Button variant="ghost" size="icon" className="size-7" onClick={scan} disabled={loading || busy} title="Rescan (F5)" aria-label="Rescan">
-                        <RotateCw className={cn("size-3.5", loading && "animate-spin")} />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Esc)" aria-label="Close">
-                        <X className="size-4" />
-                    </Button>
-                </div>
-
-                {report && (
-                    <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b bg-chrome/60 px-3.5 py-1.5 text-[0.6875rem] text-muted-foreground">
-                        <Sparkles className="size-3 shrink-0 text-primary" />
-                        <span>
-                            <b className="font-medium text-foreground">{formatCount(report.filesScanned)}</b> files scanned →{" "}
-                            <b className="font-medium text-foreground">{formatCount(report.sizeCandidates)}</b> same-size →{" "}
-                            <b className="font-medium text-foreground">{formatCount(report.edgeCandidates)}</b> same start and end →{" "}
-                            <b className="font-medium text-foreground">{formatCount(report.groups.length)}</b> duplicate{" "}
-                            {report.groups.length === 1 ? "group" : "groups"}
-                            {report.hardlinksSkipped > 0
-                                ? ` (${formatCount(report.hardlinksSkipped)} already hard-linked, skipped)`
-                                : ""}
-                        </span>
-                    </div>
                 )}
+                <Button variant="ghost" size="icon" className="size-7" onClick={scan} disabled={loading || busy} title="Rescan (F5)" aria-label="Rescan">
+                    <RotateCw className={cn("size-3.5", loading && "animate-spin")} />
+                </Button>
+                <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Esc)" aria-label="Close">
+                    <X className="size-4" />
+                </Button>
+            </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                    {loading ? (
-                        <div className="flex flex-col items-center justify-center gap-2 py-14 text-sm text-muted-foreground">
-                            <Loader2 className="size-5 animate-spin text-primary" />
-                            <span>Comparing sizes, then contents…</span>
-                        </div>
-                    ) : error ? (
-                        <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm">
-                            <AlertTriangle className="size-6 text-destructive" />
-                            <p className="font-medium text-foreground">Couldn't scan for duplicates</p>
-                            <p className="max-w-md text-xs text-muted-foreground">{error}</p>
-                        </div>
-                    ) : report && report.groups.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center gap-2 py-14 text-center text-sm text-muted-foreground">
-                            <CheckCircle2 className="size-8 stroke-[1.5] text-emerald-500" />
-                            <p className="font-medium text-foreground">No duplicate files found</p>
-                            <p className="max-w-sm text-xs">
-                                Checked {formatCount(report.filesScanned)} {report.filesScanned === 1 ? "file" : "files"} in {formatDuration(report.elapsedMs)}.
-                                {report.hardlinksSkipped > 0 && ` (${formatCount(report.hardlinksSkipped)} already-hardlinked files were skipped.)`}
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="flex flex-col gap-2.5">
-                            {report?.groups.map((group) => {
-                                const kept = keptFor(group);
-                                return (
-                                    <div key={group.hash} className="overflow-hidden rounded-lg border bg-card/50">
-                                        <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-3 py-1.5 text-xs">
-                                            <div className="flex min-w-0 items-center gap-2">
-                                                <span className="font-semibold text-foreground">{formatSize(group.size)} each</span>
-                                                <span className="text-muted-foreground">·</span>
-                                                <span className="font-medium text-amber-600 dark:text-amber-400">
-                                                    {formatSize(group.wastedBytes)} duplicate
-                                                </span>
-                                                <span className="rounded-xs border bg-background px-1.5 py-0.2 font-mono text-[0.625rem] text-muted-foreground">
-                                                    #{group.hash.slice(0, 12)}
-                                                </span>
-                                            </div>
-                                            <div className="flex shrink-0 items-center gap-1">
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    disabled={busy}
-                                                    onClick={() => linkOneGroup(group)}
-                                                    className="h-6 gap-1 px-2 text-[0.6875rem]"
-                                                    title="Replace the other copies with hard links to the one you keep: the paths stay, the space is freed, and they become one file"
-                                                >
-                                                    <Link2 className="size-3 text-primary" /> Hard-link
-                                                </Button>
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    disabled={busy}
-                                                    onClick={() => recycleOneGroup(group)}
-                                                    className="h-6 gap-1 border-destructive/30 px-2 text-[0.6875rem] text-destructive hover:bg-destructive/10 hover:text-destructive"
-                                                    title="Move non-kept copies to the Recycle Bin"
-                                                >
-                                                    <Trash2 className="size-3" /> Recycle
-                                                </Button>
-                                            </div>
-                                        </div>
-                                        <div className="divide-y">
-                                            {group.files.map((file) => {
-                                                const isKept = file.path === kept;
-                                                return (
-                                                    <div
-                                                        key={file.path}
-                                                        onClick={() => setKeptByGroup((prev) => ({ ...prev, [group.hash]: file.path }))}
-                                                        className={cn(
-                                                            "flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-accent/40",
-                                                            isKept && "bg-primary/[0.04]"
-                                                        )}
-                                                    >
-                                                        <div className="flex min-w-0 items-center gap-2">
-                                                            <span
-                                                                className={cn(
-                                                                    "shrink-0 rounded-xs px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase",
-                                                                    isKept
-                                                                        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                                                                        : "bg-muted text-muted-foreground"
-                                                                )}
-                                                                title={isKept ? "This copy will be kept" : "Click to keep this copy instead"}
-                                                            >
-                                                                {isKept ? "Keep" : "Dup"}
-                                                            </span>
-                                                            <span className="truncate font-mono text-foreground" title={file.path}>
-                                                                {inRoot(file.path)}
-                                                            </span>
-                                                        </div>
-                                                        <div className="flex shrink-0 items-center gap-2">
-                                                            {file.modified > 0 && (
-                                                                <span className="text-[0.6875rem] text-muted-foreground tabular-nums">
-                                                                    {formatDate(file.modified)}
-                                                                </span>
-                                                            )}
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                className="size-6"
-                                                                title="Reveal in Glint"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    onClose();
-                                                                    revealInApp(file.path);
-                                                                }}
-                                                            >
-                                                                <FolderInput className="size-3.5" />
-                                                            </Button>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    )}
-                </div>
-
-                <div className="flex h-9 shrink-0 items-center justify-between border-t bg-chrome px-3.5 text-xs text-muted-foreground">
-                    <span className="flex items-center gap-1 truncate">
-                        <Zap className="size-3 text-primary" />
-                        {report
-                            ? `${formatCount(report.groups.length)} ${report.groups.length === 1 ? "group" : "groups"} (${formatCount(report.totalDuplicateFiles)} ${report.totalDuplicateFiles === 1 ? "duplicate" : "duplicates"}) in ${formatDuration(report.elapsedMs)}`
+            {report && (
+                <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b bg-chrome/60 px-3.5 py-1.5 text-[0.6875rem] text-muted-foreground">
+                    <Sparkles className="size-3 shrink-0 text-primary" />
+                    <span>
+                        <b className="font-medium text-foreground">{formatCount(report.filesScanned)}</b> files scanned →{" "}
+                        <b className="font-medium text-foreground">{formatCount(report.sizeCandidates)}</b> same-size →{" "}
+                        <b className="font-medium text-foreground">{formatCount(report.edgeCandidates)}</b> same start and end →{" "}
+                        <b className="font-medium text-foreground">{formatCount(report.groups.length)}</b> duplicate{" "}
+                        {report.groups.length === 1 ? "group" : "groups"}
+                        {report.hardlinksSkipped > 0
+                            ? ` (${formatCount(report.hardlinksSkipped)} already hard-linked, skipped)`
                             : ""}
                     </span>
-                    {report && report.groups.length > 1 && (
-                        <div className="flex shrink-0 items-center gap-1.5">
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled={busy}
-                                onClick={linkAllGroups}
-                                className="h-6 gap-1 px-2 text-xs text-primary hover:bg-primary/10 hover:text-primary"
-                            >
-                                <Link2 className="size-3" /> Hard-link all ({formatCount(report.totalDuplicateFiles)})
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled={busy}
-                                onClick={recycleAllGroups}
-                                className="h-6 gap-1 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            >
-                                <Trash2 className="size-3" /> Recycle all
-                            </Button>
-                        </div>
-                    )}
                 </div>
+            )}
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                {loading ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-14 text-sm text-muted-foreground">
+                        <Loader2 className="size-5 animate-spin text-primary" />
+                        <span>Comparing sizes, then contents…</span>
+                        <Button variant="outline" size="sm" onClick={() => void cancelDedup()}>
+                            <Square className="size-3! fill-current" /> Stop
+                        </Button>
+                    </div>
+                ) : stopped ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-14 text-center text-sm text-muted-foreground">
+                        <p className="font-medium text-foreground">Stopped before it finished</p>
+                        <Button variant="outline" size="sm" onClick={scan}>
+                            <RotateCw /> Scan again
+                        </Button>
+                    </div>
+                ) : error ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm">
+                        <AlertTriangle className="size-6 text-destructive" />
+                        <p className="font-medium text-foreground">Couldn't scan for duplicates</p>
+                        <p className="max-w-md text-xs text-muted-foreground">{error}</p>
+                    </div>
+                ) : report && report.groups.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-14 text-center text-sm text-muted-foreground">
+                        <CheckCircle2 className="size-8 stroke-[1.5] text-emerald-500" />
+                        <p className="font-medium text-foreground">No duplicate files found</p>
+                        <p className="max-w-sm text-xs">
+                            Checked {formatCount(report.filesScanned)} {report.filesScanned === 1 ? "file" : "files"} in {formatDuration(report.elapsedMs)}.
+                            {report.hardlinksSkipped > 0 && ` (${formatCount(report.hardlinksSkipped)} already-hardlinked files were skipped.)`}
+                        </p>
+                    </div>
+                ) : (
+                    <div className="flex flex-col gap-2.5">
+                        {report?.groups.map((group) => {
+                            const kept = keptFor(group);
+                            return (
+                                <div key={group.hash} className="overflow-hidden rounded-lg border bg-card/50">
+                                    <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-3 py-1.5 text-xs">
+                                        <div className="flex min-w-0 items-center gap-2">
+                                            <span className="font-semibold text-foreground">{formatSize(group.size)} each</span>
+                                            <span className="text-muted-foreground">·</span>
+                                            <span className="font-medium text-amber-700 dark:text-amber-400">
+                                                {formatSize(group.wastedBytes)} duplicate
+                                            </span>
+                                            <span className="rounded-xs border bg-background px-1.5 py-0.2 font-mono text-[0.625rem] text-muted-foreground">
+                                                #{group.hash.slice(0, 12)}
+                                            </span>
+                                        </div>
+                                        <div className="flex shrink-0 items-center gap-1">
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={busy}
+                                                onClick={() => linkOneGroup(group)}
+                                                className="h-6 gap-1 px-2 text-[0.6875rem]"
+                                                title="Replace the other copies with hard links to the one you keep: the paths stay, the space is freed, and they become one file"
+                                            >
+                                                <Link2 className="size-3 text-primary" /> Hard-link
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={busy}
+                                                onClick={() => recycleOneGroup(group)}
+                                                className="h-6 gap-1 border-destructive/30 px-2 text-[0.6875rem] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                                title="Move non-kept copies to the Recycle Bin"
+                                            >
+                                                <Trash2 className="size-3" /> Recycle
+                                            </Button>
+                                        </div>
+                                    </div>
+                                    <div role="radiogroup" aria-label="The copy to keep" className="divide-y">
+                                        {group.files.map((file) => {
+                                            const isKept = file.path === kept;
+                                            return (
+                                                <div
+                                                    key={file.path}
+                                                    role="radio"
+                                                    aria-checked={isKept}
+                                                    aria-label={`Keep ${inRoot(file.path)}`}
+                                                    {...pressable(() => setKeptByGroup((prev) => ({ ...prev, [group.hash]: file.path })))}
+                                                    className={cn(
+                                                        "flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-accent/40",
+                                                        isKept && "bg-primary/[0.04]"
+                                                    )}
+                                                >
+                                                    <div className="flex min-w-0 items-center gap-2">
+                                                        <span
+                                                            className={cn(
+                                                                "shrink-0 rounded-xs px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase",
+                                                                isKept
+                                                                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                                                                    : "bg-muted text-muted-foreground"
+                                                            )}
+                                                            title={isKept ? "This copy will be kept" : "Click to keep this copy instead"}
+                                                        >
+                                                            {isKept ? "Keep" : "Dup"}
+                                                        </span>
+                                                        <span className="truncate font-mono text-foreground" title={file.path}>
+                                                            {inRoot(file.path)}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex shrink-0 items-center gap-2">
+                                                        {file.modified > 0 && (
+                                                            <span className="text-[0.6875rem] text-muted-foreground tabular-nums">
+                                                                {formatDate(file.modified)}
+                                                            </span>
+                                                        )}
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="size-6"
+                                                            title="Reveal in Glint"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                onClose();
+                                                                revealInApp(file.path);
+                                                            }}
+                                                        >
+                                                            <FolderInput className="size-3.5" />
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
             </div>
-        </div>
+
+            <div className="flex h-9 shrink-0 items-center justify-between border-t bg-chrome px-3.5 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1 truncate">
+                    <Zap className="size-3 text-primary" />
+                    {report
+                        ? `${formatCount(report.groups.length)} ${report.groups.length === 1 ? "group" : "groups"} (${formatCount(report.totalDuplicateFiles)} ${report.totalDuplicateFiles === 1 ? "duplicate" : "duplicates"}) in ${formatDuration(report.elapsedMs)}`
+                        : ""}
+                </span>
+                {report && report.groups.length > 1 && (
+                    <div className="flex shrink-0 items-center gap-1.5">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy}
+                            onClick={linkAllGroups}
+                            className="h-6 gap-1 px-2 text-xs text-primary hover:bg-primary/10 hover:text-primary"
+                        >
+                            <Link2 className="size-3" /> Hard-link all ({formatCount(report.totalDuplicateFiles)})
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy}
+                            onClick={recycleAllGroups}
+                            className="h-6 gap-1 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        >
+                            <Trash2 className="size-3" /> Recycle all
+                        </Button>
+                    </div>
+                )}
+            </div>
+        </Modal>
     );
 }
