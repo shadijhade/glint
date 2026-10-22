@@ -186,7 +186,7 @@ fn parse_schema_leaf_page(page: &[u8], hdr_off: usize, out: &mut Vec<SqliteObjec
 
 pub fn parse_sqlite_file(path: &str) -> Result<SqliteInfo, String> {
     let start = Instant::now();
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut file = File::open(path).map_err(crate::fsx::file_error)?;
     let mut hdr = [0u8; 100];
     file.read_exact(&mut hdr).map_err(|_| "Not a valid SQLite 3 database".to_string())?;
     if &hdr[0..16] != b"SQLite format 3\0" {
@@ -330,7 +330,7 @@ fn infer_column_kind(rows: &[Vec<String>], col_idx: usize) -> String {
 pub fn parse_tabular_file(path: &str, max_bytes: usize) -> Result<TablePreview, String> {
     let start = Instant::now();
     let limit = max_bytes.clamp(16 * 1024, 1024 * 1024);
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    let file = File::open(path).map_err(crate::fsx::file_error)?;
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
     let truncated = bytes.len() > limit;
