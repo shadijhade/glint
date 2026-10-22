@@ -59,7 +59,7 @@ function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
           title={title}
           onClick={() => onChange(m)}
           className={cn(
-            "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground [&_svg]:size-4",
+            "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground max-sm:px-2 [&_svg]:size-4",
             mode === m && "bg-background font-medium text-foreground shadow-xs dark:bg-foreground/[0.12]"
           )}
         >
@@ -354,7 +354,7 @@ function App() {
     <div className="flex h-full flex-col">
       {/* The window's title bar (it has no system one): drag it by any empty spot, double-click to maximize. */}
       <header data-tauri-drag-region="deep" className="flex h-11 shrink-0 items-center gap-2 border-b bg-chrome pl-3">
-        <img src={logo} alt="" draggable={false} className="size-[18px] shrink-0" />
+        <img src={logo} alt="" draggable={false} className="size-[18px] shrink-0 max-sm:hidden" />
         {/* Text keeps the folder it searched last; the search bar fills an empty one when it opens. */}
         <ModeSwitch mode={mode} onChange={setMode} />
         {mode === "files" ? <AddressBar /> : <div className="min-w-0 flex-1" />}

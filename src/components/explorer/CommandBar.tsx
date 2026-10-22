@@ -7,6 +7,7 @@ import {
     Command,
     Copy,
     CopyPlus,
+    Ellipsis,
     Eye,
     EyeOff,
     FileClock,
@@ -117,24 +118,29 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
     );
 }
 
+/** The most the bar folds: see `useFold`. */
+const MOST = 6;
+
 /**
  * How far the bar folds to fit: 0 shows every label; 1 hides the `data-fold="1"` ones (icons and
  * tooltips stay); 2 hides them all; 3 also puts the view toggles in a menu; 4 puts Disk usage,
- * Folder sizes and Search text in the Tools menu too. Measured, so it holds at any text size;
- * `buttons` changes when the set of buttons does, so the widths are measured again.
+ * Folder sizes and Search text in the Tools menu too; 5 puts list or grid in the view menu and the
+ * palette in Tools; 6, a window half a small screen wide, puts cut, copy, paste, rename and delete
+ * in a "…" menu. Measured, so it holds at any text size; `buttons` changes when the set of buttons
+ * does, so the widths are measured again.
  */
 function useFold(buttons: unknown) {
     const ref = useRef<HTMLDivElement>(null);
     const [fold, setFold] = useState(0);
     // What the bar needs at each fold: 0 and 1 measured at 0, the others at that fold when even it
     // overflows (0 until then: as far as anyone knows, it fits).
-    const needs = useRef([0, 0, 0, 0]);
+    const needs = useRef<number[]>(Array(MOST).fill(0));
     const measuredFor = useRef(buttons);
     useLayoutEffect(() => {
         const bar = ref.current!;
         if (measuredFor.current !== buttons) {
             measuredFor.current = buttons;
-            needs.current = [0, 0, 0, 0];
+            needs.current = Array(MOST).fill(0);
         }
         const check = () => {
             if (fold === 0) {
@@ -143,10 +149,10 @@ function useFold(buttons: unknown) {
                     (sum, label) => sum + label.offsetWidth + (parseFloat(getComputedStyle(label.parentElement!).columnGap) || 0),
                     0
                 );
-                needs.current = [bar.scrollWidth, bar.scrollWidth - first, 0, 0];
-            } else if (fold >= 2 && fold < 4 && bar.scrollWidth > bar.clientWidth) needs.current[fold] = bar.scrollWidth;
+                needs.current = [bar.scrollWidth, bar.scrollWidth - first, ...Array(MOST - 2).fill(0)];
+            } else if (fold >= 2 && fold < MOST && bar.scrollWidth > bar.clientWidth) needs.current[fold] = bar.scrollWidth;
             const fits = needs.current.findIndex((need) => bar.clientWidth >= need);
-            setFold(fits < 0 ? 4 : fits);
+            setFold(fits < 0 ? MOST : fits);
         };
         check();
         const observer = new ResizeObserver(check);
@@ -225,6 +231,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
         const below = e.currentTarget.getBoundingClientRect();
         const file = selected.length === 1 && !selected[0].dir ? selected[0] : undefined;
         menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
+            ...(fold >= 5 ? [{ label: "Command palette", icon: Command, shortcut: "Ctrl+K", onSelect: () => useExplorer.setState({ palette: true }) }, "separator" as const] : []),
             // Folded in from the bar, when it's that narrow.
             ...(fold >= 4
                 ? [
@@ -243,14 +250,37 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
         ]);
     };
 
-    /** When even the icons don't fit, the view toggles in a menu. */
+    /** When even the icons don't fit, the view toggles in a menu (and narrower still, list or grid). */
     const showToggles = (e: React.MouseEvent<HTMLButtonElement>) => {
         const below = e.currentTarget.getBoundingClientRect();
+        const canView = inFolder || find;
         menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
+            ...(fold >= 5
+                ? [
+                      { label: "List", checked: !mapped && view === "list", disabled: !canView, shortcut: "Ctrl+Shift+6", onSelect: () => chooseView("list", tab) },
+                      { label: "Grid, with thumbnails", checked: !mapped && view === "grid", disabled: !canView, shortcut: "Ctrl+Shift+2", onSelect: () => chooseView("grid", tab) },
+                      "separator" as const,
+                  ]
+                : []),
             { label: "Show hidden items", toggle: true, checked: showHidden, shortcut: "Ctrl+H", onSelect: () => setSettings({ showHidden: !showHidden }) },
             { label: "Preview pane", toggle: true, checked: showPreviewPane, shortcut: "Alt+P", onSelect: () => setSettings({ showPreviewPane: !showPreviewPane }) },
             { label: "Dual pane", toggle: true, checked: dual, shortcut: "Ctrl+Shift+D", onSelect: toggleDual },
             { label: "Compare panes", toggle: true, checked: dual && comparePanes, shortcut: "Ctrl+Shift+M", onSelect: toggleComparePanes },
+        ]);
+    };
+
+    /** Narrowest: what's done to the selection, in a menu by New folder. */
+    const showEdits = (e: React.MouseEvent<HTMLButtonElement>) => {
+        const below = e.currentTarget.getBoundingClientRect();
+        menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
+            { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", disabled: !paths.length || readOnly, onSelect: () => copyToClipboard(paths, true) },
+            { label: "Copy", icon: Copy, shortcut: "Ctrl+C", disabled: !paths.length, onSelect: () => copyToClipboard(paths, false) },
+            { label: "Paste", icon: ClipboardPaste, shortcut: "Ctrl+V", disabled: !inFolder || find || readOnly, onSelect: () => paste() },
+            dual && { label: "Copy to the other pane", icon: CopyPlus, disabled: !paths.length || !other, onSelect: () => copyToOtherPane(false, paths) },
+            dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !paths.length || !other || readOnly, onSelect: () => copyToOtherPane(true, paths) },
+            "separator",
+            { label: selected.length > 1 ? `Rename ${selected.length} items` : "Rename", icon: PenLine, shortcut: "F2", disabled: !selected.length || readOnly, onSelect: onRename },
+            { label: "Delete", icon: Trash2, shortcut: "Del", danger: true, disabled: !paths.length || readOnly, onSelect: onDelete },
         ]);
     };
 
@@ -259,23 +289,29 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find || readOnly} title="New folder (Ctrl+Shift+N)">
                 <FolderPlus /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>New folder</span>
             </Button>
-            <Divider />
-            <Tool icon={Scissors} label="Cut (Ctrl+X)" disabled={!paths.length || readOnly} onClick={() => copyToClipboard(paths, true)} />
-            <Tool icon={Copy} label={readOnly ? "Copy (Ctrl+C): extracted, to paste anywhere" : "Copy (Ctrl+C)"} disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
-            <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || find || readOnly} onClick={() => paste()} />
-            {dual && (
+            {fold < MOST ? (
                 <>
-                    <Tool icon={CopyPlus} label="Copy to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(false, paths)} />
-                    <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other || readOnly} onClick={() => copyToOtherPane(true, paths)} />
+                    <Divider />
+                    <Tool icon={Scissors} label="Cut (Ctrl+X)" disabled={!paths.length || readOnly} onClick={() => copyToClipboard(paths, true)} />
+                    <Tool icon={Copy} label={readOnly ? "Copy (Ctrl+C): extracted, to paste anywhere" : "Copy (Ctrl+C)"} disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
+                    <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || find || readOnly} onClick={() => paste()} />
+                    {dual && (
+                        <>
+                            <Tool icon={CopyPlus} label="Copy to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(false, paths)} />
+                            <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other || readOnly} onClick={() => copyToOtherPane(true, paths)} />
+                        </>
+                    )}
+                    <Tool
+                        icon={PenLine}
+                        label={selected.length > 1 ? `Rename ${selected.length} items (F2)` : "Rename (F2) · Ctrl+Shift+R renames many"}
+                        disabled={!selected.length || readOnly}
+                        onClick={onRename}
+                    />
+                    <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length || readOnly} onClick={onDelete} />
                 </>
+            ) : (
+                <Tool icon={Ellipsis} label="Cut, copy, paste, rename, delete" aria-haspopup="menu" onClick={showEdits} />
             )}
-            <Tool
-                icon={PenLine}
-                label={selected.length > 1 ? `Rename ${selected.length} items (F2)` : "Rename (F2) · Ctrl+Shift+R renames many"}
-                disabled={!selected.length || readOnly}
-                onClick={onRename}
-            />
-            <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length || readOnly} onClick={onDelete} />
             <Divider />
             {/* In an archive, where the tools would be (they're for folders on disk): why the rest is greyed out. */}
             {readOnly ? (
@@ -303,7 +339,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             )}
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
-                <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find} tileSize={tileSize} onChange={(v) => chooseView(v, tab)} onSizes={showSizes} />
+                {fold < 5 && <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find} tileSize={tileSize} onChange={(v) => chooseView(v, tab)} onSizes={showSizes} />}
                 {fold < 4 && (
                 <>
                 <Button
@@ -331,8 +367,12 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 </Button>
                 </>
                 )}
-                <Tool icon={Command} label="Command palette (Ctrl+K)" onClick={() => useExplorer.setState({ palette: true })} />
-                <Divider />
+                {fold < 5 && (
+                    <>
+                        <Tool icon={Command} label="Command palette (Ctrl+K)" onClick={() => useExplorer.setState({ palette: true })} />
+                        <Divider />
+                    </>
+                )}
                 {fold < 3 ? (
                     <>
                         <Tool icon={showHidden ? Eye : EyeOff} label="Show hidden items (Ctrl+H)" pressed={showHidden} onClick={() => setSettings({ showHidden: !showHidden })} />
@@ -346,7 +386,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                         />
                     </>
                 ) : (
-                    <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showToggles} title="View: hidden items, preview pane, dual pane, compare panes">
+                    <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showToggles} title={fold >= 5 ? "View: list or grid, hidden items, preview pane, dual pane, compare panes" : "View: hidden items, preview pane, dual pane, compare panes"}>
                         <SlidersHorizontal />
                         <ChevronDown className="-ml-1 size-3.5! opacity-70" />
                     </Button>
