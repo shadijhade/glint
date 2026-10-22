@@ -38,6 +38,10 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
             .center()
             .build()
             .ok()
+            .inspect(|_window| {
+                #[cfg(all(windows, not(debug_assertions)))]
+                crate::disable_browser_keys(_window);
+            })
     })
 }
 
