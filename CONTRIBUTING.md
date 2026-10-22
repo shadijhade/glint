@@ -35,6 +35,9 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/archive/` | Zip and 7z archives opened like folders: reading their list of entries, the folder tree, extracting on demand and into staging folders, safety limits ([docs/archives.md](docs/archives.md)) |
 | `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, dust folder sizes and disk-usage maps (or the index when it's on) |
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop, Properties |
+| `src-tauri/src/compare.rs` | Compare panes down through subfolders and by contents, and what Sync copies |
+| `src-tauri/src/native_preview.rs`, `src/components/explorer/ShellPreview.tsx` | Windows' preview handlers (Office, fonts…) drawing over the preview pane, on a thread of their own |
+| `src-tauri/src/quick.rs`, `src/components/QuickSearch.tsx` | Quick search from anywhere: the shortcut, its window, the tray and starting with Windows |
 | `src-tauri/src/thumbs.rs` | Thumbnails from Windows' thumbnail cache (`IShellItemImageFactory`, `IThumbnailCache`) on worker threads, in a queue per tab |
 | `src-tauri/src/launch.rs`, `verbs.rs` | Folders from the command line and later launches (one copy runs at a time), and File Explorer's *Open in Glint* entries ([docs/explorer-integration.md](docs/explorer-integration.md)) |
 | `src-tauri/index/` | The opt-in instant-search service (NTFS MFT + USN journal) |
