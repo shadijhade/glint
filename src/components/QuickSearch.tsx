@@ -79,9 +79,12 @@ export function QuickSearch() {
     const list = useRef<HTMLDivElement>(null);
     const roots = useRef<string[]>([]);
 
-    // Each time it's called up: the drives as they are now, and the last query selected, to type over.
+    // Each time it's called up: settings and folders as the main window left them, the drives as they
+    // are now, and the last query selected, to type over.
     useEffect(() => {
+        const reload = () => void useStore.persist.rehydrate();
         const ready = () => {
+            reload();
             searchable().then((r) => (roots.current = r), () => {});
             input.current?.focus();
             input.current?.select();
@@ -90,9 +93,13 @@ export function QuickSearch() {
         const shown = listen("quick-shown", ready);
         const away = () => void quickHide();
         window.addEventListener("blur", away);
+        // The main window saved a change (the theme, a folder opened): it shows here at once.
+        const saved = (e: StorageEvent) => e.key === useStore.persist.getOptions().name && reload();
+        window.addEventListener("storage", saved);
         return () => {
             shown.then((stop) => stop());
             window.removeEventListener("blur", away);
+            window.removeEventListener("storage", saved);
         };
     }, []);
 

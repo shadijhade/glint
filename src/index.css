@@ -21,7 +21,7 @@
   --color-destructive: hsl(var(--destructive));
   --color-muted: hsl(var(--muted));
   --color-muted-foreground: hsl(var(--muted-foreground));
-  --color-accent: hsl(var(--accent));
+  --color-accent: hsl(var(--accent) / var(--accent-alpha));
   --color-popover: hsl(var(--popover));
   --color-popover-foreground: hsl(var(--popover-foreground));
 }
@@ -42,6 +42,7 @@
     --muted: 0 0% 94%;
     --muted-foreground: 0 0% 38%;
     --accent: 0 0% 92%;
+    --accent-alpha: 1;
     --destructive: 0 72% 51%;
     --border: 0 0% 89%;
     --input: 0 0% 82%;
@@ -75,7 +76,10 @@
     --popover-foreground: 0 0% 95%;
     --muted: 0 0% 16%;
     --muted-foreground: 0 0% 64%;
-    --accent: 0 0% 18.5%;
+    /* Hover and highlight fills see-through, as Windows 11's are in the dark: they show on every
+       surface, a menu's or a dialog's as much as the page's. */
+    --accent: 0 0% 100%;
+    --accent-alpha: 0.085;
     --destructive: 0 72% 60%;
     --border: 0 0% 18.5%;
     --input: 0 0% 26%;

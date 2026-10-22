@@ -13,7 +13,8 @@
         var theme = JSON.parse(saved).state.settings.theme;
         if (theme !== "light" && (theme !== "system" || matchMedia("(prefers-color-scheme: dark)").matches)) document.documentElement.classList.add("dark");
       } catch (e) {
-        document.documentElement.classList.add("dark");
+        // A first run: Windows' own light or dark (the default, System).
+        if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark");
       }
     </script>
   </head>

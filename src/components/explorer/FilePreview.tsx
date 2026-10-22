@@ -6,7 +6,7 @@ import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, HardD
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, useExplorer } from "@/lib/explorer";
 import { isKnownType, kindOf, previewKind, typeLabel } from "@/lib/fileTypes";
-import { formatCount, formatFullDate, formatSize } from "@/lib/format";
+import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, listDir, readTextPreview } from "@/lib/fs";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, parentPath } from "@/lib/paths";
@@ -396,7 +396,7 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
                 <Files className="size-14 stroke-[1.25] text-primary" />
                 <p className="text-foreground">{formatCount(selected.length)} items selected</p>
                 <p>
-                    {formatCount(selected.length - files.length)} folders, {formatCount(files.length)} files
+                    {[selected.length > files.length && plural(selected.length - files.length, "folder"), files.length > 0 && plural(files.length, "file")].filter(Boolean).join(", ")}
                     {files.length > 0 && <span className="block">{formatSize(files.reduce((sum, e) => sum + e.size, 0))} in files</span>}
                 </p>
             </Centered>

@@ -362,6 +362,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const s = useExplorer.getState();
         const t = tabState()!;
         const { visits, settings: now } = useStore.getState();
+        const dark = document.documentElement.classList.contains("dark");
         const inFolder = t.path !== THIS_PC;
         const seen = new Set<string>();
         const folders: Command[] = [];
@@ -460,7 +461,10 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
             writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
-            action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
+            // From the theme showing, which System leaves to Windows.
+            dark
+                ? action("theme", "Switch to light theme", Sun, () => setSettings({ theme: "light" }))
+                : action("theme", "Switch to dark theme", Moon, () => setSettings({ theme: "dark" })),
             !!step && action("undo", `Undo the ${step.label}`, Undo2, () => undo(), "Ctrl+Z"),
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
             action("shortcuts", "Keyboard shortcuts", Keyboard, openShortcuts, "F1"),
