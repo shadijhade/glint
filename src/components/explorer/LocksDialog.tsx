@@ -200,17 +200,19 @@ function LocksModal({ paths, onClose }: { paths: string[]; onClose: () => void }
                 ) : error ? (
                     <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm">
                         <AlertTriangle className="size-6 text-destructive" />
-                        <p className="font-medium text-foreground">Couldn't inspect locks</p>
+                        <p className="font-medium text-foreground">Couldn't find out what's using it</p>
                         <p className="max-w-md text-xs text-muted-foreground">{error}</p>
                     </div>
                 ) : report && report.processes.length === 0 ? (
                     <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm text-muted-foreground">
                         <LockOpen className="size-8 stroke-[1.5] text-emerald-500" />
-                        <p className="font-medium text-foreground">No locking processes found</p>
+                        <p className="font-medium text-foreground">Nothing is using {report.filesChecked === 1 ? "it" : "them"}</p>
                         <p className="max-w-sm text-xs">
                             {report.filesChecked === 0
-                                ? "Nothing to check inside the selected location."
-                                : `No other process currently holds an open handle across ${formatCount(report.filesChecked)} checked ${report.filesChecked === 1 ? "file" : "files"}.`}
+                                ? "There are no files in it to check."
+                                : report.filesChecked === 1
+                                  ? "No program has the file open right now."
+                                  : `No program has any of the ${formatCount(report.filesChecked)} files open right now.`}
                         </p>
                     </div>
                 ) : (

@@ -123,7 +123,7 @@ function PatternEditor({ value, onChange, placeholder }: { value: string[]; onCh
                     onChange={(e) => setPattern(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && add()}
                     placeholder={placeholder}
-                    className="font-mono"
+                    className="font-mono placeholder:font-sans"
                 />
                 <Button size="sm" variant="outline" onClick={add} disabled={!pattern.trim()}>
                     <Plus /> Add
@@ -351,7 +351,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     </button>
                 ))}
             </nav>
-            <div ref={content} onScroll={onScroll} className="min-w-0 flex-1 space-y-6 overflow-y-auto px-5 py-5">
+            <div ref={content} data-settings-body tabIndex={-1} onScroll={onScroll} className="min-w-0 flex-1 space-y-6 overflow-y-auto px-5 py-5 outline-hidden">
                 <Section title="Appearance">
                     <Row label="Theme">
                         <Segmented value={settings.theme} onChange={(theme) => set({ theme })} options={[["light", "Light"], ["dark", "Dark"], ["system", "System"]]} />

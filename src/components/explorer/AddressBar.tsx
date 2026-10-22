@@ -285,10 +285,20 @@ export function AddressBar() {
     const [findFocused, setFindFocused] = useState(false);
     const trail = crumbs(path);
 
-    // Long paths keep their end in view; the start scrolls away to the left.
+    // Long paths keep their end in view, as the window narrows too; the start scrolls away to the left
+    // and fades out there.
+    const [cut, setCut] = useState(false);
     useLayoutEffect(() => {
         const el = trailRef.current;
-        if (el) el.scrollLeft = el.scrollWidth;
+        if (!el) return;
+        const toEnd = () => {
+            el.scrollLeft = el.scrollWidth;
+            setCut(el.scrollLeft > 0);
+        };
+        toEnd();
+        const observer = new ResizeObserver(toEnd);
+        observer.observe(el);
+        return () => observer.disconnect();
     }, [path, drives, editing]);
 
     const rootName = (root: string) => {
@@ -405,7 +415,11 @@ export function AddressBar() {
                 {editing ? (
                     <AddressInput path={path} />
                 ) : (
-                    <div ref={trailRef} className="flex h-full min-w-0 flex-1 items-center overflow-x-auto px-1 [scrollbar-width:none]">
+                    <div
+                        ref={trailRef}
+                        onScroll={(e) => setCut(e.currentTarget.scrollLeft > 0)}
+                        className={cn("flex h-full min-w-0 flex-1 items-center overflow-x-auto px-1 [scrollbar-width:none]", cut && "[mask-image:linear-gradient(to_right,transparent,black_2.5rem)]")}
+                    >
                         <button
                             type="button"
                             onClick={() => navigate(THIS_PC)}

@@ -91,7 +91,11 @@ function App() {
 
   const openSettings = () => {
     const dialog = settingsRef.current;
-    if (dialog && !dialog.open) dialog.showModal();
+    if (dialog && !dialog.open) {
+      dialog.showModal();
+      // Its content, not the close button that would get a focus ring for nothing.
+      dialog.querySelector<HTMLElement>("[data-settings-body]")?.focus();
+    }
     // The service may have stopped, restarted or finished a drive since the last look.
     refreshIndex();
   };
