@@ -161,6 +161,17 @@ pub async fn resolve_path(path: String) -> Result<Resolved, String> {
     .await
 }
 
+/// Why a file couldn't be read, in words (the preview pane shows it).
+pub(crate) fn file_error(e: io::Error) -> String {
+    match e.kind() {
+        io::ErrorKind::NotFound => "This file doesn't exist (anymore).".into(),
+        io::ErrorKind::PermissionDenied => "You don't have permission to read this file.".into(),
+        // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+        _ if matches!(e.raw_os_error(), Some(32 | 33)) => "Another app is using this file, so it can't be read right now.".into(),
+        _ => e.to_string(),
+    }
+}
+
 fn describe(e: &io::Error) -> String {
     match e.kind() {
         io::ErrorKind::NotFound => "This folder doesn't exist (anymore).".into(),
@@ -581,9 +592,9 @@ pub async fn read_text_preview(path: String, max_bytes: usize) -> Result<TextPre
             let (bytes, truncated) = read?;
             return Ok(decode_text(&bytes, truncated));
         }
-        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        let file = std::fs::File::open(&path).map_err(file_error)?;
         let mut bytes = Vec::new();
-        file.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        file.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(file_error)?;
         let truncated = bytes.len() > limit;
         bytes.truncate(limit);
         Ok(decode_text(&bytes, truncated))

@@ -237,7 +237,7 @@ export function FileList(props: FileListProps) {
                         <span className="truncate">{entry.name}</span>
                     )}
                     {badge && (
-                        <span title={badge.title} className={cn("shrink-0 rounded-[4px] px-1.5 py-px text-[10px] font-medium leading-tight", badge.className)}>
+                        <span title={badge.title} className={cn("shrink-0 rounded-[4px] px-1.5 py-px text-[0.625rem] font-medium leading-tight", badge.className)}>
                             {badge.label}
                         </span>
                     )}

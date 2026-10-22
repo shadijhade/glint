@@ -167,7 +167,7 @@ export function TimelineDialog() {
                     <Clock className="size-3.5" />
                     Modified in window
                     {report && (
-                        <span className="rounded-full bg-primary/20 px-1.5 py-0.2 text-[10px] font-semibold tabular-nums">
+                        <span className="rounded-full bg-primary/20 px-1.5 py-0.2 text-[0.625rem] font-semibold tabular-nums">
                             {formatCount(report.totalFilesChanged)}
                         </span>
                     )}
@@ -185,7 +185,7 @@ export function TimelineDialog() {
                     <Activity className="size-3.5" />
                     Live
                     {report && (
-                        <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-semibold tabular-nums">
+                        <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[0.625rem] font-semibold tabular-nums">
                             {formatCount(report.liveEvents.length)}
                         </span>
                     )}
@@ -279,10 +279,10 @@ export function TimelineDialog() {
                                                     <span className="min-w-0 flex-1 truncate font-medium" title={hf.path}>
                                                         {hf.name}
                                                     </span>
-                                                    <span className="shrink-0 font-mono text-[11px] font-semibold text-orange-600 dark:text-orange-400 tabular-nums">
+                                                    <span className="shrink-0 font-mono text-[0.6875rem] font-semibold text-orange-600 dark:text-orange-400 tabular-nums">
                                                         {formatSize(hf.bytesChanged)}
                                                     </span>
-                                                    <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                                                    <span className="shrink-0 text-[0.625rem] text-muted-foreground tabular-nums">
                                                         ({formatCount(hf.filesChanged)})
                                                     </span>
                                                     <button
@@ -330,16 +330,16 @@ export function TimelineDialog() {
                                                     <span className="truncate font-medium text-foreground" title={item.path}>
                                                         {item.name}
                                                     </span>
-                                                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
+                                                    <span className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
                                                         {formatSize(item.size)}
                                                     </span>
                                                 </div>
-                                                <p className="truncate font-mono text-[11px] text-muted-foreground" title={item.folder}>
+                                                <p className="truncate font-mono text-[0.6875rem] text-muted-foreground" title={item.folder}>
                                                     {relFolder}
                                                 </p>
                                             </div>
                                             <span
-                                                className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums"
+                                                className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground tabular-nums"
                                                 title={formatFullDate(item.modified)}
                                             >
                                                 {formatDate(item.modified)}
@@ -400,7 +400,7 @@ export function TimelineDialog() {
                                               : "bg-sky-500/15 text-sky-600 dark:text-sky-400";
                                     return (
                                         <div key={`${ev.path}:${ev.timestampMs}:${idx}`} className="flex items-center gap-3 px-3 py-2 text-xs">
-                                            <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase", badgeTone)}>
+                                            <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[0.625rem] font-semibold uppercase", badgeTone)}>
                                                 <Icon className="size-3" />
                                                 {ev.kind}
                                             </span>
@@ -408,16 +408,16 @@ export function TimelineDialog() {
                                                 <p className="truncate font-medium text-foreground" title={ev.path}>
                                                     {ev.name}
                                                 </p>
-                                                <p className="truncate font-mono text-[11px] text-muted-foreground" title={ev.path}>
+                                                <p className="truncate font-mono text-[0.6875rem] text-muted-foreground" title={ev.path}>
                                                     {ev.path}
                                                 </p>
                                             </div>
                                             {ev.size !== null && (
-                                                <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
+                                                <span className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
                                                     {formatSize(ev.size)}
                                                 </span>
                                             )}
-                                            <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
+                                            <span className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
                                                 {formatFullDate(ev.timestampMs)}
                                             </span>
                                             {ev.kind !== "deleted" && (

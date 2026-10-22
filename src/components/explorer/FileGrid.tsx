@@ -104,7 +104,7 @@ export function FileGrid(props: FileGridProps) {
                     {badge && (
                         <span
                             title={badge.title}
-                            className={cn(" absolute top-0.5 right-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[9px] font-medium leading-tight shadow-xs backdrop-blur-xs", badge.className)}
+                            className={cn(" absolute top-0.5 right-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[0.5625rem] font-medium leading-tight shadow-xs backdrop-blur-xs", badge.className)}
                         >
                             {badge.label}
                         </span>

@@ -58,7 +58,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                 type="button"
                 onClick={() => void enableIndex()}
                 title="Find files on every drive in milliseconds (Windows asks for administrator approval)"
-                className="inline-flex shrink-0 items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"
+                className="inline-flex shrink-0 items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-primary transition-colors hover:bg-primary/20"
             >
                 <Zap className="size-3" /> Turn on instant search
             </button>
@@ -143,7 +143,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                     type="button"
                     onClick={() => inspectXRay(selected[0].path)}
                     title="File X-Ray: hashes and hidden streams"
-                    className="hidden items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 @md:inline-flex"
+                    className="hidden items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-primary transition-colors hover:bg-primary/20 @md:inline-flex"
                 >
                     <Fingerprint className="size-3" /> X-Ray
                 </button>
@@ -153,7 +153,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                     type="button"
                     onClick={() => openBatchRename(selected, listing?.entries ?? selected)}
                     title="Rename the selected items (F2)"
-                    className="hidden items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 @md:inline-flex"
+                    className="hidden items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-primary transition-colors hover:bg-primary/20 @md:inline-flex"
                 >
                     <PenLine className="size-3" /> Rename
                 </button>

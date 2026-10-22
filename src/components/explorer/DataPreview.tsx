@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Check, Copy, Database, FileCode, Hash, Loader2, Search, Table2, ToggleLeft, Type } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Copy, Database, FileCode, Hash, Search, Table2, ToggleLeft, Type } from "lucide-react";
 import { toast } from "sonner";
 import type { FileEntry } from "@/lib/entries";
-import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatSize } from "@/lib/format";
 import { inspectSqlite, inspectTabular, readTextPreview, type SqliteInfo, type TablePreview } from "@/lib/fs";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+import { BigIcon, Waiting } from "./PreviewState";
 
 const SQLITE_EXTS = new Set(["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"]);
 const TABULAR_EXTS = new Set(["csv", "tsv", "jsonl", "ndjson"]);
@@ -72,23 +72,8 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
         return { tables, indexes, other };
     }, [state, query]);
 
-    if (!state) {
-        return (
-            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin text-primary" /> Reading SQLite B-Tree header…
-            </div>
-        );
-    }
-
-    if ("error" in state) {
-        const kind = kindOf(entry);
-        return (
-            <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
-                <kind.icon className={cn("size-16 stroke-[1.25]", kind.tone)} />
-                <p className="max-w-xs text-xs">{state.error}</p>
-            </div>
-        );
-    }
+    if (!state) return <Waiting what="Reading the database…" />;
+    if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
 
     const { info } = state;
     const totalTables = info.objects.filter((o) => o.kind === "table").length;
@@ -115,10 +100,10 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                     >
                         {info.journalMode} mode
                     </span>
-                    <span className="ml-auto font-mono text-[10px] text-muted-foreground tabular-nums">{info.elapsedMs.toFixed(2)} ms</span>
+                    <span className="ml-auto font-mono text-[0.625rem] text-muted-foreground tabular-nums">{info.elapsedMs.toFixed(2)} ms</span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[0.6875rem]">
                     <div className="flex justify-between gap-2">
                         <span className="text-muted-foreground">Page size</span>
                         <span className="font-mono tabular-nums">{formatSize(info.pageSize)}</span>
@@ -181,7 +166,7 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="Filter schema…"
-                        className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[11px] outline-none focus:border-primary"
+                        className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[0.6875rem] outline-none focus:border-primary"
                     />
                 </div>
             </div>
@@ -196,21 +181,21 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                             <div className="flex items-center gap-2 border-b bg-muted/20 px-2.5 py-1.5">
                                 <span className="font-mono font-semibold text-foreground">{obj.name}</span>
                                 {obj.tableName && obj.tableName !== obj.name && (
-                                    <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                                    <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground">
                                         on {obj.tableName}
                                     </span>
                                 )}
-                                <span className="ml-auto font-mono text-[10px] text-muted-foreground tabular-nums">
+                                <span className="ml-auto font-mono text-[0.625rem] text-muted-foreground tabular-nums">
                                     page #{obj.rootPage}
                                 </span>
                                 {obj.sql && <CopySqlButton text={obj.sql} />}
                             </div>
                             {obj.sql ? (
-                                <pre className="overflow-x-auto whitespace-pre-wrap p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                                <pre className="overflow-x-auto whitespace-pre-wrap p-2.5 font-mono text-[0.6875rem] leading-relaxed text-muted-foreground">
                                     {obj.sql}
                                 </pre>
                             ) : (
-                                <p className="p-2.5 text-[11px] italic text-muted-foreground">Internal auto-index (no SQL statement)</p>
+                                <p className="p-2.5 text-[0.6875rem] italic text-muted-foreground">Internal auto-index (no SQL statement)</p>
                             )}
                         </div>
                     ))
@@ -276,17 +261,8 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
         });
     }, [state, query, sortCol]);
 
-    if (!state) {
-        return (
-            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin text-primary" /> Parsing tabular data…
-            </div>
-        );
-    }
-
-    if ("error" in state) {
-        return <p className="p-4 text-sm text-destructive">{state.error}</p>;
-    }
+    if (!state) return <Waiting what="Reading the table…" />;
+    if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
 
     const { table } = state;
 
@@ -308,7 +284,7 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                     <b className="font-semibold text-foreground">{formatCount(table.totalRowsSampled)}</b>
                     {table.truncated ? "+" : ""} rows
                 </span>
-                <span className="font-mono text-[10px] text-muted-foreground tabular-nums">{table.elapsedMs.toFixed(2)} ms</span>
+                <span className="font-mono text-[0.625rem] text-muted-foreground tabular-nums">{table.elapsedMs.toFixed(2)} ms</span>
 
                 <div className="ml-auto flex items-center gap-1">
                     {mode === "grid" && (
@@ -319,14 +295,14 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
                                 placeholder="Filter rows…"
-                                className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[11px] outline-none focus:border-primary"
+                                className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[0.6875rem] outline-none focus:border-primary"
                             />
                         </div>
                     )}
                     <Button
                         variant="outline"
                         size="sm"
-                        className="h-6 px-2 text-[11px]"
+                        className="h-6 px-2 text-[0.6875rem]"
                         onClick={() => setMode((m) => (m === "grid" ? "raw" : "grid"))}
                         title={mode === "grid" ? "Switch to raw text view" : "Switch to structured table grid"}
                     >
@@ -350,14 +326,12 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                             {rawText.text}
                         </SyntaxHighlighter>
                     ) : (
-                        <div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
-                            <Loader2 className="size-4 animate-spin text-primary" /> Loading raw text…
-                        </div>
+                        <Waiting />
                     )}
                 </div>
             ) : (
                 <div className="min-h-0 flex-1 overflow-auto select-text">
-                    <table className="w-full border-collapse text-left font-mono text-[11px]">
+                    <table className="w-full border-collapse text-left font-mono text-[0.6875rem]">
                         <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-xs">
                             <tr className="border-b">
                                 <th className="w-9 border-r px-2 py-1.5 text-right font-normal text-muted-foreground select-none">#</th>
@@ -397,7 +371,7 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                         <tbody className="divide-y divide-border/50">
                             {rows.map((row, rIdx) => (
                                 <tr key={rIdx} className="hover:bg-muted/30">
-                                    <td className="border-r bg-muted/10 px-2 py-1 text-right text-[10px] text-muted-foreground tabular-nums select-none">
+                                    <td className="border-r bg-muted/10 px-2 py-1 text-right text-[0.625rem] text-muted-foreground tabular-nums select-none">
                                         {rIdx + 1}
                                     </td>
                                     {table.columns.map((col, cIdx) => {
@@ -421,7 +395,7 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                         </tbody>
                     </table>
                     {table.truncated && (
-                        <p className="border-t bg-muted/10 px-3 py-2 text-[11px] text-muted-foreground">
+                        <p className="border-t bg-muted/10 px-3 py-2 text-[0.6875rem] text-muted-foreground">
                             Showing the first {formatCount(table.rows.length)} rows sampled from the file header.
                         </p>
                     )}

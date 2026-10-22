@@ -111,7 +111,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                         </span>
                         <span className="text-border">·</span>
                         <span className="font-medium text-emerald-700 dark:text-emerald-400">{formatSize(totalFree)} free</span>
-                        <span className="rounded bg-primary/15 px-1.5 py-0.2 font-mono text-[11px] font-semibold text-primary tabular-nums">
+                        <span className="rounded bg-primary/15 px-1.5 py-0.2 font-mono text-[0.6875rem] font-semibold text-primary tabular-nums">
                             {totalPct}%
                         </span>
                     </div>
@@ -152,14 +152,14 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                                 <div className="flex items-center gap-1.5">
                                     <span className="truncate text-sm font-medium">{driveName(d)}</span>
                                     {d.fs && (
-                                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.2 font-mono text-[10px] font-medium text-muted-foreground">
+                                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.2 font-mono text-[0.625rem] font-medium text-muted-foreground">
                                             {d.fs}
                                         </span>
                                     )}
                                     {d.total > 0 && (
                                         <span
                                             className={cn(
-                                                "ml-auto shrink-0 font-mono text-[11px] font-semibold tabular-nums",
+                                                "ml-auto shrink-0 font-mono text-[0.6875rem] font-semibold tabular-nums",
                                                 nearlyFull ? "text-destructive" : "text-muted-foreground"
                                             )}
                                         >

@@ -190,7 +190,7 @@ export function QuickSearch() {
 
     const hint = (keys: string, what: string) => (
         <span className="shrink-0">
-            <kbd className="rounded border bg-muted px-1 font-sans text-[11px]">{keys}</kbd> {what}
+            <kbd className="rounded border bg-muted px-1 font-sans text-[0.6875rem]">{keys}</kbd> {what}
         </span>
     );
 

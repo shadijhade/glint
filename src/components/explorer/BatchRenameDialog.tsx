@@ -283,7 +283,7 @@ export function BatchRenameDialog() {
                                 onClick={() => setUseRegex((v) => !v)}
                                 title="Use regular expressions (supports $1, $2 capture groups)"
                                 className={cn(
-                                    "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors",
+                                    "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6875rem] font-medium transition-colors",
                                     useRegex ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"
                                 )}
                             >
@@ -294,7 +294,7 @@ export function BatchRenameDialog() {
                                 onClick={() => setCaseSensitive((v) => !v)}
                                 title="Match case"
                                 className={cn(
-                                    "rounded px-1.5 py-0.5 font-mono text-[11px] font-medium transition-colors",
+                                    "rounded px-1.5 py-0.5 font-mono text-[0.6875rem] font-medium transition-colors",
                                     caseSensitive ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"
                                 )}
                             >
@@ -320,7 +320,7 @@ export function BatchRenameDialog() {
                         />
                     </div>
                     {simulation.regexError && (
-                        <p className="text-[11px] text-destructive">{simulation.regexError}</p>
+                        <p className="text-[0.6875rem] text-destructive">{simulation.regexError}</p>
                     )}
                 </div>
 
@@ -328,7 +328,7 @@ export function BatchRenameDialog() {
                 <div className="space-y-2 rounded-md border bg-card p-3">
                     <div className="flex items-center justify-between gap-2">
                         <span className="font-semibold text-foreground">2. Pattern and case</span>
-                        <div className="flex items-center gap-1.5 text-[11px]">
+                        <div className="flex items-center gap-1.5 text-[0.6875rem]">
                             <span className="text-muted-foreground">Start #</span>
                             <input
                                 type="number"
@@ -373,7 +373,7 @@ export function BatchRenameDialog() {
                                 type="button"
                                 title={t.desc}
                                 onClick={() => setPattern((p) => `${p}${t.token}`)}
-                                className="rounded border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                className="rounded border bg-muted/40 px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                             >
                                 {t.token}
                             </button>
@@ -406,7 +406,7 @@ export function BatchRenameDialog() {
                                           : "hover:bg-muted/30"
                                 )}
                             >
-                                <td className="px-3 py-1.5 text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+                                <td className="px-3 py-1.5 text-right font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
                                     {idx + 1}
                                 </td>
                                 <td className="max-w-[18rem] truncate px-3 py-1.5 font-mono text-muted-foreground" title={row.entry.name}>
@@ -431,7 +431,7 @@ export function BatchRenameDialog() {
                                             {row.newName}
                                         </span>
                                         {row.conflict && (
-                                            <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 font-sans text-[10px] font-medium text-destructive">
+                                            <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 font-sans text-[0.625rem] font-medium text-destructive">
                                                 <AlertTriangle className="size-3" /> {row.conflict}
                                             </span>
                                         )}
