@@ -13,18 +13,15 @@ import {
     Lock,
     LockOpen,
     OctagonX,
-    RotateCw,
     ShieldAlert,
     SquareTerminal,
-    X,
 } from "lucide-react";
 import { revealInApp } from "@/lib/explorer";
 import { formatCount, formatDuration } from "@/lib/format";
 import { type LockReport, type LockingProcess, stopLockingProcess, whoLocks } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
-import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
-import { Modal } from "../Modal";
+import { Modal, ModalHeader } from "../Modal";
 
 interface LocksState {
     paths: string[] | null;
@@ -107,17 +104,6 @@ function LocksModal({ paths, onClose }: { paths: string[]; onClose: () => void }
         scan();
     }, [scan]);
 
-    useEffect(() => {
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === "F5") {
-                e.preventDefault();
-                e.stopPropagation();
-                scan();
-            }
-        };
-        window.addEventListener("keydown", onKeyDown, true);
-        return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [scan]);
 
     const stopOne = async (proc: LockingProcess) => {
         const ok = await confirm(
@@ -174,18 +160,7 @@ function LocksModal({ paths, onClose }: { paths: string[]; onClose: () => void }
 
     return (
         <Modal label={title} onClose={onClose} className="max-h-[min(80vh,34rem)] max-w-[40rem]">
-            <div className="flex h-11 shrink-0 items-center gap-2.5 border-b px-3.5">
-                <Lock className="size-4 shrink-0 text-primary" />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium" title={paths.join("\n")}>
-                    {title}
-                </span>
-                <Button variant="ghost" size="icon" className="size-7" onClick={scan} disabled={loading} title="Refresh (F5)" aria-label="Refresh">
-                    <RotateCw className={cn("size-3.5", loading && "animate-spin")} />
-                </Button>
-                <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Esc)" aria-label="Close">
-                    <X className="size-4" />
-                </Button>
-            </div>
+            <ModalHeader icon={Lock} title={title} subtitle={paths.length === 1 ? paths[0] : `${paths.length} items`} onClose={onClose} onRefresh={scan} refreshing={loading} />
 
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
                 {loading && !report ? (

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
@@ -13,7 +13,6 @@ import {
     Sparkles,
     Square,
     Trash2,
-    X,
     Zap,
 } from "lucide-react";
 import { fileOp, reload, revealInApp } from "@/lib/explorer";
@@ -22,7 +21,7 @@ import { cancelDedup, type DedupReport, type DuplicateGroup, findDuplicates, har
 import { baseName } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
-import { Modal, pressable } from "../Modal";
+import { Modal, ModalHeader, pressable } from "../Modal";
 
 interface DedupState {
     root: string | null;
@@ -56,16 +55,21 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
     /** Per group hash, which file path is chosen as the master to keep (defaults to the first/oldest). */
     const [keptByGroup, setKeptByGroup] = useState<Record<string, string>>({});
 
+    // The scan asked for last: one stopped for it (another folder, or Refresh) mustn't say it stopped.
+    const latest = useRef(0);
     const scan = useCallback(() => {
+        const run = ++latest.current;
         setLoading(true);
         setError(null);
         setStopped(false);
         findDuplicates(root, 1).then(
             (res) => {
+                if (run !== latest.current) return;
                 setReport(res);
                 setLoading(false);
             },
             (e) => {
+                if (run !== latest.current) return;
                 const msg = String(e);
                 if (msg === "cancelled") setStopped(true);
                 else setError(msg);
@@ -81,17 +85,6 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
         };
     }, [scan]);
 
-    useEffect(() => {
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === "F5" && !busy) {
-                e.preventDefault();
-                e.stopPropagation();
-                scan();
-            }
-        };
-        window.addEventListener("keydown", onKeyDown, true);
-        return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [scan, busy]);
 
     const keptFor = (group: DuplicateGroup) => {
         const chosen = keptByGroup[group.hash];
@@ -199,23 +192,13 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
 
     return (
         <Modal label={`Duplicate files in ${folderTitle}`} onClose={onClose} className="max-h-[min(84vh,42rem)] max-w-[48rem]">
-            <div className="flex h-11 shrink-0 items-center gap-2.5 border-b px-3.5">
-                <Files className="size-4 shrink-0 text-primary" />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium" title={root}>
-                    Duplicate files in “{folderTitle}”
-                </span>
+            <ModalHeader icon={Files} title={`Duplicate files in “${folderTitle}”`} subtitle={root} onClose={onClose} onRefresh={scan} refreshing={loading || busy}>
                 {report && report.totalWastedBytes > 0 && (
                     <span className="shrink-0 rounded-md bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-400">
                         {formatSize(report.totalWastedBytes)} reclaimable
                     </span>
                 )}
-                <Button variant="ghost" size="icon" className="size-7" onClick={scan} disabled={loading || busy} title="Rescan (F5)" aria-label="Rescan">
-                    <RotateCw className={cn("size-3.5", loading && "animate-spin")} />
-                </Button>
-                <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Esc)" aria-label="Close">
-                    <X className="size-4" />
-                </Button>
-            </div>
+            </ModalHeader>
 
             {report && (
                 <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b bg-chrome/60 px-3.5 py-1.5 text-[0.6875rem] text-muted-foreground">

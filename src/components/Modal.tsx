@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
+import { type LucideIcon, RotateCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "./ui/button";
 
 /** Fields typed in, which Esc leaves before it closes the dialog. */
 const TYPED = "input:not([type=checkbox], [type=radio], [type=range], [type=button], [type=submit]), textarea";
@@ -74,6 +76,68 @@ export function Modal({ label, onClose, onSubmit, className, children }: { label
                     {children}
                 </div>
             )}
+        </div>
+    );
+}
+
+/**
+ * The top of a dialog, the same in each: its icon, title and a line under it, what else it can do
+ * (`children`), then Close. `onRefresh` adds Refresh, which F5 presses too.
+ */
+export function ModalHeader({
+    icon: Icon,
+    title,
+    subtitle,
+    subtitleClassName,
+    onClose,
+    closeDisabled,
+    onRefresh,
+    refreshing,
+    children,
+}: {
+    icon: LucideIcon;
+    title: React.ReactNode;
+    subtitle?: React.ReactNode;
+    subtitleClassName?: string;
+    onClose: () => void;
+    closeDisabled?: boolean;
+    onRefresh?: () => void;
+    refreshing?: boolean;
+    children?: React.ReactNode;
+}) {
+    useEffect(() => {
+        if (!onRefresh) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key !== "F5") return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (!refreshing) onRefresh();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [onRefresh, refreshing]);
+    return (
+        <div className="flex shrink-0 items-center gap-2.5 border-b px-4 py-3">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <Icon className="size-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+                <h2 className="truncate text-sm font-semibold">{title}</h2>
+                {subtitle && (
+                    <p className={cn("truncate text-xs text-muted-foreground", subtitleClassName)} title={typeof subtitle === "string" ? subtitle : undefined}>
+                        {subtitle}
+                    </p>
+                )}
+            </div>
+            {children}
+            {onRefresh && (
+                <Button variant="ghost" size="icon" className="size-7" onClick={onRefresh} disabled={refreshing} title="Refresh (F5)" aria-label="Refresh">
+                    <RotateCw className={cn("size-4", refreshing && "animate-spin")} />
+                </Button>
+            )}
+            <Button variant="ghost" size="icon" className="size-7" onClick={onClose} disabled={closeDisabled} title="Close (Esc)" aria-label="Close">
+                <X className="size-4" />
+            </Button>
         </div>
     );
 }
