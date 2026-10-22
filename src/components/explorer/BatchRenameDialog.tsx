@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
-import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, PenLine, Regex, RotateCcw, Sparkles, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, PenLine, Regex, RotateCcw, Sparkles } from "lucide-react";
 import type { FileEntry } from "@/lib/entries";
 import { refresh, rememberUndo, undo, type UndoStep } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
@@ -9,7 +9,7 @@ import { batchRename, type RenamePair } from "@/lib/fs";
 import { baseName, joinPath, parentPath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
-import { Modal } from "../Modal";
+import { Modal, ModalHeader } from "../Modal";
 
 type CaseMode = "none" | "lower" | "upper" | "title" | "snake" | "kebab";
 
@@ -245,19 +245,13 @@ export function BatchRenameDialog() {
     return (
         // A form: Enter in any field renames, as the button does.
         <Modal label="Rename items" onClose={() => !running && closeBatchRename()} onSubmit={() => void applyBatch()} className="max-h-[88vh] max-w-4xl">
-            {/* Header */}
-            <div className="flex items-center gap-2.5 border-b px-4 py-3">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                    <PenLine className="size-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                    <h2 className="truncate text-sm font-semibold">
-                        Rename {formatCount(items.length)} {items.length === 1 ? "item" : "items"}
-                    </h2>
-                    <p className="truncate text-xs text-muted-foreground">
-                        Every item is renamed, or none is, and Undo puts the names back
-                    </p>
-                </div>
+            <ModalHeader
+                icon={PenLine}
+                title={`Rename ${formatCount(items.length)} ${items.length === 1 ? "item" : "items"}`}
+                subtitle="Every item is renamed, or none is, and Undo puts the names back"
+                onClose={closeBatchRename}
+                closeDisabled={running}
+            >
                 {lastUndo && (
                     <Button variant="outline" size="sm" onClick={undoPrevious} disabled={running} title={`Undo the ${lastUndo.label} (Ctrl+Z)`}>
                         <RotateCcw className="size-3.5" /> Undo last batch
@@ -266,10 +260,7 @@ export function BatchRenameDialog() {
                 <Button variant="ghost" size="sm" onClick={resetRules} disabled={running}>
                     Reset
                 </Button>
-                <Button variant="ghost" size="icon" className="size-7" onClick={closeBatchRename} disabled={running} title="Close (Esc)">
-                    <X className="size-4" />
-                </Button>
-            </div>
+            </ModalHeader>
 
             {/* Rule controls */}
             <div className="grid gap-3 border-b bg-muted/20 p-4 text-xs sm:grid-cols-2">

@@ -1,8 +1,7 @@
 import { create } from "zustand";
-import { Keyboard, X } from "lucide-react";
+import { Keyboard } from "lucide-react";
 import { useStore } from "@/lib/store";
-import { Modal } from "./Modal";
-import { Button } from "./ui/button";
+import { Modal, ModalHeader } from "./Modal";
 import { Kbd } from "./ui/kbd";
 
 const useShortcuts = create<{ open: boolean }>(() => ({ open: false }));
@@ -82,13 +81,7 @@ export function ShortcutsDialog() {
     if (!open) return null;
     return (
         <Modal label="Keyboard shortcuts" onClose={close} className="max-h-[86vh] max-w-4xl">
-            <div className="flex h-12 shrink-0 items-center gap-2.5 border-b px-4">
-                <Keyboard className="size-4 text-primary" />
-                <h2 className="flex-1 text-sm font-semibold">Keyboard shortcuts</h2>
-                <Button variant="ghost" size="icon" className="size-7" onClick={close} title="Close (Esc)" aria-label="Close">
-                    <X className="size-4" />
-                </Button>
-            </div>
+            <ModalHeader icon={Keyboard} title="Keyboard shortcuts" subtitle="F1 or Ctrl+/ shows this sheet from anywhere in Glint" onClose={close} />
             <div className="grid gap-x-8 gap-y-6 overflow-y-auto p-5 md:grid-cols-[3fr_2fr]">
                 {groups(quick).map(([title, keys], i) => (
                     <section key={title} className={i === 0 ? "md:row-span-3" : undefined}>
