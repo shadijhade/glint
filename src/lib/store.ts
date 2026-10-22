@@ -72,7 +72,7 @@ export interface Settings {
 export type Column = 'date' | 'type' | 'size'
 
 export const DEFAULT_SETTINGS: Settings = {
-    theme: 'dark',
+    theme: 'system',
     fontSize: 'medium',
     showLineNumbers: true,
     defaultSearchPath: '',

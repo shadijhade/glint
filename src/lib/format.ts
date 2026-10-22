@@ -19,6 +19,9 @@ export function formatSize(bytes: number) {
 
 export const formatCount = (n: number) => numberFormat.format(n);
 
+/** 1 → "1 item", 3 → "3 items". */
+export const plural = (n: number, word: string) => `${formatCount(n)} ${word}${n === 1 ? "" : "s"}`;
+
 /** 0.42 → "0.4 ms", 12.3 → "12 ms", 1234 → "1.23 s". */
 export function formatDuration(ms: number) {
     if (ms < 10) return `${ms.toFixed(1)} ms`;
