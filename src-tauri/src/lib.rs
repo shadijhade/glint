@@ -190,6 +190,9 @@ struct TextSearch {
     whole_word: bool,
     regex: bool,
     exclusions: Vec<String>,
+    /// Searching again, skipping nothing: hidden files, what .gitignore files list and the exclusions too.
+    #[serde(default)]
+    everything: bool,
 }
 
 fn rg_args(search: &TextSearch, folder: &str) -> Vec<String> {
@@ -212,8 +215,12 @@ fn rg_args(search: &TextSearch, folder: &str) -> Vec<String> {
     } else if !search.regex {
         args.push("--fixed-strings".into());
     }
-    for exclusion in &search.exclusions {
-        args.extend(["--glob".into(), format!("!{exclusion}")]);
+    if search.everything {
+        args.extend(["--hidden".into(), "--no-ignore".into()]);
+    } else {
+        for exclusion in &search.exclusions {
+            args.extend(["--glob".into(), format!("!{exclusion}")]);
+        }
     }
     // "--" so queries starting with "-" aren't parsed as flags.
     args.extend(["--".into(), query, folder.into()]);
@@ -454,10 +461,12 @@ pub fn run() {
             dedup::cancel_dedup,
             dedup::hardlink_duplicates,
             timeline::scan_timeline,
+            timeline::cancel_timeline,
             data_lens::inspect_sqlite,
             data_lens::inspect_tabular,
             batch_rename::batch_rename,
             xray::inspect_file_xray,
+            xray::cancel_xray,
             xray::remove_ntfs_stream,
             watch::watch_dirs,
             launch::take_launch_targets,
@@ -502,7 +511,7 @@ mod tests {
     use super::*;
 
     fn search(query: &str, regex: bool) -> TextSearch {
-        TextSearch { query: query.into(), path: String::new(), case_sensitive: false, whole_word: true, regex, exclusions: vec!["*.min.js".into()] }
+        TextSearch { query: query.into(), path: String::new(), case_sensitive: false, whole_word: true, regex, exclusions: vec!["*.min.js".into()], everything: false }
     }
 
     #[test]
@@ -516,6 +525,9 @@ mod tests {
         assert!(args.contains(&"--multiline".into()) && !args.contains(&"--fixed-strings".into()));
         assert!(args.contains(&r"a\.b\r?\n\(c\)".into()));
         assert!(!rg_args(&search("a.b", true), "C:\\").contains(&"--fixed-strings".into()));
+        // Skipping nothing: no exclusions, and hidden and ignored files too.
+        let args = rg_args(&TextSearch { everything: true, ..search("a", false) }, "C:\\");
+        assert!(args.contains(&"--hidden".into()) && args.contains(&"--no-ignore".into()) && !args.contains(&"--glob".into()));
     }
 
     #[test]

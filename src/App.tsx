@@ -35,6 +35,8 @@ export interface SearchRun {
   path: string;
   options: SearchOptions;
   limit: number | null;
+  /** Searched again skipping nothing. */
+  everything?: boolean;
 }
 
 /** How often a long-running session looks for a new version again (it also looks at start). */
@@ -61,7 +63,7 @@ function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
           )}
         >
           <Icon className={mode === m ? "text-primary" : undefined} />
-          <span className="hidden sm:inline">{label}</span>
+          <span className="hidden lg:inline">{label}</span>
         </button>
       ))}
     </div>
@@ -158,7 +160,8 @@ function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey;
-      if (e.key === "Escape" && searching && mode === "text" && !(e.target as Element).closest("dialog, [popover]")) {
+      // Esc in a field leaves it first; the next one stops the search.
+      if (e.key === "Escape" && searching && mode === "text" && !(e.target as Element).closest("dialog, [popover], input, textarea")) {
         cancelSearch();
       } else if (ctrl && e.key === ",") {
         e.preventDefault();
@@ -175,7 +178,7 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [searching, mode]);
 
-  const search = async (query: string, path: string, limit = useStore.getState().settings.maxResults) => {
+  const search = async (query: string, path: string, limit = useStore.getState().settings.maxResults, everything = false) => {
     if (!query || !path) return;
     const { options, settings, addToHistory } = useStore.getState();
     const id = crypto.randomUUID();
@@ -184,7 +187,7 @@ function App() {
     unlisten.current?.();
     unlisten.current = undefined;
 
-    setRun({ id, query, path, options, limit });
+    setRun({ id, query, path, options, limit, everything });
     setMatches([]);
     setSelected(-1);
     setError("");
@@ -229,7 +232,7 @@ function App() {
         if (isCurrent()) setError(message);
         finish();
       },
-      { ...options, exclusions: settings.exclusions, maxResults: limit }
+      { ...options, exclusions: settings.exclusions, maxResults: limit, everything }
     );
     // A newer search may have started while this one was spinning up.
     if (!isCurrent()) return stop();
@@ -380,7 +383,8 @@ function App() {
             onSelect={setSelected}
             onOpen={openFile}
             onReveal={revealInApp}
-            onShowAll={() => search(run.query, run.path, null)}
+            onShowAll={() => search(run.query, run.path, null, run.everything)}
+            onSearchAgain={(everything) => search(run.query, run.path, run.limit, everything)}
             onClose={closeResults}
           />
         ) : (
@@ -398,7 +402,7 @@ function App() {
       <dialog
         ref={settingsRef}
         onClick={(e) => e.target === e.currentTarget && e.currentTarget.close()}
-        className="m-auto h-[min(85vh,46rem)] w-[min(92vw,44rem)] overflow-hidden rounded-xl border bg-chrome p-0 text-foreground shadow-2xl backdrop:bg-black/50"
+        className="m-auto h-[min(85vh,46rem)] w-[min(92vw,54rem)] overflow-hidden rounded-xl border bg-chrome p-0 text-foreground shadow-2xl backdrop:bg-black/50"
       >
         <SettingsView onClose={() => settingsRef.current?.close()} />
         {/* The dialog sits above everything else, toasts included: its own show them over it. */}

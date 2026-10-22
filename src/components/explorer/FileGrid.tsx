@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Cloud, Lock } from "lucide-react";
+import { Cloud } from "lucide-react";
 import { isHidden, isLocked, isOnlineOnly } from "@/lib/entries";
 import { typeLabel } from "@/lib/fileTypes";
 import { formatFullDate, formatSize } from "@/lib/format";
@@ -7,7 +7,7 @@ import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { VirtualList } from "../VirtualList";
-import { DIFF_BADGE, dropPath, type FileViewProps, Header, lockReason, relativeTo, RenameInput, sizeOf } from "./FileList";
+import { DIFF_BADGE, dropPath, type FileViewProps, Header, LockMark, relativeTo, RenameInput, sizeOf } from "./FileList";
 import { Thumbnail } from "./Thumbnail";
 
 interface FileGridProps extends FileViewProps {
@@ -89,7 +89,7 @@ export function FileGrid(props: FileGridProps) {
                 className={cn(
                     "relative m-0.5 flex min-w-0 cursor-default flex-col items-center rounded-md px-1.5 pt-2 text-center",
                     selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
-                    entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary/40",
+                    entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
                     (isHidden(entry) || cut.has(entry.path)) && "opacity-55",
                     diff === "same" && !selected && "opacity-60"
@@ -106,7 +106,7 @@ export function FileGrid(props: FileGridProps) {
                         </span>
                     )}
                     {isOnlineOnly(entry) && <Cloud className="absolute bottom-0.5 right-0.5 size-4 fill-background text-sky-500" aria-label="Online-only" />}
-                    {isLocked(entry) && <Lock className="absolute bottom-0.5 right-0.5 size-4 fill-background text-amber-600 dark:text-amber-500" aria-label={lockReason(entry)} />}
+                    {isLocked(entry) && <LockMark entry={entry} className="absolute bottom-0.5 right-0.5 size-4 fill-background text-amber-600 dark:text-amber-500" />}
                 </div>
                 {renaming === entry.path ? (
                     <RenameInput

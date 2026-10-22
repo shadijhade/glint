@@ -203,7 +203,7 @@ export function BinaryPreview({ entry }: { entry: FileEntry }) {
                                                         key={fl}
                                                         className={cn(
                                                             "rounded-xs px-1 py-0.2 font-mono text-[0.625rem]",
-                                                            fl === "X" ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" : "bg-muted text-muted-foreground"
+                                                            fl === "X" ? "bg-amber-500/15 text-amber-700 dark:text-amber-400" : "bg-muted text-muted-foreground"
                                                         )}
                                                     >
                                                         {fl}

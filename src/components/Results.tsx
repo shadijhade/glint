@@ -17,6 +17,7 @@ import {
     FolderSearch,
     Loader2,
     Lock,
+    RotateCw,
     Search as SearchIcon,
     SearchX,
     X,
@@ -65,12 +66,15 @@ interface ResultsProps {
     onOpen: (path: string) => void;
     onReveal: (path: string) => void;
     onShowAll: () => void;
+    /** The same search again, or (`everything`) skipping nothing. */
+    onSearchAgain: (everything: boolean) => void;
     /** Back to the start screen. */
     onClose: () => void;
 }
 
-export function Results({ active, run, matches, searching, error, duration, filesSearched, selected, onSelect, onOpen, onReveal, onShowAll, onClose }: ResultsProps) {
+export function Results({ active, run, matches, searching, error, duration, filesSearched, selected, onSelect, onOpen, onReveal, onShowAll, onSearchAgain, onClose }: ResultsProps) {
     const fontSize = useStore((s) => s.settings.fontSize);
+    const exclusions = useStore((s) => s.settings.exclusions);
     const [filter, setFilter] = useState("");
     const [activeExts, setActiveExts] = useState<string[]>([]);
     const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
@@ -140,6 +144,8 @@ export function Results({ active, run, matches, searching, error, duration, file
             if (target.closest("input, textarea, dialog, [popover]")) return;
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
+                // Handed over from the search box (the page sent it): onto the match on show, if there's one.
+                if (!e.isTrusted && selectedRow >= 0) return;
                 const step = e.key === "ArrowDown" ? 1 : -1;
                 for (let i = selectedRow + step; i >= 0 && i < rows.length; i += step) {
                     const row = rows[i];
@@ -165,7 +171,7 @@ export function Results({ active, run, matches, searching, error, duration, file
             await invoke("write_file_content", { path: file, content });
             toast.success(`Exported ${fmt(visible.length)} results`, { description: file });
         } catch (e) {
-            toast.error("Export failed", { description: String(e) });
+            toast.error("Couldn't export the results", { description: String(e) });
         }
     };
 
@@ -271,8 +277,11 @@ export function Results({ active, run, matches, searching, error, duration, file
         body = (
             <Centered>
                 <AlertTriangle className="size-6 text-destructive" />
-                <p className="font-medium text-foreground">Search failed</p>
+                <p className="font-medium text-foreground">The search failed</p>
                 <pre className="max-w-full select-text whitespace-pre-wrap text-left font-mono text-xs">{error}</pre>
+                <Button variant="outline" size="sm" onClick={() => onSearchAgain(!!run.everything)}>
+                    <RotateCw /> Try again
+                </Button>
             </Centered>
         );
     } else if (!matches.length) {
@@ -283,10 +292,14 @@ export function Results({ active, run, matches, searching, error, duration, file
                 <SearchX className="size-6" />
                 <p className="font-medium text-foreground">No results</p>
                 <p className="max-w-sm">
-                    {filesSearched === 0
-                        ? `Nothing was searched — check that “${run.path}” exists and isn't excluded.`
-                        : "Try different search options. Excluded patterns, .gitignore'd and hidden files are skipped."}
+                    {filesSearched === 0 ? `Nothing was searched: check that “${run.path}” exists and isn't skipped. ` : ""}
+                    {run.everything ? "Nothing was skipped." : `Skipped: ${[...exclusions, "hidden files", "what .gitignore files list"].join(", ")}.`}
                 </p>
+                {!run.everything && (
+                    <Button variant="outline" size="sm" onClick={() => onSearchAgain(true)}>
+                        <FolderSearch /> Search again, skipping nothing
+                    </Button>
+                )}
             </Centered>
         );
     } else if (!rows.length) {
@@ -310,7 +323,7 @@ export function Results({ active, run, matches, searching, error, duration, file
                     {!searching && duration > 0 && ` · ${duration < 1000 ? `${Math.round(duration)} ms` : `${(duration / 1000).toFixed(2)} s`}`}
                 </span>
                 {limited && (
-                    <button onClick={onShowAll} className="shrink-0 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 hover:bg-amber-500/20 dark:text-amber-400" title="Run this search again without the result limit">
+                    <button onClick={onShowAll} className="shrink-0 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-500/20 dark:text-amber-400" title="Run this search again without the result limit">
                         Stopped at {fmt(run.limit!)} · Show all
                     </button>
                 )}

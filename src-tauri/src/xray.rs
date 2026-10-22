@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 /// Bytes hashed when the X-Ray opens (256 MB), so a multi-GB ISO doesn't keep it waiting; asked for, the
@@ -63,9 +64,18 @@ pub struct FileXRayReport {
     pub elapsed_ms: f64,
 }
 
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// Closing X-Ray stops a full hash of a big file.
+#[tauri::command]
+pub fn cancel_xray() {
+    CANCEL.store(true, Ordering::Relaxed);
+}
+
 #[tauri::command]
 pub async fn inspect_file_xray(path: String, full: Option<bool>) -> Result<FileXRayReport, String> {
-    blocking(move || analyze_file(&path, full.unwrap_or(false))).await
+    CANCEL.store(false, Ordering::Relaxed);
+    blocking(move || analyze_file(&path, full.unwrap_or(false), &CANCEL)).await
 }
 
 #[tauri::command]
@@ -258,7 +268,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-pub fn analyze_file(path: &str, full: bool) -> Result<FileXRayReport, String> {
+pub fn analyze_file(path: &str, full: bool, cancel: &AtomicBool) -> Result<FileXRayReport, String> {
     let started = Instant::now();
     let meta = fs::metadata(path).map_err(|e| e.to_string())?;
     let logical_size = meta.len();
@@ -284,6 +294,9 @@ pub fn analyze_file(path: &str, full: bool) -> Result<FileXRayReport, String> {
         if let Ok(mut file) = File::open(Path::new(path)) {
             let mut buf = vec![0u8; 64 * 1024];
             while bytes_hashed < limit {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("cancelled".into());
+                }
                 let n = match file.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => n,
@@ -379,12 +392,12 @@ mod tests {
         // NIST's "abc", and the IEEE 802.3 check value of "123456789".
         let abc = dir.join("abc.txt");
         fs::write(&abc, b"abc").unwrap();
-        let report = analyze_file(&abc.to_string_lossy(), false).unwrap();
+        let report = analyze_file(&abc.to_string_lossy(), false, &AtomicBool::new(false)).unwrap();
         assert_eq!(report.sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert!(report.hashes_complete);
         let digits = dir.join("digits.txt");
         fs::write(&digits, b"123456789").unwrap();
-        assert_eq!(analyze_file(&digits.to_string_lossy(), false).unwrap().crc32, "cbf43926");
+        assert_eq!(analyze_file(&digits.to_string_lossy(), false, &AtomicBool::new(false)).unwrap().crc32, "cbf43926");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -416,14 +429,14 @@ mod tests {
         let ads_path = format!("{}:Zone.Identifier", file_path.display());
         let ads_written = fs::write(&ads_path, "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.com/file.zip\r\n").is_ok();
 
-        let report = analyze_file(&file_path.to_string_lossy(), false).unwrap();
+        let report = analyze_file(&file_path.to_string_lossy(), false, &AtomicBool::new(false)).unwrap();
         assert_eq!(report.logical_size, 23);
         assert!(report.entropy > 3.0 && report.entropy < 5.0);
         if ads_written {
             assert!(report.streams.iter().any(|s| s.clean_name == "Zone.Identifier"));
             assert_eq!(report.zone_info.as_ref().unwrap().zone_id, 3);
             delete_ads(&file_path.to_string_lossy(), "Zone.Identifier").unwrap();
-            let after = analyze_file(&file_path.to_string_lossy(), false).unwrap();
+            let after = analyze_file(&file_path.to_string_lossy(), false, &AtomicBool::new(false)).unwrap();
             assert!(after.zone_info.is_none());
         }
 

@@ -355,10 +355,13 @@ export interface TimelineReport {
     totalBytesChanged: number;
     totalFilesChanged: number;
     filesScanned: number;
+    /** It stopped looking after 150,000 files. */
+    stoppedEarly: boolean;
     elapsedMs: number;
 }
 
 export const scanTimeline = (root: string, windowMs: number) => invoke<TimelineReport>("scan_timeline", { root, windowMs });
+export const cancelTimeline = () => invoke<void>("cancel_timeline");
 
 export interface SqliteObject {
     kind: "table" | "index" | "view" | "trigger";
@@ -450,6 +453,7 @@ export interface FileXRayReport {
 
 /** Hashes the first 256 MB, or the whole file when `full`. */
 export const inspectFileXRay = (path: string, full = false) => invoke<FileXRayReport>("inspect_file_xray", { path, full });
+export const cancelXRay = () => invoke<void>("cancel_xray");
 export const removeNtfsStream = (path: string, streamName: string) => invoke<void>("remove_ntfs_stream", { path, streamName });
 
 /** Watches exactly these folders (the ones on screen); changes arrive as "dir-changed" events carrying the folder's path. */

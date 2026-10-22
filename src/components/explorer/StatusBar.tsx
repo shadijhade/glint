@@ -51,7 +51,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     const mapped = useUsage((s) => !!s[tab]) && !find;
     const { sizes, drives, index } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length, index: s.index })));
     const scanning = index?.state === "on" ? index.volumes.find((v) => v.state === "scanning") : undefined;
-    // Offered on This PC only; a drive being read shows in every folder.
+    // Offered on This PC and after a search without it; a drive being read shows in every folder.
     const turnOn =
         index && (index.state === "off" || index.state === "stopped") ? (
             <button
@@ -129,9 +129,10 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
         );
     }
 
+    // The counts stay whole; what did the work and how long it took gives way first.
     return (
         <div className="@container flex h-7 shrink-0 items-center gap-2 overflow-hidden border-t px-3 text-xs text-muted-foreground">
-            <span className="truncate">
+            <span className="shrink-0">
                 {items(shown)}
                 {hidden > 0 && !mapped && ` · ${formatCount(hidden)} hidden`}
                 {selected.length > 0 && ` · ${formatCount(selected.length)} selected`}
@@ -157,10 +158,11 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                     <PenLine className="size-3" /> Rename
                 </button>
             )}
-            <span className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap tabular-nums">
+            <span className="ml-auto flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap tabular-nums">
                 {indexing && <span className="hidden @md:inline-flex">{indexing}</span>}
                 {work}
                 {thumbsHere && <ThumbWork run={thumbsHere} />}
+                {find && !find.running && find.engine === "fd" && turnOn && <span className="ml-1 hidden @lg:inline-flex">{turnOn}</span>}
             </span>
         </div>
     );

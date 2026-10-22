@@ -66,6 +66,15 @@ export interface FindRun {
     elapsed: number;
     limited: boolean;
     error: string;
+    /** What it didn't look in: Settings' folders to skip, and what .gitignore files list. */
+    skipped: string[];
+}
+
+/** Searching again more widely than Settings say, once: elsewhere, without the limit or skipping nothing. */
+export interface Wider {
+    scope?: string;
+    unlimited?: boolean;
+    skipNothing?: boolean;
 }
 
 /** Subfolder sizes for one folder, from the index or dust. */
@@ -311,7 +320,13 @@ export async function navigate(target: string, { select, history = true, quiet =
         } catch (e) {
             if (seq === r.navSeq) {
                 updateTab({ loading: false }, tab);
-                if (!silent) toast.error(`Can't open “${baseName(target)}”`, { description: String(e) });
+                // File Explorer can ask for access where Glint was refused.
+                const denied = /denied/i.test(String(e));
+                if (!silent)
+                    toast.error(`Can't open “${baseName(target)}”`, {
+                        description: String(e),
+                        action: denied ? { label: "Open in File Explorer", onClick: () => void openPath(target).catch(() => {}) } : undefined,
+                    });
             }
             return false;
         }
@@ -447,7 +462,7 @@ export function reloadFolder(folder: string) {
 /** F5: runs the search again when one is shown, otherwise re-reads the folder. */
 export const refresh = () => {
     const find = tabState()?.find;
-    return find ? runFind(find.query) : reload();
+    return find ? runFind(find.query, { scope: find.scope }) : reload();
 };
 
 export async function refreshDrives() {
@@ -996,15 +1011,15 @@ export function compressEntries(entries: FileEntry[]) {
 }
 
 /** Extract here: a zip or 7z on disk into a new folder next to it, named after it (Explorer's Extract All). Ctrl+Z takes it back. */
-export function extractHere(entry: FileEntry) {
+/** Extracts the archive file at `path` (on disk, not in another archive) into a folder next to it. */
+export function extractHere(path: string) {
     const tab = activeTabId();
-    if (isArchived(entry)) return readOnlyNotice();
-    const what = `“${entry.name}”`;
-    return staging({ doing: `Extracting ${what}`, failed: `Couldn't extract ${what}`, skipped: "extracted" }, (lane, p) => archiveExtractHere(entry.path, lane, p), async (staged) => {
+    const what = `“${baseName(path)}”`;
+    return staging({ doing: `Extracting ${what}`, failed: `Couldn't extract ${what}`, skipped: "extracted" }, (lane, p) => archiveExtractHere(path, lane, p), async (staged) => {
         rememberUndo(`extraction of ${what}`, () => performFileOp({ kind: "delete", paths: [staged.folder], permanent: false, confirm: false }));
         const t = tabState(tab);
-        if (t && !t.find && samePath(t.path, parentPath(entry.path))) await navigate(t.path, { history: false, quiet: true, select: staged.folder, tab });
-        else toast.success(`Extracted ${what} into “${baseName(staged.folder)}”`);
+        if (t && !t.find && samePath(t.path, parentPath(path))) await navigate(t.path, { history: false, quiet: true, select: staged.folder, tab });
+        else toast.success(`Extracted ${what} into “${baseName(staged.folder)}”`, { action: { label: "Open", onClick: () => void navigate(staged.folder) } });
     });
 }
 
@@ -1079,18 +1094,26 @@ export async function runSavedSearch({ query, folder }: SavedSearch) {
     return runFind(query);
 }
 
-export async function runFind(query: string) {
+export async function runFind(query: string, wider: Wider = {}) {
     if (!query.trim()) return clearFind();
     const tab = activeTabId();
     const t = tabState(tab);
     if (!t) return;
     const settings = useStore.getState().settings;
     const id = ++findSeq;
-    const roots = t.path === THIS_PC ? get().drives.filter((d) => d.kind === "fixed" || d.kind === "removable").map((d) => d.path) : [t.path];
+    const scope = wider.scope ?? t.path;
+    const roots = scope === THIS_PC ? get().drives.filter((d) => d.kind === "fixed" || d.kind === "removable").map((d) => d.path) : [scope];
+    const options = {
+        hidden: settings.showHidden,
+        respectIgnore: settings.findRespectIgnore && !wider.skipNothing,
+        exclude: wider.skipNothing ? [] : settings.findExclusions,
+        maxResults: wider.unlimited ? null : settings.findMaxResults,
+    };
+    const skipped = [...options.exclude, ...(options.respectIgnore ? ["what .gitignore files list"] : [])];
     const started = performance.now();
     updateTab(
         {
-            find: { id, query, engine: "", scope: t.path, entries: [], running: true, elapsed: 0, limited: false, error: "" },
+            find: { id, query, engine: "", scope, entries: [], running: true, elapsed: 0, limited: false, error: "", skipped },
             selection: new Set(),
             focus: null,
             anchor: null,
@@ -1102,12 +1125,6 @@ export async function runFind(query: string) {
         const find = tabState(tab)?.find;
         if (find?.id === id) updateTab({ find: { ...find, ...patch } }, tab);
     };
-    const options = {
-        hidden: settings.showHidden,
-        respectIgnore: settings.findRespectIgnore,
-        exclude: settings.findExclusions,
-        maxResults: settings.findMaxResults,
-    };
     try {
         await findFiles(roots, query, options, tab, (event) => {
             const find = tabState(tab)?.find;
@@ -1115,11 +1132,26 @@ export async function runFind(query: string) {
             if (event.type === "entries") update({ entries: find.entries.concat(event.entries) });
             else if (event.type === "started") update({ engine: event.engine });
             else if (event.type === "error") update({ error: event.message });
-            else update({ running: false, elapsed: performance.now() - started, limited: event.limited });
+            else {
+                const elapsed = performance.now() - started;
+                update({ running: false, elapsed, limited: event.limited });
+                if (elapsed > 1000 && find.engine === "fd") offerIndex();
+            }
         });
     } catch (e) {
         update({ running: false, error: String(e) });
     }
+}
+
+/** After a slow search without the index: what it would have been with it, once. */
+function offerIndex() {
+    const index = get().index;
+    if (!index || (index.state !== "off" && index.state !== "stopped") || !firstNotice("offer-instant-search", "1")) return;
+    toast.message("Instant search finds names in milliseconds", {
+        description: "It reads each drive's file table once and keeps up with every change. Windows asks for administrator approval.",
+        action: { label: "Turn on", onClick: () => void enableIndex() },
+        duration: 15_000,
+    });
 }
 
 export const stopFind = () => {
@@ -1305,6 +1337,12 @@ export function rememberUndo(label: string, run: () => Promise<unknown>): UndoSt
     return step;
 }
 
+/** What Ctrl+Z would take back now, if anything. */
+export const nextUndo = (): UndoStep | undefined => undoSteps[undoSteps.length - 1];
+
+/** Says what was just done, with Undo right there (as Ctrl+Z). */
+const offerUndo = (said: string, step: UndoStep) => toast.success(said, { id: "undo", duration: 8000, action: { label: "Undo", onClick: () => void undo(step) } });
+
 /**
  * A copy, move, rename or delete through Windows' file engine that Ctrl+Z can take back. False when
  * the person cancelled in one of its dialogs; what was done by then can still be undone.
@@ -1315,10 +1353,19 @@ export async function fileOp(op: FileOp): Promise<boolean> {
     const what = plural(done.length, "item");
     if (done.length) {
         // Taking back a copy recycles it rather than deleting it for good.
+        // Moves and deletions say so with Undo; a copy or a rename shows where it happened.
         if (op.kind === "copy") rememberUndo(`copy of ${what}`, () => performFileOp({ kind: "delete", paths: done.map((i) => i.to), permanent: false, confirm: false }));
-        else if (op.kind === "move") rememberUndo(`move of ${what}`, () => performFileOp({ kind: "moveBack", items: done.map((i) => ({ path: i.to, folder: parentPath(i.from), name: baseName(i.from) })) }));
+        else if (op.kind === "move")
+            offerUndo(
+                `Moved ${what} to “${baseName(op.dest)}”`,
+                rememberUndo(`move of ${what}`, () => performFileOp({ kind: "moveBack", items: done.map((i) => ({ path: i.to, folder: parentPath(i.from), name: baseName(i.from) })) }))
+            );
         else if (op.kind === "rename") rememberUndo(`rename to “${baseName(done[0].to)}”`, () => performFileOp({ kind: "rename", path: done[0].to, name: baseName(done[0].from) }));
-        else if (op.kind === "delete") rememberUndo(`deletion of ${what}`, () => performFileOp({ kind: "restore", items: done.map((i) => ({ path: i.to, folder: parentPath(i.from), name: baseName(i.from) })) }));
+        else if (op.kind === "delete")
+            offerUndo(
+                `Moved ${what} to the Recycle Bin`,
+                rememberUndo(`deletion of ${what}`, () => performFileOp({ kind: "restore", items: done.map((i) => ({ path: i.to, folder: parentPath(i.from), name: baseName(i.from) })) }))
+            );
     }
     return completed;
 }
@@ -1326,13 +1373,15 @@ export async function fileOp(op: FileOp): Promise<boolean> {
 /** Takes back the last copy, move, rename, deletion or new item (Ctrl+Z), or `step` if it's still to undo. */
 export async function undo(step = undoSteps[undoSteps.length - 1]) {
     const at = step ? undoSteps.lastIndexOf(step) : -1;
-    if (!step || at < 0) return void toast.message("Nothing to undo", { id: "undo" });
+    if (!step || at < 0) return void toast.message("Nothing to undo", { id: "undone" });
     undoSteps.splice(at, 1);
+    // What offered it (a toast with Undo) has done its job.
+    toast.dismiss("undo");
     try {
         await busy(`Undoing the ${step.label}…`, step.run());
-        toast.success(`Undid the ${step.label}`, { id: "undo" });
+        toast.success(`Undid the ${step.label}`, { id: "undone" });
     } catch (e) {
-        toast.error(`Couldn't undo the ${step.label}`, { description: String(e), id: "undo" });
+        toast.error(`Couldn't undo the ${step.label}`, { description: String(e), id: "undone" });
     }
     reload();
 }
@@ -1436,7 +1485,8 @@ export async function dropFiles(paths: string[], dest: string) {
             return t && !t.find && t.path !== THIS_PC && samePath(dest, t.path);
         });
         if (showing) await navigate(dest, { history: false, quiet: true, select: sources.map((p) => joinPath(dest, baseName(p))), tab: showing });
-        else toast.success(`${move ? "Moved" : "Copied"} ${what} to “${baseName(dest)}”`);
+        // A move said so already, with Undo.
+        else if (!move) toast.success(`Copied ${what} to “${baseName(dest)}”`);
     } catch (e) {
         toast.error(`Couldn't ${move ? "move" : "copy"} ${what}`, { description: String(e) });
     }

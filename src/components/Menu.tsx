@@ -4,8 +4,8 @@ import { Check, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type MenuItem =
-    /** `checked` makes it one of a set to choose from (a check mark in place of an icon). */
-    | { label: string; icon?: LucideIcon; shortcut?: string; disabled?: boolean; danger?: boolean; checked?: boolean; onSelect: () => void }
+    /** `checked` makes it one of a set to choose from (a check mark in place of an icon), or with `toggle` something on or off. */
+    | { label: string; icon?: LucideIcon; shortcut?: string; disabled?: boolean; danger?: boolean; checked?: boolean; toggle?: boolean; onSelect: () => void }
     | "separator"
     | false
     | null
@@ -49,7 +49,7 @@ export function useMenu() {
                     item && (
                         <button
                             key={i}
-                            role={item.checked === undefined ? "menuitem" : "menuitemradio"}
+                            role={item.checked === undefined ? "menuitem" : item.toggle ? "menuitemcheckbox" : "menuitemradio"}
                             aria-checked={item.checked}
                             disabled={item.disabled}
                             className={cn(itemClass, item.danger ? "text-destructive [&_svg]:text-destructive" : "[&_svg]:text-muted-foreground")}

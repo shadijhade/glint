@@ -26,6 +26,15 @@ import { DRIVE_ICONS, KNOWN_ICONS } from "./Sidebar";
 
 export const FIND_BOX_ID = "find-box";
 
+/** The search box's filters, as it offers them when empty: what choosing one types, an example, and what it means. */
+const FILTERS: [string, string, string][] = [
+    ["ext:", "ext:pdf", "of a type (ext:jpg,png for more)"],
+    ["size:>", "size:>10mb", "bigger than (size:<1kb smaller)"],
+    ["dm:", "dm:7d", "changed in the last 7 days (dm:>1y before)"],
+    ["file:", "file:", "files only"],
+    ["folder:", "folder:", "folders only"],
+];
+
 function NavButton({ icon: Icon, label, className, ...props }: { icon: LucideIcon; label: string } & React.ComponentProps<"button">) {
     return (
         <button
@@ -271,6 +280,8 @@ export function AddressBar() {
     const [flyoutItems, setFlyoutItems] = useState<Suggestion[]>([]);
     const [flyoutLoading, setFlyoutLoading] = useState(false);
     const [flyoutFilter, setFlyoutFilter] = useState("");
+    // The search box, focused and empty, shows what it can do.
+    const [findFocused, setFindFocused] = useState(false);
     const trail = crumbs(path);
 
     // Long paths keep their end in view; the start scrolls away to the left.
@@ -385,7 +396,7 @@ export function AddressBar() {
                 <NavButton icon={ArrowLeft} label="Back (Alt+Left)" onClick={goBack} disabled={!back} />
                 <NavButton icon={ArrowRight} label="Forward (Alt+Right)" onClick={goForward} disabled={!forward} />
                 <NavButton icon={ArrowUp} label="Up (Alt+Up)" onClick={goUp} disabled={path === THIS_PC} />
-                <NavButton icon={RotateCw} label="Refresh (F5)" onClick={refresh} className={cn(loading && "[&_svg]:animate-spin")} />
+                <NavButton icon={RotateCw} label="Refresh (F5)" onClick={refresh} className={cn("hidden md:grid", loading && "[&_svg]:animate-spin")} />
             </div>
 
             {/* In the title bar, but a click here types a path or picks a crumb rather than moving the window. */}
@@ -500,13 +511,15 @@ export function AddressBar() {
                 </div>
             </div>
 
-            <div data-tauri-drag-region="false" className="relative w-[clamp(11rem,22vw,19rem)] shrink-0">
+            <div data-tauri-drag-region="false" className="relative w-[clamp(8rem,22vw,19rem)] shrink-0">
                 <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <input
                     id={FIND_BOX_ID}
                     value={filter}
                     onChange={(e) => updateTab({ filter: e.target.value })}
                     onKeyDown={onFindKeyDown}
+                    onFocus={() => setFindFocused(true)}
+                    onBlur={() => setFindFocused(false)}
                     spellCheck={false}
                     placeholder={`Search ${folderName}`}
                     aria-label={`Search ${folderName}. Typing filters; Enter searches subfolders too.`}
@@ -517,6 +530,20 @@ export function AddressBar() {
                     <button onClick={clearFind} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground" title="Clear (Esc)" aria-label="Clear search">
                         <X className="size-4" />
                     </button>
+                )}
+                {findFocused && !filter && !find && (
+                    // Mouse down keeps the focus in the box, which each filter starts.
+                    <div className="absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
+                        <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too.</p>
+                        <div className="mt-1.5 flex flex-col">
+                            {FILTERS.map(([start, example, meaning]) => (
+                                <button key={start} type="button" onClick={() => updateTab({ filter: start })} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
+                                    <code className="shrink-0 font-mono text-[11px] text-primary">{example}</code>
+                                    <span className="truncate text-muted-foreground">{meaning}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                 )}
             </div>
         </div>

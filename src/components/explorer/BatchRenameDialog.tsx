@@ -9,6 +9,7 @@ import { batchRename, type RenamePair } from "@/lib/fs";
 import { baseName, joinPath, parentPath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+import { Modal } from "../Modal";
 
 type CaseMode = "none" | "lower" | "upper" | "title" | "snake" | "kebab";
 
@@ -239,7 +240,7 @@ export function BatchRenameDialog() {
                 action: step ? { label: "Undo", onClick: () => void undo(step) } : undefined,
             });
         } catch (e) {
-            toast.error("Batch rename failed", { description: String(e) });
+            toast.error("Couldn't rename the items", { description: String(e) });
         } finally {
             setRunning(false);
         }
@@ -254,245 +255,237 @@ export function BatchRenameDialog() {
     };
 
     return (
-        <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-[1px] animate-in fade-in duration-100"
-            onMouseDown={(e) => e.target === e.currentTarget && !running && closeBatchRename()}
-        >
-            <div
-                role="dialog"
-                aria-modal="true"
-                aria-label="Rename items"
-                className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-2xl"
-            >
-                {/* Header */}
-                <div className="flex items-center gap-2.5 border-b px-4 py-3">
-                    <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                        <PenLine className="size-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                        <h2 className="truncate text-sm font-semibold">
-                            Rename {formatCount(items.length)} {items.length === 1 ? "item" : "items"}
-                        </h2>
-                        <p className="truncate text-xs text-muted-foreground">
-                            Every item is renamed, or none is, and Undo puts the names back
-                        </p>
-                    </div>
-                    {lastUndo && (
-                        <Button variant="outline" size="sm" onClick={undoPrevious} disabled={running} title={`Undo the ${lastUndo.label} (Ctrl+Z)`}>
-                            <RotateCcw className="size-3.5" /> Undo last batch
-                        </Button>
-                    )}
-                    <Button variant="ghost" size="sm" onClick={resetRules} disabled={running}>
-                        Reset
-                    </Button>
-                    <Button variant="ghost" size="icon" className="size-7" onClick={closeBatchRename} disabled={running} title="Close (Esc)">
-                        <X className="size-4" />
-                    </Button>
+        // A form: Enter in any field renames, as the button does.
+        <Modal label="Rename items" onClose={() => !running && closeBatchRename()} onSubmit={() => void applyBatch()} className="max-h-[88vh] max-w-4xl">
+            {/* Header */}
+            <div className="flex items-center gap-2.5 border-b px-4 py-3">
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <PenLine className="size-4" />
                 </div>
+                <div className="min-w-0 flex-1">
+                    <h2 className="truncate text-sm font-semibold">
+                        Rename {formatCount(items.length)} {items.length === 1 ? "item" : "items"}
+                    </h2>
+                    <p className="truncate text-xs text-muted-foreground">
+                        Every item is renamed, or none is, and Undo puts the names back
+                    </p>
+                </div>
+                {lastUndo && (
+                    <Button variant="outline" size="sm" onClick={undoPrevious} disabled={running} title={`Undo the ${lastUndo.label} (Ctrl+Z)`}>
+                        <RotateCcw className="size-3.5" /> Undo last batch
+                    </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={resetRules} disabled={running}>
+                    Reset
+                </Button>
+                <Button variant="ghost" size="icon" className="size-7" onClick={closeBatchRename} disabled={running} title="Close (Esc)">
+                    <X className="size-4" />
+                </Button>
+            </div>
 
-                {/* Rule controls */}
-                <div className="grid gap-3 border-b bg-muted/20 p-4 text-xs sm:grid-cols-2">
-                    {/* Find & Replace */}
-                    <div className="space-y-2 rounded-md border bg-card p-3">
-                        <div className="flex items-center justify-between">
-                            <span className="font-semibold text-foreground">1. Find and replace</span>
-                            <div className="flex items-center gap-1">
-                                <button
-                                    type="button"
-                                    onClick={() => setUseRegex((v) => !v)}
-                                    title="Use regular expressions (supports $1, $2 capture groups)"
-                                    className={cn(
-                                        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors",
-                                        useRegex ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"
-                                    )}
-                                >
-                                    <Regex className="size-3" /> Regex
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setCaseSensitive((v) => !v)}
-                                    title="Match case"
-                                    className={cn(
-                                        "rounded px-1.5 py-0.5 font-mono text-[11px] font-medium transition-colors",
-                                        caseSensitive ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"
-                                    )}
-                                >
-                                    Aa
-                                </button>
-                            </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                            <input
-                                type="text"
-                                value={findText}
-                                onChange={(e) => setFindText(e.target.value)}
-                                placeholder={useRegex ? "Regex (e.g. ^IMG_(\\d+))" : "Find text…"}
-                                className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
-                            />
-                            <input
-                                type="text"
-                                value={replaceText}
-                                onChange={(e) => setReplaceText(e.target.value)}
-                                placeholder={useRegex ? "Replace (e.g. Photo_$1)" : "Replace with…"}
-                                className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
-                            />
-                        </div>
-                        {simulation.regexError && (
-                            <p className="text-[11px] text-destructive">{simulation.regexError}</p>
-                        )}
-                    </div>
-
-                    {/* Pattern Template & Case */}
-                    <div className="space-y-2 rounded-md border bg-card p-3">
-                        <div className="flex items-center justify-between gap-2">
-                            <span className="font-semibold text-foreground">2. Pattern and case</span>
-                            <div className="flex items-center gap-1.5 text-[11px]">
-                                <span className="text-muted-foreground">Start #</span>
-                                <input
-                                    type="number"
-                                    value={startNum}
-                                    onChange={(e) => setStartNum(Number(e.target.value) || 0)}
-                                    className="h-6 w-12 rounded border bg-background px-1.5 text-center font-mono outline-none focus:border-primary"
-                                />
-                                <span className="text-muted-foreground">Step</span>
-                                <input
-                                    type="number"
-                                    value={stepNum}
-                                    onChange={(e) => setStepNum(Number(e.target.value) || 1)}
-                                    className="h-6 w-12 rounded border bg-background px-1.5 text-center font-mono outline-none focus:border-primary"
-                                />
-                            </div>
-                        </div>
-                        <div className="grid grid-cols-[1fr_auto] gap-2">
-                            <input
-                                type="text"
-                                value={pattern}
-                                onChange={(e) => setPattern(e.target.value)}
-                                placeholder="{name}_{nn}"
-                                className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
-                            />
-                            <select
-                                value={caseMode}
-                                onChange={(e) => setCaseMode(e.target.value as CaseMode)}
-                                className="h-7 rounded border bg-background px-2 text-xs outline-none focus:border-primary"
+            {/* Rule controls */}
+            <div className="grid gap-3 border-b bg-muted/20 p-4 text-xs sm:grid-cols-2">
+                {/* Find & Replace */}
+                <div className="space-y-2 rounded-md border bg-card p-3">
+                    <div className="flex items-center justify-between">
+                        <span className="font-semibold text-foreground">1. Find and replace</span>
+                        <div className="flex items-center gap-1">
+                            <button
+                                type="button"
+                                onClick={() => setUseRegex((v) => !v)}
+                                title="Use regular expressions (supports $1, $2 capture groups)"
+                                className={cn(
+                                    "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors",
+                                    useRegex ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"
+                                )}
                             >
-                                <option value="none">Same case</option>
-                                <option value="lower">lowercase</option>
-                                <option value="upper">UPPERCASE</option>
-                                <option value="title">Title Case</option>
-                                <option value="snake">snake_case</option>
-                                <option value="kebab">kebab-case</option>
-                            </select>
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                            {TOKENS.map((t) => (
-                                <button
-                                    key={t.token}
-                                    type="button"
-                                    title={t.desc}
-                                    onClick={() => setPattern((p) => `${p}${t.token}`)}
-                                    className="rounded border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                                >
-                                    {t.token}
-                                </button>
-                            ))}
+                                <Regex className="size-3" /> Regex
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setCaseSensitive((v) => !v)}
+                                title="Match case"
+                                className={cn(
+                                    "rounded px-1.5 py-0.5 font-mono text-[11px] font-medium transition-colors",
+                                    caseSensitive ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"
+                                )}
+                            >
+                                Aa
+                            </button>
                         </div>
                     </div>
-                </div>
-
-                {/* Live preview matrix */}
-                <div className="min-h-[16rem] flex-1 overflow-y-auto">
-                    <table className="w-full border-collapse text-left text-xs">
-                        <thead className="sticky top-0 z-10 border-b bg-muted/90 backdrop-blur-xs">
-                            <tr>
-                                <th className="w-10 px-3 py-2 text-right font-normal text-muted-foreground">#</th>
-                                <th className="w-[44%] px-3 py-2 font-semibold text-foreground">Current name</th>
-                                <th className="w-6 px-1 py-2" />
-                                <th className="px-3 py-2 font-semibold text-foreground">New name</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y">
-                            {simulation.rows.map((row, idx) => (
-                                <tr
-                                    key={row.entry.path}
-                                    className={cn(
-                                        "transition-colors",
-                                        row.conflict
-                                            ? "bg-destructive/10"
-                                            : row.changed
-                                              ? "bg-emerald-500/5 hover:bg-emerald-500/10"
-                                              : "hover:bg-muted/30"
-                                    )}
-                                >
-                                    <td className="px-3 py-1.5 text-right font-mono text-[11px] text-muted-foreground tabular-nums">
-                                        {idx + 1}
-                                    </td>
-                                    <td className="max-w-[18rem] truncate px-3 py-1.5 font-mono text-muted-foreground" title={row.entry.name}>
-                                        {row.entry.name}
-                                    </td>
-                                    <td className="px-1 py-1.5 text-center">
-                                        <ArrowRight className={cn("size-3.5", row.changed ? "text-primary" : "text-muted-foreground/30")} />
-                                    </td>
-                                    <td className="px-3 py-1.5 font-mono">
-                                        <div className="flex items-center gap-2">
-                                            <span
-                                                className={cn(
-                                                    "truncate",
-                                                    row.conflict
-                                                        ? "font-semibold text-destructive"
-                                                        : row.changed
-                                                          ? "font-semibold text-emerald-600 dark:text-emerald-400"
-                                                          : "text-muted-foreground"
-                                                )}
-                                                title={row.newName}
-                                            >
-                                                {row.newName}
-                                            </span>
-                                            {row.conflict && (
-                                                <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 font-sans text-[10px] font-medium text-destructive">
-                                                    <AlertTriangle className="size-3" /> {row.conflict}
-                                                </span>
-                                            )}
-                                        </div>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-
-                {/* Footer */}
-                <div className="flex items-center justify-between border-t bg-muted/20 px-4 py-2.5 text-xs">
-                    <div className="flex items-center gap-3">
-                        {simulation.conflictCount > 0 ? (
-                            <span className="inline-flex items-center gap-1.5 font-medium text-destructive">
-                                <AlertTriangle className="size-3.5" />
-                                {formatCount(simulation.conflictCount)} {simulation.conflictCount === 1 ? "conflict" : "conflicts"} detected — resolve before renaming
-                            </span>
-                        ) : simulation.changedCount > 0 ? (
-                            <span className="inline-flex items-center gap-1.5 font-medium text-emerald-600 dark:text-emerald-400">
-                                <CheckCircle2 className="size-3.5" />
-                                Ready to rename {formatCount(simulation.changedCount)} of {formatCount(items.length)} items: all of them, or none if one can't be
-                            </span>
-                        ) : (
-                            <span className="text-muted-foreground">Modify Find/Replace, Pattern, or Case above to preview changes</span>
-                        )}
+                    <div className="grid grid-cols-2 gap-2">
+                        <input
+                            type="text"
+                            value={findText}
+                            onChange={(e) => setFindText(e.target.value)}
+                            autoFocus
+                            placeholder={useRegex ? "Regex (e.g. ^IMG_(\\d+))" : "Find text…"}
+                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                        />
+                        <input
+                            type="text"
+                            value={replaceText}
+                            onChange={(e) => setReplaceText(e.target.value)}
+                            placeholder={useRegex ? "Replace (e.g. Photo_$1)" : "Replace with…"}
+                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                        />
                     </div>
-                    <div className="flex items-center gap-2">
-                        <Button variant="outline" size="sm" onClick={closeBatchRename} disabled={running}>
-                            Cancel
-                        </Button>
-                        <Button
-                            size="sm"
-                            onClick={applyBatch}
-                            disabled={running || !!simulation.regexError || simulation.conflictCount > 0 || simulation.changedCount === 0}
+                    {simulation.regexError && (
+                        <p className="text-[11px] text-destructive">{simulation.regexError}</p>
+                    )}
+                </div>
+
+                {/* Pattern Template & Case */}
+                <div className="space-y-2 rounded-md border bg-card p-3">
+                    <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-foreground">2. Pattern and case</span>
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                            <span className="text-muted-foreground">Start #</span>
+                            <input
+                                type="number"
+                                value={startNum}
+                                onChange={(e) => setStartNum(Number(e.target.value) || 0)}
+                                className="h-6 w-12 rounded border bg-background px-1.5 text-center font-mono outline-none focus:border-primary"
+                            />
+                            <span className="text-muted-foreground">Step</span>
+                            <input
+                                type="number"
+                                value={stepNum}
+                                onChange={(e) => setStepNum(Number(e.target.value) || 1)}
+                                className="h-6 w-12 rounded border bg-background px-1.5 text-center font-mono outline-none focus:border-primary"
+                            />
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                        <input
+                            type="text"
+                            value={pattern}
+                            onChange={(e) => setPattern(e.target.value)}
+                            placeholder="{name}_{nn}"
+                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                        />
+                        <select
+                            value={caseMode}
+                            onChange={(e) => setCaseMode(e.target.value as CaseMode)}
+                            className="h-7 rounded border bg-background px-2 text-xs outline-none focus:border-primary"
                         >
-                            {running ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-                            Rename {formatCount(simulation.changedCount)} {simulation.changedCount === 1 ? "item" : "items"}
-                        </Button>
+                            <option value="none">Same case</option>
+                            <option value="lower">lowercase</option>
+                            <option value="upper">UPPERCASE</option>
+                            <option value="title">Title Case</option>
+                            <option value="snake">snake_case</option>
+                            <option value="kebab">kebab-case</option>
+                        </select>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                        {TOKENS.map((t) => (
+                            <button
+                                key={t.token}
+                                type="button"
+                                title={t.desc}
+                                onClick={() => setPattern((p) => `${p}${t.token}`)}
+                                className="rounded border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                            >
+                                {t.token}
+                            </button>
+                        ))}
                     </div>
                 </div>
             </div>
-        </div>
+
+            {/* Live preview matrix */}
+            <div className="min-h-[16rem] flex-1 overflow-y-auto">
+                <table className="w-full border-collapse text-left text-xs">
+                    <thead className="sticky top-0 z-10 border-b bg-muted/90 backdrop-blur-xs">
+                        <tr>
+                            <th className="w-10 px-3 py-2 text-right font-normal text-muted-foreground">#</th>
+                            <th className="w-[44%] px-3 py-2 font-semibold text-foreground">Current name</th>
+                            <th className="w-6 px-1 py-2" />
+                            <th className="px-3 py-2 font-semibold text-foreground">New name</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                        {simulation.rows.map((row, idx) => (
+                            <tr
+                                key={row.entry.path}
+                                className={cn(
+                                    "transition-colors",
+                                    row.conflict
+                                        ? "bg-destructive/10"
+                                        : row.changed
+                                          ? "bg-emerald-500/5 hover:bg-emerald-500/10"
+                                          : "hover:bg-muted/30"
+                                )}
+                            >
+                                <td className="px-3 py-1.5 text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+                                    {idx + 1}
+                                </td>
+                                <td className="max-w-[18rem] truncate px-3 py-1.5 font-mono text-muted-foreground" title={row.entry.name}>
+                                    {row.entry.name}
+                                </td>
+                                <td className="px-1 py-1.5 text-center">
+                                    <ArrowRight className={cn("size-3.5", row.changed ? "text-primary" : "text-muted-foreground/30")} />
+                                </td>
+                                <td className="px-3 py-1.5 font-mono">
+                                    <div className="flex items-center gap-2">
+                                        <span
+                                            className={cn(
+                                                "truncate",
+                                                row.conflict
+                                                    ? "font-semibold text-destructive"
+                                                    : row.changed
+                                                      ? "font-semibold text-emerald-700 dark:text-emerald-400"
+                                                      : "text-muted-foreground"
+                                            )}
+                                            title={row.newName}
+                                        >
+                                            {row.newName}
+                                        </span>
+                                        {row.conflict && (
+                                            <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 font-sans text-[10px] font-medium text-destructive">
+                                                <AlertTriangle className="size-3" /> {row.conflict}
+                                            </span>
+                                        )}
+                                    </div>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between border-t bg-muted/20 px-4 py-2.5 text-xs">
+                <div className="flex items-center gap-3">
+                    {simulation.conflictCount > 0 ? (
+                        <span className="inline-flex items-center gap-1.5 font-medium text-destructive">
+                            <AlertTriangle className="size-3.5" />
+                            {formatCount(simulation.conflictCount)} {simulation.conflictCount === 1 ? "conflict" : "conflicts"} detected — resolve before renaming
+                        </span>
+                    ) : simulation.changedCount > 0 ? (
+                        <span className="inline-flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-400">
+                            <CheckCircle2 className="size-3.5" />
+                            Ready to rename {formatCount(simulation.changedCount)} of {formatCount(items.length)} items: all of them, or none if one can't be
+                        </span>
+                    ) : (
+                        <span className="text-muted-foreground">Modify Find/Replace, Pattern, or Case above to preview changes</span>
+                    )}
+                </div>
+                <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={closeBatchRename} disabled={running}>
+                        Cancel
+                    </Button>
+                    <Button
+                        type="submit"
+                        size="sm"
+                        disabled={running || !!simulation.regexError || simulation.conflictCount > 0 || simulation.changedCount === 0}
+                    >
+                        {running ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                        Rename {formatCount(simulation.changedCount)} {simulation.changedCount === 1 ? "item" : "items"}
+                    </Button>
+                </div>
+            </div>
+        </Modal>
     );
 }

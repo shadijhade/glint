@@ -81,6 +81,12 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
             onSearch();
         } else if (e.key === "Escape") {
             e.currentTarget.blur();
+        } else if (e.key === "ArrowDown" && !e.shiftKey && !e.currentTarget.value.slice(e.currentTarget.selectionEnd).includes("\n")) {
+            // From the last line, on to the results, as from Files' search box. Sent from the page
+            // itself: the results' handler wants an element as the target.
+            e.preventDefault();
+            e.currentTarget.blur();
+            document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
         } else if (toggle) {
             e.preventDefault();
             setOption(toggle.key, !options[toggle.key]);

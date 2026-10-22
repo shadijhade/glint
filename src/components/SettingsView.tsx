@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -9,7 +9,7 @@ import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer }
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
-import { DEFAULT_SETTINGS, useStore } from "@/lib/store";
+import { clearWithUndo, DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
@@ -26,9 +26,25 @@ const PRESETS = [
     { label: "Lock files", icon: Lock, items: ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "Gemfile.lock", "composer.lock", "poetry.lock"] },
 ];
 
-function Section({ id, title, action, children }: { id?: string; title: string; action?: ReactNode; children: ReactNode }) {
+/** A section's id, from its title: "settings-about" for About. */
+const sectionId = (title: string) => `settings-${title.toLowerCase().replace(/[^a-z]+/g, "-").replace(/^-|-$/g, "")}`;
+
+/** The sections in order, as the column on the left lists them (title, and a shorter name). */
+const SECTIONS: [string, string][] = [
+    ["Appearance", "Appearance"],
+    ["Files", "Files"],
+    ["Instant search", "Instant search"],
+    ["Find files by name", "Find files"],
+    ["Quick search", "Quick search"],
+    ["Search text (ripgrep)", "Search text"],
+    ["Text search skips", "Text search skips"],
+    ["History", "History"],
+    ["About", "About"],
+];
+
+function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
     return (
-        <section id={id}>
+        <section id={sectionId(title)} className="scroll-mt-5">
             <div className="mb-2 flex h-7 items-center justify-between px-1">
                 <h3 className="text-sm font-semibold">{title}</h3>
                 {action}
@@ -64,7 +80,7 @@ function SwitchRow({ label, hint, checked, disabled, onChange }: { label: string
                 checked={checked}
                 disabled={disabled}
                 onChange={(e) => onChange(e.target.checked)}
-                className="relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full bg-input transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-4 before:rounded-full before:bg-white before:shadow-xs before:transition-transform checked:bg-primary checked:before:translate-x-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-default disabled:opacity-50"
+                className="relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full bg-input transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-4 before:rounded-full before:bg-white before:shadow-xs before:transition-transform checked:bg-primary checked:before:translate-x-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50"
             />
         </label>
     );
@@ -282,8 +298,17 @@ interface SettingsViewProps {
 }
 
 export function SettingsView({ onClose }: SettingsViewProps) {
-    const { settings, setSettings: set, history, clearHistory } = useStore();
+    const { settings, setSettings: set, history } = useStore();
+    const visited = useStore((s) => Object.keys(s.visits).length);
     const [version, setVersion] = useState("");
+    // The section at the top of the scroll, marked on the left.
+    const content = useRef<HTMLDivElement>(null);
+    const [current, setCurrent] = useState(SECTIONS[0][0]);
+    const onScroll = () => {
+        const top = content.current!.getBoundingClientRect().top + 40;
+        const passed = SECTIONS.filter(([title]) => (document.getElementById(sectionId(title))?.getBoundingClientRect().top ?? Infinity) <= top);
+        setCurrent((passed[passed.length - 1] ?? SECTIONS[0])[0]);
+    };
 
     useEffect(() => {
         getVersion().then(setVersion).catch(() => {});
@@ -309,7 +334,24 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 </Button>
             </div>
 
-            <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+            <div className="flex min-h-0 flex-1">
+            <nav aria-label="Settings sections" className="hidden w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-r p-2 md:flex">
+                {SECTIONS.map(([title, name]) => (
+                    <button
+                        key={title}
+                        type="button"
+                        aria-current={current === title || undefined}
+                        onClick={() => document.getElementById(sectionId(title))?.scrollIntoView({ block: "start", behavior: "smooth" })}
+                        className={cn(
+                            "rounded-md px-2.5 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                            current === title && "bg-accent font-medium text-foreground"
+                        )}
+                    >
+                        {name}
+                    </button>
+                ))}
+            </nav>
+            <div ref={content} onScroll={onScroll} className="min-w-0 flex-1 space-y-6 overflow-y-auto px-5 py-5">
                 <Section title="Appearance">
                     <Row label="Theme">
                         <Segmented value={settings.theme} onChange={(theme) => set({ theme })} options={[["light", "Light"], ["dark", "Dark"], ["system", "System"]]} />
@@ -452,11 +494,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         <Segmented value={settings.maxHistoryItems} onChange={(maxHistoryItems) => set({ maxHistoryItems })} options={[[100, "100"], [500, "500"], [1000, "1,000"], [5000, "5,000"]]} />
                     </Row>
                     <Row label={`${history.length.toLocaleString()} saved ${history.length === 1 ? "search" : "searches"}`}>
-                        <Button variant="outline" size="sm" onClick={clearHistory} disabled={!history.length}>Clear history</Button>
+                        <Button variant="outline" size="sm" onClick={() => clearWithUndo("history")} disabled={!history.length}>Clear history</Button>
+                    </Row>
+                    <Row label={`${visited.toLocaleString()} ${visited === 1 ? "folder" : "folders"} remembered`} hint="The command palette (Ctrl+K) offers the folders you use most first">
+                        <Button variant="outline" size="sm" onClick={() => clearWithUndo("visits")} disabled={!visited}>Clear folders</Button>
                     </Row>
                 </Section>
 
-                <Section id="settings-about" title="About">
+                <Section title="About">
                     <div className="flex items-center gap-3 px-4 py-4">
                         <img src={logo} alt="" className="size-11" />
                         <div className="min-w-0 flex-1">
@@ -482,6 +527,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                         </Button>
                     </Row>
                 </Section>
+            </div>
             </div>
         </div>
     );

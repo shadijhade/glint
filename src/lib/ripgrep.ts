@@ -28,6 +28,8 @@ export interface SearchOptions {
     regex?: boolean;
     exclusions?: string[];
     maxResults?: number | null;
+    /** Skipping nothing: hidden files, what .gitignore files list and the exclusions too. */
+    everything?: boolean;
 }
 
 export async function searchBatched(
@@ -54,7 +56,7 @@ export async function searchBatched(
 
     try {
         // ripgrep's arguments are built in Rust from these options. The folder comes back as searched.
-        const request = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions: options.exclusions ?? [] };
+        const request = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions: options.exclusions ?? [], everything: !!options.everything };
         const folder = await invoke<string>("run_ripgrep_batched", { request, searchId, maxResults: options.maxResults });
         return { stop: unlisten, folder };
     } catch (e) {

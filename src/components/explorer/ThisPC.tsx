@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Files, History, LayoutDashboard, Loader2, ShieldCheck, Zap } from "lucide-react";
+import { FileClock, Files, LayoutDashboard, Loader2, ShieldCheck, Zap } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { toggleUsage, useUsage } from "@/lib/diskUsage";
 import { enableIndex, middleClickOpens, navigate, useExplorer, useTab } from "@/lib/explorer";
@@ -12,7 +12,7 @@ import { CapacityBar, DRIVE_ICONS, freeOf, KNOWN_ICONS } from "./Sidebar";
 import { inspectTimeline } from "./TimelineDialog";
 
 const tile =
-    "group relative flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-all duration-150 hover:border-primary/40 hover:bg-accent/60 hover:shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50";
+    "group relative flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-all duration-150 hover:border-primary/40 hover:bg-accent/60 hover:shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Instant search, offered where first-time users see it: off, starting, reading a drive, or a drive that failed. */
 function InstantSearchCard() {
@@ -110,7 +110,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                             <b className="font-semibold text-foreground">{formatSize(totalCapacity)}</b>
                         </span>
                         <span className="text-border">·</span>
-                        <span className="font-medium text-emerald-600 dark:text-emerald-400">{formatSize(totalFree)} free</span>
+                        <span className="font-medium text-emerald-700 dark:text-emerald-400">{formatSize(totalFree)} free</span>
                         <span className="rounded bg-primary/15 px-1.5 py-0.2 font-mono text-[11px] font-semibold text-primary tabular-nums">
                             {totalPct}%
                         </span>
@@ -191,11 +191,11 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                                                 }}
                                                 className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
                                             >
-                                                <History className="size-3.5" />
+                                                <FileClock className="size-3.5" />
                                             </button>
                                             <button
                                                 type="button"
-                                                title="Find duplicates"
+                                                title="Find duplicate files"
                                                 onClick={(e) => {
                                                     e.stopPropagation();
                                                     inspectDuplicates(d.path);

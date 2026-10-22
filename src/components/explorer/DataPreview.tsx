@@ -109,7 +109,7 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                         className={cn(
                             "rounded-md px-2 py-0.5 font-medium",
                             info.journalMode === "WAL"
-                                ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                                ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
                                 : "bg-muted text-muted-foreground"
                         )}
                     >
@@ -300,7 +300,7 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
         <div className="flex h-full flex-col text-xs">
             {/* Telemetry & view mode header */}
             <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-3 py-2">
-                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-0.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-400">
                     <Table2 className="size-3" /> {table.format}
                 </span>
                 <span className="text-muted-foreground">
@@ -408,8 +408,8 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                                                 title={val}
                                                 className={cn(
                                                     "max-w-[16rem] truncate border-r px-2.5 py-1",
-                                                    col.kind === "number" && "text-right tabular-nums text-amber-600 dark:text-amber-400",
-                                                    col.kind === "boolean" && "text-emerald-600 dark:text-emerald-400"
+                                                    col.kind === "number" && "text-right tabular-nums text-amber-700 dark:text-amber-400",
+                                                    col.kind === "boolean" && "text-emerald-700 dark:text-emerald-400"
                                                 )}
                                             >
                                                 {val}
