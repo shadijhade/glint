@@ -189,6 +189,18 @@ fn decode(bytes: &[u8]) -> Result<(Tree, Meta), String> {
             return Err("snapshot link out of bounds".into());
         }
     }
+    // Each record's names are a chain of its own links in use, with an end: anything else would
+    // send the index off the end of its links, or round in circles.
+    for (n, rec) in rec_list.iter().enumerate() {
+        let (mut id, mut steps) = (rec.first_link, 0);
+        while id != NONE {
+            let link = &link_list[id as usize];
+            if link.flags & LINK_USED == 0 || link.rec as usize != n || steps == link_list.len() {
+                return Err("snapshot names are tangled".into());
+            }
+            (id, steps) = (link.next, steps + 1);
+        }
+    }
     Ok((Tree::from_parts(rec_list, link_list, arena), meta))
 }
 
@@ -233,6 +245,12 @@ mod tests {
         assert!(decode(&bytes).err().unwrap().contains("checksum"));
         assert!(decode(&bytes[..bytes.len() - 1]).is_err());
         assert!(decode(b"nothing").is_err());
+        // A snapshot whose checksum is right but whose names go round in circles is refused.
+        let mut looped = sample();
+        let first = looped.recs[21].first_link;
+        looped.links[first as usize].next = first;
+        save(&path, &looped, &meta).unwrap();
+        assert!(load(&path).err().unwrap().contains("tangled"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

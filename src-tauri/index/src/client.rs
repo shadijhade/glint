@@ -52,7 +52,11 @@ pub(crate) fn trusted(owner: &str) -> bool {
 
 /// Opens the service's pipe, refusing any server it can't trust.
 pub fn connect() -> Result<Handle, Error> {
-    connect_to(crate::PIPE_NAME, &trusted)
+    match connect_to(crate::PIPE_NAME, &trusted) {
+        // A service from before 0.6, which can then be offered its update.
+        Err(Error::NotRunning) => connect_to(crate::LEGACY_PIPE_NAME, &trusted),
+        other => other,
+    }
 }
 
 pub(crate) fn connect_to(name: &str, trust: &dyn Fn(&str) -> bool) -> Result<Handle, Error> {

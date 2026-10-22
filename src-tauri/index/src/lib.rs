@@ -49,7 +49,12 @@ pub const SERVICE_NAME: &str = "ShadUIRipgrepIndex";
 pub const SERVICE_DISPLAY_NAME: &str = "Glint instant search";
 /// The executable, bundled next to the app and copied to Program Files when installed.
 pub const SERVICE_EXE: &str = "shadui-index.exe";
-/// The pipe the service answers on. The version changes with incompatible protocol changes.
-pub const PIPE_NAME: &str = r"\\.\pipe\shadui-ripgrep-index-v1";
+/// The pipe the service answers on, under the prefix where only administrators and SYSTEM can
+/// create a pipe, so nothing can take its name first. The version changes with incompatible protocol
+/// changes.
+pub const PIPE_NAME: &str = r"\\.\pipe\ProtectedPrefix\Administrators\shadui-ripgrep-index-v1";
+/// Where services before 0.6 answer (and this one, on a Windows without the protected prefix): the
+/// app still reaches a service there, to offer its update.
+pub const LEGACY_PIPE_NAME: &str = r"\\.\pipe\shadui-ripgrep-index-v1";
 /// Reported in the status, so the app can offer to update an older service.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
