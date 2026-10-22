@@ -7,7 +7,10 @@
     <script>
       // Apply the saved theme before first paint to avoid a light flash.
       try {
-        var theme = JSON.parse(localStorage.getItem("shadui-ripgrep-storage")).state.settings.theme;
+        var saved = localStorage.getItem("shadui-ripgrep-storage");
+        // Settings from an earlier run: an update, not a fresh install (see greetUpdate).
+        if (saved) document.documentElement.dataset.returning = "";
+        var theme = JSON.parse(saved).state.settings.theme;
         if (theme !== "light" && (theme !== "system" || matchMedia("(prefers-color-scheme: dark)").matches)) document.documentElement.classList.add("dark");
       } catch (e) {
         document.documentElement.classList.add("dark");

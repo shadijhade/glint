@@ -11,13 +11,14 @@ import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
 import { archiveOf, currentPath, defaultTextSearchFolder, openRequested, refreshIndex, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
 import { replaceText, toRegExp } from "./lib/text";
-import { checkForUpdates, useUpdater } from "./lib/updater";
+import { checkForUpdates, greetUpdate, useUpdater } from "./lib/updater";
 import { quickConfigure, setStartWithWindows } from "./lib/fs";
 import { cn, firstNotice } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
 import { RipgrepCard, SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
 import { SettingsView } from "./components/SettingsView";
+import { openShortcuts, ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Home, HistoryPopover, HISTORY_POPOVER_ID } from "./components/History";
 import { WindowControls } from "./components/WindowControls";
 import { AddressBar } from "./components/explorer/AddressBar";
@@ -147,6 +148,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    void greetUpdate();
     checkForUpdates();
     const timer = setInterval(checkForUpdates, UPDATE_CHECK_MS);
     return () => {
@@ -173,6 +175,9 @@ function App() {
       // Esc in a field leaves it first; the next one stops the search.
       if (e.key === "Escape" && searching && mode === "text" && !(e.target as Element).closest("dialog, [popover], input, textarea")) {
         cancelSearch();
+      } else if (e.key === "F1" || (ctrl && e.key === "/")) {
+        e.preventDefault();
+        openShortcuts();
       } else if (ctrl && e.key === ",") {
         e.preventDefault();
         openSettings();
@@ -408,6 +413,7 @@ function App() {
       <TimelineDialog />
       <BatchRenameDialog />
       <XRayDialog />
+      <ShortcutsDialog />
       <HistoryPopover onPick={pickHistory} />
       <dialog
         ref={settingsRef}

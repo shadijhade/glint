@@ -40,6 +40,7 @@ import {
     GitCompareArrows,
     HardDrive,
     Info,
+    Keyboard,
     LayoutDashboard,
     LayoutGrid,
     List,
@@ -155,6 +156,7 @@ import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
+import { openShortcuts } from "../ShortcutsDialog";
 import { ResizeHandle } from "../ResizeHandle";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
@@ -461,6 +463,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("theme", now.theme === "light" ? "Switch to dark theme" : "Switch to light theme", now.theme === "light" ? Moon : Sun, () => setSettings({ theme: now.theme === "light" ? "dark" : "light" })),
             !!step && action("undo", `Undo the ${step.label}`, Undo2, () => undo(), "Ctrl+Z"),
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
+            action("shortcuts", "Keyboard shortcuts", Keyboard, openShortcuts, "F1"),
         ];
         return [...folders, ...actions.filter((a): a is Command => !!a)];
     };
