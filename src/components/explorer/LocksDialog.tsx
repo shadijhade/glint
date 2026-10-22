@@ -191,7 +191,7 @@ function LocksModal({ paths, onClose }: { paths: string[]; onClose: () => void }
                 {loading && !report ? (
                     <div className="flex flex-col items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
                         <Loader2 className="size-5 animate-spin text-primary" />
-                        <span>Checking Windows kernel handles…</span>
+                        <span>Looking for apps that have it open…</span>
                     </div>
                 ) : error ? (
                     <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm">

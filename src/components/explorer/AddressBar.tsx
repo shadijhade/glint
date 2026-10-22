@@ -43,7 +43,7 @@ function NavButton({ icon: Icon, label, className, ...props }: { icon: LucideIco
             title={label}
             aria-label={label}
             className={cn(
-                "grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35 [&_svg]:size-4",
+                "grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4",
                 className
             )}
             {...props}

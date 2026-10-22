@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, HardDrive, X } from "lucide-react";
+import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, useExplorer } from "@/lib/explorer";
 import { isKnownType, previewKind, typeLabel } from "@/lib/fileTypes";
@@ -322,7 +322,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                         </Button>
                     )}
                     <Button variant="ghost" size="icon" className="size-7" onClick={reveal} title={archive ? "Show the archive in File Explorer" : "Show in File Explorer"}>
-                        <FolderOpen />
+                        <FolderSearch />
                     </Button>
                     <Button variant="ghost" size="icon" className="size-7" onClick={open} title="Open (Enter)">
                         <ExternalLink />

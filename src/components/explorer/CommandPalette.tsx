@@ -2,6 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { CornerDownLeft, type LucideIcon, Search } from "lucide-react";
 import { fuzzyScore } from "@/lib/rank";
 import { cn } from "@/lib/utils";
+import { Kbd } from "../ui/kbd";
 
 export interface Command {
     id: string;
@@ -103,7 +104,7 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                         aria-activedescendant={results.length ? `palette-${active}` : undefined}
                         className="h-12 min-w-0 flex-1 bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
                     />
-                    <kbd className="rounded-sm border bg-card px-1.5 py-0.5 font-sans text-[0.6875rem] text-muted-foreground">Esc</kbd>
+                    <Kbd>Esc</Kbd>
                 </div>
                 <div ref={listRef} id="palette-results" role="listbox" aria-label="Results" className="max-h-[min(60vh,26rem)] overflow-y-auto p-1.5">
                     {results.map((c, i) => (

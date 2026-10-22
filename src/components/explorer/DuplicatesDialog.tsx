@@ -329,7 +329,7 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
                                                             )}
                                                             title={isKept ? "This copy will be kept" : "Click to keep this copy instead"}
                                                         >
-                                                            {isKept ? "Keep" : "Dup"}
+                                                            {isKept ? "Keep" : "Duplicate"}
                                                         </span>
                                                         <span className="truncate font-mono text-foreground" title={file.path}>
                                                             {inRoot(file.path)}
@@ -345,7 +345,7 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
                                                             variant="ghost"
                                                             size="icon"
                                                             className="size-6"
-                                                            title="Reveal in Glint"
+                                                            title="Open file location"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 onClose();
