@@ -11,17 +11,20 @@ import {
     archiveStage,
     archiveUnstage,
     cancelArchiveStage,
+    cancelCompare,
     cancelFind,
     cancelFolderSizes,
     clipboardClear,
     clipboardGetFiles,
     clipboardSetFiles,
+    compareFolders,
     createEntry,
     type Drive,
     driveName,
     type FileOp,
     fileOp as performFileOp,
     findFiles,
+    type FolderDiff,
     folderSizes,
     indexDisable,
     indexEnable,
@@ -938,6 +941,59 @@ export async function copyToOtherPane(move: boolean, paths = [...(tabState()?.se
     }
 }
 
+// Compare panes, deeper (the compare bar's Subfolders and Contents): the panes' folders compared
+// all the way down in Rust, for the rows' statuses and for Sync.
+
+export interface DeepCompare {
+    /** What was compared (deepKey): the result is for those folders and options only. */
+    key: string;
+    running: boolean;
+    result: FolderDiff | null;
+    error: string;
+}
+export const useDeepCompare = create<DeepCompare>(() => ({ key: "", running: false, result: null, error: "" }));
+let deepSeq = 0;
+
+/** The left and right folders with the options that change the answer. */
+export function deepKey(left: string, right: string) {
+    const { compareSubfolders, compareContents, showHidden, findExclusions } = useStore.getState().settings;
+    return JSON.stringify([left.toLowerCase(), right.toLowerCase(), compareSubfolders, compareContents, showHidden, findExclusions]);
+}
+
+/** Compares the left and right panes' folders as the compare bar says; a newer comparison stops this one. */
+export async function runDeepCompare(left: string, right: string) {
+    const { compareSubfolders, compareContents, showHidden, findExclusions } = useStore.getState().settings;
+    if (!compareSubfolders && !compareContents) return stopDeepCompare();
+    const key = deepKey(left, right);
+    const id = ++deepSeq;
+    // The last answer stays on screen while it's worked out again for the same folders.
+    useDeepCompare.setState((s) => ({ key, running: true, error: "", result: s.key === key ? s.result : null }));
+    try {
+        const result = await compareFolders(left, right, compareSubfolders, compareContents, showHidden, findExclusions);
+        if (id === deepSeq) useDeepCompare.setState({ running: false, result });
+    } catch (e) {
+        if (id === deepSeq) useDeepCompare.setState({ running: false, result: null, error: String(e) === "cancelled" ? "" : String(e) });
+    }
+}
+
+export function stopDeepCompare() {
+    deepSeq++;
+    if (useDeepCompare.getState().running) cancelCompare().catch(() => {});
+    useDeepCompare.setState({ key: "", running: false, result: null, error: "" });
+}
+
+/** Sync, deeper: each item into the folder it goes in (in subfolders too), through Windows' file engine. */
+export async function syncInto(items: { path: string; folder: string }[]) {
+    if (!items.length) return;
+    const what = plural(items.length, "item");
+    try {
+        await busy(`Copying ${what}…`, fileOp({ kind: "copyInto", items: items.map((i) => ({ ...i, name: baseName(i.path) })) }));
+    } catch (e) {
+        toast.error(`Couldn't copy ${what}`, { description: String(e) });
+    }
+    for (const id of visibleTabs()) void reload(id);
+}
+
 // Archives: what's copied out of one is extracted first, then copied by Windows' file engine.
 
 /**
@@ -1354,7 +1410,7 @@ export async function fileOp(op: FileOp): Promise<boolean> {
     if (done.length) {
         // Taking back a copy recycles it rather than deleting it for good.
         // Moves and deletions say so with Undo; a copy or a rename shows where it happened.
-        if (op.kind === "copy") rememberUndo(`copy of ${what}`, () => performFileOp({ kind: "delete", paths: done.map((i) => i.to), permanent: false, confirm: false }));
+        if (op.kind === "copy" || op.kind === "copyInto") rememberUndo(`copy of ${what}`, () => performFileOp({ kind: "delete", paths: done.map((i) => i.to), permanent: false, confirm: false }));
         else if (op.kind === "move")
             offerUndo(
                 `Moved ${what} to “${baseName(op.dest)}”`,

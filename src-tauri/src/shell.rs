@@ -18,6 +18,8 @@ pub enum FileOp {
     MoveBack { items: Vec<Back> },
     /// Undoing a delete: Recycle Bin items (as [`Done::to`] names them) back where they came from.
     Restore { items: Vec<Back> },
+    /// Sync in compare panes: each item copied into `folder` as `name`, each to a folder of its own.
+    CopyInto { items: Vec<Back> },
 }
 
 #[derive(Deserialize)]
@@ -83,7 +85,7 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
             FileOp::Copy { sources, dest } | FileOp::Move { sources, dest } => archive::is_read_only(dest) || sources.iter().any(|s| archive::is_inside(s)),
             FileOp::Delete { paths, .. } => paths.iter().any(|p| archive::is_inside(p)),
             FileOp::Rename { path, .. } => archive::is_inside(path),
-            FileOp::MoveBack { items } | FileOp::Restore { items } => items.iter().any(|b| archive::is_inside(&b.path) || archive::is_read_only(&b.folder)),
+            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items.iter().any(|b| archive::is_inside(&b.path) || archive::is_read_only(&b.folder)),
         };
         if touches_archive {
             return Err(crate::fsx::READ_ONLY.into());
@@ -374,13 +376,19 @@ mod imp {
             FileOp::Copy { sources, .. } | FileOp::Move { sources, .. } => sources.clone(),
             FileOp::Delete { paths, .. } => paths.clone(),
             FileOp::Rename { path, .. } => vec![path.clone()],
-            FileOp::MoveBack { items } | FileOp::Restore { items } => items.iter().map(|b| b.path.clone()).collect(),
+            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items.iter().map(|b| b.path.clone()).collect(),
         };
         match op {
             FileOp::MoveBack { items } | FileOp::Restore { items } => {
                 fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).map_err(message)?;
                 for back in &items {
                     fo.MoveItem(&item(&back.path)?, &item(&back.folder)?, &HSTRING::from(back.name.as_str()), sink).map_err(message)?;
+                }
+            }
+            FileOp::CopyInto { items } => {
+                fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).map_err(message)?;
+                for each in &items {
+                    fo.CopyItem(&item(&each.path)?, &item(&each.folder)?, &HSTRING::from(each.name.as_str()), sink).map_err(message)?;
                 }
             }
             FileOp::Copy { sources, dest } => {
