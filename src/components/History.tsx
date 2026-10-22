@@ -79,7 +79,7 @@ export function HistoryPopover({ onPick }: { onPick: (item: HistoryItem) => void
             </div>
             {history.length > 0 && (
                 <div className="mt-2 flex items-center justify-between border-t pt-2 text-xs text-muted-foreground">
-                    <span className="pl-1">{history.length.toLocaleString()} saved</span>
+                    <span className="pl-1">{history.length.toLocaleString()} {history.length === 1 ? "search" : "searches"}</span>
                     <Button variant="ghost" size="sm" onClick={() => clearWithUndo("history")}>Clear history</Button>
                 </div>
             )}
