@@ -81,6 +81,10 @@ export function FileGrid(props: FileGridProps) {
             <div
                 key={entry.path}
                 data-row
+                id={`${lane}-tile-${i}`}
+                role="option"
+                aria-selected={selected}
+                aria-label={entry.name}
                 data-drop={dropPath(entry)}
                 onMouseDown={(e) => props.onRowMouseDown(e, i)}
                 onDoubleClick={() => props.onOpen(entry)}
@@ -149,6 +153,11 @@ export function FileGrid(props: FileGridProps) {
             <div className="relative min-h-0 flex-1">
                 <VirtualList
                     data-file-grid
+                    role="listbox"
+                    aria-multiselectable
+                    aria-label={search ? "Search results" : "Files"}
+                    aria-activedescendant={focusIndex >= 0 ? `${lane}-tile-${focusIndex}` : undefined}
+                    tabIndex={0}
                     data-cols={cols}
                     data-row-height={tile.height}
                     count={Math.ceil(rows.length / cols)}
@@ -164,7 +173,7 @@ export function FileGrid(props: FileGridProps) {
                         lastWidth.set(pane, w);
                         setWidth(w);
                     }}
-                    className="[scrollbar-gutter:stable]"
+                    className="outline-hidden [scrollbar-gutter:stable]"
                     onMouseDown={(e) => !(e.target as Element).closest("[data-row]") && props.onBackgroundMouseDown(e)}
                     onContextMenu={(e) => !(e.target as Element).closest("[data-row]") && props.onBackgroundContextMenu(e)}
                 >

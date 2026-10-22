@@ -6,8 +6,10 @@ import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
 import { parentPath } from "@/lib/paths";
+import { type Column, useStore } from "@/lib/store";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
+import { ResizeHandle } from "../ResizeHandle";
 import { VirtualList } from "../VirtualList";
 import { Thumbnail } from "./Thumbnail";
 
@@ -101,18 +103,48 @@ export function RenameInput({ entry, onCommit, onCancel, className }: { entry: F
     );
 }
 
-export function Header({ sortKey, sort, onSort, className, children }: { sortKey: SortKey; sort: Sort; onSort: (key: SortKey) => void; className?: string; children: React.ReactNode }) {
+export function Header({ sortKey, sort, onSort, column, className, children }: { sortKey: SortKey; sort: Sort; onSort: (key: SortKey) => void; column?: Column; className?: string; children: React.ReactNode }) {
     const active = sort.key === sortKey;
     const Arrow = sort.desc ? ChevronDown : ChevronUp;
     return (
         <button
             onClick={() => onSort(sortKey)}
-            className={cn("flex h-full min-w-0 items-center gap-1 hover:text-foreground", active && "text-foreground", className)}
+            className={cn("relative flex h-full min-w-0 items-center gap-1 hover:text-foreground", active && "text-foreground", className)}
             title={`Sort by ${String(children).toLowerCase()}`}
         >
             <span className="truncate">{children}</span>
             {active && <Arrow className="size-3.5 shrink-0" />}
+            {column && <ColumnEdge column={column} name={String(children)} />}
         </button>
+    );
+}
+
+/** Between a column and the one before it: dragged left, the column widens, in every list. */
+function ColumnEdge({ column, name }: { column: Column; name: string }) {
+    const drag = useRef({ width: 0, files: null as HTMLElement | null, now: 0 });
+    return (
+        <ResizeHandle
+            label={`${name} column width`}
+            className="-left-2.5"
+            onStart={(bar) => {
+                drag.current = { width: bar.parentElement!.getBoundingClientRect().width, files: bar.closest<HTMLElement>(".files"), now: 0 };
+            }}
+            onDrag={(left) => {
+                const d = drag.current;
+                d.now = Math.round(Math.min(480, Math.max(40, d.width + left)));
+                d.files?.style.setProperty(`--col-${column}`, `${d.now}px`);
+            }}
+            onEnd={() => {
+                const { settings, setSettings } = useStore.getState();
+                if (drag.current.now) setSettings({ columns: { ...settings.columns, [column]: drag.current.now } });
+            }}
+            onReset={() => {
+                const { settings, setSettings } = useStore.getState();
+                const columns = { ...settings.columns };
+                delete columns[column];
+                setSettings({ columns });
+            }}
+        />
     );
 }
 
@@ -147,6 +179,7 @@ export const sizeOf = (entry: FileEntry, search: boolean, sizes?: SizeRun) => (e
 export function FileList(props: FileListProps) {
     const { rows, rowHeight, search, scope, sizes, diffs, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
     const focusPath = rows[focusIndex]?.path;
+    const columns = useStore((s) => s.settings.columns);
     const relative = useMemo(() => relativeTo(scope), [scope]);
     const maxSize = useMemo(() => {
         let max = 0;
@@ -175,6 +208,9 @@ export function FileList(props: FileListProps) {
         return (
             <div
                 data-row
+                id={`${lane}-row-${i}`}
+                role="option"
+                aria-selected={selected}
                 data-search={search || undefined}
                 data-drop={dropPath(entry)}
                 onMouseDown={(e) => props.onRowMouseDown(e, i)}
@@ -231,31 +267,39 @@ export function FileList(props: FileListProps) {
     };
 
     return (
-        <div className={cn("files flex h-full min-h-0 flex-col", dropTarget && dropTarget === scope && !search && "bg-primary/5 outline-2 -outline-offset-2 outline-dashed outline-primary/60")}>
+        <div
+            className={cn("files flex h-full min-h-0 flex-col", dropTarget && dropTarget === scope && !search && "bg-primary/5 outline-2 -outline-offset-2 outline-dashed outline-primary/60")}
+            style={Object.fromEntries(Object.entries(columns).map(([column, width]) => [`--col-${column}`, `${width}px`]))}
+        >
             <div data-search={search || undefined} className="file-row h-8 shrink-0 overflow-y-hidden border-b px-3 text-xs font-medium text-muted-foreground [scrollbar-gutter:stable]">
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
                 {search && <span className="truncate">Folder</span>}
-                <Header sortKey="modified" sort={sort} onSort={onSort} className={search ? "col-optional" : "col-narrow"}>
+                <Header sortKey="modified" sort={sort} onSort={onSort} column="date" className={search ? "col-optional" : "col-narrow"}>
                     Date modified
                 </Header>
                 {!search && (
-                    <Header sortKey="type" sort={sort} onSort={onSort} className="col-optional">
+                    <Header sortKey="type" sort={sort} onSort={onSort} column="type" className="col-optional">
                         Type
                     </Header>
                 )}
-                <Header sortKey="size" sort={sort} onSort={onSort} className="justify-end">
+                <Header sortKey="size" sort={sort} onSort={onSort} column="size" className="justify-end">
                     Size
                 </Header>
             </div>
             <div className="relative min-h-0 flex-1">
                 <VirtualList
                     data-file-list
+                    role="listbox"
+                    aria-multiselectable
+                    aria-label={search ? "Search results" : "Files"}
+                    aria-activedescendant={focusIndex >= 0 ? `${lane}-row-${focusIndex}` : undefined}
+                    tabIndex={0}
                     count={rows.length}
                     rowHeight={rowHeight}
                     scrollToIndex={focusIndex}
                     initialScrollTop={props.scrollTop}
                     onScrollTop={props.onScrollTop}
-                    className="[scrollbar-gutter:stable]"
+                    className="outline-hidden [scrollbar-gutter:stable]"
                     onMouseDown={(e) => !(e.target as Element).closest("[data-row]") && props.onBackgroundMouseDown(e)}
                     onContextMenu={(e) => !(e.target as Element).closest("[data-row]") && props.onBackgroundContextMenu(e)}
                 >

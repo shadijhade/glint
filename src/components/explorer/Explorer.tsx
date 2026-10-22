@@ -154,6 +154,7 @@ import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
+import { ResizeHandle } from "../ResizeHandle";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
 import { openBatchRename } from "./BatchRenameDialog";
@@ -485,11 +486,32 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
     );
 }
 
-/** The selection (or the folder) of the pane the keyboard acts on. */
+/** The selection (or the folder) of the pane the keyboard acts on. Its left edge drags its width. */
 function PreviewPane() {
     const { selected, items, folder, total } = useActiveView();
+    const width = useStore((s) => s.settings.previewWidth);
+    const drag = useRef({ from: 0, now: 0, pane: null as HTMLElement | null });
     return (
-        <aside className="flex w-[min(28%,28rem)] min-w-[16rem] shrink-0 border-l">
+        <aside className="relative flex w-[min(28%,28rem)] min-w-[16rem] max-w-[60%] shrink-0 border-l" style={width ? { width } : undefined}>
+            <ResizeHandle
+                label="Preview pane width"
+                className="-left-1"
+                onStart={(bar) => {
+                    const pane = bar.parentElement!;
+                    drag.current = { from: pane.getBoundingClientRect().width, now: 0, pane };
+                }}
+                onDrag={(left) => {
+                    const d = drag.current;
+                    d.now = Math.round(Math.max(256, d.from + left));
+                    if (d.pane) d.pane.style.width = `${d.now}px`;
+                }}
+                onEnd={() => {
+                    // What the pane came to, within its limits.
+                    const shown = drag.current.pane?.getBoundingClientRect().width;
+                    if (drag.current.now && shown) useStore.getState().setSettings({ previewWidth: Math.round(shown) });
+                }}
+                onReset={() => useStore.getState().setSettings({ previewWidth: null })}
+            />
             <FilePreview selected={selected} folder={{ path: folder, items, total }} />
         </aside>
     );
