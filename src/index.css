@@ -119,26 +119,30 @@
      Narrow lists drop the optional column. */
   .files {
     container-type: inline-size;
+    /* Dragged in the header (FileList sets them). */
+    --col-date: 9.5rem;
+    --col-type: 8rem;
+    --col-size: 5.5rem;
   }
 
   .file-row {
     display: grid;
     align-items: center;
     column-gap: 0.75rem;
-    grid-template-columns: minmax(0, 1fr) 9.5rem 8rem 5.5rem;
+    grid-template-columns: minmax(0, 1fr) var(--col-date) var(--col-type) var(--col-size);
   }
 
   .file-row[data-search] {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) 9.5rem 5.5rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) var(--col-date) var(--col-size);
   }
 
   @container (max-width: 42rem) {
     .file-row {
-      grid-template-columns: minmax(0, 1fr) 9.5rem 5.5rem;
+      grid-template-columns: minmax(0, 1fr) var(--col-date) var(--col-size);
     }
 
     .file-row[data-search] {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) 5.5rem;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) var(--col-size);
     }
 
     /* !important: header cells are flex items, and utilities outrank this layer. */
@@ -150,7 +154,7 @@
   /* A narrow pane (dual-pane view on a small window): names and sizes only. */
   @container (max-width: 26rem) {
     .file-row {
-      grid-template-columns: minmax(0, 1fr) 5.5rem;
+      grid-template-columns: minmax(0, 1fr) var(--col-size);
     }
 
     .col-narrow {

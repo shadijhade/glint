@@ -63,7 +63,13 @@ export interface Settings {
     // Compare panes: what's inside subfolders too, and files' contents
     compareSubfolders: boolean;
     compareContents: boolean;
+    // Widths dragged in the list's header and at the preview pane's edge, in pixels (unset: the defaults)
+    columns: Partial<Record<Column, number>>;
+    previewWidth: number | null;
 }
+
+/** The list's columns whose width can be dragged (the name takes what's left). */
+export type Column = 'date' | 'type' | 'size'
 
 export const DEFAULT_SETTINGS: Settings = {
     theme: 'dark',
@@ -108,6 +114,8 @@ export const DEFAULT_SETTINGS: Settings = {
     startWithWindows: false,
     compareSubfolders: false,
     compareContents: false,
+    columns: {},
+    previewWidth: null,
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */
