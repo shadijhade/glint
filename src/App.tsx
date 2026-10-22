@@ -316,7 +316,7 @@ function App() {
     try {
       const confirmed = !settings.confirmBeforeReplace || await confirm(
         `Replace every match of “${run.query}” with “${replacement}” in ${files.length} ${files.length === 1 ? "file" : "files"}?\n\nThis can't be undone.`,
-        { title: "Replace all", kind: "warning" }
+        { title: "Replace all", kind: "warning", okLabel: "Replace all", cancelLabel: "Cancel" }
       );
       if (!confirmed) return;
 

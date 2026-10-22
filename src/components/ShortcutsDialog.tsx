@@ -3,6 +3,7 @@ import { Keyboard, X } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { Modal } from "./Modal";
 import { Button } from "./ui/button";
+import { Kbd } from "./ui/kbd";
 
 const useShortcuts = create<{ open: boolean }>(() => ({ open: false }));
 
@@ -96,7 +97,7 @@ export function ShortcutsDialog() {
                             {keys.map(([key, what]) => (
                                 <div key={key} className="contents">
                                     <dt className="text-right">
-                                        <kbd className="whitespace-nowrap rounded-sm border bg-card px-1.5 py-0.5 font-sans text-xs">{key}</kbd>
+                                        <Kbd className="text-xs text-foreground">{key}</Kbd>
                                     </dt>
                                     <dd className="text-muted-foreground">{what}</dd>
                                 </div>

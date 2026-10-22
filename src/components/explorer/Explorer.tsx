@@ -762,7 +762,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         if (chosen.length === 1) return openEntry(chosen[0]);
         const files = chosen.filter((e) => !e.dir);
         if (!files.length) return chosen[0] && openEntry(chosen[0]);
-        if (files.length > 10 && !(await confirm(`Open ${files.length} files?`, { title: "Open files", kind: "warning" }))) return;
+        if (files.length > 10 && !(await confirm(`Open ${files.length} files?`, { title: "Open files", kind: "warning", okLabel: `Open ${files.length}`, cancelLabel: "Cancel" }))) return;
         files.forEach(openEntry);
     };
 
@@ -1308,8 +1308,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                             <span className="shrink-0 text-muted-foreground">· {formatCount(comparison.same)} same</span>
                             {deep.running && <Loader2 className="size-3 shrink-0 animate-spin text-primary" aria-label="Comparing deeper" />}
                             {deep.error && (
-                                <span className="shrink-0 text-destructive" title={deep.error}>
-                                    Couldn't compare deeper
+                                <span className="min-w-0 max-w-full truncate text-destructive" title={deep.error}>
+                                    Couldn't compare deeper: {deep.error}
                                 </span>
                             )}
                             <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -1334,7 +1334,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                     title="Select all items that differ in this pane"
                                     className="rounded-[4px] px-1.5 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                                 >
-                                    Select ({formatCount(comparison.diffPaths.length)})
+                                    Select differences ({formatCount(comparison.diffPaths.length)})
                                 </button>
                                 <button
                                     type="button"

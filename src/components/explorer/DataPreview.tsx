@@ -166,7 +166,7 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="Filter schema…"
-                        className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[0.6875rem] outline-none focus:border-primary"
+                        className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[0.6875rem] outline-hidden focus:border-primary"
                     />
                 </div>
             </div>
@@ -295,7 +295,7 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
                                 placeholder="Filter rows…"
-                                className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[0.6875rem] outline-none focus:border-primary"
+                                className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[0.6875rem] outline-hidden focus:border-primary"
                             />
                         </div>
                     )}

@@ -241,7 +241,7 @@ export function XRayDialog() {
                                         value={expectedHash}
                                         onChange={(e) => setExpectedHash(e.target.value)}
                                         placeholder="Paste a SHA-256 or CRC32 to compare"
-                                        className="h-6 w-64 rounded border bg-background px-2 font-mono text-[0.6875rem] outline-none focus:border-primary"
+                                        className="h-6 w-64 rounded border bg-background px-2 font-mono text-[0.6875rem] outline-hidden focus:border-primary"
                                     />
                                     {cleanExpected &&
                                         (matchedAlgo ? (

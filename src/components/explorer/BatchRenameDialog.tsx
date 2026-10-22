@@ -309,14 +309,14 @@ export function BatchRenameDialog() {
                             onChange={(e) => setFindText(e.target.value)}
                             autoFocus
                             placeholder={useRegex ? "Regex (e.g. ^IMG_(\\d+))" : "Find text…"}
-                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-hidden focus:border-primary"
                         />
                         <input
                             type="text"
                             value={replaceText}
                             onChange={(e) => setReplaceText(e.target.value)}
                             placeholder={useRegex ? "Replace (e.g. Photo_$1)" : "Replace with…"}
-                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-hidden focus:border-primary"
                         />
                     </div>
                     {simulation.regexError && (
@@ -334,14 +334,14 @@ export function BatchRenameDialog() {
                                 type="number"
                                 value={startNum}
                                 onChange={(e) => setStartNum(Number(e.target.value) || 0)}
-                                className="h-6 w-12 rounded border bg-background px-1.5 text-center font-mono outline-none focus:border-primary"
+                                className="h-6 w-12 rounded border bg-background px-1.5 text-center font-mono outline-hidden focus:border-primary"
                             />
                             <span className="text-muted-foreground">Step</span>
                             <input
                                 type="number"
                                 value={stepNum}
                                 onChange={(e) => setStepNum(Number(e.target.value) || 1)}
-                                className="h-6 w-12 rounded border bg-background px-1.5 text-center font-mono outline-none focus:border-primary"
+                                className="h-6 w-12 rounded border bg-background px-1.5 text-center font-mono outline-hidden focus:border-primary"
                             />
                         </div>
                     </div>
@@ -351,12 +351,12 @@ export function BatchRenameDialog() {
                             value={pattern}
                             onChange={(e) => setPattern(e.target.value)}
                             placeholder="{name}_{nn}"
-                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                            className="h-7 rounded border bg-background px-2 font-mono text-xs outline-hidden focus:border-primary"
                         />
                         <select
                             value={caseMode}
                             onChange={(e) => setCaseMode(e.target.value as CaseMode)}
-                            className="h-7 rounded border bg-background px-2 text-xs outline-none focus:border-primary"
+                            className="h-7 rounded border bg-background px-2 text-xs outline-hidden focus:border-primary"
                         >
                             <option value="none">Same case</option>
                             <option value="lower">lowercase</option>
