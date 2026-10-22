@@ -140,6 +140,12 @@ function App() {
     setStartWithWindows(startWithWindows && keepInTray).catch(() => {});
   }, [startWithWindows, keepInTray]);
 
+  // Painted: the window can show (it's made hidden, so it never flashes white first).
+  useEffect(() => {
+    let frame = requestAnimationFrame(() => (frame = requestAnimationFrame(() => void invoke("app_ready"))));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
   useEffect(() => {
     checkForUpdates();
     const timer = setInterval(checkForUpdates, UPDATE_CHECK_MS);
