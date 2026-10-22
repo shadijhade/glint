@@ -41,7 +41,7 @@ import {
 } from "./fs";
 import { zoomTiles } from "./grid";
 import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
-import { DEFAULT_SETTINGS, type Session, useStore, type ViewMode } from "./store";
+import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
 import { dropThumbnails } from "./thumbs";
 import { firstNotice } from "./utils";
 
@@ -1071,6 +1071,14 @@ export function openArchivedWith(entry: FileEntry, open: (path: string) => Promi
 let findSeq = 0;
 
 /** Searches the open folder and its subfolders (or every drive from This PC) by name: index, else fd. */
+/** A search kept in the sidebar: its folder in this tab, searched for its query (shown in the box to change). */
+export async function runSavedSearch({ query, folder }: SavedSearch) {
+    const tab = activeTabId();
+    if ((await navigate(folder, { tab })) === false) return;
+    updateTab({ filter: query }, tab);
+    return runFind(query);
+}
+
 export async function runFind(query: string) {
     if (!query.trim()) return clearFind();
     const tab = activeTabId();
