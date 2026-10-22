@@ -33,7 +33,12 @@ pub struct BatchRenameResult {
 
 #[tauri::command]
 pub async fn batch_rename(ops: Vec<RenamePair>) -> Result<BatchRenameResult, String> {
-    blocking(move || execute_batch_rename(ops)).await
+    blocking(move || {
+        // A preview handler may hold one of them open.
+        crate::native_preview::release(&ops.iter().map(|op| op.from.clone()).collect::<Vec<_>>());
+        execute_batch_rename(ops)
+    })
+    .await
 }
 
 /// Renames without replacing anything at `to` (std's rename would): if something appeared there after
