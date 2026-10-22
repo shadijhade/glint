@@ -369,6 +369,29 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     </div>
                 </Section>
 
+                <Section title="Quick search">
+                    <Row label="Shortcut" hint="From anywhere: a search box over every drive. Enter opens, Alt+Enter shows it in Glint">
+                        <Segmented
+                            value={settings.quickShortcut}
+                            onChange={(quickShortcut) => set({ quickShortcut })}
+                            options={[[null, "Off"], ["Ctrl+Alt+F", "Ctrl+Alt+F"], ["Ctrl+Alt+Space", "Ctrl+Alt+Space"], ["Ctrl+Shift+Space", "Ctrl+Shift+Space"]]}
+                        />
+                    </Row>
+                    <SwitchRow
+                        label="Keep running in the tray"
+                        hint="Closing the window leaves Glint in the notification area, so the shortcut works anytime"
+                        checked={settings.keepInTray}
+                        onChange={(keepInTray) => set({ keepInTray })}
+                    />
+                    <SwitchRow
+                        label="Start with Windows"
+                        hint="In the tray, when you sign in"
+                        checked={settings.startWithWindows && settings.keepInTray}
+                        disabled={!settings.keepInTray}
+                        onChange={(startWithWindows) => set({ startWithWindows })}
+                    />
+                </Section>
+
                 <Section title="Search text (ripgrep)">
                     <Row label="Default folder" hint="Used when no folder is filled in">
                         <Input className="w-52" value={settings.defaultSearchPath} onChange={(e) => set({ defaultSearchPath: e.target.value })} placeholder="None" />

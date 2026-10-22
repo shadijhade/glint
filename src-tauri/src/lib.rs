@@ -9,6 +9,7 @@ mod launch;
 mod locks;
 mod pe;
 mod proc;
+mod quick;
 mod shell;
 mod sizes;
 mod thumbs;
@@ -382,6 +383,8 @@ pub fn run() {
         }
     }
 
+    // Started with Windows (Settings → Quick search): in the tray, without showing the window.
+    let in_tray = std::env::args().any(|arg| arg == "--tray");
     let builder = tauri::Builder::default();
     // One copy runs at a time: a later launch hands its folders to it and quits. Not in debug builds,
     // which would hand theirs to an installed Glint (they share its identifier).
@@ -392,6 +395,12 @@ pub fn run() {
         .manage(AppState::default())
         .manage(watch::FolderWatcher::default())
         .manage(thumbs::Thumbs::default())
+        .manage(quick::Quick::default())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                quick::on_close(window, api);
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -401,6 +410,10 @@ pub fn run() {
             run_ripgrep_batched,
             proc::ripgrep_status,
             proc::install_ripgrep,
+            quick::quick_configure,
+            quick::quick_reveal,
+            quick::quick_hide,
+            quick::set_start_with_windows,
             diagnostics,
             cancel_search,
             stop_tools,
@@ -451,9 +464,16 @@ pub fn run() {
             verbs::explorer_integration,
             verbs::set_explorer_integration,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(all(windows, not(debug_assertions)))]
             disable_browser_keys(app);
+            // Made hidden, so starting in the tray doesn't flash it.
+            if !in_tray {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                }
+            }
             {
                 use tauri::Manager;
                 app.state::<thumbs::Thumbs>().warm_up();
