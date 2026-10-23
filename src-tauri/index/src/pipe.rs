@@ -215,6 +215,7 @@ fn answer(pipe: Handle, engine: &Engine) {
         }
         Request::Usage(request) => engine.usage(&request, &mut io),
         Request::List { path } => engine.list(&path, &mut io),
+        Request::History(request) => proto::write_message(&mut io, &Message::History(engine.history(&request))),
     };
     match result {
         // Let the client read everything before the pipe goes away.
@@ -233,8 +234,9 @@ fn answer(pipe: Handle, engine: &Engine) {
 mod tests {
     use super::*;
     use crate::client::{self, Error, Event};
-    use crate::proto::{SearchRequest, UsageRequest, NO_PARENT};
+    use crate::proto::{HistoryRequest, Kind, SearchRequest, UsageRequest, NO_PARENT};
     use crate::tree::{make_ref, RecordState, Tree, ROOT};
+    use crate::usn::{UsnRecord, REASON_CLOSE, REASON_FILE_DELETE, REASON_RENAME_NEW_NAME, REASON_RENAME_OLD_NAME};
 
     /// T:\Users\me\{report.pdf 1000 B, notes.txt 24 B}
     fn sample() -> Tree {
@@ -259,7 +261,23 @@ mod tests {
         let me = win::current_user_sid().unwrap();
         // This test serves the pipe as itself, so it needs the instance-creating right the service has.
         let dacl = format!("{}(A;;GA;;;{me})", sddl(&[]));
-        let server = serve_on(&name, Engine::with_tree('T', sample()), &dacl).unwrap();
+        let engine = Engine::with_tree('T', sample());
+        // From the journal: report.pdf was draft.pdf a moment ago, and old.txt was deleted.
+        let record = |ms: i64, file: u32, reason: u32, attrs: u32, name: &str| UsnRecord {
+            usn: ms,
+            file: make_ref(file, 1),
+            parent: make_ref(21, 1),
+            time: ms * 10_000 + 116_444_736_000_000_000,
+            reason,
+            attrs,
+            name: name.into(),
+        };
+        engine.feed_history(&[
+            record(1_000, 22, REASON_RENAME_OLD_NAME, 0x20, "draft.pdf"),
+            record(1_001, 22, REASON_RENAME_NEW_NAME | REASON_CLOSE, 0x20, "report.pdf"),
+            record(2_000, 30, REASON_FILE_DELETE | REASON_CLOSE, 0x20, "old.txt"),
+        ]);
+        let server = serve_on(&name, engine, &dacl).unwrap();
         // The app refuses a server that isn't SYSTEM or administrators: a test run isn't.
         if !win::is_elevated() {
             assert!(matches!(client::connect_to(&name, &client::trusted), Err(Error::Untrusted(_))));
@@ -319,6 +337,21 @@ mod tests {
         );
         assert_eq!(list(r"T:\").unwrap(), [(r"T:\Users".to_string(), true, 1024, 0)]);
         assert!(matches!(list(r"T:\Nowhere"), Err(Error::Service(_))));
+
+        // What was renamed, moved and deleted: newest first, with where it is now.
+        let history = |query: &str, since| client::history_on(client::connect_to(&name, &trust).unwrap(), &HistoryRequest { query: query.into(), since, max: 10 }).unwrap();
+        let found = history("", 0);
+        let told: Vec<_> = found.events.iter().map(|e| (e.kind, e.path.as_str(), e.to.as_deref(), e.now.as_deref())).collect();
+        assert_eq!(
+            told,
+            [
+                (Kind::Deleted, r"T:\Users\me\old.txt", None, None),
+                (Kind::Renamed, r"T:\Users\me\draft.pdf", Some(r"T:\Users\me\report.pdf"), Some(r"T:\Users\me\report.pdf")),
+            ]
+        );
+        assert_eq!((found.limited, found.oldest), (false, 1_001));
+        assert_eq!(history("DRAFT", 0).events.len(), 1);
+        assert_eq!(history("", 1_500).events.len(), 1);
         // A request the service doesn't know (as List is to one from before it) gets the pipe closed,
         // with no answer: the app takes that as an error, and does without.
         let pipe = client::connect_to(&name, &trust).unwrap();

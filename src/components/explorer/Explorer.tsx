@@ -42,6 +42,7 @@ import {
     FolderSearch,
     GitCompareArrows,
     HardDrive,
+    History,
     Info,
     Keyboard,
     LayoutDashboard,
@@ -182,6 +183,7 @@ import { inspectDuplicates } from "./DuplicatesDialog";
 import { FileGrid } from "./FileGrid";
 import { FileList } from "./FileList";
 import { FilePreview } from "./FilePreview";
+import { openHistory } from "./HistoryDialog";
 import { inspectLocks } from "./LocksDialog";
 import { QuickLook } from "./QuickLook";
 import { DRIVE_ICONS, KNOWN_ICONS, Sidebar } from "./Sidebar";
@@ -383,6 +385,7 @@ function folderMenu(
         current && { label: "Folder sizes", icon: HardDrive, disabled: find || unlisted, onSelect: calcSizes },
         !inArchive && !shut && { label: "Search text", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
         !inArchive && !shut && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
+        !inArchive && !shut && { label: "Moved and deleted here", icon: History, onSelect: () => openHistory(folder) },
         !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
         !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
         !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
@@ -616,6 +619,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 chosenEntries.every((e) => !e.dir) &&
                 action("compare-files", "Compare the two selected files", GitCompareArrows, () => compareFiles(chosenEntries[0].path, chosenEntries[1].path)),
             writable && !shut && action("timeline", "Recent changes in this folder", FileClock, () => inspectTimeline(t.path)),
+            action("history", "Moved and deleted: where did a file go?", History, () => openHistory()),
             writable && !shut && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
             writable && !shut && action("cleanup", "Clean up this folder: build output and package caches", BrushCleaning, () => openCleanup(t.path)),
             writable && !shut && action("export-ncdu", "Export this folder as ncdu JSON…", FileJson, () => void exportAsNcdu(t.path)),
