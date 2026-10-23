@@ -15,6 +15,8 @@ export const ATTR = {
     unreadable: 0x10000000,
     /** In a zip or 7z archive: read-only, and extracted to be opened (see archive/tree.rs). */
     inArchive: 0x40000000,
+    /** Listed from instant search's index, in a folder Windows keeps closed to this account: read-only, and it can't be opened (see index.rs). */
+    closed: 0x80000000,
 };
 
 export interface FileEntry {
@@ -65,6 +67,8 @@ export interface Listing {
     elapsed: number;
     /** Set for a folder in a zip or 7z archive (read-only). */
     archive?: InArchive;
+    /** Listed from instant search's index: Windows keeps the folder closed to this account, so it's read-only and nothing in it opens. */
+    fromIndex?: boolean;
 }
 
 const utf8 = new TextDecoder();
@@ -94,6 +98,7 @@ export function decodeListing(buffer: ArrayBuffer): Listing {
         entries[i] = withDetails({ name, dir: (attrs[i] & 0x10) !== 0, size: sizes[i], modified: modified[i], attrs: attrs[i] }, path);
     }
     const listing: Listing = { path, entries, elapsed };
+    if (view.getUint32(28, true) & 2) listing.fromIndex = true;
     const archiveUnits = view.getUint32(16, true);
     if (archiveUnits) {
         const archive = path.slice(0, archiveUnits);
@@ -120,6 +125,9 @@ export const isArchiveFile = (e: FileEntry) => !e.dir && (e.ext === "zip" || e.e
 
 /** Something inside an archive: read-only, and extracted to be opened or copied. */
 export const isArchived = (e: FileEntry) => (e.attrs & ATTR.inArchive) !== 0;
+
+/** Listed from the index, in a folder Windows keeps closed to this account: read-only, and it can't be opened. */
+export const isClosed = (e: FileEntry) => (e.attrs & ATTR.closed) !== 0;
 
 /** In an archive, but can't be extracted: password-protected, or compressed in a way Glint can't read. */
 export const isLocked = (e: FileEntry) => (e.attrs & (ATTR.encrypted | ATTR.unreadable)) !== 0;

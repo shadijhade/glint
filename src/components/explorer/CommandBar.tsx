@@ -14,6 +14,7 @@ import {
     Files,
     Fingerprint,
     FolderOutput,
+    FolderLock,
     FolderPlus,
     GitCompareArrows,
     HardDrive,
@@ -171,7 +172,7 @@ interface CommandBarProps {
 
 /** Acts on the active pane (its tab and selection). */
 export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
-    const { path, find, tab, view, readOnly, wholeArchive } = useTab(
+    const { path, find, tab, view, readOnly, closed, wholeArchive } = useTab(
         useShallow((t) => {
             const archive = t.listing?.archive;
             return {
@@ -179,7 +180,9 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 find: !!t.find,
                 tab: t.id,
                 view: t.view,
-                readOnly: !!archive,
+                readOnly: !!archive || !!t.noAccess,
+                // Windows keeps the folder closed to this account: nothing in it opens or changes.
+                closed: !!t.noAccess,
                 // At the top of an archive on disk (not one inside another): it can be extracted whole.
                 wholeArchive: archive && samePath(t.path, archive.path) && samePath(archive.path, archive.outer) ? archive.outer : undefined,
             };
@@ -190,12 +193,12 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
         useShallow((s) => {
             const pane = s.dual ? s.panes[1 - s.activePane] : undefined;
             const t = pane && s.tabs[pane.active];
-            // An archive in the other pane is read-only: nothing goes into it.
+            // An archive in the other pane is read-only, and Windows may keep its folder closed: nothing goes into either.
             return {
                 sizing: !!s.sizes[path]?.running,
                 dual: s.dual,
                 comparePanes: s.comparePanes,
-                other: !!t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive,
+                other: !!t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive && !t.noAccess,
             };
         })
     );
@@ -293,7 +296,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 <>
                     <Divider />
                     <Tool icon={Scissors} label="Cut (Ctrl+X)" disabled={!paths.length || readOnly} onClick={() => copyToClipboard(paths, true)} />
-                    <Tool icon={Copy} label={readOnly ? "Copy (Ctrl+C): extracted, to paste anywhere" : "Copy (Ctrl+C)"} disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
+                    <Tool icon={Copy} label={readOnly && !closed ? "Copy (Ctrl+C): extracted, to paste anywhere" : "Copy (Ctrl+C)"} disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
                     <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || find || readOnly} onClick={() => paste()} />
                     {dual && (
                         <>
@@ -313,16 +316,20 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 <Tool icon={Ellipsis} label="Cut, copy, paste, rename, delete" aria-haspopup="menu" onClick={showEdits} />
             )}
             <Divider />
-            {/* In an archive, where the tools would be (they're for folders on disk): why the rest is greyed out. */}
+            {/* In an archive, or a folder Windows keeps closed, where the tools would be (they're for folders on disk you may read): why the rest is greyed out. */}
             {readOnly ? (
                 <>
                     <span
-                        title="Glint opens zip and 7z archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
+                        title={
+                            closed
+                                ? "Windows keeps this folder closed to your account: nothing in it can be opened or changed here. Get access from the folder itself, or its right-click menu."
+                                : "Glint opens zip and 7z archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
+                        }
                         className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber-500/10 px-2 text-xs font-medium text-amber-800 dark:text-amber-400"
                     >
-                        <PencilOff className="size-3.5" />
+                        {closed ? <FolderLock className="size-3.5" /> : <PencilOff className="size-3.5" />}
                         <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>
-                            Read-only archive
+                            {closed ? "No access" : "Read-only archive"}
                         </span>
                     </span>
                     {wholeArchive && (

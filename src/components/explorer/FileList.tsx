@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Cloud, FileX, KeyRound } from "lucide-react";
-import { ATTR, type DiffStatus, type FileEntry, isArchived, isHidden, isLocked, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
+import { ATTR, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, isLocked, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
 import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
@@ -158,8 +158,8 @@ export function LockMark({ entry, className }: { entry: FileEntry; className: st
     return <Icon className={className} aria-label={lockReason(entry)} />;
 }
 
-/** A folder that files dragged in can be dropped on: not one in an archive, which is read-only. */
-export const dropPath = (entry: FileEntry) => (entry.dir && !isArchived(entry) ? entry.path : undefined);
+/** A folder that files dragged in can be dropped on: not one in an archive, which is read-only, nor one Windows keeps closed. */
+export const dropPath = (entry: FileEntry) => (entry.dir && !isArchived(entry) && !isClosed(entry) ? entry.path : undefined);
 
 /** Where a search result is, below the folder that was searched ("" when right in it). */
 export function relativeTo(scope: string) {

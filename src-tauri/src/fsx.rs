@@ -56,7 +56,8 @@ impl ListError {
 
 /// Lists a folder for the UI, sorted, as one binary buffer (see `encode_listing`). A path that goes
 /// into a zip or 7z archive lists the folder in the archive. A link Windows won't list, such as
-/// "Documents and Settings" (kept for old apps, it lets no one look inside), lists where it points.
+/// "Documents and Settings" (kept for old apps, it lets no one look inside), lists where it points;
+/// a folder Windows keeps this user out of lists what instant search's index has in it, if it can.
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
     let asked = path.clone();
@@ -66,16 +67,24 @@ pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
         if let Some(listing) = crate::archive::list(&path, started) {
             return listing.map(tauri::ipc::Response::new).map_err(|e| ListError::other(&path, e));
         }
+        let mut from_index = false;
         let (path, mut entries) = match read_dir(&path) {
             Ok(entries) => (path, entries),
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => match link_target(&path).and_then(|target| Some((read_dir(&target).ok()?, target))) {
-                Some((entries, target)) => (target, entries),
-                None => return Err(ListError { kind: "denied", message: describe(&e), remote: on_other_computer(&path), path }),
-            },
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                let remote = on_other_computer(&path);
+                if let Some((entries, target)) = link_target(&path).and_then(|target| Some((read_dir(&target).ok()?, target))) {
+                    (target, entries)
+                } else if let Some(entries) = (!remote).then(|| crate::index::listing(&path)).flatten() {
+                    from_index = true;
+                    (path, entries)
+                } else {
+                    return Err(ListError { kind: "denied", message: describe(&e), remote, path });
+                }
+            }
             Err(e) => return Err(ListError::other(&path, describe(&e))),
         };
         sort_entries(&mut entries);
-        Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started), None)))
+        Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started), None, from_index)))
     })
     .await
     .map_err(|e| ListError::other(&asked, e.to_string()))?
@@ -159,17 +168,19 @@ pub struct InArchive {
 ///   0: u32 count · 4: u32 path length (UTF-8 bytes) · 8: f64 milliseconds spent
 ///   16: u32 archive (UTF-16 units of the path that are the archive the folder is in; 0 for a
 ///   folder on disk) · 20: u32 outer (those that are the archive file on disk, when archives nest)
-///   24: u32 entries in the archive · 28: u32 flags (1: its list of entries was in memory)
+///   24: u32 entries in the archive · 28: u32 flags (1: the archive's list of entries was in memory;
+///   2: listed from instant search's index, as Windows keeps the folder closed to this user)
 ///   32: f64 milliseconds reading the archive's list of entries
 ///   40: f64 size[count] · then f64 modified[count] · u32 attrs[count] · u32 name length[count]
 ///   (UTF-16 units, how JavaScript counts) · the path (UTF-8) · every name back to back (UTF-8).
-pub fn encode_listing<T: Listed>(path: &str, entries: &[T], elapsed: f64, archive: Option<&InArchive>) -> Vec<u8> {
+pub fn encode_listing<T: Listed>(path: &str, entries: &[T], elapsed: f64, archive: Option<&InArchive>, from_index: bool) -> Vec<u8> {
     let names: usize = entries.iter().map(|e| e.name().len()).sum();
     let mut out = Vec::with_capacity(40 + 24 * entries.len() + path.len() + names);
     out.extend((entries.len() as u32).to_le_bytes());
     out.extend((path.len() as u32).to_le_bytes());
     out.extend(elapsed.to_le_bytes());
     let (inside, outer, count, flags, read_ms) = archive.map_or((0, 0, 0, 0, 0.0), |a| (a.archive, a.outer, a.entries, a.cached as u32, a.read_ms));
+    let flags = flags | if from_index { 2 } else { 0 };
     out.extend(inside.to_le_bytes());
     out.extend(outer.to_le_bytes());
     out.extend(count.to_le_bytes());
@@ -779,7 +790,7 @@ mod tests {
             Entry { name: "é😀.txt".into(), path: None, dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x2 },
         ];
         let archive = InArchive { archive: 3, outer: 2, entries: 50_000, cached: true, read_ms: 12.5 };
-        let bytes = encode_listing("C:\\x", &entries, 1.5, Some(&archive));
+        let bytes = encode_listing("C:\\x", &entries, 1.5, Some(&archive), false);
         let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
         assert_eq!((u32_at(0), u32_at(4), f64_at(8)), (2, 4, 1.5));
@@ -791,9 +802,12 @@ mod tests {
         assert_eq!((u32_at(80), u32_at(84)), (3, 7));
         assert_eq!(std::str::from_utf8(&bytes[88..]).unwrap(), "C:\\xsubé😀.txt");
         // A folder on disk has zeros where the archive's details go.
-        let plain = encode_listing("D:\\", &entries[..0], 0.5, None);
+        let plain = encode_listing("D:\\", &entries[..0], 0.5, None, false);
         assert_eq!(plain.len(), 40 + 3);
         assert!(plain[16..40].iter().all(|&b| b == 0));
+        // One listed from the index says so in its flags.
+        let closed = encode_listing("C:\\PerfLogs", &entries, 0.5, None, true);
+        assert_eq!(u32::from_le_bytes(closed[28..32].try_into().unwrap()), 2);
     }
 
     #[test]

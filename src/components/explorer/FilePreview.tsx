@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
-import { ATTR, type FileEntry, isArchived, isArchiveFile, isLocked, isOnlineOnly } from "@/lib/entries";
+import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
 import { isKnownType, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
@@ -276,6 +276,13 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                 <p>This file is online-only. Opening it downloads it.</p>
             </Centered>
         );
+    else if (isClosed(entry))
+        body = (
+            <Centered>
+                <FolderLock className="size-14 stroke-[1.25] text-amber-600 dark:text-amber-500" />
+                <p className="max-w-sm">Windows keeps the folder this file is in closed to your account, so it can't be previewed or opened. Get access to the folder first.</p>
+            </Centered>
+        );
     else if (isLocked(entry))
         body = (
             <Centered>
@@ -304,7 +311,8 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
         );
     else body = <BigIcon entry={entry} />;
 
-    const open = () => (archived || entry.dir ? openEntry(entry) : openFile(entry.path));
+    const closed = isClosed(entry);
+    const open = () => (archived || entry.dir || closed ? openEntry(entry) : openFile(entry.path));
     // What's in an archive isn't a place File Explorer shows here: it shows the archive.
     const reveal = () => (archive ? revealItemInDir(archive.outer) : revealItemInDir(entry.path));
 
@@ -315,7 +323,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                     {entry.name}
                 </span>
                 <div className="ml-auto flex shrink-0">
-                    {!entry.dir && !archived && (
+                    {!entry.dir && !archived && !closed && (
                         <Button variant="ghost" size="icon" className="size-7" onClick={() => inspectXRay(entry.path)} title="File X-Ray: hashes and hidden streams">
                             <Fingerprint />
                         </Button>
@@ -378,7 +386,9 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
             <Centered>
                 <FolderLock className="size-14 stroke-[1.25] text-muted-foreground/60" />
                 <p className="font-medium text-foreground">{baseName(folder.path) || folder.path}</p>
-                <p>No access</p>
+                <p>
+                    {folder.items > 0 && `${formatCount(folder.items)} ${folder.items === 1 ? "item" : "items"} · `}No access
+                </p>
             </Centered>
         );
     }
