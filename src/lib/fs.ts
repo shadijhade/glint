@@ -361,6 +361,37 @@ export const cancelGit = (lane: string) => invoke("cancel_git", { lane });
 /** Watches exactly the repositories at `roots` (each emits "git-changed" with its root). */
 export const gitWatch = (roots: string[]) => invoke("git_watch", { roots });
 
+/** A line of a diff: its number before and after (0 on the side it isn't on). */
+export interface DiffLine {
+    kind: "same" | "removed" | "added";
+    old: number;
+    new: number;
+    text: string;
+}
+
+/** What changed in a file since the last commit: its version in HEAD against the one on disk. */
+export interface FileDiff {
+    /** Where it is in its repository ("src/lib/fs.ts"). */
+    path: string;
+    /** Not in the last commit: all of it is new. */
+    newFile: boolean;
+    binary: boolean;
+    /** Over 1 MB on either side: sizes only. */
+    tooBig: boolean;
+    oldSize: number;
+    newSize: number;
+    added: number;
+    removed: number;
+    /** Changes with up to 3 lines around them; a jump in line numbers is a gap. */
+    lines: DiffLine[];
+    /** More changed than the 5,000 lines sent. */
+    cut: boolean;
+    elapsed: number;
+}
+
+/** What changed in the file at `path` since the last commit; null outside a repository. */
+export const gitDiff = (path: string) => invoke<FileDiff | null>("git_diff", { path });
+
 /** Export as ncdu JSON: the folder `path` walked into `dest` (written as `dest.part` until done); progress counts entries, with no total. */
 export const exportNcdu = (path: string, dest: string, lane: string, onProgress: Progress) =>
     invoke<Staged>("export_ncdu", { path, dest, lane, onProgress: progressChannel(onProgress) });

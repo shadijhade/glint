@@ -47,6 +47,18 @@ function forget(tab: string) {
     save(tab, null);
 }
 
+/** What Git says of the item at `path`, from its folder's view in any tab (undefined: nothing, or not known). */
+export function useGitMark(path: string) {
+    return useGit((s) => {
+        const folder = path.replace(/[\\/][^\\/]*$/, "");
+        const run = Object.values(s).find((r) => r.view && samePath(r.folder, folder));
+        return run?.view?.marks[path.slice(folder.length + 1).toLowerCase()];
+    });
+}
+
+/** Whether the preview shows a changed file's changes rather than the file: kept as one moves through them. */
+export const useChangesView = create<{ on: boolean }>(() => ({ on: false }));
+
 /** Trusts a repository whose own settings name programs for status to run, and shows its status. */
 export function trustRepository(root: string) {
     const { settings, setSettings } = useStore.getState();

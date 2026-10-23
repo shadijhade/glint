@@ -346,6 +346,143 @@ pub fn cancel_git(lane: String) {
     }
 }
 
+/// The most of a file (either side) a diff reads.
+const DIFF_BYTES: usize = 1 << 20;
+/// The most lines a diff sends: a whole file rewritten is shown up to here.
+const DIFF_LINES: usize = 5_000;
+/// Lines kept around each change.
+const CONTEXT: u32 = 3;
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LineKind {
+    Same,
+    Removed,
+    Added,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLine {
+    pub kind: LineKind,
+    /// Its line number before and after, from 1; 0 on the side it isn't on.
+    pub old: u32,
+    pub new: u32,
+    pub text: String,
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    /// Where it is in its repository ("src/lib/fs.ts").
+    pub path: String,
+    /// Not in the last commit: all of it is new.
+    pub new_file: bool,
+    /// Either side has a NUL byte in its first 8 KB, as Git tells binary files.
+    pub binary: bool,
+    /// Either side is over [`DIFF_BYTES`]: sizes only.
+    pub too_big: bool,
+    pub old_size: u64,
+    pub new_size: u64,
+    pub added: u32,
+    pub removed: u32,
+    /// Changes with up to [`CONTEXT`] lines around them; a gap between two is a hunk's end.
+    pub lines: Vec<DiffLine>,
+    /// More lines changed than [`DIFF_LINES`]: the first are shown.
+    pub cut: bool,
+    pub elapsed: f64,
+}
+
+/// What `old` and `new` differ in, line by line, with Windows line endings evened out (so a file
+/// Git stores with LF and checks out with CRLF doesn't differ on every line).
+fn line_diff(old: &str, new: &str, diff: &mut FileDiff) {
+    use gix::diff::blob::{Algorithm, Diff, InternedInput};
+    let (old, new) = (old.replace("\r\n", "\n"), new.replace("\r\n", "\n"));
+    let input = InternedInput::new(old.as_str(), new.as_str());
+    let mut found = Diff::compute(Algorithm::Histogram, &input);
+    found.postprocess_lines(&input);
+    diff.added = found.count_additions();
+    diff.removed = found.count_removals();
+    let text = |token: gix::diff::blob::Token| input.interner[token].trim_end_matches('\n').to_string();
+    let (before, after) = (input.before.len() as u32, input.after.len() as u32);
+    let mut shown_to = 0u32; // lines of `old` already sent
+    let push = |diff: &mut FileDiff, line: DiffLine| {
+        if diff.lines.len() >= DIFF_LINES {
+            diff.cut = true;
+        } else {
+            diff.lines.push(line);
+        }
+    };
+    let hunks: Vec<_> = found.hunks().collect();
+    for (n, hunk) in hunks.iter().enumerate() {
+        // Context before: back from the change, not before what's shown already.
+        let from = hunk.before.start.saturating_sub(CONTEXT).max(shown_to);
+        let offset = hunk.after.start as i64 - hunk.before.start as i64;
+        for at in from..hunk.before.start {
+            push(diff, DiffLine { kind: LineKind::Same, old: at + 1, new: (at as i64 + offset) as u32 + 1, text: text(input.before[at as usize]) });
+        }
+        for at in hunk.before.clone() {
+            push(diff, DiffLine { kind: LineKind::Removed, old: at + 1, new: 0, text: text(input.before[at as usize]) });
+        }
+        for at in hunk.after.clone() {
+            push(diff, DiffLine { kind: LineKind::Added, old: 0, new: at + 1, text: text(input.after[at as usize]) });
+        }
+        // Context after: up to the next change, which brings its own.
+        let next = hunks.get(n + 1).map_or(before, |h| h.before.start);
+        let to = (hunk.before.end + CONTEXT).min(next).min(before);
+        let offset = hunk.after.end as i64 - hunk.before.end as i64;
+        for at in hunk.before.end..to {
+            let new = (at as i64 + offset) as u32;
+            if new < after {
+                push(diff, DiffLine { kind: LineKind::Same, old: at + 1, new: new + 1, text: text(input.before[at as usize]) });
+            }
+        }
+        shown_to = to;
+    }
+}
+
+/// Whether bytes look binary, as Git tells: a NUL in the first 8 KB.
+fn binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(8192)].contains(&0)
+}
+
+/// What changed in the file at `path` since the last commit: its version in HEAD against the one on
+/// disk (staged changes and the rest). None when it isn't in a repository.
+fn file_diff(path: &str) -> Result<Option<FileDiff>, String> {
+    let started = Instant::now();
+    let file = Path::new(path);
+    let Some(folder) = file.parent() else { return Ok(None) };
+    let Ok(repo) = gix::discover(folder) else { return Ok(None) };
+    let Some(workdir) = repo.workdir().map(Path::to_path_buf) else { return Ok(None) };
+    let Some(relative) = inside(&workdir, file).filter(|r| !r.is_empty()) else { return Ok(None) };
+    let mut diff = FileDiff { path: relative.clone(), ..Default::default() };
+
+    let now = std::fs::read(file).map_err(|e| e.to_string())?;
+    let then: Option<Vec<u8>> = repo
+        .head_tree_id()
+        .ok()
+        .and_then(|tree| repo.find_tree(tree.detach()).ok())
+        .and_then(|tree| tree.lookup_entry_by_path(&relative).ok().flatten())
+        .and_then(|entry| repo.find_object(entry.object_id()).ok())
+        .map(|object| object.detach().data);
+    diff.new_file = then.is_none();
+    let then = then.unwrap_or_default();
+    (diff.old_size, diff.new_size) = (then.len() as u64, now.len() as u64);
+    diff.binary = binary(&then) || binary(&now);
+    diff.too_big = then.len() > DIFF_BYTES || now.len() > DIFF_BYTES;
+    if !diff.binary && !diff.too_big {
+        line_diff(&String::from_utf8_lossy(&then), &String::from_utf8_lossy(&now), &mut diff);
+    }
+    diff.elapsed = ms_since(started);
+    Ok(Some(diff))
+}
+
+/// What changed in the file at `path` since the last commit (the Changes view); None outside a repository.
+#[tauri::command]
+pub async fn git_diff(path: String) -> Result<Option<FileDiff>, String> {
+    blocking(move || file_diff(&path)).await
+}
+
 /// One recursive watcher per repository on screen, by its lowercase root.
 #[derive(Default)]
 pub struct RepoWatcher(Arc<Mutex<HashMap<String, RecommendedWatcher>>>);
@@ -532,6 +669,54 @@ mod tests {
         let trusted = view(&repo.at(""), &[repo.at("")], false, stop).unwrap().unwrap();
         assert!(!trusted.limited);
         assert_eq!(marks(&trusted), [("a.txt".into(), Mark::Modified)]);
+    }
+
+    #[test]
+    fn diffs_lines_with_some_around_each_change() {
+        // Committed with LF, on disk with CRLF: only what changed differs.
+        let old = (1..=20).map(|n| format!("line {n}\n")).collect::<String>();
+        let new = old.replace("line 5\n", "line five\n").replace("line 18\n", "").replace('\n', "\r\n");
+        let mut diff = FileDiff::default();
+        line_diff(&old, &new, &mut diff);
+        assert_eq!((diff.added, diff.removed), (1, 2));
+        let shown: Vec<(LineKind, u32, u32, &str)> = diff.lines.iter().map(|l| (l.kind, l.old, l.new, l.text.as_str())).collect();
+        use LineKind::*;
+        assert_eq!(
+            shown,
+            [
+                (Same, 2, 2, "line 2"),
+                (Same, 3, 3, "line 3"),
+                (Same, 4, 4, "line 4"),
+                (Removed, 5, 0, "line 5"),
+                (Added, 0, 5, "line five"),
+                (Same, 6, 6, "line 6"),
+                (Same, 7, 7, "line 7"),
+                (Same, 8, 8, "line 8"),
+                // A gap: lines 9–14 are the same.
+                (Same, 15, 15, "line 15"),
+                (Same, 16, 16, "line 16"),
+                (Same, 17, 17, "line 17"),
+                (Removed, 18, 0, "line 18"),
+                (Same, 19, 18, "line 19"),
+                (Same, 20, 19, "line 20"),
+            ]
+        );
+    }
+
+    #[test]
+    fn diffs_a_file_against_its_last_commit() {
+        let Some(repo) = Repo::new("diff") else { return };
+        repo.put("a.txt", "one\ntwo\nthree\n");
+        repo.put("pic.bin", "\0\x01\x02");
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-q", "-m", "1"]).unwrap();
+        repo.put("a.txt", "one\n2\nthree\nfour\n");
+        repo.put("new.txt", "fresh\n");
+        let diff = file_diff(&repo.at("a.txt")).unwrap().unwrap();
+        assert_eq!((diff.path.as_str(), diff.new_file, diff.added, diff.removed), ("a.txt", false, 2, 1));
+        let fresh = file_diff(&repo.at("new.txt")).unwrap().unwrap();
+        assert!(fresh.new_file && fresh.added == 1 && fresh.lines[0].kind == LineKind::Added);
+        assert!(file_diff(&repo.at("pic.bin")).unwrap().unwrap().binary);
     }
 
     /// `GLINT_GIT_FOLDER=C:\Repos\app cargo test --release -- --ignored --nocapture views_a_real_folder`:

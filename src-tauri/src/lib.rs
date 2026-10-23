@@ -490,6 +490,7 @@ pub fn run() {
             git::git_view,
             git::cancel_git,
             git::git_watch,
+            git::git_diff,
             dedup::find_duplicates,
             dedup::cancel_dedup,
             compare::compare_folders,

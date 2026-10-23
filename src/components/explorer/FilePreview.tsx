@@ -7,11 +7,14 @@ import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useEx
 import { isKnownType, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, type ArchivePeek, archivePeek, listDir, readTextPreview } from "@/lib/fs";
+import { useChangesView, useGitMark } from "@/lib/git";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
+import { ChangesView } from "./ChangesView";
 import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
 import { ShellPreview } from "./ShellPreview";
@@ -311,8 +314,13 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     const kind = previewKind(entry);
     const archived = isArchived(entry);
     const archive = archived ? archiveOf() : undefined;
+    // A file Git has a change for can show what changed since its last commit instead.
+    const mark = useGitMark(entry.path);
+    const changed = !entry.dir && !archived && !!mark && mark !== "ignored";
+    const showChanges = useChangesView((s) => s.on) && changed;
     let body: React.ReactNode;
-    if (entry.dir) body = <FolderPreview entry={entry} />;
+    if (showChanges) body = <ChangesView entry={entry} />;
+    else if (entry.dir) body = <FolderPreview entry={entry} />;
     else if (isOnlineOnly(entry))
         body = (
             <Centered>
@@ -359,7 +367,29 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                 <span className="truncate text-sm font-medium" title={entry.path}>
                     {entry.name}
                 </span>
-                <div className="ml-auto flex shrink-0">
+                {changed && (
+                    <div role="group" aria-label="Show" className="ml-auto flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
+                        {[
+                            { on: false, label: "File", title: "The file as it is" },
+                            { on: true, label: "Changes", title: "What changed since the last commit (Git)" },
+                        ].map((choice) => (
+                            <button
+                                key={choice.label}
+                                type="button"
+                                aria-pressed={showChanges === choice.on}
+                                title={choice.title}
+                                onClick={() => useChangesView.setState({ on: choice.on })}
+                                className={cn(
+                                    "h-5 rounded-[4px] px-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:text-foreground",
+                                    showChanges === choice.on && "bg-background text-primary shadow-xs dark:bg-foreground/[0.12]"
+                                )}
+                            >
+                                {choice.label}
+                            </button>
+                        ))}
+                    </div>
+                )}
+                <div className={cn("flex shrink-0", !changed && "ml-auto")}>
                     {!entry.dir && !archived && !closed && (
                         <Button variant="ghost" size="icon" className="size-7" onClick={() => inspectXRay(entry.path)} title="File X-Ray: hashes and hidden streams">
                             <Fingerprint />
