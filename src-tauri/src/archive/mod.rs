@@ -20,6 +20,7 @@ mod cab;
 mod codec;
 mod compress;
 mod extract;
+mod msi;
 mod read;
 mod stream;
 mod tar;
@@ -200,11 +201,12 @@ fn sniffed(path: &str) -> Option<Format> {
     None
 }
 
-/// What a file is by its first bytes, if it's an archive Glint reads.
+/// What a file is by its first bytes, if it's an archive Glint reads. A compound file (as MSI
+/// packages are, and old Office documents) is a package only if its root says so.
 fn detect_file(path: &Path) -> Option<Format> {
     let mut head = Vec::with_capacity(4096);
     std::fs::File::open(path).ok()?.take(4096).read_to_end(&mut head).ok()?;
-    Format::detect(&head)
+    Format::detect(&head).or_else(|| (head.starts_with(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1") && msi::is_package(path)).then_some(Format::Msi))
 }
 
 /// For a path that leads into or is a file not named like an archive (a renamed zip, a .bin that's

@@ -768,6 +768,148 @@ fn reads_what_makecab_made() {
     }
 }
 
+/// What a test package holds: its folders (key, parent, DefaultDir), files (key, folder, FileName,
+/// bytes), where its cabinet is ("#stream" in it, a file name next to it, or none), its kind and its
+/// word count (compressed or not, short source names).
+struct TestMsi<'a> {
+    dirs: &'a [(&'a str, Option<&'a str>, &'a str)],
+    files: &'a [(&'a str, &'a str, &'a str, &'a [u8])],
+    cabinet: Option<&'a str>,
+    kind: ::msi::PackageType,
+    word_count: i32,
+}
+
+fn write_msi(path: &Path, spec: &TestMsi) {
+    use ::msi::{Column, Insert, Value};
+    let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path).unwrap();
+    let mut package = ::msi::Package::create(spec.kind, file).unwrap();
+    package.summary_info_mut().set_word_count(spec.word_count);
+    let create = |package: &mut ::msi::Package<fs::File>, name: &str, columns: Vec<Column>, rows: Vec<Vec<Value>>| {
+        package.create_table(name, columns).unwrap();
+        if !rows.is_empty() {
+            package.insert_rows(rows.into_iter().fold(Insert::into(name), |q, r| q.row(r))).unwrap();
+        }
+    };
+    let id = |name: &str| Column::build(name).id_string(72);
+    let dirs = spec.dirs.iter().map(|(k, p, d)| vec![Value::from(*k), p.map_or(Value::Null, Value::from), Value::from(*d)]).collect();
+    create(&mut package, "Directory", vec![Column::build("Directory").primary_key().id_string(72), Column::build("Directory_Parent").nullable().id_string(72), Column::build("DefaultDir").text_string(255)], dirs);
+    // A component per folder used.
+    let mut used: Vec<&str> = spec.files.iter().map(|f| f.1).collect();
+    used.sort_unstable();
+    used.dedup();
+    let components = used.iter().map(|d| vec![Value::from(format!("C_{d}")), Value::from(*d)]).collect();
+    create(&mut package, "Component", vec![Column::build("Component").primary_key().id_string(72), id("Directory_")], components);
+    let files = spec.files.iter().enumerate().map(|(i, (k, d, n, data))| vec![Value::from(*k), Value::from(format!("C_{d}")), Value::from(*n), Value::Int(data.len() as i32), Value::Int(0), Value::Int(i as i32 + 1)]).collect();
+    create(
+        &mut package,
+        "File",
+        vec![Column::build("File").primary_key().id_string(72), id("Component_"), Column::build("FileName").text_string(255), Column::build("FileSize").int32(), Column::build("Attributes").nullable().int16(), Column::build("Sequence").int32()],
+        files,
+    );
+    if spec.cabinet != Some(MERGE_MODULE) {
+        let media = vec![vec![Value::Int(1), Value::Int(spec.files.len() as i32), spec.cabinet.map_or(Value::Null, Value::from)]];
+        create(&mut package, "Media", vec![Column::build("DiskId").primary_key().int16(), Column::build("LastSequence").int32(), Column::build("Cabinet").nullable().string(255)], media);
+    }
+    // The cabinet holds each file by its key, as a package's cabinets do.
+    let by_key: Vec<(&str, &[u8])> = spec.files.iter().map(|(k, _, _, data)| (*k, *data)).collect();
+    let cab_path = path.with_extension("cab.tmp");
+    write_cab(&cab_path, &[(::cab::CompressionType::MsZip, &by_key)]);
+    let bytes = fs::read(&cab_path).unwrap();
+    fs::remove_file(&cab_path).unwrap();
+    match spec.cabinet {
+        Some(MERGE_MODULE) => package.write_stream("MergeModule.CABinet").unwrap().write_all(&bytes).unwrap(),
+        Some(name) if name.starts_with('#') => package.write_stream(&name[1..]).unwrap().write_all(&bytes).unwrap(),
+        Some(name) if name != "missing.cab" => fs::write(path.parent().unwrap().join(name), &bytes).unwrap(),
+        _ => {}
+    }
+    package.flush().unwrap();
+}
+
+/// A merge module's cabinet, for `TestMsi::cabinet`.
+const MERGE_MODULE: &str = "(merge module)";
+
+#[test]
+fn opens_installer_packages_as_what_they_install() {
+    let dir = scratch("msi");
+    let dirs: &[(&str, Option<&str>, &str)] = &[
+        ("TARGETDIR", None, "SourceDir"),
+        ("ProgramFilesFolder", Some("TARGETDIR"), "PFiles"),
+        ("APPDIR", Some("ProgramFilesFolder"), "CONTOSO|Contoso App"),
+        ("BIN", Some("APPDIR"), "bin"),
+        ("SAME", Some("BIN"), "."),
+        ("System64Folder", Some("TARGETDIR"), "."),
+        ("LOOP1", Some("LOOP2"), "a"),
+        ("LOOP2", Some("LOOP1"), "b"),
+    ];
+    let exe = vec![0x4Du8; 50_000];
+    let files: &[(&str, &str, &str, &[u8])] = &[
+        ("readme.txt", "APPDIR", "README.TXT|readme.txt", b"read me"),
+        ("app.exe", "BIN", "app.exe", &exe),
+        ("tool.dll", "SAME", "TOOL~1.DLL|tool.dll", b"a tool"),
+        ("helper.dll", "System64Folder", "helper.dll", b"a helper"),
+        ("looped.txt", "LOOP1", "looped.txt", b"in a loop"),
+    ];
+    let spec = |cabinet| TestMsi { dirs, files, cabinet, kind: ::msi::PackageType::Installer, word_count: 2 };
+    // The cabinet in the package, as a stream.
+    let msi = dir.join("setup.msi");
+    write_msi(&msi, &spec(Some("#app.cab")));
+    let m = text(&msi);
+    assert_eq!(Format::claimed("SETUP.MSI"), Some((Format::Msi, read::Claim::OnRequest)), "Enter runs the installer");
+    assert_eq!(names(&listing(&m)), ["b", "Program Files (x86)", "Windows"]);
+    assert_eq!(names(&listing(&format!("{m}\\Program Files (x86)\\Contoso App"))), ["bin", "readme.txt"]);
+    assert_eq!(names(&listing(&format!("{m}\\Program Files (x86)\\Contoso App\\bin"))), ["app.exe", "tool.dll"]);
+    for (path, data) in [("Program Files (x86)\\Contoso App\\readme.txt", &b"read me"[..]), ("Program Files (x86)\\Contoso App\\bin\\app.exe", &exe), ("Program Files (x86)\\Contoso App\\bin\\tool.dll", b"a tool"), ("Windows\\System32\\helper.dll", b"a helper"), ("b\\a\\looped.txt", b"in a loop")] {
+        assert_eq!(fs::read(copy(&format!("{m}\\{path}"), Purpose::Preview).unwrap()).unwrap(), data, "{path}");
+    }
+    let staged = stage_all(&[format!("{m}\\Program Files (x86)")]).unwrap();
+    assert!(staged.skipped.is_empty(), "{:?}", staged.skipped);
+    assert_eq!(fs::read(Path::new(&staged.folder).join("Program Files (x86)").join("Contoso App").join("bin").join("app.exe")).unwrap(), exe);
+    extract::remove_tree(Path::new(&staged.folder));
+    // A cabinet next to it; one that isn't there.
+    let external = dir.join("external");
+    fs::create_dir_all(&external).unwrap();
+    write_msi(&external.join("setup.msi"), &spec(Some("data1.cab")));
+    let e = text(&external.join("setup.msi"));
+    assert_eq!(fs::read(copy(&format!("{e}\\Windows\\System32\\helper.dll"), Purpose::Preview).unwrap()).unwrap(), b"a helper");
+    let missing = dir.join("missing");
+    fs::create_dir_all(&missing).unwrap();
+    write_msi(&missing.join("setup.msi"), &spec(Some("missing.cab")));
+    let x = text(&missing.join("setup.msi"));
+    assert!(listing(&format!("{x}\\Windows\\System32")).items.iter().all(|i| i.3 & UNREADABLE != 0));
+    let error = copy(&format!("{x}\\Windows\\System32\\helper.dll"), Purpose::Preview).unwrap_err().message();
+    assert!(error.contains("missing.cab") && error.contains("isn't next to the package"), "{error}");
+    // Uncompressed: the files are next to it, in its source tree (long names, as the word count says).
+    let loose = dir.join("loose");
+    fs::create_dir_all(loose.join("PFiles").join("Contoso App").join("bin")).unwrap();
+    write_msi(&loose.join("setup.msi"), &TestMsi { word_count: 0, ..spec(None) });
+    fs::write(loose.join("PFiles").join("Contoso App").join("readme.txt"), b"read me").unwrap();
+    fs::write(loose.join("PFiles").join("Contoso App").join("bin").join("app.exe"), b"the wrong size").unwrap();
+    let l = text(&loose.join("setup.msi"));
+    assert_eq!(fs::read(copy(&format!("{l}\\Program Files (x86)\\Contoso App\\readme.txt"), Purpose::Preview).unwrap()).unwrap(), b"read me");
+    let error = copy(&format!("{l}\\Program Files (x86)\\Contoso App\\bin\\app.exe"), Purpose::Preview).unwrap_err().message();
+    assert!(error.contains("isn't the size"), "{error}");
+    let error = copy(&format!("{l}\\Program Files (x86)\\Contoso App\\bin\\tool.dll"), Purpose::Preview).unwrap_err().message();
+    assert!(error.contains("PFiles\\Contoso App\\bin\\tool.dll") && error.contains("isn't there"), "{error}");
+    // A merge module keeps its files in one cabinet stream, with no Media table.
+    let msm = dir.join("module.msm");
+    write_msi(&msm, &spec(Some(MERGE_MODULE)));
+    assert_eq!(fs::read(copy(&format!("{}\\Program Files (x86)\\Contoso App\\readme.txt", text(&msm)), Purpose::Preview).unwrap()).unwrap(), b"read me");
+    // Found by its bytes under another name; a patch isn't a folder of files.
+    let renamed = dir.join("installer.bin");
+    fs::copy(&msi, &renamed).unwrap();
+    let r = format!("{}\\Windows", text(&renamed));
+    assert!(sniff(&r));
+    assert_eq!(names(&listing(&r)), ["System32"]);
+    let patch = dir.join("fix.msi");
+    write_msi(&patch, &TestMsi { kind: ::msi::PackageType::Patch, ..spec(Some("#app.cab")) });
+    let error = list(&text(&patch), Instant::now()).unwrap().unwrap_err();
+    assert!(error.contains("patch"), "{error}");
+    // Nor is a patch, or another compound file, found by its bytes.
+    let other = dir.join("fix.bin");
+    fs::copy(&patch, &other).unwrap();
+    assert!(!sniff(&format!("{}\\x", text(&other))));
+}
+
 #[test]
 fn says_when_entries_are_password_protected() {
     let dir = scratch("encrypted");
@@ -876,6 +1018,11 @@ fn never_falls_over_on_damaged_archives() {
     write_cab(&path, &[(::cab::CompressionType::MsZip, &[("docs\\a.txt", &[b'a'; 40_000])]), (::cab::CompressionType::None, &[("b.bin", &[7; 1000])])]);
     archives.push(fs::read(&path).unwrap());
     archives.push(fs::read(fixture("cab-lzx.cab", &dir)).unwrap());
+    // An installer package with its cabinet inside.
+    let path = dir.join("codec.msi");
+    let dirs: &[(&str, Option<&str>, &str)] = &[("TARGETDIR", None, "SourceDir"), ("ProgramFilesFolder", Some("TARGETDIR"), "PFiles"), ("APPDIR", Some("ProgramFilesFolder"), "App")];
+    write_msi(&path, &TestMsi { dirs, files: &[("a.txt", "APPDIR", "a.txt", &[b'a'; 3000])], cabinet: Some("#a.cab"), kind: ::msi::PackageType::Installer, word_count: 2 });
+    archives.push(fs::read(&path).unwrap());
     for (n, original) in archives.iter().enumerate() {
         // By its first bytes, as Glint itself tells them apart.
         let ext = match Format::detect(original) {
@@ -883,6 +1030,7 @@ fn never_falls_over_on_damaged_archives() {
             Some(Format::Cab) => "cab".to_string(),
             Some(Format::Tar(_)) => "tar".to_string(),
             Some(Format::Single(codec)) => format!("tar.{}", codec.ext()),
+            _ if original.starts_with(b"\xD0\xCF\x11\xE0") => "msi".to_string(),
             _ => "zip".to_string(),
         };
         // Every byte flipped in turn, and every length cut off: an error at worst, never a panic.
