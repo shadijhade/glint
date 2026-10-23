@@ -5,7 +5,9 @@ use super::codec::{Codec, Crc32Checked, Fused, Zstd};
 use super::stream::{self, Kind, Scan, StreamSource};
 use super::tree::{Item, ENCRYPTED, UNREADABLE};
 use super::Failure;
-use sevenz_rust2::{Archive as SevenZ, BlockDecoder, EncoderMethod, Password};
+use sevenz_rust2::{Archive as SevenZ, ArchiveEntry, Block, BlockDecoder, EncoderMethod, Password};
+use lzma_rust2::filter::bcj::BcjReader;
+use lzma_rust2::filter::delta::DeltaReader;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
@@ -157,6 +159,8 @@ struct BlockInfo {
     unpacked: u64,
     packed: u64,
     problem: Option<Failure>,
+    /// Decoded by Glint itself rather than by sevenz-rust2 (`decoded_here`).
+    here: bool,
 }
 
 /// One entry to read: its index in the archive.
@@ -619,8 +623,31 @@ fn sevenz_supported(id: &[u8]) -> bool {
         EncoderMethod::ID_BCJ_RISCV,
         EncoderMethod::ID_BCJ2,
         EncoderMethod::ID_DELTA,
+        EncoderMethod::ID_LZ4,
     ]
     .contains(&id)
+}
+
+/// The filters 7-Zip may put before a compressor: undone after it, in a block Glint decodes itself.
+const FILTERS: [&[u8]; 9] = [
+    EncoderMethod::ID_BCJ_X86,
+    EncoderMethod::ID_BCJ_ARM,
+    EncoderMethod::ID_BCJ_ARM64,
+    EncoderMethod::ID_BCJ_ARM_THUMB,
+    EncoderMethod::ID_BCJ_PPC,
+    EncoderMethod::ID_BCJ_IA64,
+    EncoderMethod::ID_BCJ_SPARC,
+    EncoderMethod::ID_BCJ_RISCV,
+    EncoderMethod::ID_DELTA,
+];
+
+/// Whether Glint decodes `block` itself: a Zstandard block (as 7-Zip ZS and NanaZip write them, which
+/// sevenz-rust2 would decode with the C library), alone or after filters, one coder feeding the next.
+fn decoded_here(block: &Block) -> bool {
+    let ids = || block.coders.iter().map(|c| c.encoder_method_id());
+    ids().any(|id| id == EncoderMethod::ID_ZSTD)
+        && ids().all(|id| id == EncoderMethod::ID_ZSTD || id == EncoderMethod::ID_COPY || FILTERS.contains(&id))
+        && block.ordered_coder_iter().count() == block.coders.len()
 }
 
 fn sevenz_method_name(id: &[u8]) -> String {
@@ -649,12 +676,15 @@ fn open_7z(path: &Path) -> Result<(Source, Vec<Item>), Failure> {
         .map(|(b, block)| {
             let start = firsts.get(b).and_then(|&p| offsets.get(p)).copied().unwrap_or(0);
             let end = firsts.get(b + 1).and_then(|&p| offsets.get(p)).copied().unwrap_or(packed_total);
+            let here = decoded_here(block);
             let problem = if block.coders.iter().any(|c| c.encoder_method_id() == EncoderMethod::ID_AES256_SHA256) {
                 Some(Failure::Encrypted)
+            } else if here {
+                None
             } else {
                 block.coders.iter().find(|c| !sevenz_supported(c.encoder_method_id())).map(|c| Failure::Unsupported(sevenz_method_name(c.encoder_method_id())))
             };
-            BlockInfo { unpacked: block.get_unpack_size(), packed: end.saturating_sub(start), problem }
+            BlockInfo { unpacked: block.get_unpack_size(), packed: end.saturating_sub(start), problem, here }
         })
         .collect();
     // Where each entry sits in its block: everything before it there is decompressed to reach it.
@@ -927,7 +957,7 @@ impl SevenZSource {
             let last = *wanted.last().unwrap_or(&first);
             let mut next = first;
             let mut done = Vec::new();
-            let decoded = BlockDecoder::new(1, block, &self.archive, &password, &mut source).for_each_entries(&mut |entry, reader| {
+            let mut on_entry = |entry: &ArchiveEntry, reader: &mut dyn Read| -> Result<bool, sevenz_rust2::Error> {
                 let index = next;
                 next += 1;
                 if wanted.binary_search(&index).is_ok() {
@@ -952,7 +982,12 @@ impl SevenZSource {
                     }
                 }
                 Ok(index < last)
-            });
+            };
+            let decoded = if self.blocks[block].here {
+                block_entries_here(&self.archive, block, &mut source, &mut on_entry)
+            } else {
+                BlockDecoder::new(1, block, &self.archive, &password, &mut source).for_each_entries(&mut on_entry)
+            };
             if let Err(e) = decoded {
                 let failure = sevenz_failure(e);
                 failed.extend(wanted.iter().filter(|i| !done.contains(i)).map(|&i| (i, failure.clone())));
@@ -962,6 +997,71 @@ impl SevenZSource {
         }
         failed
     }
+}
+
+/// Decodes a block Glint reads itself (`decoded_here`) and hands each of its entries to `each`, as
+/// sevenz-rust2's `for_each_entries` does: the packed stream goes through each coder in turn (none
+/// past the size the archive gives its output), and each entry is cut to its size and checked against
+/// its CRC32 once read to its end.
+fn block_entries_here<R: Read + Seek>(archive: &SevenZ, block: usize, source: &mut R, each: &mut dyn FnMut(&ArchiveEntry, &mut dyn Read) -> Result<bool, sevenz_rust2::Error>) -> Result<bool, sevenz_rust2::Error> {
+    let b = &archive.blocks[block];
+    let pack = archive.stream_map.block_first_pack_stream_index().get(block).copied();
+    let at = pack.and_then(|p| Some((archive.stream_map.pack_stream_offsets().get(p)?, archive.pack_sizes().get(p)?)));
+    let (offset, size) = at.and_then(|(&offset, &size)| Some((sevenz_rust2::SIGNATURE_HEADER_SIZE.checked_add(archive.pack_pos())?.checked_add(offset)?, size))).ok_or_else(|| sevenz_rust2::Error::Other("block offset out of range".into()))?;
+    source.seek(SeekFrom::Start(offset))?;
+    let mut reader: Box<dyn Read + '_> = Box::new(source.by_ref().take(size));
+    for (index, coder) in b.ordered_coder_iter() {
+        let id = coder.encoder_method_id();
+        reader = if id == EncoderMethod::ID_ZSTD {
+            Box::new(Fused::new(Zstd::new(BufReader::new(reader))))
+        } else if id == EncoderMethod::ID_DELTA {
+            // A distance of 1 to 256, stored less one.
+            Box::new(DeltaReader::new(reader, coder.properties().first().map_or(1, |&d| d as usize + 1)))
+        } else if id == EncoderMethod::ID_BCJ_X86 {
+            Box::new(BcjReader::new_x86(reader, 0))
+        } else if id == EncoderMethod::ID_BCJ_ARM {
+            Box::new(BcjReader::new_arm(reader, 0))
+        } else if id == EncoderMethod::ID_BCJ_ARM64 {
+            Box::new(BcjReader::new_arm64(reader, 0))
+        } else if id == EncoderMethod::ID_BCJ_ARM_THUMB {
+            Box::new(BcjReader::new_arm_thumb(reader, 0))
+        } else if id == EncoderMethod::ID_BCJ_PPC {
+            Box::new(BcjReader::new_ppc(reader, 0))
+        } else if id == EncoderMethod::ID_BCJ_IA64 {
+            Box::new(BcjReader::new_ia64(reader, 0))
+        } else if id == EncoderMethod::ID_BCJ_SPARC {
+            Box::new(BcjReader::new_sparc(reader, 0))
+        } else if id == EncoderMethod::ID_BCJ_RISCV {
+            Box::new(BcjReader::new_riscv(reader, 0))
+        } else {
+            reader
+        };
+        reader = Box::new(reader.take(b.get_unpack_size_at_index(index)));
+    }
+    let first = archive.stream_map.block_first_file_index.get(block).copied().unwrap_or(0);
+    let count = BlockDecoder::new(1, block, archive, &Password::empty(), &mut io::Cursor::new([0u8; 0])).entry_count();
+    let files = archive.files.get(first..first.saturating_add(count)).ok_or_else(|| sevenz_rust2::Error::Other("block entries out of range".into()))?;
+    for file in files {
+        if !(file.has_stream && file.size > 0) {
+            if !each(file, &mut io::empty())? {
+                return Ok(false);
+            }
+            continue;
+        }
+        // A block of one file may keep that file's CRC as the block's own.
+        let crc = if file.has_crc { Some(file.crc) } else { (b.has_crc && count == 1).then_some(b.crc) };
+        let mut entry = (&mut reader).take(file.size);
+        let go = match crc {
+            Some(crc) => each(file, &mut Crc32Checked::new(&mut entry, crc as u32))?,
+            None => each(file, &mut entry)?,
+        };
+        if !go {
+            return Ok(false);
+        }
+        // Whatever `each` left of the entry, so the next starts where it should.
+        io::copy(&mut entry, &mut io::sink())?;
+    }
+    Ok(true)
 }
 
 /// Counts bytes read through (they cost time too) and passes them on to the progress callback.

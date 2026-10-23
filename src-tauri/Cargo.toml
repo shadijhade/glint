@@ -41,10 +41,11 @@ sha2 = "0.10"
 crc32fast = "1.5"
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
 # original zip crate, fuzzed) with every common method but encryption (no passwords yet), and
-# sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's own
-# Zstandard is C, so Zstandard entries are decoded with ruzstd, a pure Rust decoder.
+# sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's and
+# sevenz-rust2's own Zstandard is C, so Zstandard entries and 7z blocks are decoded with ruzstd, a pure
+# Rust decoder; sevenz-rust2's LZ4 is lz4_flex, pure Rust.
 zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64", "bzip2", "lzma", "xz", "ppmd", "legacy-zip"] }
-sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate"] }
+sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate", "lz4"] }
 ruzstd = "0.9.1"
 # Tar and single compressed files (.gz, .xz, .bz2, .lz4), all pure Rust: the first three are already
 # in the build through zip-rs (zlib-rs, libbz2-rs-sys, lzma-rust2); lz4_flex is new.
@@ -54,8 +55,9 @@ lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "x
 lz4_flex = "0.14"
 
 [dev-dependencies]
-# Tests write their own 7z archives, tars (long names, PAX headers, links) and .xz files.
-sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate", "compress"] }
+# Tests write their own 7z archives (Zstandard ones with the C library, in tests only), tars (long
+# names, PAX headers, links) and .xz files.
+sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate", "lz4", "zstd", "compress"] }
 tar = { version = "0.4", default-features = false }
 lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "xz", "encoder"] }
 
