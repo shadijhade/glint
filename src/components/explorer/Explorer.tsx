@@ -164,6 +164,7 @@ import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, inArchivePath, joinPath, samePath, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
+import { toggleTerminal, useTerminals } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
@@ -186,6 +187,7 @@ import { QuickLook } from "./QuickLook";
 import { DRIVE_ICONS, KNOWN_ICONS, Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { TabStrip } from "./TabStrip";
+import { TerminalPanel, terminalFolder } from "./TerminalPanel";
 import { ThisPC } from "./ThisPC";
 import { inspectTimeline } from "./TimelineDialog";
 import { inspectXRay } from "./XRayDialog";
@@ -446,6 +448,21 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
     const activeRef = useRef(active);
     activeRef.current = active;
 
+    // Ctrl+` shows or hides the terminal pane, from the files or from the terminal itself.
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (!activeRef.current || !e.ctrlKey || e.altKey || e.code !== "Backquote" || modalOpen()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const hiding = useTerminals.getState().open;
+            toggleTerminal(terminalFolder());
+            // Back to the files, rather than a hidden terminal.
+            if (hiding && document.activeElement instanceof HTMLElement && document.activeElement.closest("[data-terminal]")) document.activeElement.blur();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, []);
+
     // Files dragged in from File Explorer, the desktop or the other pane land on the folder row or
     // sidebar place under the pointer, or else in the folder open in the pane under it.
     useEffect(() => {
@@ -586,6 +603,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!other && chosen && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
             !!other && chosen && !archive && !shut && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
+            action("terminal-pane", useTerminals.getState().open ? "Hide the terminal" : "Terminal here, under the files", SquareTerminal, () => toggleTerminal(terminalFolder()), "Ctrl+`"),
             writable && !shut && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
             !!archive && action("explorer", "Show the archive in File Explorer", FileArchive, () => revealArchive(archive)),
             writable && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
@@ -629,6 +647,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                     <Pane index={0} active={active} menuContext={menuContext} />
                     {dual && <Pane index={1} active={active} menuContext={menuContext} />}
                 </div>
+                <TerminalPanel />
             </div>
             {showPreviewPane && (path !== THIS_PC || find) && <PreviewPane />}
             {menu.element}
@@ -938,7 +957,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             // A focused button handles its own Enter and Space.
             if ((key === "Enter" || key === " ") && target?.closest("button, a")) return;
             // Fields keep their keys, except that navigation (and tabs) also work from the search box, as in Explorer.
-            if (target?.closest("input, textarea, select, [contenteditable=true], dialog, [popover]")) {
+            if (target?.closest("input, textarea, select, [contenteditable=true], dialog, [popover], [data-terminal]")) {
                 const navigation =
                     (e.altKey && !ctrl && ["ArrowLeft", "ArrowRight", "ArrowUp", "d"].includes(key)) ||
                     (ctrl && !e.altKey && ["l", "f", "e", "t", "w", "d", "Tab"].includes(key)) ||

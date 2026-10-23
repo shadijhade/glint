@@ -97,6 +97,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Compare two files.** Select two files and right-click **Compare the two files** (or `Ctrl+K`), or right-click a file the other pane has too. Text shows side by side, with each change's lines tinted and what changed in them marked, and `Alt+Up`/`Alt+Down` go from change to change. With [Difftastic](https://github.com/Wilfred/difftastic) installed (one click, with winget) code is compared by its structure: a line reflowed or re-indented isn't a change, and only the tokens that changed are marked; without it, line by line. Pictures show side by side, with a swipe or an onion skin over each other; any other two files as bytes in hex, with where they first differ (or "the same, byte for byte") and **Next difference**. A changed file's **Changes** view opens its last commit's version against it the same way, with **Side by side**.
 -   **Down through subfolders, and by contents.** The compare bar's options: **Subfolders too** compares what's inside folders as well, so a folder differs when anything in it does, and **Sync** then copies what's missing or newer inside them, each file into the folder it goes in. **File contents** reads files of the same size on both sides rather than trusting their sizes and dates. Both skip what Find files skips (`node_modules`, `.git`), and leave links to other folders alone.
 -   **Both at full speed.** Each tab searches and sizes folders on its own, so a long search in one pane doesn't stop the other's, and both panes refresh when their folders change.
+-   **A terminal under the files.** `` Ctrl+` `` opens one in the folder shown, with tabs of its own: PowerShell 7 (else Windows PowerShell), or Command Prompt, Nushell, Git Bash or WSL from the **+** menu and **Settings → Terminal**. It follows the folder shown: `cd` in it and the pane opens that folder, open a folder and the terminal goes there too, while it waits at its prompt with nothing typed (in WSL only this way round). `Ctrl+C` copies what's selected (with nothing selected it's the shell's), `Ctrl+V` pastes, and `` Ctrl+` `` hides it again with its shells still running. [Ghostty](https://github.com/ghostty-org/ghostty)'s terminal emulator draws it, built for the web as [ghostty-web](https://github.com/coder/ghostty-web), in the app's colors.
 
 ### Grid view
 
@@ -210,6 +211,7 @@ The service only runs once you opt in, with every privilege removed except the t
 | A search from anywhere | Windows Search in the Start menu | `Ctrl+Alt+F`: every drive's names, answered by the index as you type |
 | Go to a folder | Quick access, address bar | Address bar, and `Ctrl+K` with your most-used folders |
 | Tabs and panes | Tabs (Windows 11) | Tabs in each pane, and two panes side by side |
+| A terminal | Open in Terminal, in a window of its own | Under the files, where a `cd` in it opens the folder and a folder opened is `cd`'d to |
 | Duplicate files | Not found | Found by size, then content; recycled or replaced with hard links |
 | Space to free | Disk Cleanup: Windows' own temporary files and caches | Below any folder: build output and package caches beside their projects, empty folders, programs' leftovers and big files; recycled with Undo |
 | A file in use | *The action can't be completed*, sometimes naming the program | The programs holding it open, and **End** to close one |
@@ -251,6 +253,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 | `Ctrl+Shift+D` | Dual pane on or off |
 | `Ctrl+Shift+M` | Compare the two panes |
 | `F6` | Switch to the other pane |
+| `` Ctrl+` `` | Show or hide the terminal under the files (the first one opens in the folder shown) |
 | `Alt+Left` / `Backspace` · `Alt+Right` · `Alt+Up` | Back · Forward · Up |
 | `Ctrl+L` / `Alt+D` / `F4` | Type a path in the address bar |
 | `Ctrl+F` / `Ctrl+E` / `F3` | Search: typing filters, `Enter` searches subfolders, `Esc` clears |
@@ -313,6 +316,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 -   **Quick search**: `RegisterHotKey` on a thread of its own, and a second, borderless window of the app that searches as Files does.
 -   **File operations**: Windows' `IFileOperation` (the engine Explorer uses), the clipboard formats Explorer reads, and OLE drag and drop.
 -   **Live folders**: [notify](https://github.com/notify-rs/notify) watches the folders on screen (one per pane).
+-   **Terminal**: [portable-pty](https://github.com/wezterm/wezterm) runs each shell in a Windows pseudo console (ConPTY), and its output reaches the UI as raw bytes over a channel, drawn on a canvas by Ghostty's emulator (Zig, as WebAssembly), or xterm.js if that can't start. Each shell is started so its prompt says where it is, as Windows Terminal reads it (OSC 9;9): PowerShell's own prompt is wrapped, and Command Prompt's `PROMPT` and Git Bash's `PROMPT_COMMAND` are set; Nushell says it by itself. Rust picks those (and OSC 7) out of the output, and the pane goes there. The other way, Glint types a `cd` for the shell, only while it sits at its prompt with nothing typed.
 -   **Tabs and panes**: every tab keeps its own state, and its name searches and dust runs go in a lane of their own in Rust, so tabs and panes never stop each other's work.
 -   **Opening folders from Windows**: per-user shell verbs under `HKEY_CURRENT_USER\Software\Classes` (no administrator rights) run `Glint.exe "%V"`, and [tauri-plugin-single-instance](https://v2.tauri.app/plugin/single-instance/) hands a later launch's folders to the window that's open. What Glint can't open goes back to File Explorer before any window shows. See [docs/explorer-integration.md](docs/explorer-integration.md).
 -   **Instant search**: a Windows service in Rust ([`src-tauri/index`](src-tauri/index), built as `shadui-index.exe`) that reads each NTFS volume's Master File Table in one sequential pass and follows its USN journal. See [docs/instant-search.md](docs/instant-search.md).
@@ -365,6 +369,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] Quick search from anywhere (`Ctrl+Alt+F`), the tray, and starting with Windows
 -   [x] Word, Excel, PowerPoint and font previews through Windows' previewers
 -   [x] Comparing folders down through subfolders and by contents, with Sync
+-   [x] A terminal under the files that follows the folder shown
 
 Missing something? [Open an issue](https://github.com/shadijhade/glint/issues/new/choose). If the app saves you time, a star helps other people find it.
 

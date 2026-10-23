@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
 import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { inArchivePath } from "./paths.ts";
+import { cdCommand, isTyping } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
@@ -80,6 +81,13 @@ assert.equal(gitMatch("git:ignored"), "c.md");
 assert.equal(gitMatch("git:changed ext:txt"), "a.txt,B.txt");
 assert.equal(gitMatch("git:nonsense"), "");
 assert.equal(match("git:changed"), "");
+
+// The terminal's cd, as each shell takes it; its own reports aren't typing
+assert.equal(cdCommand("pwsh", "C:\\It's mine"), "Set-Location -LiteralPath 'C:\\It''s mine'\r");
+assert.equal(cdCommand("cmd", "D:\\Work Files"), 'cd /d "D:\\Work Files"\r');
+assert.equal(cdCommand("bash", "C:\\it's"), `cd "$(cygpath -u 'C:\\it'\\''s')"\r`);
+assert.equal(cdCommand("nu", "C:\\a b"), 'cd "C:\\\\a b"\r');
+assert.ok(isTyping("ls\r") && isTyping("\x1b[A") && !isTyping("\x1b[I") && !isTyping("\x1b[O") && !isTyping("\x1b[12;40R"));
 
 // Binary listings: built here with the layout fsx.rs's encode_listing writes (its test checks the offsets)
 type Item = { name: string; dir: boolean; size: number; modified: number; attrs: number };
