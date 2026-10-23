@@ -48,6 +48,11 @@ comrak = { version = "0.57", default-features = false }
 # the jaq program, installed on demand: compiled in, they'd add 4 MB). Run in a worker process (jq.rs).
 jaq-json = { version = "2", default-features = false, features = ["std"] }
 jaq-fmts = { version = "0.1", default-features = false, features = ["yaml", "toml"] }
+# Spreadsheets without Office (Excel's .xlsx/.xlsb/.xls, OpenDocument's .ods) and Parquet files, as
+# tables. Parquet without Arrow, and without Brotli (rare in Parquet, and 1.2 MB on its own); its
+# Zstandard is the C library's (0.4 MB).
+calamine = "0.37"
+parquet = { version = "60", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "zstd"] }
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
 # original zip crate, fuzzed) with every common method but encryption (no passwords yet), and
 # sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's and
