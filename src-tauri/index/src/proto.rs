@@ -9,6 +9,12 @@ use std::io::{self, Read, Write};
 pub const FRAME_JSON: u8 = 1;
 pub const FRAME_HITS: u8 = 2;
 pub const FRAME_USAGE: u8 = 3;
+/// After a map asked with `since`: each item's size at the mark, as u64s in the map's order.
+pub const FRAME_GROWTH: u8 = 4;
+/// An item that wasn't there at the mark.
+pub const NEW: u64 = u64::MAX;
+/// A file written since the mark (what it held then isn't kept).
+pub const WRITTEN: u64 = u64::MAX - 1;
 /// Requests are small; anything bigger is refused before it's read.
 pub const MAX_REQUEST: usize = 1 << 20;
 pub const MAX_FRAME: usize = 64 << 20;
@@ -50,6 +56,10 @@ pub struct UsageRequest {
     /// The most items to send. The biggest are sent, with the folders they're in; the rest only
     /// count in their folders' sizes.
     pub max_items: u32,
+    /// What grew since then (Unix ms): each item's size at the daily mark closest to it comes too
+    /// (FRAME_GROWTH). A service from before marks leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -119,6 +129,30 @@ pub struct UsageSummary {
     pub limited: bool,
     /// The service's time, in ms.
     pub elapsed: f64,
+    /// For a map asked with `since`: the mark its items' earlier sizes are from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growth: Option<GrowthSummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrowthSummary {
+    /// When the mark was taken (Unix ms).
+    pub since: i64,
+    /// The oldest mark folders can be compared with: how far back growth goes.
+    pub oldest: i64,
+    /// The whole drive's total at the mark, and now.
+    pub drive_then: u64,
+    pub drive_now: u64,
+}
+
+/// A disk-usage map as the service sends it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageMap {
+    pub nodes: Vec<UsageNode>,
+    /// Each node's size at the mark (NEW, WRITTEN), when asked for and known.
+    pub previous: Option<Vec<u64>>,
+    pub summary: UsageSummary,
 }
 
 /// One item of a disk-usage map. The folder mapped comes first; each item's folder comes before it.
@@ -237,6 +271,18 @@ pub fn decode_usage(mut bytes: &[u8]) -> Result<Vec<UsageNode>, String> {
     Ok(nodes)
 }
 
+pub fn encode_growth(previous: &[u64]) -> Vec<u8> {
+    previous.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+pub fn decode_growth(bytes: &[u8]) -> Result<Vec<u64>, String> {
+    let (words, rest) = bytes.as_chunks::<8>();
+    if !rest.is_empty() {
+        return Err("growth frame truncated".into());
+    }
+    Ok(words.iter().map(|w| u64::from_le_bytes(*w)).collect())
+}
+
 pub fn write_frame<W: Write + ?Sized>(w: &mut W, kind: u8, payload: &[u8]) -> io::Result<()> {
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.extend_from_slice(&(payload.len() as u32 + 1).to_le_bytes());
@@ -325,11 +371,16 @@ mod tests {
 
     #[test]
     fn usage_maps_round_trip() {
-        let request = Request::Usage(UsageRequest { path: r"C:\".into(), depth: 4, max_items: 20_000 });
+        let request = Request::Usage(UsageRequest { path: r"C:\".into(), depth: 4, max_items: 20_000, since: None });
         let mut wire = Vec::new();
         write_request(&mut wire, &request).unwrap();
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
-        assert!(serde_json::to_string(&request).unwrap().contains(r#""op":"usage","path":"C:\\","depth":4,"maxItems":20000"#));
+        // As a service from before growth reads it, with `since` or without.
+        assert!(serde_json::to_string(&request).unwrap().ends_with(r#""op":"usage","path":"C:\\","depth":4,"maxItems":20000}"#));
+        let asked = Request::Usage(UsageRequest { path: r"C:\".into(), depth: 4, max_items: 9, since: Some(1_700_000_000_000) });
+        let json = serde_json::to_string(&asked).unwrap();
+        assert!(json.contains(r#""since":1700000000000"#), "{json}");
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), asked);
 
         let nodes = vec![
             UsageNode { parent: NO_PARENT, name: String::new(), dir: true, size: 3 << 40, modified: 0, attrs: 0x16 },
@@ -339,16 +390,27 @@ mod tests {
         ];
         let mut payload = Vec::new();
         nodes.iter().for_each(|n| encode_usage_node(&mut payload, n));
-        let summary = UsageSummary { path: r"C:\".into(), total: 3 << 40, items: 4, limited: true, elapsed: 2.5 };
+        let growth = GrowthSummary { since: 1_700_000_000_000, oldest: 1_690_000_000_000, drive_then: 2 << 40, drive_now: 3 << 40 };
+        let summary = UsageSummary { path: r"C:\".into(), total: 3 << 40, items: 4, limited: true, elapsed: 2.5, growth: Some(growth) };
+        let previous = [2 << 40, NEW, 1 << 34, WRITTEN];
         let mut wire = Vec::new();
         write_frame(&mut wire, FRAME_USAGE, &payload).unwrap();
+        write_frame(&mut wire, FRAME_GROWTH, &encode_growth(&previous)).unwrap();
         write_message(&mut wire, &Message::Usage(summary.clone())).unwrap();
         let mut reader = wire.as_slice();
         let (kind, payload) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
         assert_eq!((kind, decode_usage(&payload).unwrap()), (FRAME_USAGE, nodes.clone()));
+        let (kind, earlier) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
+        assert_eq!((kind, decode_growth(&earlier).unwrap()), (FRAME_GROWTH, previous.to_vec()));
+        assert!(decode_growth(&earlier[..9]).is_err());
         let (kind, json) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
-        assert_eq!((kind, serde_json::from_slice::<Message>(&json).unwrap()), (FRAME_JSON, Message::Usage(summary)));
+        assert_eq!((kind, serde_json::from_slice::<Message>(&json).unwrap()), (FRAME_JSON, Message::Usage(summary.clone())));
         assert!(read_frame(&mut reader, MAX_FRAME).unwrap().is_none());
+        // A summary without growth reads as one from before it, and the other way round.
+        let plain = UsageSummary { growth: None, ..summary };
+        let json = serde_json::to_string(&Message::Usage(plain.clone())).unwrap();
+        assert!(!json.contains("growth"));
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), Message::Usage(plain));
 
         // Damage is refused rather than handed to the UI.
         assert!(decode_usage(&payload[..payload.len() - 1]).is_err());

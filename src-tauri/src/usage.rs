@@ -5,7 +5,7 @@
 use crate::fsx::{blocking, ms_since, stat};
 use crate::sizes::{self, Node};
 use crate::AppState;
-use shadui_index::proto::{UsageNode, NO_PARENT};
+use shadui_index::proto::{GrowthSummary, UsageNode, NEW, NO_PARENT, WRITTEN};
 use std::collections::VecDeque;
 use std::io::Read;
 use std::path::Path;
@@ -19,14 +19,18 @@ const ENGINE_DUST: u32 = 1;
 /// A folder in an archive, mapped from the archive's own list of entries: this plus the archive's
 /// format code (2 a zip, 3 a 7z…).
 const ENGINE_ARCHIVE: u32 = 2;
-/// Flags: smaller items were left out; the index service runs but is too old to map.
+/// Flags: smaller items were left out; the index service runs but is too old to map; what grew comes
+/// along (see `encode_map`); what grew was asked for, but the index service is too old to say.
 const LIMITED: u32 = 1;
 const SERVICE_TOO_OLD: u32 = 2;
+const GROWTH: u32 = 4;
+const GROWTH_TOO_OLD: u32 = 8;
 
 /// What the index said to a map request.
 enum Indexed {
-    /// The map, and whether it left smaller items out.
-    Map(Vec<UsageNode>, bool),
+    /// The map, whether it left smaller items out, and what its items held at a mark (when asked
+    /// and known).
+    Map(Vec<UsageNode>, bool, Option<(Vec<u64>, GrowthSummary)>),
     /// The service runs, but is a version from before maps: it drops a request it doesn't know.
     TooOld,
     /// It doesn't run, isn't allowed, or doesn't have the folder.
@@ -36,43 +40,50 @@ enum Indexed {
 /// Asks the index for its map of `path`. Junctions and links are resolved first: the index knows each
 /// folder by its real path.
 #[cfg(windows)]
-fn index_usage(path: &str, depth: u32, max_items: u32) -> Indexed {
+fn index_usage(path: &str, depth: u32, max_items: u32, since: Option<i64>) -> Indexed {
     use shadui_index::client::{usage, Error};
     use shadui_index::proto::UsageRequest;
     let Ok(real) = std::fs::canonicalize(path) else { return Indexed::No };
-    match usage(&UsageRequest { path: real.to_string_lossy().into_owned(), depth, max_items }) {
-        Ok((nodes, summary)) => Indexed::Map(nodes, summary.limited),
+    match usage(&UsageRequest { path: real.to_string_lossy().into_owned(), depth, max_items, since }) {
+        Ok(map) => Indexed::Map(map.nodes, map.summary.limited, map.previous.zip(map.summary.growth)),
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => Indexed::TooOld,
         Err(_) => Indexed::No,
     }
 }
 
 #[cfg(not(windows))]
-fn index_usage(_: &str, _: u32, _: u32) -> Indexed {
+fn index_usage(_: &str, _: u32, _: u32, _: Option<i64>) -> Indexed {
     Indexed::No
 }
 
 /// Maps `path` down to `depth` levels with at most `max_items` items (the biggest), as one binary
-/// buffer (see `encode_map`). Each tab maps in its own `lane`, so one pane's dust run doesn't stop the
-/// other's. Rejects with "cancelled" when a newer map in the lane, or Stop, ended its dust run.
+/// buffer (see `encode_map`); with `since` (Unix ms), what each item held at the index's daily mark
+/// closest to then comes along. Each tab maps in its own `lane`, so one pane's dust run doesn't stop
+/// the other's. Rejects with "cancelled" when a newer map in the lane, or Stop, ended its dust run.
 #[tauri::command]
-pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, max_items: u32, lane: String) -> Result<Response, String> {
+pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, max_items: u32, lane: String, since: Option<f64>) -> Result<Response, String> {
     let started = Instant::now();
     let (depth, max_items) = (depth.clamp(1, 32), max_items.clamp(1, 500_000));
+    let since = since.map(|s| s as i64);
     let slot = state.usage.slot(&lane);
     let asked = path.clone();
     if let Some(found) = blocking(move || Ok(crate::archive::usage(&asked, depth, max_items))).await? {
         slot.kill();
         let (nodes, limited, format) = found?;
         let engine = ENGINE_ARCHIVE + format.code() as u32;
-        return Ok(Response::new(encode_map(&path, &nodes, ms_since(started), engine, if limited { LIMITED } else { 0 })));
+        return Ok(Response::new(encode_map(&path, &nodes, ms_since(started), engine, if limited { LIMITED } else { 0 }, None)));
     }
     let asked = path.clone();
-    let too_old = match blocking(move || Ok(index_usage(&asked, depth, max_items))).await? {
-        Indexed::Map(nodes, limited) => {
+    let too_old = match blocking(move || Ok(index_usage(&asked, depth, max_items, since))).await? {
+        Indexed::Map(nodes, limited, growth) => {
             // A dust run still going in this tab is for a map no longer wanted.
             slot.kill();
-            return Ok(Response::new(encode_map(&path, &nodes, ms_since(started), ENGINE_INDEX, if limited { LIMITED } else { 0 })));
+            let mut flags = if limited { LIMITED } else { 0 };
+            if since.is_some() && growth.is_none() {
+                flags |= GROWTH_TOO_OLD;
+            }
+            let growth = growth.as_ref().map(|(previous, summary)| (previous.as_slice(), summary));
+            return Ok(Response::new(encode_map(&path, &nodes, ms_since(started), ENGINE_INDEX, flags, growth)));
         }
         Indexed::TooOld => SERVICE_TOO_OLD,
         Indexed::No => 0,
@@ -102,7 +113,7 @@ pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, ma
         if !limited {
             nodes = without_folder_entries(nodes, depth);
         }
-        Ok(Response::new(encode_map(&path, &nodes, ms_since(started), ENGINE_DUST, too_old | if limited { LIMITED } else { 0 })))
+        Ok(Response::new(encode_map(&path, &nodes, ms_since(started), ENGINE_DUST, too_old | if limited { LIMITED } else { 0 }, None)))
     })
     .await
 }
@@ -189,23 +200,42 @@ fn fill_in(nodes: &mut [(UsageNode, String)]) {
 /// viewed in place as a typed array. All little-endian:
 ///   0: u32 count · 4: u32 path length (UTF-8 bytes) · 8: f64 milliseconds spent
 ///   16: u32 engine (0 index, 1 dust, 2 plus an archive's format code for its list of entries: 2 a zip's, 3 a 7z's…) · 20: u32 flags (1: smaller items left out; 2: the index service
-///   runs but is too old to map)
-///   24: f64 size[count] · then f64 modified[count] · u32 attrs[count] (the directory bit set on
-///   folders) · u32 parent[count] (u32::MAX for the folder mapped, always first) · u32 name
-///   length[count] (UTF-16 units) · the path (UTF-8) · every name back to back (UTF-8).
-pub fn encode_map(path: &str, nodes: &[UsageNode], elapsed: f64, engine: u32, flags: u32) -> Vec<u8> {
+///   runs but is too old to map; 4: what grew comes along; 8: what grew was asked for, but the index
+///   service is too old to say)
+///   24, with flag 4: f64 since (the mark's Unix ms) · f64 oldest mark · f64 the drive's total then
+///   · f64 now
+///   then f64 size[count] · f64 modified[count] · with flag 4, f64 previous[count] (each item's size
+///   at the mark; -1: it wasn't there; -2: a file written since) · u32 attrs[count] (the directory
+///   bit set on folders) · u32 parent[count] (u32::MAX for the folder mapped, always first) · u32
+///   name length[count] (UTF-16 units) · the path (UTF-8) · every name back to back (UTF-8).
+pub fn encode_map(path: &str, nodes: &[UsageNode], elapsed: f64, engine: u32, flags: u32, growth: Option<(&[u64], &GrowthSummary)>) -> Vec<u8> {
     let names: usize = nodes.iter().map(|n| n.name.len()).sum();
-    let mut out = Vec::with_capacity(24 + 28 * nodes.len() + path.len() + names);
+    let mut out = Vec::with_capacity(56 + 36 * nodes.len() + path.len() + names);
     out.extend((nodes.len() as u32).to_le_bytes());
     out.extend((path.len() as u32).to_le_bytes());
     out.extend(elapsed.to_le_bytes());
     out.extend(engine.to_le_bytes());
-    out.extend(flags.to_le_bytes());
+    out.extend((flags | if growth.is_some() { GROWTH } else { 0 }).to_le_bytes());
+    if let Some((_, summary)) = growth {
+        for value in [summary.since as f64, summary.oldest as f64, summary.drive_then as f64, summary.drive_now as f64] {
+            out.extend(value.to_le_bytes());
+        }
+    }
     for n in nodes {
         out.extend((n.size as f64).to_le_bytes());
     }
     for n in nodes {
         out.extend((n.modified as f64).to_le_bytes());
+    }
+    if let Some((previous, _)) = growth {
+        for &then in previous {
+            let then = match then {
+                NEW => -1.0,
+                WRITTEN => -2.0,
+                then => then as f64,
+            };
+            out.extend(then.to_le_bytes());
+        }
     }
     for n in nodes {
         out.extend((n.attrs | if n.dir { 0x10 } else { 0 }).to_le_bytes());
@@ -233,7 +263,7 @@ mod tests {
             UsageNode { parent: NO_PARENT, name: String::new(), dir: true, size: 3 << 40, modified: 0, attrs: 0x16 },
             UsageNode { parent: 0, name: "é😀.mkv".into(), dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x20 },
         ];
-        let bytes = encode_map(r"D:\", &nodes, 2.5, ENGINE_DUST, LIMITED | SERVICE_TOO_OLD);
+        let bytes = encode_map(r"D:\", &nodes, 2.5, ENGINE_DUST, LIMITED | SERVICE_TOO_OLD, None);
         let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
         assert_eq!((u32_at(0), u32_at(4), f64_at(8), u32_at(16), u32_at(20)), (2, 3, 2.5, ENGINE_DUST, LIMITED | SERVICE_TOO_OLD));
@@ -244,6 +274,17 @@ mod tests {
         // "é😀.mkv" is 7 UTF-16 units: é, a surrogate pair, then ".mkv".
         assert_eq!((u32_at(72), u32_at(76)), (0, 7));
         assert_eq!(std::str::from_utf8(&bytes[80..]).unwrap(), r"D:\é😀.mkv");
+
+        // What grew: the mark's block after the header, and each item's earlier size after the dates.
+        let summary = GrowthSummary { since: 1_000, oldest: 500, drive_then: 7, drive_now: 9 };
+        let bytes = encode_map(r"D:\", &nodes, 2.5, ENGINE_INDEX, 0, Some((&[2 << 40, WRITTEN], &summary)));
+        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+        assert_eq!(u32_at(20), GROWTH);
+        assert_eq!((f64_at(24), f64_at(32), f64_at(40), f64_at(48)), (1_000.0, 500.0, 7.0, 9.0));
+        assert_eq!((f64_at(56), f64_at(72), f64_at(88), f64_at(96)), ((3u64 << 40) as f64, 0.0, (2u64 << 40) as f64, -2.0));
+        assert_eq!((u32_at(104), u32_at(112)), (0x16, NO_PARENT));
+        assert_eq!(std::str::from_utf8(&bytes[128..]).unwrap(), r"D:\é😀.mkv");
     }
 
     #[test]

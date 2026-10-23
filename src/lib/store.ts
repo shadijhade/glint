@@ -74,6 +74,8 @@ export interface Settings {
     terminalShell: string;
     terminalHeight: number | null;
     terminalFollow: boolean;
+    // The disk-usage map's Growth colors: what grew in the last this many days (1, 7 or 30)
+    growthDays: number;
 }
 
 /** The list's columns whose width can be dragged (the name takes what's left). */
@@ -128,6 +130,7 @@ export const DEFAULT_SETTINGS: Settings = {
     terminalShell: '',
     terminalHeight: null,
     terminalFollow: true,
+    growthDays: 7,
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */

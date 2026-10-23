@@ -6,7 +6,7 @@ use crate::proto::{SearchRequest, UsageRequest};
 use crate::query::{Excludes, NameMatcher};
 use crate::tree::{Search, ROOT};
 use crate::volume::Volume;
-use crate::{access, install, service, snapshot, win};
+use crate::{access, install, proto, service, snapshot, win};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
@@ -23,8 +23,9 @@ shadui-index: instant file name search and folder sizes for Glint
   status                      what the running service has indexed
   search QUERY [--in PATH]... [--max N] [--hidden] [--repeat N] [--print | --long]
   sizes PATH                  folder sizes from the running service
-  usage PATH [--depth N] [--max N] [--repeat N]
-                              a disk-usage map from the running service, timed end to end
+  usage PATH [--depth N] [--max N] [--repeat N] [--grew DAYS]
+                              a disk-usage map from the running service, timed end to end;
+                              --grew: what grew since the mark closest to DAYS ago
   bench [C:]...               read drives directly and time indexing and queries (administrator)
 ";
 
@@ -213,12 +214,13 @@ fn search(args: &[String]) -> i32 {
 /// A disk-usage map through the running service, timed end to end; prints what's biggest at the top.
 fn usage(args: &[String]) -> i32 {
     let number = |flag: &str, default: u32| values(args, flag).first().and_then(|v| v.parse().ok()).unwrap_or(default);
-    let request = UsageRequest { path: args[0].clone(), depth: number("--depth", 4), max_items: number("--max", 20_000) };
+    let since = values(args, "--grew").first().and_then(|d| d.parse::<i64>().ok()).map(|days| engine::now_ms() - days * 86_400_000);
+    let request = UsageRequest { path: args[0].clone(), depth: number("--depth", 4), max_items: number("--max", 20_000), since };
     let repeat = number("--repeat", 1).max(1);
     let mut times = Vec::new();
     for round in 0..repeat {
         let started = Instant::now();
-        let (nodes, summary) = match client::usage(&request) {
+        let map = match client::usage(&request) {
             Ok(map) => map,
             Err(e) => {
                 eprintln!("{e}");
@@ -227,10 +229,24 @@ fn usage(args: &[String]) -> i32 {
         };
         times.push(ms(started));
         if round == 0 {
+            let summary = &map.summary;
             let more = if summary.limited { ", the biggest" } else { "" };
             println!("{} bytes in {}: {} items{more}, {} levels down ({:.2} ms in the service)", summary.total, summary.path, summary.items, request.depth, summary.elapsed);
-            for node in nodes.iter().filter(|n| n.parent == 0).take(20) {
-                println!("{:>16}  {}{}", node.size, node.name, if node.dir { "\\" } else { "" });
+            if let Some(growth) = summary.growth {
+                let days = |at: i64| (engine::now_ms() - at) as f64 / 86_400_000.0;
+                println!("    compared with {:.1} days ago (marks go back {:.1} days); the drive: {} then, {} now", days(growth.since), days(growth.oldest), growth.drive_then, growth.drive_now);
+            } else if since.is_some() {
+                println!("    this service keeps no marks of what grew");
+            }
+            let previous = map.previous.as_deref();
+            for (i, node) in map.nodes.iter().enumerate().filter(|(_, n)| n.parent == 0).take(20) {
+                let grew = match previous.map(|p| p[i]) {
+                    Some(proto::NEW) => "  new".to_string(),
+                    Some(proto::WRITTEN) => "  written".to_string(),
+                    Some(then) => format!("  {:+}", node.size as i128 - then as i128),
+                    None => String::new(),
+                };
+                println!("{:>16}  {}{}{grew}", node.size, node.name, if node.dir { "\\" } else { "" });
             }
         }
     }

@@ -127,6 +127,8 @@ Bigger tiles ask for bigger thumbnails, one screen pixel to one (Huge at 125% sc
 
 **Type** and **Age** (or `T`) switch the colors between kinds of file and how long ago each changed, from today (hot) to over a year ago (frozen).
 
+**Growth** colors what changed in the last day, 7 days or 30 days: folders that are new, doubled, grew, stayed the same or shrank, and files written to since. A line above the map says where it went ("Local Disk (C:) grew 14.2 GB since Fri, Oct 16 · Docker\wsl +9.1 GB · Downloads +3 GB"), and hovering a folder says what it was ("Was 2.1 GB on Fri, Oct 16 · +1.4 GB"). It comes from instant search: once a day its service takes a mark, and a folder's size is noted just before its first change after a mark, so every folder's size at each of the last 40 marks is exact while only the folders that changed take room.
+
 With instant search on, the map comes from the index in one request: all of `C:\` is on screen 53 ms after the click. Otherwise dust measures the folder: going into a folder shows its part of the map while dust measures it, and going back out shows the map you left. Each tab has its own map, and the status bar shows which engine drew it and how long it took.
 
 <table>

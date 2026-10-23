@@ -24,6 +24,10 @@ export interface UsageMap {
     limited: boolean;
     /** dust drew it because the instant search service runs, but is a version from before maps. */
     serviceTooOld: boolean;
+    /** What grew was asked for, but the instant search service running is a version from before it. */
+    growthTooOld: boolean;
+    /** What each item held at the index's daily mark closest to the time asked (index maps only). */
+    growth: UsageGrowth | null;
     count: number;
     size: Float64Array;
     modified: Float64Array;
@@ -37,6 +41,22 @@ export interface UsageMap {
     end: Uint32Array;
 }
 
+/** What the items of a map held at a daily mark of the index's. */
+export interface UsageGrowth {
+    /** When the mark was taken (ms). */
+    since: number;
+    /** The oldest mark there is: how far back growth goes. */
+    oldest: number;
+    /** The whole drive's total then and now. */
+    driveThen: number;
+    driveNow: number;
+    /** Each item's size at the mark, or WAS_NOT_THERE, or WRITTEN_SINCE (a file; what it held isn't kept). */
+    previous: Float64Array;
+}
+
+export const WAS_NOT_THERE = -1;
+export const WRITTEN_SINCE = -2;
+
 export const isFolder = (map: UsageMap, i: number) => (map.attrs[i] & 0x10) !== 0;
 
 const utf8 = new TextDecoder();
@@ -49,13 +69,22 @@ export function decodeUsage(buffer: ArrayBuffer): UsageMap {
     const elapsed = view.getFloat64(8, true);
     const engine = ENGINES[view.getUint32(16, true)] ?? "dust";
     const flags = view.getUint32(20, true);
-    const [limited, serviceTooOld] = [(flags & 1) !== 0, (flags & 2) !== 0];
-    const size = new Float64Array(buffer, 24, count);
-    const modified = new Float64Array(buffer, 24 + 8 * count, count);
-    const attrs = new Uint32Array(buffer, 24 + 16 * count, count);
-    const parent = new Uint32Array(buffer, 24 + 20 * count, count);
-    const lengths = new Uint32Array(buffer, 24 + 24 * count, count);
-    const text = 24 + 28 * count;
+    const [limited, serviceTooOld, grew, growthTooOld] = [(flags & 1) !== 0, (flags & 2) !== 0, (flags & 4) !== 0, (flags & 8) !== 0];
+    // With what grew, the mark's numbers come first and each item's earlier size after its date.
+    let at = grew ? 56 : 24;
+    const size = new Float64Array(buffer, at, count);
+    const modified = new Float64Array(buffer, at + 8 * count, count);
+    at += 16 * count;
+    let growth: UsageGrowth | null = null;
+    if (grew) {
+        const [since, oldest, driveThen, driveNow] = [24, 32, 40, 48].map((k) => view.getFloat64(k, true));
+        growth = { since, oldest, driveThen, driveNow, previous: new Float64Array(buffer, at, count) };
+        at += 8 * count;
+    }
+    const attrs = new Uint32Array(buffer, at, count);
+    const parent = new Uint32Array(buffer, at + 4 * count, count);
+    const lengths = new Uint32Array(buffer, at + 8 * count, count);
+    const text = at + 12 * count;
     const path = utf8.decode(new Uint8Array(buffer, text, pathBytes));
     const all = utf8.decode(new Uint8Array(buffer, text + pathBytes));
     const names = new Array<string>(count);
@@ -73,7 +102,33 @@ export function decodeUsage(buffer: ArrayBuffer): UsageMap {
         if (end[p] === 0) first[p] = i;
         end[p] = i + 1;
     }
-    return { path, engine, elapsed, limited, serviceTooOld, count, size, modified, attrs, parent, names, paths, first, end };
+    return { path, engine, elapsed, limited, serviceTooOld, growthTooOld, growth, count, size, modified, attrs, parent, names, paths, first, end };
+}
+
+/** How much item `i` grew since the mark (all of it, if it wasn't there); 0 for a file written since. */
+export function grewBy(map: UsageMap, i: number) {
+    const then = map.growth?.previous[i] ?? map.size[i];
+    return then === WAS_NOT_THERE ? map.size[i] : then === WRITTEN_SINCE ? 0 : map.size[i] - then;
+}
+
+/**
+ * Where most of the growth went: the deepest folders that grew by at least 5% of what the folder
+ * mapped grew and that no folder in them holds 70% of. Biggest first, at most `max`.
+ */
+export function growthLeaders(map: UsageMap, max = 3): number[] {
+    const total = grewBy(map, 0);
+    if (!map.growth || total <= 0) return [];
+    const leaders = new Set<number>();
+    for (let i = 1; i < map.count; i++) {
+        const grew = grewBy(map, i);
+        if (!isFolder(map, i) || grew < total * 0.05) continue;
+        let concentrated = false;
+        for (let c = map.first[i]; c < map.end[i] && !concentrated; c++) concentrated = isFolder(map, c) && grewBy(map, c) >= grew * 0.7;
+        if (!concentrated) leaders.add(i);
+    }
+    // A folder with one of them inside is told by that one.
+    for (const i of [...leaders]) for (let p = map.parent[i]; p !== NO_PARENT; p = map.parent[p]) leaders.delete(p);
+    return [...leaders].sort((a, b) => grewBy(map, b) - grewBy(map, a)).slice(0, max);
 }
 
 /** Every node as a file-list entry (the folder mapped first), for selection, menus and Quick Look. */
@@ -259,6 +314,7 @@ function pick(map: UsageMap, place: Int32Array, kept: number, size = map.size): 
         count: kept,
         size: take(size, (n) => new Float64Array(n)),
         modified: take(map.modified, (n) => new Float64Array(n)),
+        growth: map.growth && { ...map.growth, previous: take(map.growth.previous, (n) => new Float64Array(n)) },
         attrs: take(map.attrs, (n) => new Uint32Array(n)),
         parent,
         names: index.map((i) => map.names[i]),

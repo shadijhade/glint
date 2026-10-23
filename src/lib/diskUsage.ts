@@ -3,6 +3,7 @@ import type { FileEntry } from "./entries";
 import { activeTabId, indexed, reload, setView, tabState, updateTab, useExplorer, type ViewMode } from "./explorer";
 import { cancelDiskUsage, diskUsage, resolvePath } from "./fs";
 import { samePath, THIS_PC } from "./paths";
+import { useStore } from "./store";
 import { pruneUsage, subUsage, type UsageEngine, type UsageMap, usageEntries } from "./usage";
 
 /** How many levels down a map goes, and the most items it shows (the biggest; the rest are grouped). */
@@ -125,7 +126,8 @@ export async function mapUsage(tab: string, path: string, started = inputTime(),
         if (now?.id === id) save(tab, { ...now, ...patch });
     };
     try {
-        const map = await diskUsage(path, DEPTH, ITEMS, tab);
+        // The index tells what grew too, for the Growth colors (it costs it a millisecond or two).
+        const map = await diskUsage(path, DEPTH, ITEMS, tab, Date.now() - useStore.getState().settings.growthDays * 86_400_000);
         serviceTooOld = map.serviceTooOld;
         if (map.engine === "dust") remember(map);
         update({ map, running: false, engine: map.engine, preview: false });

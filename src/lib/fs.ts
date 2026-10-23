@@ -169,8 +169,9 @@ export const cancelFolderSizes = (lane: string) => invoke("cancel_folder_sizes",
  * from the index when it has the folder, else measured by dust. Each tab maps in its own `lane`;
  * rejects with "cancelled" when superseded there or stopped.
  */
-export const diskUsage = async (path: string, depth: number, maxItems: number, lane: string): Promise<UsageMap> =>
-    decodeUsage(await invoke<ArrayBuffer>("disk_usage", { path, depth, maxItems, lane }));
+/** A map of `path`; `since` (ms) also asks what each item held at the index's daily mark closest to then. */
+export const diskUsage = async (path: string, depth: number, maxItems: number, lane: string, since?: number): Promise<UsageMap> =>
+    decodeUsage(await invoke<ArrayBuffer>("disk_usage", { path, depth, maxItems, lane, since: since ?? null }));
 export const cancelDiskUsage = (lane: string) => invoke("cancel_disk_usage", { lane });
 
 export interface ThumbRequest {
