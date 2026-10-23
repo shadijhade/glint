@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { CaseSensitive, FolderOpen, Regex, Replace, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
+import { Braces, CaseSensitive, FolderOpen, Regex, Replace, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
 import { defaultTextSearchFolder } from "@/lib/explorer";
+import { useRewrite } from "@/lib/ripgrep";
 import { SearchOptions, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { ToolNeeded } from "./ToolNeeded";
@@ -11,6 +12,7 @@ const TOGGLES: { key: keyof SearchOptions; hotkey: string; icon: typeof Regex; l
     { key: "caseSensitive", hotkey: "c", icon: CaseSensitive, label: "Match case (Alt+C)" },
     { key: "wholeWord", hotkey: "w", icon: WholeWord, label: "Whole word (Alt+W)" },
     { key: "regex", hotkey: "r", icon: Regex, label: "Regular expression (Alt+R)" },
+    { key: "code", hotkey: "a", icon: Braces, label: "Code pattern, by its structure (Alt+A): console.log($MSG), $X.unwrap() (ast-grep)" },
 ];
 
 const fieldClass = "h-9 min-w-0 flex-1 bg-transparent px-2 text-sm outline-hidden placeholder:text-muted-foreground";
@@ -40,8 +42,9 @@ interface SearchBarProps {
 
 export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }: SearchBarProps) {
     const { query, setQuery, path, setPath, options, setOption, history } = useStore();
-    const [replaceOpen, setReplaceOpen] = useState(false);
-    const [replacement, setReplacement] = useState("");
+    const { open: replaceOpen, text: replacement } = useRewrite();
+    const setReplaceOpen = (open: boolean | ((was: boolean) => boolean)) => useRewrite.setState((s) => ({ open: typeof open === "function" ? open(s.open) : open }));
+    const setReplacement = (text: string) => useRewrite.setState({ text });
     const queryRef = useRef<HTMLTextAreaElement>(null);
     const recentPaths = useMemo(() => [...new Set(history.map((h) => h.path))].slice(0, 20), [history]);
 
@@ -104,13 +107,22 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={onQueryKeyDown}
-                        placeholder="Search for text…  (Shift+Enter adds a line)"
+                        placeholder={options.code ? "A code pattern…  console.log($MSG), $X.unwrap()  ($$$ for any number)" : "Search for text…  (Shift+Enter adds a line)"}
                         aria-label="Search query"
                         className={cn(fieldClass, "h-auto max-h-40 min-h-9 resize-none py-2 font-mono placeholder:font-sans field-sizing-content")}
                     />
                     <div className="flex items-center gap-0.5 pt-1">
                         {TOGGLES.map(({ key, icon: Icon, label }) => (
-                            <Toggle key={key} pressed={options[key]} onClick={() => setOption(key, !options[key])} title={label} aria-label={label}>
+                            // A code pattern has no case, words or regular expression of its own.
+                            <Toggle
+                                key={key}
+                                pressed={options[key]}
+                                disabled={options.code && key !== "code"}
+                                onClick={() => setOption(key, !options[key])}
+                                title={label}
+                                aria-label={label}
+                                className="disabled:pointer-events-none disabled:opacity-40"
+                            >
                                 <Icon />
                             </Toggle>
                         ))}
@@ -129,7 +141,7 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                             value={replacement}
                             onChange={(e) => setReplacement(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && canReplace && onReplace(replacement)}
-                            placeholder={options.regex ? "Replace with…  ($1 inserts a capture group)" : "Replace with…"}
+                            placeholder={options.code ? "Rewrite to…  logger.info($MSG)  (Enter shows what each match becomes)" : options.regex ? "Replace with…  ($1 inserts a capture group)" : "Replace with…"}
                             aria-label="Replacement"
                             className={cn(fieldClass, "font-mono placeholder:font-sans")}
                         />
@@ -177,4 +189,11 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
  */
 export function RipgrepCard() {
     return <ToolNeeded id="ripgrep" icon={TextSearch} why="ripgrep, which searches inside files, is missing from this copy of Glint." className="mx-3 mt-3" />;
+}
+
+/** Shown while code patterns are on and ast-grep, which searches them, isn't installed. */
+export function AstGrepCard() {
+    const code = useStore((s) => s.options.code);
+    if (!code) return null;
+    return <ToolNeeded id="ast-grep" icon={Braces} why="Code patterns are searched by ast-grep, which knows 20-odd languages' syntax: install it to search by code's structure." className="mx-3 mt-3" />;
 }
