@@ -54,6 +54,29 @@ pub async fn index_status() -> Result<IndexInfo, String> {
     blocking(|| Ok(info())).await
 }
 
+/// Every entry listed from the index, in a folder Windows keeps closed to this user: read-only, and
+/// it can't be opened (Glint's own bit, which Windows doesn't use; `ATTR.closed` in the UI).
+pub const CLOSED: u32 = 0x8000_0000;
+
+/// What's right inside a folder Windows keeps this user out of, from the index (which the service
+/// reads as the system): None when instant search is off, hasn't got the drive, or is from before it
+/// could list folders.
+#[cfg(windows)]
+pub(crate) fn listing(path: &str) -> Option<Vec<crate::fsx::Entry>> {
+    let hits = shadui_index::client::list(path).ok()?;
+    let entries = hits.into_iter().map(|hit| {
+        let name = hit.path.rsplit('\\').next().unwrap_or_default().to_string();
+        // As a folder's own listing has them: a folder's size is measured apart.
+        crate::fsx::Entry { name, path: None, dir: hit.dir, size: if hit.dir { 0 } else { hit.size }, modified: hit.modified, attrs: hit.attrs | CLOSED }
+    });
+    Some(entries.collect())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn listing(_: &str) -> Option<Vec<crate::fsx::Entry>> {
+    None
+}
+
 /// The service executable that ships next to the app's own. A dev build (`tauri dev` builds only the
 /// app) also takes one from the other build profile's folder. Whatever this returns is installed as a
 /// LocalSystem service (or run elevated to get into a folder), so release builds never look anywhere else.

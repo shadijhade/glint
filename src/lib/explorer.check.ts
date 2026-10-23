@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
-import { archiveFormat, ATTR, compareEntries, decodeListing, type FileEntry, isArchived, isArchiveFile, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
+import { archiveFormat, ATTR, compareEntries, decodeListing, type FileEntry, isArchived, isArchiveFile, isClosed, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
@@ -73,7 +73,7 @@ assert.equal(match("size:big"), "");
 // Binary listings: built here with the layout fsx.rs's encode_listing writes (its test checks the offsets)
 type Item = { name: string; dir: boolean; size: number; modified: number; attrs: number };
 type InArchiveHeader = { archive: number; outer: number; entries: number; cached: boolean; readMs: number };
-function encodeListing(path: string, items: Item[], elapsed: number, archive?: InArchiveHeader) {
+function encodeListing(path: string, items: Item[], elapsed: number, archive?: InArchiveHeader, fromIndex = false) {
     const encoder = new TextEncoder();
     const pathBytes = encoder.encode(path);
     const names = encoder.encode(items.map((e) => e.name).join(""));
@@ -87,9 +87,9 @@ function encodeListing(path: string, items: Item[], elapsed: number, archive?: I
         view.setUint32(16, archive.archive, true);
         view.setUint32(20, archive.outer, true);
         view.setUint32(24, archive.entries, true);
-        view.setUint32(28, archive.cached ? 1 : 0, true);
         view.setFloat64(32, archive.readMs, true);
     }
+    view.setUint32(28, (archive?.cached ? 1 : 0) | (fromIndex ? 2 : 0), true);
     items.forEach((e, i) => {
         view.setFloat64(40 + 8 * i, e.size, true);
         view.setFloat64(40 + 8 * n + 8 * i, e.modified, true);
@@ -114,6 +114,15 @@ assert.deepEqual(
 );
 assert.deepEqual(decodeListing(encodeListing("D:\\", [], 0)).entries, []);
 assert.equal(decoded.archive, undefined, "a folder on disk");
+assert.equal(decoded.fromIndex, undefined, "a folder on disk");
+
+// A folder Windows keeps closed, listed from instant search's index: the listing says so, and so does each item
+const closed = decodeListing(
+    encodeListing("C:\\PerfLogs", [{ name: "System", dir: true, size: 0, modified: 5, attrs: ATTR.closed }, { name: "trace.etl", dir: false, size: 7, modified: 6, attrs: ATTR.closed | 0x20 }], 0.4, undefined, true)
+);
+assert.equal(closed.fromIndex, true);
+assert.deepEqual(closed.entries.map((e) => [e.path, e.dir, isClosed(e)]), [["C:\\PerfLogs\\System", true, true], ["C:\\PerfLogs\\trace.etl", false, true]]);
+assert.ok(!isClosed(entry("plain.txt")));
 
 // A folder in an archive (here one in an archive in an archive): its listing says where the archives are
 const inside = "C:\\Dö\\photos.zip\\2024\\old.7z\\summer";

@@ -77,12 +77,13 @@ import {
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { compareEntries, type DiffStatus, type FileEntry, type InArchive, isArchived, isArchiveFile, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { compareEntries, type DiffStatus, type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     archiveOf,
     calcSizes,
     canReopenTab,
     clearFind,
+    closedNotice,
     closeOtherTabs,
     compressEntries,
     closeTab,
@@ -196,6 +197,8 @@ const properties = (path: string) => showProperties(path).catch(report("Couldn't
 const revealArchive = (archive: InArchive) => revealItemInDir(archive.outer).catch(report("Couldn't open File Explorer"));
 /** A menu's last line in an archive: why the commands that change things are greyed out. */
 const READ_ONLY_NOTE = { label: "Read-only: inside an archive", icon: PencilOff, disabled: true, onSelect: () => {} };
+/** In a folder listed from the index: why nothing opens or changes. */
+const CLOSED_NOTE = { label: "Read-only: Windows keeps this folder closed", icon: FolderLock, disabled: true, onSelect: () => {} };
 /** Undo, saying what it takes back (the background menu, the palette). */
 const undoLabel = () => {
     const step = nextUndo();
@@ -273,6 +276,38 @@ function NoAccessView({ tab, path, info }: { tab: string; path: string; info: No
     );
 }
 
+/** Over a folder listed from instant search's index: Windows keeps it closed, so it's read-only here, with Get access where that can help. */
+function ClosedBar({ tab, info }: { tab: string; info: NoAccess | null }) {
+    const [working, setWorking] = useState(false);
+    const canGet = !!info && !info.remote && !info.refused;
+    return (
+        <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-amber-500/10 px-3 py-1 text-sm">
+            <FolderLock className="size-4 shrink-0 text-amber-700 dark:text-amber-400" />
+            <span
+                className="min-w-0 flex-1 truncate"
+                title="Instant search reads each drive's file table as the system, so it knows what's here; your account still may not open or change any of it."
+            >
+                Windows keeps this folder {info?.refused ? "to itself" : "closed to you"}: shown read-only from instant search.
+            </span>
+            {canGet && (
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={working}
+                    title="Windows asks for administrator approval"
+                    onClick={async () => {
+                        setWorking(true);
+                        await getAccess(tab);
+                        setWorking(false);
+                    }}
+                >
+                    {working ? <Loader2 className="animate-spin" /> : <ShieldCheck />} Get access
+                </Button>
+            )}
+        </div>
+    );
+}
+
 /** What the active pane shows, for the toolbar and the preview pane, which sit outside the panes. */
 interface ActiveView {
     selected: FileEntry[];
@@ -303,45 +338,57 @@ interface MenuContext {
 
 /**
  * For a folder: the one open in a pane (right-click on empty space, `current`), or a place in the
- * sidebar. In an archive (`view.archive`), what would change it is greyed out, as is what needs to
- * look inside a folder Windows keeps this account out of (`view.noAccess`).
+ * sidebar. In an archive (`view.archive`), what would change it is greyed out, as it is in a folder
+ * Windows keeps this account out of (`view.noAccess`), where Get access comes first and what needs to
+ * read the folder goes, unless the index listed it (`view.fromIndex`).
  */
-function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: { find: boolean; selectAll: () => void; archive?: InArchive; noAccess?: boolean }): MenuItem[] {
+function folderMenu(
+    folder: string,
+    current: boolean,
+    ctx: MenuContext,
+    view?: { find: boolean; selectAll: () => void; archive?: InArchive; noAccess?: NoAccess | null; fromIndex?: boolean; tab?: string }
+): MenuItem[] {
     if (folder === THIS_PC) return [{ label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refreshDrives }];
     const isPinned = ctx.pinned.includes(folder);
     const find = !!view?.find;
     const archive = view?.archive;
-    const shut = !!view?.noAccess;
+    const noAccess = view?.noAccess;
+    const shut = !!noAccess;
+    const unlisted = shut && !view?.fromIndex;
+    const canGet = !!noAccess && !noAccess.remote && !noAccess.refused;
     // A pinned folder can be inside an archive too.
     const inArchive = !!archive || inArchivePath(folder);
     return [
+        canGet && { label: "Get access", icon: ShieldCheck, onSelect: () => void getAccess(view?.tab) },
+        canGet && "separator",
         !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
         !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
         current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find || !!archive || shut, onSelect: () => newItem(true) },
         current && { label: "New text document", icon: FilePlus, disabled: find || !!archive || shut, onSelect: () => newItem(false) },
         "separator",
-        { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: (current && find) || inArchive, onSelect: () => paste(folder) },
+        { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: (current && find) || inArchive || shut, onSelect: () => paste(folder) },
         current && { label: undoLabel(), icon: Undo2, shortcut: "Ctrl+Z", disabled: !nextUndo(), onSelect: () => void undo() },
-        current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", disabled: shut, onSelect: view.selectAll },
+        current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", disabled: unlisted, onSelect: view.selectAll },
         current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
         "separator",
-        current && { label: "Folder sizes", icon: HardDrive, disabled: find || shut, onSelect: calcSizes },
-        !inArchive && { label: "Search text", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
-        !inArchive && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
-        !inArchive && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
+        current && { label: "Folder sizes", icon: HardDrive, disabled: find || unlisted, onSelect: calcSizes },
+        !inArchive && !shut && { label: "Search text", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
+        !inArchive && !shut && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
+        !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
         { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
         "separator",
         archive
             ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archive) }
             : { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
-        !inArchive && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
+        !inArchive && !shut && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
         { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
         !inArchive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
         archive
             ? { label: "Archive properties", icon: Info, onSelect: () => properties(archive.outer) }
             : { label: "Properties", icon: Info, shortcut: current ? "Alt+Enter" : undefined, onSelect: () => properties(folder) },
-        archive && "separator",
+        (archive || view?.fromIndex) && "separator",
         archive && READ_ONLY_NOTE,
+        !!view?.fromIndex && CLOSED_NOTE,
     ];
 }
 
@@ -401,8 +448,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             if (pane === undefined || !under?.closest(".files")) return null;
             const s = useExplorer.getState();
             const tab = s.panes[Number(pane)] && s.tabs[s.panes[Number(pane)].active];
-            // Nothing can be dropped into an archive: it's read-only.
-            return tab && tab.path !== THIS_PC && !tab.find && !tab.listing?.archive ? tab.path : null;
+            // Nothing can be dropped into an archive (it's read-only), nor into a folder Windows keeps closed.
+            return tab && tab.path !== THIS_PC && !tab.find && !tab.listing?.archive && !tab.noAccess ? tab.path : null;
         };
         const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
             const target = activeRef.current && payload.type !== "leave" ? targetAt(payload.position) : null;
@@ -482,16 +529,19 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const chosenEntries = useActiveView.getState().selected;
         const oneArchive = chosenEntries.length === 1 && isArchiveFile(chosenEntries[0]) && !archive ? chosenEntries[0] : undefined;
         const step = nextUndo();
-        // A folder Windows keeps this account out of has nothing to list, measure or rename yet.
+        // In a folder Windows keeps this account out of, nothing changes and nothing reads it; unless
+        // the index listed it, there's nothing to measure either.
         const shut = t.noAccess;
+        const unlisted = !!shut && !t.listing;
+        const closedItems = chosenEntries.some(isClosed);
         const actions: (Command | false)[] = [
             !!shut && !shut.remote && !shut.refused && action("get-access", "Get access to this folder", ShieldCheck, () => getAccess(t.id)),
             writable && !t.find && !shut && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
             writable && !t.find && !shut && action("new-file", "New text document", FilePlus, () => newItem(false)),
             action("find", "Find files in this folder", Search, focusFind, "Ctrl+F"),
-            writable && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
-            inFolder && !t.find && !shut && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
-            inFolder && !t.find && !shut && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
+            writable && !shut && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
+            inFolder && !t.find && !unlisted && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
+            inFolder && !t.find && !unlisted && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
             canGrid &&
                 (grid
                     ? action("view-list", "Show as a list", List, () => chooseView("list", t.id), "Ctrl+Shift+6")
@@ -518,20 +568,20 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
             action("compare-panes", s.dual && s.comparePanes ? "Stop comparing panes" : "Compare panes: highlight differences between both panes", GitCompareArrows, toggleComparePanes, "Ctrl+Shift+M"),
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
-            !archive && chosenEntries.length > 0 && action("compress", "Compress the selection to a zip file", FileArchive, () => compressEntries(chosenEntries)),
-            !!oneArchive && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
+            !archive && !closedItems && chosenEntries.length > 0 && action("compress", "Compress the selection to a zip file", FileArchive, () => compressEntries(chosenEntries)),
+            !!oneArchive && !closedItems && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
             !!archive && samePath(t.path, archive.path) && samePath(archive.path, archive.outer) && action("extract-all", "Extract all: everything into a folder next to the archive", ArchiveRestore, () => extractHere(archive.outer)),
             !!other && chosen && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
-            !!other && chosen && !archive && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
+            !!other && chosen && !archive && !shut && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
-            writable && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
+            writable && !shut && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
             !!archive && action("explorer", "Show the archive in File Explorer", FileArchive, () => revealArchive(archive)),
             writable && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
             writable && !t.find && !shut && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
-            !archive && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
-            writable && action("timeline", "Recent changes in this folder", FileClock, () => inspectTimeline(t.path)),
-            writable && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
+            !archive && !closedItems && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
+            writable && !shut && action("timeline", "Recent changes in this folder", FileClock, () => inspectTimeline(t.path)),
+            writable && !shut && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
             !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
             writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
@@ -673,7 +723,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 otherListing: otherReady ? otherTab.listing : null,
                 otherPath: otherReady ? otherTab.path : null,
                 otherSizes: otherReady ? s.sizes[otherTab.path] : undefined,
-                otherWritable: otherReady && !otherTab.listing?.archive,
+                otherWritable: otherReady && !otherTab.listing?.archive && !otherTab.noAccess,
             };
         })
     );
@@ -803,6 +853,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
 
     const startBatchRename = () => {
         if (tabState(tabRef.current)?.listing?.archive) return readOnlyNotice();
+        if (tabState(tabRef.current)?.noAccess) return closedNotice(tabRef.current);
         const chosen = selectedNow();
         openBatchRename(chosen.length ? chosen : rowsRef.current, rowsRef.current);
     };
@@ -810,6 +861,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const startRename = (target?: string) => {
         const t = tabState(tabRef.current);
         if (t?.listing?.archive) return readOnlyNotice();
+        if (t?.noAccess) return closedNotice(tabRef.current);
         if (!target) {
             const chosen = selectedNow();
             if (chosen.length > 1) {
@@ -1050,11 +1102,14 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const other = dual && !!otherPaneFolder();
         // Inside an archive, nothing changes: what would is greyed out, and opening a file extracts it.
         const archived = targets.some(isArchived) ? archiveOf(tabRef.current) : undefined;
+        // Listed from the index (Windows keeps their folder closed): nothing changes, and only folders open.
+        const closed = targets.some(isClosed);
+        const fixed = !!archived || closed;
         const browses = !!one && (one.dir || isArchiveFile(one));
         // Open, then the clipboard and the other pane, archives, renaming and deleting, tools, properties.
         return [
             { label: browses ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: browses ? (one!.dir ? FolderOpen : FileArchive) : ExternalLink, shortcut: "Enter", onSelect: openSelected },
-            one && isArchiveFile(one) && !archived && { label: "Extract here", icon: ArchiveRestore, onSelect: () => extractHere(one.path) },
+            one && isArchiveFile(one) && !fixed && { label: "Extract here", icon: ArchiveRestore, onSelect: () => extractHere(one.path) },
             folders.length > 0 && {
                 label: folders.length > 1 ? `Open ${folders.length} folders in new tabs` : "Open in new tab",
                 icon: SquarePlus,
@@ -1070,51 +1125,52 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     useExplorer.setState({ quickLook: true });
                 },
             },
-            one && isArchiveFile(one) && {
+            one && isArchiveFile(one) && !closed && {
                 label: "Open with its app",
                 icon: AppWindow,
                 onSelect: () => (archived ? openArchivedWith(one, openItem) : openFile(one.path)),
             },
-            one && !one.dir && !!editorName && {
+            one && !one.dir && !closed && !!editorName && {
                 label: `Open with ${editorName}`,
                 icon: Code,
                 onSelect: () => (archived ? openArchivedWith(one, (p) => openPath(p, editorPath.trim())) : openPath(one.path, editorPath.trim()).catch(report("Couldn't open the file"))),
             },
-            one && !one.dir && {
+            one && !one.dir && !closed && {
                 label: "Open with…",
                 icon: AppWindow,
                 onSelect: () => (archived ? openArchivedWith(one, openWith) : openWith(one.path).catch(report("Couldn't open the app picker"))),
             },
-            one?.dir && !archived && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
+            one?.dir && !fixed && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
             find && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
             archived
                 ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }
                 : { label: "Show in File Explorer", icon: FolderSearch, onSelect: () => revealItemInDir(paths).catch(report("Couldn't open File Explorer")) },
             "separator",
-            { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", disabled: !!archived, onSelect: () => copyToClipboard(paths, true) },
+            { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", disabled: fixed, onSelect: () => copyToClipboard(paths, true) },
             { label: "Copy", icon: Copy, shortcut: "Ctrl+C", onSelect: () => copyToClipboard(paths, false) },
-            one?.dir && { label: "Paste into folder", icon: ClipboardPaste, disabled: !!archived, onSelect: () => paste(one.path) },
+            one?.dir && { label: "Paste into folder", icon: ClipboardPaste, disabled: fixed, onSelect: () => paste(one.path) },
             { label: paths.length === 1 ? "Copy path" : "Copy paths", icon: ClipboardCopy, shortcut: "Ctrl+Shift+C", onSelect: () => copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths") },
             dual && { label: "Copy to the other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
-            dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || !!archived, onSelect: () => copyToOtherPane(true, paths) },
+            dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || fixed, onSelect: () => copyToOtherPane(true, paths) },
             "separator",
-            !archived && { label: "Compress to zip file", icon: FileArchive, onSelect: () => compressEntries(targets) },
+            !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => compressEntries(targets) },
             "separator",
             one
-                ? { label: "Rename", icon: PenLine, shortcut: "F2", disabled: !!archived, onSelect: () => startRename(one.path) }
-                : { label: `Rename ${targets.length} items…`, icon: PenLine, shortcut: "F2", disabled: !!archived, onSelect: () => openBatchRename(targets, rowsRef.current) },
-            one && !find && !archived && { label: "Rename items in this folder…", icon: PenLine, shortcut: "Ctrl+Shift+R", onSelect: () => openBatchRename(rowsRef.current, rowsRef.current) },
-            { label: "Delete", icon: Trash2, shortcut: "Del", danger: !archived, disabled: !!archived, onSelect: () => deleteSelected(false) },
+                ? { label: "Rename", icon: PenLine, shortcut: "F2", disabled: fixed, onSelect: () => startRename(one.path) }
+                : { label: `Rename ${targets.length} items…`, icon: PenLine, shortcut: "F2", disabled: fixed, onSelect: () => openBatchRename(targets, rowsRef.current) },
+            one && !find && !fixed && { label: "Rename items in this folder…", icon: PenLine, shortcut: "Ctrl+Shift+R", onSelect: () => openBatchRename(rowsRef.current, rowsRef.current) },
+            { label: "Delete", icon: Trash2, shortcut: "Del", danger: !fixed, disabled: fixed, onSelect: () => deleteSelected(false) },
             "separator",
             one?.dir && { label: pinned.includes(one.path) ? "Unpin from sidebar" : "Pin to sidebar", icon: pinned.includes(one.path) ? PinOff : Pin, onSelect: () => togglePin(one.path) },
-            one?.dir && !archived && { label: "Search text", icon: TextSearch, onSelect: () => onSearchText(one.path) },
-            one?.dir && !archived && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(one.path) },
-            one?.dir && !archived && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(one.path) },
-            one && !one.dir && !archived && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
+            one?.dir && !fixed && { label: "Search text", icon: TextSearch, onSelect: () => onSearchText(one.path) },
+            one?.dir && !fixed && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(one.path) },
+            one?.dir && !fixed && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(one.path) },
+            one && !one.dir && !fixed && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
             !archived && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
             "separator",
             one && !archived && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
             !!archived && READ_ONLY_NOTE,
+            closed && CLOSED_NOTE,
         ];
     };
 
@@ -1130,7 +1186,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         menu.open(e, folderMenu(place, false, menuContext));
     };
 
-    const backgroundMenu = () => folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive, noAccess: !!noAccess });
+    const backgroundMenu = () =>
+        folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive, noAccess, fromIndex: !!listing?.fromIndex, tab: tabId });
 
     /**
      * The keyboard's right-click (the menu key, Shift+F10): what's selected gets its menu, at the item
@@ -1210,7 +1267,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </div>
             </Centered>
         );
-    } else if (noAccess) {
+    } else if (noAccess && !listing) {
         empty = <NoAccessView tab={tabId} path={path} info={noAccess} />;
     } else if (listing && !rows.length) {
         empty = filter ? (
@@ -1355,6 +1412,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     </div>
                 </div>
             )}
+            {listing?.fromIndex && !find && <ClosedBar tab={tabId} info={noAccess} />}
             {dual && comparePanes && !find && path !== THIS_PC && (
                 <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-1.5 border-b bg-primary/5 px-2.5 py-1 text-xs">
                     <GitCompareArrows className="size-3.5 shrink-0 text-primary" />
