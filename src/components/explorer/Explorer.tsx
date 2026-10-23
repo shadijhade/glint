@@ -80,6 +80,7 @@ import {
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { SINGLE_FILE } from "@/lib/archives";
+import { scanWithDefender } from "@/lib/defender";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
 import { compareEntries, type DiffStatus, type FileEntry, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
@@ -386,6 +387,7 @@ function folderMenu(
         !inArchive && !shut && { label: "Search text", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
         !inArchive && !shut && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
         !inArchive && !shut && { label: "Moved and deleted here", icon: History, onSelect: () => openHistory(folder) },
+        !inArchive && !shut && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender([folder]) },
         !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
         !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
         !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
@@ -624,6 +626,12 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             writable && !shut && action("cleanup", "Clean up this folder: build output and package caches", BrushCleaning, () => openCleanup(t.path)),
             writable && !shut && action("export-ncdu", "Export this folder as ncdu JSON…", FileJson, () => void exportAsNcdu(t.path)),
             !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
+            !archive &&
+                !closedItems &&
+                (inFolder || chosen) &&
+                action("defender", chosen ? "Scan the selection with Microsoft Defender" : "Scan this folder with Microsoft Defender", ShieldCheck, () =>
+                    scanWithDefender(chosen ? [...t.selection] : [t.path])
+                ),
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
             writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
             // From the theme showing, which System leaves to Windows.
@@ -1221,6 +1229,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             !!namesake && one && { label: "Compare with the other pane's", icon: GitCompareArrows, onSelect: () => (index === 0 ? compareFiles(one.path, namesake) : compareFiles(namesake, one.path)) },
             one && !one.dir && !fixed && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
             !archived && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
+            !fixed && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender(paths) },
             "separator",
             one && !archived && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
             !!archived && READ_ONLY_NOTE,
