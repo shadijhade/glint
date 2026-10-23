@@ -116,6 +116,10 @@ webview2-com = "0.39"
 # What windows' #[implement] expands to (the file engine's progress sink, for Undo); already in the build.
 windows-core = "0.62"
 windows = { version = "0.62", features = [
+    # A PDF's first page as a thumbnail, by Windows' own PDF renderer (thumbs.rs).
+    "Data_Pdf",
+    "Graphics_Imaging",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Graphics_Gdi",

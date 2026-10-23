@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { FileEntry } from "@/lib/entries";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { type FileEntry, isArchived } from "@/lib/entries";
 import { kindOf } from "@/lib/fileTypes";
 import { thumbStep } from "@/lib/grid";
 import { isHeld, useThumbnail } from "@/lib/thumbs";
@@ -47,9 +48,18 @@ function fit(picture: Picture, box: number, standIn: boolean) {
     return { width: picture.width * scale, height: picture.height * scale };
 }
 
-/** A file's thumbnail from Windows' thumbnail cache, or its type icon. */
+/** An SVG the page draws itself, up to this size. */
+const MAX_SVG = 4 << 20;
+
+/**
+ * A file's thumbnail from Windows' thumbnail cache, or its type icon. An SVG is drawn by the page itself,
+ * crisp at any size, whatever thumbnail handler Windows has for SVG (none, as it comes): as a picture,
+ * an SVG in an <img> runs nothing and loads nothing else.
+ */
 export function Thumbnail({ entry, box, lane, enabled, bottom, iconClassName, iconSize }: ThumbnailProps) {
-    const url = useThumbnail(entry, thumbStep(box, devicePixelRatio), lane, enabled);
+    const vector = enabled && entry.ext === "svg" && !isArchived(entry) && entry.size <= MAX_SVG;
+    const fromWindows = useThumbnail(entry, thumbStep(box, devicePixelRatio), lane, enabled && !vector);
+    const url = vector ? convertFileSrc(entry.path) : fromWindows;
     // The icon stays until the picture is decoded, so it never blinks out first: decoded here, or by any
     // tile (the browser has it at hand then, as when a zoom or a resize makes the tiles anew). This tile
     // keeps its own, whatever the other pane decodes of the file meanwhile.
@@ -76,7 +86,10 @@ export function Thumbnail({ entry, box, lane, enabled, bottom, iconClassName, ic
                     onLoad={(e) => {
                         if (drawn) return;
                         const img = e.currentTarget;
-                        const picture = { path: entry.path, url, width: img.naturalWidth / devicePixelRatio, height: img.naturalHeight / devicePixelRatio, box };
+                        // A drawing has no pixels of its own to keep to: it fills its square, its shape kept.
+                        const ratio = img.naturalWidth / img.naturalHeight || 1;
+                        const size = vector ? (ratio >= 1 ? { width: box, height: box / ratio } : { width: box * ratio, height: box }) : { width: img.naturalWidth / devicePixelRatio, height: img.naturalHeight / devicePixelRatio };
+                        const picture = { path: entry.path, url, ...size, box };
                         img.decode()
                             .catch(() => {})
                             .finally(() => {
@@ -84,6 +97,7 @@ export function Thumbnail({ entry, box, lane, enabled, bottom, iconClassName, ic
                                 setOwn(picture);
                             });
                     }}
+                    onError={() => vector && setOwn(null)}
                     style={drawn ? fit(drawn, box, false) : undefined}
                     className={cn(place, !drawn && "invisible")}
                 />

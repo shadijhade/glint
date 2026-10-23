@@ -550,7 +550,7 @@ fn has_thumbnail(name: &str) -> bool {
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     matches!(
         ext.as_str(),
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tif" | "tiff" | "heic" | "heif" | "avif" | "ico" | "jfif" | "dng" | "cr2" | "nef" | "arw" | "mp4" | "mov" | "m4v" | "wmv" | "avi" | "mkv" | "pdf"
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tif" | "tiff" | "heic" | "heif" | "avif" | "jxl" | "ico" | "jfif" | "dng" | "cr2" | "nef" | "arw" | "mp4" | "mov" | "m4v" | "wmv" | "avi" | "mkv" | "pdf"
     )
 }
 
