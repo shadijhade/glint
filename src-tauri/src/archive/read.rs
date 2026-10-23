@@ -1,6 +1,7 @@
 //! Reading zip and 7z archives: their list of entries (the zip central directory, the 7z header),
 //! and the data of the entries asked for, streamed out one at a time.
 
+use super::codec::{Crc32Checked, Zstd};
 use super::tree::{Item, ENCRYPTED, UNREADABLE};
 use super::Failure;
 use sevenz_rust2::{Archive as SevenZ, BlockDecoder, EncoderMethod, Password};
@@ -266,6 +267,13 @@ impl Seek for ZipTail {
     }
 }
 
+/// Zstandard: method 93, and 20, its number before 2020. The zip crate's own Zstandard support is C,
+/// so it's built without it, and Glint decodes these entries itself (`codec::Zstd`).
+#[allow(deprecated)]
+fn is_zstd(method: CompressionMethod) -> bool {
+    matches!(method, CompressionMethod::Unsupported(93 | 20))
+}
+
 /// Why an entry with this encryption flag and method can't be read, if it can't. (The zip crate marks
 /// methods it can't decompress as `Unsupported`, with the method's number.)
 #[allow(deprecated)]
@@ -274,7 +282,7 @@ fn zip_problem(encrypted: bool, method: CompressionMethod) -> Option<Failure> {
         return Some(Failure::Encrypted);
     }
     match method {
-        CompressionMethod::Unsupported(93) => Some(Failure::Unsupported("Zstandard".into())),
+        _ if is_zstd(method) => None,
         CompressionMethod::Unsupported(99) => Some(Failure::Encrypted),
         CompressionMethod::Unsupported(n) => Some(Failure::Unsupported(zip_method_name(n))),
         _ => None,
@@ -504,9 +512,18 @@ impl ZipSource {
                 failed.push((item, problem));
                 continue;
             }
-            match zip.by_index(item) {
-                Ok(mut entry) => stopped = !each(item, &mut entry),
-                Err(e) => failed.push((item, zip_failure(e))),
+            let zstd = self.meta.entry(item).is_ok_and(|e| is_zstd(e.compression()));
+            let read = if zstd {
+                // The stored bytes, decoded here, then checked against the entry's CRC32.
+                zip.by_index_raw(item).map(|raw| {
+                    let crc = raw.crc32();
+                    stopped = !each(item, &mut Crc32Checked::new(Zstd::new(BufReader::new(raw)), crc));
+                })
+            } else {
+                zip.by_index(item).map(|mut entry| stopped = !each(item, &mut entry))
+            };
+            if let Err(e) = read {
+                failed.push((item, zip_failure(e)));
             }
         }
         failed
@@ -957,9 +974,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn names_unreadable_methods() {
         assert!(matches!(zip_problem(true, CompressionMethod::Stored), Some(Failure::Encrypted)));
-        assert!(matches!(zip_problem(false, CompressionMethod::ZSTD), Some(Failure::Unsupported(m)) if m == "Zstandard"));
+        assert!(zip_problem(false, CompressionMethod::ZSTD).is_none(), "Glint decodes Zstandard itself");
+        assert!(matches!(zip_problem(false, CompressionMethod::Unsupported(94)), Some(Failure::Unsupported(m)) if m == "MP3"));
         assert!(matches!(zip_problem(false, CompressionMethod::AES), Some(Failure::Encrypted)));
         assert!(zip_problem(false, CompressionMethod::LZMA).is_none());
         assert!(zip_problem(false, CompressionMethod::Deflated).is_none());

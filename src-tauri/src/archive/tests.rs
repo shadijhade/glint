@@ -271,8 +271,12 @@ fn keeps_every_entry_inside_where_it_is_extracted() {
     extract::remove_tree(&folder);
 }
 
-/// Sets a zip entry's sizes or method in both its local and central headers.
+/// Sets a zip entry's method, uncompressed size or CRC32 in both its local and central headers.
 fn patch_zip(path: &Path, name: &str, method: Option<u16>, size: Option<u32>) {
+    patch_zip_crc(path, name, method, size, None)
+}
+
+fn patch_zip_crc(path: &Path, name: &str, method: Option<u16>, size: Option<u32>, crc: Option<u32>) {
     let mut bytes = fs::read(path).unwrap();
     let mut patched = 0;
     for at in 0..bytes.len().saturating_sub(4) {
@@ -286,12 +290,15 @@ fn patch_zip(path: &Path, name: &str, method: Option<u16>, size: Option<u32>) {
         if bytes.get(at + name_at..at + name_at + len) != Some(name.as_bytes()) {
             continue;
         }
-        let (method_at, size_at) = if sig == 30 { (8, 22) } else { (10, 24) };
+        let (method_at, crc_at, size_at) = if sig == 30 { (8, 14, 22) } else { (10, 16, 24) };
         if let Some(method) = method {
             bytes[at + method_at..at + method_at + 2].copy_from_slice(&method.to_le_bytes());
         }
         if let Some(size) = size {
             bytes[at + size_at..at + size_at + 4].copy_from_slice(&size.to_le_bytes());
+        }
+        if let Some(crc) = crc {
+            bytes[at + crc_at..at + crc_at + 4].copy_from_slice(&crc.to_le_bytes());
         }
         patched += 1;
     }
@@ -339,15 +346,39 @@ fn refuses_zip_bombs() {
 #[test]
 fn names_what_it_cannot_read() {
     let dir = scratch("unreadable");
-    let zip = dir.join("zstd.zip");
-    write_zip(&zip, &[("z.txt", b"pretend zstd"), ("ok.txt", b"ok")], zip::CompressionMethod::Stored);
-    patch_zip(&zip, "z.txt", Some(93), None);
+    let zip = dir.join("mp3.zip");
+    write_zip(&zip, &[("song.bin", b"pretend mp3"), ("ok.txt", b"ok")], zip::CompressionMethod::Stored);
+    patch_zip(&zip, "song.bin", Some(94), None);
     let z = text(&zip);
     let top = listing(&z);
-    assert!(top.items.iter().find(|i| i.0 == "z.txt").unwrap().3 & UNREADABLE != 0);
-    let error = copy(&format!("{z}\\z.txt"), Purpose::Preview).unwrap_err().message();
-    assert!(error.contains("Zstandard"), "{error}");
+    assert!(top.items.iter().find(|i| i.0 == "song.bin").unwrap().3 & UNREADABLE != 0);
+    let error = copy(&format!("{z}\\song.bin"), Purpose::Preview).unwrap_err().message();
+    assert!(error.contains("MP3"), "{error}");
     assert_eq!(fs::read_to_string(copy(&format!("{z}\\ok.txt"), Purpose::Preview).unwrap()).unwrap(), "ok");
+}
+
+#[test]
+fn reads_zstandard_entries() {
+    let dir = scratch("zstd");
+    let text_data = "Zstandard in a zip, as WinZip and Python 3.14 write it. ".repeat(500);
+    let packed = ruzstd::encoding::compress_to_vec(text_data.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest);
+    // Stored entries holding Zstandard data, then marked as method 93 (and 20, its old number), with
+    // the size and CRC32 of what they unpack to.
+    let zip = dir.join("zstd.zip");
+    write_zip(&zip, &[("z.txt", &packed), ("old.txt", &packed), ("bad.txt", &packed)], zip::CompressionMethod::Stored);
+    for (name, method, crc) in [("z.txt", 93, crc32fast::hash(text_data.as_bytes())), ("old.txt", 20, crc32fast::hash(text_data.as_bytes())), ("bad.txt", 93, 12345)] {
+        patch_zip_crc(&zip, name, Some(method), Some(text_data.len() as u32), Some(crc));
+    }
+    let z = text(&zip);
+    let top = listing(&z);
+    assert!(top.items.iter().all(|i| i.3 & UNREADABLE == 0), "Zstandard is readable now");
+    assert_eq!(top.items.iter().find(|i| i.0 == "z.txt").unwrap().2, text_data.len() as u64);
+    assert_eq!(fs::read_to_string(copy(&format!("{z}\\z.txt"), Purpose::Preview).unwrap()).unwrap(), text_data);
+    assert_eq!(fs::read_to_string(copy(&format!("{z}\\old.txt"), Purpose::Preview).unwrap()).unwrap(), text_data);
+    assert_eq!(read_prefix(&format!("{z}\\z.txt"), 9).unwrap().unwrap().0, b"Zstandard");
+    // A CRC that doesn't match what comes out: damaged, and nothing is left behind.
+    let error = copy(&format!("{z}\\bad.txt"), Purpose::Preview).unwrap_err();
+    assert!(matches!(error, Failure::Damaged(_)), "{error:?}");
 }
 
 #[test]
