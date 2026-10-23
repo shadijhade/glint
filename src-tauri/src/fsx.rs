@@ -35,21 +35,81 @@ pub fn ms_since(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
+/// Why a folder couldn't be listed. "denied": Windows doesn't let this user open it (the UI says so
+/// in the tab, with Get access unless it's on another computer); anything else is said in words.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ListError {
+    pub kind: &'static str,
+    pub message: String,
+    /// The folder as asked for, made absolute.
+    pub path: String,
+    /// On another computer, which decides who may open it.
+    pub remote: bool,
+}
+
+impl ListError {
+    fn other(path: &str, message: String) -> ListError {
+        ListError { kind: "other", message, path: path.to_string(), remote: false }
+    }
+}
+
 /// Lists a folder for the UI, sorted, as one binary buffer (see `encode_listing`). A path that goes
-/// into a zip or 7z archive lists the folder in the archive.
+/// into a zip or 7z archive lists the folder in the archive. A link Windows won't list, such as
+/// "Documents and Settings" (kept for old apps, it lets no one look inside), lists where it points.
 #[tauri::command]
-pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, String> {
-    blocking(move || {
+pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
+    let asked = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
-        let path = normalize(&path)?;
+        let path = normalize(&path).map_err(|e| ListError::other(&path, e))?;
         if let Some(listing) = crate::archive::list(&path, started) {
-            return listing.map(tauri::ipc::Response::new);
+            return listing.map(tauri::ipc::Response::new).map_err(|e| ListError::other(&path, e));
         }
-        let mut entries = read_dir(&path).map_err(|e| describe(&e))?;
+        let (path, mut entries) = match read_dir(&path) {
+            Ok(entries) => (path, entries),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => match link_target(&path).and_then(|target| Some((read_dir(&target).ok()?, target))) {
+                Some((entries, target)) => (target, entries),
+                None => return Err(ListError { kind: "denied", message: describe(&e), remote: on_other_computer(&path), path }),
+            },
+            Err(e) => return Err(ListError::other(&path, describe(&e))),
+        };
         sort_entries(&mut entries);
         Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started), None)))
     })
     .await
+    .map_err(|e| ListError::other(&asked, e.to_string()))?
+}
+
+/// Where a junction or symbolic link to a folder points, made absolute; None for anything else.
+fn link_target(path: &str) -> Option<String> {
+    if stat(path)?.attrs & 0x400 == 0 {
+        return None;
+    }
+    let target = std::fs::read_link(path).ok()?;
+    // A relative link is relative to the folder it's in.
+    let target = match Path::new(path).parent() {
+        Some(parent) => parent.join(target),
+        None => target,
+    };
+    normalize(&target.to_string_lossy()).ok()
+}
+
+/// On a network share or a mapped network drive: that computer decides who may open what.
+#[cfg(windows)]
+pub fn on_other_computer(path: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_REMOTE: u32 = 4;
+    if path.starts_with(r"\\") {
+        return !path.starts_with(r"\\?\") || path.starts_with(r"\\?\UNC\");
+    }
+    path.get(..3).is_some_and(|root| unsafe { GetDriveTypeW(PCWSTR(win::wide_str(root).as_ptr())) } == DRIVE_REMOTE)
+}
+
+#[cfg(not(windows))]
+pub fn on_other_computer(_: &str) -> bool {
+    false
 }
 
 /// What a listing shows of each item: a folder's entries, or an archive's.
@@ -155,7 +215,14 @@ pub async fn resolve_path(path: String) -> Result<Resolved, String> {
         }
         match std::fs::metadata(&path) {
             Ok(meta) => Ok(Resolved { dir: meta.is_dir(), path }),
-            Err(_) => Err(format!("Can't find “{path}”. Check the spelling and try again.")),
+            Err(e) => match stat(&path) {
+                // Seen from its folder, but its own permissions keep this user out (C:\PerfLogs): it
+                // opens, and says so.
+                Some(entry) => Ok(Resolved { dir: entry.dir, path }),
+                // Its folder can't be looked into either: opened as a folder, which says why.
+                None if e.kind() == io::ErrorKind::PermissionDenied => Ok(Resolved { dir: true, path }),
+                None => Err(format!("Can't find “{path}”. Check the spelling and try again.")),
+            },
         }
     })
     .await
@@ -316,7 +383,7 @@ pub fn entry_for_path(path: &str, dir_hint: bool) -> Entry {
 }
 
 #[cfg(windows)]
-pub use win::{can_list, read_dir, stat};
+pub use win::{probe, read_dir, stat};
 
 #[cfg(windows)]
 mod win {
@@ -414,8 +481,8 @@ mod win {
         result.map(|_| entries)
     }
 
-    /// Whether `read_dir` can list `dir`, from its first entry only.
-    pub fn can_list(dir: &str) -> bool {
+    /// Whether `read_dir` can list `dir`, from its first entry only, and why not.
+    pub fn probe(dir: &str) -> io::Result<()> {
         let pattern = wide(&Path::new(dir).join("*"));
         let mut data = WIN32_FIND_DATAW::default();
         let found = unsafe { FindFirstFileExW(PCWSTR(pattern.as_ptr()), FindExInfoBasic, &mut data as *mut _ as *mut _, FindExSearchNameMatch, None, Default::default()) };
@@ -424,9 +491,10 @@ mod win {
                 unsafe {
                     let _ = FindClose(handle);
                 }
-                true
+                Ok(())
             }
-            Err(e) => e.code() == ERROR_FILE_NOT_FOUND.to_hresult() && Path::new(dir).is_dir(),
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() && Path::new(dir).is_dir() => Ok(()),
+            Err(e) => Err(io_error(e)),
         }
     }
 
@@ -451,8 +519,8 @@ pub fn read_dir(dir: &str) -> io::Result<Vec<Entry>> {
 }
 
 #[cfg(not(windows))]
-pub fn can_list(dir: &str) -> bool {
-    std::fs::read_dir(dir).is_ok()
+pub fn probe(dir: &str) -> io::Result<()> {
+    std::fs::read_dir(dir).map(|_| ())
 }
 
 #[cfg(not(windows))]

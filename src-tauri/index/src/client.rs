@@ -212,7 +212,8 @@ pub fn installed() -> bool {
 }
 
 /// Runs `exe args` elevated (Windows shows the UAC prompt over `owner`) and waits for it to finish.
-fn run_elevated(exe: &Path, args: &str, owner: Option<isize>) -> Result<u32, String> {
+/// Err("cancelled") when the prompt was declined.
+pub(crate) fn run_elevated(exe: &Path, args: &str, owner: Option<isize>) -> Result<u32, String> {
     let verb = wide("runas");
     let file = wide(exe);
     let params = wide(args);

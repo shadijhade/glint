@@ -1,3 +1,4 @@
+mod access;
 mod archive;
 mod batch_rename;
 mod compare;
@@ -439,6 +440,7 @@ pub fn run() {
             cancel_search,
             stop_tools,
             fsx::list_dir,
+            access::grant_access,
             fsx::resolve_path,
             fsx::list_drives,
             fsx::read_text_preview,
@@ -459,6 +461,7 @@ pub fn run() {
             shell::clipboard_get_files,
             shell::clipboard_clear,
             shell::show_properties,
+            shell::open_item,
             shell::open_with,
             shell::open_terminal,
             shell::start_drag,

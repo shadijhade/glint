@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { Loader2, Search } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { type FileEntry, isHidden } from "@/lib/entries";
 import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
-import { cancelFind, findFiles, listDrives, quickHide, quickReveal } from "@/lib/fs";
+import { cancelFind, findFiles, listDrives, openItem, quickHide, quickReveal } from "@/lib/fs";
 import { baseName, parentPath } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
@@ -162,7 +161,10 @@ export function QuickSearch() {
         if (!entry) return;
         if (inGlint || entry.dir) return void quickReveal(entry.path, entry.dir);
         void quickHide();
-        openPath(entry.path).catch(() => quickReveal(entry.path, false));
+        // A shortcut to a folder opens the folder in Glint.
+        openItem(entry.path)
+            .then((folder) => folder && quickReveal(folder, true))
+            .catch(() => quickReveal(entry.path, false));
     };
 
     // Nothing typed yet: the folders you use most, as the command palette ranks them.

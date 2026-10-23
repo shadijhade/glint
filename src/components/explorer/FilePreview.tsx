@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { toast } from "sonner";
-import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isLocked, isOnlineOnly } from "@/lib/entries";
-import { archiveOf, calcSizes, currentPath, navigate, openEntry, useExplorer } from "@/lib/explorer";
+import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
 import { isKnownType, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, listDir, readTextPreview } from "@/lib/fs";
@@ -305,7 +304,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
         );
     else body = <BigIcon entry={entry} />;
 
-    const open = () => (archived || entry.dir ? openEntry(entry) : openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) })));
+    const open = () => (archived || entry.dir ? openEntry(entry) : openFile(entry.path));
     // What's in an archive isn't a place File Explorer shows here: it shows the archive.
     const reveal = () => (archive ? revealItemInDir(archive.outer) : revealItemInDir(entry.path));
 
@@ -355,6 +354,8 @@ interface FolderSummary {
     items: number;
     /** Everything inside, once sized (by the index or dust). */
     total?: number;
+    /** Windows keeps this account out of it: there's nothing listed to count. */
+    noAccess?: boolean;
 }
 
 export function FilePreview({ selected, folder }: { selected: FileEntry[]; folder: FolderSummary }) {
@@ -369,6 +370,15 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
                     {[selected.length > files.length && plural(selected.length - files.length, "folder"), files.length > 0 && plural(files.length, "file")].filter(Boolean).join(", ")}
                     {files.length > 0 && <span className="block">{formatSize(files.reduce((sum, e) => sum + e.size, 0))} in files</span>}
                 </p>
+            </Centered>
+        );
+    }
+    if (folder.noAccess && !selected.length) {
+        return (
+            <Centered>
+                <FolderLock className="size-14 stroke-[1.25] text-muted-foreground/60" />
+                <p className="font-medium text-foreground">{baseName(folder.path) || folder.path}</p>
+                <p>No access</p>
             </Centered>
         );
     }

@@ -1,8 +1,9 @@
 //! Folders handed to the app from outside: on its command line (File Explorer's "Open in Glint", a
 //! double-click on a folder once folders open here by default, a terminal), and from later launches,
 //! which give theirs to the copy that's already running instead of opening a second window.
-//! Whatever the app can't open (This PC, the Recycle Bin, shell: and ::{CLSID} locations, a folder
-//! it may not read, a drive with no disc) goes to File Explorer instead, so it opens as it always did.
+//! Whatever the app can't open (This PC, the Recycle Bin, shell: and ::{CLSID} locations, a share
+//! that keeps the user out, a drive with no disc) goes to File Explorer instead, so it opens as it
+//! always did.
 
 use crate::fsx;
 use serde::Serialize;
@@ -61,7 +62,7 @@ fn target(arg: &str, cwd: &Path) -> Result<Target, String> {
     let Ok(path) = fsx::normalize(&text) else { return Err(arg.to_string()) };
     let Some(info) = fsx::stat(&path) else { return Err(path) };
     if info.dir {
-        return if fsx::can_list(&path) { Ok(Target { path, select: None }) } else { Err(path) };
+        return if opens_here(&path) { Ok(Target { path, select: None }) } else { Err(path) };
     }
     // A zip or 7z archive opens like a folder (when it's opened with Glint).
     if crate::archive::is_archive_name(&path) {
@@ -69,10 +70,20 @@ fn target(arg: &str, cwd: &Path) -> Result<Target, String> {
     }
     // A file: its folder, with the file selected.
     let folder = Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    if !folder.is_empty() && fsx::can_list(&folder) {
+    if !folder.is_empty() && opens_here(&folder) {
         Ok(Target { path: fsx::normalize(&folder).unwrap_or(folder), select: Some(path) })
     } else {
         Err(path)
+    }
+}
+
+/// Whether the app opens a folder: one it can list, or one on this PC that Windows keeps this user
+/// out of, which its tab says, offering to get access. A share that keeps them out is File Explorer's,
+/// which can ask for another user name and password.
+fn opens_here(dir: &str) -> bool {
+    match fsx::probe(dir) {
+        Ok(()) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::PermissionDenied && !fsx::on_other_computer(dir),
     }
 }
 
@@ -239,12 +250,16 @@ mod tests {
         // Missing: File Explorer says so, as it would have.
         let missing = dir.join("missing");
         assert_eq!(parse("missing").explorer, [missing.to_string_lossy().into_owned()]);
-        // A folder the app may not list (where Windows has one).
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folders_windows_keeps_the_user_out_of_open_here() {
+        // Where Windows has one: its tab says why it can't be listed, and offers to get access.
         let denied = r"C:\System Volume Information";
         if Path::new(denied).exists() && fs::read_dir(denied).is_err() {
-            assert_eq!(parse(denied).explorer, [denied]);
+            assert_eq!(Request::parse([denied.to_string()], Path::new("C:\\")).open, [Target { path: denied.into(), select: None }]);
         }
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

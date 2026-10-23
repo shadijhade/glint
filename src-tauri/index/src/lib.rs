@@ -15,6 +15,8 @@ pub mod tree;
 pub mod usn;
 
 #[cfg(windows)]
+pub mod access;
+#[cfg(windows)]
 pub mod client;
 #[cfg(windows)]
 pub mod cli;
