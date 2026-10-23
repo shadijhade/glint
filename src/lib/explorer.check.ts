@@ -7,6 +7,7 @@ import { cdCommand, isTyping } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
+import { markdownTitle, safeHref } from "./markdown.ts";
 import {
     BLOCK,
     decodeUsage,
@@ -55,6 +56,23 @@ assert.equal(linkedPath("100%.md", docs, repo), "C:\\src\\app\\docs\\100%.md");
 assert.equal(linkedPath("pic.png", "\\\\nas\\media\\docs", "\\\\nas\\media\\"), "\\\\nas\\media\\docs\\pic.png");
 assert.equal(volumeOf("\\\\nas\\media\\docs\\a"), "\\\\nas\\media");
 assert.equal(volumeOf("c:\\x"), "c:");
+assert.equal(safeHref("javascript:alert(1)"), null);
+assert.equal(safeHref(" JavaScript:alert(1)"), null);
+assert.equal(safeHref("data:text/html,<b>"), null);
+assert.equal(safeHref("file:///C:/x"), null);
+assert.equal(safeHref("https://example.com"), "https://example.com");
+assert.equal(safeHref("#install"), "#install");
+assert.equal(safeHref("docs/a.md"), "docs/a.md");
+assert.equal(safeHref("C:\\notes\\a.md"), "C:\\notes\\a.md");
+assert.equal(safeHref(""), null);
+
+// A README's title, for its folded card
+assert.equal(markdownTitle('<div align="center">\n\n<img src="logo.svg" width="96" alt="Glint logo">\n\n# Glint\n\n**A file explorer**'), "Glint");
+assert.equal(markdownTitle("Project *Name*\n=====\n\nText"), "Project Name");
+assert.equal(markdownTitle('<h1 align="center">My <b>App</b></h1>'), "My App");
+assert.equal(markdownTitle("[![build](https://x/badge.svg)](https://x)\n\nA tool that does `things`.\n\n## Install"), "A tool that does things.");
+assert.equal(markdownTitle("# [Docs](https://example.com) #\n"), "Docs");
+assert.equal(markdownTitle("\n\n"), "");
 assert.deepEqual(crumbs(THIS_PC), []);
 
 // Natural order and sorting

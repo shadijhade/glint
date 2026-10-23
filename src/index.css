@@ -380,6 +380,36 @@
     max-width: 100%;
   }
 
+  .markdown img[width] {
+    height: auto;
+  }
+
+  .markdown kbd {
+    padding: 0.05em 0.4em;
+    border: 1px solid hsl(var(--border));
+    border-bottom-width: 2px;
+    border-radius: 0.3rem;
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+  }
+
+  .markdown details {
+    margin: 0 0 0.85em;
+  }
+
+  .markdown summary {
+    cursor: default;
+    font-weight: 500;
+  }
+
+  .markdown dt {
+    font-weight: 600;
+  }
+
+  .markdown dd {
+    margin: 0 0 0.6em 1.4em;
+  }
+
   /* A picture that isn't shown: from the web, or not found. */
   .markdown .md-missing {
     display: inline-flex;

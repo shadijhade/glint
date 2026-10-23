@@ -193,6 +193,7 @@ import { QuickLook } from "./QuickLook";
 import { DRIVE_ICONS, KNOWN_ICONS, Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { TabStrip } from "./TabStrip";
+import { ReadmeCard, readmeOf } from "./ReadmeCard";
 import { TerminalPanel, terminalFolder } from "./TerminalPanel";
 import { ThisPC } from "./ThisPC";
 import { inspectTimeline } from "./TimelineDialog";
@@ -890,6 +891,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     }, [sorted, deferredFilter, showHidden, comparison, diffOnly, gitMarks]);
     // A tab showing its disk-usage map has the map's items as rows.
     const mapRows = useMapRows(tabId);
+    // The folder's README, folded above its list (not over search results, the map, or a closed folder).
+    const readme = useMemo(
+        () => (settings.showReadme && !find && !mapRows && path !== THIS_PC && listing && !listing.fromIndex ? readmeOf(listing.entries) : undefined),
+        [settings.showReadme, find, mapRows, path, listing]
+    );
     const rows = mapRows ?? listRows;
 
     const focusIndex = useMemo(() => (focus ? rows.findIndex((r) => r.path === focus) : -1), [rows, focus]);
@@ -1590,6 +1596,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     )}
                 </div>
             )}
+            {readme && <ReadmeCard key={readme.path} entry={readme} />}
             <div className="min-h-0 flex-1">
                 {path === THIS_PC && !find ? (
                     <ThisPC onContextMenu={onPlaceContextMenu} />
