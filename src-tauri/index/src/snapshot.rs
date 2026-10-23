@@ -35,13 +35,13 @@ pub struct Meta {
 
 /// A checksum fast enough not to matter next to the disk (words mixed in order).
 #[derive(Default)]
-struct Checksum {
+pub(crate) struct Checksum {
     hash: u64,
     pending: Vec<u8>,
 }
 
 impl Checksum {
-    fn update(&mut self, mut bytes: &[u8]) {
+    pub(crate) fn update(&mut self, mut bytes: &[u8]) {
         if !self.pending.is_empty() {
             let take = (8 - self.pending.len()).min(bytes.len());
             self.pending.extend_from_slice(&bytes[..take]);
@@ -63,7 +63,7 @@ impl Checksum {
         self.hash = (self.hash.rotate_left(23) ^ word).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     }
 
-    fn finish(mut self) -> u64 {
+    pub(crate) fn finish(mut self) -> u64 {
         let mut last = [0u8; 8];
         last[..self.pending.len()].copy_from_slice(&self.pending);
         self.mix(u64::from_le_bytes(last) ^ self.pending.len() as u64);

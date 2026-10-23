@@ -2,6 +2,7 @@
 //! the journal, then follow it), and the answers to the app's requests.
 
 use crate::growth::Growth;
+use crate::history::{self, History, Paths};
 use crate::proto::{
     self, unix_ms, GrowthSummary, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_GROWTH, FRAME_HITS, FRAME_USAGE,
     NEW, NO_PARENT, WRITTEN,
@@ -127,6 +128,16 @@ struct Slot {
     tree: RwLock<Tree>,
     ready: AtomicBool,
     status: Mutex<VolumeStatus>,
+    /// What was renamed, moved and deleted. Taken before the tree when both are.
+    history: Mutex<History>,
+    /// Whether the saved history was read (once: it outlives a new read of the disk).
+    history_loaded: AtomicBool,
+}
+
+impl Slot {
+    fn new(letter: char, tree: Tree, ready: bool, status: VolumeStatus) -> Slot {
+        Slot { letter, tree: RwLock::new(tree), ready: AtomicBool::new(ready), status: Mutex::new(status), history: Mutex::default(), history_loaded: AtomicBool::new(false) }
+    }
 }
 
 enum Restart {
@@ -168,7 +179,7 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn with_tree(letter: char, tree: Tree) -> Arc<Engine> {
         let status = VolumeStatus { volume: format!("{letter}:"), state: "ready".into(), ..Default::default() };
-        let slot = Arc::new(Slot { letter, tree: RwLock::new(tree), ready: AtomicBool::new(true), status: Mutex::new(status) });
+        let slot = Arc::new(Slot::new(letter, tree, true, status));
         let log = Log { file: Mutex::new(None), echo: false };
         Arc::new(Engine { data: PathBuf::new(), only: None, slots: RwLock::new(vec![slot]), stop: Stop::default(), workers: Mutex::default(), log })
     }
@@ -191,7 +202,7 @@ impl Engine {
                 continue;
             }
             let status = VolumeStatus { volume: format!("{letter}:"), state: "scanning".into(), ..Default::default() };
-            let slot = Arc::new(Slot { letter, tree: RwLock::default(), ready: AtomicBool::new(false), status: Mutex::new(status) });
+            let slot = Arc::new(Slot::new(letter, Tree::default(), false, status));
             slots.push(slot.clone());
             let engine = self.clone();
             let handle = thread::Builder::new().name(format!("index {letter}:")).spawn(move || engine.worker(&slot)).expect("index worker");
@@ -249,6 +260,15 @@ impl Engine {
         if !path.exists() && legacy.exists() {
             let _ = fs::rename(&legacy, &path);
         }
+        // What was renamed, moved and deleted: read once, then kept across new reads of the disk.
+        let history_path = path.with_extension("hist");
+        if !slot.history_loaded.swap(true, Ordering::SeqCst) {
+            match history::load(&history_path) {
+                Ok(saved) => *slot.history.lock().unwrap() = saved,
+                Err(e) if history_path.exists() => self.log.line(&format!("{}: history unusable ({e})", slot.letter)),
+                Err(_) => {}
+            }
+        }
         let started = Instant::now();
         // What grew carries over a new read of the disk (as far as it can): from the index read last,
         // or the snapshot the journal no longer reaches.
@@ -288,6 +308,9 @@ impl Engine {
         };
 
         let mut page = vec![0u8; 1 << 20];
+        // The index stands where the snapshot left off, or (read from the disk) where the journal was.
+        let stands_at = if source == "snapshot" { cursor } else { journal.next_usn };
+        self.catch_up_history(&volume, slot, &journal, stands_at, &mut page);
         let mut replayed = 0;
         loop {
             let read = match self.apply(&volume, slot, &mut cursor, journal.id, since, &mut page) {
@@ -406,11 +429,55 @@ impl Engine {
 
     fn save(&self, slot: &Slot, path: &Path, meta: Meta) {
         let started = Instant::now();
-        let tree = slot.tree.read().unwrap();
-        match snapshot::save(path, &tree, &meta) {
+        let saved = snapshot::save(path, &slot.tree.read().unwrap(), &meta);
+        match saved {
             Ok(()) => self.log.line(&format!("{}: saved the snapshot in {:.0} ms", slot.letter, ms(started))),
             Err(e) => self.log.line(&format!("{}: couldn't save the snapshot: {e}", slot.letter)),
         }
+        if let Err(e) = history::save(&path.with_extension("hist"), &slot.history.lock().unwrap()) {
+            self.log.line(&format!("{}: couldn't save the history: {e}", slot.letter));
+        }
+    }
+
+    /// Brings what was renamed, moved and deleted up to where the index stands (`to`), when it's
+    /// behind: none kept yet (or by a service from before it), or kept less often than the index.
+    /// The journal's records from where it left off (its last 256 MB at most) are read twice: first
+    /// for how the folders stood before them, then for what happened.
+    fn catch_up_history(&self, volume: &Volume, slot: &Slot, journal: &Journal, to: i64, page: &mut [u8]) {
+        let mut history = slot.history.lock().unwrap();
+        let kept = if history.journal == journal.id { history.next_usn } else { 0 };
+        // Reads start at a record (where history or the journal starts); a journal made far bigger
+        // than Windows' 32 MB is told for its last 256 MB.
+        let from = kept.max(journal.first_usn);
+        let oldest = to - (256 << 20);
+        if from < to {
+            let started = Instant::now();
+            let tree = slot.tree.read().unwrap();
+            let mut paths = Paths::new(&tree, slot.letter);
+            let mut read = 0;
+            for learning in [true, false] {
+                let mut cursor = from;
+                while cursor < to {
+                    let Ok(len) = volume.read_journal(cursor, journal.id, page) else { break };
+                    let Some((next, records)) = usn::parse_page(&page[..len]) else { break };
+                    let end = records.partition_point(|r| r.usn < to);
+                    let start = records[..end].partition_point(|r| r.usn < oldest);
+                    if learning {
+                        paths.learn(&records[start..end]);
+                    } else {
+                        history.feed(&records[start..end], &mut paths);
+                        read += end - start;
+                    }
+                    if end < records.len() || records.is_empty() {
+                        break;
+                    }
+                    cursor = next;
+                }
+            }
+            self.log.line(&format!("{}: read {read} journal records for history in {:.0} ms: {} events kept", slot.letter, ms(started), history.len()));
+        }
+        history.journal = journal.id;
+        history.next_usn = history.next_usn.max(to);
     }
 
     /// Reads the next page of the journal and brings every record it touched up to date. Returns
@@ -424,6 +491,21 @@ impl Engine {
         if records.is_empty() {
             *cursor = next.max(*cursor);
             return Ok(0);
+        }
+        // What was renamed, moved or deleted is told before the index takes the changes in, while it
+        // still names folders as they were.
+        {
+            let mut history = slot.history.lock().unwrap();
+            if history.journal == journal {
+                let fresh = records.partition_point(|r| r.usn < history.next_usn);
+                if fresh < records.len() {
+                    let tree = slot.tree.read().unwrap();
+                    let mut paths = Paths::new(&tree, slot.letter);
+                    paths.learn(&records[fresh..]);
+                    history.feed(&records[fresh..], &mut paths);
+                }
+                history.next_usn = history.next_usn.max(next);
+            }
         }
         // Read what each record holds now before taking the lock, so searches don't wait on the disk.
         // A record that can't be read right now is left as it is.

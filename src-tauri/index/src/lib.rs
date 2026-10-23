@@ -8,6 +8,7 @@
 //! any OS; reading volumes, the service and the pipe are Windows-only.
 
 pub mod growth;
+pub mod history;
 pub mod proto;
 pub mod query;
 pub mod record;
