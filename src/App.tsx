@@ -6,7 +6,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, Sparkles, TextSearch } from "lucide-react";
 import logo from "./assets/logo.svg";
-import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
+import { astGrepApply, cancelSearch, RgMatch, searchBatched, useRewrite } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
 import { archiveOf, closedNotice, closedOf, currentPath, defaultTextSearchFolder, openRequested, refreshIndex, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
@@ -15,7 +15,7 @@ import { checkForUpdates, greetUpdate, useUpdater } from "./lib/updater";
 import { openItem, quickConfigure, setStartWithWindows } from "./lib/fs";
 import { cn, firstNotice } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
-import { RipgrepCard, SearchBar } from "./components/Search";
+import { AstGrepCard, RipgrepCard, SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
 import { SettingsView } from "./components/SettingsView";
 import { openShortcuts, ShortcutsDialog } from "./components/ShortcutsDialog";
@@ -39,6 +39,8 @@ export interface SearchRun {
   query: string;
   path: string;
   options: SearchOptions;
+  /** A code search's rewrite, previewed on each match. */
+  rewrite?: string | null;
   limit: number | null;
   /** Searched again skipping nothing. */
   everything?: boolean;
@@ -216,7 +218,10 @@ function App() {
     unlisten.current?.();
     unlisten.current = undefined;
 
-    setRun({ id, query, path, options, limit, everything });
+    // A code search shows what each match becomes, when the replace box says.
+    const replace = useRewrite.getState();
+    const rewrite = options.code && replace.open && replace.text ? replace.text : null;
+    setRun({ id, query, path, options, rewrite, limit, everything });
     setMatches([]);
     setSelected(-1);
     setError("");
@@ -261,7 +266,7 @@ function App() {
         if (isCurrent()) setError(message);
         finish();
       },
-      { ...options, exclusions: settings.exclusions, maxResults: limit, everything }
+      { ...options, rewrite, exclusions: settings.exclusions, maxResults: limit, everything }
     );
     // A newer search may have started while this one was spinning up.
     if (!isCurrent()) return stop();
@@ -312,6 +317,7 @@ function App() {
     if (!run || searching || replacing.current) return;
     const files = [...new Set(matches.map((m) => m.data.path?.text ?? ""))].filter(Boolean);
     if (!files.length) return;
+    if (run.options.code) return rewriteAll(replacement, files.length);
 
     try {
       toRegExp(run.query, run.options);
@@ -352,6 +358,31 @@ function App() {
     }
     // What's left to replace, unless a newer search started meanwhile.
     if (runId.current === run.id) search(run.query, run.path, run.limit);
+  };
+
+  /** A code search's rewrite: first shown on each match (searched again with it), then, asked again, made in the files. */
+  const rewriteAll = async (replacement: string, files: number) => {
+    if (!run) return;
+    if (!replacement) return void toast.message("Type what each match becomes first");
+    if (run.rewrite !== replacement) {
+      toast.message("Each match now shows what it becomes", { description: "Replace all again to rewrite them in the files." });
+      return search(run.query, run.path, run.limit, !!run.everything);
+    }
+    replacing.current = true;
+    try {
+      const confirmed = !settings.confirmBeforeReplace || await confirm(
+        `Rewrite ${matches.length} ${matches.length === 1 ? "match" : "matches"} of “${run.query}” as “${replacement}” in ${files} ${files === 1 ? "file" : "files"}?\n\nThis can't be undone.`,
+        { title: "Replace all", kind: "warning", okLabel: "Rewrite", cancelLabel: "Cancel" }
+      );
+      if (!confirmed) return;
+      const rewrote = await astGrepApply(run.query, run.path, replacement, { exclusions: settings.exclusions, everything: run.everything });
+      toast.success(`Rewrote ${rewrote} ${rewrote === 1 ? "match" : "matches"}`);
+    } catch (e) {
+      toast.error("Couldn't rewrite them", { description: String(e) });
+    } finally {
+      replacing.current = false;
+    }
+    if (runId.current === run.id) search(run.query, run.path, run.limit, !!run.everything);
   };
 
   // With auto-preview on, the first result is shown until the user picks another.
@@ -399,6 +430,7 @@ function App() {
           </div>
         )}
         {mode === "text" && <RipgrepCard />}
+        {mode === "text" && <AstGrepCard />}
         {run ? (
           <Results
             key={run.id}

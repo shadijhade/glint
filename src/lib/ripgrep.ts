@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { create } from "zustand";
+
+/** The replace box: open or not, and what it says (a code search previews it on each match). */
+export const useRewrite = create<{ open: boolean; text: string }>(() => ({ open: false, text: "" }));
 
 export interface RgMatch {
     type: "match" | "context" | "begin" | "end" | "summary";
@@ -9,6 +13,8 @@ export interface RgMatch {
         line_number?: number;
         absolute_offset?: number;
         submatches?: Array<{ match: { text: string }; start: number; end: number }>;
+        /** A code search with a rewrite: what this match becomes. */
+        replacement?: string;
         elapsed_total?: { human: string; nanos: number; secs: number };
         stats?: {
             elapsed?: { human: string; nanos: number; secs: number };
@@ -30,7 +36,14 @@ export interface SearchOptions {
     maxResults?: number | null;
     /** Skipping nothing: hidden files, what .gitignore files list and the exclusions too. */
     everything?: boolean;
+    /** A code pattern, searched by ast-grep (codesearch.rs), and what each match becomes. */
+    code?: boolean;
+    rewrite?: string | null;
 }
+
+/** A code search's rewrite made in its files, by ast-grep: how many matches it rewrote. */
+export const astGrepApply = (query: string, path: string, rewrite: string, options: SearchOptions) =>
+    invoke<number>("ast_grep_apply", { request: { query, path, rewrite, exclusions: options.exclusions ?? [], everything: !!options.everything } });
 
 export async function searchBatched(
     query: string,
@@ -55,9 +68,15 @@ export async function searchBatched(
     });
 
     try {
-        // ripgrep's arguments are built in Rust from these options. The folder comes back as searched.
-        const request = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions: options.exclusions ?? [], everything: !!options.everything };
-        const folder = await invoke<string>("run_ripgrep_batched", { request, searchId, maxResults: options.maxResults });
+        // ripgrep's (or ast-grep's) arguments are built in Rust from these options. The folder comes back as searched.
+        const exclusions = options.exclusions ?? [];
+        const folder = options.code
+            ? await invoke<string>("run_ast_grep", { request: { query, path, rewrite: options.rewrite || null, exclusions, everything: !!options.everything }, searchId, maxResults: options.maxResults })
+            : await invoke<string>("run_ripgrep_batched", {
+                  request: { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions, everything: !!options.everything },
+                  searchId,
+                  maxResults: options.maxResults,
+              });
         return { stop: unlisten, folder };
     } catch (e) {
         onError(String(e));

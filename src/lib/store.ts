@@ -15,6 +15,8 @@ export interface SearchOptions {
     caseSensitive: boolean;
     wholeWord: boolean;
     regex: boolean;
+    /** A code pattern, by ast-grep, rather than text. */
+    code: boolean;
 }
 
 export type Mode = 'files' | 'text';
@@ -183,7 +185,7 @@ export const useStore = create<AppState>()(
             query: '',
             path: '',
             history: [],
-            options: { caseSensitive: false, wholeWord: false, regex: false },
+            options: { caseSensitive: false, wholeWord: false, regex: false, code: false },
             settings: DEFAULT_SETTINGS,
             mode: 'files',
             pinned: [],

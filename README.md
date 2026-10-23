@@ -200,6 +200,7 @@ The service only runs once you opt in, with every privilege removed except the t
 -   **Search and replace** across many files at once, matching line by line as ripgrep searched (`^` and `$` mean a line's start and end, CRLF files included), each file written safely: a write cut short leaves it as it was.
 -   **Results that fold.** Click a file to fold its matches away, or collapse them all at once; a bar on each file shows which have the most matches.
 -   **Regex, case, whole word, exclusions.** Full regular expressions (multi-line with `Shift+Enter`), case sensitivity, whole words, and patterns to skip (`node_modules`, `.git`…).
+-   **Code patterns.** `Alt+A` searches code by its structure rather than its text, with [ast-grep](https://github.com/ast-grep/ast-grep) (installed with one click): `console.log($$$ARGS)` finds every call however it's spaced or split over lines, `$X.unwrap()` every unwrap, in 20-odd languages. With a rewrite in the replace box (`logger.info($$$ARGS)`), each result first shows what it becomes; **Replace all** again rewrites them in the files.
 -   **Preview, history and export.** A syntax-highlighted preview of every result, recent searches one click away, and results exported to CSV or JSON.
 -   **Connected to Files.** **Search text** (`Ctrl+Shift+F`) searches the folder you're in; **Show in folder** on a result opens it in Files with the file selected.
 

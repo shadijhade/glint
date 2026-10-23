@@ -3,6 +3,7 @@ mod archive;
 mod batch_rename;
 mod check;
 mod cleanup;
+mod codesearch;
 mod compare;
 mod data_lens;
 mod dedup;
@@ -277,16 +278,70 @@ fn run_ripgrep_batched(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
+    stream_search(window, search_id, child, max_results, state.search.clone(), |line: String| (!line.is_empty()).then_some(line))?;
+    Ok(folder)
+}
+
+/// A code search (Text's code patterns, by ast-grep): its matches arrive as `search-event`s, as
+/// ripgrep's JSON lines (codesearch.rs), then a summary with how long it took. Returns the folder as
+/// searched.
+#[tauri::command]
+fn run_ast_grep(window: Window, request: codesearch::CodeSearch, search_id: String, max_results: Option<usize>, state: State<AppState>) -> Result<String, String> {
+    let folder = fsx::normalize(&request.path)?;
+    if std::fs::metadata(&folder).is_err() {
+        return Err(format!("Can't find “{folder}”. Check the folder path and try again."));
+    }
+    let mut command = tools::command("ast-grep")?;
+    command.args(codesearch::args(&request, &folder, false)).current_dir(&folder).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = command.spawn().map_err(|e| format!("Couldn't start ast-grep: {e}"))?;
+    let started = Instant::now();
+    let base = folder.clone();
+    let mut summary = Some(());
+    stream_search(window, search_id, child, max_results, state.search.clone(), move |line: String| {
+        // ast-grep says nothing at the end: the summary ripgrep would send is made here.
+        if line.is_empty() {
+            return summary.take().map(|_| {
+                let elapsed = started.elapsed();
+                serde_json::json!({ "type": "summary", "data": { "elapsed_total": { "secs": elapsed.as_secs(), "nanos": elapsed.subsec_nanos(), "human": format!("{:.3}s", elapsed.as_secs_f64()) } } }).to_string()
+            });
+        }
+        codesearch::as_ripgrep(&line, &base)
+    })?;
+    Ok(folder)
+}
+
+/// Rewrites every match of a code search in its files, with ast-grep (--update-all); how many it rewrote.
+#[tauri::command]
+async fn ast_grep_apply(request: codesearch::CodeSearch) -> Result<u64, String> {
+    fsx::blocking(move || {
+        let folder = fsx::normalize(&request.path)?;
+        if request.rewrite.as_deref().unwrap_or("").is_empty() {
+            return Err("Type what each match becomes first.".into());
+        }
+        let mut command = tools::command("ast-grep")?;
+        let output = command.args(codesearch::args(&request, &folder, true)).current_dir(&folder).stdin(Stdio::null()).output().map_err(|e| format!("Couldn't start ast-grep: {e}"))?;
+        let said = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        if !output.status.success() && codesearch::applied(&said) == 0 {
+            return Err(said.trim().to_string());
+        }
+        Ok(codesearch::applied(&said))
+    })
+    .await
+}
+
+/// Sends a search's output to the UI as `search-event`s: its lines (each `convert`ed, None to skip
+/// one) in batches, until it ends or `max_results` matches came, then an empty line through `convert`
+/// (for a summary of its own), any error it gave, and "finished". The search replaces the one before.
+fn stream_search(window: Window, search_id: String, mut child: std::process::Child, max_results: Option<usize>, search: proc::Slot, mut convert: impl FnMut(String) -> Option<String> + Send + 'static) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
     let mut stderr = child.stderr.take().ok_or("Failed to open stderr")?;
     // Replaces (and stops) any search still running.
-    let search = state.search.clone();
     let pid = search.replace(child);
 
-    // Drain stderr on its own thread so a chatty rg can never block stdout.
+    // Drain stderr on its own thread so a chatty search can never block stdout.
     let stderr_reader = thread::spawn(move || {
         let mut text = String::new();
         let _ = stderr.read_to_string(&mut text);
@@ -305,35 +360,36 @@ fn run_ripgrep_batched(
         };
 
         for line in reader.lines() {
-            if let Ok(l) = line {
-                // rg's JSON always starts with the type field, so no need to parse every line.
-                if l.starts_with(r#"{"type":"match""#) {
-                    total_matches += 1;
-                }
+            let Ok(line) = line else { break };
+            let Some(l) = convert(line) else { continue };
+            // The JSON always starts with the type field, so no need to parse every line.
+            if l.starts_with(r#"{"type":"match""#) {
+                total_matches += 1;
+            }
 
-                batch.push(l);
+            batch.push(l);
 
-                if batch.len() >= 1000 || last_emit.elapsed() >= Duration::from_millis(50) {
-                    let _ = window.emit(
-                        "search-event",
-                        SearchEvent {
-                            id: search_id.clone(),
-                            r#type: "data".to_string(),
-                            lines: batch.clone(),
-                        },
-                    );
-                    batch.clear();
-                    last_emit = Instant::now();
-                }
+            if batch.len() >= 1000 || last_emit.elapsed() >= Duration::from_millis(50) {
+                let _ = window.emit(
+                    "search-event",
+                    SearchEvent {
+                        id: search_id.clone(),
+                        r#type: "data".to_string(),
+                        lines: batch.clone(),
+                    },
+                );
+                batch.clear();
+                last_emit = Instant::now();
+            }
 
-                if total_matches >= limit {
-                    // Limit reached: kill our rg — but not a newer search that already replaced it.
-                    search.kill_if(pid);
-                    break;
-                }
-            } else {
+            if total_matches >= limit {
+                // Limit reached: kill this search — but not a newer one that already replaced it.
+                search.kill_if(pid);
                 break;
             }
+        }
+        if let Some(last) = convert(String::new()) {
+            batch.push(last);
         }
 
         if !batch.is_empty() {
@@ -370,8 +426,7 @@ fn run_ripgrep_batched(
             },
         );
     });
-
-    Ok(folder)
+    Ok(())
 }
 
 /// In release builds, WebView2's browser shortcuts would reload the whole app (F5, Ctrl+R), print it
@@ -450,6 +505,8 @@ pub fn run() {
             read_file_chunk,
             write_file_content,
             run_ripgrep_batched,
+            run_ast_grep,
+            ast_grep_apply,
             tools::tools_status,
             tools::tool_install,
             tools::tool_cancel_install,

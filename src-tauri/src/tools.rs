@@ -95,6 +95,14 @@ pub static TOOLS: &[Tool] = &[
         used_for: "Finding passwords, keys and tokens left in files before they're shared (MongoDB's secret scanner; nothing is sent anywhere)",
     },
     Tool {
+        id: "ast-grep",
+        name: "ast-grep",
+        exe: "ast-grep",
+        package: "ast-grep.ast-grep",
+        source: Source::Winget { id: "ast-grep.ast-grep" },
+        used_for: "Code patterns in Text: code found (and rewritten) by its structure, console.log($MSG) or $X.unwrap()",
+    },
+    Tool {
         id: "jaq",
         name: "jaq",
         exe: "jaq",

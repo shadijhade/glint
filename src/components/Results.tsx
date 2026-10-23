@@ -250,11 +250,16 @@ export function Results({ active, run, matches, searching, error, duration, file
                 )}
             >
                 <span className="w-12 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground/70">{match.data.line_number}</span>
-                <span className="truncate font-mono text-[0.8125rem]">
+                <span className="min-w-0 truncate font-mono text-[0.8125rem]">
                     {segments(match).map((p, k) =>
                         p.hit ? <mark key={k} className="rounded-sm bg-primary/20 px-px font-semibold text-pink-700 dark:text-pink-300">{p.text}</mark> : p.text
                     )}
                 </span>
+                {match.data.replacement !== undefined && (
+                    <span className="max-w-[45%] shrink-0 truncate font-mono text-[0.8125rem] text-emerald-700 dark:text-emerald-400" title={`Becomes: ${match.data.replacement}`}>
+                        → {match.data.replacement.replace(/\s*\n\s*/g, " ")}
+                    </span>
+                )}
             </div>
         );
     };
