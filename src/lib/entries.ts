@@ -1,4 +1,5 @@
 import { ARCHIVE_FORMATS, type ArchiveFormat, BROWSED, ON_REQUEST } from "./archives.ts";
+import type { GitMark } from "./fs.ts";
 import { joinPath } from "./paths.ts";
 
 /** Windows FILE_ATTRIBUTE_* bits the explorer cares about, and two of Glint's own for archives (Windows doesn't use them). */
@@ -251,14 +252,31 @@ function globToRegExp(glob: string) {
 const SIZE_UNITS: Record<string, number> = { "": 1, b: 1, k: 2 ** 10, kb: 2 ** 10, m: 2 ** 20, mb: 2 ** 20, g: 2 ** 30, gb: 2 ** 30, t: 2 ** 40, tb: 2 ** 40 };
 const AGE_UNITS: Record<string, number> = { h: 3600, d: 86400, w: 7 * 86400, y: 365 * 86400 };
 
+/** What `git:` takes, and the marks each stands for. */
+const GIT_FILTERS: Record<string, GitMark[]> = {
+    changed: ["modified", "staged", "untracked", "conflicted"],
+    modified: ["modified"],
+    staged: ["staged"],
+    new: ["untracked"],
+    untracked: ["untracked"],
+    conflict: ["conflicted"],
+    conflicted: ["conflicted"],
+    ignored: ["ignored"],
+};
+
 /**
  * A filter term (ext:, size:, dm:, file:, folder:) as the index and fd read it (shadui_index::query::parse),
  * for what's on screen; undefined for a name term. One that doesn't read right matches nothing here
- * (the search says what's wrong with it).
+ * (the search says what's wrong with it). `git:changed` (modified, staged, new, conflict, ignored) asks
+ * the folder's Git marks, so it filters what's on screen only.
  */
-function filterTest(term: string): ((e: FileEntry) => boolean) | undefined {
-    const [, key, value] = /^(ext|size|dm|files?|folders?):(.*)$/.exec(term) ?? [];
+function filterTest(term: string, git?: Readonly<Record<string, GitMark>>): ((e: FileEntry) => boolean) | undefined {
+    const [, key, value] = /^(ext|size|dm|files?|folders?|git):(.*)$/.exec(term) ?? [];
     if (!key) return undefined;
+    if (key === "git") {
+        const wanted = GIT_FILTERS[value];
+        return (e) => !!wanted && !!git && wanted.includes(git[e.lower]);
+    }
     if (key === "ext") {
         const exts = value.split(/[;,]/).map((x) => x.trim().replace(/^\.+/, "")).filter(Boolean);
         return (e) => !exts.length || exts.some((x) => e.lower.endsWith(`.${x}`));
@@ -285,13 +303,14 @@ function filterTest(term: string): ((e: FileEntry) => boolean) | undefined {
 /**
  * The same matching fd does for a search, applied to what's on screen: every term must match the
  * name, case-insensitively; terms with * or ? match the whole name, others any part of it. Filters
- * (ext:pdf, size:>10mb, dm:7d, file:, folder:) narrow it as the index does.
+ * (ext:pdf, size:>10mb, dm:7d, file:, folder:) narrow it as the index does; git:changed by `git`,
+ * the folder's Git marks by lowercase name.
  */
-export function matcher(query: string): ((e: FileEntry) => boolean) | null {
+export function matcher(query: string, git?: Readonly<Record<string, GitMark>>): ((e: FileEntry) => boolean) | null {
     const parts = terms(query.toLowerCase());
     if (!parts.length) return null;
     const tests = parts.map((term) => {
-        const filter = filterTest(term);
+        const filter = filterTest(term, git);
         if (filter) return filter;
         if (!/[*?]/.test(term)) return (e: FileEntry) => e.lower.includes(term);
         const re = globToRegExp(term);

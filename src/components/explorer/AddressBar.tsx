@@ -16,13 +16,16 @@ import {
     Search as SearchIcon,
     X,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { type FileEntry, isArchiveFile, isHidden } from "@/lib/entries";
 import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName, listDir } from "@/lib/fs";
+import { useGit } from "@/lib/git";
 import { crumbs, samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { GitChip } from "./GitChip";
 import { DRIVE_ICONS, KNOWN_ICONS } from "./Sidebar";
 
 export const FIND_BOX_ID = "find-box";
@@ -35,6 +38,12 @@ const FILTERS: [string, string, string][] = [
     ["file:", "file:", "files only"],
     ["folder:", "folder:", "folders only"],
 ];
+
+/** Offered too in a Git repository: it filters what's on screen (Enter doesn't take it into subfolders). */
+const GIT_FILTER: [string, string, string] = ["git:", "git:changed", "changed in Git (git:new, git:staged…), here"];
+
+/** Whether a search holds a git: filter, which works on the folder shown only. */
+const hasGitFilter = (text: string) => /(^|\s)git:/i.test(text);
 
 function NavButton({ icon: Icon, label, className, ...props }: { icon: LucideIcon; label: string } & React.ComponentProps<"button">) {
     return (
@@ -257,8 +266,9 @@ interface FlyoutTarget {
 
 /** Back/forward/up, the breadcrumb address bar (click it to type a path) and the search box, for the active tab. */
 export function AddressBar() {
-    const { path, back, forward, loading, filter, find, archive, activeListing } = useTab(
+    const { tab, path, back, forward, loading, filter, find, archive, activeListing } = useTab(
         useShallow((t) => ({
+            tab: t.id,
             path: t.path,
             back: t.back.length > 0,
             forward: t.forward.length > 0,
@@ -285,6 +295,7 @@ export function AddressBar() {
     const [flyoutFilter, setFlyoutFilter] = useState("");
     // The search box, focused and empty, shows what it can do.
     const [findFocused, setFindFocused] = useState(false);
+    const inRepository = useGit((s) => !!s[tab]?.view);
     const trail = crumbs(path);
 
     // A path too long for the bar keeps its end, as the window narrows too: the crumbs are laid out
@@ -421,7 +432,9 @@ export function AddressBar() {
     const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === "Enter") {
             e.preventDefault();
-            runFind(filter);
+            // Git's marks are the folder shown's: a search of its subfolders couldn't ask them.
+            if (hasGitFilter(filter)) toast.message("git: filters this folder, as you type", { id: "git-filter", description: "Enter searches subfolders by name, where Git's marks don't reach." });
+            else runFind(filter);
         } else if (e.key === "Escape") {
             // Like Explorer: clear the search and go back to the list.
             if (filter || find) clearFind();
@@ -506,6 +519,7 @@ export function AddressBar() {
                                 </div>
                             ))}
                         </div>
+                        <GitChip tab={tab} path={path} />
                         <div onClick={startEditing} className="h-full min-w-4 flex-1 cursor-text" title="Type a path (Ctrl+L)" />
                     </div>
                 )}
@@ -602,7 +616,7 @@ export function AddressBar() {
                     <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
                         <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too.</p>
                         <div className="mt-1.5 flex flex-col">
-                            {FILTERS.map(([start, example, meaning]) => (
+                            {(inRepository ? [...FILTERS, GIT_FILTER] : FILTERS).map(([start, example, meaning]) => (
                                 <button key={start} type="button" tabIndex={-1} onClick={() => updateTab({ filter: start })} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
                                     <code className="shrink-0 font-mono text-[0.6875rem] text-primary">{example}</code>
                                     <span className="truncate text-muted-foreground">{meaning}</span>
