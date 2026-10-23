@@ -342,6 +342,8 @@ interface ActiveView {
     total?: number;
     /** Windows keeps this account out of the folder. */
     noAccess?: boolean;
+    /** The folder is a Git repository's own (it has its .git). */
+    repo?: boolean;
 }
 const useActiveView = create<ActiveView>(() => ({ selected: NO_ENTRIES, items: 0, folder: THIS_PC }));
 
@@ -732,7 +734,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 
 /** The selection (or the folder) of the pane the keyboard acts on. Its left edge drags its width. */
 function PreviewPane() {
-    const { selected, items, folder, total, noAccess } = useActiveView();
+    const { selected, items, folder, total, noAccess, repo } = useActiveView();
     const width = useStore((s) => s.settings.previewWidth);
     const drag = useRef({ from: 0, now: 0, pane: null as HTMLElement | null });
     return (
@@ -760,7 +762,7 @@ function PreviewPane() {
                 }}
                 onReset={() => useStore.getState().setSettings({ previewWidth: null })}
             />
-            <FilePreview selected={selected} folder={{ path: folder, items, total, noAccess }} />
+            <FilePreview selected={selected} folder={{ path: folder, items, total, noAccess, repo }} />
         </aside>
     );
 }
@@ -977,9 +979,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const folder = find?.scope ?? path;
     const total = binTotal ?? sizeRun?.total;
     const shut = !!noAccess && !find;
+    const repo = !find && !!listing && !listing.archive && listing.entries.some((e) => e.lower === ".git");
     useLayoutEffect(() => {
-        if (current) useActiveView.setState({ selected, items: rows.length, folder, total, noAccess: shut });
-    }, [current, selected, rows.length, folder, total, shut]);
+        if (current) useActiveView.setState({ selected, items: rows.length, folder, total, noAccess: shut, repo });
+    }, [current, selected, rows.length, folder, total, shut, repo]);
 
     const rowsRef = useRef(rows);
     rowsRef.current = rows;

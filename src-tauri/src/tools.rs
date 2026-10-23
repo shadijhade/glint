@@ -136,6 +136,27 @@ pub static TOOLS: &[Tool] = &[
         },
         used_for: "Converting pictures to JPEG, PNG, WebP or AVIF, smaller if asked (Convert pictures…)",
     },
+    Tool {
+        id: "onefetch",
+        name: "onefetch",
+        exe: "onefetch",
+        package: "o2sh.onefetch",
+        source: Source::Release {
+            version: "3.1.0",
+            url: "https://github.com/o2sh/onefetch/releases/download/3.1.0/onefetch-win.tar.gz",
+            sha256: "da8bbfb4566c2d4ef5303b9f126b08d5176060f508f94b75bba5d5320bc9bc76",
+            member: "onefetch.exe",
+        },
+        used_for: "A Git repository's card in its preview: its languages, who works on it, its last change and license",
+    },
+    Tool {
+        id: "tokei",
+        name: "tokei",
+        exe: "tokei",
+        package: "xampprocky.tokei",
+        source: Source::Winget { id: "XAMPPRocky.Tokei" },
+        used_for: "Lines of code by language, on a Git repository's card",
+    },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {
@@ -393,8 +414,17 @@ async fn download(tool: &'static Tool, url: &str, sha256: &str, member: &str, st
     let temp = fetch(url, sha256, tool.id, tool.name, stop, progress).await?;
     let _ = progress.send(Progress { stage: "Unpacking".into(), done: 0, total: 0 });
     let into = DIR.get().ok_or("Glint's data folder isn't available")?.join(tool.id);
-    let (file, member, exe) = (temp.clone(), member.to_string(), tool.exe);
-    let unpacked = blocking(move || if member.is_empty() { place(&file, &into, exe) } else { unpack(&file, &member, &into, exe) }).await;
+    let (file, member, exe, tarball) = (temp.clone(), member.to_string(), tool.exe, url.ends_with(".tar.gz"));
+    let unpacked = blocking(move || {
+        if member.is_empty() {
+            place(&file, &into, exe)
+        } else if tarball {
+            unpack_tarball(&file, &member, &into, exe)
+        } else {
+            unpack(&file, &member, &into, exe)
+        }
+    })
+    .await;
     let _ = fs::remove_file(&temp);
     unpacked
 }
@@ -472,6 +502,17 @@ fn unpack(zip: &Path, member: &str, into: &Path, exe: &str) -> Result<(), String
     let mut out = File::create(fresh.join(format!("{exe}.exe"))).map_err(|e| e.to_string())?;
     std::io::copy(&mut (&mut entry).take(MAX_DOWNLOAD), &mut out).map_err(|e| e.to_string())?;
     drop(out);
+    replace(into, &fresh)
+}
+
+/// Takes only the program out of a checked release tarball (.tar.gz), into a fresh folder that then
+/// replaces the old one.
+fn unpack_tarball(tarball: &Path, member: &str, into: &Path, exe: &str) -> Result<(), String> {
+    let program = crate::archive::tar_gz_member(tarball, member, MAX_DOWNLOAD)?;
+    let fresh = into.with_extension("new");
+    let _ = fs::remove_dir_all(&fresh);
+    fs::create_dir_all(&fresh).map_err(|e| e.to_string())?;
+    fs::write(fresh.join(format!("{exe}.exe")), program).map_err(|e| e.to_string())?;
     replace(into, &fresh)
 }
 
@@ -561,6 +602,19 @@ mod tests {
         place(&dir.join("jaq-x86_64-pc-windows-msvc.exe"), &dir.join("difftastic"), "jaq").unwrap();
         assert_eq!(fs::read(dir.join("difftastic").join("jaq.exe")).unwrap(), b"jaq");
         assert!(!dir.join("difftastic").join("difft.exe").exists());
+        // A tarball (onefetch's): "./onefetch.exe" in it, gzip-compressed.
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(11);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, "./onefetch.exe", &b"one fetched"[..]).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(File::create(dir.join("onefetch-win.tar.gz")).unwrap(), flate2::Compression::default());
+        gz.write_all(&tar.into_inner().unwrap()).unwrap();
+        gz.finish().unwrap();
+        unpack_tarball(&dir.join("onefetch-win.tar.gz"), "onefetch.exe", &dir.join("onefetch"), "onefetch").unwrap();
+        assert_eq!(fs::read(dir.join("onefetch").join("onefetch.exe")).unwrap(), b"one fetched");
+        assert!(unpack_tarball(&dir.join("onefetch-win.tar.gz"), "other.exe", &dir.join("y"), "y").is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

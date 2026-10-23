@@ -29,6 +29,7 @@ mod pe;
 mod proc;
 mod quick;
 mod recycle;
+mod repo;
 mod sheet;
 mod shell;
 mod sign;
@@ -654,6 +655,7 @@ pub fn run() {
             convert::convert_cancel,
             openers::openers,
             openers::open_in,
+            repo::repo_card,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,
