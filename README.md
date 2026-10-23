@@ -85,6 +85,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **An address bar that gets you there.** The arrow after each part of the path lists that folder's subfolders and archives, with a filter box and arrow keys; the first one lists drives and places. Typing a path (`Ctrl+L`) suggests what's in the folder you're typing in, folders first, and names a letter off after those (`C:\Windows\Sytem32` suggests System32): `Tab` completes, `Enter` opens.
 -   **The usual explorer moves.** Back, forward and up, a breadcrumb address bar you can type into, Quick access, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folders and text documents, and hidden items on demand.
 -   **Windows-native file operations.** Copy, cut, paste, delete and rename go through Windows' own file engine, so progress, *Replace or Skip*, the Recycle Bin and permission prompts behave exactly like Explorer. The clipboard is shared with Explorer: copy here, paste there, and the other way round. A delete or a move says so with **Undo** right there, and `Ctrl+Z` takes back the last copy, move, rename, Recycle Bin delete, new folder or batch rename, with the names Windows actually gave (*Keep both*, *- Copy*), and steps further back on each press.
+-   **The Recycle Bin, as a place.** Under the drives in the sidebar (or typed as `Recycle Bin`): what you deleted, every drive's, with the folder each was deleted from, when, and how big it is (a folder's, everything in it). **Restore** puts the selection back where it was deleted from, making that folder again if it's gone, and says so with **Undo**; Quick Look and the preview show an item before you decide. There, `Delete` deletes for good once Glint has asked, naming what goes; **Restore all items** and **Empty the Recycle Bin** are on the right-click menu (Windows asks before emptying), and files dropped on the sidebar's Recycle Bin are deleted, as in File Explorer. What's in it isn't opened, renamed or copied where it is: restore it first. Nothing watches the Recycle Bin, so it's read again after each delete or restore here, when Glint comes back to the front, and with `F5` ([how it works](docs/recycle-bin.md)).
 -   **Every folder opens.** A folder Windows keeps you out of, such as `C:\PerfLogs` or another account's profile, opens all the same and says why, with **Get access**: as File Explorer's Continue button does, Windows asks for administrator approval once, and your account may open it and everything in it from then on. With instant search on, even a folder Windows keeps to itself, such as *System Volume Information*, shows what's in it, read-only, from the index. Old links such as *Documents and Settings* open where they point, a shortcut to a folder opens the folder right here, and files open as a double-click in File Explorer opens them: with their app, or Windows' app picker when no app is set yet.
 -   **Drag and drop.** Drag files out to File Explorer, the desktop, a mail or a chat, or drop them in from anywhere onto a folder, a sidebar place or the open folder. As in Explorer, dropping on the same drive moves and on another drive copies.
 -   **Live.** The open folder refreshes when files change elsewhere.
@@ -290,7 +291,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 | `Ctrl+Shift+C` | Copy path |
 | `F2` | Rename (several selected: batch rename) |
 | `Ctrl+Shift+R` | Batch rename the selection, or every item in the folder |
-| `Delete` / `Shift+Delete` | Move to the Recycle Bin / delete permanently |
+| `Delete` / `Shift+Delete` | Move to the Recycle Bin / delete permanently (in the Recycle Bin, `Delete` deletes for good, once asked) |
 | `Ctrl+Z` | Undo the last copy, move, rename, delete, new item or batch rename |
 | `Ctrl+Shift+N` | New folder |
 | `Alt+Enter` | Properties |
@@ -394,6 +395,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] Word, Excel, PowerPoint and font previews through Windows' previewers
 -   [x] Comparing folders down through subfolders and by contents, with Sync
 -   [x] A terminal under the files that follows the folder shown
+-   [x] The Recycle Bin as a place: restore with Undo, delete for good, empty
 
 Missing something? [Open an issue](https://github.com/shadijhade/glint/issues/new/choose). If the app saves you time, a star helps other people find it.
 

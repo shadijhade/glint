@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { ChevronDown, Link2, Plus, SquareTerminal, X } from "lucide-react";
 import { isTyping } from "@/lib/cd";
 import { currentPath, navigate, useExplorer } from "@/lib/explorer";
-import { baseName, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, isFolderPath, samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import {
     cdActive,
@@ -31,7 +31,7 @@ import { ResizeHandle } from "../ResizeHandle";
 /** The folder on disk a terminal starts in or follows: the active pane's, or home from This PC. */
 export function terminalFolder() {
     const path = currentPath();
-    if (path !== THIS_PC) return path;
+    if (isFolderPath(path)) return path;
     return useExplorer.getState().known.find((k) => k.id === "home")?.path ?? "C:\\";
 }
 
@@ -160,7 +160,7 @@ function TerminalView({ tab, visible }: { tab: TermTab; visible: boolean }) {
                     const shown = currentPath();
                     // The shell went somewhere: the pane follows. The pane went somewhere while the shell was busy: now it follows.
                     if (moved && !samePath(shown, event.path)) void navigate(event.path);
-                    else if (!moved && shown !== THIS_PC && !samePath(shown, event.path)) cdActive(shown);
+                    else if (!moved && isFolderPath(shown) && !samePath(shown, event.path)) cdActive(shown);
                 }
             );
             session.id = id;
@@ -216,7 +216,7 @@ export function TerminalPanel() {
     const setSettings = useStore((s) => s.setSettings);
     const folder = useExplorer((s) => {
         const t = s.tabs[(s.panes[s.activePane] ?? s.panes[0]).active];
-        return t && !t.find && !t.listing?.archive ? t.path : THIS_PC;
+        return t && !t.find && !t.listing?.archive && isFolderPath(t.path) ? t.path : THIS_PC;
     });
     const menu = useMenu();
     const drag = useRef({ from: 0, now: 0, panel: null as HTMLElement | null });

@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { refreshedByHand, useExplorer, visibleTabs } from "./explorer";
 import { cancelGit, type GitView, gitView, gitWatch } from "./fs";
-import { samePath, THIS_PC } from "./paths";
+import { isFolderPath, samePath } from "./paths";
 import { useStore } from "./store";
 
 /** A tab's Git: its folder's view (null: not in a repository), while it's being worked out too. */
@@ -76,12 +76,12 @@ function watchShown() {
 }
 
 // Git follows each tab's listing: a folder opened (or read again) is looked at; F5 runs status even
-// where it waits for it. Search results, archives, This PC and closed tabs have none.
+// where it waits for it. Search results, archives, This PC, the Recycle Bin and closed tabs have none.
 useExplorer.subscribe((s, prev) => {
     for (const [tab, t] of Object.entries(s.tabs)) {
         const before = prev.tabs[tab];
         if (t.listing === before?.listing && t.find === before?.find) continue;
-        if (!t.listing || t.find || t.listing.archive || t.listing.fromIndex || t.path === THIS_PC) {
+        if (!t.listing || t.find || t.listing.archive || t.listing.fromIndex || !isFolderPath(t.path)) {
             forget(tab);
             continue;
         }

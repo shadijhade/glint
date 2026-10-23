@@ -1,9 +1,9 @@
-import { Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Search, Server, Usb, X } from "lucide-react";
+import { Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Search, Server, Trash2, Usb, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { type KnownFolder, middleClickOpens, navigate, runSavedSearch, useExplorer, useTab } from "@/lib/explorer";
 import { type Drive, driveName } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
-import { baseName, inArchivePath, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { type SavedSearch, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -168,6 +168,14 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                         <CapacityBar drive={d} className="mt-1" />
                     </Place>
                 ))}
+                <Place
+                    icon={Trash2}
+                    label="Recycle Bin"
+                    path={RECYCLE_BIN}
+                    active={here(RECYCLE_BIN)}
+                    title="What you deleted, to restore or delete for good. Files dropped here are deleted."
+                    onContextMenu={onContextMenu}
+                />
             </Section>
         </nav>
     );

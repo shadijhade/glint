@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { FileEntry } from "./entries";
 import { activeTabId, indexed, reload, setView, tabState, updateTab, useExplorer, type ViewMode } from "./explorer";
 import { cancelDiskUsage, diskUsage, resolvePath } from "./fs";
-import { samePath, THIS_PC } from "./paths";
+import { isFolderPath, samePath, THIS_PC } from "./paths";
 import { useStore } from "./store";
 import { pruneUsage, subUsage, type UsageEngine, type UsageMap, usageEntries } from "./usage";
 
@@ -61,7 +61,7 @@ export function setUsage(tab: string, on: boolean) {
     // A name being edited is the list's.
     if (t?.renaming) updateTab({ renaming: null }, tab);
     save(tab, { id: 0, path, map: null, running: false, engine: "dust", error: "", started: 0, shownIn: 0, preview: false });
-    if (path !== THIS_PC) mapUsage(tab, path);
+    if (isFolderPath(path)) mapUsage(tab, path);
 }
 
 /** The command bar's and the palette's Disk usage: map or list, for the active tab by default. */
@@ -109,7 +109,7 @@ const remapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 export async function mapUsage(tab: string, path: string, started = inputTime(), again = false) {
     clearTimeout(remapTimers.get(tab));
     const before = runs()[tab];
-    if (!before || path === THIS_PC) return;
+    if (!before || !isFolderPath(path)) return;
     const id = ++seq;
     // A folder in an archive is mapped from the archive's own list of entries, at once.
     const engine: UsageEngine = tabState(tab)?.listing?.archive?.format ?? (indexed(path) && !serviceTooOld ? "index" : "dust");
@@ -141,7 +141,7 @@ export async function refreshUsage(tab = activeTabId()) {
     const started = inputTime();
     await reload(tab);
     const path = tabState(tab)?.path;
-    if (path && path !== THIS_PC) mapUsage(tab, path, started, true);
+    if (path && isFolderPath(path)) mapUsage(tab, path, started, true);
 }
 
 /** Called once a map is drawn, to time it from the click; not for a part of an earlier map shown meanwhile. */
@@ -224,7 +224,7 @@ export function entriesOf(map: UsageMap) {
 export function useMapRows(tab: string): FileEntry[] | null {
     const run = useUsage((s) => s[tab]);
     const folder = useExplorer((s) => (s.tabs[tab] && !s.tabs[tab].find ? s.tabs[tab].path : THIS_PC));
-    if (!run || folder === THIS_PC) return null;
+    if (!run || !isFolderPath(folder)) return null;
     if (!run.map) return NO_ROWS;
     let list = rows.get(run.map);
     if (!list) rows.set(run.map, (list = entriesOf(run.map).slice(1)));

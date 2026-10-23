@@ -17,8 +17,12 @@ pub enum FileOp {
     Rename { path: String, name: String },
     /// Undoing a move: each item back into `folder` as `name`.
     MoveBack { items: Vec<Back> },
-    /// Undoing a delete: Recycle Bin items (as [`Done::to`] names them) back where they came from.
+    /// Undoing a delete, or Restore in the Recycle Bin: its items (as [`Done::to`] names them) back
+    /// where they came from, into their folder made again if it's gone.
     Restore { items: Vec<Back> },
+    /// Delete for good in the Recycle Bin: its items, by their `$R` paths, with their `$I` records
+    /// (the app has asked first, naming them as they were).
+    Purge { paths: Vec<String> },
     /// Sync in compare panes: each item copied into `folder` as `name`, each to a folder of its own.
     CopyInto { items: Vec<Back> },
 }
@@ -52,14 +56,17 @@ pub struct ClipboardFiles {
 }
 
 #[cfg(windows)]
-fn owner(window: &Window) -> isize {
+pub(crate) fn owner(window: &Window) -> isize {
     window.hwnd().map_or(0, |h| h.0 as isize)
 }
 
 #[cfg(not(windows))]
-fn owner(_: &Window) -> isize {
+pub(crate) fn owner(_: &Window) -> isize {
     0
 }
+
+#[cfg(windows)]
+pub(crate) use imp::in_sta;
 
 /// Runs `f` on the UI thread, which owns the window and has COM set up.
 async fn on_main<T, F>(window: &Window, f: F) -> Result<T, String>
@@ -84,7 +91,7 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
     blocking(move || {
         let touches_archive = match &op {
             FileOp::Copy { sources, dest } | FileOp::Move { sources, dest } => archive::is_read_only(dest) || sources.iter().any(|s| archive::is_inside(s)),
-            FileOp::Delete { paths, .. } => paths.iter().any(|p| archive::is_inside(p)),
+            FileOp::Delete { paths, .. } | FileOp::Purge { paths } => paths.iter().any(|p| archive::is_inside(p)),
             FileOp::Rename { path, .. } => archive::is_inside(path),
             FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items.iter().any(|b| archive::is_inside(&b.path) || archive::is_read_only(&b.folder)),
         };
@@ -94,7 +101,7 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
         // A preview handler may hold the file open: what's moved, renamed or deleted goes from the preview first.
         let leaving: Vec<String> = match &op {
             FileOp::Move { sources, .. } => sources.clone(),
-            FileOp::Delete { paths, .. } => paths.clone(),
+            FileOp::Delete { paths, .. } | FileOp::Purge { paths } => paths.clone(),
             FileOp::Rename { path, .. } => vec![path.clone()],
             FileOp::MoveBack { items } => items.iter().map(|b| b.path.clone()).collect(),
             FileOp::Copy { .. } | FileOp::Restore { .. } | FileOp::CopyInto { .. } => Vec::new(),
@@ -274,7 +281,7 @@ mod imp {
     }
 
     /// Runs `f` on a fresh single-threaded COM apartment, which the shell's dialogs need.
-    fn in_sta<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    pub(crate) fn in_sta<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
         std::thread::spawn(move || unsafe {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).ok().map_err(message)?;
             let result = f();
@@ -395,7 +402,9 @@ mod imp {
     }
 
     unsafe fn perform(owner: isize, op: FileOp) -> Result<Performed, String> {
+        // Either way, what's left of an item in the Recycle Bin is its `$I` record, which goes too.
         let restoring = matches!(op, FileOp::Restore { .. });
+        let purging = matches!(op, FileOp::Purge { .. });
         let fo: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL).map_err(message)?;
         if owner != 0 {
             fo.SetOwnerWindow(hwnd(owner)).map_err(message)?;
@@ -407,7 +416,7 @@ mod imp {
         // The items asked for: the engine reports what's inside folders too.
         let asked: Vec<String> = match &op {
             FileOp::Copy { sources, .. } | FileOp::Move { sources, .. } => sources.clone(),
-            FileOp::Delete { paths, .. } => paths.clone(),
+            FileOp::Delete { paths, .. } | FileOp::Purge { paths } => paths.clone(),
             FileOp::Rename { path, .. } => vec![path.clone()],
             FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items.iter().map(|b| b.path.clone()).collect(),
         };
@@ -415,7 +424,17 @@ mod imp {
             FileOp::MoveBack { items } | FileOp::Restore { items } => {
                 fo.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).map_err(message)?;
                 for back in &items {
+                    // As File Explorer restores: into the folder it was deleted from, made again if it's gone.
+                    if restoring && !Path::new(&back.folder).exists() {
+                        std::fs::create_dir_all(&back.folder).map_err(|e| format!("{}: {e}", back.folder))?;
+                    }
                     fo.MoveItem(&item(&back.path)?, &item(&back.folder)?, &HSTRING::from(back.name.as_str()), sink).map_err(message)?;
+                }
+            }
+            FileOp::Purge { paths } => {
+                fo.SetOperationFlags(FOF_NOCONFIRMATION).map_err(message)?;
+                for path in &paths {
+                    fo.DeleteItem(&item(path)?, sink).map_err(message)?;
                 }
             }
             FileOp::CopyInto { items } => {
@@ -478,6 +497,8 @@ mod imp {
         let items: Vec<Done> = track.done.take().into_iter().filter(|d| asked.iter().any(|a| same(a, &d.from))).collect();
         if restoring {
             items.iter().filter(|d| d.to.is_some()).for_each(|d| forget_recycled(&d.from));
+        } else if purging {
+            items.iter().for_each(|d| forget_recycled(&d.from));
         }
         Ok(Performed { completed, items })
     }

@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
-import { crumbs, isRoot, joinPath, linkedPath, parentPath, samePath, THIS_PC, volumeOf } from "./paths.ts";
-import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, matcher, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
+import { crumbs, isFolderPath, isRecycleBin, isRoot, joinPath, linkedPath, parentPath, RECYCLE_BIN, samePath, THIS_PC, volumeOf } from "./paths.ts";
+import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, matcher, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
 import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping } from "./cd.ts";
@@ -314,14 +314,18 @@ assert.deepEqual(crumbs(inside).map((c) => c.name), ["C:\\", "Dö", "photos.zip"
 assert.equal(parentPath("C:\\Dö\\photos.zip"), "C:\\Dö");
 
 // Search results: items that each carry their own path, built with the layout fsx.rs's encode_items writes (its test checks the offsets)
-function encodeItems(items: (Item & { path: string })[], withNames: boolean) {
-    const text = new TextEncoder().encode(items.map((e) => e.path).join("") + (withNames ? items.map((e) => e.name).join("") : ""));
+function encodeItems(items: (Item & { path: string })[], withNames: boolean, origins: string[] = [], location = "") {
+    const encoder = new TextEncoder();
+    const where = encoder.encode(location);
+    const text = encoder.encode(items.map((e) => e.path).join("") + (withNames ? items.map((e) => e.name).join("") : "") + origins.join(""));
     const n = items.length;
-    const buffer = new ArrayBuffer(40 + 28 * n + text.length);
+    const columns = origins.length ? 32 : 28;
+    const buffer = new ArrayBuffer(40 + columns * n + where.length + text.length);
     const view = new DataView(buffer);
     view.setUint32(0, n, true);
+    view.setUint32(4, where.length, true);
     view.setFloat64(8, 2.5, true);
-    view.setUint32(24, withNames ? 1 : 0, true);
+    view.setUint32(24, (withNames ? 1 : 0) | (origins.length ? 2 : 0), true);
     view.setUint32(28, 4, true);
     items.forEach((e, i) => {
         view.setFloat64(40 + 8 * i, e.size, true);
@@ -329,8 +333,10 @@ function encodeItems(items: (Item & { path: string })[], withNames: boolean) {
         view.setUint32(40 + 16 * n + 4 * i, e.attrs | (e.dir ? 0x10 : 0), true);
         view.setUint32(40 + 20 * n + 4 * i, e.path.length, true);
         view.setUint32(40 + 24 * n + 4 * i, e.name.length, true);
+        if (origins.length) view.setUint32(40 + 28 * n + 4 * i, origins[i].length, true);
     });
-    new Uint8Array(buffer).set(text, 40 + 28 * n);
+    new Uint8Array(buffer).set(where, 40 + columns * n);
+    new Uint8Array(buffer).set(text, 40 + columns * n + where.length);
     return buffer;
 }
 const results = decodeItems(
@@ -356,6 +362,30 @@ assert.deepEqual(
 const renamed = decodeItems(encodeItems([{ name: "budget.xlsx", path: "C:\\$Recycle.Bin\\S-1-5\\$RQ2Z1.xlsx", dir: false, size: 9, modified: 1, attrs: 0 }], true));
 assert.deepEqual(renamed.entries.map((e) => [e.name, e.path, e.ext]), [["budget.xlsx", "C:\\$Recycle.Bin\\S-1-5\\$RQ2Z1.xlsx", "xlsx"]]);
 assert.deepEqual(decodeItems(encodeItems([], false)).entries, []);
+
+// The Recycle Bin: a listing of items each named as it was, with the folder it was deleted from (and when, as its date)
+const bin = decodeListing(
+    encodeItems(
+        [
+            { name: "budget 😀.xlsx", path: "C:\\$Recycle.Bin\\S-1-5\\$RQ2Z1.xlsx", dir: false, size: 9, modified: 1.7e12, attrs: ATTR.recycled },
+            { name: "old", path: "D:\\$RECYCLE.BIN\\S-1-5\\$R0X", dir: true, size: 4096, modified: 8, attrs: ATTR.recycled },
+        ],
+        true,
+        ["C:\\Users\\Dö\\Desktop", "D:\\Projects"],
+        RECYCLE_BIN
+    )
+);
+assert.equal(bin.path, RECYCLE_BIN);
+assert.deepEqual(bin.entries.map((e) => [e.name, e.path, e.origin, e.dir, e.size, e.ext, isRecycled(e)]), [
+    ["budget 😀.xlsx", "C:\\$Recycle.Bin\\S-1-5\\$RQ2Z1.xlsx", "C:\\Users\\Dö\\Desktop", false, 9, "xlsx", true],
+    ["old", "D:\\$RECYCLE.BIN\\S-1-5\\$R0X", "D:\\Projects", true, 4096, "", true],
+]);
+assert.ok(!isRecycled(entry("plain.txt")));
+// A place, not a folder: its own root, with This PC above it, and one crumb.
+assert.ok(isRecycleBin(RECYCLE_BIN) && isRecycleBin("SHELL:recyclebinfolder") && !isRecycleBin("C:\\$Recycle.Bin"));
+assert.ok(isRoot(RECYCLE_BIN) && parentPath(RECYCLE_BIN) === THIS_PC);
+assert.ok(!isFolderPath(RECYCLE_BIN) && !isFolderPath(THIS_PC) && isFolderPath("C:\\") && isFolderPath("C:\\a.zip\\b"));
+assert.deepEqual(crumbs(RECYCLE_BIN), [{ name: "Recycle Bin", path: RECYCLE_BIN }]);
 
 // Disk-usage maps: built here with the layout usage.rs's encode_map writes (its test checks the offsets)
 type Node = { name: string; parent: number; dir: boolean; size: number; modified?: number; attrs?: number };

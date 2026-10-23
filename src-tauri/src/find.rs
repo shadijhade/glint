@@ -192,7 +192,7 @@ impl<'a> Out<'a> {
 
     fn flush(&mut self) {
         if !self.batch.is_empty() {
-            let _ = self.channel.send(InvokeResponseBody::Raw(encode_items("", &self.batch, 0.0, false)));
+            let _ = self.channel.send(InvokeResponseBody::Raw(encode_items("", &self.batch, &[], 0.0, false)));
             self.batch.clear();
             self.sent = Instant::now();
         }
