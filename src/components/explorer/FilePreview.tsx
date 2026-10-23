@@ -5,7 +5,7 @@ import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, Folde
 import { create } from "zustand";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
-import { isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
+import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, type ArchivePeek, archivePeek, listDir, readTextPreview } from "@/lib/fs";
 import { useGitMark } from "@/lib/git";
@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { ChangesView } from "./ChangesView";
+import { DataTree } from "./DataTree";
 import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
 import { MarkdownView } from "./MarkdownView";
@@ -347,12 +348,19 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     const archive = archived ? archiveOf() : undefined;
     const readable = !entry.dir && !isOnlineOnly(entry) && !isClosed(entry) && !isLocked(entry) && !isListOnly(entry);
     const markdown = readable && isMarkdown(entry);
+    // JSON, YAML and TOML as a tree (up to the 64 MB the jq worker reads).
+    const data = readable && entry.size <= 64 * 1024 * 1024 ? dataFormat(entry) : undefined;
     // A file Git has a change for can show what changed since its last commit instead.
     const mark = useGitMark(entry.path);
     const changed = !entry.dir && !archived && !!mark && mark !== "ignored";
     const views: { view: View; label: string; title: string }[] = [
-        markdown ? { view: "file", label: "Rendered", title: "The Markdown as it reads" } : { view: "file", label: "File", title: "The file as it is" },
+        markdown
+            ? { view: "file", label: "Rendered", title: "The Markdown as it reads" }
+            : data
+              ? { view: "file", label: "Tree", title: "Its values as a tree, with a jq filter" }
+              : { view: "file", label: "File", title: "The file as it is" },
         ...(markdown ? [{ view: "source" as const, label: "Source", title: "The Markdown as written" }] : []),
+        ...(data ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
         ...(changed ? [{ view: "changes" as const, label: "Changes", title: "What changed since the last commit (Git)" }] : []),
     ];
     const chosen = usePreviewView((s) => s.view);
@@ -384,6 +392,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     else if (!archived && isSqliteCandidate(entry)) body = <SqlitePreview entry={entry} />;
     else if (!archived && isTabularCandidate(entry)) body = <TabularPreview entry={entry} />;
     else if (markdown) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <MarkdownPreview entry={entry} />;
+    else if (data) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <DataTree entry={entry} format={data} />;
     // Unknown extensions get a text preview attempt; the backend spots binary files.
     else if (kind === "text" || !isKnownType(entry)) body = <TextPreview entry={entry} over={!!onClose} />;
     else if (!archived && isPeCandidate(entry)) body = <BinaryPreview entry={entry} />;

@@ -8,6 +8,8 @@ import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
 import { markdownTitle, safeHref } from "./markdown.ts";
+import { initiallyOpen, isContainer, JsonNumber, jqPath, PAGE, parseJson, preview, treeRows } from "./jsonTree.ts";
+import { byteChar, byteClass, hex, parseOffset } from "./hex.ts";
 import {
     BLOCK,
     decodeUsage,
@@ -73,6 +75,45 @@ assert.equal(markdownTitle('<h1 align="center">My <b>App</b></h1>'), "My App");
 assert.equal(markdownTitle("[![build](https://x/badge.svg)](https://x)\n\nA tool that does `things`.\n\n## Install"), "A tool that does things.");
 assert.equal(markdownTitle("# [Docs](https://example.com) #\n"), "Docs");
 assert.equal(markdownTitle("\n\n"), "");
+
+// The JSON tree: exact numbers, jq paths, rows a page at a time
+const doc = parseJson('{"name":"glint","big":123456789012345678901234567890,"price":1.50,"n":3,"tools":["fd","rg"],"odd key":{"x":[]}}');
+assert.ok(isContainer(doc) && !Array.isArray(doc));
+assert.ok(doc.big instanceof JsonNumber && String(doc.big) === "123456789012345678901234567890");
+assert.ok(doc.price instanceof JsonNumber && String(doc.price) === "1.50");
+assert.equal(doc.n, 3);
+assert.equal(jqPath(".", "name"), ".name");
+assert.equal(jqPath(".", 2), ".[2]");
+assert.equal(jqPath(".tools", 1), ".tools[1]");
+assert.equal(jqPath(".", "odd key"), '.["odd key"]');
+assert.equal(jqPath('.["odd key"]', "x"), '.["odd key"].x');
+const opened = initiallyOpen([doc]);
+assert.deepEqual([...opened.keys()], ["0:.", "0:.tools", '0:.["odd key"]']);
+assert.deepEqual(
+    treeRows([doc], opened).map((r) => `${"  ".repeat(r.depth)}${r.key ?? "."}`),
+    [".", "  name", "  big", "  price", "  n", "  tools", "    0", "    1", "  odd key", "    x"]
+);
+assert.equal(preview(doc, 40), '{name: "glint", …}');
+assert.equal(preview(["a", 1, null, { b: 2 }]), '["a", 1, null, {…}]');
+assert.equal(preview({ "a b": "x".repeat(100) }, 30), '{…}');
+const long = Array.from({ length: PAGE + 5 }, (_, i) => i);
+const paged = treeRows([long], new Map([["0:.", PAGE]]));
+assert.equal(paged.length, PAGE + 2);
+assert.equal(paged[paged.length - 1].more, 5);
+assert.equal(treeRows([long], new Map([["0:.", PAGE * 2]])).length, PAGE + 6);
+
+// The hex view: hexyl's byte classes and characters, and offsets to go to
+assert.deepEqual([0, 0x20, 0x0a, 0x41, 0x7f, 0x01, 0x80, 0xff].map(byteClass), ["null", "space", "space", "text", "control", "control", "high", "high"]);
+assert.equal([0, 0x20, 0x09, 0x41, 0x1b, 0xe9].map(byteChar).join(""), "⋄ _A•×");
+assert.equal(hex(255, 2), "FF");
+assert.equal(hex(0x1f00, 8), "00001F00");
+assert.equal(parseOffset("0x1F00"), 0x1f00);
+assert.equal(parseOffset("1f00h"), 0x1f00);
+assert.equal(parseOffset("1F00"), 0x1f00);
+assert.equal(parseOffset("8192"), 8192);
+assert.equal(parseOffset(" 1_000 "), 1000);
+assert.equal(parseOffset("12g"), null);
+assert.equal(parseOffset(""), null);
 assert.deepEqual(crumbs(THIS_PC), []);
 
 // Natural order and sorting

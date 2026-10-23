@@ -1,7 +1,10 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { ArchiveFormat } from "./archives";
 import { decodeItems, decodeListing, type DiffStatus, type FileEntry, type Listing } from "./entries";
+import { type JsonValue, parseJson } from "./jsonTree";
 import { decodeUsage, type UsageMap } from "./usage";
+
+const utf8 = new TextDecoder();
 
 export type { Listing };
 
@@ -106,8 +109,31 @@ export const diagnostics = () => invoke<string>("diagnostics");
 export const readTextPreview = (path: string, maxBytes: number) =>
     invoke<{ text: string; truncated: boolean; binary: boolean }>("read_text_preview", { path, maxBytes });
 
-/** Markdown as HTML (GitHub's flavor, by comrak), its raw HTML escaped and links that could run something emptied. */
+/** Markdown as HTML (GitHub's flavor, by comrak), with its own HTML in it for the preview to keep what's allowed. */
 export const markdownHtml = (text: string) => invoke<string>("markdown_html", { text });
+
+export interface JqAnswer {
+    values: JsonValue[];
+    /** Cut at 100,000 values or 64 MB of JSON. */
+    truncated: boolean;
+    /** Why there are no values, or why they stop: the file isn't its format, the filter doesn't compile, or it failed. */
+    error: string | null;
+    elapsed: number;
+}
+
+/**
+ * A JSON, YAML or TOML file's documents through a jq filter ("." for the file as it is), by jaq in a
+ * worker held to 1 GB and 10 seconds. A newer query, or jqStop, stops this one ("stopped").
+ */
+export async function jqQuery(path: string, format: "json" | "yaml" | "toml", filter: string): Promise<JqAnswer> {
+    const bytes = new Uint8Array(await invoke<ArrayBuffer>("jq_query", { path, format, filter }));
+    const line = bytes.indexOf(10);
+    const head = JSON.parse(utf8.decode(bytes.subarray(0, line))) as Omit<JqAnswer, "values">;
+    const values = parseJson(utf8.decode(bytes.subarray(line + 1)));
+    return { ...head, values: Array.isArray(values) ? values : [] };
+}
+
+export const jqStop = () => invoke<void>("jq_stop");
 
 /** Creates a folder or empty file, numbered like "New folder (2)" if the name is taken; returns its path. */
 export const createEntry = (parent: string, name: string, dir: boolean) => invoke<string>("create_entry", { parent, name, dir });
