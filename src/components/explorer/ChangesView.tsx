@@ -1,10 +1,31 @@
 import { Fragment, useEffect, useState } from "react";
-import { AlertTriangle, FileDiff as FileDiffIcon, FilePlus2, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { AlertTriangle, Columns2, FileDiff as FileDiffIcon, FilePlus2, Loader2 } from "lucide-react";
 import type { FileEntry } from "@/lib/entries";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
-import { type FileDiff, gitDiff } from "@/lib/fs";
+import { type FileDiff, gitDiff, gitHeadCopy, gitHeadDiscard } from "@/lib/fs";
 import { cn } from "@/lib/utils";
+import { Button } from "../ui/button";
+import { compareFiles } from "./CompareFilesDialog";
 import { Centered } from "./PreviewState";
+
+/** The file as it was in its last commit against it now, side by side (by Difftastic when it's installed). */
+async function sideBySide(entry: FileEntry) {
+    try {
+        const copy = await gitHeadCopy(entry.path);
+        if (copy) compareFiles({ path: copy, label: "In the last commit" }, { path: entry.path, label: "Now" }, () => void gitHeadDiscard(copy));
+    } catch (e) {
+        toast.error("Couldn't read it from the last commit", { description: String(e) });
+    }
+}
+
+function SideBySide({ entry }: { entry: FileEntry }) {
+    return (
+        <Button variant="ghost" size="sm" className="h-6 shrink-0 px-1.5 text-xs" onClick={() => void sideBySide(entry)} title="The last commit's version and this one side by side (by the code's structure, with Difftastic)">
+            <Columns2 className="size-3.5" /> Side by side
+        </Button>
+    );
+}
 
 const SIGN = { same: " ", removed: "−", added: "+" } as const;
 const ROW = {
@@ -51,6 +72,7 @@ export function ChangesView({ entry }: { entry: FileEntry }) {
                 <FileDiffIcon className="size-12 stroke-[1.25] text-muted-foreground" />
                 <p>{diff.binary ? "A binary file: what changed in it isn't shown as lines." : "Too big to compare here (over 1 MB)."}</p>
                 <p className="text-xs">{diff.newFile ? `New: ${formatSize(diff.newSize)}, not in the last commit` : sizes}</p>
+                {!diff.newFile && <SideBySide entry={entry} />}
             </Centered>
         );
 
@@ -72,6 +94,7 @@ export function ChangesView({ entry }: { entry: FileEntry }) {
                 <span className="ml-auto truncate font-mono text-[0.6875rem] text-muted-foreground" title={`${diff.path}, compared in ${formatDuration(diff.elapsed)}`}>
                     {diff.path}
                 </span>
+                {!diff.newFile && <SideBySide entry={entry} />}
             </div>
             {diff.lines.length === 0 ? (
                 <Centered>

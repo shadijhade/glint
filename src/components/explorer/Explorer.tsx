@@ -161,7 +161,7 @@ import { formatCount } from "@/lib/format";
 import { driveName, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, inArchivePath, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, joinPath, samePath, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -175,6 +175,7 @@ import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
 import { openCleanup } from "./CleanupDialog";
+import { compareFiles } from "./CompareFilesDialog";
 import { DiskUsage } from "./DiskUsage";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { FileGrid } from "./FileGrid";
@@ -591,6 +592,11 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
             writable && !t.find && !shut && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
             !archive && !closedItems && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
+            !archive &&
+                !closedItems &&
+                chosenEntries.length === 2 &&
+                chosenEntries.every((e) => !e.dir) &&
+                action("compare-files", "Compare the two selected files", GitCompareArrows, () => compareFiles(chosenEntries[0].path, chosenEntries[1].path)),
             writable && !shut && action("timeline", "Recent changes in this folder", FileClock, () => inspectTimeline(t.path)),
             writable && !shut && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
             writable && !shut && action("cleanup", "Clean up this folder: build output and package caches", BrushCleaning, () => openCleanup(t.path)),
@@ -1121,6 +1127,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const closed = targets.some(isClosed);
         const fixed = !!archived || closed;
         const browses = !!one && (one.dir || isArchiveFile(one));
+        // Two files side by side: the two chosen, or (comparing panes) one and its namesake in the other pane.
+        const pair = targets.length === 2 && !fixed && targets.every((t) => !t.dir) ? targets : null;
+        const status = one && !one.dir && !fixed && otherPath ? comparison?.diffs.get(one.lower) : undefined;
+        const namesake = status && status !== "unique" && otherPath && one ? joinPath(otherPath, one.name) : null;
         // Open, then the clipboard and the other pane, archives, renaming and deleting, tools, properties.
         return [
             { label: browses ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: browses ? (one!.dir ? FolderOpen : FileArchive) : ExternalLink, shortcut: "Enter", onSelect: openSelected },
@@ -1184,6 +1194,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one?.dir && !fixed && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(one.path) },
             one?.dir && !fixed && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(one.path) },
             one?.dir && !fixed && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(one.path) },
+            pair && { label: "Compare the two files", icon: GitCompareArrows, onSelect: () => compareFiles(pair[0].path, pair[1].path) },
+            !!namesake && one && { label: "Compare with the other pane's", icon: GitCompareArrows, onSelect: () => (index === 0 ? compareFiles(one.path, namesake) : compareFiles(namesake, one.path)) },
             one && !one.dir && !fixed && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
             !archived && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
             "separator",

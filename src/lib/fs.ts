@@ -392,6 +392,56 @@ export interface FileDiff {
 /** What changed in the file at `path` since the last commit; null outside a repository. */
 export const gitDiff = (path: string) => invoke<FileDiff | null>("git_diff", { path });
 
+/** The file at `path` as it is in its last commit, in a temp file (null: it isn't in it); `gitHeadDiscard` removes it. */
+export const gitHeadCopy = (path: string) => invoke<string | null>("git_head_copy", { path });
+export const gitHeadDiscard = (path: string) => invoke("git_head_discard", { path });
+
+/** Two text files side by side (filediff.rs). */
+export interface TextCompare {
+    left: string[];
+    right: string[];
+    /** The rows side by side, by line on each side (from 0); null where only the other side has one. */
+    rows: [number | null, number | null][];
+    /** The changed lines on each side (by line), with what changed in them: [start, end) in the line; none listed: all of it. */
+    leftChanges: Record<string, [number, number][]>;
+    rightChanges: Record<string, [number, number][]>;
+    /** "difftastic" (by the code's structure) or "lines". */
+    engine: string;
+    /** The language Difftastic read them as. */
+    language: string | null;
+    /** Not text: compare the bytes instead. */
+    binary: boolean;
+    /** Over 8 MB: compare the bytes instead. */
+    tooBig: boolean;
+    elapsed: number;
+}
+
+export const compareTextFiles = (left: string, right: string) => invoke<TextCompare>("compare_text_files", { left, right });
+
+/** A window of two files' bytes, and their sizes. */
+export interface BytesWindow {
+    leftSize: number;
+    rightSize: number;
+    left: Uint8Array;
+    right: Uint8Array;
+}
+
+/** `len` bytes of each file from `offset` (at most 1 MB). */
+export async function compareBytes(left: string, right: string, offset: number, len: number): Promise<BytesWindow> {
+    const buffer = await invoke<ArrayBuffer>("compare_bytes", { left, right, offset, len });
+    const view = new DataView(buffer);
+    const [leftLen, rightLen] = [view.getUint32(16, true), view.getUint32(20, true)];
+    return {
+        leftSize: Number(view.getBigUint64(0, true)),
+        rightSize: Number(view.getBigUint64(8, true)),
+        left: new Uint8Array(buffer, 24, leftLen),
+        right: new Uint8Array(buffer, 24 + leftLen, rightLen),
+    };
+}
+
+/** The first offset at or after `from` where the files differ; null when they don't from there on. */
+export const nextByteDifference = (left: string, right: string, from: number) => invoke<number | null>("next_byte_difference", { left, right, from });
+
 /** Export as ncdu JSON: the folder `path` walked into `dest` (written as `dest.part` until done); progress counts entries, with no total. */
 export const exportNcdu = (path: string, dest: string, lane: string, onProgress: Progress) =>
     invoke<Staged>("export_ncdu", { path, dest, lane, onProgress: progressChannel(onProgress) });

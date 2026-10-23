@@ -5,6 +5,7 @@ mod cleanup;
 mod compare;
 mod data_lens;
 mod dedup;
+mod filediff;
 mod find;
 mod fsx;
 mod git;
@@ -491,6 +492,11 @@ pub fn run() {
             git::cancel_git,
             git::git_watch,
             git::git_diff,
+            git::git_head_copy,
+            git::git_head_discard,
+            filediff::compare_text_files,
+            filediff::compare_bytes,
+            filediff::next_byte_difference,
             dedup::find_duplicates,
             dedup::cancel_dedup,
             compare::compare_folders,
