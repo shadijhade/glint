@@ -114,6 +114,36 @@ export function decodeListing(buffer: ArrayBuffer): Listing {
     return listing;
 }
 
+/**
+ * Reads items that each carry their own path, such as search results (layout documented on
+ * `encode_items` in fsx.rs): a name is the end of its path unless the names follow the paths.
+ */
+export function decodeItems(buffer: ArrayBuffer): { location: string; entries: FileEntry[]; elapsed: number } {
+    const view = new DataView(buffer);
+    const count = view.getUint32(0, true);
+    const locationBytes = view.getUint32(4, true);
+    const elapsed = view.getFloat64(8, true);
+    const withNames = (view.getUint32(24, true) & 1) !== 0;
+    const sizes = new Float64Array(buffer, HEADER, count);
+    const modified = new Float64Array(buffer, HEADER + 8 * count, count);
+    const attrs = new Uint32Array(buffer, HEADER + 16 * count, count);
+    const pathLengths = new Uint32Array(buffer, HEADER + 20 * count, count);
+    const nameLengths = new Uint32Array(buffer, HEADER + 24 * count, count);
+    const textAt = HEADER + 28 * count;
+    const location = utf8.decode(new Uint8Array(buffer, textAt, locationBytes));
+    // Every path (and name) decodes in one go, then is cut up by its length in UTF-16 units.
+    const text = utf8.decode(new Uint8Array(buffer, textAt + locationBytes));
+    let names = 0;
+    if (withNames) for (let i = 0; i < count; i++) names += pathLengths[i];
+    const entries = new Array<FileEntry>(count);
+    for (let i = 0, at = 0; i < count; i++) {
+        const path = text.slice(at, (at += pathLengths[i]));
+        const name = withNames ? text.slice(names, (names += nameLengths[i])) : path.slice(path.length - nameLengths[i]);
+        entries[i] = withDetails({ name, path, dir: (attrs[i] & 0x10) !== 0, size: sizes[i], modified: modified[i], attrs: attrs[i] });
+    }
+    return { location, entries, elapsed };
+}
+
 /** "zip" or "7z" for a name Glint opens like a folder (whatever's before it), else null. */
 export function archiveFormat(name: string): InArchive["format"] | null {
     const lower = name.toLowerCase();
