@@ -2,11 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExternalLink, FileSearch, FolderInput } from "lucide-react";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
-import { RgMatch } from "@/lib/ripgrep";
+import { docLines, RgMatch } from "@/lib/ripgrep";
 import { useStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 
 const BLOCK = 100; // the preview loads 300-line windows aligned to 100-line blocks, so nearby matches reuse it
+
+/** The first line of the window around `line`. */
+const windowStart = (line: number) => Math.max(1, (Math.floor((line - 1) / BLOCK) - 1) * BLOCK + 1);
 
 interface PreviewProps {
     match?: RgMatch;
@@ -22,10 +26,13 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
 
     const path = match?.data.path?.text;
     const line = match?.data.line_number ?? 1;
-    const start = Math.max(1, (Math.floor((line - 1) / BLOCK) - 1) * BLOCK + 1);
+    // A Documents search's match: its document's text, as the search read it.
+    const label = match?.data.label;
+    const inDocument = label !== undefined;
+    const start = windowStart(line);
 
     useEffect(() => {
-        if (!path) return;
+        if (!path || inDocument) return;
         let stale = false;
         invoke<string>("read_file_chunk", { path, startLine: start, endLine: start + 3 * BLOCK - 1 })
             .then((text) => {
@@ -39,7 +46,7 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
         return () => {
             stale = true;
         };
-    }, [path, start]);
+    }, [path, start, inDocument]);
 
     useEffect(() => {
         codeRef.current?.querySelector(".hl-line")?.scrollIntoView({ block: "center" });
@@ -62,7 +69,7 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
             <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-chrome pl-3 pr-1.5">
                 <span className="truncate text-sm" title={path}>
                     <span className="font-medium">{name}</span>
-                    <span className="text-muted-foreground"> · line {line}</span>
+                    <span className="text-muted-foreground"> · {inDocument ? label : `line ${line}`}</span>
                 </span>
                 <div className="ml-auto flex shrink-0">
                     <Button variant="ghost" size="icon" className="size-7" onClick={() => onReveal(path)} title="Show in Files" aria-label="Show in Files">
@@ -73,23 +80,74 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
                     </Button>
                 </div>
             </div>
-            <div ref={codeRef} className="min-h-0 flex-1 select-text overflow-auto bg-card">
-                {error ? (
-                    <p className="p-4 text-sm text-destructive">{error}</p>
-                ) : current && (
-                    <SyntaxHighlighter
-                        language={languageFor(ext)}
-                        useInlineStyles={false}
-                        showLineNumbers={showLineNumbers}
-                        startingLineNumber={current.start}
-                        wrapLines
-                        lineProps={(n: number) => ({ className: n === line ? "block pl-3 pr-4 hl-line" : "block pl-3 pr-4" })}
-                        className="min-w-max py-2 font-mono text-[0.8125rem] leading-5"
-                    >
-                        {current.text}
-                    </SyntaxHighlighter>
-                )}
-            </div>
+            {inDocument ? (
+                <DocumentLines path={path} line={line} />
+            ) : (
+                <div ref={codeRef} className="min-h-0 flex-1 select-text overflow-auto bg-card">
+                    {error ? (
+                        <p className="p-4 text-sm text-destructive">{error}</p>
+                    ) : current && (
+                        <SyntaxHighlighter
+                            language={languageFor(ext)}
+                            useInlineStyles={false}
+                            showLineNumbers={showLineNumbers}
+                            startingLineNumber={current.start}
+                            wrapLines
+                            lineProps={(n: number) => ({ className: n === line ? "block pl-3 pr-4 hl-line" : "block pl-3 pr-4" })}
+                            className="min-w-max py-2 font-mono text-[0.8125rem] leading-5"
+                        >
+                            {current.text}
+                        </SyntaxHighlighter>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/** A document's lines around a match, as Documents search read them, each page's (slide's, row's) label once. */
+function DocumentLines({ path, line }: { path: string; line: number }) {
+    const [chunk, setChunk] = useState<{ path: string; start: number; lines: [string, string][] } | null>(null);
+    const [error, setError] = useState("");
+    const ref = useRef<HTMLDivElement>(null);
+    const start = windowStart(line);
+
+    useEffect(() => {
+        let stale = false;
+        docLines(path, start, start + 3 * BLOCK - 1).then(
+            (lines) => {
+                if (stale) return;
+                setChunk({ path, start, lines });
+                setError("");
+            },
+            (e) => {
+                if (!stale) setError(String(e));
+            }
+        );
+        return () => {
+            stale = true;
+        };
+    }, [path, start]);
+
+    useEffect(() => {
+        ref.current?.querySelector(".hl-line")?.scrollIntoView({ block: "center" });
+    }, [chunk, line]);
+
+    const current = chunk?.path === path ? chunk : null;
+    return (
+        <div ref={ref} className="min-h-0 flex-1 select-text overflow-auto bg-card py-2 text-[0.8125rem] leading-5">
+            {error ? (
+                <p className="p-4 text-sm text-destructive">{error}</p>
+            ) : (
+                current?.lines.map(([label, text], i) => (
+                    <div key={current.start + i} className={cn("flex gap-3 pl-3 pr-4", current.start + i === line && "hl-line")}>
+                        <span className="w-20 shrink-0 truncate text-right text-xs leading-5 text-muted-foreground/70" title={label}>
+                            {i === 0 || current.lines[i - 1][0] !== label ? label : ""}
+                        </span>
+                        <span className="min-w-0 whitespace-pre-wrap break-words">{text}</span>
+                    </div>
+                ))
+            )}
         </div>
     );
 }

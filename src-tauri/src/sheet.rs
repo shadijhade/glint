@@ -212,6 +212,10 @@ pub(crate) struct Loaded {
     pub name: String,
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Cell>>,
+    /// The sheet's number for the first row of `rows` (1-based), and whether the row above it named the
+    /// columns, for Documents search's labels.
+    pub first: u32,
+    pub header: bool,
 }
 
 /// Cells gathered into rows (relative to the sheet's used range), at most `limit` rows (and a header)
@@ -418,8 +422,9 @@ pub(crate) fn load_workbook(path: &str, limit: usize) -> Result<Vec<Loaded>, Str
     let mut tables = Vec::new();
     for name in book.sheets() {
         let (grid, _, _) = book.grid(&name, limit)?;
-        let (columns, rows, _) = grid.split();
-        tables.push(Loaded { name, columns, rows });
+        let top = grid.start.0 + 1;
+        let (columns, rows, header) = grid.split();
+        tables.push(Loaded { name, columns, rows, first: top + header as u32, header });
     }
     Ok(tables)
 }
@@ -532,7 +537,7 @@ fn parquet_preview(path: &str) -> Result<SheetPreview, String> {
 /// A Parquet file whole (up to `limit` rows), for SQL.
 pub(crate) fn load_parquet(path: &str, name: &str, limit: usize) -> Result<Loaded, String> {
     let (columns, _, rows, _) = read_parquet(path, limit)?;
-    Ok(Loaded { name: name.into(), columns, rows })
+    Ok(Loaded { name: name.into(), columns, rows, first: 1, header: false })
 }
 
 #[cfg(test)]

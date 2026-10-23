@@ -6,7 +6,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, Sparkles, TextSearch } from "lucide-react";
 import logo from "./assets/logo.svg";
-import { astGrepApply, cancelSearch, RgMatch, searchBatched, useRewrite } from "./lib/ripgrep";
+import { astGrepApply, cancelSearch, isDocument, RgMatch, searchBatched, useRewrite } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
 import { archiveOf, closedNotice, closedOf, currentPath, defaultTextSearchFolder, openRequested, refreshIndex, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
@@ -88,6 +88,8 @@ function App() {
   const [error, setError] = useState("");
   const [duration, setDuration] = useState(0);
   const [filesSearched, setFilesSearched] = useState<number | null>(null);
+  // A Documents search's documents it couldn't read.
+  const [unreadable, setUnreadable] = useState(0);
   const [selected, setSelected] = useState(-1);
   const update = useUpdater((s) => s.available);
   const updating = useUpdater((s) => s.progress !== null);
@@ -227,6 +229,7 @@ function App() {
     setError("");
     setDuration(0);
     setFilesSearched(null);
+    setUnreadable(0);
     setSearching(true);
     addToHistory(query, path);
 
@@ -254,6 +257,7 @@ function App() {
               const total = event.data.elapsed_total;
               if (total) elapsed = total.secs * 1000 + total.nanos / 1e6;
               setFilesSearched(event.data.stats?.searches ?? null);
+              setUnreadable(event.data.stats?.unreadable ?? 0);
             }
           } catch {
             // not a JSON line
@@ -308,13 +312,14 @@ function App() {
     search(item.query, item.path);
   };
 
-  // In the editor from Settings, else with the file's app as File Explorer opens it.
+  // In the editor from Settings, else with the file's app as File Explorer opens it (a document always so).
   const openFile = (path: string) =>
-    (settings.editorPath.trim() ? openPath(path, settings.editorPath.trim()) : openItem(path)).catch((e) => toast.error("Couldn't open the file", { description: String(e) }));
+    (settings.editorPath.trim() && !isDocument(path) ? openPath(path, settings.editorPath.trim()) : openItem(path)).catch((e) => toast.error("Couldn't open the file", { description: String(e) }));
 
   const replaceAll = async (replacement: string) => {
-    // One at a time: a second Enter mid-way would replace in what the first just wrote.
-    if (!run || searching || replacing.current) return;
+    // One at a time: a second Enter mid-way would replace in what the first just wrote. Documents are
+    // zips and PDFs: replacing in their bytes as text would ruin them.
+    if (!run || searching || replacing.current || run.options.documents) return;
     const files = [...new Set(matches.map((m) => m.data.path?.text ?? ""))].filter(Boolean);
     if (!files.length) return;
     if (run.options.code) return rewriteAll(replacement, files.length);
@@ -422,7 +427,7 @@ function App() {
           <div className="flex shrink-0 border-b bg-chrome px-3 py-2.5">
             <SearchBar
               searching={searching}
-              canReplace={!searching && matches.length > 0}
+              canReplace={!searching && matches.length > 0 && !run?.options.documents}
               onSearch={searchCurrent}
               onStop={cancelSearch}
               onReplace={replaceAll}
@@ -441,6 +446,7 @@ function App() {
             error={error}
             duration={duration}
             filesSearched={filesSearched}
+            unreadable={unreadable}
             selected={current}
             onSelect={setSelected}
             onOpen={openFile}

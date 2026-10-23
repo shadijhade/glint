@@ -17,6 +17,8 @@ export interface SearchOptions {
     regex: boolean;
     /** A code pattern, by ast-grep, rather than text. */
     code: boolean;
+    /** The text inside documents (PDF, Office, OpenDocument, EPUB) rather than files' own (doctext.rs). */
+    documents: boolean;
 }
 
 export type Mode = 'files' | 'text';
@@ -185,7 +187,7 @@ export const useStore = create<AppState>()(
             query: '',
             path: '',
             history: [],
-            options: { caseSensitive: false, wholeWord: false, regex: false, code: false },
+            options: { caseSensitive: false, wholeWord: false, regex: false, code: false, documents: false },
             settings: DEFAULT_SETTINGS,
             mode: 'files',
             pinned: [],
@@ -207,7 +209,8 @@ export const useStore = create<AppState>()(
                 history: state.history.filter(h => h.query !== query || h.path !== path)
             })),
             setOption: (key, value) => set((state) => ({
-                options: { ...state.options, [key]: value }
+                // Code patterns and documents are searches of their own: turning one on turns the other off.
+                options: { ...state.options, [key]: value, ...(value && key === 'code' && { documents: false }), ...(value && key === 'documents' && { code: false }) }
             })),
             setSettings: (newSettings) => set((state) => ({
                 settings: { ...state.settings, ...newSettings }

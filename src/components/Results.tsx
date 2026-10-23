@@ -62,6 +62,8 @@ interface ResultsProps {
     error: string;
     duration: number;
     filesSearched: number | null;
+    /** A Documents search's documents it couldn't read. */
+    unreadable: number;
     selected: number;
     onSelect: (index: number) => void;
     onOpen: (path: string) => void;
@@ -73,7 +75,7 @@ interface ResultsProps {
     onClose: () => void;
 }
 
-export function Results({ active, run, matches, searching, error, duration, filesSearched, selected, onSelect, onOpen, onReveal, onShowAll, onSearchAgain, onClose }: ResultsProps) {
+export function Results({ active, run, matches, searching, error, duration, filesSearched, unreadable, selected, onSelect, onOpen, onReveal, onShowAll, onSearchAgain, onClose }: ResultsProps) {
     const fontSize = useStore((s) => s.settings.fontSize);
     const exclusions = useStore((s) => s.settings.exclusions);
     const [filter, setFilter] = useState("");
@@ -165,9 +167,10 @@ export function Results({ active, run, matches, searching, error, duration, file
         const visible = rows.flatMap((r) => (r.type === "match" ? [matches[r.index]] : []));
         const file = await save({ defaultPath: "search-results.csv", filters: [{ name: "CSV", extensions: ["csv"] }, { name: "JSON", extensions: ["json"] }] });
         if (!file) return;
+        // A document's matches say where they are (p. 3) rather than a line.
         const content = file.toLowerCase().endsWith(".json")
             ? JSON.stringify(visible, null, 2)
-            : "File,Line,Content\n" + visible.map((m) => [m.data.path?.text ?? "", m.data.line_number ?? "", (m.data.lines?.text ?? "").trim()].map(csv).join(",")).join("\n");
+            : `File,${run.options.documents ? "Where" : "Line"},Content\n` + visible.map((m) => [m.data.path?.text ?? "", m.data.label ?? m.data.line_number ?? "", (m.data.lines?.text ?? "").trim()].map(csv).join(",")).join("\n");
         try {
             await invoke("write_file_content", { path: file, content });
             toast.success(`Exported ${fmt(visible.length)} results`, { description: file });
@@ -249,8 +252,13 @@ export function Results({ active, run, matches, searching, error, duration, file
                     i === selectedRow && "bg-primary/10 before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-primary hover:bg-primary/15"
                 )}
             >
-                <span className="w-12 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground/70">{match.data.line_number}</span>
-                <span className="min-w-0 truncate font-mono text-[0.8125rem]">
+                {match.data.label !== undefined ? (
+                    <span className="w-24 shrink-0 truncate text-right text-xs tabular-nums text-muted-foreground/70" title={match.data.label}>{match.data.label}</span>
+                ) : (
+                    <span className="w-12 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground/70">{match.data.line_number}</span>
+                )}
+                {/* A document's text is prose: in the sans font. */}
+                <span className={cn("min-w-0 truncate text-[0.8125rem]", match.data.label === undefined && "font-mono")}>
                     {segments(match).map((p, k) =>
                         p.hit ? <mark key={k} className="rounded-sm bg-primary/20 px-px font-semibold text-pink-700 dark:text-pink-300">{p.text}</mark> : p.text
                     )}
@@ -284,10 +292,18 @@ export function Results({ active, run, matches, searching, error, duration, file
             <Centered>
                 <SearchX className="size-6" />
                 <p className="font-medium text-foreground">No results</p>
-                <p className="max-w-sm">
-                    {filesSearched === 0 ? `Nothing was searched: check that “${run.path}” exists and isn't skipped. ` : ""}
-                    {run.everything ? "Nothing was skipped." : `Skipped: ${[...exclusions, "hidden files", "what .gitignore files list"].join(", ")}.`}
-                </p>
+                {run.options.documents ? (
+                    <p className="max-w-sm">
+                        {filesSearched === 0 ? `No PDF, Word, Excel, PowerPoint, OpenDocument or EPUB files in “${run.path}”. ` : ""}
+                        {unreadable > 0 && `${fmt(unreadable)} couldn't be read. `}
+                        {run.everything ? "Only files kept in the cloud were skipped." : "Skipped: hidden files and folders, files kept in the cloud, and the folders excluded in Settings."}
+                    </p>
+                ) : (
+                    <p className="max-w-sm">
+                        {filesSearched === 0 ? `Nothing was searched: check that “${run.path}” exists and isn't skipped. ` : ""}
+                        {run.everything ? "Nothing was skipped." : `Skipped: ${[...exclusions, "hidden files", "what .gitignore files list"].join(", ")}.`}
+                    </p>
+                )}
                 {!run.everything && (
                     <Button variant="outline" size="sm" onClick={() => onSearchAgain(true)}>
                         <FolderSearch /> Search again, skipping nothing
@@ -314,7 +330,13 @@ export function Results({ active, run, matches, searching, error, duration, file
                     <b className="font-semibold tabular-nums text-foreground">{fmt(matches.length)}</b> {matches.length === 1 ? "result" : "results"} in{" "}
                     <b className="font-semibold tabular-nums text-foreground">{fmt(fileCount)}</b> {fileCount === 1 ? "file" : "files"}
                     {!searching && duration > 0 && ` · ${duration < 1000 ? `${Math.round(duration)} ms` : `${(duration / 1000).toFixed(2)} s`}`}
+                    {run.options.documents && filesSearched !== null && ` · ${fmt(filesSearched)} ${filesSearched === 1 ? "document" : "documents"} read`}
                 </span>
+                {unreadable > 0 && (
+                    <span className="shrink-0 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-400" title="Damaged, locked with a password, over 256 MB, or still being read after 30 seconds">
+                        {fmt(unreadable)} couldn't be read
+                    </span>
+                )}
                 {limited && (
                     <button onClick={onShowAll} className="shrink-0 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-500/20 dark:text-amber-400" title="Run this search again without the result limit">
                         Stopped at {fmt(run.limit!)} · Show all

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Braces, CaseSensitive, FolderOpen, Regex, Replace, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
+import { Braces, CaseSensitive, FileText, FolderOpen, Regex, Replace, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
 import { defaultTextSearchFolder } from "@/lib/explorer";
 import { useRewrite } from "@/lib/ripgrep";
 import { SearchOptions, useStore } from "@/lib/store";
@@ -13,6 +13,7 @@ const TOGGLES: { key: keyof SearchOptions; hotkey: string; icon: typeof Regex; l
     { key: "wholeWord", hotkey: "w", icon: WholeWord, label: "Whole word (Alt+W)" },
     { key: "regex", hotkey: "r", icon: Regex, label: "Regular expression (Alt+R)" },
     { key: "code", hotkey: "a", icon: Braces, label: "Code pattern, by its structure (Alt+A): console.log($MSG), $X.unwrap() (ast-grep)" },
+    { key: "documents", hotkey: "d", icon: FileText, label: "Documents (Alt+D): the text in PDF, Word, Excel, PowerPoint, OpenDocument and EPUB files" },
 ];
 
 const fieldClass = "h-9 min-w-0 flex-1 bg-transparent px-2 text-sm outline-hidden placeholder:text-muted-foreground";
@@ -107,7 +108,13 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={onQueryKeyDown}
-                        placeholder={options.code ? "A code pattern…  console.log($MSG), $X.unwrap()  ($$$ for any number)" : "Search for text…  (Shift+Enter adds a line)"}
+                        placeholder={
+                            options.code
+                                ? "A code pattern…  console.log($MSG), $X.unwrap()  ($$$ for any number)"
+                                : options.documents
+                                  ? "Search inside documents…  PDF, Word, Excel, PowerPoint, OpenDocument, EPUB"
+                                  : "Search for text…  (Shift+Enter adds a line)"
+                        }
                         aria-label="Search query"
                         className={cn(fieldClass, "h-auto max-h-40 min-h-9 resize-none py-2 font-mono placeholder:font-sans field-sizing-content")}
                     />
@@ -116,8 +123,8 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                             // A code pattern has no case, words or regular expression of its own.
                             <Toggle
                                 key={key}
-                                pressed={options[key]}
-                                disabled={options.code && key !== "code"}
+                                pressed={!!options[key]}
+                                disabled={options.code && key !== "code" && key !== "documents"}
                                 onClick={() => setOption(key, !options[key])}
                                 title={label}
                                 aria-label={label}
@@ -139,13 +146,22 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                         <input
                             spellCheck={false}
                             value={replacement}
+                            disabled={options.documents}
                             onChange={(e) => setReplacement(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && canReplace && onReplace(replacement)}
-                            placeholder={options.code ? "Rewrite to…  logger.info($MSG)  (Enter shows what each match becomes)" : options.regex ? "Replace with…  ($1 inserts a capture group)" : "Replace with…"}
+                            placeholder={
+                                options.documents
+                                    ? "Documents aren't changed here: replace works in text files"
+                                    : options.code
+                                      ? "Rewrite to…  logger.info($MSG)  (Enter shows what each match becomes)"
+                                      : options.regex
+                                        ? "Replace with…  ($1 inserts a capture group)"
+                                        : "Replace with…"
+                            }
                             aria-label="Replacement"
-                            className={cn(fieldClass, "font-mono placeholder:font-sans")}
+                            className={cn(fieldClass, "font-mono placeholder:font-sans disabled:cursor-not-allowed")}
                         />
-                        <Button size="sm" variant="ghost" disabled={!canReplace} onClick={() => onReplace(replacement)} title="Replace in every file of the current results">
+                        <Button size="sm" variant="ghost" disabled={!canReplace || options.documents} onClick={() => onReplace(replacement)} title="Replace in every file of the current results">
                             Replace all
                         </Button>
                     </div>

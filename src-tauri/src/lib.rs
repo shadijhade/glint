@@ -8,6 +8,7 @@ mod compare;
 mod data_lens;
 mod dedup;
 mod defender;
+mod doctext;
 mod filediff;
 mod find;
 mod fsx;
@@ -197,6 +198,7 @@ struct SearchEvent {
 #[tauri::command]
 fn cancel_search(state: State<AppState>) {
     state.search.kill();
+    doctext::cancel();
 }
 
 /// Stops every sidecar that runs (the text search, and each tab's file search, folder sizes and
@@ -204,6 +206,7 @@ fn cancel_search(state: State<AppState>) {
 #[tauri::command]
 fn stop_tools(state: State<AppState>) {
     state.search.kill();
+    doctext::cancel();
     state.finds.stop_all();
     state.sizes.close_all();
     state.usage.close_all();
@@ -281,8 +284,43 @@ fn run_ripgrep_batched(
     let child = command
         .spawn()
         .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
+    doctext::cancel();
     stream_search(window, search_id, child, max_results, state.search.clone(), |line: String| (!line.is_empty()).then_some(line))?;
     Ok(folder)
+}
+
+/// A Documents search (Text's documents toggle): PDFs', Office's, OpenDocument's and EPUBs' text, read
+/// by worker processes (doctext.rs). Its matches arrive as `search-event`s, as ripgrep's JSON lines with
+/// a label each ("p. 3"), then a summary and "finished". Returns the folder as searched.
+#[tauri::command]
+fn run_doc_search(window: Window, request: doctext::DocSearch, search_id: String, max_results: Option<usize>, state: State<AppState>) -> Result<String, String> {
+    let folder = fsx::normalize(&request.path)?;
+    if std::fs::metadata(&folder).is_err() {
+        return Err(format!("Can't find “{folder}”. Check the folder path and try again."));
+    }
+    let pattern = doctext::pattern(&request)?;
+    state.search.kill();
+    let run = doctext::begin();
+    let max = match max_results {
+        Some(0) | None => usize::MAX,
+        Some(n) => n,
+    };
+    let base = std::path::PathBuf::from(&folder);
+    thread::spawn(move || {
+        let emit = |r#type: &str, lines: Vec<String>| {
+            let _ = window.emit("search-event", SearchEvent { id: search_id.clone(), r#type: r#type.into(), lines });
+        };
+        doctext::search(run, &base, &request, &pattern, max, |lines| emit("data", lines));
+        emit("finished", Vec::new());
+    });
+    Ok(folder)
+}
+
+/// Lines `from` to `to` (1-based) of a document as the Documents search read it, with their labels, for
+/// the preview.
+#[tauri::command]
+async fn doc_lines(path: String, from: usize, to: usize) -> Result<Vec<(String, String)>, String> {
+    fsx::blocking(move || doctext::lines_of(&path, from, to)).await
 }
 
 /// A code search (Text's code patterns, by ast-grep): its matches arrive as `search-event`s, as
@@ -297,6 +335,7 @@ fn run_ast_grep(window: Window, request: codesearch::CodeSearch, search_id: Stri
     let mut command = tools::command("ast-grep")?;
     command.args(codesearch::args(&request, &folder, false)).current_dir(&folder).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = command.spawn().map_err(|e| format!("Couldn't start ast-grep: {e}"))?;
+    doctext::cancel();
     let started = Instant::now();
     let base = folder.clone();
     let mut summary = Some(());
@@ -461,10 +500,10 @@ pub(crate) fn installed_by_setup() -> bool {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// Glint started as the worker that reads data files for their tree (jq.rs): its exit code, once it has
-/// answered; None for the app.
+/// Glint started as a worker: the one that reads data files for their tree (jq.rs), or one that reads
+/// documents for Documents search (doctext.rs). Its exit code, once it has answered; None for the app.
 pub fn worker() -> Option<i32> {
-    jq::worker()
+    jq::worker().or_else(doctext::worker)
 }
 
 pub fn run() {
@@ -507,6 +546,8 @@ pub fn run() {
             run_ripgrep_batched,
             run_ast_grep,
             ast_grep_apply,
+            run_doc_search,
+            doc_lines,
             tools::tools_status,
             tools::tool_install,
             tools::tool_cancel_install,

@@ -63,6 +63,12 @@ nom-exif = "3.8"
 lofty = "0.25"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
+# Documents search (doctext.rs): a PDF's text by pdf-extract (pure Rust, over lopdf), in a worker
+# process; Office's, OpenDocument's and EPUB's XML by quick-xml and the pattern by the regex crate,
+# both in the build already.
+pdf-extract = "0.12"
+quick-xml = "0.42"
+regex = "1"
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
 # original zip crate, fuzzed) with every common method but encryption (no passwords yet), and
 # sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's and

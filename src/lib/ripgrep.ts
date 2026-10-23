@@ -15,6 +15,8 @@ export interface RgMatch {
         submatches?: Array<{ match: { text: string }; start: number; end: number }>;
         /** A code search with a rewrite: what this match becomes. */
         replacement?: string;
+        /** A Documents search's match: where it is in the document ("p. 3", "slide 2", "Sales, row 7"). */
+        label?: string;
         elapsed_total?: { human: string; nanos: number; secs: number };
         stats?: {
             elapsed?: { human: string; nanos: number; secs: number };
@@ -24,9 +26,20 @@ export interface RgMatch {
             bytes_printed?: number;
             matched_lines?: number;
             matches?: number;
+            /** A Documents search's documents that couldn't be read (damaged, locked by a password, too big or too slow). */
+            unreadable?: number;
         };
     };
 }
+
+/** What Documents search reads (doctext.rs's DOCUMENTS). */
+const DOCUMENT_EXTENSIONS = new Set(["pdf", "docx", "docm", "dotx", "dotm", "pptx", "pptm", "ppsx", "potx", "xlsx", "xlsm", "xlsb", "xls", "ods", "odt", "ott", "odp", "epub"]);
+
+/** Whether Documents search reads this file. */
+export const isDocument = (path: string) => DOCUMENT_EXTENSIONS.has(path.slice(path.lastIndexOf(".") + 1).toLowerCase());
+
+/** A document's lines `from` to `to` (1-based) as Documents search read them, each with where it is. */
+export const docLines = (path: string, from: number, to: number) => invoke<[string, string][]>("doc_lines", { path, from, to });
 
 export interface SearchOptions {
     caseSensitive?: boolean;
@@ -39,6 +52,8 @@ export interface SearchOptions {
     /** A code pattern, searched by ast-grep (codesearch.rs), and what each match becomes. */
     code?: boolean;
     rewrite?: string | null;
+    /** The text inside documents, read by Glint's workers (doctext.rs). */
+    documents?: boolean;
 }
 
 /** A code search's rewrite made in its files, by ast-grep: how many matches it rewrote. */
@@ -70,13 +85,10 @@ export async function searchBatched(
     try {
         // ripgrep's (or ast-grep's) arguments are built in Rust from these options. The folder comes back as searched.
         const exclusions = options.exclusions ?? [];
+        const text = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions, everything: !!options.everything };
         const folder = options.code
             ? await invoke<string>("run_ast_grep", { request: { query, path, rewrite: options.rewrite || null, exclusions, everything: !!options.everything }, searchId, maxResults: options.maxResults })
-            : await invoke<string>("run_ripgrep_batched", {
-                  request: { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions, everything: !!options.everything },
-                  searchId,
-                  maxResults: options.maxResults,
-              });
+            : await invoke<string>(options.documents ? "run_doc_search" : "run_ripgrep_batched", { request: text, searchId, maxResults: options.maxResults });
         return { stop: unlisten, folder };
     } catch (e) {
         onError(String(e));
