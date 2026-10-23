@@ -11,9 +11,10 @@ import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexV
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { clearWithUndo, DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { knownShells, useTerminals } from "@/lib/terminal";
-import { cancelInstall, describeProgress, installTool, refreshTools, removeTool, useTools } from "@/lib/tools";
+import { cancelInstall, describeProgress, installTool, refreshTools, removeTool, useTool, useTools } from "@/lib/tools";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
+import { refreshZoxide } from "@/lib/zoxide";
 import { openShortcuts } from "./ShortcutsDialog";
 import { installHint } from "./ToolNeeded";
 import { Button } from "./ui/button";
@@ -433,6 +434,7 @@ interface SettingsViewProps {
 export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
     const { settings, setSettings: set, history } = useStore();
     const visited = useStore((s) => Object.keys(s.visits).length);
+    const zoxide = useTool("zoxide");
     const [version, setVersion] = useState("");
     // The section at the top of the scroll, marked on the left.
     const content = useRef<HTMLDivElement>(null);
@@ -657,6 +659,20 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
                     <Row label={`${visited.toLocaleString()} ${visited === 1 ? "folder" : "folders"} remembered`} hint="The command palette (Ctrl+K) offers the folders you use most first">
                         <Button variant="outline" size="sm" onClick={() => clearWithUndo("visits")} disabled={!visited}>Clear folders</Button>
                     </Row>
+                    <SwitchRow
+                        label="Share folder history with zoxide"
+                        hint={
+                            zoxide?.path
+                                ? "Ctrl+K and quick search rank the folders you cd to in a terminal too, and z there finds the folders you open here"
+                                : "zoxide, the smarter cd for terminals, isn't installed: Tools above installs it"
+                        }
+                        checked={settings.zoxide}
+                        disabled={!zoxide?.path && !settings.zoxide}
+                        onChange={(on) => {
+                            set({ zoxide: on });
+                            void refreshZoxide();
+                        }}
+                    />
                 </Section>
 
                 <Section title="About">

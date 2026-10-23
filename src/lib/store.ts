@@ -85,6 +85,9 @@ export interface Settings {
     // A folder's README.md above its list, and whether it's open (or folded to its title)
     showReadme: boolean;
     readmeOpen: boolean;
+    // Folder history shared with zoxide, when it's installed: its folders rank in Ctrl+K and quick
+    // search, and the folders opened here go to it
+    zoxide: boolean;
 }
 
 /** The list's columns whose width can be dragged (the name takes what's left). */
@@ -143,6 +146,7 @@ export const DEFAULT_SETTINGS: Settings = {
     yaraRules: '',
     showReadme: true,
     readmeOpen: false,
+    zoxide: false,
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */

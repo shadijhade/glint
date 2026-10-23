@@ -115,6 +115,14 @@ pub static TOOLS: &[Tool] = &[
         },
         used_for: "jq filters over JSON, YAML and TOML files, in their preview (jq, rewritten in Rust)",
     },
+    Tool {
+        id: "zoxide",
+        name: "zoxide",
+        exe: "zoxide",
+        package: "ajeetdsouza.zoxide",
+        source: Source::Winget { id: "ajeetdsouza.zoxide" },
+        used_for: "Folder history shared with your terminals (Settings → History): the folders you cd to rank in Ctrl+K, and z finds the ones you open here",
+    },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {

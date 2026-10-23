@@ -7,7 +7,8 @@ import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { cancelFind, findFiles, listDrives, openItem, quickHide, quickReveal } from "@/lib/fs";
 import { baseName, parentPath } from "@/lib/paths";
-import { frecency, typoDistance } from "@/lib/rank";
+import { typoDistance } from "@/lib/rank";
+import { refreshZoxide, usedFolders, useZoxide } from "@/lib/zoxide";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Kbd } from "./ui/kbd";
@@ -87,6 +88,7 @@ export function QuickSearch() {
         const reload = () => void useStore.persist.rehydrate();
         const ready = () => {
             reload();
+            void refreshZoxide();
             searchable().then((r) => (roots.current = r), () => {});
             input.current?.focus();
             input.current?.select();
@@ -170,15 +172,13 @@ export function QuickSearch() {
             .catch(() => quickReveal(entry.path, false));
     };
 
-    // Nothing typed yet: the folders you use most, as the command palette ranks them.
+    // Nothing typed yet: the folders you use most (and, shared, the ones zoxide knows), as the command palette ranks them.
     const visits = useStore((s) => s.visits);
+    const zoxide = useZoxide((s) => s.folders);
     const recent = useMemo(
-        () =>
-            Object.entries(visits)
-                .sort((a, b) => frecency(b[1]) - frecency(a[1]))
-                .slice(0, 8)
-                .map(([path]): FileEntry => ({ name: baseName(path) || path, path, dir: true, size: 0, modified: 0, attrs: 0, lower: path.toLowerCase(), ext: "" })),
-        [visits]
+        () => usedFolders(visits, 8).map((path): FileEntry => ({ name: baseName(path) || path, path, dir: true, size: 0, modified: 0, attrs: 0, lower: path.toLowerCase(), ext: "" })),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [visits, zoxide]
     );
     const shown = query.trim() ? found : recent;
 
