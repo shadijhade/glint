@@ -2,7 +2,10 @@
 //! things, and turning it on or off, which runs the service executable elevated behind the UAC prompt.
 
 use crate::pipe::PipeIo;
-use crate::proto::{self, Hit, Message, Request, SearchRequest, Sizes, Status, UsageMap, UsageRequest, FRAME_GROWTH, FRAME_HITS, FRAME_JSON, FRAME_USAGE, MAX_FRAME};
+use crate::proto::{
+    self, HistoryAnswer, HistoryRequest, Hit, Message, Request, SearchRequest, Sizes, Status, UsageMap, UsageRequest, FRAME_GROWTH, FRAME_HITS, FRAME_JSON, FRAME_USAGE,
+    MAX_FRAME,
+};
 use crate::win::{self, os_error, wide, Handle};
 use std::fmt;
 use std::io;
@@ -192,6 +195,23 @@ pub(crate) fn list_on(pipe: Handle, path: &str) -> Result<Vec<Hit>, Error> {
         };
     }
     Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection")))
+}
+
+/// What was renamed, moved and deleted on the indexed drives (see `HistoryRequest`). An older service
+/// that doesn't know the request closes the pipe without an answer: an Io error, UnexpectedEof.
+pub fn history(request: &HistoryRequest) -> Result<HistoryAnswer, Error> {
+    history_on(connect()?, request)
+}
+
+pub(crate) fn history_on(pipe: Handle, request: &HistoryRequest) -> Result<HistoryAnswer, Error> {
+    let pipe = ask(pipe, &Request::History(request.clone()))?;
+    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
+        Some((kind, payload)) => match message(kind, &payload)? {
+            Message::History(answer) => Ok(answer),
+            _ => Err(unexpected()),
+        },
+        None => Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection"))),
+    }
 }
 
 pub enum Event {

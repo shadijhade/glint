@@ -54,6 +54,30 @@ pub async fn index_status() -> Result<IndexInfo, String> {
     blocking(|| Ok(info())).await
 }
 
+/// What was renamed, moved and deleted on the drives instant search covers, newest first: since
+/// `since` (ms), with `query` in a path, at most `max`. Rejects with "tooOld" for a service from
+/// before it kept history, and "off" when instant search doesn't run.
+#[tauri::command]
+pub async fn index_history(query: String, since: f64, max: u32) -> Result<shadui_index::proto::HistoryAnswer, String> {
+    #[cfg(windows)]
+    {
+        use shadui_index::client::{history, Error};
+        use shadui_index::proto::HistoryRequest;
+        blocking(move || match history(&HistoryRequest { query, since: since as i64, max }) {
+            Ok(answer) => Ok(answer),
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => Err("tooOld".into()),
+            Err(Error::NotRunning) => Err("off".into()),
+            Err(e) => Err(e.to_string()),
+        })
+        .await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (query, since, max);
+        Err("off".into())
+    }
+}
+
 /// Every entry listed from the index, in a folder Windows keeps closed to this user: read-only, and
 /// it can't be opened (Glint's own bit, which Windows doesn't use; `ATTR.closed` in the UI).
 pub const CLOSED: u32 = 0x8000_0000;

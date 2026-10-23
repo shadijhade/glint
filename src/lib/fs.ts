@@ -800,3 +800,36 @@ export const indexStatus = () => invoke<IndexInfo>("index_status");
 export const indexEnable = () => invoke<IndexInfo>("index_enable");
 /** Stops and removes the service and its index files (administrator approval again). */
 export const indexDisable = () => invoke<IndexInfo>("index_disable");
+
+export type HistoryKind = "renamed" | "moved" | "deleted" | "recycled" | "restored" | "emptied";
+
+/** Something renamed, moved or deleted, as the index service's history has it (history.rs). */
+export interface HistoryEvent {
+    /** ms since the Unix epoch. */
+    time: number;
+    kind: HistoryKind;
+    dir: boolean;
+    /** Where it was; for something in the Recycle Bin, its place there. */
+    path: string;
+    /** Where it went (renamed, moved, recycled, restored). */
+    to: string | null;
+    /** For something in the Recycle Bin: where it was before. */
+    was: string | null;
+    /** Where it is now, if it's still there. */
+    now: string | null;
+    /** A folder deleted with what was in it: how many items went with it; a burst: how many more were deleted in `path`. */
+    items: number;
+    burst: boolean;
+}
+
+export interface HistoryAnswer {
+    events: HistoryEvent[];
+    /** More matched than came. */
+    limited: boolean;
+    /** When the oldest event kept happened (0: none). */
+    oldest: number;
+    elapsed: number;
+}
+
+/** What was renamed, moved and deleted, newest first; rejects with "tooOld" (a service from before it) or "off". */
+export const indexHistory = (query: string, since: number, max: number) => invoke<HistoryAnswer>("index_history", { query, since, max });

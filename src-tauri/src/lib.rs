@@ -463,6 +463,7 @@ pub fn run() {
             usage::disk_usage,
             usage::cancel_disk_usage,
             index::index_status,
+            index::index_history,
             index::index_enable,
             index::index_disable,
             shell::file_op,

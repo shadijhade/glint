@@ -3,6 +3,7 @@
 //! messages, and search results and disk-usage maps in a compact binary form (thousands of paths a
 //! frame).
 
+pub use crate::history::Kind;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
@@ -31,6 +32,52 @@ pub enum Request {
     /// Everything right inside a folder, for one Windows keeps the user out of: hit frames, as a
     /// search's results come, then Done.
     List { path: String },
+    /// What was renamed, moved and deleted on the indexed drives, newest first.
+    History(HistoryRequest),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRequest {
+    /// Only what has this in a path (any case); empty for everything.
+    pub query: String,
+    /// Only what happened since then (Unix ms).
+    pub since: i64,
+    /// At most this many (10,000 at most).
+    pub max: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryAnswer {
+    pub events: Vec<HistoryEvent>,
+    /// More matched than were sent.
+    pub limited: bool,
+    /// When the oldest event kept happened (Unix ms, 0 when there's none): how far back it goes.
+    pub oldest: i64,
+    /// The service's time, in ms.
+    pub elapsed: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEvent {
+    /// Unix ms.
+    pub time: i64,
+    pub kind: Kind,
+    pub dir: bool,
+    /// Where it was (for something in the Recycle Bin, its place there).
+    pub path: String,
+    /// Where it went (renamed, moved, recycled, restored).
+    pub to: Option<String>,
+    /// For something in the Recycle Bin: where it was before.
+    pub was: Option<String>,
+    /// Where it is now, if it's still there (it may have moved on since).
+    pub now: Option<String>,
+    /// A folder deleted with what was in it: how many items went with it. A burst: how many more
+    /// were deleted in the folder `path`.
+    pub items: u32,
+    pub burst: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -74,6 +121,7 @@ pub enum Message {
     Sizes(Sizes),
     /// Follows a disk-usage map's frame.
     Usage(UsageSummary),
+    History(HistoryAnswer),
     Error { message: String },
 }
 
@@ -427,6 +475,20 @@ mod tests {
         encode_usage_node(&mut rootless, &nodes[1]);
         assert!(decode_usage(&rootless).is_err());
         assert_eq!(decode_usage(&[]).unwrap(), []);
+    }
+
+    #[test]
+    fn history_round_trips() {
+        let request = Request::History(HistoryRequest { query: "report".into(), since: 1, max: 100 });
+        let mut wire = Vec::new();
+        write_request(&mut wire, &request).unwrap();
+        assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
+        assert!(serde_json::to_string(&request).unwrap().contains(r#""op":"history""#));
+        let moved = HistoryEvent { time: 5, kind: Kind::Moved, dir: false, path: r"C:\a.txt".into(), to: Some(r"D:\a.txt".into()), was: None, now: Some(r"D:\a.txt".into()), items: 0, burst: false };
+        let answer = HistoryAnswer { events: vec![moved], limited: true, oldest: 1, elapsed: 0.5 };
+        let json = serde_json::to_string(&Message::History(answer.clone())).unwrap();
+        assert!(json.contains(r#""type":"history""#) && json.contains(r#""kind":"moved""#), "{json}");
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), Message::History(answer));
     }
 
     #[test]

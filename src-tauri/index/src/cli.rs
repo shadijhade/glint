@@ -26,6 +26,8 @@ shadui-index: instant file name search and folder sizes for Glint
   usage PATH [--depth N] [--max N] [--repeat N] [--grew DAYS]
                               a disk-usage map from the running service, timed end to end;
                               --grew: what grew since the mark closest to DAYS ago
+  history [QUERY] [--days N] [--max N]
+                              what was renamed, moved and deleted, newest first (30 days, 100)
   bench [C:]...               read drives directly and time indexing and queries (administrator)
 ";
 
@@ -107,6 +109,7 @@ pub fn main() -> i32 {
             }
         },
         Some("usage") if rest.first().is_some_and(|p| !p.starts_with("--")) => usage(rest),
+        Some("history") => history(rest),
         Some("bench") => bench(rest),
         _ => {
             eprint!("{USAGE}");
@@ -252,6 +255,42 @@ fn usage(args: &[String]) -> i32 {
     }
     let (median, p95) = median_p95(times);
     eprintln!("end to end: median {median:.1} ms, p95 {p95:.1} ms over {repeat} run(s)");
+    0
+}
+
+/// What was renamed, moved and deleted, from the running service, newest first.
+fn history(args: &[String]) -> i32 {
+    let query = args.first().filter(|a| !a.starts_with("--")).cloned().unwrap_or_default();
+    let days: i64 = values(args, "--days").first().and_then(|d| d.parse().ok()).unwrap_or(30);
+    let max = values(args, "--max").first().and_then(|m| m.parse().ok()).unwrap_or(100);
+    let request = proto::HistoryRequest { query, since: engine::now_ms() - days * 86_400_000, max };
+    let answer = match client::history(&request) {
+        Ok(answer) => answer,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let now = engine::now_ms();
+    for e in &answer.events {
+        let mut line = if e.burst { format!("{} more items in {}", e.items, e.path) } else { e.path.clone() };
+        if let Some(to) = &e.to {
+            line += &format!(" → {to}");
+        }
+        if let Some(was) = &e.was {
+            line += &format!(" (was {was})");
+        }
+        if e.dir && e.items > 0 && !e.burst {
+            line += &format!(" (and {} items in it)", e.items);
+        }
+        if e.now.as_ref().is_some_and(|at| Some(at) != e.to.as_ref()) {
+            line += &format!(", now {}", e.now.as_deref().unwrap_or_default());
+        }
+        let kind = format!("{:?}", e.kind).to_lowercase();
+        println!("{:>7.1} h ago  {kind:<9} {line}", (now - e.time) as f64 / 3_600_000.0);
+    }
+    let since = if answer.oldest > 0 { format!("; kept from {:.1} days ago", (now - answer.oldest) as f64 / 86_400_000.0) } else { String::new() };
+    eprintln!("{} events{}{since} ({:.1} ms in the service)", answer.events.len(), if answer.limited { ", the newest of more" } else { "" }, answer.elapsed);
     0
 }
 
