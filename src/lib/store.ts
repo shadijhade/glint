@@ -76,6 +76,8 @@ export interface Settings {
     terminalFollow: boolean;
     // The disk-usage map's Growth colors: what grew in the last this many days (1, 7 or 30)
     growthDays: number;
+    // The YARA rules files are checked with: a .yar file, or a folder of them ("" until chosen)
+    yaraRules: string;
 }
 
 /** The list's columns whose width can be dragged (the name takes what's left). */
@@ -131,6 +133,7 @@ export const DEFAULT_SETTINGS: Settings = {
     terminalHeight: null,
     terminalFollow: true,
     growthDays: 7,
+    yaraRules: '',
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */

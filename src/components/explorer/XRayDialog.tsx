@@ -13,15 +13,18 @@ import {
     HardDrive,
     Layers,
     Loader2,
+    ScanSearch,
     ShieldAlert,
     ShieldCheck,
     Trash2,
 } from "lucide-react";
 import { scanWithDefender } from "@/lib/defender";
 import { formatCount, formatSize } from "@/lib/format";
-import { cancelXRay, type FileXRayReport, inspectFileXRay, removeNtfsStream, signable } from "@/lib/fs";
+import { cancelXRay, fileRealType, type FileXRayReport, inspectFileXRay, type RealType, removeNtfsStream, signable } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
+import { useTool } from "@/lib/tools";
 import { cn } from "@/lib/utils";
+import { ToolNeeded } from "../ToolNeeded";
 import { Button } from "../ui/button";
 import { Modal, ModalHeader } from "../Modal";
 import { describeSignature, TONES, useSignature } from "./SignatureChip";
@@ -120,6 +123,63 @@ function SignatureSection({ path }: { path: string }) {
                         </li>
                     ))}
                 </ul>
+            )}
+        </div>
+    );
+}
+
+/** What the file really is, as Magika tells it from its content, and whether its name says otherwise. */
+function RealTypeSection({ path }: { path: string }) {
+    // undefined while Magika looks; null without Magika.
+    const [found, setFound] = useState<RealType | null | undefined>(undefined);
+    const [failed, setFailed] = useState("");
+    const installed = useTool("magika")?.origin;
+    useEffect(() => {
+        let stale = false;
+        setFound(undefined);
+        setFailed("");
+        fileRealType(path).then(
+            (r) => !stale && setFound(r),
+            (e) => !stale && setFailed(String(e))
+        );
+        return () => {
+            stale = true;
+        };
+    }, [path, installed]);
+    if (found === null) return <ToolNeeded id="magika" why="Magika tells a file's real type by its content: a program named photo.jpg, say." icon={ScanSearch} />;
+    if (!found && !failed) return null;
+    const dot = baseName(path).lastIndexOf(".");
+    const ext = dot > 0 ? baseName(path).slice(dot + 1).toLowerCase() : "";
+    const mismatch = !!found && !!ext && found.extensions.length > 0 && !found.extensions.includes(ext);
+    const program = mismatch && found!.group === "executable";
+    return (
+        <div className="space-y-2 rounded-lg border bg-card p-3.5">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="flex items-center gap-1.5 font-semibold text-foreground">
+                    <ScanSearch className="size-3.5 text-primary" />
+                    Real type
+                </span>
+                {found ? (
+                    <>
+                        <span className="font-medium text-foreground">{found.description}</span>
+                        <span className="text-muted-foreground tabular-nums" title={`${found.mime} · Magika's label: ${found.label}`}>
+                            {Math.round(found.score * 100)}% sure · Magika
+                        </span>
+                    </>
+                ) : (
+                    <span className="text-muted-foreground">{failed}</span>
+                )}
+            </div>
+            {program ? (
+                <p className="rounded bg-destructive/10 px-2.5 py-1.5 font-medium text-destructive">
+                    This is a program, though its name ends in .{ext}: don't open it unless you trust where it came from.
+                </p>
+            ) : (
+                mismatch && (
+                    <p className="text-amber-700 dark:text-amber-400">
+                        Its content is what .{found!.extensions[0]} files hold, not .{ext}.
+                    </p>
+                )
             )}
         </div>
     );
@@ -239,6 +299,7 @@ export function XRayDialog() {
                         )}
 
                         {signable(path) && <SignatureSection path={path} />}
+                        <RealTypeSection path={path} />
 
                         {/* 1. Checksums, and comparing one with a published one */}
                         <div className="space-y-2.5 rounded-lg border bg-card p-3.5">

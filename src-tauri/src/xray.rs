@@ -79,6 +79,56 @@ pub async fn inspect_file_xray(path: String, full: Option<bool>) -> Result<FileX
     blocking(move || analyze_file(&path, full.unwrap_or(false), &CANCEL)).await
 }
 
+/// A file's type as Magika tells it from its content (Google's model), whatever its name says.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealType {
+    pub label: String,
+    /// e.g. "PE Windows executable".
+    pub description: String,
+    /// "executable", "code", "image", "document"…
+    pub group: String,
+    pub mime: String,
+    /// The extensions files of this type have.
+    pub extensions: Vec<String>,
+    pub text: bool,
+    /// How sure it is, 0 to 1.
+    pub score: f64,
+}
+
+/// What Magika says the file is; None when Magika isn't installed.
+#[tauri::command]
+pub async fn file_real_type(path: String) -> Result<Option<RealType>, String> {
+    blocking(move || {
+        let Ok(mut magika) = crate::tools::command("magika") else { return Ok(None) };
+        magika.args(["--json", "--no-colors", "--"]).arg(&path);
+        crate::proc::no_window(&mut magika);
+        let out = magika.output().map_err(|e| format!("Couldn't run Magika: {e}"))?;
+        real_type(&out.stdout).map(Some)
+    })
+    .await
+}
+
+/// Magika's JSON for one file.
+fn real_type(json: &[u8]) -> Result<RealType, String> {
+    let all: serde_json::Value = serde_json::from_slice(json).map_err(|e| format!("Magika said something unexpected: {e}"))?;
+    let result = &all[0]["result"];
+    if result["status"] != "ok" {
+        return Err(format!("Magika couldn't tell: {}", result["status"].as_str().unwrap_or("no answer")));
+    }
+    let output = &result["value"]["output"];
+    let text = |key: &str| output[key].as_str().unwrap_or_default().to_string();
+    Ok(RealType {
+        label: text("label"),
+        description: text("description"),
+        group: text("group"),
+        mime: text("mime_type"),
+        extensions: output["extensions"].as_array().map(|e| e.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+        text: output["is_text"].as_bool().unwrap_or(false),
+        score: result["value"]["score"].as_f64().unwrap_or(0.0),
+    })
+}
+
 #[tauri::command]
 pub async fn remove_ntfs_stream(path: String, stream_name: String) -> Result<(), String> {
     blocking(move || delete_ads(&path, &stream_name)).await
@@ -413,6 +463,16 @@ mod tests {
         fs::write(&digits, b"123456789").unwrap();
         assert_eq!(analyze_file(&digits.to_string_lossy(), false, &AtomicBool::new(false)).unwrap().crc32, "cbf43926");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_what_magika_says() {
+        let said = br#"[{"path":"C:\\x\\photo.jpg","result":{"status":"ok","value":{"dl":{"label":"pebin"},"output":{"description":"PE Windows executable","extensions":["exe","dll"],"group":"executable","is_text":false,"label":"pebin","mime_type":"application/x-dosexec"},"score":0.999}}}]"#;
+        let found = real_type(said).unwrap();
+        assert_eq!((found.label.as_str(), found.group.as_str(), found.extensions.clone(), found.text), ("pebin", "executable", vec!["exe".to_string(), "dll".into()], false));
+        assert!((found.score - 0.999).abs() < 1e-9 && found.description == "PE Windows executable");
+        assert!(real_type(br#"[{"path":"x","result":{"status":"permission_error"}}]"#).unwrap_err().contains("permission_error"));
+        assert!(real_type(b"not json").is_err());
     }
 
     #[test]
