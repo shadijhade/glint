@@ -3,6 +3,7 @@
 
 use super::cab::{self, Cabinet, FolderReader};
 use super::codec::{Codec, Crc32Checked, Fused, Zstd};
+use super::msi::{self, MsiSource};
 use super::stream::{self, Kind, Scan, StreamSource};
 use super::tree::{Item, ENCRYPTED, UNREADABLE};
 use super::Failure;
@@ -29,6 +30,8 @@ pub enum Format {
     Single(Codec),
     /// A cabinet (.cab).
     Cab,
+    /// A Windows Installer package or merge module, as the folders it installs.
+    Msi,
 }
 
 /// What a file's name says about it: Enter opens it like a folder (`Browse`), or opens it in its app
@@ -78,6 +81,9 @@ impl Format {
             }
         } else if ZIP_INSIDE.iter().any(|z| is(z)) {
             return Some((Format::Zip, Claim::OnRequest));
+        } else if is("msi") || is("msm") {
+            // Enter runs the installer; "Open as archive" shows what it installs.
+            return Some((Format::Msi, Claim::OnRequest));
         } else {
             return None;
         };
@@ -114,6 +120,7 @@ impl Format {
             Format::Tar(codec) => 2 + codec.index(),
             Format::Single(codec) => 7 + codec.index(),
             Format::Cab => 13,
+            Format::Msi => 14,
         }
     }
 
@@ -129,6 +136,7 @@ impl Format {
             Format::Tar(Codec::Lz4) => "tar.lz4",
             Format::Single(codec) => codec.ext(),
             Format::Cab => "cab",
+            Format::Msi => "msi",
         }
     }
 }
@@ -147,6 +155,7 @@ pub enum Source {
     SevenZ(Box<SevenZSource>),
     Stream(Box<StreamSource>),
     Cab(Box<CabSource>),
+    Msi(Box<MsiSource>),
 }
 
 pub struct ZipSource {
@@ -186,7 +195,7 @@ impl Source {
             f.take(4096).read_to_end(&mut head).map(|_| head)
         }) {
             Ok(head) => match Format::detect(&head) {
-                Some(found @ (Format::Zip | Format::SevenZ | Format::Cab)) => found,
+                Some(found @ (Format::Zip | Format::SevenZ | Format::Cab | Format::Msi)) => found,
                 Some(Format::Single(_) | Format::Tar(_)) => Format::Tar(Codec::Plain),
                 None => format,
             },
@@ -196,6 +205,7 @@ impl Source {
             Format::Zip => open_zip(path).map(|(s, items)| (s, items, format)),
             Format::SevenZ => open_7z(path).map(|(s, items)| (s, items, format)),
             Format::Cab => open_cab(path).map(|(s, items)| (s, items, format)),
+            Format::Msi => msi::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Msi(Box::new(s)), items, format)),
             Format::Tar(_) | Format::Single(_) => {
                 let kind = stream::kind_of(path).ok_or_else(|| Failure::Damaged("it isn't a tar archive or a compressed file Glint reads".into()))?;
                 let (source, items) = StreamSource::open(path, kind, scan, MAX_ENTRIES)?;
@@ -216,6 +226,7 @@ impl Source {
             Source::SevenZ(s) => s.place.get(item).copied().flatten().map_or(size, |(_, before)| before.saturating_add(size)),
             Source::Stream(s) => s.cost(item, size),
             Source::Cab(c) => c.cabinet.files.get(item).map_or(size, |f| f.offset.saturating_add(size)),
+            Source::Msi(m) => m.cost(item, size),
         }
     }
 
@@ -227,6 +238,7 @@ impl Source {
             Source::SevenZ(s) => s.place.get(item).copied().flatten().map(|(block, _)| block),
             Source::Stream(s) => s.block_of(item),
             Source::Cab(c) => c.cabinet.files.get(item).map(|f| f.folder),
+            Source::Msi(m) => m.block_of(item),
         }
     }
 
@@ -241,6 +253,7 @@ impl Source {
             },
             Source::Stream(s) => s.ratio(),
             Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| c.cabinet.folders.get(f.folder)).map_or(1, |f| f.unpacked / f.packed.max(1)),
+            Source::Msi(m) => m.ratio(item),
         }
     }
 
@@ -252,6 +265,7 @@ impl Source {
             Source::SevenZ(s) => s.place.get(item).copied().flatten().and_then(|(block, _)| s.blocks[block].problem.clone()),
             Source::Stream(s) => s.problem(item),
             Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| f.problem.clone()),
+            Source::Msi(m) => m.problem(item),
         }
     }
 
@@ -266,6 +280,7 @@ impl Source {
             Source::SevenZ(s) => s.read_each(file, items, each, skipped),
             Source::Stream(s) => s.read_each(file, items, each, skipped),
             Source::Cab(c) => c.read_each(file, items, each, skipped),
+            Source::Msi(m) => m.read_each(file, items, each, skipped),
         }
     }
 }

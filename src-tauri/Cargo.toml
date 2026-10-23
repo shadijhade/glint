@@ -55,6 +55,8 @@ lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "x
 lz4_flex = "0.14"
 # Cabinets' LZX blocks (Glint reads cabinets itself; MSZIP is flate2's). Pure Rust, no dependencies.
 lzxd = "0.2.7"
+# Windows Installer packages' tables and streams: its compound-file reader (cfb) is in the build already.
+msi = "0.10"
 
 [dev-dependencies]
 # Tests write their own cabinets (stored and MSZIP).
