@@ -167,8 +167,8 @@ import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, inArchivePath, joinPath, samePath, THIS_PC } from "@/lib/paths";
-import { frecency } from "@/lib/rank";
 import { useStore } from "@/lib/store";
+import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
 import { toggleTerminal, useTerminals } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
@@ -438,6 +438,11 @@ interface ExplorerProps {
 export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps) {
     const { path, find } = useTab(useShallow((t) => ({ path: t.path, find: !!t.find })));
     const { dual, palette } = useExplorer(useShallow((s) => ({ dual: s.dual, palette: s.palette })));
+    // zoxide's folders, read again each time the palette opens (it re-renders with them).
+    useZoxide((s) => s.folders);
+    useEffect(() => {
+        if (palette) void refreshZoxide();
+    }, [palette]);
     const showPreviewPane = useStore((s) => s.settings.showPreviewPane);
     const selected = useActiveView((v) => v.selected);
     const pinned = useStore((s) => s.pinned);
@@ -523,14 +528,12 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             const key = folder.toLowerCase();
             if (seen.has(key)) return;
             seen.add(key);
-            const visit = visits[folder];
-            folders.push({ id: `folder:${key}`, label, detail: folder, icon, iconClass, kind: "folder", weight: weight + (visit ? Math.log2(1 + frecency(visit)) : 0), run: () => navigate(folder) });
+            folders.push({ id: `folder:${key}`, label, detail: folder, icon, iconClass, kind: "folder", weight: weight + Math.log2(1 + usedScore(folder, visits)), run: () => navigate(folder) });
         };
         for (const p of pinned) addFolder(p, baseName(p), Pin, 1.5);
         for (const k of s.known) addFolder(k.path, k.name, KNOWN_ICONS[k.id], 0.5);
-        for (const [folder] of Object.entries(visits).sort((a, b) => frecency(b[1]) - frecency(a[1])).slice(0, 60)) {
-            addFolder(folder, baseName(folder), Folder, 0, "fill-amber-400/80 text-amber-500");
-        }
+        // Used most, here and (with history shared with zoxide) in terminals.
+        for (const folder of usedFolders(visits, 60)) addFolder(folder, baseName(folder), Folder, 0, "fill-amber-400/80 text-amber-500");
         for (const d of s.drives) addFolder(d.path, driveName(d), DRIVE_ICONS[d.kind], 0);
         for (const saved of useStore.getState().savedSearches) {
             const where = saved.folder || "every drive";

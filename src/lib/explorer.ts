@@ -52,6 +52,7 @@ import { formatCount, plural } from "./format";
 import { zoomTiles } from "./grid";
 import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
+import { shareVisit } from "./zoxide";
 import { dropThumbnails } from "./thumbs";
 import { firstNotice } from "./utils";
 
@@ -451,6 +452,8 @@ export async function navigate(target: string, { select, history = true, quiet =
         }
         syncWatches();
         if (path !== THIS_PC) useStore.getState().recordVisit(path);
+        // A folder on disk (not one in an archive) for zoxide too, when history is shared with it.
+        if (path !== THIS_PC && listing && !listing.archive) shareVisit(path);
         if (path === THIS_PC) refreshDrives();
     }
     // In an archive, every folder's size comes with the listing; with the index, every folder shows
