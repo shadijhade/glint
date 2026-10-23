@@ -60,6 +60,7 @@ import {
     PencilOff,
     Pin,
     PinOff,
+    Play,
     Plus,
     RotateCcw,
     RotateCw,
@@ -177,6 +178,7 @@ import { baseName, inArchivePath, isFolderPath, isRecycleBin, joinPath, RECYCLE_
 import { useStore } from "@/lib/store";
 import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
 import { openInItems, refreshOpeners, useOpeners } from "@/lib/openers";
+import { knownTasks, runTask } from "@/lib/projects";
 import { toggleTerminal, useTerminals } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
@@ -667,6 +669,10 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
             action("terminal-pane", useTerminals.getState().open ? "Hide the terminal" : "Terminal here, under the files", SquareTerminal, () => toggleTerminal(terminalFolder()), "Ctrl+`"),
             writable && !shut && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
+            // What this folder's projects can run, as the Run menu has them.
+            ...(writable && !shut && !t.find
+                ? knownTasks(t.path).flatMap((g) => (g.missing ? [] : g.tasks.map((task) => action(`run:${g.folder}:${task.command}`, `Run ${task.command}`, Play, () => runTask(g, task.command)))))
+                : []),
             ...(writable && !shut
                 ? useOpeners.getState().list.map((o) =>
                       action(`open-in-${o.id}`, `Open this folder in ${o.name}`, o.terminal ? SquareTerminal : Code, () => void openIn(o.id, t.path).catch(report(`Couldn't open it in ${o.name}`)))
