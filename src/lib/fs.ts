@@ -275,6 +275,30 @@ export const archiveCompress = (paths: string[], folder: string, name: string, l
 export const archiveExtractHere = (path: string, lane: string, onProgress: Progress) =>
     invoke<Staged>("archive_extract_here", { path, lane, onProgress: progressChannel(onProgress) });
 
+/** A folder of developer junk (build output, a package cache) beside its project's file: what Clean up offers to recycle. */
+export interface Junk {
+    path: string;
+    /** Everything in it, in bytes. */
+    size: number;
+    /** When its project last changed, leaving out its build output, caches and .git; 0 when that couldn't be told (a project too big to look through). */
+    projectChanged: number;
+    /** What it is: "Node.js packages and builds", "Rust builds"… */
+    kind: string;
+}
+
+export interface JunkReport {
+    /** Biggest first. */
+    items: Junk[];
+    total: number;
+    /** "index", "fd + dust", or "index + fd + dust". */
+    engine: string;
+    elapsed: number;
+}
+
+/** Developer junk below `root`, found in the tab's `lane`; rejects with "cancelled" when stopped. Nothing is removed. */
+export const cleanupJunk = (root: string, lane: string) => invoke<JunkReport>("cleanup_junk", { root, lane });
+export const cancelCleanup = (lane: string) => invoke("cancel_cleanup", { lane });
+
 /** Export as ncdu JSON: the folder `path` walked into `dest` (written as `dest.part` until done); progress counts entries, with no total. */
 export const exportNcdu = (path: string, dest: string, lane: string, onProgress: Progress) =>
     invoke<Staged>("export_ncdu", { path, dest, lane, onProgress: progressChannel(onProgress) });

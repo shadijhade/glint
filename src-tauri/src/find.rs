@@ -234,12 +234,12 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
 
 /// Whether the running service is this app's version (so it reads every filter this app knows).
 #[cfg(windows)]
-fn same_service() -> bool {
+pub(crate) fn same_service() -> bool {
     shadui_index::client::status().is_ok_and(|status| status.version == shadui_index::VERSION)
 }
 
 #[cfg(not(windows))]
-fn same_service() -> bool {
+pub(crate) fn same_service() -> bool {
     false
 }
 
