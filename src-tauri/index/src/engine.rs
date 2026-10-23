@@ -1,6 +1,7 @@
 //! The running index: a worker per NTFS drive (read the MFT or load the last snapshot, catch up with
 //! the journal, then follow it), and the answers to the app's requests.
 
+use crate::growth::Growth;
 use crate::proto::{self, unix_ms, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_HITS, FRAME_USAGE, NO_PARENT};
 use crate::query::{self, Excludes, NameMatcher};
 use crate::snapshot::{self, Meta};
@@ -16,6 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use windows::Win32::Foundation::FILETIME;
+use windows::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
 
 /// How often an idle journal is checked.
 const POLL: Duration = Duration::from_millis(250);
@@ -64,6 +67,19 @@ impl Stop {
 
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+/// The day `ms` (Unix ms) falls on in this PC's time zone, counted from 1601: marks of what grew
+/// are taken a day apart, as people count days.
+fn local_day(ms: i64) -> i64 {
+    let utc = ms * 10_000 + 116_444_736_000_000_000;
+    let at = FILETIME { dwLowDateTime: utc as u32, dwHighDateTime: (utc >> 32) as u32 };
+    let mut local = FILETIME::default();
+    let local = match unsafe { FileTimeToLocalFileTime(&at, &mut local) } {
+        Ok(()) => (local.dwHighDateTime as i64) << 32 | local.dwLowDateTime as i64,
+        Err(_) => utc,
+    };
+    local / 864_000_000_000
 }
 
 fn ms(since: Instant) -> f64 {
@@ -228,7 +244,13 @@ impl Engine {
             let _ = fs::rename(&legacy, &path);
         }
         let started = Instant::now();
-        let saved = if rescan { None } else { self.load(slot.letter, &path, &volume, &journal) };
+        // What grew carries over a new read of the disk (as far as it can): from the index read last,
+        // or the snapshot the journal no longer reaches.
+        let (saved, mut growth) = if rescan {
+            (None, std::mem::take(&mut slot.tree.write().unwrap().growth))
+        } else {
+            self.load(slot.letter, &path, &volume, &journal)
+        };
         let (mut cursor, since, source) = match saved {
             Some((tree, meta)) => {
                 *slot.tree.write().unwrap() = tree;
@@ -242,12 +264,17 @@ impl Engine {
                     (status.progress, status.progress_total) = (done, total);
                     !self.stop.is_set()
                 };
-                let tree = match volume.scan(&progress) {
+                let mut tree = match volume.scan(&progress) {
                     Ok(tree) => tree,
                     Err(_) if self.stop.is_set() => return Ok(()),
                     Err(e) => return Err(retry("can't read the MFT", e)),
                 };
                 self.log.line(&format!("{}: read the MFT in {:.0} ms", slot.letter, ms(started)));
+                // Records may hold other folders now than the notes say: folders compare from now on.
+                if growth.tracking() {
+                    growth.restart(now_ms(), tree.rec(ROOT).map_or(0, |r| r.size));
+                }
+                tree.growth = std::mem::take(&mut growth);
                 *slot.tree.write().unwrap() = tree;
                 // The whole journal is replayed, but only recent changes are reread.
                 (journal.first_usn, Some(since), "scan")
@@ -298,11 +325,13 @@ impl Engine {
         ));
 
         let meta = |cursor| Meta { volume_serial: volume.serial, journal_id: journal.id, next_usn: cursor, saved_at: now_ms() };
+        let marked = self.mark_day(slot);
         if source == "scan" {
             self.save(slot, &path, meta(cursor));
         }
         // A snapshot the journal had to catch up gets saved again at the next chance.
-        let (mut dirty, mut saved_at, mut counted_at) = (source == "snapshot" && replayed > 0, Instant::now(), Instant::now());
+        let (mut dirty, mut saved_at, mut counted_at) = (source == "snapshot" && (replayed > 0 || marked), Instant::now(), Instant::now());
+        let mut today = local_day(now_ms());
         loop {
             if self.stop.is_set() {
                 if dirty {
@@ -313,6 +342,10 @@ impl Engine {
             if self.apply(&volume, slot, &mut cursor, journal.id, None, &mut page)? > 0 {
                 dirty = true;
                 continue;
+            }
+            if local_day(now_ms()) != today {
+                dirty |= self.mark_day(slot);
+                today = local_day(now_ms());
             }
             if dirty && saved_at.elapsed() > SAVE_EVERY {
                 self.save(slot, &path, meta(cursor));
@@ -328,8 +361,9 @@ impl Engine {
         }
     }
 
-    /// The last snapshot, if the journal still reaches back to where it left off.
-    fn load(&self, letter: char, path: &Path, volume: &Volume, journal: &Journal) -> Option<(Tree, Meta)> {
+    /// The last snapshot, if the journal still reaches back to where it left off; otherwise what grew,
+    /// as it says (a snapshot of this drive's).
+    fn load(&self, letter: char, path: &Path, volume: &Volume, journal: &Journal) -> (Option<(Tree, Meta)>, Growth) {
         let started = Instant::now();
         let (tree, meta) = match snapshot::load(path) {
             Ok(loaded) => loaded,
@@ -337,19 +371,31 @@ impl Engine {
                 if path.exists() {
                     self.log.line(&format!("{letter}: snapshot unusable ({e})"));
                 }
-                return None;
+                return (None, Growth::default());
             }
         };
-        let usable = meta.volume_serial == volume.serial
-            && meta.journal_id == journal.id
-            && meta.next_usn >= journal.first_usn
-            && meta.next_usn <= journal.next_usn;
-        if !usable {
+        if meta.volume_serial != volume.serial {
+            self.log.line(&format!("{letter}: the snapshot is of another drive"));
+            return (None, Growth::default());
+        }
+        if meta.journal_id != journal.id || meta.next_usn < journal.first_usn || meta.next_usn > journal.next_usn {
             self.log.line(&format!("{letter}: the journal no longer reaches back to the snapshot"));
-            return None;
+            return (None, tree.growth);
         }
         self.log.line(&format!("{letter}: loaded the snapshot in {:.0} ms", ms(started)));
-        Some((tree, meta))
+        (Some((tree, meta)), Growth::default())
+    }
+
+    /// Takes the day's mark for what grew, unless one was taken today already. True if it did.
+    fn mark_day(&self, slot: &Slot) -> bool {
+        let now = now_ms();
+        let mut tree = slot.tree.write().unwrap();
+        if tree.growth.last().is_some_and(|m| local_day(m.at) == local_day(now)) {
+            return false;
+        }
+        let total = tree.rec(ROOT).map_or(0, |r| r.size);
+        tree.growth.mark(now, total);
+        true
     }
 
     fn save(&self, slot: &Slot, path: &Path, meta: Meta) {

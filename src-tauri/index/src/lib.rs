@@ -7,6 +7,7 @@
 //! The pure parts (record parsing, the index, queries, snapshots, the wire format) build and test on
 //! any OS; reading volumes, the service and the pipe are Windows-only.
 
+pub mod growth;
 pub mod proto;
 pub mod query;
 pub mod record;

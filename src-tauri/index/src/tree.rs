@@ -2,6 +2,7 @@
 //! number, every name (hard links included) as a link from a record to its parent folder, and the
 //! total size below every folder, kept current as changes come in.
 
+use crate::growth::{Growth, ABSENT};
 use crate::query::{fold, is_hidden, Excludes, Filters, NameMatcher};
 use rayon::prelude::*;
 use std::cmp::Reverse;
@@ -141,6 +142,8 @@ pub struct Tree {
     dirs: HashMap<u32, Vec<u32>>,
     /// Arena bytes no live link uses any more.
     garbage: usize,
+    /// Folders' sizes at daily marks, noted as they change.
+    pub growth: Growth,
 }
 
 /// A name search over one volume.
@@ -357,6 +360,9 @@ impl Tree {
             if rec.used() && !rec.dir() {
                 return;
             }
+            if rec.used() {
+                self.growth.note(dir, rec.seq, rec.size);
+            }
             rec.size = rec.size.saturating_add_signed(delta);
             if dir == ROOT || rec.first_link == NONE {
                 return;
@@ -396,6 +402,10 @@ impl Tree {
         rec.flags = REC_USED | if state.dir { REC_DIR } else { 0 };
         if n == ROOT {
             return;
+        }
+        // A folder that's new wasn't there at the last mark.
+        if state.dir && !used {
+            self.growth.note(n, state.seq, ABSENT);
         }
         let mut wanted: Vec<(u32, &str)> =
             state.names.iter().map(|(parent, name)| (self.parent_number(*parent), name.as_str())).filter(|&(p, _)| p != n).collect();
@@ -855,7 +865,8 @@ impl Tree {
             + self.links.capacity() * size_of::<Link>()
             + self.names.capacity()
             + self.free.capacity() * 4
-            + dirs) as u64;
+            + dirs) as u64
+            + self.growth.memory();
         stats
     }
 }
@@ -1059,6 +1070,76 @@ mod tests {
         tree.set_record(22, &RecordState { seq: 2, ..file(5 * KB, &[(30, "new.txt")]) });
         assert_eq!((size(&tree, 21), size(&tree, 30)), (0, 125 * KB));
         assert_totals(&mut tree);
+    }
+
+    #[test]
+    fn notes_what_folders_held_at_the_last_mark() {
+        let mut tree = sample();
+        tree.growth.mark(0, size(&tree, ROOT));
+        // b.pdf grows twice: its folders are noted at their sizes before the first time.
+        tree.set_record(24, &file(20 * KB, &[(23, "b.pdf")]));
+        tree.set_record(24, &file(30 * KB, &[(23, "b.pdf")]));
+        // A new folder, with a file in it.
+        tree.set_record(50, &dir(1, &[(30, "new")]));
+        tree.set_record(51, &file(5 * KB, &[(50, "n.bin")]));
+        // A folder moves: it stays as big, the folders it left and joined change.
+        tree.set_record(25, &dir(1, &[(30, ".hidden")]));
+        // Recounting to undo drift notes nothing.
+        tree.recompute_totals();
+        tree.growth.mark(1, size(&tree, ROOT));
+
+        let then = |tree: &Tree, n: u32, epoch: u16| {
+            let r = tree.rec(n).unwrap();
+            tree.growth.then(n, r.seq, epoch, r.size)
+        };
+        assert_eq!((then(&tree, 23, 0), size(&tree, 23)), (Some(110 * KB), 30 * KB));
+        assert_eq!(then(&tree, 21, 0), Some(111 * KB));
+        assert_eq!((then(&tree, 30, 0), size(&tree, 30)), (Some(1024 * KB), 1129 * KB));
+        assert_eq!(then(&tree, ROOT, 0), Some(1135 * KB));
+        assert_eq!(then(&tree, 50, 0), None);
+        assert_eq!(then(&tree, 25, 0), Some(100 * KB));
+        // At the second mark, they were as they are now.
+        assert_eq!(then(&tree, 23, 1), Some(30 * KB));
+        assert_eq!(then(&tree, 50, 1), Some(5 * KB));
+
+        // The folder is deleted and its record made into another folder: that one is new.
+        tree.remove_record(51);
+        tree.remove_record(50);
+        tree.set_record(50, &dir(2, &[(ROOT, "again")]));
+        assert_eq!(then(&tree, 50, 1), None);
+        assert_totals(&mut tree);
+    }
+
+    /// What noting folders for growth costs a file change, eight folders deep (run with --release
+    /// --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn growth_notes_cost_little() {
+        let build = || {
+            let mut tree = Tree::default();
+            tree.set_record(ROOT, &RecordState { seq: 5, dir: true, ..Default::default() });
+            for (i, n) in (100..108u32).enumerate() {
+                tree.set_record(n, &dir(1, &[(if i == 0 { ROOT } else { n - 1 }, "d")]));
+            }
+            for n in 1000..201_000u32 {
+                tree.set_record(n, &file(1, &[(100 + n % 8, "f")]));
+            }
+            tree
+        };
+        let run = |tree: &mut Tree| {
+            let started = std::time::Instant::now();
+            for round in 0..3u64 {
+                for n in 1000..201_000u32 {
+                    tree.set_record(n, &file(2 + round, &[(100 + n % 8, "f")]));
+                }
+            }
+            started.elapsed().as_secs_f64() * 1e9 / 600_000.0
+        };
+        let mut plain = build();
+        let mut noted = build();
+        noted.growth.mark(0, 0);
+        let (without, with) = (run(&mut plain), run(&mut noted));
+        println!("a file change: {without:.0} ns without growth notes, {with:.0} ns with");
     }
 
     fn listed(tree: &Tree, dir: u32) -> Vec<String> {
