@@ -307,6 +307,18 @@ export async function convertImages(pictures: string[], options: ConvertOptions,
 
 export const convertCancel = () => invoke("convert_cancel");
 
+/** An editor or terminal found on this PC (openers.rs). A terminal opens a file's folder. */
+export interface Opener {
+    id: string;
+    name: string;
+    terminal: boolean;
+    path: string;
+}
+
+export const listOpeners = () => invoke<Opener[]>("openers");
+/** Opens a folder or a file in the editor or terminal `id`. */
+export const openIn = (id: string, path: string) => invoke("open_in", { id, path });
+
 export const clipboardSetFiles = (paths: string[], cut: boolean) => invoke("clipboard_set_files", { paths, cut });
 export const clipboardGetFiles = () => invoke<{ paths: string[]; cut: boolean } | null>("clipboard_get_files");
 /** With no files on the clipboard: its picture (a PNG) or text (a .txt) as a new file in `folder`; null when it holds neither. */

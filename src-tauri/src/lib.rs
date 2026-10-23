@@ -24,6 +24,7 @@ mod meaning;
 mod media;
 mod native_preview;
 mod ocr;
+mod openers;
 mod pe;
 mod proc;
 mod quick;
@@ -651,6 +652,8 @@ pub fn run() {
             dedup::clone_duplicates,
             convert::convert_images,
             convert::convert_cancel,
+            openers::openers,
+            openers::open_in,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,
