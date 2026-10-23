@@ -91,6 +91,46 @@ pub fn make_ref(number: u32, seq: u16) -> u64 {
     number as u64 | (seq as u64) << 48
 }
 
+/// Puts each record of a batch after the folders it's in now, where they're in the batch too. NTFS
+/// gives a deleted file's record to whatever comes next, so a folder made right after a delete may
+/// have a record the batch first saw as the file deleted before it; read in first, what was made
+/// in the folder would find that file still there and be left in no folder at all.
+pub fn parents_first(batch: Vec<(u32, Option<RecordState>)>) -> Vec<(u32, Option<RecordState>)> {
+    let at: HashMap<u32, usize> = batch.iter().enumerate().map(|(i, (n, _))| (*n, i)).collect();
+    // Depth first, without recursion: a record is placed once the folders it's in are. A cycle
+    // (a move between two reads) just ends where it closes.
+    const NEW: u8 = 0;
+    const OPEN: u8 = 1;
+    const PLACED: u8 = 2;
+    let mut mark = vec![NEW; batch.len()];
+    let mut order = Vec::with_capacity(batch.len());
+    let mut stack = Vec::new();
+    for start in 0..batch.len() {
+        stack.push((start, false));
+        while let Some((i, parents_placed)) = stack.pop() {
+            if parents_placed {
+                mark[i] = PLACED;
+                order.push(i);
+                continue;
+            }
+            if mark[i] != NEW {
+                continue;
+            }
+            mark[i] = OPEN;
+            stack.push((i, true));
+            for (parent, _) in batch[i].1.iter().flat_map(|s| s.names.iter()) {
+                if let Some(&j) = u32::try_from(split_ref(*parent).0).ok().and_then(|n| at.get(&n)) {
+                    if mark[j] == NEW {
+                        stack.push((j, false));
+                    }
+                }
+            }
+        }
+    }
+    let mut batch: Vec<_> = batch.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| batch[i].take()).collect()
+}
+
 #[derive(Default)]
 pub struct Tree {
     pub(crate) recs: Vec<Rec>,
@@ -1272,6 +1312,40 @@ mod tests {
         tree.set_record(61, &file(1, &[(11, "$Quota")]));
         assert!(find(&tree, "stale", ROOT, true, &[]).is_empty());
         assert!(find(&tree, "quota", ROOT, true, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_folder_made_again_keeps_what_is_made_in_it() {
+        // docs (23) goes with everything in it and is made again at once, with b.pdf in it: NTFS
+        // gives the new docs b.pdf's old record (24), and the new b.pdf docs' old one (23). The
+        // journal lists 23 first (b.pdf's delete), so read in that order, b.pdf would find the old
+        // b.pdf in 24 and hang nowhere.
+        let docs = RecordState { seq: 2, ..dir(2, &[(21, "docs")]) };
+        let pdf = RecordState { seq: 2, names: vec![(make_ref(24, 2), "b.pdf".into())], ..file(10 * KB, &[]) };
+        let batch = vec![(23, Some(pdf)), (24, Some(docs)), (25, None), (26, None)];
+        let order = |batch: &[(u32, Option<RecordState>)]| batch.iter().map(|(n, _)| *n).collect::<Vec<_>>();
+        assert_eq!(order(&parents_first(batch.clone())), [24, 23, 25, 26]);
+
+        let apply = |batch: Vec<(u32, Option<RecordState>)>| {
+            let mut tree = sample();
+            for (n, state) in batch {
+                match state {
+                    Some(state) => tree.set_record(n, &state),
+                    None => tree.remove_record(n),
+                }
+            }
+            tree
+        };
+        assert!(find(&apply(batch.clone()), "b.pdf", ROOT, true, &[]).is_empty());
+        let mut tree = apply(parents_first(batch));
+        assert_eq!(find(&tree, "*.pdf", ROOT, true, &[]), [r"Users\me\docs\b.pdf"]);
+        assert_eq!(size(&tree, 21), KB + 10 * KB);
+        assert_totals(&mut tree);
+
+        // A cycle (a move between two reads) still places every record once.
+        let a = RecordState { names: vec![(parent_ref(41), "a".into())], ..dir(1, &[]) };
+        let b = RecordState { names: vec![(parent_ref(40), "b".into())], ..dir(1, &[]) };
+        assert_eq!(order(&parents_first(vec![(40, Some(a)), (41, Some(b)), (42, None)])), [41, 40, 42]);
     }
 
     #[test]

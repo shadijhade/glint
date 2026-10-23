@@ -75,8 +75,9 @@ pub fn parse_page(page: &[u8]) -> Option<(i64, Vec<UsnRecord>)> {
     Some((next, records))
 }
 
-/// File records a batch touched, each once, in the order first seen (so a new folder is indexed
-/// before what was created in it): every changed file, and every folder that gained or lost a name.
+/// File records a batch touched, each once, in the order first seen (so a new folder is mostly
+/// indexed before what was created in it; `tree::parents_first` sees to the rest): every changed
+/// file, and every folder that gained or lost a name.
 /// `since`, when given, skips records stamped before it (a FILETIME).
 pub fn touched(records: &[UsnRecord], since: Option<i64>) -> Vec<u32> {
     let mut seen = std::collections::HashSet::new();
