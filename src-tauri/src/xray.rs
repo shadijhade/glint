@@ -1,6 +1,6 @@
 //! Deep File X-Ray: NTFS Alternate Data Streams (`:Zone.Identifier` inspector & unblocker),
 //! physical vs. logical disk allocation (`GetCompressedFileSizeW`), MFT identity & hardlink count
-//! (`GetFileInformationByHandle`), Shannon entropy spectrum, and single-pass SHA-256 + CRC32.
+//! (`GetFileInformationByHandle`), Shannon entropy spectrum, and single-pass SHA-256, BLAKE3 and CRC32.
 
 use crate::fsx::blocking;
 use serde::Serialize;
@@ -59,6 +59,7 @@ pub struct FileXRayReport {
     pub ascii_pct: f64,
     pub high_byte_pct: f64,
     pub sha256: String,
+    pub blake3: String,
     pub crc32: String,
     pub hashes_complete: bool,
     pub elapsed_ms: f64,
@@ -289,9 +290,10 @@ pub fn analyze_file(path: &str, full: bool, cancel: &AtomicBool) -> Result<FileX
         .and_then(|s| s.preview.as_deref())
         .and_then(parse_zone_identifier);
 
-    // Single-pass streaming read for SHA-256, CRC32, and Shannon Entropy
+    // Single-pass streaming read for SHA-256, BLAKE3, CRC32, and Shannon Entropy
     let limit = if full { u64::MAX } else { MAX_HASH_BYTES };
     let mut sha256 = Sha256::new();
+    let mut blake3 = blake3::Hasher::new();
     let mut crc32 = crc32fast::Hasher::new();
     let mut counts = [0u64; 256];
     let mut entropy_sampled = 0usize;
@@ -311,6 +313,7 @@ pub fn analyze_file(path: &str, full: bool, cancel: &AtomicBool) -> Result<FileX
                 };
                 let slice = &buf[..n];
                 sha256.update(slice);
+                blake3.update(slice);
                 crc32.update(slice);
                 bytes_hashed += n as u64;
 
@@ -382,6 +385,7 @@ pub fn analyze_file(path: &str, full: bool, cancel: &AtomicBool) -> Result<FileX
         ascii_pct,
         high_byte_pct,
         sha256: hex(&sha256.finalize()),
+        blake3: blake3.finalize().to_hex().to_string(),
         crc32: format!("{:08x}", crc32.finalize()),
         hashes_complete: bytes_hashed >= logical_size,
         elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
@@ -402,6 +406,8 @@ mod tests {
         fs::write(&abc, b"abc").unwrap();
         let report = analyze_file(&abc.to_string_lossy(), false, &AtomicBool::new(false)).unwrap();
         assert_eq!(report.sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        // BLAKE3's own reference value for "abc".
+        assert_eq!(report.blake3, "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85");
         assert!(report.hashes_complete);
         let digits = dir.join("digits.txt");
         fs::write(&digits, b"123456789").unwrap();
