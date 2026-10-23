@@ -77,7 +77,7 @@ import {
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { compareEntries, type DiffStatus, type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { compareEntries, type DiffStatus, type FileEntry, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     archiveOf,
     calcSizes,
@@ -1109,7 +1109,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         // Open, then the clipboard and the other pane, archives, renaming and deleting, tools, properties.
         return [
             { label: browses ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: browses ? (one!.dir ? FolderOpen : FileArchive) : ExternalLink, shortcut: "Enter", onSelect: openSelected },
-            one && isArchiveFile(one) && !fixed && { label: "Extract here", icon: ArchiveRestore, onSelect: () => extractHere(one.path) },
+            // A .docx or .jar is a zip too: Enter opens it in its app, this looks inside.
+            one && isBrowsable(one) && !closed && { label: "Open as archive", icon: FileArchive, onSelect: () => navigate(one.path) },
+            one && (isArchiveFile(one) || isBrowsable(one)) && !fixed && { label: "Extract here", icon: ArchiveRestore, onSelect: () => extractHere(one.path) },
             folders.length > 0 && {
                 label: folders.length > 1 ? `Open ${folders.length} folders in new tabs` : "Open in new tab",
                 icon: SquarePlus,

@@ -1,10 +1,12 @@
+import { ARCHIVE_IN_PATH } from "./archives.ts";
+
 /** The "This PC" view (drives and known folders) has no real path. */
 export const THIS_PC = "";
 
 const SEPARATORS = /[\\/]+$/;
 
-/** In a zip or 7z archive (or the archive itself): read-only, and not on disk for other tools. */
-export const inArchivePath = (path: string) => /\.(zip|7z)([\\/]|$)/i.test(path);
+/** In an archive (or the archive itself), by its names: read-only, and not on disk for other tools. */
+export const inArchivePath = (path: string) => ARCHIVE_IN_PATH.test(path);
 
 /** "C:\", "C:", "\\server\share" and "/" are roots. */
 export function isRoot(path: string) {
