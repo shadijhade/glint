@@ -1,13 +1,14 @@
+import { ARCHIVE_FORMATS, type ArchiveFormat } from "./archives.ts";
 import { type FileEntry, withDetails } from "./entries.ts";
 import { joinPath } from "./paths.ts";
 
 /** The folder mapped has no parent. */
 export const NO_PARENT = 0xffffffff;
 
-/** Who drew a map: the index, dust, or (a folder in an archive) the archive's own list of entries. */
-export type UsageEngine = "index" | "dust" | "zip" | "7z";
-/** By the number usage.rs's encode_map writes. */
-const ENGINES: UsageEngine[] = ["index", "dust", "zip", "7z"];
+/** Who drew a map: the index, dust, or (a folder in an archive) the archive's own list of entries, by its format. */
+export type UsageEngine = "index" | "dust" | ArchiveFormat;
+/** By the number usage.rs's encode_map writes: 2 and up are archives, by their format's code. */
+const ENGINES: UsageEngine[] = ["index", "dust", ...ARCHIVE_FORMATS];
 
 /**
  * A disk-usage map of a folder: its biggest files and folders a few levels down. Node 0 is the folder

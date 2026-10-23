@@ -1,7 +1,8 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
-import { archiveFormat, ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, isArchived, isArchiveFile, isClosed, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
+import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, isArchived, isArchiveFile, isBrowsable, isClosed, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
+import { inArchivePath } from "./paths.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
@@ -72,7 +73,7 @@ assert.equal(match("size:big"), "");
 
 // Binary listings: built here with the layout fsx.rs's encode_listing writes (its test checks the offsets)
 type Item = { name: string; dir: boolean; size: number; modified: number; attrs: number };
-type InArchiveHeader = { archive: number; outer: number; entries: number; cached: boolean; readMs: number };
+type InArchiveHeader = { archive: number; outer: number; entries: number; cached: boolean; readMs: number; format: number };
 function encodeListing(path: string, items: Item[], elapsed: number, archive?: InArchiveHeader, fromIndex = false) {
     const encoder = new TextEncoder();
     const pathBytes = encoder.encode(path);
@@ -89,7 +90,7 @@ function encodeListing(path: string, items: Item[], elapsed: number, archive?: I
         view.setUint32(24, archive.entries, true);
         view.setFloat64(32, archive.readMs, true);
     }
-    view.setUint32(28, (archive?.cached ? 1 : 0) | (fromIndex ? 2 : 0), true);
+    view.setUint32(28, (archive?.cached ? 1 : 0) | (fromIndex ? 2 : 0) | (archive ? (archive.format + 1) << 8 : 0), true);
     items.forEach((e, i) => {
         view.setFloat64(40 + 8 * i, e.size, true);
         view.setFloat64(40 + 8 * n + 8 * i, e.modified, true);
@@ -133,6 +134,7 @@ const nested = decodeListing(
         entries: 54_001,
         cached: false,
         readMs: 13.5,
+        format: 1,
     })
 );
 assert.deepEqual(nested.archive, { path: "C:\\Dö\\photos.zip\\2024\\old.7z", outer: "C:\\Dö\\photos.zip", format: "7z", entries: 54_001, cached: false, readMs: 13.5 });
@@ -140,8 +142,10 @@ assert.deepEqual(nested.entries.map((e) => [e.path, isArchived(e), isLocked(e)])
     [`${inside}\\beach.jpg`, true, false],
     [`${inside}\\secret.txt`, true, true],
 ]);
-assert.deepEqual([archiveFormat("a.ZIP"), archiveFormat("b.7z"), archiveFormat("c.tar"), archiveFormat("zip")], ["zip", "7z", null, null]);
-assert.ok(isArchiveFile(entry("x.Zip")) && isArchiveFile(entry("y.7z")) && !isArchiveFile(entry("z.zip/")) && !isArchiveFile(entry("w.rar")));
+assert.ok(isArchiveFile(entry("x.Zip")) && isArchiveFile(entry("y.7z")) && !isArchiveFile(entry("z.zip/")) && !isArchiveFile(entry("w.docx")));
+// A .docx or .jar is a zip that Enter opens in its app: "Open as archive" looks inside, and a path into it is an archive's.
+assert.ok(isBrowsable(entry("report.DOCX")) && isBrowsable(entry("lib.jar")) && !isBrowsable(entry("x.zip")) && !isBrowsable(entry("dir.docx/")));
+assert.ok(inArchivePath("C:\\a\\report.docx\\word") && inArchivePath("C:\\a\\b.7z") && !inArchivePath("C:\\a\\docx\\b") && !inArchivePath("C:\\a\\b.zipper"));
 assert.ok(!isArchived(entry("plain.txt")));
 // The archive's own top folder, and the crumbs into it: an archive's path is a folder path like any other.
 assert.deepEqual(crumbs(inside).map((c) => c.name), ["C:\\", "Dö", "photos.zip", "2024", "old.7z", "summer"]);

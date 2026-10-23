@@ -4,6 +4,18 @@ Glint opens zip and 7z archives like folders. Press `Enter` on one (or double-cl
 
 Archives are **read-only** inside. New folder, Cut, Paste, Rename, Delete, Move to other pane and Open in Terminal are greyed out, a *Read-only archive* badge takes Open in Terminal's place in the command bar, and their keys only say why. Nothing can be dropped into an archive. To change what's in one, copy it out first.
 
+## Archives by other names
+
+Many files are zips inside:
+-   Word, Excel and PowerPoint documents (`.docx`, `.xlsx`, `.pptx`, and their macro and template kinds), and OpenDocument files;
+-   Java and Android packages (`.jar`, `.war`, `.apk`, `.aab`);
+-   NuGet packages, VSIX extensions, Python wheels, EPUB books, MSIX and AppX packages and Firefox add-ons;
+-   KMZ and 3MF files.
+
+`Enter` still opens them in their app. Right-click **Open as archive** to look inside, read-only, like any zip, or **Extract here** to unpack one into a folder next to it.
+
+Glint goes by a file's first bytes, not its name. A renamed zip (`data.bin`), or a zip inside a zip under another name, opens all the same once a path goes into it: through Open as archive, a path you type or paste, or a tab that comes back. Glint reads the first 4 KB of the file to tell, and only after the path has failed as a folder, so plain folders never pay for it.
+
 ## What works in an archive
 
 -   **The list and the grid**, with names, uncompressed sizes, dates, and every folder's total (sort by size works). Hidden and system items stay hidden unless you show them, as on disk.
@@ -58,10 +70,19 @@ The status bar shows it for every folder in an archive: *zip · 54,001 items rea
 
 ## In the code
 
--   `src-tauri/src/archive/mod.rs`: where a path goes into an archive (`locate`), the archives read (`opened`, by path, size and date), the commands (`archive_extract`, `archive_stage`, `archive_extract_here`, `archive_compress`, `cancel_archive_stage`, `archive_unstage`), and what `list_dir`, `resolve_path`, `read_text_preview`, `folder_sizes`, `disk_usage`, `find_files` and `thumbnail` ask of an archive.
--   `read.rs`: zip and 7z behind one interface (`Source`), the 7z header check, names and dates.
+-   `src-tauri/src/archive/mod.rs`:
+    -   where a path goes into an archive (`locate`), and finding one by its first bytes (`sniff`);
+    -   the archives read (`opened`, by path, size and date);
+    -   the commands (`archive_extract`, `archive_stage`, `archive_extract_here`, `archive_compress`, `cancel_archive_stage`, `archive_unstage`);
+    -   what `list_dir`, `resolve_path`, `read_text_preview`, `folder_sizes`, `disk_usage`, `find_files` and `thumbnail` ask of an archive.
+-   `read.rs`:
+    -   the formats (`Format`: what a name claims, what the first bytes say, the code the UI knows each by);
+    -   zip and 7z behind one interface (`Source`);
+    -   the 7z header check, names and dates.
 -   `tree.rs`: safe names, the folder tree, totals and natural order.
 -   `extract.rs`: temp folders and their cleanup, and writing an entry within its declared size.
 -   `compress.rs`: writing a zip (Compress to zip file).
 -   `tests.rs` and `fixtures/` (made with 7-Zip 26.04: encrypted zips and 7z files, a solid 7z and a zip with non-ASCII names, a zip with names in the OEM code page): listings, nesting, previews, staging, zip slip, bombs, encrypted, damaged and real-world archives. `cargo test --release -- --ignored --nocapture lists_50000` times a 50,000-entry zip.
--   The UI reads a listing's archive (`Listing.archive` in `src/lib/entries.ts`: where it is in the path, its format, its entry count, how long reading it took) and the `ATTR.inArchive`, `ATTR.encrypted` and `ATTR.unreadable` bits of its entries. `src/lib/explorer.ts` has the read-only guards, copying out (`extracting`, `copyOutOfArchive`, `dragFromArchive`) and opening (`openFromArchive`).
+-   The UI side:
+    -   The UI reads a listing's archive (`Listing.archive` in `src/lib/entries.ts`: where it is in the path, its format, its entry count, how long reading it took) and the `ATTR.inArchive`, `ATTR.encrypted` and `ATTR.unreadable` bits of its entries.
+    -   `src/lib/archives.ts` lists the formats by code, which extensions `Enter` opens and which "Open as archive" offers. `src/lib/explorer.ts` has the read-only guards, copying out (`extracting`, `copyOutOfArchive`, `dragFromArchive`) and opening (`openFromArchive`).

@@ -81,7 +81,12 @@ pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
                     return Err(ListError { kind: "denied", message: describe(&e), remote, path });
                 }
             }
-            Err(e) => return Err(ListError::other(&path, describe(&e))),
+            // A path into (or to) an archive not named like one: a renamed zip, or one opened with
+            // "Open as archive". Its first bytes say so, and it's remembered from then on.
+            Err(e) => match crate::archive::sniff(&path).then(|| crate::archive::list(&path, started)).flatten() {
+                Some(listing) => return listing.map(tauri::ipc::Response::new).map_err(|e| ListError::other(&path, e)),
+                None => return Err(ListError::other(&path, describe(&e))),
+            },
         };
         sort_entries(&mut entries);
         Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started), None, from_index)))
@@ -161,6 +166,8 @@ pub struct InArchive {
     pub cached: bool,
     /// How long reading it took (0 when it was in memory).
     pub read_ms: f64,
+    /// The archive's format, by its code (`archive::Format::code`).
+    pub format: u8,
 }
 
 /// A listing as bytes rather than JSON: a third of the size for big folders, and nothing to parse.
@@ -169,7 +176,8 @@ pub struct InArchive {
 ///   16: u32 archive (UTF-16 units of the path that are the archive the folder is in; 0 for a
 ///   folder on disk) · 20: u32 outer (those that are the archive file on disk, when archives nest)
 ///   24: u32 entries in the archive · 28: u32 flags (1: the archive's list of entries was in memory;
-///   2: listed from instant search's index, as Windows keeps the folder closed to this user)
+///   2: listed from instant search's index, as Windows keeps the folder closed to this user; bits
+///   8 to 15: the archive's format code plus one)
 ///   32: f64 milliseconds reading the archive's list of entries
 ///   40: f64 size[count] · then f64 modified[count] · u32 attrs[count] · u32 name length[count]
 ///   (UTF-16 units, how JavaScript counts) · the path (UTF-8) · every name back to back (UTF-8).
@@ -179,7 +187,7 @@ pub fn encode_listing<T: Listed>(path: &str, entries: &[T], elapsed: f64, archiv
     out.extend((entries.len() as u32).to_le_bytes());
     out.extend((path.len() as u32).to_le_bytes());
     out.extend(elapsed.to_le_bytes());
-    let (inside, outer, count, flags, read_ms) = archive.map_or((0, 0, 0, 0, 0.0), |a| (a.archive, a.outer, a.entries, a.cached as u32, a.read_ms));
+    let (inside, outer, count, flags, read_ms) = archive.map_or((0, 0, 0, 0, 0.0), |a| (a.archive, a.outer, a.entries, a.cached as u32 | (a.format as u32 + 1) << 8, a.read_ms));
     let flags = flags | if from_index { 2 } else { 0 };
     out.extend(inside.to_le_bytes());
     out.extend(outer.to_le_bytes());
@@ -275,6 +283,7 @@ pub async fn resolve_path(path: String) -> Result<Resolved, String> {
         }
         match std::fs::metadata(&path) {
             Ok(meta) => Ok(Resolved { dir: meta.is_dir(), path }),
+            Err(_) if crate::archive::sniff(&path) => crate::archive::resolve(&path).unwrap_or_else(|| Err(format!("Can't find “{path}”."))).map_err(|e| format!("Can't open “{path}”. {e}")),
             Err(e) => match stat(&path) {
                 // Seen from its folder, but its own permissions keep this user out (C:\PerfLogs): it
                 // opens, and says so.
@@ -838,12 +847,13 @@ mod tests {
             Entry { name: "sub".into(), path: None, dir: true, size: 0, modified: 5, attrs: 0 },
             Entry { name: "é😀.txt".into(), path: None, dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x2 },
         ];
-        let archive = InArchive { archive: 3, outer: 2, entries: 50_000, cached: true, read_ms: 12.5 };
+        let archive = InArchive { archive: 3, outer: 2, entries: 50_000, cached: true, read_ms: 12.5, format: 1 };
         let bytes = encode_listing("C:\\x", &entries, 1.5, Some(&archive), false);
         let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
         assert_eq!((u32_at(0), u32_at(4), f64_at(8)), (2, 4, 1.5));
-        assert_eq!((u32_at(16), u32_at(20), u32_at(24), u32_at(28), f64_at(32)), (3, 2, 50_000, 1, 12.5));
+        // Flags: in memory (1), and the format's code plus one in bits 8 to 15 (a 7z: 2).
+        assert_eq!((u32_at(16), u32_at(20), u32_at(24), u32_at(28), f64_at(32)), (3, 2, 50_000, 1 | 2 << 8, 12.5));
         assert_eq!((f64_at(40), f64_at(48)), (0.0, (1u64 << 40) as f64));
         assert_eq!((f64_at(56), f64_at(64)), (5.0, 1_700_000_000_000.0));
         assert_eq!((u32_at(72), u32_at(76)), (0x10, 0x2));
