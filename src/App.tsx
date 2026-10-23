@@ -12,7 +12,7 @@ import { archiveOf, currentPath, defaultTextSearchFolder, openRequested, refresh
 import { THIS_PC } from "./lib/paths";
 import { replaceText, toRegExp } from "./lib/text";
 import { checkForUpdates, greetUpdate, useUpdater } from "./lib/updater";
-import { quickConfigure, setStartWithWindows } from "./lib/fs";
+import { openItem, quickConfigure, setStartWithWindows } from "./lib/fs";
 import { cn, firstNotice } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
 import { RipgrepCard, SearchBar } from "./components/Search";
@@ -297,8 +297,9 @@ function App() {
     search(item.query, item.path);
   };
 
+  // In the editor from Settings, else with the file's app as File Explorer opens it.
   const openFile = (path: string) =>
-    openPath(path, settings.editorPath.trim() || undefined).catch((e) => toast.error("Couldn't open the file", { description: String(e) }));
+    (settings.editorPath.trim() ? openPath(path, settings.editorPath.trim()) : openItem(path)).catch((e) => toast.error("Couldn't open the file", { description: String(e) }));
 
   const replaceAll = async (replacement: string) => {
     // One at a time: a second Enter mid-way would replace in what the first just wrote.

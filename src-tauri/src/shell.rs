@@ -1,6 +1,7 @@
 //! Windows shell integration: copy, move, delete and rename through IFileOperation (Explorer's own
 //! engine, so progress, conflicts, Recycle Bin and permission prompts behave exactly like Explorer),
-//! the file clipboard shared with Explorer, Properties, Open with and the terminal.
+//! opening files as a double-click there does, the file clipboard shared with Explorer, Properties,
+//! Open with and the terminal.
 
 use crate::archive;
 use crate::fsx::blocking;
@@ -138,6 +139,16 @@ pub async fn show_properties(window: Window, path: String) -> Result<(), String>
     on_main(&window, move || imp::show_properties(owner, &path)).await
 }
 
+/// Opens a file as a double-click in File Explorer does: the shell's own default action, from a
+/// thread with COM set up and the window as owner, so app-store apps, programs that ask for
+/// administrator approval and shortcuts all open as they do there, and a type no app opens yet gets
+/// Windows' app picker. A shortcut to a folder comes back as that folder, for the tab to open.
+#[tauri::command]
+pub async fn open_item(window: Window, path: String) -> Result<Option<String>, String> {
+    let owner = owner(&window);
+    blocking(move || imp::open_item(owner, path)).await
+}
+
 /// Windows' "Open with" app picker.
 #[tauri::command]
 pub async fn open_with(window: Window, path: String) -> Result<(), String> {
@@ -175,11 +186,14 @@ mod imp {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
-    use windows::core::{implement, w, ComObject, Ref, BOOL, HRESULT, HSTRING, PCWSTR};
-    use windows::Win32::Foundation::{GlobalFree, ERROR_CANCELLED, HANDLE, HGLOBAL, HWND, LPARAM, POINT};
+    use windows::core::{implement, w, ComObject, Interface, Ref, BOOL, HRESULT, HSTRING, PCWSTR};
+    use windows::Win32::Foundation::{
+        GlobalFree, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_NO_ASSOCIATION, ERROR_PATH_NOT_FOUND, HANDLE, HGLOBAL,
+        HWND, LPARAM, POINT,
+    };
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IDataObject, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
-        COINIT_DISABLE_OLE1DDE,
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IDataObject, IPersistFile, CLSCTX_ALL, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, STGM_READ,
     };
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
@@ -190,15 +204,16 @@ mod imp {
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
         DragQueryFileW, FileOperation, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, ILCreateFromPathW, ILFree, IShellItem,
-        SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
+        IShellLinkW, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
         SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHObjectProperties,
-        SHOpenWithDialog, BHID_DataObject, DROPFILES, FILEOPERATION_FLAGS,
+        SHOpenWithDialog, ShellExecuteExW, ShellLink, BHID_DataObject, DROPFILES, FILEOPERATION_FLAGS,
         FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
-        FOF_WANTNUKEWARNING, HDROP, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SHOP_FILEPATH,
+        FOF_WANTNUKEWARNING, HDROP, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST,
+        SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, SHOP_FILEPATH,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetSystemMetrics, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, SM_SWAPBUTTON,
+        EnumWindows, GetSystemMetrics, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, SM_SWAPBUTTON, SW_SHOWNORMAL,
     };
 
     /// HRESULT for "cancelled" from the copy engine's progress dialog.
@@ -564,18 +579,60 @@ mod imp {
     }
 
     pub fn open_with(owner: isize, path: String) -> Result<(), String> {
+        in_sta(move || unsafe { pick_app(owner, &path) })
+    }
+
+    /// The app picker, which opens the file with what's picked (and can make it the default).
+    unsafe fn pick_app(owner: isize, path: &str) -> Result<(), String> {
+        let file = HSTRING::from(path);
+        let info = OPENASINFO {
+            pcszFile: PCWSTR(file.as_ptr()),
+            pcszClass: PCWSTR::null(),
+            oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT | OAIF_EXEC,
+        };
+        match SHOpenWithDialog(Some(hwnd(owner)), &info) {
+            Err(e) if e.code() != ERROR_CANCELLED.to_hresult() => Err(message(e)),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn open_item(owner: isize, path: String) -> Result<Option<String>, String> {
         in_sta(move || unsafe {
-            let file = HSTRING::from(path);
-            let info = OPENASINFO {
-                pcszFile: PCWSTR(file.as_ptr()),
-                pcszClass: PCWSTR::null(),
-                oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT | OAIF_EXEC,
+            if path.to_ascii_lowercase().ends_with(".lnk") {
+                if let Some(folder) = shortcut_folder(&path) {
+                    return Ok(Some(folder));
+                }
+            }
+            let file = HSTRING::from(path.as_str());
+            let mut info = SHELLEXECUTEINFOW {
+                cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+                // The item's default action, as File Explorer runs it; what goes wrong comes back here.
+                fMask: SEE_MASK_INVOKEIDLIST | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+                hwnd: hwnd(owner),
+                lpFile: PCWSTR(file.as_ptr()),
+                nShow: SW_SHOWNORMAL.0,
+                ..Default::default()
             };
-            match SHOpenWithDialog(Some(hwnd(owner)), &info) {
-                Err(e) if e.code() != ERROR_CANCELLED.to_hresult() => Err(message(e)),
-                _ => Ok(()),
+            match ShellExecuteExW(&mut info) {
+                Ok(()) => Ok(None),
+                // Declined, such as an administrator approval.
+                Err(e) if e.code() == ERROR_CANCELLED.to_hresult() => Ok(None),
+                Err(e) if e.code() == ERROR_NO_ASSOCIATION.to_hresult() => pick_app(owner, &path).map(|()| None),
+                Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => Err("Windows doesn't let your account open it.".into()),
+                Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() || e.code() == ERROR_PATH_NOT_FOUND.to_hresult() => Err("It isn't there anymore.".into()),
+                Err(e) => Err(message(e)),
             }
         })
+    }
+
+    /// Where a shortcut points, when that's a folder (not a file, nor a place such as This PC).
+    unsafe fn shortcut_folder(path: &str) -> Option<String> {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(path), STGM_READ).ok()?;
+        let mut target = vec![0u16; 32_768];
+        link.GetPath(&mut target, std::ptr::null_mut(), 0).ok()?;
+        let target = String::from_utf16_lossy(&target[..target.iter().position(|&c| c == 0)?]);
+        (!target.is_empty() && crate::fsx::stat(&target).is_some_and(|e| e.dir)).then_some(target)
     }
 
     /// Runs on the UI thread (OLE is initialized there and the drag loop needs it).
@@ -672,6 +729,10 @@ mod imp {
     }
 
     pub fn open_with(_: isize, _: String) -> Result<(), String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn open_item(_: isize, _: String) -> Result<Option<String>, String> {
         Err(WINDOWS_ONLY.into())
     }
 

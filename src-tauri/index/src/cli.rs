@@ -6,7 +6,7 @@ use crate::proto::{SearchRequest, UsageRequest};
 use crate::query::{Excludes, NameMatcher};
 use crate::tree::{Search, ROOT};
 use crate::volume::Volume;
-use crate::{install, service, snapshot, win};
+use crate::{access, install, service, snapshot, win};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
@@ -17,6 +17,8 @@ shadui-index: instant file name search and folder sizes for Glint
   service                     run as the Windows service (started by Windows)
   install [--allow-sid SID]   install and start the service (administrator)
   uninstall                   stop and remove it, with its snapshots (administrator)
+  grant SID PATH              give a user read access to a folder and what's in it, as File
+                              Explorer's Continue button does (Glint's Get access)
   run [--volume C:]...        run in this console instead of as a service (administrator)
   status                      what the running service has indexed
   search QUERY [--in PATH]... [--max N] [--hidden] [--repeat N] [--print | --long]
@@ -65,6 +67,13 @@ pub fn main() -> i32 {
                 println!("Removed {}.", crate::SERVICE_NAME);
                 0
             }
+            Err(failure) => {
+                eprintln!("{failure}");
+                failure.exit_code()
+            }
+        },
+        Some("grant") if rest.len() == 2 => match access::grant(&rest[1], &rest[0]) {
+            Ok(()) => 0,
             Err(failure) => {
                 eprintln!("{failure}");
                 failure.exit_code()

@@ -4,8 +4,40 @@ import { decodeUsage, type UsageMap } from "./usage";
 
 export type { Listing };
 
-/** One folder, read with a single Win32 enumeration pass and sorted folders-first in natural order. */
-export const listDir = async (path: string): Promise<Listing> => decodeListing(await invoke<ArrayBuffer>("list_dir", { path }));
+/** What `listDir` rejects with: why the folder couldn't be listed. */
+export interface ListFailure {
+    /** "denied": Windows doesn't let this account open it; anything else is said in `message`. */
+    kind: "denied" | "other";
+    message: string;
+    /** The folder as asked for, made absolute. */
+    path: string;
+    /** On another computer, which decides who may open it. */
+    remote: boolean;
+}
+
+/** One folder, read with a single Win32 enumeration pass and sorted folders-first in natural order. Rejects with a ListFailure. */
+export async function listDir(path: string): Promise<Listing> {
+    try {
+        return decodeListing(await invoke<ArrayBuffer>("list_dir", { path }));
+    } catch (e) {
+        // An Error too, nameless, so String(e) says the message where errors are shown that way.
+        throw typeof e === "object" && e ? Object.assign(new Error((e as ListFailure).message), e, { name: "" }) : e;
+    }
+}
+
+/**
+ * Get access, as File Explorer's Continue button does: gives this account read access to a folder
+ * and what's in it, for good (Windows asks for administrator approval unless it's theirs to change).
+ * "refused": even administrators may not; "stillDenied": a rule in its permissions still denies this
+ * account. Rejects with "cancelled" when the approval was declined.
+ */
+export const grantAccess = (path: string) => invoke<"granted" | "refused" | "stillDenied">("grant_access", { path });
+
+/**
+ * Opens a file as a double-click in File Explorer does (its app, or Windows' app picker when none
+ * opens it yet). A shortcut to a folder resolves to that folder instead, for the tab to open.
+ */
+export const openItem = (path: string) => invoke<string | null>("open_item", { path });
 
 export interface Drive {
     /** Root, e.g. "C:\". */
