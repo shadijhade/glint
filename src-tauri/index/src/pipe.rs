@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(status.volumes.len(), 1);
         assert_eq!((status.volumes[0].volume.as_str(), status.volumes[0].state.as_str(), status.volumes[0].files), ("T:", "ready", 2));
 
-        let request = SearchRequest { query: "pdf".into(), roots: vec![r"T:\".into(), r"Z:\Elsewhere".into()], hidden: false, exclude: vec![], max_results: None };
+        let request = SearchRequest { query: "pdf".into(), roots: vec![r"T:\".into(), r"Z:\Elsewhere".into()], hidden: false, exclude: vec![], max_results: None, fuzzy: false };
         let (mut plan, mut hits, mut done) = (None, Vec::new(), None);
         client::search_on(client::connect_to(&name, &trust).unwrap(), &request, |event| {
             match event {
@@ -303,6 +303,26 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!((hits[0].path.as_str(), hits[0].size, hits[0].dir, hits[0].modified), (r"T:\Users\me\report.pdf", 1000, false, 1_655_526_400_000));
         assert_eq!(done, Some((1, false)));
+
+        // A typo: nothing as typed, so close matches when asked for, said to be so.
+        let search = |query: &str, fuzzy| {
+            let request = SearchRequest { query: query.into(), roots: vec![r"T:\".into()], hidden: false, exclude: vec![], max_results: None, fuzzy };
+            let (mut paths, mut done) = (Vec::new(), None);
+            client::search_on(client::connect_to(&name, &trust).unwrap(), &request, |event| {
+                match event {
+                    Event::Hits(batch) => paths.extend(batch.into_iter().map(|h| h.path)),
+                    Event::Done { count, fuzzy, .. } => done = Some((count, fuzzy)),
+                    Event::Plan { .. } => {}
+                }
+                true
+            })
+            .unwrap();
+            (paths, done)
+        };
+        assert_eq!(search("reprot", false), (vec![], Some((0, false))));
+        assert_eq!(search("reprot", true), (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, true))));
+        assert_eq!(search("report", true), (vec![r"T:\Users\me\report.pdf".to_string()], Some((1, false))), "as typed first");
+        assert_eq!(search("zzzzzz", true), (vec![], Some((0, true))));
 
         let sizes = client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"t:\users").unwrap();
         assert_eq!((sizes.total, sizes.sizes), (1024, vec![("me".to_string(), 1024)]));

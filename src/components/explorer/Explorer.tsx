@@ -1487,8 +1487,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             {find && (
                 <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-primary/5 px-3 text-sm">
                     {find.running ? <Loader2 className="size-4 shrink-0 animate-spin text-primary" /> : <Search className="size-4 shrink-0 text-primary" />}
-                    <span className="truncate">
-                        Results for <b className="font-semibold">“{find.query}”</b> in {scopeName}
+                    <span className="truncate" title={find.fuzzy ? "Nothing is named as typed: these names are a letter or two off" : undefined}>
+                        {find.fuzzy ? "Close matches" : "Results"} for <b className="font-semibold">“{find.query}”</b> in {scopeName}
                         {find.scope !== THIS_PC && " and its subfolders"}
                     </span>
                     {find.limited && (

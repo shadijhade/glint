@@ -122,7 +122,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                 <Loader2 className="size-3 animate-spin text-primary" /> {engine}searching… {formatCount(find.entries.length)} found
             </>
         ) : (
-            `${engine}${formatCount(find.entries.length)} found in ${formatDuration(find.elapsed)}${find.limited ? " · stopped at the limit" : ""}`
+            `${engine}${find.fuzzy ? "fuzzy · " : ""}${formatCount(find.entries.length)} found in ${formatDuration(find.elapsed)}${find.limited ? " · stopped at the limit" : ""}`
         );
     } else if (sizes?.running) {
         work = (

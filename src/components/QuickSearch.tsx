@@ -7,7 +7,7 @@ import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { cancelFind, findFiles, listDrives, openItem, quickHide, quickReveal } from "@/lib/fs";
 import { baseName, parentPath } from "@/lib/paths";
-import { frecency } from "@/lib/rank";
+import { frecency, typoDistance } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Kbd } from "./ui/kbd";
@@ -31,7 +31,8 @@ const wordsOf = (query: string) =>
 
 /**
  * Best first: a name that is what was typed, then one that starts with it, then one with a word that
- * does; then what's outside Windows' own folders and not hidden; then the shorter path.
+ * does, then the index's close matches, fewest typos first; then what's outside Windows' own folders
+ * and not hidden; then the shorter path.
  */
 function rank(entries: FileEntry[], words: string[]) {
     const first = words[0] ?? "";
@@ -39,7 +40,8 @@ function rank(entries: FileEntry[], words: string[]) {
     const score = (e: FileEntry) => {
         const stem = e.lower.replace(/\.[^.]*$/, "");
         const match = !first || stem === first || e.lower === first ? 0 : e.lower.startsWith(first) ? 1 : wordStart.test(e.lower) ? 2 : 3;
-        return match * 4 + (SYSTEM.test(e.path) ? 2 : 0) + (isHidden(e) ? 1 : 0);
+        const typos = first && !e.lower.includes(first) ? 1 + (typoDistance(words.join(" "), e.name) ?? 3) : 0;
+        return (match + typos) * 4 + (SYSTEM.test(e.path) ? 2 : 0) + (isHidden(e) ? 1 : 0);
     };
     return entries
         .map((e) => ({ e, s: score(e) }))
@@ -123,7 +125,7 @@ export function QuickSearch() {
             setActive(0);
             try {
                 if (!roots.current.length) roots.current = await searchable();
-                const options = { hidden: settings.showHidden, respectIgnore: false, exclude: settings.findExclusions, maxResults: ASKED };
+                const options = { hidden: settings.showHidden, respectIgnore: false, exclude: settings.findExclusions, maxResults: ASKED, fuzzy: true };
                 await findFiles(roots.current, text, options, LANE, (event) => {
                     if (!current) return;
                     if (event.type === "started") engine = event.engine;
@@ -136,7 +138,8 @@ export function QuickSearch() {
                     } else if (event.type === "finished") {
                         setBusy(false);
                         setFound(rank(entries, words).slice(0, LIMIT));
-                        setStatus(`${engine} · ${formatCount(event.count)}${event.limited ? "+" : ""} found in ${formatDuration(event.elapsed)}${event.count > LIMIT ? ` · the best ${LIMIT} shown` : ""}`);
+                        const close = event.fuzzy ? (event.count ? "nothing as typed · close matches: " : "nothing as typed, nor close · ") : "";
+                        setStatus(`${engine} · ${close}${formatCount(event.count)}${event.limited ? "+" : ""} found in ${formatDuration(event.elapsed)}${event.count > LIMIT ? ` · the best ${LIMIT} shown` : ""}`);
                     }
                 });
             } catch (e) {
