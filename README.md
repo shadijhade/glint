@@ -91,6 +91,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Drag and drop.** Drag files out to File Explorer, the desktop, a mail or a chat, or drop them in from anywhere onto a folder, a sidebar place or the open folder. As in Explorer, dropping on the same drive moves and on another drive copies.
 -   **Live.** The open folder refreshes when files change elsewhere.
 -   **Explorer integration.** Properties, Open with…, Show in File Explorer and Open in Terminal. The other way round too, if you turn them on in **Settings → Files**: *Open in Glint* on File Explorer's right-click menu for folders and drives, and Glint opening folders when you double-click them in File Explorer or on the desktop. Drives, This PC, the Recycle Bin and other special places still open in File Explorer, and file dialogs aren't affected ([how it works](docs/explorer-integration.md)).
+-   **Open in your editor or terminal.** **Open in** on a folder's or a file's menu (and `Ctrl+K`) lists the code editors and terminals on this PC: VS Code, Cursor, Zed, Antigravity, Windows Terminal, WezTerm, and yazi (in Windows Terminal). A terminal opens a file's folder. The program text search opens files with (**Settings → Search text**) can be picked from the editors found, too.
 
 ### Tabs and dual pane
 
