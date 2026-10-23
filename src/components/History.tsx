@@ -93,6 +93,7 @@ const SHORTCUTS = [
     ["↓ ↑", "From the search box on through the results"],
     ["Shift+Enter", "A new line: search for several lines at once"],
     ["Alt+C / W / R", "Match case, whole words, regular expression"],
+    ["Alt+A / D / O / M", "Code patterns, documents, pictures too, meaning"],
     ["Ctrl+H", "Replace"],
     ["Esc", "Leave the search box; again, stop the search"],
 ];

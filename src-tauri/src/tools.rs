@@ -237,9 +237,9 @@ fn version_in(text: &str) -> Option<String> {
 /// How an install is going, for its progress bar: what it's doing, and bytes when it's downloading.
 #[derive(Clone, Serialize)]
 pub struct Progress {
-    stage: String,
-    done: u64,
-    total: u64,
+    pub(crate) stage: String,
+    pub(crate) done: u64,
+    pub(crate) total: u64,
 }
 
 /// Installs running now: winget's process per tool, or a download's stop flag.
@@ -247,6 +247,19 @@ pub struct Progress {
 pub struct Installs {
     winget: Lanes,
     downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+impl Installs {
+    /// A download starting: its stop flag, which `tool_cancel_install` sets for `id`.
+    pub(crate) fn begin(&self, id: &str) -> Arc<AtomicBool> {
+        let stop = Arc::new(AtomicBool::new(false));
+        self.downloads.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), stop.clone());
+        stop
+    }
+
+    pub(crate) fn end(&self, id: &str) {
+        self.downloads.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
 }
 
 /// Installs a tool (or puts a bundled one back): with winget, or by downloading its release.
@@ -259,10 +272,9 @@ pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: 
             blocking(move || winget_install(winget, &lane, tool.id, &on_progress)).await?;
         }
         Source::Release { url, sha256, member, .. } => {
-            let stop = Arc::new(AtomicBool::new(false));
-            installs.downloads.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), stop.clone());
+            let stop = installs.begin(&id);
             let done = download(tool, url, sha256, member, &stop, &on_progress).await;
-            installs.downloads.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+            installs.end(&id);
             done?;
         }
     }
@@ -365,6 +377,18 @@ fn bytes_of(line: &str) -> Option<(u64, u64)> {
 const MAX_DOWNLOAD: u64 = 512 << 20;
 
 async fn download(tool: &'static Tool, url: &str, sha256: &str, member: &str, stop: &AtomicBool, progress: &Channel<Progress>) -> Result<(), String> {
+    let temp = fetch(url, sha256, tool.id, tool.name, stop, progress).await?;
+    let _ = progress.send(Progress { stage: "Unpacking".into(), done: 0, total: 0 });
+    let into = DIR.get().ok_or("Glint's data folder isn't available")?.join(tool.id);
+    let (file, member, exe) = (temp.clone(), member.to_string(), tool.exe);
+    let unpacked = blocking(move || if member.is_empty() { place(&file, &into, exe) } else { unpack(&file, &member, &into, exe) }).await;
+    let _ = fs::remove_file(&temp);
+    unpacked
+}
+
+/// Downloads `url` (what `name` is) into a file of its own in Glint's data folder, with progress, and
+/// checks it against its pinned `sha256`: the file, or why not (one that doesn't match is thrown away).
+pub(crate) async fn fetch(url: &str, sha256: &str, id: &str, name: &str, stop: &AtomicBool, progress: &Channel<Progress>) -> Result<PathBuf, String> {
     let dir = DIR.get().ok_or("Glint's data folder isn't available")?.clone();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // The TLS the updater uses; installing it twice is harmless.
@@ -374,23 +398,23 @@ async fn download(tool: &'static Tool, url: &str, sha256: &str, member: &str, st
         .connect_timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut response = client.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("Couldn't download {}: {e}", tool.name))?;
+    let mut response = client.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("Couldn't download {name}: {e}"))?;
     let total = response.content_length().unwrap_or(0);
     if total > MAX_DOWNLOAD {
-        return Err(format!("{}'s download is bigger than expected, so it wasn't downloaded", tool.name));
+        return Err(format!("{name}'s download is bigger than expected, so it wasn't downloaded"));
     }
-    let temp = dir.join(format!(".{}-{}.download", tool.id, std::process::id()));
+    let temp = dir.join(format!(".{id}-{}.download", std::process::id()));
     let fetched = async {
         let mut file = File::create(&temp).map_err(|e| e.to_string())?;
         let mut hasher = Sha256::new();
         let (mut done, mut told) = (0u64, Instant::now());
-        while let Some(chunk) = response.chunk().await.map_err(|e| format!("The download of {} broke off: {e}", tool.name))? {
+        while let Some(chunk) = response.chunk().await.map_err(|e| format!("The download of {name} broke off: {e}"))? {
             if stop.load(Ordering::SeqCst) {
                 return Err("cancelled".to_string());
             }
             done += chunk.len() as u64;
             if done > MAX_DOWNLOAD {
-                return Err(format!("{}'s download is bigger than expected, so it was stopped", tool.name));
+                return Err(format!("{name}'s download is bigger than expected, so it was stopped"));
             }
             hasher.update(&chunk);
             file.write_all(&chunk).map_err(|e| e.to_string())?;
@@ -403,17 +427,18 @@ async fn download(tool: &'static Tool, url: &str, sha256: &str, member: &str, st
         Ok::<_, String>(hasher.finalize())
     }
     .await;
-    let unpacked = match fetched {
-        Ok(digest) if hex(&digest).eq_ignore_ascii_case(sha256) => {
-            let _ = progress.send(Progress { stage: "Unpacking".into(), done: 0, total: 0 });
-            let (temp, member, into, exe) = (temp.clone(), member.to_string(), dir.join(tool.id), tool.exe);
-            blocking(move || if member.is_empty() { place(&temp, &into, exe) } else { unpack(&temp, &member, &into, exe) }).await
+    match fetched {
+        Ok(digest) if hex(&digest).eq_ignore_ascii_case(sha256) => Ok(temp),
+        other => {
+            let _ = fs::remove_file(&temp);
+            Err(other.err().unwrap_or_else(|| format!("The download didn't match {name}'s published checksum, so it was thrown away")))
         }
-        Ok(_) => Err(format!("The download didn't match {}'s published checksum, so it was thrown away", tool.name)),
-        Err(e) => Err(e),
-    };
-    let _ = fs::remove_file(&temp);
-    unpacked
+    }
+}
+
+/// Glint's data folder (the tools folder's parent), for what Glint downloads besides tools.
+pub(crate) fn data_dir() -> Option<PathBuf> {
+    DIR.get().and_then(|d| d.parent()).map(Path::to_path_buf)
 }
 
 fn hex(bytes: &[u8]) -> String {

@@ -210,6 +210,10 @@ The service only runs once you opt in, with every privilege removed except the t
     -   What's read stays in memory for the session (up to 256 MB), so searching the same folder again is quick; none of it is written to disk.
     -   **Pictures too** (`Alt+O`, with Documents) reads the text in pictures as well, with Windows' own OCR (in the languages your Windows has it for): PNG, JPEG, TIFF, BMP and GIF, and WebP, HEIC and AVIF with Microsoft's extensions for them. A scan or a screenshot is then found by what it says, and each result is its line.
     -   Skipped: hidden files and folders, the excluded folders, and files kept only in the cloud (reading them would download them). File patterns like `*.pdf` among the exclusions keep binary files out of text searches and don't apply here. Replace works in text files only.
+-   **Meaning.** `Alt+M` ranks the passages of documents and notes (`.txt`, `.md`, `.rst`, `.org`, `.adoc`) by how close their meaning is to what you type, not by its words: "something to cook for dinner" finds the spaghetti recipe with neither word in it. The 100 closest come first, each saying where it is and how alike it is ("p. 3 · 62%"), and the preview marks the whole passage. With **Pictures too**, the text in pictures is ranked as well.
+    -   It runs [Model2Vec](https://github.com/MinishLab/model2vec)'s potion-base-8M (30 MB, MIT), a vector for each word piece averaged over a passage, so a folder is ranked about as fast as it's read: no GPU, no index, and what you search for never leaves the PC. The model is downloaded once, the first time you ask for it (**Download it** on its card, or **Settings → Tools**, which also removes it), from Hugging Face, pinned to one version and checked against its checksums.
+    -   A small model weighs words rather than reading sentences, so take its order as a guide: it knows English best, finds the subject more surely than the answer, and a passage that shares a few words with what you typed can come before one that means it.
+    -   Documents and notes are read as Documents search reads them, with the same skips, workers and memory, so the folder searched again, by meaning or by words, is quick.
 -   **Preview, history and export.** A syntax-highlighted preview of every result, recent searches one click away, and results exported to CSV or JSON.
 -   **Connected to Files.** **Search text** (`Ctrl+Shift+F`) searches the folder you're in; **Show in folder** on a result opens it in Files with the file selected.
 
@@ -220,7 +224,7 @@ The service only runs once you opt in, with every privilege removed except the t
 | Folder sizes | In Properties or a tooltip | In the list, for every folder |
 | What fills a drive | Not shown (Storage settings has categories) | A treemap of any folder, like WizTree's |
 | Find a file by name | Windows Search where it indexes, otherwise a walk through every folder | An index of every NTFS drive (opt-in), otherwise fd |
-| Search inside files | Indexed places and file types | ripgrep in any folder, with regex and replace; PDFs' and Office documents' text too |
+| Search inside files | Indexed places and file types | ripgrep in any folder, with regex and replace; PDFs' and Office documents' text too, by words or by meaning |
 | Preview | Preview pane | Preview pane with the same previewers (and tables, databases and programs of its own), and Quick Look on `Space` |
 | Compare two folders | Not available | Side by side, down through subfolders and by contents, with Sync |
 | Compare two files | Not available (`fc` in a terminal) | Side by side: code by its structure (Difftastic), pictures with a swipe, any file byte by byte |
@@ -316,7 +320,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 | `Ctrl+F` / `Ctrl+K` | Focus the search box |
 | `Ctrl+H` | Show or hide Replace |
 | `Alt+C` / `Alt+W` / `Alt+R` | Toggle match case / whole word / regex |
-| `Alt+A` / `Alt+D` / `Alt+O` | Toggle code patterns / documents / pictures too (OCR) |
+| `Alt+A` / `Alt+D` / `Alt+O` / `Alt+M` | Toggle code patterns / documents / pictures too (OCR) / meaning |
 | `Ctrl+Shift+E` | Back to Files |
 | `Esc` | Leave the search box; again, stop a running search; close menus and dialogs |
 

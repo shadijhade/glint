@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Braces, CaseSensitive, FileText, FolderOpen, Regex, Replace, ScanText, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
+import { Braces, CaseSensitive, Download, FileText, FolderOpen, Regex, Replace, ScanText, Search as SearchIcon, Sparkles, Square, TextSearch, WholeWord } from "lucide-react";
 import { defaultTextSearchFolder } from "@/lib/explorer";
+import { cancelMeaning, installMeaning, refreshMeaning, useMeaning } from "@/lib/meaning";
 import { useRewrite } from "@/lib/ripgrep";
 import { SearchOptions, useStore } from "@/lib/store";
+import { describeProgress } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { ToolNeeded } from "./ToolNeeded";
 import { Button } from "./ui/button";
@@ -15,7 +17,11 @@ const TOGGLES: { key: keyof SearchOptions; hotkey: string; icon: typeof Regex; l
     { key: "code", hotkey: "a", icon: Braces, label: "Code pattern, by its structure (Alt+A): console.log($MSG), $X.unwrap() (ast-grep)" },
     { key: "documents", hotkey: "d", icon: FileText, label: "Documents (Alt+D): the text in PDF, Word, Excel, PowerPoint, OpenDocument and EPUB files" },
     { key: "ocr", hotkey: "o", icon: ScanText, label: "Pictures too, with Documents (Alt+O): the text in them, read by Windows' OCR" },
+    { key: "meaning", hotkey: "m", icon: Sparkles, label: "Meaning (Alt+M): documents and notes ranked by what they're about, not by their words (a small model, downloaded once)" },
 ];
+
+/** Case, whole words and regular expressions: how text matches, which code patterns and meaning have none of. */
+const MATCHING = new Set<keyof SearchOptions>(["caseSensitive", "wholeWord", "regex"]);
 
 const fieldClass = "h-9 min-w-0 flex-1 bg-transparent px-2 text-sm outline-hidden placeholder:text-muted-foreground";
 
@@ -112,9 +118,11 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                         placeholder={
                             options.code
                                 ? "A code pattern…  console.log($MSG), $X.unwrap()  ($$$ for any number)"
-                                : options.documents
-                                  ? "Search inside documents…  PDF, Word, Excel, PowerPoint, OpenDocument, EPUB"
-                                  : "Search for text…  (Shift+Enter adds a line)"
+                                : options.meaning
+                                  ? "What you're looking for, in your own words…  (documents and notes ranked by meaning)"
+                                  : options.documents
+                                    ? "Search inside documents…  PDF, Word, Excel, PowerPoint, OpenDocument, EPUB"
+                                    : "Search for text…  (Shift+Enter adds a line)"
                         }
                         aria-label="Search query"
                         className={cn(fieldClass, "h-auto max-h-40 min-h-9 resize-none py-2 font-mono placeholder:font-sans field-sizing-content")}
@@ -125,7 +133,7 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                             <Toggle
                                 key={key}
                                 pressed={!!options[key]}
-                                disabled={(options.code && key !== "code" && key !== "documents") || (key === "ocr" && !options.documents)}
+                                disabled={((options.code || options.meaning) && MATCHING.has(key)) || (options.code && key === "ocr") || (key === "ocr" && !options.documents)}
                                 onClick={() => setOption(key, !options[key])}
                                 title={label}
                                 aria-label={label}
@@ -206,6 +214,36 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
  */
 export function RipgrepCard() {
     return <ToolNeeded id="ripgrep" icon={TextSearch} why="ripgrep, which searches inside files, is missing from this copy of Glint." className="mx-3 mt-3" />;
+}
+
+/** Shown while Meaning is on and its model isn't downloaded: says what it is, and gets it with one click. */
+export function MeaningCard() {
+    const meaning = useStore((s) => s.options.meaning);
+    const { installed, progress } = useMeaning();
+    useEffect(() => {
+        if (meaning && installed === null) void refreshMeaning();
+    }, [meaning, installed]);
+    if (!meaning || installed !== false) return null;
+    return (
+        <div className="mx-3 mt-3 flex items-center gap-3 rounded-lg border bg-primary/5 px-4 py-3">
+            <Sparkles className="size-4 shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 text-sm">
+                Meaning search ranks passages by what they're about, with a small model (Model2Vec's potion-base-8M, 30 MB, MIT) downloaded once from Hugging Face and checked against its pinned checksum. What you search for never leaves this PC.
+            </span>
+            {progress ? (
+                <>
+                    <span className="truncate text-xs tabular-nums text-muted-foreground">{describeProgress(progress)}</span>
+                    <Button size="sm" variant="outline" onClick={cancelMeaning}>
+                        Stop
+                    </Button>
+                </>
+            ) : (
+                <Button size="sm" onClick={() => void installMeaning()}>
+                    <Download /> Download it
+                </Button>
+            )}
+        </div>
+    );
 }
 
 /** Shown while code patterns are on and ast-grep, which searches them, isn't installed. */

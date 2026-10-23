@@ -69,6 +69,10 @@ base64 = "0.22"
 # The calculator in Ctrl+K (= 3 ft to cm): fend, a units-aware calculator in pure Rust with no
 # dependencies (1.2 MB; numbat, planned first, was 3.3 MB).
 fend-core = "1.5"
+# Meaning search (meaning.rs): BERT's normalizer and pre-tokenizer, by Unicode's decompositions and
+# general categories; both already in the build through pdf-extract.
+unicode-normalization = "0.1"
+unicode-properties = "0.1"
 # Documents search (doctext.rs): a PDF's text by pdf-extract (pure Rust, over lopdf), in a worker
 # process; Office's, OpenDocument's and EPUB's XML by quick-xml and the pattern by the regex crate,
 # both in the build already.
