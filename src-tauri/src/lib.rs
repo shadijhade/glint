@@ -483,7 +483,7 @@ pub fn run() {
             locks::who_locks,
             locks::stop_locking_process,
             pe::inspect_pe,
-            cleanup::cleanup_junk,
+            cleanup::cleanup_scan,
             cleanup::cancel_cleanup,
             dedup::find_duplicates,
             dedup::cancel_dedup,
