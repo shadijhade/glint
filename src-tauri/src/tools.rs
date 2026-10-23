@@ -167,6 +167,7 @@ pub static TOOLS: &[Tool] = &[
         used_for: "Python projects' scripts in the Run menu, and Python scripts in Scripts",
     },
     Tool { id: "bun", name: "Bun", exe: "bun", package: "oven-sh.bun", source: Source::Winget { id: "Oven-sh.Bun" }, used_for: "TypeScript and JavaScript scripts in Scripts" },
+    Tool { id: "nushell", name: "Nushell", exe: "nu", package: "nushell.nushell", source: Source::Winget { id: "Nushell.Nushell" }, used_for: "A shell for the terminal, and Nushell scripts in Scripts" },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {

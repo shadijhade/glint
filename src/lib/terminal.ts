@@ -101,7 +101,8 @@ export interface TermTab {
     shell: string;
     /** Where its prompt last said it is (where it started, till then). */
     cwd: string;
-    title: string;
+    /** What it was started to run (a task, a script), which its tab says; a shell's tab says where it is. */
+    title?: string;
     /** How it ended (null: still running). */
     exited: number | null;
     /** What's typed at its prompt once its shell first says where it is (a project's task, a script), Enter included. */
@@ -157,17 +158,26 @@ let next = 0;
 
 /** A new terminal tab in `cwd`, with `shell` (the default one otherwise), shown. */
 export async function newTerminal(cwd: string, shell?: string) {
-    const id = shell ?? (await defaultShell());
-    const name = get().shells.find((s) => s.id === id)?.name ?? id;
-    const tab: TermTab = { key: `t${++next}`, shell: id, cwd, title: name, exited: null };
+    const tab: TermTab = { key: `t${++next}`, shell: shell ?? (await defaultShell()), cwd, exited: null };
     set((s) => ({ tabs: [...s.tabs, tab], active: tab.key, open: true }));
 }
 
+const sameFolder = (a: string, b: string) => a.replace(/\\+$/, "").toLowerCase() === b.replace(/\\+$/, "").toLowerCase();
+
 /**
- * Runs `line` (as `shell` takes it, built for it with `runLine`) in a new terminal tab in `cwd`, named
- * `title`, shown: typed at its prompt once its shell is there. Not in WSL, whose tools aren't Windows'.
+ * Runs `line` (as `shell` takes it, built for it with `runLine`) in a terminal tab named `title`, shown:
+ * the one that ran it last if it's back at its prompt in `cwd`, else a new one in `cwd`, typed at its
+ * prompt once its shell is there. Not in WSL, whose tools aren't Windows'.
  */
 export async function runInTerminal(cwd: string, line: (shell: string) => string, title: string) {
+    const again = [...get().tabs].reverse().find((t) => t.title === title && t.exited === null && sameFolder(t.cwd, cwd) && live.get(t.key)?.idle);
+    const session = again && live.get(again.key);
+    if (again && session) {
+        session.idle = false;
+        session.send(line(again.shell));
+        set({ active: again.key, open: true });
+        return;
+    }
     const shells = await knownShells();
     const preferred = await defaultShell();
     const shell = preferred === "wsl" ? (shells.find((s) => s.id !== "wsl")?.id ?? "cmd") : preferred;
@@ -202,7 +212,7 @@ export function cdActive(folder: string) {
     const tab = s.tabs.find((t) => t.key === s.active);
     const session = tab && live.get(tab.key);
     if (!tab || !session?.idle || tab.exited !== null) return;
-    if (tab.cwd.replace(/\\+$/, "").toLowerCase() === folder.replace(/\\+$/, "").toLowerCase()) return;
+    if (sameFolder(tab.cwd, folder)) return;
     session.idle = false;
     session.send(cdCommand(tab.shell, folder));
 }

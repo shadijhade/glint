@@ -34,6 +34,7 @@ import {
     Files,
     Fingerprint,
     Folder,
+    FolderCog,
     FolderInput,
     FolderLock,
     FolderOpen,
@@ -66,6 +67,7 @@ import {
     RotateCw,
     ScanSearch,
     Scissors,
+    ScrollText,
     Search,
     SearchX,
     Settings as SettingsIcon,
@@ -169,16 +171,17 @@ import {
     viewKey,
     zoomGrid,
 } from "@/lib/explorer";
-import { formatCount } from "@/lib/format";
+import { formatCount, plural } from "@/lib/format";
 import { driveName, openIn, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, inArchivePath, isFolderPath, isRecycleBin, joinPath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, isFolderPath, isRecycleBin, joinPath, parentPath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
 import { openInItems, refreshOpeners, useOpeners } from "@/lib/openers";
 import { knownTasks, runTask } from "@/lib/projects";
+import { openScriptsFolder, refreshScripts, runScript, scriptItems, useScripts } from "@/lib/scripts";
 import { toggleTerminal, useTerminals } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
@@ -430,6 +433,7 @@ function folderMenu(
             : { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
         !inArchive && !shut && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
         !inArchive && !shut && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(folder) },
+        !inArchive && !shut && isFolderPath(folder) && { label: "Scripts", icon: ScrollText, items: scriptItems(folder, [folder]) },
         { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
         !inArchive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
         archive
@@ -466,8 +470,11 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
     const { dual, palette } = useExplorer(useShallow((s) => ({ dual: s.dual, palette: s.palette })));
     // zoxide's folders, read again each time the palette opens (it re-renders with them).
     useZoxide((s) => s.folders);
+    useScripts((s) => s.list);
     useEffect(() => {
-        if (palette) void refreshZoxide();
+        if (!palette) return;
+        void refreshZoxide();
+        refreshScripts();
     }, [palette]);
     const showPreviewPane = useStore((s) => s.settings.showPreviewPane);
     const selected = useActiveView((v) => v.selected);
@@ -479,13 +486,20 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
     useEffect(() => {
         initExplorer();
         refreshOpeners();
+        refreshScripts();
         // Refresh the folders on screen when they change on disk; drives may come and go while we're away,
-        // what's deleted elsewhere goes into the Recycle Bin, and an editor may have been installed.
-        const unlisten = listen<string>("dir-changed", (event) => reloadFolder(event.payload));
+        // what's deleted elsewhere goes into the Recycle Bin, an editor may have been installed, and a
+        // script written.
+        const unlisten = listen<string>("dir-changed", (event) => {
+            reloadFolder(event.payload);
+            const scripts = useScripts.getState().folder;
+            if (scripts && samePath(event.payload, scripts)) refreshScripts();
+        });
         const onFocus = () => {
             refreshDrives();
             reloadRecycleBins();
             refreshOpeners();
+            refreshScripts();
         };
         window.addEventListener("focus", onFocus);
         return () => {
@@ -673,6 +687,19 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             ...(writable && !shut && !t.find
                 ? knownTasks(t.path).flatMap((g) => (g.missing ? [] : g.tasks.map((task) => action(`run:${g.folder}:${task.command}`, `Run ${task.command}`, Play, () => runTask(g, task.command)))))
                 : []),
+            ...(!archive && !shut && !closedItems && !bin && (inFolder || chosenEntries.length > 0)
+                ? useScripts.getState().list.map((script) => {
+                      const on = chosenEntries.length > 0 ? chosenEntries.map((e) => e.path) : [t.path];
+                      const cwd = inFolder ? t.path : parentPath(on[0]);
+                      const detail = script.missing
+                          ? "installs what it needs first"
+                          : chosenEntries.length > 1
+                            ? `on the ${plural(chosenEntries.length, "selected item")}`
+                            : `on ${chosenEntries.length ? chosenEntries[0].name : "this folder"}`;
+                      return { ...action(`script:${script.path}`, `Script: ${script.name}`, ScrollText, () => runScript(script, cwd, on)), detail };
+                  })
+                : []),
+            action("scripts-folder", "Open the Scripts folder", FolderCog, () => void openScriptsFolder()),
             ...(writable && !shut
                 ? useOpeners.getState().list.map((o) =>
                       action(`open-in-${o.id}`, `Open this folder in ${o.name}`, o.terminal ? SquareTerminal : Code, () => void openIn(o.id, t.path).catch(report(`Couldn't open it in ${o.name}`)))
@@ -1327,6 +1354,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             },
             one?.dir && !fixed && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
             one && !fixed && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(one.path) },
+            !fixed && { label: "Scripts", icon: ScrollText, items: scriptItems(isFolderPath(path) ? path : parentPath(paths[0]), paths) },
             find && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
             archived
                 ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }
