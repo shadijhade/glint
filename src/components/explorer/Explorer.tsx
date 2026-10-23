@@ -84,7 +84,7 @@ import { useShallow } from "zustand/react/shallow";
 import { SINGLE_FILE } from "@/lib/archives";
 import { scanWithDefender } from "@/lib/defender";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { compareEntries, type DiffStatus, type FileEntry, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     archiveOf,
     calcSizes,
@@ -164,7 +164,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { driveName, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
-import { readTaken, takenKey, useTaken } from "@/lib/media";
+import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, inArchivePath, joinPath, samePath, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
@@ -813,11 +813,23 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const source = find ? found : (listing?.entries ?? NO_ENTRIES);
     const sizeRun = find ? undefined : sizes;
     // Sorted by date taken: the photos' and videos' dates are read in the background, and sort as they come.
-    const takenMap = useTaken((s) => (sort.key === "taken" ? s.taken : null));
-    const takenOf = useMemo(() => (takenMap ? (e: FileEntry) => takenMap.get(takenKey(e)) : undefined), [takenMap]);
+    // Filtered by width:, taken: and the like (the folder, not search results, which the search checked):
+    // what its photos, videos and songs say is read the same way, and they show as it comes.
+    const deferredFilter = useDeferredValue(filter);
+    const filterReads = !find && hasPropFilter(deferredFilter);
+    const factsMap = useFacts((s) => (sort.key === "taken" || filterReads ? s.facts : null));
+    const takenOf = useMemo(() => {
+        if (!factsMap || sort.key !== "taken") return undefined;
+        return (e: FileEntry) => {
+            const facts = factsMap.get(takenKey(e));
+            return facts === undefined ? undefined : (facts?.taken ?? null);
+        };
+    }, [factsMap, sort.key]);
+    const factsOf = useMemo(() => (factsMap && filterReads ? (e: FileEntry) => factsMap.get(takenKey(e)) : undefined), [factsMap, filterReads]);
     useEffect(() => {
         if (sort.key === "taken") void readTaken(source);
-    }, [sort.key, source]);
+        if (filterReads) void readFacts(source);
+    }, [sort.key, source, filterReads]);
     const sorted = useMemo(() => {
         const sizeOf = sizeRun ? (e: FileEntry) => (e.dir ? (sizeRun.sizes.get(e.name) ?? -1) : e.size) : undefined;
         // Listings arrive sorted by name from Rust, so the default view needs no work here.
@@ -880,9 +892,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         return { diffs, unique, newer, differ, older, same, diffPaths, syncPaths };
     }, [dual, comparePanes, find, path, listing, otherListing, sorted, showHidden, sizeRun, otherSizes, deepStatuses]);
 
-    const deferredFilter = useDeferredValue(filter);
     const { rows: listRows, hidden } = useMemo(() => {
-        const match = matcher(deferredFilter, gitMarks);
+        const match = matcher(deferredFilter, gitMarks, factsOf);
         const filterDiffs = !!comparison && diffOnly;
         if (!match && showHidden && !filterDiffs) return { rows: sorted, hidden: 0 };
         let hidden = 0;
@@ -895,7 +906,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             return !match || match(e);
         });
         return { rows, hidden };
-    }, [sorted, deferredFilter, showHidden, comparison, diffOnly, gitMarks]);
+    }, [sorted, deferredFilter, showHidden, comparison, diffOnly, gitMarks, factsOf]);
     // A tab showing its disk-usage map has the map's items as rows.
     const mapRows = useMapRows(tabId);
     // The folder's README, folded above its list (not over search results, the map, or a closed folder).

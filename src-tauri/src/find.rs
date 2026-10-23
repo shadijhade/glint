@@ -7,12 +7,12 @@ use crate::fsx::{encode_items, entry_for_path, ms_since, Entry};
 use crate::proc::Slot;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
-use shadui_index::query::{parse, Kind};
+use shadui_index::query::{parse, without_props, Kind};
 use std::io::{BufRead, BufReader, Read};
 use std::process::Stdio;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -162,9 +162,16 @@ struct Out<'a> {
     sent: Instant,
     count: usize,
     started: bool,
+    /// With property filters (width:, taken:…): what's found goes to be read first (`check`), not
+    /// straight to the app.
+    check: Option<mpsc::SyncSender<Entry>>,
 }
 
-impl Out<'_> {
+impl<'a> Out<'a> {
+    fn new(channel: &'a Channel, check: Option<mpsc::SyncSender<Entry>>) -> Self {
+        Out { channel, batch: Vec::new(), sent: Instant::now(), count: 0, started: false, check }
+    }
+
     fn started(&mut self, engine: &'static str) {
         if !std::mem::replace(&mut self.started, true) {
             tell(self.channel, FindEvent::Started { engine });
@@ -172,8 +179,12 @@ impl Out<'_> {
     }
 
     fn push(&mut self, entry: Entry) {
-        self.batch.push(entry);
         self.count += 1;
+        if let Some(check) = &self.check {
+            let _ = check.send(entry);
+            return;
+        }
+        self.batch.push(entry);
         if self.batch.len() >= 10_000 || self.sent.elapsed() >= Duration::from_millis(40) {
             self.flush();
         }
@@ -311,6 +322,23 @@ pub async fn find_files(
     if terms.is_empty() && filters.is_empty() {
         return Err("Type part of a file name to search for".into());
     }
+    // What photos, videos and songs say of themselves (width:, taken:, artist:…) is read here: the
+    // index and fd get the query without it, narrowed to the files that can say it.
+    let props = filters.props.clone();
+    let (query, filters) = if props.is_empty() {
+        (query, filters)
+    } else {
+        let exts = crate::media::exts_for(&props);
+        if exts.is_empty() {
+            return Err("No file is all of that: width:, height:, taken: and camera: go with photos and videos, artist: and album: with songs, duration: with videos and songs.".into());
+        }
+        let mut narrowed = without_props(&query);
+        if filters.exts.is_empty() {
+            narrowed = format!("{narrowed} ext:{}", exts.join(";")).trim().to_string();
+        }
+        let filters = parse(&narrowed)?.1;
+        (narrowed, filters)
+    };
     // An older service would read ext: and the like as part of a name, and find nothing: until it's
     // updated, fd answers queries with filters.
     let index_reads_filters = filters.is_empty() || same_service();
@@ -319,51 +347,98 @@ pub async fn find_files(
     thread::spawn(move || {
         let (stop, slot) = (&run.stop, &run.fd);
         let started = Instant::now();
-        let mut out = Out { channel: &on_event, batch: Vec::new(), sent: Instant::now(), count: 0, started: false };
-        let mut fd_roots = roots.clone();
-        let (mut limited, mut fuzzy) = (false, false);
-        // A folder in an archive: searched in the archive's own list of entries.
-        if let [root] = roots.as_slice() {
-            let searched = crate::archive::search(root, &query, options.hidden, &options.exclude, options.max_results, stop, &mut |entry| out.push(entry));
-            if let Some(searched) = searched {
-                match searched {
-                    Ok((engine, hit_limit)) => {
-                        out.started(engine);
-                        limited = hit_limit;
+        // With properties to check, the index and fd find every candidate, which four threads read
+        // (each file once a session): the limit is on what holds them.
+        let wanted = options.max_results.filter(|&m| m > 0);
+        let checking = !props.is_empty();
+        let options = if checking { FindOptions { max_results: None, ..options } } else { options };
+        let (to_check, checks) = mpsc::sync_channel::<Entry>(1024);
+        let checks = Mutex::new(checks);
+        let held = AtomicUsize::new(0);
+        let (count, limited, fuzzy) = thread::scope(|scope| {
+            for _ in 0..if checking { 4 } else { 0 } {
+                let channel = on_event.clone();
+                let (checks, held, props) = (&checks, &held, &props);
+                scope.spawn(move || {
+                    let mut out = Out::new(&channel, None);
+                    out.started = true;
+                    let next = || checks.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                    while let Ok(entry) = next() {
+                        // Stopped: what's left is passed over, so what finds it never waits.
+                        if stop.load(Ordering::SeqCst) || !entry.path.as_deref().is_some_and(|path| crate::media::matches(path, entry.size, entry.modified, props)) {
+                            continue;
+                        }
+                        if wanted.is_some_and(|w| held.fetch_add(1, Ordering::SeqCst) >= w) {
+                            // The limit: the index and fd stop too.
+                            stop.store(true, Ordering::SeqCst);
+                            slot.kill();
+                            continue;
+                        }
+                        if wanted.is_none() {
+                            held.fetch_add(1, Ordering::SeqCst);
+                        }
+                        out.push(entry);
                     }
+                    out.flush();
+                });
+            }
+            let mut out = Out::new(&on_event, checking.then_some(to_check));
+            let mut fd_roots = roots.clone();
+            let (mut limited, mut fuzzy) = (false, false);
+            // A folder in an archive: searched in the archive's own list of entries.
+            if let [root] = roots.as_slice() {
+                let searched = crate::archive::search(root, &query, options.hidden, &options.exclude, options.max_results, stop, &mut |entry| {
+                    if !checking {
+                        out.push(entry)
+                    }
+                });
+                if let Some(searched) = searched {
+                    match searched {
+                        Ok(_) if checking => tell(&on_event, FindEvent::Error { message: "Photo, video and music filters don't look inside archives: they read files on disk.".into() }),
+                        Ok((engine, hit_limit)) => {
+                            out.started(engine);
+                            limited = hit_limit;
+                        }
+                        Err(message) => {
+                            out.flush();
+                            tell(&on_event, FindEvent::Error { message });
+                        }
+                    }
+                    out.flush();
+                    return (out.count, limited, false);
+                }
+            }
+            // .gitignore rules are fd's alone; anything else goes to the index first.
+            if !options.respect_ignore && index_reads_filters {
+                if let Some(answered) = search_index(&roots, &query, &options, stop, &mut out) {
+                    (fd_roots, limited, fuzzy) = (answered.skipped, answered.limited, answered.fuzzy);
+                }
+            }
+            let left = options.max_results.filter(|&m| m > 0).map(|m| m.saturating_sub(out.count));
+            if !fd_roots.is_empty() && !stop.load(Ordering::SeqCst) && left != Some(0) {
+                out.started("fd");
+                let options = FindOptions { max_results: left, ..options };
+                match search_fd(slot, &fd_roots, &query, &options, &mut out) {
+                    Ok(hit_limit) => limited |= hit_limit,
                     Err(message) => {
                         out.flush();
                         tell(&on_event, FindEvent::Error { message });
                     }
                 }
-                out.flush();
-                tell(&on_event, FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited, fuzzy: false });
-                finds.finished(&lane, &run);
-                return;
+            } else if !fd_roots.is_empty() {
+                limited = true;
             }
-        }
-        // .gitignore rules are fd's alone; anything else goes to the index first.
-        if !options.respect_ignore && index_reads_filters {
-            if let Some(answered) = search_index(&roots, &query, &options, stop, &mut out) {
-                (fd_roots, limited, fuzzy) = (answered.skipped, answered.limited, answered.fuzzy);
-            }
-        }
-        let left = options.max_results.filter(|&m| m > 0).map(|m| m.saturating_sub(out.count));
-        if !fd_roots.is_empty() && !stop.load(Ordering::SeqCst) && left != Some(0) {
-            out.started("fd");
-            let options = FindOptions { max_results: left, ..options };
-            match search_fd(slot, &fd_roots, &query, &options, &mut out) {
-                Ok(hit_limit) => limited |= hit_limit,
-                Err(message) => {
-                    out.flush();
-                    tell(&on_event, FindEvent::Error { message });
-                }
-            }
-        } else if !fd_roots.is_empty() {
-            limited = true;
-        }
-        out.flush();
-        tell(&on_event, FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited, fuzzy });
+            out.flush();
+            (out.count, limited, fuzzy)
+        });
+        // Checked: as many as held, up to the limit.
+        let (count, limited) = if checking {
+            let held = held.into_inner();
+            (wanted.map_or(held, |w| held.min(w)), wanted.is_some_and(|w| held > w))
+        } else {
+            (count, limited)
+        };
+        tell(&on_event, FindEvent::Finished { count, elapsed: ms_since(started), limited, fuzzy });
         finds.finished(&lane, &run);
     });
     Ok(())

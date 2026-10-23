@@ -370,6 +370,9 @@ pub struct Filters {
     pub newer_than: Option<u64>,
     pub older_than: Option<u64>,
     pub kind: Option<Kind>,
+    /// What photos, videos and songs say of themselves (`Prop`), which the app reads: the index and fd
+    /// are given the query `without_props`.
+    pub props: Vec<Prop>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -378,14 +381,57 @@ pub enum Kind {
     Folders,
 }
 
+/// What a photo, video or song says of itself: `width:>1920` and `height:` in pixels, `duration:>5m`
+/// (seconds, or s, m, h, or 1:30), `taken:2024` (2024-06, 2024-06-15, after `>` or `<` too, or 7d and
+/// >1y as dm: goes), and `camera:`, `artist:` and `album:` with some of their text (any case).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Prop {
+    Width(Range),
+    Height(Range),
+    /// In seconds.
+    Duration(Range),
+    Taken(Taken),
+    Camera(String),
+    Artist(String),
+    Album(String),
+}
+
+/// At least and at most, both included.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Range {
+    pub min: Option<u64>,
+    pub max: Option<u64>,
+}
+
+impl Range {
+    pub fn holds(&self, n: u64) -> bool {
+        self.min.is_none_or(|min| n >= min) && self.max.is_none_or(|max| n <= max)
+    }
+}
+
+/// A day (year, month, day), at midnight where the app is.
+pub type Day = (i32, u32, u32);
+
+/// When something was taken: from one day (included) to another (not), or more or less than so many
+/// seconds ago.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Taken {
+    Days { from: Option<Day>, to: Option<Day> },
+    Within(u64),
+    Before(u64),
+}
+
+/// The keys of `Prop`s.
+const PROPS: &[&str] = &["width", "height", "duration", "taken", "camera", "artist", "album"];
+
 impl Filters {
     pub fn is_empty(&self) -> bool {
         self == &Filters::default()
     }
 
-    /// `file:`, or a size, which only files have.
+    /// `file:`, or a size or a `Prop`, which only files have.
     pub fn files_only(&self) -> bool {
-        self.kind == Some(Kind::Files) || self.min_size.is_some() || self.max_size.is_some()
+        self.kind == Some(Kind::Files) || self.min_size.is_some() || self.max_size.is_some() || !self.props.is_empty()
     }
 
     /// Whether an item passes. `folded` is its name's lowercase form when the name isn't ASCII, and
@@ -439,10 +485,128 @@ pub fn parse(query: &str) -> Result<(Vec<String>, Filters), String> {
             }
             "file" | "files" if value.is_empty() => filters.kind = Some(Kind::Files),
             "folder" | "folders" if value.is_empty() => filters.kind = Some(Kind::Folders),
+            key if PROPS.contains(&key) => filters.props.push(prop(key, value).ok_or_else(|| format!("“{term}”: {}", prop_help(key)))?),
             _ => names.push(term),
         }
     }
     Ok((names, filters))
+}
+
+/// How a property filter goes, for one that doesn't read right.
+fn prop_help(key: &str) -> &'static str {
+    match key {
+        "width" | "height" => "pixels go like width:>1920 or height:<=1080",
+        "duration" => "a length goes like duration:>5m, duration:<30s or duration:>1:30",
+        _ => "a date goes like taken:2024, taken:2024-06-15, taken:>2023-06 or taken:7d",
+    }
+}
+
+fn prop(key: &str, value: &str) -> Option<Prop> {
+    let text = || value.trim().to_lowercase();
+    Some(match key {
+        "width" => Prop::Width(range(value, |n| n.parse().ok())?),
+        "height" => Prop::Height(range(value, |n| n.parse().ok())?),
+        "duration" => Prop::Duration(range(value, seconds)?),
+        "taken" => Prop::Taken(taken(value)?),
+        "camera" => Prop::Camera(text()),
+        "artist" => Prop::Artist(text()),
+        _ => Prop::Album(text()),
+    })
+}
+
+/// `>1920`, `<=1080` or `1080` (exactly), each number read by `number`.
+fn range(value: &str, number: impl Fn(&str) -> Option<u64>) -> Option<Range> {
+    let (op, amount) = split_op(value);
+    let n = number(amount)?;
+    Some(match op {
+        ">" => Range { min: Some(n.saturating_add(1)), max: None },
+        ">=" => Range { min: Some(n), max: None },
+        "<" => Range { min: None, max: Some(n.checked_sub(1)?) },
+        "<=" => Range { min: None, max: Some(n) },
+        "" | "=" => Range { min: Some(n), max: Some(n) },
+        _ => return None,
+    })
+}
+
+/// "90" or "90s", "5m", "1.5h", "1:30" or "1:02:03", in seconds.
+fn seconds(text: &str) -> Option<u64> {
+    if text.contains(':') {
+        return text.split(':').try_fold(0u64, |total, part| (part.len() <= 2 || total == 0).then(|| part.parse::<u64>().ok()).flatten().map(|n| total * 60 + n));
+    }
+    let at = text.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(text.len());
+    let number: f64 = text[..at].parse().ok()?;
+    let unit = match text[at..].to_ascii_lowercase().as_str() {
+        "" | "s" | "sec" => 1.0,
+        "m" | "min" => 60.0,
+        "h" | "hr" => 3600.0,
+        _ => return None,
+    };
+    Some((number * unit).round() as u64)
+}
+
+fn days_in(year: i32, month: u32) -> u32 {
+    match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// `2024`, `2024-06` or `2024-06-15`: the first day of that year, month or day, and the first day after.
+fn period(text: &str) -> Option<(Day, Day)> {
+    let parts: Vec<&str> = text.split('-').collect();
+    let number = |part: &str, digits: usize| (part.len() == digits && part.bytes().all(|b| b.is_ascii_digit())).then(|| part.parse::<u32>().ok()).flatten();
+    let year = number(parts.first()?, 4)? as i32;
+    Some(match parts[1..] {
+        [] => ((year, 1, 1), (year + 1, 1, 1)),
+        [month] => {
+            let month = number(month, 2).filter(|m| (1..=12).contains(m))?;
+            ((year, month, 1), if month == 12 { (year + 1, 1, 1) } else { (year, month + 1, 1) })
+        }
+        [month, day] => {
+            let month = number(month, 2).filter(|m| (1..=12).contains(m))?;
+            let day = number(day, 2).filter(|d| (1..=days_in(year, month)).contains(d))?;
+            let next = if day < days_in(year, month) {
+                (year, month, day + 1)
+            } else if month < 12 {
+                (year, month + 1, 1)
+            } else {
+                (year + 1, 1, 1)
+            };
+            ((year, month, day), next)
+        }
+        _ => return None,
+    })
+}
+
+/// `taken:`'s value: a period (in it, or `>` after it, `>=` from it, `<` before it, `<=` to its end),
+/// or an age as dm: takes it (`7d` within it, `>1y` before it).
+fn taken(value: &str) -> Option<Taken> {
+    let (op, amount) = split_op(value);
+    if let Some(secs) = duration(amount) {
+        return Some(if op.starts_with('>') { Taken::Before(secs) } else { Taken::Within(secs) });
+    }
+    let (start, end) = period(amount)?;
+    let (from, to) = match op {
+        "" | "=" => (Some(start), Some(end)),
+        ">" => (Some(end), None),
+        ">=" => (Some(start), None),
+        "<" => (None, Some(start)),
+        "<=" => (None, Some(end)),
+        _ => return None,
+    };
+    Some(Taken::Days { from, to })
+}
+
+/// The query without its `Prop` filters, for the index and fd, which can't read them.
+pub fn without_props(query: &str) -> String {
+    terms(query)
+        .into_iter()
+        .filter(|t| !t.split_once(':').is_some_and(|(key, _)| PROPS.contains(&key.to_ascii_lowercase().as_str())))
+        .map(|t| if t.contains(char::is_whitespace) { format!("\"{t}\"") } else { t })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `>=10mb` → (">=", "10mb").
@@ -551,6 +715,36 @@ mod tests {
         assert_eq!(parse("C:x \"a:b\"").unwrap().0, ["C:x", "a:b"], "not filters: names");
         assert!(parse("size:big").is_err() && parse("dm:7").is_err() && parse("size:").is_err());
         assert!(parse("ext: file:").unwrap().1 == Filters { kind: Some(Kind::Files), ..Default::default() });
+    }
+
+    #[test]
+    fn reads_what_photos_videos_and_songs_say() {
+        let props = |query: &str| parse(query).unwrap().1.props;
+        let range = |min, max| Range { min, max };
+        assert_eq!(props("width:>1920 height:<=1080"), [Prop::Width(range(Some(1921), None)), Prop::Height(range(None, Some(1080)))]);
+        assert_eq!(props("width:4000"), [Prop::Width(range(Some(4000), Some(4000)))]);
+        assert_eq!(props("duration:>5m duration:<=1:30 duration:<1.5h duration:90"), [
+            Prop::Duration(range(Some(301), None)),
+            Prop::Duration(range(None, Some(90))),
+            Prop::Duration(range(None, Some(5399))),
+            Prop::Duration(range(Some(90), Some(90))),
+        ]);
+        let days = |from, to| Prop::Taken(Taken::Days { from, to });
+        assert_eq!(props("taken:2024"), [days(Some((2024, 1, 1)), Some((2025, 1, 1)))]);
+        assert_eq!(props("taken:2024-12"), [days(Some((2024, 12, 1)), Some((2025, 1, 1)))]);
+        assert_eq!(props("taken:2024-02-29"), [days(Some((2024, 2, 29)), Some((2024, 3, 1)))], "a leap day");
+        assert_eq!(props("taken:2023-12-31"), [days(Some((2023, 12, 31)), Some((2024, 1, 1)))]);
+        assert_eq!(props("taken:>2023-06 taken:<=2024"), [days(Some((2023, 7, 1)), None), days(None, Some((2025, 1, 1)))]);
+        assert_eq!(props("taken:>=2024-06-15 taken:<2020"), [days(Some((2024, 6, 15)), None), days(None, Some((2020, 1, 1)))]);
+        assert_eq!(props("taken:7d taken:>1y"), [Prop::Taken(Taken::Within(7 * 86_400)), Prop::Taken(Taken::Before(365 * 86_400))]);
+        assert_eq!(props(r#"Camera:"EOS R5" artist:Beatles album:"#), [Prop::Camera("eos r5".into()), Prop::Artist("beatles".into()), Prop::Album(String::new())]);
+        for bad in ["width:wide", "width:<0", "height:>", "duration:5x", "duration:1:300", "taken:2023-02-29", "taken:2024-13", "taken:24", "taken:yesterday"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        let (names, filters) = parse("holiday width:>1000 ext:jpg").unwrap();
+        assert_eq!((names, filters.exts.clone(), filters.files_only()), (vec!["holiday".to_string()], vec!["jpg".to_string()], true));
+        assert_eq!(without_props(r#"holiday "q3 final" width:>1000 ext:jpg Taken:2024 "camera:eos r5""#), r#"holiday "q3 final" ext:jpg"#);
+        assert_eq!(without_props("artist:x"), "");
     }
 
     #[test]

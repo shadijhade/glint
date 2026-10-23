@@ -486,6 +486,11 @@ export interface MediaDetails {
     place: [number, number] | null;
     /** A song's cover, as a data: URL. */
     cover: string | null;
+    /** A picture's or video's size in pixels, as it shows. */
+    width: number | null;
+    height: number | null;
+    /** A video's or song's length, in seconds. */
+    duration: number | null;
 }
 
 /** A photo's, video's or song's details (media.rs); null for other files. */
