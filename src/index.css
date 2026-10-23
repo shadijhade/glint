@@ -439,6 +439,19 @@
     text-decoration: none;
   }
 
+  /* The hex view's bytes, colored as hexyl colors them: zero, ASCII text, whitespace, other ASCII, the rest. */
+  .hx-null { color: hsl(var(--muted-foreground) / 0.55); }
+  .hx-text { color: var(--tk-number); }
+  .hx-space,
+  .hx-control { color: var(--tk-tag); }
+  .hx-high { color: var(--tk-attr); }
+
+  .hx-at {
+    border-radius: 2px;
+    background: hsl(var(--primary) / 0.22);
+    box-shadow: 0 0 0 1px hsl(var(--primary));
+  }
+
   .hl-line {
     background: hsl(var(--primary) / 0.14);
     box-shadow: inset 2px 0 hsl(var(--primary));

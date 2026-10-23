@@ -469,6 +469,12 @@ export async function compareBytes(left: string, right: string, offset: number, 
     };
 }
 
+/** `len` bytes of a file from `offset` (at most 1 MB), and the file's size. */
+export async function fileBytes(path: string, offset: number, len: number) {
+    const buffer = await invoke<ArrayBuffer>("file_bytes", { path, offset, len });
+    return { size: Number(new DataView(buffer).getBigUint64(0, true)), bytes: new Uint8Array(buffer, 8) };
+}
+
 /** The first offset at or after `from` where the files differ; null when they don't from there on. */
 export const nextByteDifference = (left: string, right: string, from: number) => invoke<number | null>("next_byte_difference", { left, right, from });
 

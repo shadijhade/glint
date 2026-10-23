@@ -17,6 +17,7 @@ import { Button } from "../ui/button";
 import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { ChangesView } from "./ChangesView";
 import { DataTree } from "./DataTree";
+import { HexView } from "./HexView";
 import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
 import { MarkdownView } from "./MarkdownView";
@@ -188,12 +189,13 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
 
     if (!state) return <Waiting />;
     if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
+    // A file of a kind Glint doesn't know, that isn't text: Windows' previewer for it, if it has one, or its bytes.
     if (state.binary)
         return isArchived(entry) ? (
-            <BigIcon entry={entry} note="No preview for this kind of file" />
+            <HexView entry={entry} />
         ) : (
-            <ShellPreview entry={entry} over={over}>
-                <BigIcon entry={entry} note="No preview for this kind of file" />
+            <ShellPreview entry={entry} over={over} quiet>
+                <HexView entry={entry} />
             </ShellPreview>
         );
     if (!state.text) return <Centered>This file is empty.</Centered>;
@@ -231,7 +233,7 @@ function MarkdownPreview({ entry }: { entry: FileEntry }) {
     const state = useText(entry);
     if (!state) return <Waiting />;
     if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
-    if (state.binary) return <BigIcon entry={entry} note="This file isn't text inside." />;
+    if (state.binary) return <HexView entry={entry} />;
     if (!state.text.trim()) return <Centered>This file is empty.</Centered>;
     return (
         <div className="min-h-full select-text px-5 py-4">
@@ -335,8 +337,8 @@ function Details({ entry }: { entry: FileEntry }) {
     );
 }
 
-/** A file's other views: as written (Markdown's source), or what Git says changed. */
-type View = "file" | "source" | "changes";
+/** A file's other views: as written (Markdown's source, a tree's text), what Git says changed, or its bytes. */
+type View = "file" | "source" | "changes" | "hex";
 
 /** Which view the preview shows, kept while moving from file to file (where a file has no such view, it's shown as it is). */
 const usePreviewView = create<{ view: View }>(() => ({ view: "file" }));
@@ -362,11 +364,13 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
         ...(markdown ? [{ view: "source" as const, label: "Source", title: "The Markdown as written" }] : []),
         ...(data ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
         ...(changed ? [{ view: "changes" as const, label: "Changes", title: "What changed since the last commit (Git)" }] : []),
+        ...(readable ? [{ view: "hex" as const, label: "Hex", title: "Its bytes, in hexadecimal" }] : []),
     ];
     const chosen = usePreviewView((s) => s.view);
     const view = views.some((v) => v.view === chosen) ? chosen : "file";
     let body: React.ReactNode;
     if (view === "changes") body = <ChangesView entry={entry} />;
+    else if (view === "hex") body = <HexView entry={entry} />;
     else if (entry.dir) body = <FolderPreview entry={entry} />;
     else if (isOnlineOnly(entry))
         body = (
