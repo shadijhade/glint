@@ -27,6 +27,7 @@ import { CleanupDialog } from "./components/explorer/CleanupDialog";
 import { CompareFilesDialog } from "./components/explorer/CompareFilesDialog";
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
 import { Explorer } from "./components/explorer/Explorer";
+import { HistoryDialog } from "./components/explorer/HistoryDialog";
 import { LocksDialog } from "./components/explorer/LocksDialog";
 import { TimelineDialog } from "./components/explorer/TimelineDialog";
 import { XRayDialog } from "./components/explorer/XRayDialog";
@@ -426,6 +427,7 @@ function App() {
       <CleanupDialog />
       <CompareFilesDialog />
       <TimelineDialog />
+      <HistoryDialog />
       <BatchRenameDialog />
       <XRayDialog />
       <ShortcutsDialog />

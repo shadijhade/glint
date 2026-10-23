@@ -19,6 +19,7 @@ import {
     FolderPlus,
     GitCompareArrows,
     HardDrive,
+    History,
     LayoutDashboard,
     LayoutGrid,
     List,
@@ -52,6 +53,7 @@ import { useMenu } from "../Menu";
 import { Button } from "../ui/button";
 import { openCleanup } from "./CleanupDialog";
 import { inspectDuplicates } from "./DuplicatesDialog";
+import { openHistory } from "./HistoryDialog";
 import { inspectLocks } from "./LocksDialog";
 import { terminalFolder } from "./TerminalPanel";
 import { inspectTimeline } from "./TimelineDialog";
@@ -254,6 +256,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             { label: "File X-Ray: hashes and hidden streams", icon: Fingerprint, disabled: !file, onSelect: () => file && inspectXRay(file.path) },
             { label: paths.length ? "What's locking the selection?" : "What's locking this folder?", icon: Lock, disabled: !inFolder && !paths.length, onSelect: () => inspectLocks(paths.length ? paths : [path]) },
             { label: "Recent changes in this folder", icon: FileClock, disabled: !inFolder, onSelect: () => inspectTimeline(path) },
+            { label: "Moved and deleted: where did a file go?", icon: History, onSelect: () => openHistory() },
             { heading: "Clean up" },
             { label: "Find duplicate files in this folder", icon: Files, disabled: !inFolder, onSelect: () => inspectDuplicates(path) },
             { label: "Clean up this folder…", icon: BrushCleaning, disabled: !inFolder || readOnly, onSelect: () => openCleanup(path) },

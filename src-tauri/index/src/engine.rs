@@ -4,8 +4,8 @@
 use crate::growth::Growth;
 use crate::history::{self, History, Paths};
 use crate::proto::{
-    self, unix_ms, GrowthSummary, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_GROWTH, FRAME_HITS, FRAME_USAGE,
-    NEW, NO_PARENT, WRITTEN,
+    self, unix_ms, GrowthSummary, HistoryAnswer, HistoryEvent, HistoryRequest, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus,
+    FRAME_GROWTH, FRAME_HITS, FRAME_USAGE, NEW, NO_PARENT, WRITTEN,
 };
 use crate::query::{self, Excludes, NameMatcher};
 use crate::snapshot::{self, Meta};
@@ -39,6 +39,8 @@ pub const MAX_HITS: usize = 500_000;
 /// can show.
 const MAX_USAGE_DEPTH: u32 = 32;
 const MAX_USAGE_ITEMS: usize = 500_000;
+/// Events a history request gets at most.
+const MAX_HISTORY: usize = 10_000;
 
 /// A stop signal that sleeping threads wake up for.
 #[derive(Default)]
@@ -182,6 +184,17 @@ impl Engine {
         let slot = Arc::new(Slot::new(letter, tree, true, status));
         let log = Log { file: Mutex::new(None), echo: false };
         Arc::new(Engine { data: PathBuf::new(), only: None, slots: RwLock::new(vec![slot]), stop: Stop::default(), workers: Mutex::default(), log })
+    }
+
+    /// Feeds journal records to the history of the first drive, as following the journal does: for tests.
+    #[cfg(test)]
+    pub(crate) fn feed_history(&self, records: &[crate::usn::UsnRecord]) {
+        let slot = self.slots.read().unwrap()[0].clone();
+        let mut history = slot.history.lock().unwrap();
+        let tree = slot.tree.read().unwrap();
+        let mut paths = Paths::new(&tree, slot.letter);
+        paths.learn(records);
+        history.feed(records, &mut paths);
     }
 
     /// Stops every worker; each saves its snapshot if anything changed since the last one.
@@ -690,6 +703,43 @@ impl Engine {
         let summary = UsageSummary { path: request.path.clone(), total, items: items.len() as u64, limited, elapsed: ms(started), growth };
         Ok((payload, mark.map(|_| proto::encode_growth(&previous)), summary))
     }
+
+    /// What was renamed, moved and deleted on every indexed drive, newest first, with where each
+    /// thing that's still there is now.
+    pub fn history(&self, request: &HistoryRequest) -> HistoryAnswer {
+        let started = Instant::now();
+        let max = (request.max as usize).clamp(1, MAX_HISTORY);
+        let slots = self.slots.read().unwrap().clone();
+        let (mut events, mut limited, mut oldest) = (Vec::new(), false, 0);
+        for slot in slots {
+            let history = slot.history.lock().unwrap();
+            let (found, more) = history.find(&request.query, request.since, max);
+            limited |= more;
+            if let Some(first) = history.oldest() {
+                oldest = if oldest == 0 { first } else { oldest.min(first) };
+            }
+            let tree = slot.tree.read().unwrap();
+            let ready = slot.ready.load(Ordering::SeqCst);
+            let mut dirs = HashMap::new();
+            for e in found {
+                let now = if ready && !e.burst && e.kind != history::Kind::Deleted && e.kind != history::Kind::Emptied { now_at(&tree, e.file, slot.letter, &mut dirs) } else { None };
+                events.push(HistoryEvent { time: e.time, kind: e.kind, dir: e.dir, path: e.path.clone(), to: e.to.clone(), was: e.was.clone(), now, items: e.items, burst: e.burst });
+            }
+        }
+        events.sort_by_key(|e| std::cmp::Reverse(e.time));
+        if events.len() > max {
+            events.truncate(max);
+            limited = true;
+        }
+        HistoryAnswer { events, limited, oldest, elapsed: ms(started) }
+    }
+}
+
+/// Where the file `file` (a file reference) is now, if its record still holds it.
+fn now_at(tree: &Tree, file: u64, letter: char, dirs: &mut HashMap<u32, String>) -> Option<String> {
+    let (number, seq) = tree::split_ref(file);
+    let rec = tree.rec(u32::try_from(number).ok()?).filter(|r| r.used() && r.seq == seq && r.first_link != NONE)?;
+    Some(format!("{letter}:\\{}", tree.path(rec.first_link, dirs)?))
 }
 
 /// Searches one drive and encodes up to `max` results into frames; also returns how many matched.
