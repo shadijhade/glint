@@ -275,18 +275,39 @@ export const archiveCompress = (paths: string[], folder: string, name: string, l
 export const archiveExtractHere = (path: string, lane: string, onProgress: Progress) =>
     invoke<Staged>("archive_extract_here", { path, lane, onProgress: progressChannel(onProgress) });
 
-/** What Clean up looks for: build output and package caches beside their projects, empty folders, what programs leave behind, or files of `atLeast` bytes and up. */
-export type CleanupMode = { mode: "junk" } | { mode: "empty" } | { mode: "temporary" } | { mode: "big"; atLeast: number };
+/**
+ * What Clean up looks for: build output and package caches beside their projects, empty folders, what programs leave behind, files of
+ * `atLeast` bytes and up; and with Czkawka, look-alike pictures and videos (`alike`: how different they may be), music with the same
+ * tags or sound, broken files, and files with the wrong extension.
+ */
+export type CleanupMode =
+    | { mode: "junk" }
+    | { mode: "empty" }
+    | { mode: "temporary" }
+    | { mode: "big"; atLeast: number }
+    | { mode: "images"; alike: number }
+    | { mode: "videos"; alike: number }
+    | { mode: "music"; bySound: boolean }
+    | { mode: "broken" }
+    | { mode: "misnamed" };
 
-/** Something Clean up found, to recycle if chosen. */
+/** Something Clean up found, to recycle (or give its real extension) if chosen. */
 export interface CleanupItem {
     path: string;
     /** In bytes; a folder's is everything in it. */
     size: number;
     /** When it last changed (developer junk: when its project did, leaving out its build output, caches and .git); 0 when that couldn't be told. */
     date: number;
-    /** What it is: "Rust builds", "Office owner files"…; "" for empty folders and big files. */
+    /** What it is: "Rust builds", "Office owner files"…; "" for empty folders, big files and look-alikes. */
     kind: string;
+    /** Look-alikes: the group it's in, from 1 (the biggest first in each); 0 otherwise. */
+    group: number;
+    /** A picture's size ("1920 × 1080"), a video's length, a song's tags, why a file doesn't open, what a misnamed file really is. */
+    note: string;
+    /** A misnamed file's right extension ("png"). */
+    fix: string;
+    /** A picture's width × height. */
+    pixels: number;
 }
 
 export interface CleanupReport {

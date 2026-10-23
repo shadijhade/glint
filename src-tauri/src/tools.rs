@@ -32,7 +32,7 @@ pub struct Tool {
     pub used_for: &'static str,
 }
 
-// Until the features that use winget and release tools land, only bundled ones are listed.
+// Until a tool that's only on GitHub is listed, nothing downloads a release.
 #[allow(dead_code)]
 pub enum Source {
     /// Comes with Glint, next to the app; winget puts a copy back when a security tool removed it.
@@ -46,6 +46,16 @@ pub static TOOLS: &[Tool] = &[
     Tool { id: "ripgrep", name: "ripgrep", exe: "rg", package: "ripgrep", source: Source::Bundled { winget: "BurntSushi.ripgrep.MSVC" }, used_for: "Searching inside files" },
     Tool { id: "fd", name: "fd", exe: "fd", package: "sharkdp.fd", source: Source::Bundled { winget: "sharkdp.fd" }, used_for: "Finding files by name where instant search doesn't" },
     Tool { id: "dust", name: "dust", exe: "dust", package: "bootandy.dust", source: Source::Bundled { winget: "bootandy.dust" }, used_for: "Folder sizes and disk-usage maps where instant search doesn't" },
+    Tool {
+        id: "czkawka",
+        name: "Czkawka",
+        exe: "windows_czkawka_cli",
+        package: "qarmin.czkawka.cli",
+        source: Source::Winget { id: "qarmin.czkawka.cli" },
+        used_for: "Look-alike pictures, videos and music, broken files and wrong extensions in Clean up",
+    },
+    // Any FFmpeg found is used; a new install is the smaller build, which reads every common video.
+    Tool { id: "ffmpeg", name: "FFmpeg", exe: "ffmpeg", package: "gyan.ffmpeg", source: Source::Winget { id: "Gyan.FFmpeg.Essentials" }, used_for: "Reading videos for Clean up's look-alike videos" },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {
@@ -69,7 +79,6 @@ pub fn folder_of(id: &str) -> Option<PathBuf> {
 }
 
 /// A tool, ready to run without a console window; an error that says it isn't installed otherwise.
-#[allow(dead_code)]
 pub fn command(id: &str) -> Result<Command, String> {
     let tool = get(id).ok_or_else(|| format!("No tool is called {id}"))?;
     let (exe, _) = proc::locate(tool.exe).ok_or_else(|| format!("{} isn't installed. Settings → Tools installs it.", tool.name))?;

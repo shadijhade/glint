@@ -134,13 +134,14 @@ fn find(name: &str, package: &str, downloaded: Option<&std::path::Path>) -> Opti
     in_winget_packages(&winget?.join("Packages"), package, &file).map(|p| (p, Origin::Installed))
 }
 
-/// A winget install this session hasn't seen on PATH yet: Packages\<id>\[<release>\]rg.exe.
+/// A winget install this session hasn't seen on PATH yet: Packages\<id>\[<release>\[bin\]]rg.exe
+/// (FFmpeg's builds keep theirs in bin).
 fn in_winget_packages(packages: &std::path::Path, package: &str, file: &str) -> Option<PathBuf> {
     std::fs::read_dir(packages)
         .ok()?
         .flatten()
         .filter(|p| p.file_name().to_string_lossy().to_ascii_lowercase().contains(package))
-        .flat_map(|p| std::iter::once(p.path()).chain(std::fs::read_dir(p.path()).into_iter().flatten().flatten().map(|sub| sub.path())))
+        .flat_map(|p| std::iter::once(p.path()).chain(std::fs::read_dir(p.path()).into_iter().flatten().flatten().flat_map(|sub| [sub.path(), sub.path().join("bin")])))
         .map(|dir| dir.join(file))
         .find(|p| p.is_file())
 }
@@ -170,6 +171,11 @@ mod tests {
         std::fs::write(release.join("rg.exe"), "").unwrap();
         assert_eq!(in_winget_packages(&packages, "ripgrep", "rg.exe"), Some(release.join("rg.exe")));
         assert_eq!(in_winget_packages(&packages, "fd", "fd.exe"), None);
+        // FFmpeg's builds: Packages\Gyan.FFmpeg…\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe.
+        let bin = packages.join("Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe").join("ffmpeg-9.0.2-full_build").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("ffmpeg.exe"), "").unwrap();
+        assert_eq!(in_winget_packages(&packages, "gyan.ffmpeg", "ffmpeg.exe"), Some(bin.join("ffmpeg.exe")));
         std::fs::remove_dir_all(&packages).unwrap();
     }
 }
