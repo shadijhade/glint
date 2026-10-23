@@ -75,6 +75,8 @@ export interface FindRun {
     running: boolean;
     elapsed: number;
     limited: boolean;
+    /** Nothing matched as typed: these are close matches (a letter or two off), from the index. */
+    fuzzy: boolean;
     error: string;
     /** What it didn't look in: Settings' folders to skip, and what .gitignore files list. */
     skipped: string[];
@@ -1313,12 +1315,13 @@ export async function runFind(query: string, wider: Wider = {}) {
         respectIgnore: settings.findRespectIgnore && !wider.skipNothing,
         exclude: wider.skipNothing ? [] : settings.findExclusions,
         maxResults: wider.unlimited ? null : settings.findMaxResults,
+        fuzzy: true,
     };
     const skipped = [...options.exclude, ...(options.respectIgnore ? ["what .gitignore files list"] : [])];
     const started = performance.now();
     updateTab(
         {
-            find: { id, query, engine: "", scope, entries: [], running: true, elapsed: 0, limited: false, error: "", skipped },
+            find: { id, query, engine: "", scope, entries: [], running: true, elapsed: 0, limited: false, fuzzy: false, error: "", skipped },
             selection: new Set(),
             focus: null,
             anchor: null,
@@ -1339,7 +1342,7 @@ export async function runFind(query: string, wider: Wider = {}) {
             else if (event.type === "error") update({ error: event.message });
             else {
                 const elapsed = performance.now() - started;
-                update({ running: false, elapsed, limited: event.limited });
+                update({ running: false, elapsed, limited: event.limited, fuzzy: event.fuzzy });
                 if (elapsed > 1000 && find.engine === "fd") offerIndex();
             }
         });

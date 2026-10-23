@@ -21,7 +21,7 @@ shadui-index: instant file name search and folder sizes for Glint
                               Explorer's Continue button does (Glint's Get access)
   run [--volume C:]...        run in this console instead of as a service (administrator)
   status                      what the running service has indexed
-  search QUERY [--in PATH]... [--max N] [--hidden] [--repeat N] [--print | --long]
+  search QUERY [--in PATH]... [--max N] [--hidden] [--fuzzy] [--repeat N] [--print | --long]
   sizes PATH                  folder sizes from the running service
   usage PATH [--depth N] [--max N] [--repeat N] [--grew DAYS]
                               a disk-usage map from the running service, timed end to end;
@@ -168,6 +168,7 @@ fn search(args: &[String]) -> i32 {
         hidden: args.iter().any(|a| a == "--hidden"),
         exclude: vec!["node_modules".into(), ".git".into()],
         max_results: Some(values(args, "--max").first().and_then(|m| m.parse().ok()).unwrap_or(50_000)),
+        fuzzy: args.iter().any(|a| a == "--fuzzy"),
     };
     let repeat: usize = values(args, "--repeat").first().and_then(|r| r.parse().ok()).unwrap_or(1).max(1);
     let print = args.iter().any(|a| a == "--print");
@@ -193,8 +194,8 @@ fn search(args: &[String]) -> i32 {
                         }
                     }
                 }
-                Event::Done { count, limited, elapsed } => {
-                    summary = format!("{count} found{} · {elapsed:.1} ms in the service", if limited { " (limit reached)" } else { "" });
+                Event::Done { count, limited, elapsed, fuzzy } => {
+                    summary = format!("{count} found{}{} · {elapsed:.1} ms in the service", if fuzzy { " (close matches)" } else { "" }, if limited { " (limit reached)" } else { "" });
                 }
                 _ => {}
             }

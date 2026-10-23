@@ -28,6 +28,10 @@ pub struct FindOptions {
     /// Names or globs to skip, e.g. node_modules.
     pub exclude: Vec<String>,
     pub max_results: Option<usize>,
+    /// When nothing matches as typed, the index looks again with typos allowed (a word an edit or two
+    /// from the start of a name's word); fd doesn't.
+    #[serde(default)]
+    pub fuzzy: bool,
 }
 
 /// What a search says besides its results, as JSON; the results themselves go as bytes (`encode_items`).
@@ -37,8 +41,9 @@ pub enum FindEvent {
     /// Who answers: "index", "fd", or "index + fd" when the index covers only some of the folders.
     Started { engine: &'static str },
     Error { message: String },
+    /// `fuzzy`: nothing matched as typed, and the index found these close matches.
     #[serde(rename_all = "camelCase")]
-    Finished { count: usize, elapsed: f64, limited: bool },
+    Finished { count: usize, elapsed: f64, limited: bool, fuzzy: bool },
 }
 
 fn tell(channel: &Channel, event: FindEvent) {
@@ -183,11 +188,12 @@ impl Out<'_> {
     }
 }
 
-/// What the index answered: the folders it couldn't (searched with fd instead), and whether it
-/// stopped at the result limit.
+/// What the index answered: the folders it couldn't (searched with fd instead), whether it stopped at
+/// the result limit, and whether these are close matches.
 struct Answered {
     skipped: Vec<String>,
     limited: bool,
+    fuzzy: bool,
 }
 
 /// Asks the index service. None when it isn't running, isn't allowed, or covers none of `roots`.
@@ -200,6 +206,7 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
         hidden: options.hidden,
         exclude: options.exclude.clone(),
         max_results: options.max_results,
+        fuzzy: options.fuzzy,
     };
     let mut answered = None;
     // A failure halfway keeps what arrived; one before the plan leaves everything to fd.
@@ -213,7 +220,7 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
                     return false;
                 }
                 out.started(if skipped.is_empty() { "index" } else { "index + fd" });
-                answered = Some(Answered { skipped, limited: false });
+                answered = Some(Answered { skipped, limited: false, fuzzy: false });
             }
             Event::Hits(hits) => {
                 for hit in hits {
@@ -221,9 +228,9 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
                     out.push(Entry { name, path: Some(hit.path), dir: hit.dir, size: hit.size, modified: hit.modified, attrs: hit.attrs });
                 }
             }
-            Event::Done { limited, .. } => {
+            Event::Done { limited, fuzzy, .. } => {
                 if let Some(answered) = answered.as_mut() {
-                    answered.limited = limited;
+                    (answered.limited, answered.fuzzy) = (limited, fuzzy);
                 }
             }
         }
@@ -314,7 +321,7 @@ pub async fn find_files(
         let started = Instant::now();
         let mut out = Out { channel: &on_event, batch: Vec::new(), sent: Instant::now(), count: 0, started: false };
         let mut fd_roots = roots.clone();
-        let mut limited = false;
+        let (mut limited, mut fuzzy) = (false, false);
         // A folder in an archive: searched in the archive's own list of entries.
         if let [root] = roots.as_slice() {
             let searched = crate::archive::search(root, &query, options.hidden, &options.exclude, options.max_results, stop, &mut |entry| out.push(entry));
@@ -330,7 +337,7 @@ pub async fn find_files(
                     }
                 }
                 out.flush();
-                tell(&on_event, FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited });
+                tell(&on_event, FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited, fuzzy: false });
                 finds.finished(&lane, &run);
                 return;
             }
@@ -338,7 +345,7 @@ pub async fn find_files(
         // .gitignore rules are fd's alone; anything else goes to the index first.
         if !options.respect_ignore && index_reads_filters {
             if let Some(answered) = search_index(&roots, &query, &options, stop, &mut out) {
-                (fd_roots, limited) = (answered.skipped, answered.limited);
+                (fd_roots, limited, fuzzy) = (answered.skipped, answered.limited, answered.fuzzy);
             }
         }
         let left = options.max_results.filter(|&m| m > 0).map(|m| m.saturating_sub(out.count));
@@ -356,7 +363,7 @@ pub async fn find_files(
             limited = true;
         }
         out.flush();
-        tell(&on_event, FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited });
+        tell(&on_event, FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited, fuzzy });
         finds.finished(&lane, &run);
     });
     Ok(())
@@ -373,7 +380,7 @@ mod tests {
     use super::*;
 
     fn options() -> FindOptions {
-        FindOptions { hidden: false, respect_ignore: false, exclude: vec!["node_modules".into(), " ".into()], max_results: Some(100) }
+        FindOptions { hidden: false, respect_ignore: false, exclude: vec!["node_modules".into(), " ".into()], max_results: Some(100), fuzzy: false }
     }
 
     #[test]

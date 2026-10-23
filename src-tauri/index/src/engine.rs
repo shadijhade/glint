@@ -567,7 +567,7 @@ impl Engine {
         if names.is_empty() && filters.is_empty() {
             return proto::write_message(out, &Message::Error { message: "Type part of a file name to search for".into() });
         }
-        let matcher = NameMatcher::from_terms(names);
+        let matcher = NameMatcher::from_terms(names.clone());
         let now = now_ms() * 10_000 + 116_444_736_000_000_000;
         let excludes = Excludes::new(&request.exclude);
         let (mut targets, mut indexed, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
@@ -588,26 +588,35 @@ impl Engine {
         proto::write_message(out, &Message::Plan { indexed, skipped })?;
 
         let max = request.max_results.filter(|&m| m > 0).unwrap_or(MAX_HITS).min(MAX_HITS);
-        let (mut count, mut limited) = (0, false);
-        for (slot, scope) in targets {
-            if count >= max {
-                limited = true;
-                break;
+        let mut send = |matcher: &NameMatcher| -> io::Result<(usize, bool)> {
+            let (mut count, mut limited) = (0, false);
+            for (slot, scope) in &targets {
+                if count >= max {
+                    limited = true;
+                    break;
+                }
+                // Results are encoded under the lock (ids are only valid until the next change), then sent.
+                let (frames, found) = {
+                    let tree = slot.tree.read().unwrap();
+                    let search = Search { matcher, filters: &filters, now, scope: *scope, hidden: request.hidden, excludes: &excludes };
+                    collect_hits(&tree, slot.letter, &search, max - count)
+                };
+                let taken = found.min(max - count);
+                limited |= taken < found;
+                count += taken;
+                for frame in frames {
+                    proto::write_frame(out, FRAME_HITS, &frame)?;
+                }
             }
-            // Results are encoded under the lock (ids are only valid until the next change), then sent.
-            let (frames, found) = {
-                let tree = slot.tree.read().unwrap();
-                let search = Search { matcher: &matcher, filters: &filters, now, scope, hidden: request.hidden, excludes: &excludes };
-                collect_hits(&tree, slot.letter, &search, max - count)
-            };
-            let taken = found.min(max - count);
-            limited |= taken < found;
-            count += taken;
-            for frame in frames {
-                proto::write_frame(out, FRAME_HITS, &frame)?;
-            }
+            Ok((count, limited))
+        };
+        let (mut count, mut limited) = send(&matcher)?;
+        // Nothing as typed: close matches, when asked for and a word is long enough to have typos.
+        let near = if count == 0 && request.fuzzy { NameMatcher::near(names) } else { None };
+        if let Some(near) = &near {
+            (count, limited) = send(near)?;
         }
-        proto::write_message(out, &Message::Done { count: count as u64, limited, elapsed: ms(started) })
+        proto::write_message(out, &Message::Done { count: count as u64, limited, elapsed: ms(started), fuzzy: near.is_some() })
     }
 
     /// Folder sizes: the folder's total and the total of each folder in it.
@@ -639,7 +648,7 @@ impl Engine {
                 for frame in frames {
                     proto::write_frame(out, FRAME_HITS, &frame)?;
                 }
-                proto::write_message(out, &Message::Done { count: count as u64, limited: false, elapsed: ms(started) })
+                proto::write_message(out, &Message::Done { count: count as u64, limited: false, elapsed: ms(started), fuzzy: false })
             }
             Err(message) => proto::write_message(out, &Message::Error { message: message.into() }),
         }

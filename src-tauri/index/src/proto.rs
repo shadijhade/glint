@@ -91,6 +91,10 @@ pub struct SearchRequest {
     /// Names or globs to skip, with everything inside them (fd's --exclude).
     pub exclude: Vec<String>,
     pub max_results: Option<usize>,
+    /// When nothing matches as typed, look again with typos allowed (`NameMatcher::near`); Done then
+    /// says `fuzzy`. A service from before this ignores it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fuzzy: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -116,8 +120,15 @@ pub enum Message {
     /// Sent first for a search: the roots the index answers for, and those it can't (not NTFS, not
     /// indexed yet, behind a junction…), which the app searches some other way.
     Plan { indexed: Vec<String>, skipped: Vec<String> },
-    /// The search is complete. `elapsed` is the service's time in milliseconds.
-    Done { count: u64, limited: bool, elapsed: f64 },
+    /// The search is complete. `elapsed` is the service's time in milliseconds; `fuzzy` when nothing
+    /// matched as typed and these are close matches (a search that asked for them).
+    Done {
+        count: u64,
+        limited: bool,
+        elapsed: f64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fuzzy: bool,
+    },
     Sizes(Sizes),
     /// Follows a disk-usage map's frame.
     Usage(UsageSummary),
@@ -392,11 +403,21 @@ mod tests {
             hidden: false,
             exclude: vec!["node_modules".into()],
             max_results: Some(50_000),
+            fuzzy: false,
         });
         let mut wire = Vec::new();
         write_request(&mut wire, &request).unwrap();
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
         assert!(serde_json::to_string(&Request::Status).unwrap().contains(r#""op":"status""#));
+        // Without close matches asked for, a request is as a service from before them reads it; with
+        // them, an older service reads it too (it ignores what it doesn't know).
+        assert!(serde_json::to_string(&request).unwrap().ends_with(r#""maxResults":50000}"#));
+        let Request::Search(search) = &request else { unreachable!() };
+        let fuzzy = Request::Search(SearchRequest { fuzzy: true, ..search.clone() });
+        assert!(serde_json::to_string(&fuzzy).unwrap().ends_with(r#""maxResults":50000,"fuzzy":true}"#));
+        let newer = r#"{"op":"search","query":"a","roots":[],"hidden":false,"exclude":[],"maxResults":null,"fuzzy":true,"fromLater":1}"#;
+        assert!(matches!(serde_json::from_str::<Request>(newer), Ok(Request::Search(SearchRequest { fuzzy: true, .. }))), "what a service doesn't know is left");
+        assert_eq!(serde_json::from_str::<Message>(r#"{"type":"done","count":1,"limited":false,"elapsed":0.5}"#).unwrap(), Message::Done { count: 1, limited: false, elapsed: 0.5, fuzzy: false });
 
         let hits = vec![
             Hit { path: r"C:\Users\me\été.pdf".into(), dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x20 },
@@ -406,13 +427,13 @@ mod tests {
         hits.iter().for_each(|h| encode_hit(&mut payload, h));
         let mut wire = Vec::new();
         write_frame(&mut wire, FRAME_HITS, &payload).unwrap();
-        write_message(&mut wire, &Message::Done { count: 2, limited: false, elapsed: 1.5 }).unwrap();
+        write_message(&mut wire, &Message::Done { count: 2, limited: false, elapsed: 1.5, fuzzy: true }).unwrap();
         let mut reader = wire.as_slice();
         let (kind, payload) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
         assert_eq!((kind, decode_hits(&payload).unwrap()), (FRAME_HITS, hits));
         let (kind, json) = read_frame(&mut reader, MAX_FRAME).unwrap().unwrap();
         assert_eq!(kind, FRAME_JSON);
-        assert_eq!(serde_json::from_slice::<Message>(&json).unwrap(), Message::Done { count: 2, limited: false, elapsed: 1.5 });
+        assert_eq!(serde_json::from_slice::<Message>(&json).unwrap(), Message::Done { count: 2, limited: false, elapsed: 1.5, fuzzy: true });
         assert!(read_frame(&mut reader, MAX_FRAME).unwrap().is_none());
         assert!(decode_hits(&payload[..10]).is_err());
     }

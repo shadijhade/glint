@@ -3,6 +3,7 @@
 Off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows then asks for administrator approval once, and a small service (`Glint instant search`) starts indexing your fixed NTFS drives. From then on:
 
 -   **Name searches** on indexed drives answer from memory: the same query rules as fd (every word must match, `*` and `?` match the whole name, case-insensitive, same exclusions and hidden-file setting) and the same filters (`ext:`, `size:`, `dm:`, `file:`, `folder:`, which the app turns into fd's `--extension`, `--size`, `--changed-within`/`--changed-before` and `--type`; until an older service is updated, fd answers queries with filters), results streamed into the same list with size, date and attributes.
+-   **Close matches** when nothing is named as typed: the service looks again with typos allowed (each word of 4 letters or more within an edit of the start of a word in the name, two from 8 letters; a swap of two letters is one edit; numbers, shorter words and globs as typed) and answers the closest first, saying they're close matches. fd has no such pass, and a service from before it ignores the request's `fuzzy` and answers as typed.
 -   **Folder sizes** for every folder come from the index, kept current as files change.
 -   **Disk usage maps** of any folder on an indexed drive come from the index in one request: its 20,000 biggest files and folders, six levels down, with their sizes.
 -   **Fallbacks are automatic.** fd answers whatever the index can't: drives that aren't indexed (network shares, FAT/exFAT USB sticks, a drive still being read), folders behind junctions, and searches with *Skip what .gitignore lists* on (only fd reads .gitignore). From This PC, indexed drives and the rest are searched together (*index + fd*). dust sizes and maps folders the index doesn't have.
@@ -17,6 +18,7 @@ On this machine (Intel Core Ultra 7 265K, NVMe C: with 2.89 million MFT records:
 | Restart (load the 214 MB snapshot, replay the journal) | **0.25 s** to ready |
 | Memory for C: | 296 MB |
 | Search inside the service, C: | 2.5 ms (`kernel32.dll`), 4.4 ms (`report`), 2.7 ms (no match), 14 ms (`*.dll`: 108 k matches, 50 k returned) |
+| Close matches, when nothing matches as typed | 20–33 ms on a synthetic index of 3 million names (3–5 ms as typed): `reprot`, `invoise`, `downlaod` |
 | Search end to end over the pipe, all three drives | median 4.8 ms (`kernel32.dll`), 8.1 ms (`report`), 4.3 ms (no match), 31–33 ms (50 k results) |
 | Search in the app, Enter to every result listed | 6.5–7.5 ms (`kernel32.dll`), 14–15 ms (`report`), 155–186 ms (50 k results; most of it is handing 50 k rows to the webview) |
 | Folder sizes | 0.02–0.05 ms in the service, 0.4 ms in the app |

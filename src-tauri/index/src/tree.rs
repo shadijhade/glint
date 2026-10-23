@@ -747,10 +747,11 @@ impl Tree {
         (map, limited)
     }
 
-    /// Every name below `search.scope` that matches, in index order.
+    /// Every name below `search.scope` that matches, in index order; close matches (a matcher with
+    /// typos allowed) the closest first.
     pub fn search(&self, search: &Search) -> Vec<u32> {
         const CHUNK: usize = 1 << 14;
-        let found: Vec<Vec<u32>> = self
+        let found: Vec<Vec<(u32, u32)>> = self
             .links
             .par_chunks(CHUNK)
             .enumerate()
@@ -762,9 +763,7 @@ impl Tree {
                     }
                     let name = &self.names[link.name as usize..link.name as usize + link.len as usize];
                     let folded = Tree::folded_in(&self.names, link);
-                    if !search.matcher.matches(name, folded) {
-                        continue;
-                    }
+                    let Some(edits) = search.matcher.distance(name, folded) else { continue };
                     if !search.filters.is_empty() {
                         let rec = &self.recs[link.rec as usize];
                         if !search.filters.accepts(name, folded, rec.dir(), rec.size, (search.now - rec.modified) / 10_000_000) {
@@ -781,12 +780,17 @@ impl Tree {
                     if search.excludes.has_paths() && self.excluded_path(id, search) {
                         continue;
                     }
-                    found.push(id);
+                    found.push((edits, id));
                 }
                 found
             })
             .collect();
-        found.concat()
+        let mut found = found.concat();
+        if search.matcher.is_near() {
+            // Stable: index order among names as close.
+            found.sort_by_key(|&(edits, _)| edits);
+        }
+        found.into_iter().map(|(_, id)| id).collect()
     }
 
     /// Whether folder `dir` is the scope or below it, with nothing hidden (unless wanted) or excluded
@@ -1197,6 +1201,22 @@ mod tests {
     }
 
     #[test]
+    fn close_matches_come_closest_first() {
+        let mut tree = sample();
+        tree.set_record(40, &file(KB, &[(30, "Phtograhps 2.zip")]));
+        tree.set_record(41, &file(KB, &[(30, "Photographs.zip")]));
+        tree.set_record(42, &file(KB, &[(30, "graphs.txt")]));
+        let matcher = NameMatcher::near(vec!["photgraphs".into()]).unwrap();
+        let mut cache = HashMap::new();
+        let found: Vec<String> = tree
+            .search(&Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &Excludes::default() })
+            .into_iter()
+            .map(|id| tree.path(id, &mut cache).unwrap())
+            .collect();
+        assert_eq!(found, [r"Data\Photographs.zip", r"Data\Phtograhps 2.zip"], "one edit away before two, whatever the index order");
+    }
+
+    #[test]
     fn resolves_paths_and_lists_folder_sizes() {
         let tree = sample();
         assert_eq!(tree.resolve(r"users\ME\Docs"), Some(23));
@@ -1455,6 +1475,44 @@ mod tests {
         assert!(find(&tree, "size:>1kb", ROOT, true, &[]).is_empty());
         assert!(find(&tree, "late dm:7d", ROOT, true, &[]).is_empty());
         assert_eq!(find(&tree, "folder:", ROOT, true, &[]), ["Folder"]);
+    }
+
+    /// A drive's worth of names (3 million, made of real-looking words), searched as typed and then
+    /// for close matches: what a search with a typo costs the service. Run with --ignored --nocapture,
+    /// in release.
+    #[test]
+    #[ignore]
+    fn close_matches_cost_little_more() {
+        const WORDS: &[&str] = &["report", "invoice", "budget", "photo", "download", "setup", "backup", "notes", "draft", "final", "project", "meeting", "summary", "scan", "image", "video", "music", "readme", "config", "data", "cache", "temp", "log", "build"];
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let count = 3_000_000u32;
+        let mut builder = Builder::new(count as usize + 32);
+        builder.record(ROOT, 5, true, 0, 0);
+        builder.record(20, 1, true, 0, 0);
+        builder.name(20, make_ref(ROOT, 5), "Folder");
+        for n in 21..count {
+            builder.record(n, 1, false, 0x20, 0);
+            let name = format!("{}_{} {}.{}", WORDS[next(24) as usize], WORDS[next(24) as usize], next(10_000), ["txt", "pdf", "jpg", "dll"][next(4) as usize]);
+            builder.name(n, make_ref(20, 1), &name);
+        }
+        let tree = builder.finish();
+        let time = |matcher: &NameMatcher| {
+            let started = std::time::Instant::now();
+            let found = tree.search(&Search { matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &Excludes::default() }).len();
+            (found, started.elapsed().as_secs_f64() * 1000.0)
+        };
+        for query in ["reprot", "invoise", "downlaod", "summray meeting", "zzzzzz"] {
+            let terms = crate::query::terms(query);
+            let (exact, exact_ms) = time(&NameMatcher::from_terms(terms.clone()));
+            let (close, close_ms) = time(&NameMatcher::near(terms).unwrap());
+            println!("{query:>16}: as typed {exact} in {exact_ms:.0} ms, close {close} in {close_ms:.0} ms");
+        }
     }
 
     #[test]

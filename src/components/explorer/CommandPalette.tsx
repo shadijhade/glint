@@ -44,9 +44,10 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
             return [...folders, ...commands.filter((c) => c.kind === "action" && !c.searchOnly)];
         }
         const scored = commands.flatMap((c) => {
-            // A match in the label counts more than one only in a folder's path.
+            // A match in the label counts more than one only in a folder's path, where the letters
+            // typed must be close together (in a long path they'd turn up anywhere).
             const byLabel = fuzzyScore(q, c.label);
-            const byDetail = c.detail ? fuzzyScore(q, c.detail) : null;
+            const byDetail = c.detail ? fuzzyScore(q, c.detail, true) : null;
             const score = byLabel !== null ? byLabel + 2 : byDetail !== null ? byDetail - 1 : null;
             return score === null ? [] : [{ c, score: score + (c.weight ?? 0) }];
         });

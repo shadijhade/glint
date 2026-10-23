@@ -6,7 +6,7 @@ import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
-import { frecency, fuzzyScore } from "./rank.ts";
+import { editsAllowed, frecency, fuzzyScore, typoDistance } from "./rank.ts";
 import { markdownTitle, safeHref } from "./markdown.ts";
 import { initiallyOpen, isContainer, JsonNumber, jqPath, PAGE, parseJson, preview, treeRows } from "./jsonTree.ts";
 import { byteChar, byteClass, hex, parseOffset } from "./hex.ts";
@@ -515,6 +515,38 @@ assert.deepEqual(best("dl", ["Desktop", "Downloads", "Videos"]), ["Downloads"]);
 assert.deepEqual(best("doc", ["Dropbox config", "Documents", "src\\docs-old"]), ["Documents", "src\\docs-old", "Dropbox config"]);
 assert.deepEqual(best("nf", ["New folder", "Info notes"]), ["New folder", "Info notes"]);
 assert.deepEqual(best("sh", ["Refresh", "Search here", "Show hidden items"]), ["Show hidden items", "Search here", "Refresh"]);
+// A typo: a close match, below every in-order one.
+assert.deepEqual(best("stetings", ["Settings", "Set as wallpaper", "Stop"]), ["Settings"]);
+assert.deepEqual(best("setings", ["Reset tiles", "Settings"]), ["Settings"], "a letter left out is still in order: no typo needed");
+assert.ok(fuzzyScore("setings", "Settings")! > 0);
+assert.ok(fuzzyScore("stetings", "Settings")! < fuzzyScore("sett", "Reset tiles")!);
+// In a path, letters far apart aren't a match; close together they are.
+const longPath = "C:\\Users\\me\\AppData\\Local\\Temp\\claude\\visualstudio\\scratchpad\\kingfisher-test";
+assert.ok(fuzzyScore("stetings", longPath) !== null && fuzzyScore("stetings", longPath, true) === null);
+assert.ok(fuzzyScore("scratch", longPath, true)! > 0 && fuzzyScore("scrpad", longPath, true)! > 0);
+
+// Close matches, as the instant search service finds them (query.rs's cases)
+const typo = typoDistance;
+assert.equal(typo("reprot", "Q3 Report.pdf"), 1, "two letters swapped are one edit");
+assert.equal(typo("dowloads", "Downloads"), 1, "a letter missing");
+assert.equal(typo("donwloads", "Downloads"), 1);
+assert.equal(typo("downlaods", "my-downloads-old"), 1);
+assert.equal(typo("invoise", "Invoices 2026"), 1);
+assert.equal(typo("buget", "budget.xlsx"), 1);
+assert.equal(typo("reprot", "MyReportFinal.docx"), 1, "a word starting at a capital");
+assert.equal(typo("reprot", "report2026.docx"), 1, "letters then digits");
+assert.equal(typo("photgraphs", "Photographs"), 1);
+assert.equal(typo("phtograhps", "Photographs"), 2, "two edits from 8 letters");
+assert.equal(typo("erport", "report"), 1, "the first two letters swapped");
+assert.equal(typo("eport", "report"), null, "not a typo in the first letter");
+assert.equal(typo("report", "the report"), 0);
+assert.equal(typo("reprot", "freport.txt"), null, "only at a word's start");
+assert.equal(typo("reprot", "Replay.mp4"), null);
+assert.equal(typo("bdget 2026", "budget-2025.xlsx"), null, "a number as typed");
+assert.equal(typo("bdget 2026", "budget-2026.xlsx"), 1);
+assert.equal(typo("résumé", "Mon résume.pdf"), 1);
+assert.equal(typo("café", "CAFÉ menu"), 0);
+assert.deepEqual([editsAllowed("cat"), editsAllowed("2026"), editsAllowed("report"), editsAllowed("download")], [0, 0, 1, 2]);
 const now = 1_000_000_000_000;
 assert.ok(frecency({ count: 3, last: now - 60_000 }, now) > frecency({ count: 3, last: now - 3 * 86_400_000 }, now));
 assert.ok(frecency({ count: 10, last: now - 30 * 86_400_000 }, now) > frecency({ count: 1, last: now - 2 * 3_600_000 }, now));
