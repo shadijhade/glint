@@ -31,6 +31,7 @@ mod projects;
 mod quick;
 mod recycle;
 mod repo;
+mod scripts;
 mod sheet;
 mod shell;
 mod sign;
@@ -658,6 +659,8 @@ pub fn run() {
             openers::open_in,
             repo::repo_card,
             projects::project_tasks,
+            scripts::scripts_list,
+            scripts::scripts_folder,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,

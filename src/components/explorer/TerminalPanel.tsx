@@ -274,7 +274,7 @@ export function TerminalPanel() {
                                 key={tab.key}
                                 role="tab"
                                 aria-selected={tab.key === active}
-                                title={`${shell} · ${tab.cwd}`}
+                                title={`${tab.title ? `${tab.title} · ` : ""}${shell} · ${tab.cwd}`}
                                 onMouseDown={(e) => {
                                     if (e.button === 1) {
                                         e.preventDefault();
@@ -289,7 +289,7 @@ export function TerminalPanel() {
                                 )}
                             >
                                 <SquareTerminal className="size-3.5 shrink-0" />
-                                <span className="truncate">{baseName(tab.cwd) || tab.cwd}</span>
+                                <span className="truncate">{tab.title ?? (baseName(tab.cwd) || tab.cwd)}</span>
                                 <button
                                     type="button"
                                     aria-label="Close this terminal"
