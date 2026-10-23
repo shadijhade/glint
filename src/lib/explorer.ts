@@ -18,6 +18,7 @@ import {
     cancelFolderSizes,
     clipboardClear,
     clipboardGetFiles,
+    clipboardPasteFile,
     clipboardSetFiles,
     compareFolders,
     createEntry,
@@ -1760,10 +1761,7 @@ export async function paste(dest = currentPath()) {
         toast.error("Couldn't read the clipboard", { description: String(e) });
         return;
     }
-    if (!files?.paths.length) {
-        toast.message("Nothing to paste", { description: "Copy or cut files first, here or in File Explorer." });
-        return;
-    }
+    if (!files?.paths.length) return pasteAsFile(dest, tab);
     try {
         const label = `${files.cut ? "Moving" : "Copying"} ${plural(files.paths.length, "item")}…`;
         const done = await busy(label, fileOp({ kind: files.cut ? "move" : "copy", sources: files.paths, dest }));
@@ -1778,6 +1776,31 @@ export async function paste(dest = currentPath()) {
     } catch (e) {
         toast.error("Couldn't paste", { description: String(e) });
     }
+}
+
+/**
+ * Paste with no files on the clipboard: its picture or its text as a new file in `dest` ("Pasted image
+ * <date>.png", "Pasted text <date>.txt"), selected to be named in the folder shown, and Undo recycles it.
+ */
+async function pasteAsFile(dest: string, tab: string) {
+    let created: string | null;
+    try {
+        created = await clipboardPasteFile(dest);
+    } catch (e) {
+        toast.error("Couldn't paste", { description: String(e) });
+        return;
+    }
+    if (!created) {
+        toast.message("Nothing to paste", { description: "Copy files, a picture or text first, here or in another app." });
+        return;
+    }
+    const made = created;
+    rememberUndo(`paste of “${baseName(made)}”`, () => performFileOp({ kind: "delete", paths: [made], permanent: false, confirm: false }));
+    const t = tabState(tab);
+    if (t && samePath(dest, t.path) && !t.find) {
+        await navigate(dest, { history: false, quiet: true, select: made, tab });
+        updateTab({ renaming: tabState(tab)?.focus ?? null }, tab);
+    } else toast.success(`Pasted “${baseName(made)}” into “${baseName(dest)}”`);
 }
 
 /** Files dropped in from outside: moved within a drive, copied across drives, as Explorer does; on the Recycle Bin, recycled. */

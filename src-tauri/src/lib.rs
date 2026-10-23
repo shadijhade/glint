@@ -605,6 +605,7 @@ pub fn run() {
             shell::clipboard_set_files,
             shell::clipboard_get_files,
             shell::clipboard_text,
+            shell::clipboard_paste_file,
             shell::clipboard_clear,
             shell::show_properties,
             shell::open_item,

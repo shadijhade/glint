@@ -140,6 +140,119 @@ pub async fn clipboard_text(window: Window) -> Result<Option<String>, String> {
     on_main(&window, move || imp::clipboard_text(owner)).await
 }
 
+/// What can be pasted as a file when the clipboard holds no files.
+pub enum Clip {
+    /// A PNG as browsers and the Snipping Tool put one there.
+    Png(Vec<u8>),
+    /// A device-independent bitmap (CF_DIBV5 or CF_DIB): a screenshot, Paint's.
+    Bitmap(Vec<u8>),
+    Text(String),
+}
+
+/// Paste when the clipboard holds no files: its picture or its text as a new file in `folder`,
+/// "Pasted image <date and time>.png" (a bitmap Glint can't make a PNG of, .bmp) or "Pasted text
+/// <date and time>.txt" (UTF-8), with " (2)" and so on when that's taken. The file made, or None when
+/// there's nothing to paste.
+#[tauri::command]
+pub async fn clipboard_paste_file(window: Window, folder: String) -> Result<Option<String>, String> {
+    let owner = owner(&window);
+    let Some(clip) = on_main(&window, move || imp::clipboard_content(owner)).await? else {
+        return Ok(None);
+    };
+    blocking(move || {
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H%M%S");
+        let (name, bytes) = match clip {
+            Clip::Png(png) => (format!("Pasted image {stamp}.png"), png),
+            Clip::Bitmap(dib) => match dib_to_png(&dib) {
+                Some(png) => (format!("Pasted image {stamp}.png"), png),
+                None => (format!("Pasted image {stamp}.bmp"), dib_to_bmp(&dib)),
+            },
+            Clip::Text(text) => (format!("Pasted text {stamp}.txt"), text.into_bytes()),
+        };
+        let path = crate::fsx::create_numbered(&folder, &name, false)?;
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            let _ = std::fs::remove_file(&path);
+            return Err(crate::fsx::file_error(e));
+        }
+        Ok(Some(path))
+    })
+    .await
+}
+
+/// A DIB (a BITMAPINFOHEADER, or its V4 or V5 form, then the pixels) as a .bmp file: the file header
+/// before it, which says where the pixels start.
+fn dib_to_bmp(dib: &[u8]) -> Vec<u8> {
+    let pixels = 14 + dib_pixels_at(dib).unwrap_or(dib.len().min(40));
+    let mut bmp = Vec::with_capacity(14 + dib.len());
+    bmp.extend(b"BM");
+    bmp.extend(((14 + dib.len()) as u32).to_le_bytes());
+    bmp.extend([0; 4]);
+    bmp.extend((pixels as u32).to_le_bytes());
+    bmp.extend(dib);
+    bmp
+}
+
+/// Where a DIB's pixels start: after its header, the three colour masks a 40-byte header with
+/// BI_BITFIELDS has after it, and its palette. A V4 or V5 header has the masks in it, but the CF_DIBV5
+/// Windows makes of a bitmap repeats them after it too, when there's room for them.
+fn dib_pixels_at(dib: &[u8]) -> Option<usize> {
+    let u16_at = |at: usize| Some(u16::from_le_bytes(dib.get(at..at + 2)?.try_into().ok()?));
+    let u32_at = |at: usize| Some(u32::from_le_bytes(dib.get(at..at + 4)?.try_into().ok()?));
+    let header = u32_at(0)? as usize;
+    let (width, height) = (u32_at(4)? as i32, u32_at(8)? as i32);
+    let (bits, compression, used) = (u16_at(14)?, u32_at(16)?, u32_at(32)? as usize);
+    let image = (width.unsigned_abs() as usize * bits as usize).div_ceil(32) * 4 * height.unsigned_abs() as usize;
+    let repeated = header >= 108 && dib.get(header..header + 12) == dib.get(40..52) && dib.len() >= header + 12 + image;
+    let masks = if compression == 3 && (header == 40 || repeated) { 12 } else { 0 };
+    let palette = if used > 0 { used } else if bits <= 8 { 1 << bits } else { 0 };
+    Some(header + masks + 4 * palette)
+}
+
+/// A 24- or 32-bit DIB as a PNG; None for any other kind (paletted, 16-bit, compressed) or one that
+/// doesn't hold what its header says. 32-bit pixels keep their alpha when a V4 or V5 header says
+/// they have one and some pixel isn't fully transparent (plain 32-bit DIBs leave it 0).
+fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
+    let u16_at = |at: usize| Some(u16::from_le_bytes(dib.get(at..at + 2)?.try_into().ok()?));
+    let u32_at = |at: usize| Some(u32::from_le_bytes(dib.get(at..at + 4)?.try_into().ok()?));
+    let header = u32_at(0)? as usize;
+    let (width, height) = (u32_at(4)? as i32, u32_at(8)? as i32);
+    let (bits, compression) = (u16_at(14)?, u32_at(16)?);
+    let bitfields = compression == 3;
+    if header < 40 || !(compression == 0 || (bitfields && bits == 32)) || !(bits == 24 || bits == 32) {
+        return None;
+    }
+    // A standard 32-bit layout only: blue, green, red (and alpha) bytes.
+    if bitfields && (u32_at(40)?, u32_at(44)?, u32_at(48)?) != (0x00ff_0000, 0x0000_ff00, 0x0000_00ff) {
+        return None;
+    }
+    let (w, h) = (width.unsigned_abs() as usize, height.unsigned_abs() as usize);
+    if w == 0 || h == 0 || w > 32_768 || h > 32_768 {
+        return None;
+    }
+    let step = bits as usize / 8;
+    let stride = (w * bits as usize).div_ceil(32) * 4;
+    let start = dib_pixels_at(dib)?;
+    let pixels = dib.get(start..start.checked_add(stride.checked_mul(h)?)?)?;
+    let alpha_mask = if header >= 108 { u32_at(52)? } else { 0 };
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    // Bottom-up unless the height is negative.
+    for row in 0..h {
+        let line = if height > 0 { h - 1 - row } else { row };
+        for px in pixels[line * stride..][..w * step].chunks_exact(step) {
+            rgba.extend([px[2], px[1], px[0], if step == 4 { px[3] } else { 255 }]);
+        }
+    }
+    if step == 4 && (alpha_mask != 0xff00_0000 || rgba.iter().skip(3).step_by(4).all(|&a| a == 0)) {
+        rgba.iter_mut().skip(3).step_by(4).for_each(|a| *a = 255);
+    }
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, w as u32, h as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().ok()?.write_image_data(&rgba).ok()?;
+    Some(png)
+}
+
 #[tauri::command]
 pub async fn clipboard_clear(window: Window) -> Result<(), String> {
     let owner = owner(&window);
@@ -189,7 +302,7 @@ pub async fn open_terminal(path: String) -> Result<(), String> {
 
 #[cfg(windows)]
 mod imp {
-    use super::{ClipboardFiles, Done, FileOp, Performed};
+    use super::{Clip, ClipboardFiles, Done, FileOp, Performed};
     use std::cell::RefCell;
     use std::collections::HashSet;
     use std::ffi::OsStr;
@@ -566,28 +679,80 @@ mod imp {
         }
     }
 
+    const CF_UNICODETEXT: u32 = 13;
+    const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
+
     pub fn clipboard_text(owner: isize) -> Result<Option<String>, String> {
-        const CF_UNICODETEXT: u32 = 13;
         unsafe {
             if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
                 return Ok(None);
             }
             open_clipboard(owner)?;
-            let text = match GetClipboardData(CF_UNICODETEXT) {
-                Ok(handle) if !handle.is_invalid() => {
-                    let global = HGLOBAL(handle.0);
-                    let ptr = GlobalLock(global) as *const u16;
-                    // Up to its NUL, and never past the memory block, whatever it holds.
-                    let units = if ptr.is_null() { &[][..] } else { std::slice::from_raw_parts(ptr, GlobalSize(global) / 2) };
-                    let text = String::from_utf16_lossy(&units[..units.iter().position(|&u| u == 0).unwrap_or(units.len())]);
-                    let _ = GlobalUnlock(global);
-                    Some(text)
-                }
-                _ => None,
-            };
+            let text = unicode_text();
             let _ = CloseClipboard();
             Ok(text)
         }
+    }
+
+    /// The clipboard's text (it's open), up to its NUL and never past its memory block, whatever it holds.
+    unsafe fn unicode_text() -> Option<String> {
+        let handle = GetClipboardData(CF_UNICODETEXT).ok().filter(|h| !h.is_invalid())?;
+        let global = HGLOBAL(handle.0);
+        let ptr = GlobalLock(global) as *const u16;
+        let units = if ptr.is_null() { &[][..] } else { std::slice::from_raw_parts(ptr, GlobalSize(global) / 2) };
+        let text = String::from_utf16_lossy(&units[..units.iter().position(|&u| u == 0).unwrap_or(units.len())]);
+        let _ = GlobalUnlock(global);
+        Some(text)
+    }
+
+    /// All of a clipboard format's memory block (the clipboard is open).
+    unsafe fn global_bytes(format: u32) -> Option<Vec<u8>> {
+        let handle = GetClipboardData(format).ok().filter(|h| !h.is_invalid())?;
+        let global = HGLOBAL(handle.0);
+        let ptr = GlobalLock(global) as *const u8;
+        if ptr.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(ptr, GlobalSize(global)).to_vec();
+        let _ = GlobalUnlock(global);
+        Some(bytes)
+    }
+
+    /// What's on the clipboard to paste as a file when it holds no files: a "PNG" first (what browsers
+    /// and the Snipping Tool add to a picture), then text (Excel's cells come with a picture of
+    /// themselves), then a bitmap (a screenshot).
+    pub fn clipboard_content(owner: isize) -> Result<Option<Clip>, String> {
+        unsafe {
+            let png = RegisterClipboardFormatW(w!("PNG"));
+            let has = |format: u32| IsClipboardFormatAvailable(format).is_ok();
+            if has(CF_HDROP.0 as u32) || ![png, CF_UNICODETEXT, CF_DIBV5, CF_DIB].into_iter().any(has) {
+                return Ok(None);
+            }
+            open_clipboard(owner)?;
+            let clip = read_clip(png);
+            let _ = CloseClipboard();
+            Ok(clip)
+        }
+    }
+
+    unsafe fn read_clip(png: u32) -> Option<Clip> {
+        let has = |format: u32| IsClipboardFormatAvailable(format).is_ok();
+        if has(png) {
+            // Its memory block can be bigger than the PNG: up to the end of its last chunk.
+            if let Some(mut bytes) = global_bytes(png).filter(|b| b.starts_with(b"\x89PNG\r\n\x1a\n")) {
+                if let Some(end) = bytes.windows(4).rposition(|w| w == b"IEND") {
+                    bytes.truncate((end + 8).min(bytes.len()));
+                }
+                return Some(Clip::Png(bytes));
+            }
+        }
+        if has(CF_UNICODETEXT) {
+            if let Some(text) = unicode_text().filter(|t| !t.trim().is_empty()) {
+                return Some(Clip::Text(text));
+            }
+        }
+        [CF_DIBV5, CF_DIB].into_iter().filter(|&f| has(f)).find_map(|f| global_bytes(f)).map(Clip::Bitmap)
     }
 
     unsafe fn read_clipboard_files() -> Result<ClipboardFiles, String> {
@@ -742,7 +907,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{ClipboardFiles, FileOp, Performed};
+    use super::{Clip, ClipboardFiles, FileOp, Performed};
 
     const WINDOWS_ONLY: &str = "This is only available on Windows";
 
@@ -776,6 +941,10 @@ mod imp {
         Ok(None)
     }
 
+    pub fn clipboard_content(_: isize) -> Result<Option<Clip>, String> {
+        Ok(None)
+    }
+
     pub fn clear_clipboard(_: isize) -> Result<(), String> {
         Ok(())
     }
@@ -798,5 +967,83 @@ mod imp {
 
     pub fn open_terminal(_: &str) -> Result<(), String> {
         Err(WINDOWS_ONLY.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 2 by 2 DIB: red and green on top, blue and white below, as a 40-byte header (or a V5 one with
+    /// colour masks, repeated after it with `repeat` as Windows does) and its rows, bottom-up unless
+    /// `top_down`; 32-bit pixels carry `alpha`.
+    fn dib_with(bits: u16, v5: bool, top_down: bool, alpha: u8, repeat: bool) -> Vec<u8> {
+        let masks = [0x00ff_0000u32, 0x0000_ff00, 0x0000_00ff];
+        let mut d = Vec::new();
+        d.extend((if v5 { 124u32 } else { 40 }).to_le_bytes());
+        d.extend(2i32.to_le_bytes());
+        d.extend((if top_down { -2i32 } else { 2 }).to_le_bytes());
+        d.extend(1u16.to_le_bytes());
+        d.extend(bits.to_le_bytes());
+        d.extend((if v5 { 3u32 } else { 0 }).to_le_bytes());
+        d.extend([0u8; 20]);
+        if v5 {
+            for mask in masks.into_iter().chain([0xff00_0000]) {
+                d.extend(mask.to_le_bytes());
+            }
+            d.resize(124, 0);
+            if repeat {
+                d.extend(masks.iter().flat_map(|m| m.to_le_bytes()));
+            }
+        }
+        // Blue, green, red bytes.
+        let (top, bottom) = ([[0, 0, 255], [0, 255, 0]], [[255, 0, 0], [255, 255, 255]]);
+        for row in if top_down { [top, bottom] } else { [bottom, top] } {
+            let mut line: Vec<u8> = Vec::new();
+            for px in row {
+                line.extend(px);
+                if bits == 32 {
+                    line.push(alpha);
+                }
+            }
+            line.resize(line.len().div_ceil(4) * 4, 0);
+            d.extend(line);
+        }
+        d
+    }
+
+    fn dib(bits: u16, v5: bool, top_down: bool, alpha: u8) -> Vec<u8> {
+        dib_with(bits, v5, top_down, alpha, false)
+    }
+
+    fn pixels(png: &[u8]) -> Vec<u8> {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut rgba).unwrap();
+        assert_eq!((info.width, info.height, info.color_type), (2, 2, png::ColorType::Rgba));
+        rgba
+    }
+
+    #[test]
+    fn makes_pngs_of_bitmaps() {
+        let opaque = |a: u8| vec![255, 0, 0, a, 0, 255, 0, a, 0, 0, 255, a, 255, 255, 255, a];
+        // 24-bit, bottom-up, as a screenshot is.
+        assert_eq!(pixels(&dib_to_png(&dib(24, false, false, 0)).unwrap()), opaque(255));
+        // 32-bit with an alpha a V5 header vouches for, top-down.
+        assert_eq!(pixels(&dib_to_png(&dib(32, true, true, 128)).unwrap()), opaque(128));
+        // A plain 32-bit DIB leaves alpha 0: it's opaque, not invisible.
+        assert_eq!(pixels(&dib_to_png(&dib(32, false, false, 0)).unwrap()), opaque(255));
+        // Windows' own CF_DIBV5 of a bitmap: its masks again after the header, then the pixels.
+        assert_eq!(pixels(&dib_to_png(&dib_with(32, true, false, 0, true)).unwrap()), opaque(255));
+        // Paletted, or cut short: no PNG, so a .bmp of it as it is.
+        let paletted = dib(8, false, false, 0);
+        assert!(dib_to_png(&paletted).is_none());
+        let full = dib(24, false, false, 0);
+        assert!(dib_to_png(&full[..full.len() - 3]).is_none());
+        let bmp = dib_to_bmp(&full);
+        assert_eq!(&bmp[..2], b"BM");
+        assert_eq!(u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize, 14 + full.len());
+        assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 14 + 40);
+        assert_eq!(dib_pixels_at(&paletted), Some(40 + 4 * 256));
     }
 }

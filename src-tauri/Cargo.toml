@@ -41,6 +41,8 @@ shadui-index = { path = "index" }
 sha2 = "0.10"
 crc32fast = "1.5"
 blake3 = "1.8"
+# Paste as file: a picture on the clipboard as a PNG (already in the build through Tauri).
+png = "0.18"
 # Find duplicates' Clone on ReFS and Dev Drives: block clones (FSCTL_DUPLICATE_EXTENTS_TO_FILE), over the
 # windows crate already in the build.
 reflink-copy = "0.1"

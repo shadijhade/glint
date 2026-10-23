@@ -269,6 +269,8 @@ export const recycleEmpty = () => invoke<boolean>("recycle_empty");
 
 export const clipboardSetFiles = (paths: string[], cut: boolean) => invoke("clipboard_set_files", { paths, cut });
 export const clipboardGetFiles = () => invoke<{ paths: string[]; cut: boolean } | null>("clipboard_get_files");
+/** With no files on the clipboard: its picture (a PNG) or text (a .txt) as a new file in `folder`; null when it holds neither. */
+export const clipboardPasteFile = (folder: string) => invoke<string | null>("clipboard_paste_file", { folder });
 export const clipboardClear = () => invoke("clipboard_clear");
 
 /**
