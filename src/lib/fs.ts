@@ -353,6 +353,20 @@ export interface TaskGroup {
 }
 
 export const projectTasks = (folder: string) => invoke<TaskGroup[]>("project_tasks", { folder });
+
+/** A script in Glint's Scripts folder (scripts.rs): what runs it, and its arguments before the selection's. */
+export interface Script {
+    name: string;
+    path: string;
+    program: string;
+    args: string[];
+    /** The tool it needs that isn't installed, by its id. */
+    missing: string | null;
+}
+
+export const listScripts = () => invoke<{ folder: string; scripts: Script[] }>("scripts_list");
+/** The Scripts folder, made (with a script to start from) the first time. */
+export const scriptsFolder = () => invoke<string>("scripts_folder");
 /** Opens a folder or a file in the editor or terminal `id`. */
 export const openIn = (id: string, path: string) => invoke("open_in", { id, path });
 
