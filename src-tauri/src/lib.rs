@@ -37,6 +37,7 @@ mod usage;
 mod verbs;
 mod watch;
 mod xray;
+mod zoxide;
 
 use fsx::blocking;
 use proc::{Lanes, Slot};
@@ -548,6 +549,8 @@ pub fn run() {
             ast_grep_apply,
             run_doc_search,
             doc_lines,
+            zoxide::zoxide_folders,
+            zoxide::zoxide_add,
             tools::tools_status,
             tools::tool_install,
             tools::tool_cancel_install,
