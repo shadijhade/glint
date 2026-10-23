@@ -800,6 +800,27 @@ export interface SheetPreview {
     totalCols: number;
 }
 
+export interface SqlTables {
+    tables: string[];
+    /** Loading the file took this long (0 when it was loaded already, or is a database). */
+    loadMs: number;
+}
+
+export interface SqlAnswer {
+    columns: TableColumn[];
+    rows: string[][];
+    /** There were more rows than came back (1,000). */
+    truncated: boolean;
+    elapsedMs: number;
+    loadMs: number;
+}
+
+/** The tables to query in a file: a database's own, or a table file's loaded into memory as `data` (a workbook's by its sheets' names). */
+export const sqlTables = (path: string) => invoke<SqlTables>("sql_tables", { path });
+
+/** One query that reads, over a file loaded as `sqlTables` says; its first 1,000 rows. A newer one stops it. */
+export const sqlRun = (path: string, sql: string) => invoke<SqlAnswer>("sql_run", { path, sql });
+
 /** A workbook's sheet (the first one not hidden, unless `sheet` says), or a Parquet file, as a table: its first 1,000 rows. */
 export const inspectSheet = (path: string, sheet?: number) => invoke<SheetPreview>("inspect_sheet", { path, sheet: sheet ?? null });
 
