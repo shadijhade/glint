@@ -441,6 +441,60 @@ fn line_diff(old: &str, new: &str, diff: &mut FileDiff) {
     }
 }
 
+/// What's at `relative` (from the root, with forward slashes) in HEAD's tree; None when it isn't there.
+fn head_blob(repo: &gix::Repository, relative: &str) -> Option<Vec<u8>> {
+    let tree = repo.find_tree(repo.head_tree_id().ok()?.detach()).ok()?;
+    let entry = tree.lookup_entry_by_path(relative).ok().flatten()?;
+    repo.find_object(entry.object_id()).ok().map(|object| object.detach().data)
+}
+
+/// The repository a file is in, and where the file is in it ("src/lib/fs.ts").
+fn repo_of(path: &Path) -> Option<(gix::Repository, String)> {
+    let repo = gix::discover(path.parent()?).ok()?;
+    let workdir = repo.workdir()?.to_path_buf();
+    let relative = inside(&workdir, path).filter(|r| !r.is_empty())?;
+    Some((repo, relative))
+}
+
+/// Where a file as it was in HEAD is written to compare it side by side: a folder each.
+fn head_copies() -> PathBuf {
+    std::env::temp_dir().join("Glint").join("head")
+}
+
+/// The file at `path` as it is in its last commit, written to a temp file named as it is (in a
+/// folder of its own), to compare with the one on disk; None when it isn't in the last commit.
+/// Copies a day old are cleared on the way.
+#[tauri::command]
+pub async fn git_head_copy(path: String) -> Result<Option<String>, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    blocking(move || {
+        let file = Path::new(&path);
+        let Some((repo, relative)) = repo_of(file) else { return Ok(None) };
+        let Some(data) = head_blob(&repo, &relative) else { return Ok(None) };
+        let copies = head_copies();
+        for old in std::fs::read_dir(&copies).into_iter().flatten().flatten() {
+            if old.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > Duration::from_secs(86_400))) {
+                let _ = std::fs::remove_dir_all(old.path());
+            }
+        }
+        let folder = copies.join(format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let copy = folder.join(file.file_name().unwrap_or_default());
+        std::fs::write(&copy, data).map_err(|e| e.to_string())?;
+        Ok(Some(copy.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+/// Removes a copy [`git_head_copy`] made (and nothing else).
+#[tauri::command]
+pub fn git_head_discard(path: String) {
+    let copies = head_copies();
+    if let Some(folder) = Path::new(&path).parent().filter(|f| f.parent() == Some(copies.as_path())) {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+}
+
 /// Whether bytes look binary, as Git tells: a NUL in the first 8 KB.
 fn binary(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(8192)].contains(&0)
@@ -451,20 +505,11 @@ fn binary(bytes: &[u8]) -> bool {
 fn file_diff(path: &str) -> Result<Option<FileDiff>, String> {
     let started = Instant::now();
     let file = Path::new(path);
-    let Some(folder) = file.parent() else { return Ok(None) };
-    let Ok(repo) = gix::discover(folder) else { return Ok(None) };
-    let Some(workdir) = repo.workdir().map(Path::to_path_buf) else { return Ok(None) };
-    let Some(relative) = inside(&workdir, file).filter(|r| !r.is_empty()) else { return Ok(None) };
+    let Some((repo, relative)) = repo_of(file) else { return Ok(None) };
     let mut diff = FileDiff { path: relative.clone(), ..Default::default() };
 
     let now = std::fs::read(file).map_err(|e| e.to_string())?;
-    let then: Option<Vec<u8>> = repo
-        .head_tree_id()
-        .ok()
-        .and_then(|tree| repo.find_tree(tree.detach()).ok())
-        .and_then(|tree| tree.lookup_entry_by_path(&relative).ok().flatten())
-        .and_then(|entry| repo.find_object(entry.object_id()).ok())
-        .map(|object| object.detach().data);
+    let then = head_blob(&repo, &relative);
     diff.new_file = then.is_none();
     let then = then.unwrap_or_default();
     (diff.old_size, diff.new_size) = (then.len() as u64, now.len() as u64);
