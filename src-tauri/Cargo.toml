@@ -130,7 +130,10 @@ windows-core = "0.62"
 windows = { version = "0.62", features = [
     # A PDF's first page as a thumbnail, by Windows' own PDF renderer (thumbs.rs).
     "Data_Pdf",
+    "Foundation_Collections",
     "Graphics_Imaging",
+    # Text in pictures, by Windows' own OCR (ocr.rs).
+    "Media_Ocr",
     "Storage_Streams",
     "Win32_Foundation",
     "Win32_Globalization",

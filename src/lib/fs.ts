@@ -115,6 +115,9 @@ export const markdownHtml = (text: string) => invoke<string>("markdown_html", { 
 /** A sum with units, worked out by fend (calc.rs): "91.44 cm" for `3 ft to cm`; rejects with what's wrong with it. */
 export const calculate = (expression: string) => invoke<string>("calculate", { expression });
 
+/** The text in a picture, a line each, read by Windows' OCR (ocr.rs). */
+export const ocrText = (path: string) => invoke<string[]>("ocr_text", { path });
+
 export interface JqAnswer {
     values: JsonValue[];
     /** Cut at 100,000 values or 64 MB of JSON. */
