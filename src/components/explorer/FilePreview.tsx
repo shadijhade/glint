@@ -212,6 +212,32 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
     );
 }
 
+/**
+ * A file in an archive that can't be read: password-protected, or why not as the archive says (a method, a
+ * volume or cabinet that isn't there, a link UnRAR doesn't pass on…), asked of the backend, which knows.
+ */
+function LockedPreview({ entry }: { entry: FileEntry }) {
+    const encrypted = (entry.attrs & ATTR.encrypted) !== 0;
+    const [reason, setReason] = useState<string | null>(null);
+    useEffect(() => {
+        if (encrypted) return;
+        let stale = false;
+        readTextPreview(entry.path, 1).then(
+            () => {},
+            (e) => !stale && setReason(String(e))
+        );
+        return () => {
+            stale = true;
+        };
+    }, [entry.path, encrypted]);
+    return (
+        <Centered>
+            <LockMark entry={entry} className="size-14 stroke-[1.25] text-amber-600 dark:text-amber-500" />
+            <p className="max-w-sm">{encrypted ? "This file is password-protected, and Glint can't open encrypted files in archives yet." : (reason ?? "Glint can't read this file from the archive.")}</p>
+        </Centered>
+    );
+}
+
 function FolderPreview({ entry }: { entry: FileEntry }) {
     const size = useExplorer((s) => s.sizes[parentPath(entry.path)]?.sizes.get(entry.name));
     const [counts, setCounts] = useState<{ folders: number; files: number; bytes: number } | { error: string } | null>(null);
@@ -301,15 +327,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                 <p className="max-w-sm">Windows keeps the folder this file is in closed to your account, so it can't be previewed or opened. Get access to the folder first.</p>
             </Centered>
         );
-    else if (isLocked(entry))
-        body = (
-            <Centered>
-                <LockMark entry={entry} className="size-14 stroke-[1.25] text-amber-600 dark:text-amber-500" />
-                <p className="max-w-sm">
-                    {entry.attrs & ATTR.encrypted ? "This file is password-protected, and Glint can't open encrypted files in archives yet." : "This file is compressed in a way Glint can't read."}
-                </p>
-            </Centered>
-        );
+    else if (isLocked(entry)) body = <LockedPreview entry={entry} />;
     else if (isListOnly(entry)) body = <BigIcon entry={entry} note="This file is listed in an ncdu export, with its size and date. What's in it isn't there." />;
     else if (isArchiveFile(entry)) body = <ArchivePreview entry={entry} />;
     // In an archive, pictures, video, sound and PDFs are shown from a temp copy; text is read straight out of it.
