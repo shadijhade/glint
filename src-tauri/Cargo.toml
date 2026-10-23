@@ -65,6 +65,8 @@ unrar_sys = "0.5.8"
 # imara-diff comes with its blob diffs. Status is most of its 3.6 MB in Glint.exe; `parallel` keeps it
 # interruptible (the deadline and Stop).
 gix = { version = "=0.90.0", default-features = false, features = ["sha1", "status", "parallel"] }
+# The terminal pane's shells, in Windows' pseudo console (ConPTY), from WezTerm.
+portable-pty = "0.9"
 
 [dev-dependencies]
 # Tests write their own cabinets (stored and MSZIP).

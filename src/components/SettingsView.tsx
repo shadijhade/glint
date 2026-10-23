@@ -10,6 +10,7 @@ import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { clearWithUndo, DEFAULT_SETTINGS, useStore } from "@/lib/store";
+import { knownShells, useTerminals } from "@/lib/terminal";
 import { cancelInstall, describeProgress, installTool, refreshTools, removeTool, useTools } from "@/lib/tools";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
@@ -41,6 +42,7 @@ const SECTIONS: [string, string][] = [
     ["Quick search", "Quick search"],
     ["Search text (ripgrep)", "Search text"],
     ["Text search skips", "Text search skips"],
+    ["Terminal", "Terminal"],
     ["Tools", "Tools"],
     ["History", "History"],
     ["About", "About"],
@@ -300,6 +302,39 @@ function ToolsSection() {
 }
 
 /** File Explorer's "Open in Glint", and opening folders here when they're double-clicked. */
+/** The terminal under the files (Ctrl+`): the shell new ones start, and whether they follow the folder shown. */
+function TerminalSection() {
+    const shells = useTerminals((s) => s.shells);
+    const settings = useStore((s) => s.settings);
+    const set = useStore((s) => s.setSettings);
+    useEffect(() => {
+        void knownShells();
+    }, []);
+    return (
+        <Section title="Terminal">
+            <Row label="Shell" hint="New terminals start it. Ctrl+` opens one under the files, in the folder shown">
+                <select
+                    value={shells.find((s) => s.id === settings.terminalShell)?.id ?? shells[0]?.id ?? ""}
+                    onChange={(e) => set({ terminalShell: e.target.value })}
+                    className="h-8 rounded-md border bg-background px-2 text-sm outline-hidden focus:border-primary"
+                >
+                    {shells.map((shell) => (
+                        <option key={shell.id} value={shell.id}>
+                            {shell.name}
+                        </option>
+                    ))}
+                </select>
+            </Row>
+            <SwitchRow
+                label="Follow the folder shown"
+                hint="A cd in the terminal opens that folder here, and a folder opened here is cd'd to while the shell waits at its prompt"
+                checked={settings.terminalFollow}
+                onChange={(terminalFollow) => set({ terminalFollow })}
+            />
+        </Section>
+    );
+}
+
 function FileExplorerRows() {
     const [state, setState] = useState<ExplorerIntegration | null>(null);
     const [working, setWorking] = useState(false);
@@ -577,6 +612,8 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
                         <PatternEditor value={settings.exclusions} onChange={(exclusions) => set({ exclusions })} placeholder="Add a pattern: folder, *.log, or file name" />
                     </div>
                 </Section>
+
+                <TerminalSection />
 
                 <ToolsSection />
 

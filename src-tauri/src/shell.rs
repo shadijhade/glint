@@ -126,6 +126,13 @@ pub async fn clipboard_get_files(window: Window) -> Result<Option<ClipboardFiles
     on_main(&window, move || imp::clipboard_files(owner)).await
 }
 
+/// The text on the clipboard, if it holds any (the terminal pastes it).
+#[tauri::command]
+pub async fn clipboard_text(window: Window) -> Result<Option<String>, String> {
+    let owner = owner(&window);
+    on_main(&window, move || imp::clipboard_text(owner)).await
+}
+
 #[tauri::command]
 pub async fn clipboard_clear(window: Window) -> Result<(), String> {
     let owner = owner(&window);
@@ -199,7 +206,7 @@ mod imp {
         CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
         RegisterClipboardFormatW, SetClipboardData,
     };
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::Ole::{IDropSource, CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
@@ -538,6 +545,30 @@ mod imp {
         }
     }
 
+    pub fn clipboard_text(owner: isize) -> Result<Option<String>, String> {
+        const CF_UNICODETEXT: u32 = 13;
+        unsafe {
+            if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
+                return Ok(None);
+            }
+            open_clipboard(owner)?;
+            let text = match GetClipboardData(CF_UNICODETEXT) {
+                Ok(handle) if !handle.is_invalid() => {
+                    let global = HGLOBAL(handle.0);
+                    let ptr = GlobalLock(global) as *const u16;
+                    // Up to its NUL, and never past the memory block, whatever it holds.
+                    let units = if ptr.is_null() { &[][..] } else { std::slice::from_raw_parts(ptr, GlobalSize(global) / 2) };
+                    let text = String::from_utf16_lossy(&units[..units.iter().position(|&u| u == 0).unwrap_or(units.len())]);
+                    let _ = GlobalUnlock(global);
+                    Some(text)
+                }
+                _ => None,
+            };
+            let _ = CloseClipboard();
+            Ok(text)
+        }
+    }
+
     unsafe fn read_clipboard_files() -> Result<ClipboardFiles, String> {
         let drop = HDROP(GetClipboardData(CF_HDROP.0 as u32).map_err(message)?.0);
         let count = DragQueryFileW(drop, u32::MAX, None);
@@ -717,6 +748,10 @@ mod imp {
     }
 
     pub fn clipboard_files(_: isize) -> Result<Option<ClipboardFiles>, String> {
+        Ok(None)
+    }
+
+    pub fn clipboard_text(_: isize) -> Result<Option<String>, String> {
         Ok(None)
     }
 

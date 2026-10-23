@@ -69,6 +69,11 @@ export interface Settings {
     // Git repositories (their roots) whose own settings name programs for status to run (filter
     // drivers), trusted to run them
     gitTrusted: string[];
+    // The terminal pane: its shell ("" picks the first found: PowerShell 7, Windows PowerShell, cmd),
+    // its height in pixels (null: the default), and whether it and the folder shown follow each other
+    terminalShell: string;
+    terminalHeight: number | null;
+    terminalFollow: boolean;
 }
 
 /** The list's columns whose width can be dragged (the name takes what's left). */
@@ -120,6 +125,9 @@ export const DEFAULT_SETTINGS: Settings = {
     columns: {},
     previewWidth: null,
     gitTrusted: [],
+    terminalShell: '',
+    terminalHeight: null,
+    terminalFollow: true,
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */

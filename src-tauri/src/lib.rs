@@ -19,6 +19,7 @@ mod quick;
 mod shell;
 mod snap;
 mod sizes;
+mod term;
 mod thumbs;
 mod timeline;
 mod tools;
@@ -467,6 +468,7 @@ pub fn run() {
             shell::file_op,
             shell::clipboard_set_files,
             shell::clipboard_get_files,
+            shell::clipboard_text,
             shell::clipboard_clear,
             shell::show_properties,
             shell::open_item,
@@ -497,6 +499,11 @@ pub fn run() {
             filediff::compare_text_files,
             filediff::compare_bytes,
             filediff::next_byte_difference,
+            term::term_shells,
+            term::term_spawn,
+            term::term_write,
+            term::term_resize,
+            term::term_close,
             dedup::find_duplicates,
             dedup::cancel_dedup,
             compare::compare_folders,
@@ -560,6 +567,7 @@ pub fn run() {
         .run(|_, event| {
             if let tauri::RunEvent::Exit = event {
                 archive::finish();
+                term::close_all();
             }
         });
 }
