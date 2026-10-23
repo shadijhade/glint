@@ -6,6 +6,7 @@ mod check;
 mod cleanup;
 mod codesearch;
 mod compare;
+mod convert;
 mod data_lens;
 mod dedup;
 mod defender;
@@ -648,6 +649,8 @@ pub fn run() {
             compare::cancel_compare,
             dedup::hardlink_duplicates,
             dedup::clone_duplicates,
+            convert::convert_images,
+            convert::convert_cancel,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,

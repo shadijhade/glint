@@ -123,6 +123,19 @@ pub static TOOLS: &[Tool] = &[
         source: Source::Winget { id: "ajeetdsouza.zoxide" },
         used_for: "Folder history shared with your terminals (Settings → History): the folders you cd to rank in Ctrl+K, and z finds the ones you open here",
     },
+    Tool {
+        id: "rimage",
+        name: "rimage",
+        exe: "rimage",
+        package: "rimage",
+        source: Source::Release {
+            version: "0.14.0",
+            url: "https://github.com/vlad-salone/rimage/releases/download/v0.14.0/rimage-0.14.0-x86_64-pc-windows-msvc.zip",
+            sha256: "93667bd6140b9845f72abc3849d22dd25b9c33ae0d8b08ffb86835c81afbcf25",
+            member: "rimage-0.14.0-x86_64-pc-windows-msvc/rimage.exe",
+        },
+        used_for: "Converting pictures to JPEG, PNG, WebP or AVIF, smaller if asked (Convert pictures…)",
+    },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {

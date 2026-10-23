@@ -24,6 +24,7 @@ import { WindowControls } from "./components/WindowControls";
 import { AddressBar } from "./components/explorer/AddressBar";
 import { BatchRenameDialog } from "./components/explorer/BatchRenameDialog";
 import { CheckDialog } from "./components/explorer/CheckDialog";
+import { ConvertDialog } from "./components/explorer/ConvertDialog";
 import { CleanupDialog } from "./components/explorer/CleanupDialog";
 import { CompareFilesDialog } from "./components/explorer/CompareFilesDialog";
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
@@ -469,6 +470,7 @@ function App() {
       <TimelineDialog />
       <HistoryDialog />
       <CheckDialog />
+      <ConvertDialog />
       <BatchRenameDialog />
       <XRayDialog />
       <ShortcutsDialog />
