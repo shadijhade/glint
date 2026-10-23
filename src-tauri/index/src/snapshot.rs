@@ -11,8 +11,10 @@ use std::io::{self, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 8] = b"SHUIIDX\0";
-/// Bumped whenever what the arrays mean changes (2: NTFS-internal attribute bits dropped).
-const FORMAT: u32 = 2;
+/// Bumped whenever what the arrays mean changes (2: NTFS-internal attribute bits dropped; 3: what
+/// was made in a folder that took a deleted file's record is no longer lost, and one fresh scan
+/// finds what an older service lost that way).
+const FORMAT: u32 = 3;
 const HEADER: usize = 8 + 4 + 4 + 8 * 4 + 8 * 3;
 const REC: usize = 28;
 const LINK: usize = 20;
