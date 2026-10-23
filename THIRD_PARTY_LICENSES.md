@@ -1198,6 +1198,46 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Meaning search (its model downloaded when first used)
+
+Text mode's Meaning search ranks passages with a model the installer doesn't include: Glint downloads it from Hugging Face the first time it's asked to (**Download it** on its card, or **Settings → Tools**), pinned to one revision and checked against each file's SHA-256, into its own data folder. The model's tokenizer and the arithmetic that uses it are Glint's own code, with two crates compiled into the app.
+
+| Model or crate | Version | Used for | License |
+| :--- | :--- | :--- | :--- |
+| [potion-base-8M](https://huggingface.co/minishlab/potion-base-8M), from [Minish Lab](https://github.com/MinishLab/model2vec)'s Model2Vec: static embeddings distilled from BAAI's [bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) | revision `bf8b056` | A vector for each word piece, averaged into a passage's meaning | MIT (as its model card declares) |
+| [unicode-normalization](https://github.com/unicode-rs/unicode-normalization) | 0.1.26 | Taking accents off letters, as the model's tokenizer does | MIT or Apache-2.0 |
+| [unicode-properties](https://github.com/unicode-rs/unicode-properties) | 0.1.4 | Telling letters from punctuation and invisible characters, as the tokenizer does | MIT or Apache-2.0 |
+
+### unicode-normalization and unicode-properties
+
+```text
+Copyright (c) 2015 The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
 ## Calculator (compiled into the app)
 
 | Crate | Version | Used for | License |

@@ -19,6 +19,7 @@ mod jq;
 mod launch;
 mod locks;
 mod markdown;
+mod meaning;
 mod media;
 mod native_preview;
 mod ocr;
@@ -301,7 +302,8 @@ fn run_doc_search(window: Window, request: doctext::DocSearch, search_id: String
     if std::fs::metadata(&folder).is_err() {
         return Err(format!("Can't find “{folder}”. Check the folder path and try again."));
     }
-    let pattern = doctext::pattern(&request)?;
+    // By meaning, what's typed isn't a pattern: a regex that matches nothing stands in.
+    let pattern = if request.meaning { regex::Regex::new("a^").map_err(|e| e.to_string())? } else { doctext::pattern(&request)? };
     state.search.kill();
     let run = doctext::begin();
     let max = match max_results {
@@ -313,7 +315,16 @@ fn run_doc_search(window: Window, request: doctext::DocSearch, search_id: String
         let emit = |r#type: &str, lines: Vec<String>| {
             let _ = window.emit("search-event", SearchEvent { id: search_id.clone(), r#type: r#type.into(), lines });
         };
-        doctext::search(run, &base, &request, &pattern, max, |lines| emit("data", lines));
+        // By meaning: the model (loaded here the first time), and words in what's typed that it knows.
+        let ready = if request.meaning {
+            meaning::model().and_then(|model| model.embed(&request.query).map(|_| ()).ok_or_else(|| "The meaning model knows none of those words: try others".to_string()))
+        } else {
+            Ok(())
+        };
+        match ready {
+            Err(message) => emit("error", vec![message]),
+            Ok(()) => doctext::search(run, &base, &request, &pattern, max, |lines| emit("data", lines)),
+        }
         emit("finished", Vec::new());
     });
     Ok(folder)
@@ -555,6 +566,9 @@ pub fn run() {
             zoxide::zoxide_add,
             calc::calculate,
             ocr::ocr_text,
+            meaning::meaning_install,
+            meaning::meaning_status,
+            meaning::meaning_remove,
             tools::tools_status,
             tools::tool_install,
             tools::tool_cancel_install,

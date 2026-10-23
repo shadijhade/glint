@@ -81,7 +81,7 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
                 </div>
             </div>
             {inDocument ? (
-                <DocumentLines path={path} line={line} />
+                <DocumentLines path={path} line={line} count={match?.data.line_count ?? 1} />
             ) : (
                 <div ref={codeRef} className="min-h-0 flex-1 select-text overflow-auto bg-card">
                     {error ? (
@@ -105,8 +105,9 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
     );
 }
 
-/** A document's lines around a match, as Documents search read them, each page's (slide's, row's) label once. */
-function DocumentLines({ path, line }: { path: string; line: number }) {
+/** A document's lines around a match (its `count` lines, a Meaning passage's), as Documents search read
+ *  them, each page's (slide's, row's) label once. */
+function DocumentLines({ path, line, count }: { path: string; line: number; count: number }) {
     const [chunk, setChunk] = useState<{ path: string; start: number; lines: [string, string][] } | null>(null);
     const [error, setError] = useState("");
     const ref = useRef<HTMLDivElement>(null);
@@ -140,7 +141,7 @@ function DocumentLines({ path, line }: { path: string; line: number }) {
                 <p className="p-4 text-sm text-destructive">{error}</p>
             ) : (
                 current?.lines.map(([label, text], i) => (
-                    <div key={current.start + i} className={cn("flex gap-3 pl-3 pr-4", current.start + i === line && "hl-line")}>
+                    <div key={current.start + i} className={cn("flex gap-3 pl-3 pr-4", current.start + i >= line && current.start + i < line + count && "hl-line")}>
                         <span className="w-20 shrink-0 truncate text-right text-xs leading-5 text-muted-foreground/70" title={label}>
                             {i === 0 || current.lines[i - 1][0] !== label ? label : ""}
                         </span>

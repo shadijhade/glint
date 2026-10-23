@@ -17,6 +17,8 @@ export interface RgMatch {
         replacement?: string;
         /** A Documents search's match: where it is in the document ("p. 3", "slide 2", "Sales, row 7"). */
         label?: string;
+        /** A Meaning match: how many lines its passage spans, from line_number. */
+        line_count?: number;
         elapsed_total?: { human: string; nanos: number; secs: number };
         stats?: {
             elapsed?: { human: string; nanos: number; secs: number };
@@ -56,9 +58,11 @@ export interface SearchOptions {
     /** A code pattern, searched by ast-grep (codesearch.rs), and what each match becomes. */
     code?: boolean;
     rewrite?: string | null;
-    /** The text inside documents, read by Glint's workers (doctext.rs), and with `ocr`, pictures' too. */
+    /** The text inside documents, read by Glint's workers (doctext.rs), and with `ocr`, pictures' too;
+     *  with `meaning`, documents' and notes' passages ranked by meaning (meaning.rs). */
     documents?: boolean;
     ocr?: boolean;
+    meaning?: boolean;
 }
 
 /** A code search's rewrite made in its files, by ast-grep: how many matches it rewrote. */
@@ -90,10 +94,10 @@ export async function searchBatched(
     try {
         // ripgrep's (or ast-grep's) arguments are built in Rust from these options. The folder comes back as searched.
         const exclusions = options.exclusions ?? [];
-        const text = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions, everything: !!options.everything, ocr: !!options.ocr };
+        const text = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions, everything: !!options.everything, ocr: !!options.ocr, meaning: !!options.meaning };
         const folder = options.code
             ? await invoke<string>("run_ast_grep", { request: { query, path, rewrite: options.rewrite || null, exclusions, everything: !!options.everything }, searchId, maxResults: options.maxResults })
-            : await invoke<string>(options.documents ? "run_doc_search" : "run_ripgrep_batched", { request: text, searchId, maxResults: options.maxResults });
+            : await invoke<string>(options.documents || options.meaning ? "run_doc_search" : "run_ripgrep_batched", { request: text, searchId, maxResults: options.maxResults });
         return { stop: unlisten, folder };
     } catch (e) {
         onError(String(e));

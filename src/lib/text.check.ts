@@ -4,7 +4,7 @@ import { replaceText, segments, toRegExp } from "./text.ts";
 import type { RgMatch } from "./ripgrep";
 
 const opts = (o: Partial<{ caseSensitive: boolean; wholeWord: boolean; regex: boolean }> = {}) =>
-    ({ caseSensitive: false, wholeWord: false, regex: false, code: false, documents: false, ocr: false, ...o });
+    ({ caseSensitive: false, wholeWord: false, regex: false, code: false, documents: false, ocr: false, meaning: false, ...o });
 const replace = (text: string, query: string, o = opts()) => text.replace(toRegExp(query, o), "X");
 
 // Smart case, like rg: lowercase ignores case, any uppercase matches exactly.
