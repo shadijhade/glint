@@ -2,8 +2,8 @@ import { createContext, useContext } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
-import { save } from "@tauri-apps/plugin-dialog";
-import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, withDetails } from "./entries";
+import { confirm, save } from "@tauri-apps/plugin-dialog";
+import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, withDetails } from "./entries";
 import {
     archiveCompress,
     archiveExtract,
@@ -41,6 +41,7 @@ import {
     listDrives,
     type Listing,
     openItem,
+    recycleEmpty,
     resolvePath,
     type SizeEngine,
     type Staged,
@@ -50,7 +51,7 @@ import {
 } from "./fs";
 import { formatCount, plural } from "./format";
 import { zoomTiles } from "./grid";
-import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
+import { baseName, crumbs, isFolderPath, isRecycleBin, isRoot, joinPath, parentPath, RECYCLE_BIN, samePath, THIS_PC } from "./paths";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
 import { shareVisit } from "./zoxide";
 import { dropThumbnails } from "./thumbs";
@@ -246,6 +247,17 @@ export function readOnlyNotice() {
 /** Whether Windows keeps a tab's folder (the active tab's by default) closed to this account: shown from the index, or not at all. */
 export const closedOf = (tab = activeTabId()) => !!tabState(tab)?.noAccess;
 
+/** Whether a tab (the active tab by default) shows the Recycle Bin. */
+export const recycleBinOf = (tab = activeTabId()) => isRecycleBin(tabState(tab)?.path ?? THIS_PC);
+
+/** What's in the Recycle Bin is restored, or deleted for good: says so when something would open, copy or change it there (once at a time). */
+export function recycledNotice() {
+    toast.message("In the Recycle Bin", {
+        id: "recycled",
+        description: "Restore an item to use it again: it goes back to the folder it was deleted from.",
+    });
+}
+
 /** Says so when something would open or change what's in a folder Windows keeps closed (once at a time), with Get access where it can help. */
 export function closedNotice(tab = activeTabId()) {
     const t = tabState(tab);
@@ -287,9 +299,10 @@ export function zoomGrid(steps: number) {
     if (tileSize !== settings.tileSize) setSettings({ tileSize });
 }
 
-/** "This PC", a drive's name, or the folder's. */
+/** "This PC", "Recycle Bin", a drive's name, or the folder's. */
 export function tabName(path: string, drives: Drive[]) {
     if (path === THIS_PC) return "This PC";
+    if (isRecycleBin(path)) return "Recycle Bin";
     if (!isRoot(path)) return baseName(path);
     const drive = drives.find((d) => samePath(d.path, path));
     return drive ? driveName(drive) : path;
@@ -451,9 +464,9 @@ export async function navigate(target: string, { select, history = true, quiet =
             useStore.getState().setLastFolder(path);
         }
         syncWatches();
-        if (path !== THIS_PC) useStore.getState().recordVisit(path);
+        if (isFolderPath(path)) useStore.getState().recordVisit(path);
         // A folder on disk (not one in an archive) for zoxide too, when history is shared with it.
-        if (path !== THIS_PC && listing && !listing.archive) shareVisit(path);
+        if (isFolderPath(path) && listing && !listing.archive) shareVisit(path);
         if (path === THIS_PC) refreshDrives();
     }
     // In an archive, every folder's size comes with the listing; with the index, every folder shows
@@ -607,7 +620,7 @@ export function defaultTextSearchFolder(): string {
     const { settings } = useStore.getState();
     if (settings.defaultSearchPath.trim()) return settings.defaultSearchPath.trim();
     const cur = currentPath();
-    if (cur && cur !== THIS_PC && !archiveOf()) return cur;
+    if (cur && isFolderPath(cur) && !archiveOf()) return cur;
     const home = homeFolder();
     if (home && home !== THIS_PC) return home;
     return get().drives[0]?.path ?? "";
@@ -712,7 +725,7 @@ function syncWatches() {
     const folders = new Map<string, string>();
     for (const id of visibleTabs(s)) {
         const t = s.tabs[id];
-        if (t?.listing && t.path !== THIS_PC) folders.set(watchedFolder(t).toLowerCase(), watchedFolder(t));
+        if (t?.listing && isFolderPath(t.path)) folders.set(watchedFolder(t).toLowerCase(), watchedFolder(t));
     }
     const key = [...folders.keys()].join("|");
     if (key === watching) return;
@@ -1029,13 +1042,13 @@ export function toggleDiffOnly() {
     set((s) => ({ diffOnly: !s.diffOnly }));
 }
 
-/** The folder open in the other pane, when there's one to copy or move into (an archive isn't one, nor a folder Windows keeps closed). */
+/** The folder open in the other pane, when there's one to copy or move into (an archive isn't one, nor a folder Windows keeps closed, nor the Recycle Bin). */
 export function otherPaneFolder() {
     const s = get();
     if (!s.dual) return null;
     const other = s.panes[1 - s.activePane];
     const t = other && s.tabs[other.active];
-    return t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive && !t.noAccess ? { tab: t.id, path: t.path } : null;
+    return t?.ready && isFolderPath(t.path) && !t.find && !t.listing?.archive && !t.noAccess ? { tab: t.id, path: t.path } : null;
 }
 
 /** Dual-pane view: copies (or moves) items to the folder open in the other pane, through Windows' file engine. */
@@ -1054,6 +1067,7 @@ export async function copyToOtherPane(move: boolean, paths = [...(tabState()?.se
     }
     const tab = activeTabId();
     if (move && closedOf(tab)) return closedNotice(tab);
+    if (recycleBinOf(tab)) return recycledNotice();
     if (archiveOf(tab)) {
         if (move) readOnlyNotice();
         else copyOutOfArchive(paths, target);
@@ -1310,8 +1324,13 @@ export async function runFind(query: string, wider: Wider = {}) {
     const t = tabState(tab);
     if (!t) return;
     const settings = useStore.getState().settings;
-    const id = ++findSeq;
     const scope = wider.scope ?? t.path;
+    // What's in the Recycle Bin isn't in folders to search: the box filters it as it's typed.
+    if (isRecycleBin(scope)) {
+        toast.message("Nothing to search below the Recycle Bin", { id: "find-recycled", description: "What you type already narrows what's shown in it." });
+        return;
+    }
+    const id = ++findSeq;
     const roots = scope === THIS_PC ? get().drives.filter((d) => d.kind === "fixed" || d.kind === "removable").map((d) => d.path) : [scope];
     const options = {
         hidden: settings.showHidden,
@@ -1387,7 +1406,7 @@ const autoSizes = (tab: string) => sizeFolder(tab, true);
 
 async function sizeFolder(tab: string, auto: boolean) {
     const path = tabState(tab)?.path;
-    if (!path || path === THIS_PC) return;
+    if (!path || !isFolderPath(path)) return;
     const previous = get().sizes[path];
     const save = (run: SizeRun | null) => {
         const { [path]: _, ...rest } = get().sizes;
@@ -1537,6 +1556,12 @@ export async function openFile(path: string, tab = activeTabId()) {
 export function openEntry(entry: FileEntry) {
     // Listed from the index: its folders open the same way, its files not at all.
     if (isClosed(entry) && !entry.dir) return closedNotice();
+    // In the Recycle Bin, an item is looked at, not opened: what's done to it there would be lost.
+    if (isRecycled(entry)) {
+        updateTab({ focus: entry.path });
+        set({ quickLook: true });
+        return;
+    }
     // An archive opens like a folder.
     if (entry.dir || isArchiveFile(entry)) return navigate(entry.path);
     if (isArchived(entry)) return openFromArchive(entry);
@@ -1592,8 +1617,58 @@ export async function fileOp(op: FileOp): Promise<boolean> {
                 `Moved ${what} to the Recycle Bin`,
                 rememberUndo(`deletion of ${what}`, () => performFileOp({ kind: "restore", items: done.map((i) => ({ path: i.to, folder: parentPath(i.from), name: baseName(i.from) })) }))
             );
+        else if (op.kind === "restore") offerUndo(`Restored ${what}`, rememberUndo(`restore of ${what}`, recycle));
     }
+    // What's in the Recycle Bin changed.
+    if (op.kind === "delete" || op.kind === "restore" || op.kind === "purge") reloadRecycleBins();
     return completed;
+}
+
+/** Re-reads the Recycle Bin in the tabs on screen that show it: nothing watches it, so after what's done here and when the window is back in front. */
+export function reloadRecycleBins() {
+    for (const id of visibleTabs()) if (recycleBinOf(id)) void reload(id);
+}
+
+/** Restore in the Recycle Bin: each item back into the folder it was deleted from (made again if it's gone), with Undo. */
+export async function restoreRecycled(entries: FileEntry[]) {
+    const items = entries.filter((e) => isRecycled(e) && e.origin).map((e) => ({ path: e.path, folder: e.origin!, name: e.name }));
+    if (!items.length) return;
+    try {
+        await busy(`Restoring ${plural(items.length, "item")}…`, fileOp({ kind: "restore", items }));
+    } catch (e) {
+        toast.error("Couldn't restore", { description: String(e) });
+    }
+}
+
+/** Delete for good in the Recycle Bin, once asked (naming them as they were), then selects `next`. */
+export async function purgeRecycled(entries: FileEntry[], next?: string) {
+    const items = entries.filter(isRecycled);
+    if (!items.length) return;
+    const what = items.length === 1 ? `“${items[0].name}”` : plural(items.length, "item");
+    const sure = await confirm(`Delete ${what} for good? ${items.length === 1 ? "It" : "They"} can't be restored afterwards.`, {
+        title: "Delete for good",
+        kind: "warning",
+        okLabel: "Delete",
+        cancelLabel: "Cancel",
+    });
+    if (!sure) return;
+    const tab = activeTabId();
+    try {
+        await busy(`Deleting ${plural(items.length, "item")}…`, fileOp({ kind: "purge", paths: items.map((e) => e.path) }));
+        if (next && recycleBinOf(tab)) updateTab({ selection: new Set([next]), focus: next, anchor: next }, tab);
+    } catch (e) {
+        toast.error("Couldn't delete", { description: String(e) });
+    }
+}
+
+/** Empties the Recycle Bin, every drive's, after Windows' own question. */
+export async function emptyRecycleBin() {
+    try {
+        if (await recycleEmpty()) toast.success("Emptied the Recycle Bin", { id: "emptied" });
+    } catch (e) {
+        toast.error("Couldn't empty the Recycle Bin", { description: String(e) });
+    }
+    reloadRecycleBins();
 }
 
 /** Takes back the last copy, move, rename, deletion or new item (Ctrl+Z), or `step` if it's still to undo. */
@@ -1610,6 +1685,8 @@ export async function undo(step = undoSteps[undoSteps.length - 1]) {
         toast.error(`Couldn't undo the ${step.label}`, { description: String(e), id: "undone" });
     }
     reload();
+    // Undoing a deletion or a restore changes what's in the Recycle Bin, as most undos do (they recycle).
+    reloadRecycleBins();
 }
 
 /** Shows a file (e.g. a text search result) in its folder here, in Files. */
@@ -1625,10 +1702,11 @@ export function revealInApp(path: string) {
  */
 export const modalOpen = () => !!document.querySelector('[aria-modal="true"]:not([data-quicklook])');
 
-/** Opens what someone typed: "This PC", a folder, or a file (its folder, with it selected). */
+/** Opens what someone typed: "This PC", "Recycle Bin", a folder, or a file (its folder, with it selected). */
 export async function goTo(text: string) {
     const value = text.trim();
     if (!value || /^this pc$/i.test(value)) return navigate(THIS_PC);
+    if (/^recycle bin$/i.test(value) || isRecycleBin(value)) return navigate(RECYCLE_BIN);
     const tab = activeTabId();
     // Checking a path into a big .tar.gz reads it whole: that shows, with Stop.
     const reading = showArchiveReading(value);
@@ -1646,6 +1724,7 @@ export async function goTo(text: string) {
 export async function copyToClipboard(paths: string[], cut: boolean) {
     if (!paths.length) return;
     if (cut && closedOf()) return closedNotice();
+    if (recycleBinOf()) return recycledNotice();
     if (archiveOf()) {
         if (cut) return readOnlyNotice();
         // Extracted first: the clipboard carries files. Pasting (here or in File Explorer) copies them.
@@ -1670,7 +1749,7 @@ export async function copyToClipboard(paths: string[], cut: boolean) {
 
 /** Pastes files copied or cut here or in File Explorer into `dest` (default: the open folder). */
 export async function paste(dest = currentPath()) {
-    if (dest === THIS_PC) return;
+    if (!isFolderPath(dest)) return;
     const tab = activeTabId();
     if (samePath(dest, tabState(tab)?.path ?? THIS_PC) && archiveOf(tab)) return readOnlyNotice();
     if (samePath(dest, tabState(tab)?.path ?? THIS_PC) && closedOf(tab)) return closedNotice(tab);
@@ -1701,8 +1780,17 @@ export async function paste(dest = currentPath()) {
     }
 }
 
-/** Files dropped in from outside: moved within a drive, copied across drives, as Explorer does. */
+/** Files dropped in from outside: moved within a drive, copied across drives, as Explorer does; on the Recycle Bin, recycled. */
 export async function dropFiles(paths: string[], dest: string) {
+    if (isRecycleBin(dest)) {
+        const what = plural(paths.length, "item");
+        try {
+            await busy(`Deleting ${what}…`, fileOp({ kind: "delete", paths, permanent: false, confirm: useStore.getState().settings.confirmDelete }));
+        } catch (e) {
+            toast.error(`Couldn't delete ${what}`, { description: String(e) });
+        }
+        return;
+    }
     const sources = paths.filter((p) => !samePath(parentPath(p), dest) && !samePath(p, dest));
     if (!sources.length) return;
     const root = (p: string) => crumbs(p)[0]?.path.toLowerCase();
@@ -1754,6 +1842,7 @@ export async function renameEntry(entry: FileEntry, name: string, tab = activeTa
     updateTab({ renaming: null }, tab);
     if (isArchived(entry)) return readOnlyNotice();
     if (isClosed(entry)) return closedNotice(tab);
+    if (isRecycled(entry)) return recycledNotice();
     // Windows drops trailing dots and spaces itself.
     const trimmed = name.trim().replace(/[. ]+$/, "");
     if (!trimmed || trimmed === entry.name) return;
@@ -1779,7 +1868,7 @@ export async function renameEntry(entry: FileEntry, name: string, tab = activeTa
 export async function newItem(dir: boolean) {
     const tab = activeTabId();
     const path = tabState(tab)?.path;
-    if (!path || path === THIS_PC) return;
+    if (!path || !isFolderPath(path)) return;
     if (archiveOf(tab)) return readOnlyNotice();
     if (closedOf(tab)) return closedNotice(tab);
     try {

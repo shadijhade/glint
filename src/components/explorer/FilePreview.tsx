@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, Loader2, ScanText, X } from "lucide-react";
+import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, Loader2, RotateCcw, ScanText, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
-import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
-import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
+import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly, isRecycled } from "@/lib/entries";
+import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, restoreRecycled, useExplorer } from "@/lib/explorer";
 import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, type ArchivePeek, archivePeek, listDir, ocrText, readTextPreview } from "@/lib/fs";
@@ -12,7 +12,7 @@ import { useGitMark } from "@/lib/git";
 import { mapLink, useMediaDetails } from "@/lib/media";
 import { usePreviewView, type View } from "@/lib/preview";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
-import { baseName, parentPath } from "@/lib/paths";
+import { baseName, isRecycleBin, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
@@ -303,7 +303,8 @@ function LockedPreview({ entry }: { entry: FileEntry }) {
 }
 
 function FolderPreview({ entry }: { entry: FileEntry }) {
-    const size = useExplorer((s) => s.sizes[parentPath(entry.path)]?.sizes.get(entry.name));
+    // A folder in the Recycle Bin comes with its size, as Windows noted it.
+    const size = useExplorer((s) => s.sizes[parentPath(entry.path)]?.sizes.get(entry.name)) ?? (isRecycled(entry) ? entry.size : undefined);
     const [counts, setCounts] = useState<{ folders: number; files: number; bytes: number } | { error: string } | null>(null);
     useEffect(() => {
         let stale = false;
@@ -353,12 +354,14 @@ function Details({ entry }: { entry: FileEntry }) {
     // A photo's camera, exposure, date taken and place, a song's artist and album…, read from the file.
     const media = useMediaDetails(entry, !isArchived(entry));
     const place = media?.place;
+    // In the Recycle Bin, its date is when it was deleted, and where it was is where it goes back to.
+    const recycled = isRecycled(entry);
     const rows: [string, string][] = [
         ...(media?.rows ?? []),
         ["Type", typeLabel(entry)],
-        ...(!entry.dir ? [["Size", `${formatSize(entry.size)} (${formatCount(entry.size)} bytes)`] as [string, string]] : []),
-        ["Modified", formatFullDate(entry.modified)],
-        ["Location", parentPath(entry.path)],
+        ...(!entry.dir || recycled ? [["Size", `${formatSize(entry.size)} (${formatCount(entry.size)} bytes)`] as [string, string]] : []),
+        [recycled ? "Deleted" : "Modified", formatFullDate(entry.modified)],
+        [recycled ? "Deleted from" : "Location", recycled ? (entry.origin ?? "") : parentPath(entry.path)],
     ];
     return (
         <dl className="grid shrink-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-t px-4 py-3 text-xs">
@@ -471,6 +474,8 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     else body = <BigIcon entry={entry} />;
 
     const closed = isClosed(entry);
+    // In the Recycle Bin it's restored rather than opened, and File Explorer would show the bin.
+    const recycled = isRecycled(entry);
     const open = () => (archived || entry.dir || closed ? openEntry(entry) : openFile(entry.path));
     // What's in an archive isn't a place File Explorer shows here: it shows the archive.
     const reveal = () => (archive ? revealItemInDir(archive.outer) : revealItemInDir(entry.path));
@@ -501,17 +506,25 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                     </div>
                 )}
                 <div className={cn("flex shrink-0", views.length < 2 && "ml-auto")}>
-                    {!entry.dir && !archived && !closed && (
+                    {!entry.dir && !archived && !closed && !recycled && (
                         <Button variant="ghost" size="icon" className="size-7" onClick={() => inspectXRay(entry.path)} title="File X-Ray: hashes and hidden streams">
                             <Fingerprint />
                         </Button>
                     )}
-                    <Button variant="ghost" size="icon" className="size-7" onClick={reveal} title={archive ? "Show the archive in File Explorer" : "Show in File Explorer"}>
-                        <FolderSearch />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="size-7" onClick={open} title="Open (Enter)">
-                        <ExternalLink />
-                    </Button>
+                    {recycled ? (
+                        <Button variant="ghost" size="icon" className="size-7" onClick={() => void restoreRecycled([entry])} title={`Restore: back into ${entry.origin ?? "the folder it was deleted from"}`}>
+                            <RotateCcw />
+                        </Button>
+                    ) : (
+                        <>
+                            <Button variant="ghost" size="icon" className="size-7" onClick={reveal} title={archive ? "Show the archive in File Explorer" : "Show in File Explorer"}>
+                                <FolderSearch />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="size-7" onClick={open} title="Open (Enter)">
+                                <ExternalLink />
+                            </Button>
+                        </>
+                    )}
                     {onClose && (
                         <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Space or Esc)" aria-label="Close">
                             <X />
@@ -571,6 +584,19 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
         );
     }
     if (!entry || !selected.length) {
+        if (isRecycleBin(folder.path)) {
+            return (
+                <Centered>
+                    <Trash2 className="size-14 stroke-[1.25] text-muted-foreground/70" />
+                    <p className="font-medium text-foreground">Recycle Bin</p>
+                    <p>
+                        {formatCount(folder.items)} {folder.items === 1 ? "item" : "items"}
+                        {!!folder.total && ` · ${formatSize(folder.total)} in total`}
+                    </p>
+                    <p className="text-xs">Select an item to look at it before you restore it</p>
+                </Centered>
+            );
+        }
         return (
             <Centered>
                 <FolderOpen className="size-14 fill-amber-400/80 stroke-[1.25] text-amber-500" />

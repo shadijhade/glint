@@ -244,8 +244,10 @@ export type FileOp =
     | { kind: "rename"; path: string; name: string }
     /** Undoing a move: each item back into `folder` as `name`. */
     | { kind: "moveBack"; items: { path: string; folder: string; name: string }[] }
-    /** Undoing a delete: Recycle Bin items (as a deletion's `to` names them) back where they were. */
+    /** Undoing a delete, or Restore in the Recycle Bin: its items (as a deletion's `to` names them) back where they were, into their folder made again if it's gone. */
     | { kind: "restore"; items: { path: string; folder: string; name: string }[] }
+    /** Delete for good in the Recycle Bin: its items by their paths there (asked first, by their names). */
+    | { kind: "purge"; paths: string[] }
     /** Sync in compare panes: each item copied into `folder` as `name`. */
     | { kind: "copyInto"; items: { path: string; folder: string; name: string }[] };
 
@@ -261,6 +263,9 @@ export interface Performed {
 
 /** Runs through Windows' own file engine (progress, conflicts, Recycle Bin). */
 export const fileOp = (op: FileOp) => invoke<Performed>("file_op", { op });
+
+/** Empties the Recycle Bin, every drive's, after Windows' own question: whether it's empty now. */
+export const recycleEmpty = () => invoke<boolean>("recycle_empty");
 
 export const clipboardSetFiles = (paths: string[], cut: boolean) => invoke("clipboard_set_files", { paths, cut });
 export const clipboardGetFiles = () => invoke<{ paths: string[]; cut: boolean } | null>("clipboard_get_files");
