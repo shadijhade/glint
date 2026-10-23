@@ -1590,7 +1590,7 @@ export function rememberUndo(label: string, run: () => Promise<unknown>): UndoSt
 export const nextUndo = (): UndoStep | undefined => undoSteps[undoSteps.length - 1];
 
 /** Says what was just done, with Undo right there (as Ctrl+Z). */
-const offerUndo = (said: string, step: UndoStep) => toast.success(said, { id: "undo", duration: 8000, action: { label: "Undo", onClick: () => void undo(step) } });
+export const offerUndo = (said: string, step: UndoStep) => toast.success(said, { id: "undo", duration: 8000, action: { label: "Undo", onClick: () => void undo(step) } });
 
 /**
  * A copy, move, rename or delete through Windows' file engine that Ctrl+Z can take back. False when

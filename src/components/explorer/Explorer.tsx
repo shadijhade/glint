@@ -43,6 +43,7 @@ import {
     GitCompareArrows,
     HardDrive,
     History,
+    ImageDown,
     Info,
     Keyboard,
     KeyRound,
@@ -189,6 +190,7 @@ import { type Command, CommandPalette } from "./CommandPalette";
 import { checkForSecrets, checkWithYara, secretsCheckFirst } from "./CheckDialog";
 import { openCleanup } from "./CleanupDialog";
 import { compareFiles } from "./CompareFilesDialog";
+import { canConvert, convertPictures } from "./ConvertDialog";
 import { DiskUsage } from "./DiskUsage";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { FileGrid } from "./FileGrid";
@@ -649,6 +651,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                     )
                 ),
             !!oneArchive && !closedItems && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
+            chosenEntries.some(canConvert) && action("convert", "Convert the selected pictures: JPEG, PNG, WebP or AVIF, smaller", ImageDown, () => convertPictures(chosenEntries)),
             !!archive &&
                 samePath(t.path, archive.path) &&
                 samePath(archive.path, archive.outer) &&
@@ -1263,6 +1266,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const closed = targets.some(isClosed);
         const fixed = !!archived || closed;
         const browses = !!one && (one.dir || isArchiveFile(one));
+        const pictures = targets.filter(canConvert);
         // Two files side by side: the two chosen, or (comparing panes) one and its namesake in the other pane.
         const pair = targets.length === 2 && !fixed && targets.every((t) => !t.dir) ? targets : null;
         const status = one && !one.dir && !fixed && otherPath ? comparison?.diffs.get(one.lower) : undefined;
@@ -1317,6 +1321,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || fixed, onSelect: () => copyToOtherPane(true, paths) },
             "separator",
             !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
+            pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
             "separator",
             one
                 ? { label: "Rename", icon: PenLine, shortcut: "F2", disabled: fixed, onSelect: () => startRename(one.path) }

@@ -20,6 +20,7 @@ import {
     GitCompareArrows,
     HardDrive,
     History,
+    ImageDown,
     KeyRound,
     LayoutDashboard,
     LayoutGrid,
@@ -72,6 +73,7 @@ import { cn } from "@/lib/utils";
 import { useMenu } from "../Menu";
 import { Button } from "../ui/button";
 import { checkForSecrets, checkWithYara } from "./CheckDialog";
+import { canConvert, convertPictures } from "./ConvertDialog";
 import { openCleanup } from "./CleanupDialog";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { openHistory } from "./HistoryDialog";
@@ -284,6 +286,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             { heading: "Clean up" },
             { label: "Find duplicate files in this folder", icon: Files, disabled: !inFolder, onSelect: () => inspectDuplicates(path) },
             { label: "Clean up this folder…", icon: BrushCleaning, disabled: !inFolder || readOnly, onSelect: () => openCleanup(path) },
+            { label: "Convert the selected pictures…", icon: ImageDown, disabled: !selected.some(canConvert), onSelect: () => convertPictures(selected) },
             { heading: "Check" },
             {
                 label: paths.length ? "Scan the selection with Microsoft Defender" : "Scan this folder with Microsoft Defender",
