@@ -14,6 +14,7 @@ mod git;
 mod index;
 mod launch;
 mod locks;
+mod markdown;
 mod native_preview;
 mod pe;
 mod proc;
@@ -520,6 +521,7 @@ pub fn run() {
             batch_rename::batch_rename,
             xray::inspect_file_xray,
             xray::file_real_type,
+            markdown::markdown_html,
             sign::verify_signature,
             defender::defender_scan,
             defender::cancel_defender_scan,

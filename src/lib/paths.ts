@@ -39,6 +39,35 @@ export function samePath(a: string, b: string) {
     return a.replace(SEPARATORS, "").toLowerCase() === b.replace(SEPARATORS, "").toLowerCase();
 }
 
+/** The drive ("C:") or share ("\\server\share") a path is on. */
+export const volumeOf = (path: string) => /^(?:[a-z]:|\\\\[^\\]+\\[^\\]+)/i.exec(path)?.[0] ?? "";
+
+/**
+ * The file a link in a document names (a Markdown link or picture): its URL's path, relative to the
+ * document's `folder`, or to `root` (its repository's, or its drive's) when it starts with / as on
+ * GitHub; or a path like C:\…. Null for a web address or another scheme.
+ */
+export function linkedPath(url: string, folder: string, root: string): string | null {
+    let path = url.replace(/[?#].*$/, "");
+    if (!path) return null;
+    try {
+        path = decodeURIComponent(path);
+    } catch {
+        // A stray % is the name itself.
+    }
+    if (/^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path)) return null;
+    // A leading / or \ is the root's, never a share's \\server.
+    const full = /^[a-z]:/i.test(path) ? path : `${/^[\\/]/.test(path) ? root : folder}\\${path}`;
+    const volume = volumeOf(full);
+    if (!volume) return null;
+    const parts: string[] = [];
+    for (const part of full.slice(volume.length).split(/[\\/]+/)) {
+        if (part === "..") parts.pop();
+        else if (part && part !== ".") parts.push(part);
+    }
+    return `${volume}\\${parts.join("\\")}`;
+}
+
 /** The breadcrumb trail: root first, then each folder down to `path`. */
 export function crumbs(path: string): { name: string; path: string }[] {
     if (path === THIS_PC) return [];

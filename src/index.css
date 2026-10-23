@@ -272,6 +272,143 @@
     }
   }
 
+  /* Markdown as it reads (MarkdownView), close to GitHub's, in the app's colors. */
+  .markdown {
+    font-size: 0.875rem;
+    line-height: 1.6;
+    overflow-wrap: break-word;
+  }
+
+  .markdown > :first-child {
+    margin-top: 0;
+  }
+
+  .markdown :is(p, ul, ol, blockquote, pre, table, section) {
+    margin: 0 0 0.85em;
+  }
+
+  .markdown :is(h1, h2, h3, h4, h5, h6) {
+    margin: 1.4em 0 0.6em;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .markdown :is(h1, h2) {
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+
+  .markdown h1 { font-size: 1.6em; }
+  .markdown h2 { font-size: 1.3em; }
+  .markdown h3 { font-size: 1.1em; }
+  .markdown h6 { color: hsl(var(--muted-foreground)); }
+
+  .markdown :is(ul, ol) {
+    padding-left: 1.6em;
+  }
+
+  .markdown ul { list-style: disc; }
+  .markdown ol { list-style: decimal; }
+  .markdown li > :is(ul, ol) { margin-bottom: 0; }
+  .markdown li + li { margin-top: 0.2em; }
+
+  .markdown li.task-list-item {
+    list-style: none;
+  }
+
+  .markdown li.task-list-item > input {
+    margin: 0 0.4em 0.15em -1.4em;
+    vertical-align: middle;
+    accent-color: hsl(var(--primary));
+  }
+
+  .markdown a {
+    color: hsl(var(--primary));
+    text-underline-offset: 2px;
+  }
+
+  .markdown a:hover {
+    text-decoration: underline;
+  }
+
+  .markdown :not(pre) > code {
+    padding: 0.1em 0.35em;
+    border-radius: 0.3rem;
+    background: hsl(var(--foreground) / 0.07);
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+  }
+
+  .markdown pre {
+    overflow-x: auto;
+    padding: 0.7em 0.9em;
+    border-radius: 0.375rem;
+    background: hsl(var(--foreground) / 0.045);
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+  }
+
+  .markdown blockquote {
+    padding-left: 0.9em;
+    border-left: 3px solid hsl(var(--border));
+    color: hsl(var(--muted-foreground));
+  }
+
+  .markdown hr {
+    margin: 1.4em 0;
+    border-top: 2px solid hsl(var(--border));
+  }
+
+  .markdown table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+  }
+
+  .markdown :is(th, td) {
+    padding: 0.3em 0.75em;
+    border: 1px solid hsl(var(--border));
+  }
+
+  .markdown th { font-weight: 600; }
+  .markdown tr:nth-child(2n) { background: hsl(var(--foreground) / 0.03); }
+
+  .markdown img {
+    display: inline-block;
+    max-width: 100%;
+  }
+
+  /* A picture that isn't shown: from the web, or not found. */
+  .markdown .md-missing {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    padding: 0 0.4em;
+    border: 1px dashed hsl(var(--border));
+    border-radius: 0.3rem;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.8em;
+  }
+
+  .markdown .md-missing svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .markdown section.footnotes {
+    padding-top: 0.6em;
+    border-top: 1px solid hsl(var(--border));
+    color: hsl(var(--muted-foreground));
+    font-size: 0.85em;
+  }
+
+  .markdown sup.footnote-ref a,
+  .markdown a.footnote-backref {
+    text-decoration: none;
+  }
+
   .hl-line {
     background: hsl(var(--primary) / 0.14);
     box-shadow: inset 2px 0 hsl(var(--primary));
@@ -288,6 +425,12 @@
   .token.function, .token.class-name { color: var(--tk-function); }
   .token.tag, .token.selector { color: var(--tk-tag); }
   .token.attr-name, .token.variable, .token.deleted { color: var(--tk-attr); }
+}
+
+/* Prism calls a Markdown table "table", which is also Tailwind's display: table; in a preview it stays
+   text. (Outside the layers, to win over utilities.) */
+.token.table {
+  display: inline;
 }
 
 /* Windows' high contrast themes drop the tints that show what's selected, on or picked: those get the
