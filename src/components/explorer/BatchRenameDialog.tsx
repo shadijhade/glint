@@ -1,11 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, PenLine, Regex, RotateCcw, Sparkles } from "lucide-react";
 import type { FileEntry } from "@/lib/entries";
 import { refresh, rememberUndo, undo, type UndoStep } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
-import { batchRename, type RenamePair } from "@/lib/fs";
+import { batchRename, type MediaDetails, mediaDetailsMany, type RenamePair } from "@/lib/fs";
 import { baseName, joinPath, parentPath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
@@ -106,7 +106,19 @@ const TOKENS = [
     { token: "{nnn}", desc: "001, 002…" },
     { token: "{date}", desc: "YYYY-MM-DD" },
     { token: "{parent}", desc: "Folder name" },
+    { token: "{taken}", desc: "Date a photo or video was taken (YYYY-MM-DD), else its date" },
+    { token: "{camera}", desc: "The camera a photo was taken with" },
+    { token: "{artist}", desc: "A song's artist" },
+    { token: "{album}", desc: "A song's album" },
+    { token: "{title}", desc: "A song's title" },
+    { token: "{track}", desc: "A song's track number: 01, 02…" },
 ];
+
+/** Tokens read from inside the files: photos' EXIF, songs' tags (media.rs). */
+const DETAILS = /\{(taken|camera|artist|album|title|track)\}/;
+
+/** A detail as part of a name: the characters Windows refuses in one become _. */
+const safe = (text: string | null | undefined) => (text ?? "").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").trim();
 
 export function BatchRenameDialog() {
     const { open, items, existingNames, lastUndo } = useBatchRenameStore();
@@ -119,6 +131,24 @@ export function BatchRenameDialog() {
     const [startNum, setStartNum] = useState(1);
     const [stepNum, setStepNum] = useState(1);
     const [running, setRunning] = useState(false);
+    // The selection's details, read once when the pattern first asks for one.
+    const [media, setMedia] = useState<Map<string, MediaDetails | null> | null>(null);
+    const wantsDetails = DETAILS.test(pattern);
+    useEffect(() => {
+        setMedia(null);
+    }, [items]);
+    useEffect(() => {
+        if (!open || !wantsDetails || media) return;
+        let stale = false;
+        mediaDetailsMany(items.map((e) => e.path)).then(
+            (found) => !stale && setMedia(new Map(items.map((e, k) => [e.path, found[k]]))),
+            () => !stale && setMedia(new Map())
+        );
+        return () => {
+            stale = true;
+        };
+    }, [open, wantsDetails, media, items]);
+    const reading = wantsDetails && !media;
 
 
     const resetRules = () => {
@@ -153,6 +183,7 @@ export function BatchRenameDialog() {
             const seq = startNum + idx * stepNum;
             const parent = baseName(parentPath(entry.path));
             const dateStr = formatIsoDate(entry.modified);
+            const details = media?.get(entry.path);
 
             const patternHasExt = pattern.includes("{ext}");
             // Replacer functions, so a $ in a name (price$&tax.txt) stays a $.
@@ -163,7 +194,13 @@ export function BatchRenameDialog() {
                 .replace(/\{nn\}/g, () => String(seq).padStart(2, "0"))
                 .replace(/\{n\}/g, () => String(seq))
                 .replace(/\{date\}/g, () => dateStr)
-                .replace(/\{parent\}/g, () => parent);
+                .replace(/\{parent\}/g, () => parent)
+                .replace(/\{taken\}/g, () => (details?.taken ? formatIsoDate(details.taken) : dateStr))
+                .replace(/\{camera\}/g, () => safe(details?.camera))
+                .replace(/\{artist\}/g, () => safe(details?.artist))
+                .replace(/\{album\}/g, () => safe(details?.album))
+                .replace(/\{title\}/g, () => safe(details?.title))
+                .replace(/\{track\}/g, () => (details?.track ? String(details.track).padStart(2, "0") : ""));
 
             builtStem = transformCase(builtStem, caseMode);
             const newName = patternHasExt
@@ -206,12 +243,12 @@ export function BatchRenameDialog() {
         const conflictCount = rows.filter((r) => r.conflict !== null).length;
 
         return { rows, regexError, changedCount, conflictCount };
-    }, [items, existingNames, findText, replaceText, useRegex, caseSensitive, pattern, caseMode, startNum, stepNum]);
+    }, [items, existingNames, findText, replaceText, useRegex, caseSensitive, pattern, caseMode, startNum, stepNum, media]);
 
     if (!open) return null;
 
     const applyBatch = async () => {
-        if (simulation.regexError || simulation.conflictCount > 0 || simulation.changedCount === 0) return;
+        if (reading || simulation.regexError || simulation.conflictCount > 0 || simulation.changedCount === 0) return;
         const ops: RenamePair[] = simulation.rows
             .filter((r) => r.changed)
             .map((r) => ({ from: r.entry.path, to: r.newPath }));
@@ -357,7 +394,12 @@ export function BatchRenameDialog() {
                             <option value="kebab">kebab-case</option>
                         </select>
                     </div>
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-wrap items-center gap-1">
+                        {reading && (
+                            <span className="mr-1 flex items-center gap-1 text-[0.625rem] text-muted-foreground">
+                                <Loader2 className="size-3 animate-spin" /> Reading the files' details…
+                            </span>
+                        )}
                         {TOKENS.map((t) => (
                             <button
                                 key={t.token}
@@ -458,7 +500,7 @@ export function BatchRenameDialog() {
                     <Button
                         type="submit"
                         size="sm"
-                        disabled={running || !!simulation.regexError || simulation.conflictCount > 0 || simulation.changedCount === 0}
+                        disabled={running || reading || !!simulation.regexError || simulation.conflictCount > 0 || simulation.changedCount === 0}
                     >
                         {running ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
                         Rename {formatCount(simulation.changedCount)} {simulation.changedCount === 1 ? "item" : "items"}

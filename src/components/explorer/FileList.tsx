@@ -49,6 +49,10 @@ export interface FileViewProps {
     git?: Readonly<Record<string, GitMark>>;
     sort: Sort;
     onSort: (key: SortKey) => void;
+    /** The header's menu: what to sort by. */
+    onHeaderMenu?: (e: React.MouseEvent) => void;
+    /** When a photo or video was taken, as far as it's known (sorting by date taken). */
+    takenOf?: (entry: FileEntry) => number | null | undefined;
     selection: ReadonlySet<string>;
     focusIndex: number;
     renaming: string | null;
@@ -195,7 +199,9 @@ export function relativeTo(scope: string) {
 export const sizeOf = (entry: FileEntry, search: boolean, sizes?: SizeRun) => (entry.dir ? (search ? entry.size || undefined : sizes?.sizes.get(entry.name)) : entry.size);
 
 export function FileList(props: FileListProps) {
-    const { rows, rowHeight, search, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    const { rows, rowHeight, search, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, takenOf, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    // Sorted by date taken, the date column shows it (a file that says none, its date modified).
+    const byTaken = sort.key === "taken";
     const focusPath = rows[focusIndex]?.path;
     const columns = useStore((s) => s.settings.columns);
     const relative = useMemo(() => relativeTo(scope), [scope]);
@@ -273,10 +279,16 @@ export function FileList(props: FileListProps) {
                         {relative(entry.path)}
                     </span>
                 )}
-                <span className={cn("flex items-center gap-1.5 truncate text-xs tabular-nums text-muted-foreground", search ? "col-optional" : "col-narrow")} title={formatFullDate(entry.modified)}>
-                    {isHot && <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title="Modified within the last hour" />}
-                    <span className="truncate">{formatDate(entry.modified)}</span>
-                </span>
+                {byTaken && typeof takenOf?.(entry) === "number" ? (
+                    <span className={cn("truncate text-xs tabular-nums text-foreground/80", search ? "col-optional" : "col-narrow")} title={`Taken ${formatFullDate(takenOf(entry)!)}`}>
+                        {formatDate(takenOf(entry)!)}
+                    </span>
+                ) : (
+                    <span className={cn("flex items-center gap-1.5 truncate text-xs tabular-nums text-muted-foreground", search ? "col-optional" : "col-narrow")} title={formatFullDate(entry.modified)}>
+                        {isHot && <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title="Modified within the last hour" />}
+                        <span className="truncate">{formatDate(entry.modified)}</span>
+                    </span>
+                )}
                 {!search && <span className="col-optional truncate text-xs text-muted-foreground">{typeLabel(entry)}</span>}
                 <span className="relative flex h-5 items-center justify-end overflow-hidden rounded-[3px] px-1 text-right text-xs tabular-nums text-muted-foreground">
                     {sizePct > 0 && (
@@ -297,11 +309,15 @@ export function FileList(props: FileListProps) {
             className={cn("files flex h-full min-h-0 flex-col", dropTarget && dropTarget === scope && !search && "bg-primary/5 outline-2 -outline-offset-2 outline-dashed outline-primary/60")}
             style={Object.fromEntries(Object.entries(columns).map(([column, width]) => [`--col-${column}`, `${width}px`]))}
         >
-            <div data-search={search || undefined} className="file-row h-8 shrink-0 overflow-y-hidden border-b px-3 text-xs font-medium text-muted-foreground [scrollbar-gutter:stable]">
+            <div
+                data-search={search || undefined}
+                onContextMenu={onHeaderMenu}
+                className="file-row h-8 shrink-0 overflow-y-hidden border-b px-3 text-xs font-medium text-muted-foreground [scrollbar-gutter:stable]"
+            >
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
                 {search && <span className="truncate">Folder</span>}
-                <Header sortKey="modified" sort={sort} onSort={onSort} column="date" className={search ? "col-optional" : "col-narrow"}>
-                    Date modified
+                <Header sortKey={byTaken ? "taken" : "modified"} sort={sort} onSort={onSort} column="date" className={search ? "col-optional" : "col-narrow"}>
+                    {byTaken ? "Date taken" : "Date modified"}
                 </Header>
                 {!search && (
                     <Header sortKey="type" sort={sort} onSort={onSort} column="type" className="col-optional">

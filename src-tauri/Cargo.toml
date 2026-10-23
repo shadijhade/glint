@@ -56,6 +56,13 @@ parquet = { version = "60", default-features = false, features = ["snap", "flate
 # SQL in the preview: SQLite itself (built in, 1.7 MB), over a database opened read-only or a table file
 # loaded into memory (sql.rs); `hooks` for its authorizer and progress handler.
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "hooks"] }
+# Photo, video and music details: EXIF and video tracks (nom-exif, pure Rust, fuzzed) and audio tags
+# (lofty); chrono reads a camera's local time as this PC's, base64 makes a cover a data: URL (both are
+# in the build through them).
+nom-exif = "3.8"
+lofty = "0.25"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+base64 = "0.22"
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
 # original zip crate, fuzzed) with every common method but encryption (no passwords yet), and
 # sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's and
