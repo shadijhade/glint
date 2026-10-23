@@ -1,6 +1,7 @@
 //! Reading archives: their list of entries (the zip central directory, the 7z header; tars and
 //! compressed files in `stream.rs`), and the data of the entries asked for, streamed out one at a time.
 
+use super::cab::{self, Cabinet, FolderReader};
 use super::codec::{Codec, Crc32Checked, Fused, Zstd};
 use super::stream::{self, Kind, Scan, StreamSource};
 use super::tree::{Item, ENCRYPTED, UNREADABLE};
@@ -26,6 +27,8 @@ pub enum Format {
     Tar(Codec),
     /// One compressed file (.gz, .xz…), shown as a folder holding what it unpacks to.
     Single(Codec),
+    /// A cabinet (.cab).
+    Cab,
 }
 
 /// What a file's name says about it: Enter opens it like a folder (`Browse`), or opens it in its app
@@ -65,6 +68,8 @@ impl Format {
             Format::Tar(Codec::Bz2)
         } else if is("tzst") {
             Format::Tar(Codec::Zst)
+        } else if is("cab") {
+            Format::Cab
         } else if let Some(codec) = Codec::ALL.into_iter().find(|c| *c != Codec::Plain && is(c.ext())) {
             if tarred {
                 Format::Tar(codec)
@@ -91,6 +96,8 @@ impl Format {
             Some(Format::Zip)
         } else if head.starts_with(b"7z\xBC\xAF\x27\x1C") {
             Some(Format::SevenZ)
+        } else if cab::is_cabinet(head) {
+            Some(Format::Cab)
         } else if let Some(codec) = Codec::detect(head) {
             Some(Format::Single(codec))
         } else if super::tar::is_header(head) {
@@ -106,6 +113,7 @@ impl Format {
             Format::SevenZ => 1,
             Format::Tar(codec) => 2 + codec.index(),
             Format::Single(codec) => 7 + codec.index(),
+            Format::Cab => 13,
         }
     }
 
@@ -120,6 +128,7 @@ impl Format {
             Format::Tar(Codec::Zst) => "tar.zst",
             Format::Tar(Codec::Lz4) => "tar.lz4",
             Format::Single(codec) => codec.ext(),
+            Format::Cab => "cab",
         }
     }
 }
@@ -137,6 +146,7 @@ pub enum Source {
     Zip(ZipSource),
     SevenZ(Box<SevenZSource>),
     Stream(Box<StreamSource>),
+    Cab(Box<CabSource>),
 }
 
 pub struct ZipSource {
@@ -176,7 +186,7 @@ impl Source {
             f.take(4096).read_to_end(&mut head).map(|_| head)
         }) {
             Ok(head) => match Format::detect(&head) {
-                Some(found @ (Format::Zip | Format::SevenZ)) => found,
+                Some(found @ (Format::Zip | Format::SevenZ | Format::Cab)) => found,
                 Some(Format::Single(_) | Format::Tar(_)) => Format::Tar(Codec::Plain),
                 None => format,
             },
@@ -185,6 +195,7 @@ impl Source {
         match format {
             Format::Zip => open_zip(path).map(|(s, items)| (s, items, format)),
             Format::SevenZ => open_7z(path).map(|(s, items)| (s, items, format)),
+            Format::Cab => open_cab(path).map(|(s, items)| (s, items, format)),
             Format::Tar(_) | Format::Single(_) => {
                 let kind = stream::kind_of(path).ok_or_else(|| Failure::Damaged("it isn't a tar archive or a compressed file Glint reads".into()))?;
                 let (source, items) = StreamSource::open(path, kind, scan, MAX_ENTRIES)?;
@@ -197,23 +208,25 @@ impl Source {
         }
     }
 
-    /// What extracting `item` costs, in bytes to decompress: its size, plus, in a solid 7z block or a
-    /// compressed tar, everything before it (which must be decompressed to reach it).
+    /// What extracting `item` costs, in bytes to decompress: its size, plus, in a solid 7z block, a
+    /// compressed tar or a cabinet's folder, everything before it (which must be decompressed to reach it).
     pub fn cost(&self, item: ItemIndex, size: u64) -> u64 {
         match self {
             Source::Zip(_) => size,
             Source::SevenZ(s) => s.place.get(item).copied().flatten().map_or(size, |(_, before)| before.saturating_add(size)),
             Source::Stream(s) => s.cost(item, size),
+            Source::Cab(c) => c.cabinet.files.get(item).map_or(size, |f| f.offset.saturating_add(size)),
         }
     }
 
-    /// The solid block `item` is in: a 7z block, or a compressed tar's one stream (None in a zip, a
-    /// plain tar, or for an empty 7z file).
+    /// The solid block `item` is in: a 7z block, a compressed tar's one stream, or a cabinet's folder
+    /// (None in a zip, a plain tar, or for an empty 7z file).
     pub fn block_of(&self, item: ItemIndex) -> Option<usize> {
         match self {
             Source::Zip(_) => None,
             Source::SevenZ(s) => s.place.get(item).copied().flatten().map(|(block, _)| block),
             Source::Stream(s) => s.block_of(item),
+            Source::Cab(c) => c.cabinet.files.get(item).map(|f| f.folder),
         }
     }
 
@@ -227,6 +240,7 @@ impl Source {
                 None => 1,
             },
             Source::Stream(s) => s.ratio(),
+            Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| c.cabinet.folders.get(f.folder)).map_or(1, |f| f.unpacked / f.packed.max(1)),
         }
     }
 
@@ -237,6 +251,7 @@ impl Source {
             Source::Zip(z) => z.problem(item),
             Source::SevenZ(s) => s.place.get(item).copied().flatten().and_then(|(block, _)| s.blocks[block].problem.clone()),
             Source::Stream(s) => s.problem(item),
+            Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| f.problem.clone()),
         }
     }
 
@@ -250,6 +265,7 @@ impl Source {
             Source::Zip(z) => z.read_each(file, items, each),
             Source::SevenZ(s) => s.read_each(file, items, each, skipped),
             Source::Stream(s) => s.read_each(file, items, each, skipped),
+            Source::Cab(c) => c.read_each(file, items, each, skipped),
         }
     }
 }
@@ -420,9 +436,9 @@ fn zip_failure(e: zip::result::ZipError) -> Failure {
     match e {
         ZipError::Io(e) => Failure::from(e),
         ZipError::CompressionMethodNotSupported(n) => Failure::Unsupported(zip_method_name(n)),
-        ZipError::UnsupportedArchive(what) if what.contains("multi-disk") => Failure::Unsupported("split into several files (multi-volume)".into()),
+        ZipError::UnsupportedArchive(what) if what.contains("multi-disk") => Failure::Unreadable("it's split into several files (a multi-volume zip)".into()),
         ZipError::UnsupportedArchive(what) if what == ZipError::PASSWORD_REQUIRED => Failure::Encrypted,
-        ZipError::UnsupportedArchive(what) => Failure::Unsupported(what.to_string()),
+        ZipError::UnsupportedArchive(what) => Failure::Unreadable(what.to_string()),
         ZipError::InvalidPassword => Failure::Encrypted,
         // No end-of-directory record: cut short, or not a zip at all.
         ZipError::InvalidArchive(what) if what.contains("EOCD") => Failure::Damaged("its list of files, at the end of the file, is missing (is it complete, and is it a zip file?)".into()),
@@ -500,16 +516,16 @@ pub fn filetime_ms(ticks: u64) -> Option<i64> {
     (ticks > 0).then(|| (ticks / 10_000) as i64 - 11_644_473_600_000)
 }
 
-/// Turns a zip's local date and time into a moment, in this PC's time zone (as File Explorer shows
-/// them), remembering each hour's offset so a big archive isn't converted entry by entry.
+/// Turns a zip's (or a cabinet's) local date and time into a moment, in this PC's time zone (as File
+/// Explorer shows them), remembering each hour's offset so a big archive isn't converted entry by entry.
 #[derive(Default)]
-struct LocalTime {
+pub(super) struct LocalTime {
     offsets: std::collections::HashMap<(u16, u8, u8, u8), i64>,
     last: Option<((u16, u8, u8, u8), i64)>,
 }
 
 impl LocalTime {
-    fn unix_ms(&mut self, t: &zip::DateTime) -> i64 {
+    pub(super) fn unix_ms(&mut self, t: &zip::DateTime) -> i64 {
         let days = days_from_civil(t.year() as i64, t.month() as i64, t.day() as i64);
         let wall = ((days * 24 + t.hour() as i64) * 60 + t.minute() as i64) * 60_000 + t.second() as i64 * 1000;
         let hour = (t.year(), t.month(), t.day(), t.hour());
@@ -727,7 +743,7 @@ fn sevenz_failure(e: sevenz_rust2::Error) -> Failure {
         Error::ChecksumVerificationFailed => Failure::Damaged("a checksum doesn't match".into()),
         Error::NextHeaderCrcMismatch => Failure::Damaged("the list of files doesn't match its checksum".into()),
         Error::BadSignature(_) => Failure::Damaged("it isn't a 7z archive".into()),
-        Error::UnsupportedVersion { major, minor } => Failure::Unsupported(format!("7z format version {major}.{minor}")),
+        Error::UnsupportedVersion { major, minor } => Failure::Unreadable(format!("it's a 7z in format version {major}.{minor}")),
         Error::MaxMemLimited { .. } => Failure::Bomb("it needs more memory to unpack than allowed".into()),
         other => Failure::Damaged(other.to_string()),
     }
@@ -1062,6 +1078,64 @@ fn block_entries_here<R: Read + Seek>(archive: &SevenZ, block: usize, source: &m
         io::copy(&mut entry, &mut io::sink())?;
     }
     Ok(true)
+}
+
+// Cabinets
+
+pub struct CabSource {
+    cabinet: Cabinet,
+}
+
+fn open_cab(path: &Path) -> Result<(Source, Vec<Item>), Failure> {
+    let cabinet = cab::read(&mut BufReader::new(File::open(path)?), MAX_ENTRIES)?;
+    let items = cabinet.files.iter().map(|f| f.item.clone()).collect();
+    Ok((Source::Cab(Box::new(CabSource { cabinet })), items))
+}
+
+impl CabSource {
+    /// Folder by folder, each read once from its start for what's wanted from it, in order.
+    fn read_each(&self, file: &Path, items: &[ItemIndex], each: &mut dyn FnMut(ItemIndex, &mut dyn Read) -> bool, skipped: &mut dyn FnMut(u64) -> bool) -> Vec<(ItemIndex, Failure)> {
+        let mut failed = Vec::new();
+        let mut by_folder: BTreeMap<usize, Vec<(u64, u64, ItemIndex)>> = BTreeMap::new();
+        for &item in items {
+            match self.cabinet.files.get(item) {
+                None => failed.push((item, Failure::NotFound)),
+                Some(f) => match &f.problem {
+                    Some(problem) => failed.push((item, problem.clone())),
+                    // Nothing to decompress for an empty file.
+                    None if f.item.size == 0 => {
+                        if !each(item, &mut io::empty()) {
+                            failed.push((item, Failure::Cancelled));
+                        }
+                    }
+                    None => by_folder.entry(f.folder).or_default().push((f.offset, f.item.size, item)),
+                },
+            }
+        }
+        let mut stopped = false;
+        for (folder, mut wanted) in by_folder {
+            wanted.sort_unstable();
+            while !wanted.is_empty() && !stopped {
+                let opened = File::open(file).and_then(|mut f| f.seek(SeekFrom::Start(self.cabinet.data_at(folder))).map(|_| f));
+                let source = match opened {
+                    Ok(f) => BufReader::with_capacity(256 << 10, f),
+                    Err(e) => {
+                        failed.extend(wanted.drain(..).map(|(_, _, i)| (i, Failure::from_io(&e))));
+                        break;
+                    }
+                };
+                // Fused: a block that fails to decompress isn't followed by reads of the next.
+                let mut reader = Fused::new(FolderReader::new(source, &self.cabinet, folder));
+                let (go, again) = stream::serve_in_order(&mut reader, &wanted, false, each, skipped, &mut failed);
+                stopped = !go;
+                wanted = again;
+            }
+            if stopped {
+                failed.extend(wanted.into_iter().map(|(_, _, i)| (i, Failure::Cancelled)));
+            }
+        }
+        failed
+    }
 }
 
 /// Counts bytes read through (they cost time too) and passes them on to the progress callback.

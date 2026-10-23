@@ -269,12 +269,11 @@ impl StreamSource {
     /// with one already passed (a hard link's), for another pass.
     #[allow(clippy::type_complexity)]
     fn pass(&self, file: &Path, wanted: &[(u64, u64, usize)], each: &mut dyn FnMut(usize, &mut dyn Read) -> bool, skipped: &mut dyn FnMut(u64) -> bool, failed: &mut Vec<(usize, Failure)>) -> (bool, Vec<(u64, u64, usize)>) {
-        let mut again = Vec::new();
         let source = match File::open(file) {
             Ok(f) => BufReader::with_capacity(256 << 10, f),
             Err(e) => {
                 failed.extend(wanted.iter().map(|&(_, _, i)| (i, Failure::from_io(&e))));
-                return (false, again);
+                return (false, Vec::new());
             }
         };
         if !self.compressed() {
@@ -288,51 +287,61 @@ impl StreamSource {
                     return (false, wanted[k + 1..].to_vec());
                 }
             }
-            return (true, again);
+            return (true, Vec::new());
         }
-        let mut stream = self.codec.decoder(source);
-        let mut pos = 0u64;
-        for (k, &(offset, size, item)) in wanted.iter().enumerate() {
-            if offset < pos {
-                again.push((offset, size, item));
-                continue;
-            }
-            // Read through what isn't wanted: everything after it depends on it.
-            let mut sink = Progress { skipped: &mut *skipped, stop: false };
-            match io::copy(&mut (&mut stream).take(offset - pos), &mut sink) {
-                Ok(n) if n == offset - pos => {}
-                _ if sink.stop => {
-                    again.extend_from_slice(&wanted[k..]);
-                    return (false, again);
-                }
-                Ok(_) => {
-                    failed.extend(wanted[k..].iter().map(|&(_, _, i)| (i, Failure::Damaged("it ends too early (is it complete?)".into()))));
-                    return (true, again);
-                }
-                Err(e) => {
-                    let failure = io_failure(e);
-                    failed.extend(wanted[k..].iter().map(|&(_, _, i)| (i, failure.clone())));
-                    return (true, again);
-                }
-            }
-            // A single file's entry is the stream to its end, where its checksum is (and where it would
-            // turn out bigger or smaller than its header said). A tar's was checked when it was listed.
-            let mut entry = CountedTake { inner: (&mut stream).take(if self.single { u64::MAX } else { size }), read: 0 };
-            if !each(item, &mut entry) {
-                again.extend_from_slice(&wanted[k + 1..]);
-                return (false, again);
-            }
-            // Whatever the reader left of the entry is passed over too.
-            let rest = size.saturating_sub(entry.read);
-            let mut sink = Progress { skipped: &mut *skipped, stop: false };
-            if rest > 0 && io::copy(&mut (&mut stream).take(rest), &mut sink).is_err() && sink.stop {
-                again.extend_from_slice(&wanted[k + 1..]);
-                return (false, again);
-            }
-            pos = offset + size;
-        }
-        (true, again)
+        // A single file's entry is the stream to its end, where its checksum is (and where it would
+        // turn out bigger or smaller than its header said). A tar's was checked when it was listed.
+        serve_in_order(&mut self.codec.decoder(source), wanted, self.single, each, skipped, failed)
     }
+}
+
+/// Serves `wanted` (entries' offsets, sizes and indexes, sorted by offset) from `stream`, read front
+/// to back: what's between them is read through and counted by `skipped`, which stops it by
+/// returning false. With `to_end`, an entry is read on to the stream's end. Returns whether to go
+/// on, and the entries not served: on a stop, every one left; otherwise those whose data comes before
+/// what was already passed (entries sharing bytes, as a tar's hard links do), for another pass.
+#[allow(clippy::type_complexity)]
+pub fn serve_in_order(stream: &mut dyn Read, wanted: &[(u64, u64, usize)], to_end: bool, each: &mut dyn FnMut(usize, &mut dyn Read) -> bool, skipped: &mut dyn FnMut(u64) -> bool, failed: &mut Vec<(usize, Failure)>) -> (bool, Vec<(u64, u64, usize)>) {
+    let mut again = Vec::new();
+    let mut pos = 0u64;
+    for (k, &(offset, size, item)) in wanted.iter().enumerate() {
+        if offset < pos {
+            again.push((offset, size, item));
+            continue;
+        }
+        // Read through what isn't wanted: everything after it depends on it.
+        let mut sink = Progress { skipped: &mut *skipped, stop: false };
+        match io::copy(&mut Read::take(&mut *stream, offset - pos), &mut sink) {
+            Ok(n) if n == offset - pos => {}
+            _ if sink.stop => {
+                again.extend_from_slice(&wanted[k..]);
+                return (false, again);
+            }
+            Ok(_) => {
+                failed.extend(wanted[k..].iter().map(|&(_, _, i)| (i, Failure::Damaged("it ends too early (is it complete?)".into()))));
+                return (true, again);
+            }
+            Err(e) => {
+                let failure = io_failure(e);
+                failed.extend(wanted[k..].iter().map(|&(_, _, i)| (i, failure.clone())));
+                return (true, again);
+            }
+        }
+        let mut entry = CountedTake { inner: Read::take(&mut *stream, if to_end { u64::MAX } else { size }), read: 0 };
+        if !each(item, &mut entry) {
+            again.extend_from_slice(&wanted[k + 1..]);
+            return (false, again);
+        }
+        // Whatever the reader left of the entry is passed over too.
+        let rest = size.saturating_sub(entry.read);
+        let mut sink = Progress { skipped: &mut *skipped, stop: false };
+        if rest > 0 && io::copy(&mut Read::take(&mut *stream, rest), &mut sink).is_err() && sink.stop {
+            again.extend_from_slice(&wanted[k + 1..]);
+            return (false, again);
+        }
+        pos = offset + size;
+    }
+    (true, again)
 }
 
 /// An entry's reader, counting what was taken from it.

@@ -53,8 +53,12 @@ flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6"
 lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "xz"] }
 lz4_flex = "0.14"
+# Cabinets' LZX blocks (Glint reads cabinets itself; MSZIP is flate2's). Pure Rust, no dependencies.
+lzxd = "0.2.7"
 
 [dev-dependencies]
+# Tests write their own cabinets (stored and MSZIP).
+cab = "0.6"
 # Tests write their own 7z archives (Zstandard ones with the C library, in tests only), tars (long
 # names, PAX headers, links) and .xz files.
 sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate", "lz4", "zstd", "compress"] }
