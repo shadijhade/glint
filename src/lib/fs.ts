@@ -275,6 +275,10 @@ export const archiveCompress = (paths: string[], folder: string, name: string, l
 export const archiveExtractHere = (path: string, lane: string, onProgress: Progress) =>
     invoke<Staged>("archive_extract_here", { path, lane, onProgress: progressChannel(onProgress) });
 
+/** Export as ncdu JSON: the folder `path` walked into `dest` (written as `dest.part` until done); progress counts entries, with no total. */
+export const exportNcdu = (path: string, dest: string, lane: string, onProgress: Progress) =>
+    invoke<Staged>("export_ncdu", { path, dest, lane, onProgress: progressChannel(onProgress) });
+
 export const cancelArchiveStage = (lane: string) => invoke("cancel_archive_stage", { lane });
 export const archiveUnstage = (folder: string) => invoke("archive_unstage", { folder });
 
