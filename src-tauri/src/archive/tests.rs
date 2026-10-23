@@ -680,6 +680,94 @@ fn reads_7z_blocks_in_zstandard_and_lz4() {
     assert!(matches!(error, Failure::Damaged(_)), "{error:?}");
 }
 
+/// A cabinet folder to write: its compression and its files' names and bytes.
+type CabFolder<'a> = (::cab::CompressionType, &'a [(&'a str, &'a [u8])]);
+
+/// A cabinet of `folders`, written by the cab crate.
+fn write_cab(path: &Path, folders: &[CabFolder]) {
+    let mut builder = ::cab::CabinetBuilder::new();
+    for (kind, files) in folders {
+        let folder = builder.add_folder(*kind);
+        for (name, _) in files.iter() {
+            folder.add_file(*name);
+        }
+    }
+    let mut writer = builder.build(fs::File::create(path).unwrap()).unwrap();
+    let mut data = folders.iter().flat_map(|(_, files)| files.iter().map(|(_, d)| *d));
+    while let Some(mut file) = writer.next_file().unwrap() {
+        file.write_all(data.next().unwrap()).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+#[test]
+fn reads_cabinets() {
+    let dir = scratch("cabs");
+    // 300 files in one MSZIP folder (an MSI's cabinet holds thousands), and a stored folder.
+    let files: Vec<(String, Vec<u8>)> = (0..300).map(|i| (format!("dir{}\\file{i:03}.txt", i % 7), format!("file {i} ").repeat(50 + i).into_bytes())).collect();
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+    let stored = vec![9u8; 70_000];
+    let path = dir.join("big.cab");
+    write_cab(&path, &[(::cab::CompressionType::MsZip, &refs), (::cab::CompressionType::None, &[("stored.bin", &stored)])]);
+    let p = text(&path);
+    let top = listing(&p);
+    assert_eq!(names(&top), ["dir0", "dir1", "dir2", "dir3", "dir4", "dir5", "dir6", "stored.bin"]);
+    assert_eq!(top.items.iter().map(|i| i.2).sum::<u64>(), files.iter().map(|(_, d)| d.len() as u64).sum::<u64>() + 70_000);
+    // All of it, each folder read once, front to back.
+    let staged = stage_all(&top.items.iter().map(|(n, ..)| format!("{p}\\{n}")).collect::<Vec<_>>()).unwrap();
+    assert!(staged.skipped.is_empty(), "{:?}", staged.skipped);
+    for (name, data) in &files {
+        assert_eq!(&fs::read(Path::new(&staged.folder).join(name)).unwrap(), data, "{name}");
+    }
+    assert_eq!(fs::read(Path::new(&staged.folder).join("stored.bin")).unwrap(), stored);
+    extract::remove_tree(Path::new(&staged.folder));
+    // One from the middle of the folder (MSZIP's history carried through the blocks before it), and a start.
+    assert_eq!(fs::read(copy(&format!("{p}\\dir3\\file150.txt"), Purpose::Preview).unwrap()).unwrap(), files[150].1);
+    assert_eq!(read_prefix(&format!("{p}\\dir6\\file286.txt"), 9).unwrap().unwrap().0, b"file 286 ");
+    // A data block's checksum gives damage away.
+    let mut bytes = fs::read(&path).unwrap();
+    let stored_at = u32::from_le_bytes(bytes[44..48].try_into().unwrap()) as usize;
+    bytes[stored_at + 8 + 100] ^= 1;
+    let damaged = dir.join("damaged.cab");
+    fs::write(&damaged, &bytes).unwrap();
+    let error = copy(&format!("{}\\stored.bin", text(&damaged)), Purpose::Preview).unwrap_err();
+    assert!(matches!(error, Failure::Damaged(_)), "{error:?}");
+    // Quantum isn't read, and says so.
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[42..44].copy_from_slice(&2u16.to_le_bytes());
+    let quantum = dir.join("quantum.cab");
+    fs::write(&quantum, &bytes).unwrap();
+    let q = text(&quantum);
+    assert!(listing(&format!("{q}\\dir0")).items.iter().all(|i| i.3 & UNREADABLE != 0));
+    let error = copy(&format!("{q}\\dir0\\file000.txt"), Purpose::Preview).unwrap_err().message();
+    assert!(error.contains("Quantum"), "{error}");
+    assert_eq!(fs::read(copy(&format!("{q}\\stored.bin"), Purpose::Preview).unwrap()).unwrap(), stored, "the other folder reads");
+}
+
+#[test]
+fn reads_what_makecab_made() {
+    let dir = scratch("makecab");
+    // LZX with a 2 MB window, as Windows' own cabinets are.
+    let lzx = fixture("cab-lzx.cab", &dir);
+    assert_eq!(names(&listing(&lzx)), ["docs", "config.ini"]);
+    let readme = (1..=60).map(|i| format!("Line {i} of the readme, in an LZX cabinet made by makecab.")).collect::<Vec<_>>().join("\r\n");
+    let config = (1..=40).map(|i| format!("setting{i}=value{}", i * 7)).collect::<Vec<_>>().join("\r\n");
+    assert_eq!(fs::read_to_string(copy(&format!("{lzx}\\docs\\readme.txt"), Purpose::Preview).unwrap()).unwrap(), readme);
+    assert_eq!(fs::read_to_string(copy(&format!("{lzx}\\config.ini"), Purpose::Preview).unwrap()).unwrap(), config);
+    // A set split across two cabinets: what's whole in the first reads; what goes on into the second,
+    // or comes from the first, says why it can't.
+    let first = fixture("cab-split1.cab", &dir);
+    let whole = (1..=2000).map(|i| format!("Whole line {i} of a file that fills one block exactly.")).collect::<Vec<_>>().join("\r\n")[..32768].to_string();
+    assert_eq!(fs::read_to_string(copy(&format!("{first}\\whole.txt"), Purpose::Preview).unwrap()).unwrap(), whole);
+    let second = fixture("cab-split2.cab", &dir);
+    for (cabinet, name) in [(&first, "noise.bin"), (&first, "config.ini"), (&second, "noise.bin"), (&second, "config.ini")] {
+        let listed = listing(cabinet);
+        assert!(listed.items.iter().find(|i| i.0 == name).unwrap().3 & UNREADABLE != 0, "{cabinet} {name}");
+        let error = copy(&format!("{cabinet}\\{name}"), Purpose::Preview).unwrap_err().message();
+        assert!(error.contains("split across several cabinet files"), "{error}");
+    }
+}
+
 #[test]
 fn says_when_entries_are_password_protected() {
     let dir = scratch("encrypted");
@@ -783,10 +871,16 @@ fn never_falls_over_on_damaged_archives() {
         write_7z(&path, methods, &[("docs/a.txt", &[b'a'; 3000]), ("b.bin", &[7; 1000])], true);
         archives.push(fs::read(&path).unwrap());
     }
+    // Cabinets: MSZIP and stored folders, and LZX.
+    let path = dir.join("codec.cab");
+    write_cab(&path, &[(::cab::CompressionType::MsZip, &[("docs\\a.txt", &[b'a'; 40_000])]), (::cab::CompressionType::None, &[("b.bin", &[7; 1000])])]);
+    archives.push(fs::read(&path).unwrap());
+    archives.push(fs::read(fixture("cab-lzx.cab", &dir)).unwrap());
     for (n, original) in archives.iter().enumerate() {
         // By its first bytes, as Glint itself tells them apart.
         let ext = match Format::detect(original) {
             Some(Format::SevenZ) => "7z".to_string(),
+            Some(Format::Cab) => "cab".to_string(),
             Some(Format::Tar(_)) => "tar".to_string(),
             Some(Format::Single(codec)) => format!("tar.{}", codec.ext()),
             _ => "zip".to_string(),

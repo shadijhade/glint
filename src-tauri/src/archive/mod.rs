@@ -1,6 +1,6 @@
-//! Archives opened like folders, read-only: zip, 7z, tar and single compressed files. A path goes on
-//! into an archive the way it goes into a folder (`C:\Downloads\photos.zip\2024\summer`), and
-//! archives inside archives open the same way. An archive's list of entries (the zip central
+//! Archives opened like folders, read-only: zip, 7z, cabinets, tar and single compressed files. A
+//! path goes on into an archive the way it goes into a folder (`C:\Downloads\photos.zip\2024\summer`),
+//! and archives inside archives open the same way. An archive's list of entries (the zip central
 //! directory, the 7z header, a tar's headers) is read once, without extracting anything, into a tree
 //! of folders kept in memory while it's in use, so every folder in it lists in well under a
 //! millisecond after the first.
@@ -16,6 +16,7 @@
 //! fit on the drive don't start; encrypted entries and unknown methods get a clear message; and a
 //! damaged archive is an error, never a crash (every read runs under `catch_unwind`).
 
+mod cab;
 mod codec;
 mod compress;
 mod extract;
@@ -61,7 +62,10 @@ pub enum Failure {
     Encrypted,
     /// A 7z whose list of entries is itself encrypted.
     EncryptedList,
+    /// Compressed with a method Glint doesn't have ("MP3", "Quantum").
     Unsupported(String),
+    /// Something else Glint doesn't read ("it's a sparse file…").
+    Unreadable(String),
     Damaged(String),
     Bomb(String),
     /// Bigger (or deeper in a solid block) than `what` may extract.
@@ -95,6 +99,7 @@ impl Failure {
             Failure::Encrypted => "It's password-protected, and Glint can't open encrypted files in archives yet.".into(),
             Failure::EncryptedList => "This archive is password-protected, its list of files included, and Glint can't open encrypted archives yet.".into(),
             Failure::Unsupported(what) => format!("It's compressed with {what}, which Glint can't read."),
+            Failure::Unreadable(what) => format!("Glint can't read it: {what}."),
             Failure::Damaged(what) => format!("The archive is damaged: {what}."),
             Failure::Bomb(what) => format!("Glint won't extract it, because it looks like a zip bomb: {what}."),
             Failure::TooBig { size, what } => format!("It's too big to {what} from inside the archive ({}). Copy it out first.", size_text(*size)),
