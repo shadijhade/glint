@@ -40,6 +40,15 @@ const FILTERS: [string, string, string][] = [
     ["folder:", "folder:", "folders only"],
 ];
 
+/** What photos, videos and songs say of themselves (media.rs reads it): as you type for what's here, by the search on Enter. */
+const PROP_FILTERS: [string, string, string][] = [
+    ["width:>", "width:>1920", "wider than (height:<1080 too), photos and videos"],
+    ["taken:", "taken:2024", "taken in 2024 (taken:2024-06, taken:>2023, taken:7d)"],
+    ["camera:", "camera:pixel", "taken with that camera"],
+    ["duration:>", "duration:>5m", "longer than 5 minutes (1:30, 90s), videos and songs"],
+    ["artist:", "artist:beatles", "songs by (album: too)"],
+];
+
 /** Offered too in a Git repository: it filters what's on screen (Enter doesn't take it into subfolders). */
 const GIT_FILTER: [string, string, string] = ["git:", "git:changed", "changed in Git (git:new, git:staged…), here"];
 
@@ -612,7 +621,7 @@ export function AddressBar() {
                     spellCheck={false}
                     placeholder={`Search ${folderName}`}
                     aria-label={`Search ${folderName}. Typing filters; Enter searches subfolders too.`}
-                    title="Typing filters this folder · Enter searches subfolders by name, with the instant search index or fd (* and ? work, words all must match). Filters: ext:pdf, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:"
+                    title="Typing filters this folder · Enter searches subfolders by name, with the instant search index or fd (* and ? work, words all must match). Filters: ext:pdf, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
                     className={cn("fluent-field h-8 w-full pl-8 text-sm outline-hidden placeholder:text-muted-foreground", filter || find ? "pr-8" : "pr-8 max-sm:pr-0 max-sm:focus:pr-2")}
                 />
                 {(filter || find) && (
@@ -624,14 +633,20 @@ export function AddressBar() {
                     // Mouse down keeps the focus in the box, which each filter starts.
                     <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
                         <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too.</p>
-                        <div className="mt-1.5 flex flex-col">
-                            {(inRepository ? [...FILTERS, GIT_FILTER] : FILTERS).map(([start, example, meaning]) => (
-                                <button key={start} type="button" tabIndex={-1} onClick={() => updateTab({ filter: start })} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
-                                    <code className="shrink-0 font-mono text-[0.6875rem] text-primary">{example}</code>
-                                    <span className="truncate text-muted-foreground">{meaning}</span>
-                                </button>
-                            ))}
-                        </div>
+                        {[
+                            { title: "", filters: inRepository ? [...FILTERS, GIT_FILTER] : FILTERS },
+                            { title: "What photos, videos and songs say (read from the files):", filters: PROP_FILTERS },
+                        ].map(({ title, filters }) => (
+                            <div key={title} className="mt-1.5 flex flex-col">
+                                {title && <p className="px-1.5 pb-0.5 pt-1 text-muted-foreground">{title}</p>}
+                                {filters.map(([start, example, meaning]) => (
+                                    <button key={start} type="button" tabIndex={-1} onClick={() => updateTab({ filter: start })} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
+                                        <code className="shrink-0 font-mono text-[0.6875rem] text-primary">{example}</code>
+                                        <span className="truncate text-muted-foreground">{meaning}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        ))}
                     </div>
                 )}
             </div>
