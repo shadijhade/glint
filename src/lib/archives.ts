@@ -2,11 +2,14 @@
  * The archives Glint reads (src-tauri/src/archive/read.rs): the label of each format by its code, as a
  * listing's header and a disk-usage map's engine give it, and which file names Enter opens like folders.
  */
-export const ARCHIVE_FORMATS = ["zip", "7z", "tar", "tar.gz", "tar.xz", "tar.bz2", "tar.zst", "tar.lz4", "gz", "xz", "bz2", "zst", "lz4", "cab", "msi", "rar"] as const;
+export const ARCHIVE_FORMATS = [
+    "zip", "7z", "tar", "tar.gz", "tar.xz", "tar.bz2", "tar.zst", "tar.lz4", "gz", "xz", "bz2", "zst", "lz4", "cab", "msi", "rar",
+    "ncdu", "ncdu.gz", "ncdu.xz", "ncdu.bz2", "ncdu.zst", "ncdu.lz4",
+] as const;
 export type ArchiveFormat = (typeof ARCHIVE_FORMATS)[number];
 
-/** Extensions Enter opens like a folder: archives, tars (.tar.gz ends in "gz" like a lone .gz), and single compressed files. */
-export const BROWSED = ["zip", "7z", "rar", "tar", "tgz", "txz", "tbz", "tbz2", "tzst", "gz", "xz", "bz2", "zst", "lz4", "cab"];
+/** Extensions Enter opens like a folder: archives, tars (.tar.gz ends in "gz" like a lone .gz), single compressed files, and ncdu exports. */
+export const BROWSED = ["zip", "7z", "rar", "tar", "tgz", "txz", "tbz", "tbz2", "tzst", "gz", "xz", "bz2", "zst", "lz4", "cab", "ncdu"];
 
 /** Formats that hold one compressed file (shown as a folder of one): Extract here writes the file itself next to them. */
 export const SINGLE_FILE: readonly ArchiveFormat[] = ["gz", "xz", "bz2", "zst", "lz4"];

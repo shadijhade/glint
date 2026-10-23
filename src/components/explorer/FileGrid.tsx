@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Cloud } from "lucide-react";
-import { isHidden, isLocked, isOnlineOnly } from "@/lib/entries";
+import { isHidden, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
 import { typeLabel } from "@/lib/fileTypes";
 import { formatFullDate, formatSize } from "@/lib/format";
 import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
@@ -100,7 +100,7 @@ export function FileGrid(props: FileGridProps) {
                 )}
             >
                 <div className="relative grid shrink-0 place-items-center" style={{ width: tile.thumb, height: tile.thumb }}>
-                    <Thumbnail entry={entry} box={tile.thumb} lane={lane} enabled={!entry.dir && !isLocked(entry)} bottom iconSize={tile.thumb * (entry.dir ? 2 / 3 : 7 / 12)} iconClassName="stroke-[1.1]" />
+                    <Thumbnail entry={entry} box={tile.thumb} lane={lane} enabled={!entry.dir && !isLocked(entry) && !isListOnly(entry)} bottom iconSize={tile.thumb * (entry.dir ? 2 / 3 : 7 / 12)} iconClassName="stroke-[1.1]" />
                     {badge && (
                         <span
                             title={badge.title}

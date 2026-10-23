@@ -971,6 +971,39 @@ fn reads_rar_archives() {
 }
 
 #[test]
+fn browses_ncdu_exports() {
+    let dir = scratch("ncdu");
+    let json = r#"[1,2,{"progname":"ncdu","progver":"2.4","timestamp":1700000000},
+[{"name":"/srv","asize":4096,"dev":66306},
+ [{"name":"photos","asize":4096},{"name":"a.jpg","asize":3000000,"mtime":1700000000},{"name":"b.jpg","asize":2000000}],
+ {"name":"notes.txt","asize":1234},
+ [{"name":"logs","asize":4096},[{"name":"2024","asize":4096},{"name":"app.log","asize":500}]]
+]]"#;
+    let plain = dir.join("disk.ncdu");
+    fs::write(&plain, json).unwrap();
+    let p = text(&plain);
+    let top = listing(&p);
+    assert_eq!(names(&top), ["logs", "photos", "notes.txt"]);
+    assert_eq!(top.items.iter().map(|i| i.2).collect::<Vec<_>>(), [500, 5_000_000, 1234]);
+    assert!(top.items.iter().find(|i| i.0 == "notes.txt").unwrap().3 & tree::LIST_ONLY != 0, "names and sizes only");
+    let error = copy(&format!("{p}\\notes.txt"), Purpose::Preview).unwrap_err().message();
+    assert!(error.contains("ncdu export"), "{error}");
+    // Compressed, as `ncdu -c` writes it (zstd) or through gzip, and found by its bytes as a .json.
+    for (name, bytes) in [("disk.ncdu.zst", compressed(json.as_bytes(), Codec::Zst)), ("disk.json.gz", compressed(json.as_bytes(), Codec::Gz)), ("export.json", json.as_bytes().to_vec())] {
+        let path = dir.join(name);
+        fs::write(&path, bytes).unwrap();
+        let q = format!("{}\\photos", text(&path));
+        if name.ends_with(".json") {
+            assert!(sniff(&q), "{name}");
+        }
+        assert_eq!(names(&listing(&q)), ["a.jpg", "b.jpg"], "{name}");
+    }
+    // The disk usage map, from its sizes.
+    let (nodes, _, format) = usage(&p, 6, 100).unwrap().unwrap();
+    assert_eq!((nodes[0].size, format), (5_001_734, Format::Ncdu(Codec::Plain)));
+}
+
+#[test]
 fn says_when_entries_are_password_protected() {
     let dir = scratch("encrypted");
     for name in ["aes.zip", "zipcrypto.zip", "encrypted.7z"] {
