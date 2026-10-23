@@ -169,13 +169,14 @@ import {
     zoomGrid,
 } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
-import { driveName, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
+import { driveName, openIn, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, inArchivePath, isFolderPath, isRecycleBin, joinPath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
+import { openInItems, refreshOpeners, useOpeners } from "@/lib/openers";
 import { toggleTerminal, useTerminals } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
@@ -424,6 +425,7 @@ function folderMenu(
             ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archive) }
             : { label: "Open in File Explorer", icon: FolderSearch, onSelect: () => openPath(folder).catch(report("Couldn't open File Explorer")) },
         !inArchive && !shut && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
+        !inArchive && !shut && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(folder) },
         { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
         !inArchive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
         archive
@@ -472,12 +474,14 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 
     useEffect(() => {
         initExplorer();
+        refreshOpeners();
         // Refresh the folders on screen when they change on disk; drives may come and go while we're away,
-        // and what's deleted elsewhere goes into the Recycle Bin.
+        // what's deleted elsewhere goes into the Recycle Bin, and an editor may have been installed.
         const unlisten = listen<string>("dir-changed", (event) => reloadFolder(event.payload));
         const onFocus = () => {
             refreshDrives();
             reloadRecycleBins();
+            refreshOpeners();
         };
         window.addEventListener("focus", onFocus);
         return () => {
@@ -661,6 +665,11 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
             action("terminal-pane", useTerminals.getState().open ? "Hide the terminal" : "Terminal here, under the files", SquareTerminal, () => toggleTerminal(terminalFolder()), "Ctrl+`"),
             writable && !shut && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
+            ...(writable && !shut
+                ? useOpeners.getState().list.map((o) =>
+                      action(`open-in-${o.id}`, `Open this folder in ${o.name}`, o.terminal ? SquareTerminal : Code, () => void openIn(o.id, t.path).catch(report(`Couldn't open it in ${o.name}`)))
+                  )
+                : []),
             !!archive && action("explorer", "Show the archive in File Explorer", FileArchive, () => revealArchive(archive)),
             writable && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
@@ -1308,6 +1317,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 onSelect: () => (archived ? openArchivedWith(one, openWith) : openWith(one.path).catch(report("Couldn't open the app picker"))),
             },
             one?.dir && !fixed && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
+            one && !fixed && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(one.path) },
             find && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
             archived
                 ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }

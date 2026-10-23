@@ -16,6 +16,7 @@ import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 import { cancelMeaning, installMeaning, refreshMeaning, removeMeaning, useMeaning } from "@/lib/meaning";
 import { refreshZoxide } from "@/lib/zoxide";
+import { refreshOpeners, useOpeners } from "@/lib/openers";
 import { openShortcuts } from "./ShortcutsDialog";
 import { installHint } from "./ToolNeeded";
 import { Button } from "./ui/button";
@@ -270,6 +271,34 @@ function ToolRow({ tool, progress }: { tool: ToolStatus; progress?: ToolProgress
 }
 
 /** Meaning search's model, among the tools: downloaded or not, and Download, Stop or Remove. */
+/** The code editors found on this PC, to open files with: picking one fills in its path. */
+function EditorPicker({ value, onPick }: { value: string; onPick: (path: string) => void }) {
+    const editors = useOpeners((s) => s.list).filter((o) => !o.terminal);
+    useEffect(() => refreshOpeners(), []);
+    if (!editors.length) return null;
+    const chosen = editors.find((e) => e.path.toLowerCase() === value.trim().toLowerCase());
+    return (
+        <select
+            value={chosen?.id ?? ""}
+            onChange={(e) => {
+                const editor = editors.find((o) => o.id === e.target.value);
+                if (editor) onPick(editor.path);
+            }}
+            aria-label="An editor found on this PC"
+            className="h-8 rounded-md border bg-background px-2 text-sm outline-hidden focus:border-primary"
+        >
+            <option value="" disabled>
+                Found on this PC…
+            </option>
+            {editors.map((e) => (
+                <option key={e.id} value={e.id}>
+                    {e.name}
+                </option>
+            ))}
+        </select>
+    );
+}
+
 function MeaningRow() {
     const { installed, progress } = useMeaning();
     useEffect(() => {
@@ -628,8 +657,9 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
                     </Row>
                     <SwitchRow label="Preview the first result" hint="Show the first match as soon as results arrive" checked={settings.autoOpenPreview} onChange={(autoOpenPreview) => set({ autoOpenPreview })} />
                     <SwitchRow label="Confirm before replacing" checked={settings.confirmBeforeReplace} onChange={(confirmBeforeReplace) => set({ confirmBeforeReplace })} />
-                    <Row label="Open files with" hint="A program name or path, e.g. code or notepad++">
+                    <Row label="Open files with" hint="A program name or path, e.g. code or notepad++ (results open at their line), or an editor found on this PC">
                         <Input className="w-52" value={settings.editorPath} onChange={(e) => set({ editorPath: e.target.value })} placeholder="System default" />
+                        <EditorPicker value={settings.editorPath} onPick={(editorPath) => set({ editorPath })} />
                     </Row>
                 </Section>
 
