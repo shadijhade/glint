@@ -7,10 +7,13 @@
 //! - **Temporary files**: what programs leave behind (`*.tmp`, Office's `~$` owner files,
 //!   Thumbs.db…), less what a program still has open.
 //! - **Big files**: everything over a size.
+//! - With Czkawka (an optional tool): **look-alike** pictures, videos (FFmpeg reads them) and music,
+//!   **broken** files, and files whose extension isn't what's in them.
 //!
 //! Found from the instant search index where it answers, otherwise with fd (and sized with dust).
 //! Windows' own folder, the Recycle Bin and System Volume Information are left out. Nothing is
-//! removed here: the UI recycles what's chosen, which Ctrl+Z takes back.
+//! removed here: the UI recycles what's chosen (or gives a misnamed file its extension), which
+//! Ctrl+Z takes back.
 
 use crate::fsx::{blocking, ms_since};
 use crate::proc::Slot;
@@ -163,9 +166,20 @@ pub enum Mode {
     Temporary,
     /// Files of `at_least` bytes or more.
     Big { at_least: u64 },
+    /// Pictures that look alike: `alike` is how far apart their perceptual hashes may be (2 nearly
+    /// identical, 6 very similar, 12 similar).
+    Images { alike: u8 },
+    /// Videos with the same scenes (FFmpeg reads them): `alike` is how far apart frames may be (0–20).
+    Videos { alike: u8 },
+    /// Music with the same title and artist in its tags, or the same sound (`by_sound`).
+    Music { by_sound: bool },
+    /// Pictures, sound, PDFs and archives that don't open.
+    Broken,
+    /// Files whose extension says another type than what's in them.
+    Misnamed,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Found {
     pub path: String,
@@ -174,8 +188,24 @@ pub struct Found {
     /// When it last changed (developer junk: when its project did, see [`last_changed`]); 0 when
     /// that couldn't be told.
     pub date: i64,
-    /// What it is: "Rust builds", "Office owner files"…; empty for empty folders and big files.
-    pub kind: &'static str,
+    /// What it is: "Rust builds", "Office owner files"…; empty for empty folders, big files and
+    /// look-alikes.
+    pub kind: String,
+    /// Look-alikes: the group it's in, from 1; 0 for everything else.
+    pub group: u32,
+    /// More to say: a picture's size ("1920 × 1080"), a video's length, a song's tags, why a file
+    /// doesn't open, what a misnamed file really is.
+    pub note: String,
+    /// A misnamed file's right extension ("png").
+    pub fix: String,
+    /// A picture's width × height, to keep the biggest of look-alikes.
+    pub pixels: u64,
+}
+
+impl Found {
+    fn new(path: String, size: u64, date: i64, kind: &str) -> Found {
+        Found { path, size, date, kind: kind.to_string(), ..Default::default() }
+    }
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -529,7 +559,7 @@ fn find_junk(root: &str, run: &Run, use_index: bool) -> Result<Report, String> {
         .map(|(c, kind)| {
             let size = c.size.or_else(|| measured.get(&c.path.to_lowercase()).copied()).unwrap_or(0);
             let date = project_of(&c.path).and_then(|p| changed.get(&p.to_string_lossy().to_lowercase()).copied()).unwrap_or(0);
-            Found { path: c.path, size, date, kind }
+            Found::new(c.path, size, date, kind)
         })
         .collect();
     Ok(report(items, false, engines, 0, started))
@@ -651,7 +681,7 @@ fn find_empty(root: &str, run: &Run, use_index: bool) -> Result<Report, String> 
         run.stopped()?;
         let date = if modified > 0 { modified } else { std::fs::metadata(&path).map_or(0, |m| ms_of(&m)) };
         taken.insert(lower);
-        items.push(Found { path, size: 0, date, kind: "" });
+        items.push(Found::new(path, 0, date, ""));
     }
     Ok(report(items, true, engines, 0, started))
 }
@@ -681,7 +711,7 @@ fn find_leftovers(root: &str, run: &Run, use_index: bool) -> Result<Report, Stri
     let mut keep = |path: String, size: u64, date: i64| {
         let name = path.rsplit('\\').next().unwrap_or_default();
         if let Some(kind) = leftover(name).filter(|_| !off_limits(&path)) {
-            found.insert(path.to_lowercase(), Found { path, size, date, kind });
+            found.insert(path.to_lowercase(), Found::new(path, size, date, kind));
         }
     };
     let queries: Vec<String> = LEFTOVERS.iter().map(|(name, _)| format!("file: \"{}\"", name.glob())).collect();
@@ -727,7 +757,7 @@ fn find_big(root: &str, at_least: u64, run: &Run, use_index: bool) -> Result<Rep
     let mut keep = |path: String, size: u64, date: i64, attrs: u32| {
         let programs = path.get(from..).unwrap_or_default().split('\\').any(|part| NOT_FOR_BIG.iter().any(|n| part.eq_ignore_ascii_case(n)));
         if size >= at_least && attrs & SYSTEM == 0 && !programs && !off_limits(&path) {
-            items.push(Found { path, size, date, kind: "" });
+            items.push(Found::new(path, size, date, ""));
         }
     };
     let query = format!("file: size:>={at_least}");
@@ -746,12 +776,223 @@ fn find_big(root: &str, at_least: u64, run: &Run, use_index: bool) -> Result<Rep
     Ok(report(items, false, engines, 0, started))
 }
 
+/// Paths as they're spelled on disk. Czkawka hands them back lowercased (on Windows it compares them
+/// so): below `root`, each part is looked up in its folder, and each folder is listed once.
+struct Spelling {
+    root: String,
+    key: String,
+    folders: HashMap<String, HashMap<String, String>>,
+}
+
+impl Spelling {
+    fn new(root: &str) -> Spelling {
+        Spelling { root: root.trim_end_matches('\\').to_string(), key: folder_key(root), folders: HashMap::new() }
+    }
+
+    fn of(&mut self, path: &str) -> String {
+        let lower = path.to_lowercase();
+        if !below(&self.key, &lower) {
+            return path.to_string();
+        }
+        let mut spelled = self.root.clone();
+        for part in lower[self.key.len()..].split('\\').filter(|p| !p.is_empty()) {
+            let folder = spelled.to_lowercase();
+            if !self.folders.contains_key(&folder) {
+                // "C:" alone is the current folder on C:, not its root.
+                let listed = std::fs::read_dir(if spelled.ends_with(':') { format!("{spelled}\\") } else { spelled.clone() });
+                let names = listed.into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).map(|n| (n.to_lowercase(), n)).collect();
+                self.folders.insert(folder.clone(), names);
+            }
+            spelled.push('\\');
+            spelled.push_str(self.folders[&folder].get(part).map_or(part, String::as_str));
+        }
+        spelled
+    }
+}
+
+/// Folders below the one looked in that Czkawka passes over: programs' own (pictures in AppData are
+/// caches and icons), packages, and hidden ones (a name starting with a dot); its `$TRASH` covers
+/// the Recycle Bin.
+const NOT_FOR_CZKAWKA: &[&str] = &["appdata", "node_modules", "system volume information", ".*"];
+
+/// Whether `path` is in a hidden folder (a name starting with a dot) below `root`: what Czkawka
+/// found there when `root` is in one itself (so it couldn't be told to pass them over).
+fn in_dot_folder(root: &str, path: &str) -> bool {
+    let key = folder_key(root);
+    let lower = path.to_lowercase();
+    below(&key, &lower) && lower[key.len()..].split('\\').filter(|p| !p.is_empty()).rev().skip(1).any(|p| p.starts_with('.'))
+}
+
+/// Runs Czkawka's `tool` on `root` with `args`, and reads the compact JSON it saves. FFmpeg's folder
+/// goes first on its PATH when Glint finds FFmpeg, as Czkawka runs it by name to read videos.
+fn czkawka(tool: &str, root: &str, args: &[String], run: &Run) -> Result<serde_json::Value, String> {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let mut command = crate::tools::command("czkawka")?;
+    let saved = std::env::temp_dir().join(format!("glint-czkawka-{}-{}.json", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    // Czkawka matches what to pass over against whole paths, and only patterns that start with a
+    // wildcard (*\appdata\*): one for a folder `root` is in would pass over everything, so it's left
+    // out, and looking in a folder in AppData itself still works.
+    let parts: Vec<String> = root.to_lowercase().split('\\').map(str::to_string).collect();
+    let within = |name: &str| parts.iter().any(|p| if name == ".*" { p.starts_with('.') } else { p == name });
+    command.arg(tool).arg("-d").arg(root).arg("-C").arg(&saved).args(["-N", "-W", "-e"]).arg(&*WINDOWS).args(["-E", "$TRASH"]);
+    for name in NOT_FOR_CZKAWKA.iter().filter(|name| !within(name)) {
+        // One pattern to an -E.
+        command.arg("-E").arg(format!("*\\{name}\\*"));
+    }
+    command.args(args);
+    if let Some(dir) = crate::proc::locate("ffmpeg").and_then(|(exe, _)| exe.parent().map(Path::to_path_buf)) {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        command.env("PATH", std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).unwrap_or(path));
+    }
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|e| format!("Failed to start Czkawka: {e}"))?;
+    let stderr = child.stderr.take();
+    let pid = run.child.replace(child);
+    let mut said = String::new();
+    if let Some(mut stderr) = stderr {
+        let _ = stderr.read_to_string(&mut said);
+    }
+    let ended = run.child.finish(pid);
+    let json = std::fs::read_to_string(&saved);
+    let _ = std::fs::remove_file(&saved);
+    run.stopped()?;
+    match ended {
+        Some(status) if status.success() => serde_json::from_str(&json.map_err(|e| format!("Czkawka saved nothing to read: {e}"))?).map_err(|e| format!("Czkawka's results don't read: {e}")),
+        Some(status) => Err(format!("Czkawka stopped with {status}: {}", said.trim().lines().last().unwrap_or("it didn't say why"))),
+        None => Err("cancelled".into()),
+    }
+}
+
+/// "0:20", "1:02:03".
+fn duration(seconds: u64) -> String {
+    let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// What's wrong with a broken file, by the kind Czkawka checked it as.
+fn broken_kind(checked: &str) -> &'static str {
+    match checked {
+        "Image" => "Pictures that don't open",
+        "Audio" => "Sound that doesn't play",
+        "Pdf" => "PDFs that don't open",
+        "Archive" => "Archives that don't open",
+        c if c.starts_with("Video") => "Videos that don't play",
+        _ => "Files that don't open",
+    }
+}
+
+/// One entry of Czkawka's results, read loosely: its field names have stayed put across versions,
+/// their types less so.
+fn found_in(mode: Mode, entry: &serde_json::Value, spelling: &mut Spelling) -> Option<Found> {
+    use serde_json::Value;
+    let text = |key: &str| entry.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    let number = |key: &str| entry.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let path = spelling.of(entry.get("path")?.as_str()?);
+    let date = entry.get("modified_date").and_then(Value::as_i64).unwrap_or(0) * 1000;
+    let mut found = Found::new(path, number("size"), date, "");
+    match mode {
+        Mode::Images { .. } => {
+            let (width, height) = (number("width"), number("height"));
+            found.pixels = width * height;
+            found.note = if found.pixels > 0 { format!("{width} × {height}") } else { String::new() };
+        }
+        Mode::Videos { .. } => {
+            let ms = entry.get("signature").and_then(|s| s.get("duration_ms")).and_then(Value::as_u64).unwrap_or(0);
+            found.note = if ms > 0 { duration(ms / 1000) } else { String::new() };
+        }
+        Mode::Music { .. } => {
+            let tags = [text("track_title"), text("track_artist")].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" — ");
+            let bitrate = number("bitrate");
+            let length = number("length");
+            found.note = [tags, if bitrate > 0 { format!("{bitrate} kbps") } else { String::new() }, if length > 0 { duration(length) } else { String::new() }].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" · ");
+        }
+        Mode::Broken => {
+            let (checked, why) = entry.get("errors").and_then(Value::as_object).and_then(|e| e.iter().next())?;
+            found.kind = broken_kind(checked).to_string();
+            found.note = why.as_str().map_or_else(|| why.to_string(), str::to_string);
+        }
+        Mode::Misnamed => {
+            let (now, right) = (text("current_extension"), text("proper_extension"));
+            if right.is_empty() {
+                return None;
+            }
+            found.kind = format!("{} files with another extension", right.to_uppercase());
+            found.note = format!("named .{now}, really .{right}");
+            found.fix = right;
+        }
+        _ => {}
+    }
+    Some(found)
+}
+
+/// What Czkawka found below `root`: look-alikes as groups, biggest first (and in each, the biggest
+/// picture first), cut at a whole group past [`MAX_LISTED`]; broken and misnamed files biggest first.
+fn find_with_czkawka(root: &str, mode: Mode, run: &Run) -> Result<Report, String> {
+    let started = Instant::now();
+    let (tool, args): (&str, Vec<String>) = match mode {
+        Mode::Images { alike } => ("image", vec!["-s".into(), alike.min(40).to_string(), "-z".into(), "Lanczos3".into()]),
+        Mode::Videos { alike } => {
+            if crate::proc::locate("ffmpeg").is_none() {
+                return Err("Looking for look-alike videos needs FFmpeg, which reads them.".into());
+            }
+            ("video", vec!["-t".into(), alike.min(20).to_string()])
+        }
+        Mode::Music { by_sound } => ("music", if by_sound { vec!["-s".into(), "CONTENT".into()] } else { Vec::new() }),
+        Mode::Broken => ("broken", Vec::new()),
+        Mode::Misnamed => ("ext", Vec::new()),
+        _ => return Err("Czkawka doesn't look for that".into()),
+    };
+    let answer = czkawka(tool, root, &args, run)?;
+    Ok(czkawka_report(root, mode, &answer, started))
+}
+
+/// A report of Czkawka's `answer` for `mode` below `root`.
+fn czkawka_report(root: &str, mode: Mode, answer: &serde_json::Value, started: Instant) -> Report {
+    let mut spelling = Spelling::new(root);
+    let entries = answer.as_array().map(Vec::as_slice).unwrap_or_default();
+    let wanted = |f: &Found| !off_limits(&f.path) && !in_dot_folder(root, &f.path);
+    let mut items = Vec::new();
+    let grouped = matches!(mode, Mode::Images { .. } | Mode::Videos { .. } | Mode::Music { .. });
+    if !grouped {
+        items.extend(entries.iter().filter_map(|e| found_in(mode, e, &mut spelling)).filter(wanted));
+        let mut report = report(items, false, Engines::default(), 0, started);
+        report.engine = "czkawka".into();
+        return report;
+    }
+    let mut groups: Vec<Vec<Found>> = entries
+        .iter()
+        .filter_map(|group| group.as_array())
+        .map(|group| {
+            let mut group: Vec<Found> = group.iter().filter_map(|e| found_in(mode, e, &mut spelling)).filter(wanted).collect();
+            group.sort_by_key(|f| Reverse((f.pixels, f.size)));
+            group
+        })
+        .filter(|group| group.len() > 1)
+        .collect();
+    groups.sort_by_key(|group| Reverse(group.iter().map(|f| f.size).sum::<u64>()));
+    let mut more = 0;
+    for (n, group) in groups.into_iter().enumerate() {
+        if items.len() + group.len() > MAX_LISTED {
+            more += group.len();
+            continue;
+        }
+        items.extend(group.into_iter().map(|f| Found { group: n as u32 + 1, ..f }));
+    }
+    let total = items.iter().map(|f| f.size).sum();
+    Report { items, total, engine: "czkawka".into(), elapsed: ms_since(started), more, held: 0 }
+}
+
 fn scan(root: &str, mode: Mode, run: &Run, use_index: bool) -> Result<Report, String> {
     match mode {
         Mode::Junk => find_junk(root, run, use_index),
         Mode::Empty => find_empty(root, run, use_index),
         Mode::Temporary => find_leftovers(root, run, use_index),
         Mode::Big { at_least } => find_big(root, at_least.max(1), run, use_index),
+        Mode::Images { .. } | Mode::Videos { .. } | Mode::Music { .. } | Mode::Broken | Mode::Misnamed => find_with_czkawka(root, mode, run),
     }
 }
 
@@ -968,7 +1209,7 @@ mod tests {
         dir.put("f/keep.tmp.txt", 1000);
         let report = find_leftovers(&dir.root(), &Run::default(), false).unwrap();
         assert_eq!(dir.listed(&report), ["f/g2/Thumbs.db", "f/setup.tmp", "f/~$letter.docx"]);
-        assert_eq!(report.items.iter().map(|f| f.kind).collect::<Vec<_>>(), ["Thumbnail caches", "Temporary files", "Office owner files"]);
+        assert_eq!(report.items.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(), ["Thumbnail caches", "Temporary files", "Office owner files"]);
         assert_eq!(report.total, 4096 + 1000 + 162);
 
         dir.put("big.bin", 3 << 20);
@@ -978,6 +1219,132 @@ mod tests {
         let report = find_big(&dir.root(), 2 << 20, &Run::default(), false).unwrap();
         assert_eq!(dir.listed(&report), ["f/bigger.iso", "big.bin"]);
         assert!(report.items.iter().all(|f| f.date > 0));
+    }
+
+    /// A path as Czkawka hands it back: the drive letter as it is, the rest lowercase.
+    fn as_czkawka_says(path: &Path) -> String {
+        let path = path.to_string_lossy();
+        format!("{}{}", &path[..2], path[2..].to_lowercase())
+    }
+
+    #[test]
+    fn reads_what_czkawka_saves() {
+        let dir = Scratch::new("czkawka-json");
+        dir.put("Photos/IMG_0001.JPG", 3000);
+        dir.put("Photos/Copies/IMG_0001 Small.PNG", 1000);
+        dir.put("Photos/.Thumbs/IMG_0001.JPG", 500);
+        dir.put("Music/Song.MP3", 900);
+        dir.put("Music/Song (1).mp3", 800);
+        dir.put("Docs/Report.PDF", 700);
+        let at = |p: &str| as_czkawka_says(&dir.0.join(p.replace('/', "\\")));
+        let images = serde_json::json!([
+            [
+                { "path": at("Photos/Copies/IMG_0001 Small.PNG"), "size": 1000, "width": 960, "height": 540, "modified_date": 1_700_000_000 },
+                { "path": at("Photos/IMG_0001.JPG"), "size": 3000, "width": 1920, "height": 1080, "modified_date": 1_700_000_000 },
+                // In a hidden folder: left out, as fd leaves it.
+                { "path": at("Photos/.Thumbs/IMG_0001.JPG"), "size": 500, "width": 192, "height": 108, "modified_date": 1_700_000_000 }
+            ],
+            [{ "path": at("Docs/Report.PDF"), "size": 700, "width": 10, "height": 10, "modified_date": 0 }]
+        ]);
+        let report = czkawka_report(&dir.root(), Mode::Images { alike: 6 }, &images, Instant::now());
+        // The biggest picture first, each spelled as it is on disk; a group of one isn't one.
+        assert_eq!(dir.listed(&report), ["Photos/IMG_0001.JPG", "Photos/Copies/IMG_0001 Small.PNG"]);
+        assert_eq!((report.items[0].group, report.items[0].note.as_str(), report.items[0].pixels, report.items[0].date), (1, "1920 × 1080", 1920 * 1080, 1_700_000_000_000));
+        assert_eq!(report.total, 4000);
+
+        let music = serde_json::json!([[
+            { "path": at("Music/Song (1).mp3"), "size": 800, "track_title": "Song", "track_artist": "Band", "bitrate": 128, "length": 245, "fingerprint": [1, 2, 3] },
+            { "path": at("Music/Song.MP3"), "size": 900, "track_title": "Song", "track_artist": "Band", "bitrate": 320, "length": 245 }
+        ]]);
+        let report = czkawka_report(&dir.root(), Mode::Music { by_sound: false }, &music, Instant::now());
+        assert_eq!(dir.listed(&report), ["Music/Song.MP3", "Music/Song (1).mp3"]);
+        assert_eq!(report.items[0].note, "Song — Band · 320 kbps · 4:05");
+
+        let broken = serde_json::json!([{ "path": at("Docs/Report.PDF"), "size": 700, "modified_date": 1, "errors": { "Pdf": "invalid file header" } }]);
+        let report = czkawka_report(&dir.root(), Mode::Broken, &broken, Instant::now());
+        assert_eq!((report.items[0].kind.as_str(), report.items[0].note.as_str()), ("PDFs that don't open", "invalid file header"));
+
+        let misnamed = serde_json::json!([{ "path": at("Photos/IMG_0001.JPG"), "size": 3000, "current_extension": "jpg", "proper_extensions_group": "(png) - png,pnz", "proper_extension": "png" }]);
+        let report = czkawka_report(&dir.root(), Mode::Misnamed, &misnamed, Instant::now());
+        let item = &report.items[0];
+        assert_eq!((item.kind.as_str(), item.note.as_str(), item.fix.as_str()), ("PNG files with another extension", "named .jpg, really .png", "png"));
+        assert_eq!(dir.listed(&report), ["Photos/IMG_0001.JPG"]);
+    }
+
+    #[test]
+    fn tells_hidden_folders_below_the_one_looked_in() {
+        assert!(in_dot_folder(r"C:\Users\me", r"C:\Users\me\.cache\a.jpg"));
+        assert!(in_dot_folder(r"C:\", r"c:\users\me\.git\x\b.png"));
+        // A file whose own name starts with a dot isn't in a hidden folder.
+        assert!(!in_dot_folder(r"C:\Users\me", r"C:\Users\me\photos\.hidden.jpg"));
+        // Looking in a hidden folder itself was asked for.
+        assert!(!in_dot_folder(r"C:\Users\me\.claude\proj", r"C:\Users\me\.claude\proj\a\b.jpg"));
+        assert_eq!((duration(5), duration(245), duration(3723)), ("0:05".to_string(), "4:05".to_string(), "1:02:03".to_string()));
+    }
+
+    /// A 24-bit BMP of `width` × `height`, each pixel coloured by `shade(x, y)`.
+    fn bmp(width: u32, height: u32, shade: impl Fn(u32, u32) -> [u8; 3]) -> Vec<u8> {
+        let row = (width * 3 + 3) & !3;
+        let mut out = Vec::new();
+        out.extend(b"BM");
+        out.extend((54 + row * height).to_le_bytes());
+        out.extend([0; 4]);
+        out.extend(54u32.to_le_bytes());
+        for field in [40, width, height] {
+            out.extend(field.to_le_bytes());
+        }
+        out.extend(1u16.to_le_bytes());
+        out.extend(24u16.to_le_bytes());
+        for field in [0, row * height, 2835, 2835, 0, 0] {
+            out.extend(field.to_le_bytes());
+        }
+        for y in 0..height {
+            let start = out.len();
+            for x in 0..width {
+                out.extend(shade(x, y));
+            }
+            out.resize(start + row as usize, 0);
+        }
+        out
+    }
+
+    #[test]
+    fn asks_czkawka() {
+        if crate::proc::locate("windows_czkawka_cli").is_none() {
+            eprintln!("Czkawka isn't installed: skipped");
+            return;
+        }
+        let dir = Scratch::new("czkawka");
+        // A picture and a smaller copy of it look alike; stripes don't. One in a hidden folder is passed
+        // over. (Waves, not a plain gradient: a perceptual hash makes little of that.)
+        let waves = |scale: f32| {
+            move |x: u32, y: u32| {
+                let (u, v) = (x as f32 * scale, y as f32 * scale);
+                let r = 128.0 + 100.0 * (u / 9.0).sin() * (v / 13.0).cos();
+                let g = 128.0 + 100.0 * ((u + v) / 17.0).sin();
+                let b = 128.0 + 100.0 * (u / 5.0 - v / 23.0).cos();
+                [b as u8, g as u8, r as u8]
+            }
+        };
+        let picture = bmp(128, 128, waves(1.0));
+        fs::create_dir_all(dir.0.join("Pics/.cache")).unwrap();
+        fs::write(dir.0.join("Pics/Gradient A.BMP"), &picture).unwrap();
+        fs::write(dir.0.join("Pics/gradient small.bmp"), bmp(96, 96, waves(128.0 / 96.0))).unwrap();
+        fs::write(dir.0.join("Pics/.cache/gradient.bmp"), &picture).unwrap();
+        fs::write(dir.0.join("Pics/Stripes.bmp"), bmp(128, 128, |x, _| if x / 8 % 2 == 0 { [0, 0, 0] } else { [255, 255, 255] })).unwrap();
+        let report = find_with_czkawka(&dir.0.join("Pics").to_string_lossy(), Mode::Images { alike: 6 }, &Run::default()).unwrap();
+        assert_eq!(dir.listed(&report), ["Pics/Gradient A.BMP", "Pics/gradient small.bmp"]);
+        assert_eq!(report.items.iter().map(|f| f.group).collect::<Vec<_>>(), [1, 1]);
+        assert_eq!(report.engine, "czkawka");
+
+        // A BMP named .jpg; a "PDF" that's text.
+        fs::create_dir_all(dir.0.join("Named")).unwrap();
+        fs::write(dir.0.join("Named/Holiday.jpg"), &picture).unwrap();
+        fs::write(dir.0.join("Named/Notes.pdf"), "%PDF-1.7 not really ".repeat(1000)).unwrap();
+        let report = find_with_czkawka(&dir.0.join("Named").to_string_lossy(), Mode::Misnamed, &Run::default()).unwrap();
+        assert_eq!((dir.listed(&report), report.items[0].fix.as_str()), (vec!["Named/Holiday.jpg".to_string()], "bmp"));
+        let report = find_with_czkawka(&dir.0.join("Named").to_string_lossy(), Mode::Broken, &Run::default()).unwrap();
+        assert!(report.items.iter().any(|f| f.path.ends_with("Notes.pdf") && f.kind == "PDFs that don't open"), "{:?}", report.items);
     }
 
     /// `GLINT_CLEAN_ROOT=C:\Repos cargo test --release -- --ignored --nocapture cleans_up_a_real_folder`:
