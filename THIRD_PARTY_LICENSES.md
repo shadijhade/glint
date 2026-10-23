@@ -281,6 +281,7 @@ Apache License
 | [ruzstd](https://github.com/KillingSpark/zstd-rs) | 0.9.1 | Zstandard (zip entries, 7z blocks, .zst files) | MIT |
 | [lz4_flex](https://github.com/PSeitz/lz4_flex) | 0.14.0 | LZ4 (7z blocks, .lz4 files) | MIT |
 | [lzxd](https://github.com/Lonami/lzxd) | 0.2.7 | LZX (cabinets) | MIT or Apache-2.0 |
+| [msi](https://github.com/mdsteele/rust-msi) and [cfb](https://github.com/mdsteele/rust-cfb) | 0.10.0, 0.14.0 | Windows Installer packages' tables and streams | MIT |
 | [ppmd-rust](https://github.com/hasenbanck/ppmd-rust) | 1.5.0 | PPMd | CC0-1.0 or MIT-0 |
 | [bitstream-io](https://github.com/tuffy/bitstream-io) | 4.10.0 | Shrink, Reduce and Implode (very old zips) | MIT or Apache-2.0 |
 
@@ -390,6 +391,32 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### msi and cfb
+
+```text
+MIT License
+
+Copyright (c) 2017 Matthew D. Steele
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### zlib-rs
