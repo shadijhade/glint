@@ -510,6 +510,7 @@ pub fn run() {
             git::git_head_discard,
             filediff::compare_text_files,
             filediff::compare_bytes,
+            filediff::file_bytes,
             filediff::next_byte_difference,
             term::term_shells,
             term::term_spawn,

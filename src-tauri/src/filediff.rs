@@ -212,6 +212,20 @@ pub async fn compare_bytes(left: String, right: String, offset: u64, len: u32) -
     .await
 }
 
+/// `len` bytes of a file from `offset` (at most 1 MB), for the preview's hex view: its size (u64,
+/// little-endian), then the bytes.
+#[tauri::command]
+pub async fn file_bytes(path: String, offset: u64, len: u32) -> Result<tauri::ipc::Response, String> {
+    blocking(move || {
+        let (size, bytes) = read_at(&path, offset, len.min(1 << 20) as usize)?;
+        let mut out = Vec::with_capacity(8 + bytes.len());
+        out.extend(size.to_le_bytes());
+        out.extend(bytes);
+        Ok(tauri::ipc::Response::new(out))
+    })
+    .await
+}
+
 /// The first offset at or after `from` where the files differ (a byte, or one ending before the
 /// other); None when they're the same from there on.
 fn next_difference(left: &str, right: &str, from: u64) -> Result<Option<u64>, String> {
