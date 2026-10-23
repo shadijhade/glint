@@ -1,6 +1,7 @@
 mod access;
 mod archive;
 mod batch_rename;
+mod calc;
 mod check;
 mod cleanup;
 mod codesearch;
@@ -551,6 +552,7 @@ pub fn run() {
             doc_lines,
             zoxide::zoxide_folders,
             zoxide::zoxide_add,
+            calc::calculate,
             tools::tools_status,
             tools::tool_install,
             tools::tool_cancel_install,

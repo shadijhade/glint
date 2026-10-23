@@ -112,6 +112,9 @@ export const readTextPreview = (path: string, maxBytes: number) =>
 /** Markdown as HTML (GitHub's flavor, by comrak), with its own HTML in it for the preview to keep what's allowed. */
 export const markdownHtml = (text: string) => invoke<string>("markdown_html", { text });
 
+/** A sum with units, worked out by fend (calc.rs): "91.44 cm" for `3 ft to cm`; rejects with what's wrong with it. */
+export const calculate = (expression: string) => invoke<string>("calculate", { expression });
+
 export interface JqAnswer {
     values: JsonValue[];
     /** Cut at 100,000 values or 64 MB of JSON. */

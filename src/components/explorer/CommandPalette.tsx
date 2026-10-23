@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CornerDownLeft, type LucideIcon, Search } from "lucide-react";
+import { Calculator, CornerDownLeft, type LucideIcon, Search } from "lucide-react";
+import { toast } from "sonner";
+import { calculate } from "@/lib/fs";
 import { fuzzyScore } from "@/lib/rank";
 import { cn } from "@/lib/utils";
 import { Kbd } from "../ui/kbd";
@@ -36,8 +38,40 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
         return () => before?.focus();
     }, []);
 
+    // `=` and an expression: worked out as you type (calc.rs), its answer the one result, Enter copies it.
+    const expression = /^\s*=/.test(query) ? query.replace(/^\s*=/, "").trim() : null;
+    const [answer, setAnswer] = useState<{ expression: string; text: string; ok: boolean } | null>(null);
+    useEffect(() => {
+        if (!expression) return setAnswer(null);
+        let stale = false;
+        const timer = setTimeout(() => {
+            calculate(expression).then(
+                (text) => !stale && setAnswer({ expression, text, ok: true }),
+                (e) => !stale && setAnswer({ expression, text: String(e), ok: false })
+            );
+        }, 60);
+        return () => {
+            stale = true;
+            clearTimeout(timer);
+        };
+    }, [expression]);
+
     const results = useMemo(() => {
         const q = query.trim();
+        if (expression !== null) {
+            if (!expression) return [{ id: "calc", label: "Type a sum: 3 ft to cm, 1 GiB / (3 MB/s) to s, 0x1F + 1", icon: Calculator, kind: "action", run: () => {} } satisfies Command];
+            const shown = answer?.expression === expression ? answer : null;
+            const copy = () =>
+                void navigator.clipboard.writeText(shown!.text).then(
+                    () => toast.success(`Copied ${shown!.text}`),
+                    () => toast.error("Couldn't copy it")
+                );
+            return [
+                shown?.ok
+                    ? { id: "calc", label: `= ${shown.text}`, detail: expression, shortcut: "Enter copies", icon: Calculator, kind: "action", run: copy }
+                    : { id: "calc", label: shown ? shown.text : "…", detail: shown ? expression : undefined, icon: Calculator, kind: "action", run: () => {} },
+            ] satisfies Command[];
+        }
         if (!q) {
             // Nothing typed yet: the folders you use most, then every action.
             const folders = commands.filter((c) => c.kind === "folder").sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).slice(0, 6);
@@ -56,7 +90,7 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
         if (!looksLikePath(q)) return found;
         const go: Command = { id: "go", label: `Go to ${q}`, icon: CornerDownLeft, kind: "action", run: () => onGoTo(q) };
         return [go, ...found];
-    }, [commands, query, onGoTo]);
+    }, [commands, query, onGoTo, expression, answer]);
 
     useEffect(() => setActive(0), [query]);
     useEffect(() => {
@@ -97,7 +131,7 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={onKeyDown}
                         spellCheck={false}
-                        placeholder="Type a folder, a path or a command…"
+                        placeholder="Type a folder, a path or a command… (= for a sum)"
                         aria-label="Command or folder"
                         role="combobox"
                         aria-expanded
