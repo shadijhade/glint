@@ -275,28 +275,35 @@ export const archiveCompress = (paths: string[], folder: string, name: string, l
 export const archiveExtractHere = (path: string, lane: string, onProgress: Progress) =>
     invoke<Staged>("archive_extract_here", { path, lane, onProgress: progressChannel(onProgress) });
 
-/** A folder of developer junk (build output, a package cache) beside its project's file: what Clean up offers to recycle. */
-export interface Junk {
+/** What Clean up looks for: build output and package caches beside their projects, empty folders, what programs leave behind, or files of `atLeast` bytes and up. */
+export type CleanupMode = { mode: "junk" } | { mode: "empty" } | { mode: "temporary" } | { mode: "big"; atLeast: number };
+
+/** Something Clean up found, to recycle if chosen. */
+export interface CleanupItem {
     path: string;
-    /** Everything in it, in bytes. */
+    /** In bytes; a folder's is everything in it. */
     size: number;
-    /** When its project last changed, leaving out its build output, caches and .git; 0 when that couldn't be told (a project too big to look through). */
-    projectChanged: number;
-    /** What it is: "Node.js packages and builds", "Rust builds"… */
+    /** When it last changed (developer junk: when its project did, leaving out its build output, caches and .git); 0 when that couldn't be told. */
+    date: number;
+    /** What it is: "Rust builds", "Office owner files"…; "" for empty folders and big files. */
     kind: string;
 }
 
-export interface JunkReport {
-    /** Biggest first. */
-    items: Junk[];
+export interface CleanupReport {
+    /** Biggest first (empty folders: by path). */
+    items: CleanupItem[];
     total: number;
-    /** "index", "fd + dust", or "index + fd + dust". */
+    /** Who found and sized them: "index", "fd + dust", "index + fd"… */
     engine: string;
     elapsed: number;
+    /** How many more were found than listed (the biggest are). */
+    more: number;
+    /** Temporary files left out because a program has them open. */
+    held: number;
 }
 
-/** Developer junk below `root`, found in the tab's `lane`; rejects with "cancelled" when stopped. Nothing is removed. */
-export const cleanupJunk = (root: string, lane: string) => invoke<JunkReport>("cleanup_junk", { root, lane });
+/** What Clean up's `mode` finds below `root`, in the tab's `lane`; rejects with "cancelled" when stopped. Nothing is removed. */
+export const cleanupScan = (root: string, mode: CleanupMode, lane: string) => invoke<CleanupReport>("cleanup_scan", { root, mode, lane });
 export const cancelCleanup = (lane: string) => invoke("cancel_cleanup", { lane });
 
 /** Export as ncdu JSON: the folder `path` walked into `dest` (written as `dest.part` until done); progress counts entries, with no total. */
