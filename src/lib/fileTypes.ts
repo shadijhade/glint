@@ -63,7 +63,7 @@ const KINDS: [string, Kind][] = [
     ["mkv avi wmv flv mpg mpeg 3gp m2ts", { icon: FileVideo, tone: "text-violet-500", label: "% video", group: G.video }],
     ["mp3 wav ogg oga opus m4a aac flac", { icon: FileAudio, tone: "text-pink-500", label: "% audio", preview: "audio", group: G.audio }],
     ["wma aiff aif mid midi", { icon: FileAudio, tone: "text-pink-500", label: "% audio", group: G.audio }],
-    ["zip rar 7z tar gz tgz bz2 xz zst cab", { icon: FileArchive, tone: "text-amber-600 dark:text-amber-500", label: "% archive", group: G.archives }],
+    ["zip rar 7z tar gz tgz txz tbz tbz2 tzst bz2 xz zst lz4 cab", { icon: FileArchive, tone: "text-amber-600 dark:text-amber-500", label: "% archive", group: G.archives }],
     ["pdf", { icon: FileText, tone: "text-red-500", label: "PDF document", preview: "pdf", group: G.documents }],
     ["doc docx odt rtf pages", { icon: FileText, tone: "text-blue-600 dark:text-blue-400", label: "Word document", group: G.documents }],
     ["xls xlsx xlsm ods numbers", { icon: FileSpreadsheet, tone: "text-green-600 dark:text-green-500", label: "Spreadsheet", group: G.documents }],

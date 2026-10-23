@@ -76,6 +76,7 @@ import {
     ZoomOut,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { SINGLE_FILE } from "@/lib/archives";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
 import { compareEntries, type DiffStatus, type FileEntry, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
@@ -570,7 +571,10 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
             !archive && !closedItems && chosenEntries.length > 0 && action("compress", "Compress the selection to a zip file", FileArchive, () => compressEntries(chosenEntries)),
             !!oneArchive && !closedItems && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
-            !!archive && samePath(t.path, archive.path) && samePath(archive.path, archive.outer) && action("extract-all", "Extract all: everything into a folder next to the archive", ArchiveRestore, () => extractHere(archive.outer)),
+            !!archive &&
+                samePath(t.path, archive.path) &&
+                samePath(archive.path, archive.outer) &&
+                action("extract-all", SINGLE_FILE.includes(archive.format) ? "Extract the file next to the archive" : "Extract all: everything into a folder next to the archive", ArchiveRestore, () => extractHere(archive.outer)),
             !!other && chosen && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
             !!other && chosen && !archive && !shut && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),

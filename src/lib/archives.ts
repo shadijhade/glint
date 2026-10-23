@@ -2,11 +2,14 @@
  * The archives Glint reads (src-tauri/src/archive/read.rs): the label of each format by its code, as a
  * listing's header and a disk-usage map's engine give it, and which file names Enter opens like folders.
  */
-export const ARCHIVE_FORMATS = ["zip", "7z"] as const;
+export const ARCHIVE_FORMATS = ["zip", "7z", "tar", "tar.gz", "tar.xz", "tar.bz2", "tar.zst", "tar.lz4", "gz", "xz", "bz2", "zst", "lz4"] as const;
 export type ArchiveFormat = (typeof ARCHIVE_FORMATS)[number];
 
-/** Extensions Enter opens like a folder. */
-export const BROWSED = ["zip", "7z"];
+/** Extensions Enter opens like a folder: archives, tars (.tar.gz ends in "gz" like a lone .gz), and single compressed files. */
+export const BROWSED = ["zip", "7z", "tar", "tgz", "txz", "tbz", "tbz2", "tzst", "gz", "xz", "bz2", "zst", "lz4"];
+
+/** Formats that hold one compressed file (shown as a folder of one): Extract here writes the file itself next to them. */
+export const SINGLE_FILE: readonly ArchiveFormat[] = ["gz", "xz", "bz2", "zst", "lz4"];
 
 /**
  * Files that are archives by another name (a .docx, a .jar, an .msi…): Enter opens them in their app,

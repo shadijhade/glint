@@ -46,10 +46,18 @@ crc32fast = "1.5"
 zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64", "bzip2", "lzma", "xz", "ppmd", "legacy-zip"] }
 sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate"] }
 ruzstd = "0.9.1"
+# Tar and single compressed files (.gz, .xz, .bz2, .lz4), all pure Rust: the first three are already
+# in the build through zip-rs (zlib-rs, libbz2-rs-sys, lzma-rust2); lz4_flex is new.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+bzip2 = "0.6"
+lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "xz"] }
+lz4_flex = "0.14"
 
 [dev-dependencies]
-# Tests write their own 7z archives.
+# Tests write their own 7z archives, tars (long names, PAX headers, links) and .xz files.
 sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate", "compress"] }
+tar = { version = "0.4", default-features = false }
+lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "xz", "encoder"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Without the default `zip` feature: it only unpacks Tauri v1-style .zip updates, and updates here

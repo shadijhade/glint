@@ -1,8 +1,9 @@
-//! Zip and 7z archives opened like folders, read-only. A path goes on into an archive the way it
-//! goes into a folder (`C:\Downloads\photos.zip\2024\summer`), and archives inside archives open the
-//! same way. An archive's list of entries (the zip central directory, the 7z header) is read once,
-//! without extracting anything, into a tree of folders kept in memory while it's in use, so every
-//! folder in it lists in well under a millisecond after the first.
+//! Archives opened like folders, read-only: zip, 7z, tar and single compressed files. A path goes on
+//! into an archive the way it goes into a folder (`C:\Downloads\photos.zip\2024\summer`), and
+//! archives inside archives open the same way. An archive's list of entries (the zip central
+//! directory, the 7z header, a tar's headers) is read once, without extracting anything, into a tree
+//! of folders kept in memory while it's in use, so every folder in it lists in well under a
+//! millisecond after the first.
 //!
 //! Entries are extracted only when something needs their bytes: one at a time for previews,
 //! thumbnails and opening a file (into this run's temp folder, see `extract`), or a selection at a
@@ -19,6 +20,8 @@ mod codec;
 mod compress;
 mod extract;
 mod read;
+mod stream;
+mod tar;
 mod tree;
 
 use crate::fsx::{self, ms_since, Entry, InArchive, Resolved};
@@ -265,6 +268,12 @@ struct State {
     /// Files `sniff` found to be archives though their names don't say so (lowercase path), with the
     /// size and date they had then.
     sniffed: HashMap<String, ((u64, i64), Format)>,
+    /// First reads in progress (a compressed tar's whole stream), by archive (lowercase path), with
+    /// its path as written, for their progress and Stop.
+    scans: HashMap<String, (String, Arc<stream::Scan>)>,
+    /// One read of each archive at a time: the listing, the preview and folder sizes asking at once
+    /// share it.
+    loading: HashMap<String, Arc<Mutex<()>>>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
@@ -278,35 +287,67 @@ fn state() -> MutexGuard<'static, State> {
 /// in memory.
 fn opened(path: &str, outer: &str, stamp: (u64, i64), format: Format, file: impl FnOnce() -> Result<PathBuf, Failure>) -> Result<(Arc<Opened>, bool), Failure> {
     let key = path.to_lowercase();
-    {
+    let in_memory = || {
         let mut state = state();
-        if let Some(at) = state.opened.iter().position(|o| o.path.to_lowercase() == key) {
-            let found = state.opened.remove(at);
-            if found.stamp == stamp {
-                state.opened.push(found.clone());
-                return Ok((found, true));
-            }
+        let at = state.opened.iter().position(|o| o.path.to_lowercase() == key)?;
+        let found = state.opened.remove(at);
+        (found.stamp == stamp).then(|| {
+            state.opened.push(found.clone());
+            found
+        })
+    };
+    if let Some(found) = in_memory() {
+        return Ok((found, true));
+    }
+    // One read at a time: whoever waited finds it in memory.
+    let lock = state().loading.entry(key.clone()).or_default().clone();
+    let loading = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let done_loading = || {
+        drop(loading);
+        let mut state = state();
+        if Arc::strong_count(&lock) <= 2 {
+            state.loading.remove(&key);
         }
+    };
+    if let Some(found) = in_memory() {
+        done_loading();
+        return Ok((found, true));
     }
     let started = Instant::now();
-    let file = file()?;
-    let (source, items) = guarded(|| Source::open(&file, format))?;
+    let read = file().and_then(|file| {
+        let size = std::fs::metadata(&file).map_or(0, |m| m.len());
+        let scan = Arc::new(stream::Scan::new(size));
+        state().scans.insert(key.clone(), (path.to_string(), scan.clone()));
+        let read = guarded(|| Source::open(&file, format, &scan));
+        state().scans.remove(&key);
+        read.map(|read| (file, read))
+    });
+    let (file, (source, items, format)) = match read {
+        Ok(read) => read,
+        Err(e) => {
+            done_loading();
+            return Err(e);
+        }
+    };
     let tree = Tree::build(&items);
     let opened = Arc::new(Opened { path: path.to_string(), outer: outer.to_string(), stamp, file, format, source, tree, read_ms: ms_since(started) });
-    let mut state = state();
-    state.opened.retain(|o| o.path.to_lowercase() != key);
-    state.opened.push(opened.clone());
-    // Within the budget, keeping the newest (this one) whatever its size.
-    let mut kept = 0;
-    let mut keep_from = state.opened.len();
-    for (i, o) in state.opened.iter().enumerate().rev() {
-        kept += o.tree.len();
-        if kept > CACHE_NODES && i + 1 < state.opened.len() {
-            break;
+    {
+        let mut state = state();
+        state.opened.retain(|o| o.path.to_lowercase() != key);
+        state.opened.push(opened.clone());
+        // Within the budget, keeping the newest (this one) whatever its size.
+        let mut kept = 0;
+        let mut keep_from = state.opened.len();
+        for (i, o) in state.opened.iter().enumerate().rev() {
+            kept += o.tree.len();
+            if kept > CACHE_NODES && i + 1 < state.opened.len() {
+                break;
+            }
+            keep_from = i;
         }
-        keep_from = i;
+        state.opened.drain(..keep_from);
     }
-    state.opened.drain(..keep_from);
+    done_loading();
     Ok((opened, false))
 }
 
@@ -786,6 +827,70 @@ pub struct StageProgress {
     total: u64,
 }
 
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadProgress {
+    /// The archive being read.
+    path: String,
+    done: u64,
+    total: u64,
+}
+
+/// The first read of the archive `path` goes into, while it runs (a compressed tar is read whole to
+/// list it): compressed bytes read of the file's size. None when nothing is being read.
+#[tauri::command]
+pub fn archive_progress(path: String) -> Option<ReadProgress> {
+    let path = path.to_lowercase();
+    let state = state();
+    state.scans.iter().find(|(key, _)| path.starts_with(key.as_str())).map(|(_, (archive, scan))| ReadProgress { path: archive.clone(), done: scan.done.load(Ordering::Relaxed), total: scan.total })
+}
+
+/// Stops the first read of the archive `path` goes into (its listing then says "cancelled").
+#[tauri::command]
+pub fn cancel_archive_read(path: String) {
+    let path = path.to_lowercase();
+    for (key, (_, scan)) in state().scans.iter() {
+        if path.starts_with(key.as_str()) {
+            scan.stop.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Compressed streams bigger than this aren't read just because they're selected.
+const PEEK_LIMIT: u64 = 64 << 20;
+
+/// What the preview pane says about an archive, without reading a big compressed one whole.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Peek {
+    format: &'static str,
+    packed: u64,
+    /// Its files and folders, and what they unpack to, once its list of entries is read.
+    entries: Option<u32>,
+    unpacked: Option<u64>,
+}
+
+#[tauri::command]
+pub async fn archive_peek(path: String) -> Result<Peek, String> {
+    fsx::blocking(move || {
+        let found = locate(&path).ok_or("It isn't an archive Glint reads")?;
+        // A big compressed stream on disk that isn't in memory yet: only what its name and size say.
+        let stream = matches!(found.format, Format::Tar(c) | Format::Single(c) if c != codec::Codec::Plain);
+        let in_memory = state().opened.iter().any(|o| o.path.eq_ignore_ascii_case(&path));
+        if stream && found.inner.is_empty() && !in_memory {
+            let packed = fsx::stat(&found.outer).map_or(0, |e| e.size);
+            if packed > PEEK_LIMIT {
+                return Ok(Peek { format: found.format.label(), packed, entries: None, unpacked: None });
+            }
+        }
+        let spot = spot(&path).ok_or("It isn't an archive Glint reads")?.map_err(|e| e.message())?;
+        let (archive, node) = if spot.node().dir { (spot.archive.clone(), spot.node) } else { (guarded(|| enter(&spot.archive, spot.node)).map_err(|e| e.message())?.0, ROOT) };
+        let packed = if found.inner.is_empty() { fsx::stat(&found.outer).map_or(0, |e| e.size) } else { spot.node().size };
+        Ok(Peek { format: archive.format.label(), packed, entries: Some(archive.tree.len() as u32), unpacked: Some(archive.tree.node(node).size) })
+    })
+    .await
+}
+
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Skipped {
@@ -866,9 +971,11 @@ pub async fn archive_compress(paths: Vec<String>, folder: String, name: String, 
 }
 
 /// Extract here: a whole archive on disk into a new folder next to it named after it, as Explorer's
-/// Extract All does ("photos" for photos.zip, numbered if taken), with the same limits and checks
-/// as every extraction, and progress. Cancel (the tab `lane`) or a failure leaves nothing behind;
-/// files that can't be extracted are left out and reported. The folder is `folder` of what comes back.
+/// Extract All does ("photos" for photos.zip or photos.tar.gz, numbered if taken), with the same
+/// limits and checks as every extraction, and progress. A single compressed file is written next to
+/// it instead ("notes.txt" for notes.txt.gz), as gzip -d would. Cancel (the tab `lane`) or a failure
+/// leaves nothing behind; files that can't be extracted are left out and reported. The folder (or the
+/// one file) is `folder` of what comes back.
 #[tauri::command]
 pub async fn archive_extract_here(path: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
     in_lane(lane, move |cancel| {
@@ -876,9 +983,25 @@ pub async fn archive_extract_here(path: String, lane: String, on_progress: Chann
         let (Some(parent), Some(stem)) = (archive.parent(), archive.file_stem()) else { return Err(Failure::NotFound.message()) };
         let spot = spot(&path).ok_or_else(|| Failure::NotFound.message())?.map_err(|e| e.message())?;
         let tree = &spot.archive.tree;
-        let tops: Vec<String> = tree.node(spot.node).children.iter().map(|&c| format!("{path}\\{}", tree.node(c).name)).collect();
-        let folder = fsx::create_numbered(&parent.to_string_lossy(), &stem.to_string_lossy(), true)?;
-        match guarded(|| stage_into(Path::new(&folder), &tops, cancel, &on_progress)) {
+        let tops: Vec<(String, &str)> = tree.node(spot.node).children.iter().map(|&c| (format!("{path}\\{}", tree.node(c).name), &*tree.node(c).name)).collect();
+        let parent = parent.to_string_lossy();
+        if let (Format::Single(_), [(top, name)]) = (spot.archive.format, tops.as_slice()) {
+            let file = fsx::create_numbered(&parent, name, false)?;
+            let named = Path::new(&file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            return match guarded(|| stage_into(Path::new(&*parent), std::slice::from_ref(top), Some(&named), cancel, &on_progress)) {
+                Ok(staged) if !staged.paths.is_empty() && staged.skipped.is_empty() => Ok(Staged { folder: file, ..staged }),
+                other => {
+                    let _ = std::fs::remove_file(&file);
+                    Err(match other {
+                        Ok(staged) => staged.skipped.into_iter().next().map_or_else(|| Failure::NotFound.message(), |s| s.reason),
+                        Err(e) => e.message(),
+                    })
+                }
+            };
+        }
+        let tops: Vec<String> = tops.into_iter().map(|(top, _)| top).collect();
+        let folder = fsx::create_numbered(&parent, without_tar(&stem.to_string_lossy()), true)?;
+        match guarded(|| stage_into(Path::new(&folder), &tops, None, cancel, &on_progress)) {
             Ok(staged) if !staged.paths.is_empty() => Ok(Staged { folder, ..staged }),
             other => {
                 let _ = std::fs::remove_dir_all(&folder);
@@ -892,6 +1015,14 @@ pub async fn archive_extract_here(path: String, lane: String, on_progress: Chann
     .await
 }
 
+/// A compressed tar's name without its ".tar" ("photos" for the "photos.tar" of photos.tar.gz).
+fn without_tar(stem: &str) -> &str {
+    match stem.len().checked_sub(4).and_then(|at| stem.get(at..).map(|end| (at, end))) {
+        Some((at, end)) if at > 0 && end.eq_ignore_ascii_case(".tar") => &stem[..at],
+        _ => stem,
+    }
+}
+
 fn stage(paths: &[String], purpose: &str, cancel: &AtomicBool, progress: &Channel<StageProgress>) -> Result<Staged, Failure> {
     let out = purpose != "copy";
     if out {
@@ -900,7 +1031,7 @@ fn stage(paths: &[String], purpose: &str, cancel: &AtomicBool, progress: &Channe
         extract::sweep_out(&on_clipboard, Duration::from_secs(3600));
     }
     let folder = extract::new_folder(if out { "out" } else { "copy" })?;
-    let result = guarded(|| stage_into(&folder, paths, cancel, progress));
+    let result = guarded(|| stage_into(&folder, paths, None, cancel, progress));
     if !matches!(&result, Ok(staged) if !staged.paths.is_empty()) {
         extract::remove_tree(&folder);
     }
@@ -910,13 +1041,15 @@ fn stage(paths: &[String], purpose: &str, cancel: &AtomicBool, progress: &Channe
     }
 }
 
-fn stage_into(folder: &Path, paths: &[String], cancel: &AtomicBool, progress: &Channel<StageProgress>) -> Result<Staged, Failure> {
+/// Extracts `paths` into `folder`, each by its own name, or by `named` (one path only: Extract here's
+/// single file, under the free name it found).
+fn stage_into(folder: &Path, paths: &[String], named: Option<&str>, cancel: &AtomicBool, progress: &Channel<StageProgress>) -> Result<Staged, Failure> {
     let mut jobs = Vec::new();
     let mut staged = Vec::new();
     let mut names = std::collections::HashSet::new();
     for (k, path) in paths.iter().enumerate() {
         let spot = spot(path).ok_or(Failure::NotFound)??;
-        let top = spot.node().name.to_string();
+        let top = named.map_or_else(|| spot.node().name.to_string(), str::to_string);
         // Two of the same name (search results from different folders) each get a folder of their own.
         let dest_top = if names.insert(top.to_lowercase()) { extract::inside(folder, &[&top])? } else { extract::inside(folder, &[&k.to_string(), &top])? };
         if spot.node().dir {

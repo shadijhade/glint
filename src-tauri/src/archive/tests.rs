@@ -1,8 +1,56 @@
 use super::*;
+use codec::Codec;
 use tree::{ENCRYPTED, IN_ARCHIVE, UNREADABLE};
 use std::fs;
 use std::io::Write;
 use zip::write::SimpleFileOptions;
+
+/// A tar of `files` (a name ending in "/" is a folder), as GNU tar writes one: long names too.
+fn write_tar(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut builder = ::tar::Builder::new(Vec::new());
+    for (name, data) in files {
+        let mut header = ::tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_mtime(1_700_000_000);
+        if name.ends_with('/') {
+            header.set_entry_type(::tar::EntryType::Directory);
+            header.set_size(0);
+            builder.append_data(&mut header, name, std::io::empty()).unwrap();
+        } else {
+            header.set_size(data.len() as u64);
+            builder.append_data(&mut header, name, *data).unwrap();
+        }
+    }
+    builder.into_inner().unwrap()
+}
+
+/// `data` compressed the way each codec's own tool writes it.
+fn compressed(data: &[u8], codec: Codec) -> Vec<u8> {
+    match codec {
+        Codec::Plain => data.to_vec(),
+        Codec::Gz => {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            e.write_all(data).unwrap();
+            e.finish().unwrap()
+        }
+        Codec::Xz => {
+            let mut w = lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(1)).unwrap();
+            w.write_all(data).unwrap();
+            w.finish().unwrap()
+        }
+        Codec::Bz2 => {
+            let mut e = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
+            e.write_all(data).unwrap();
+            e.finish().unwrap()
+        }
+        Codec::Zst => ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest),
+        Codec::Lz4 => {
+            let mut e = lz4_flex::frame::FrameEncoder::new(Vec::new());
+            e.write_all(data).unwrap();
+            e.finish().unwrap()
+        }
+    }
+}
 
 /// A fresh folder for one test, deleted when it ends (and with the last one, what the tests extracted).
 fn scratch(name: &str) -> extract::testing::Scratch {
@@ -358,6 +406,192 @@ fn names_what_it_cannot_read() {
 }
 
 #[test]
+fn reads_tars_with_every_codec() {
+    let dir = scratch("tars");
+    let folder = "very-long-folder-name".repeat(8);
+    let long = format!("{folder}/deep.txt");
+    let files: &[(&str, &[u8])] = &[("docs/", b""), ("docs/readme.txt", b"hello tar"), ("photos/a.jpg", &[7; 3000]), (&long, b"deep"), ("top.bin", &[1; 1500])];
+    let tar = write_tar(files);
+    for codec in Codec::ALL {
+        let name = if codec == Codec::Plain { "photos.tar".to_string() } else { format!("photos.tar.{}", codec.ext()) };
+        let path = dir.join(&name);
+        fs::write(&path, compressed(&tar, codec)).unwrap();
+        let p = text(&path);
+        let top = listing(&p);
+        assert_eq!(names(&top), ["docs", "photos", folder.as_str(), "top.bin"], "{name}");
+        assert_eq!(top.items.iter().map(|i| i.2).collect::<Vec<_>>(), [9, 3000, 4, 1500], "{name}: folder totals");
+        assert_eq!(names(&listing(&format!("{p}\\{folder}"))), ["deep.txt"], "{name}: a GNU long name");
+        assert_eq!(fs::read(copy(&format!("{p}\\docs\\readme.txt"), Purpose::Preview).unwrap()).unwrap(), b"hello tar", "{name}");
+        assert_eq!(read_prefix(&format!("{p}\\docs\\readme.txt"), 5).unwrap().unwrap().0, b"hello", "{name}");
+        // A selection from across the stream, in one pass.
+        let staged = stage_all(&[format!("{p}\\photos"), format!("{p}\\top.bin")]).unwrap();
+        assert!(staged.skipped.is_empty(), "{name}: {:?}", staged.skipped);
+        assert_eq!(fs::read(Path::new(&staged.paths[1])).unwrap(), [1; 1500], "{name}");
+        assert_eq!(fs::read(Path::new(&staged.paths[0]).join("a.jpg")).unwrap(), [7; 3000], "{name}");
+        extract::remove_tree(Path::new(&staged.folder));
+        let label = spot(&p).unwrap().unwrap().archive.format.label();
+        assert_eq!(label, if codec == Codec::Plain { "tar".to_string() } else { format!("tar.{}", codec.ext()) });
+    }
+    // What a file is comes from its bytes: a tar.gz called .gz is a tar, a plain tar called .tar.gz too.
+    let renamed = dir.join("backup.gz");
+    fs::write(&renamed, compressed(&tar, Codec::Gz)).unwrap();
+    assert_eq!(names(&listing(&text(&renamed))), ["docs", "photos", folder.as_str(), "top.bin"]);
+    let plain = dir.join("plain.tar.gz");
+    fs::write(&plain, &tar).unwrap();
+    assert_eq!(spot(&text(&plain)).unwrap().unwrap().archive.format, Format::Tar(Codec::Plain));
+}
+
+#[test]
+fn serves_links_in_tars() {
+    let dir = scratch("tarlinks");
+    let mut builder = ::tar::Builder::new(Vec::new());
+    let mut header = ::tar::Header::new_gnu();
+    header.set_size(5);
+    header.set_mode(0o644);
+    builder.append_data(&mut header, "a.txt", &b"hello"[..]).unwrap();
+    for (kind, name) in [(::tar::EntryType::Link, "hard.txt"), (::tar::EntryType::Symlink, "soft.txt")] {
+        let mut link = ::tar::Header::new_gnu();
+        link.set_entry_type(kind);
+        link.set_size(0);
+        builder.append_link(&mut link, name, "a.txt").unwrap();
+    }
+    let path = dir.join("links.tar.gz");
+    fs::write(&path, compressed(&builder.into_inner().unwrap(), Codec::Gz)).unwrap();
+    let p = text(&path);
+    // A hard link reads its target's bytes (in a second pass, as they were passed already); a
+    // symlink is a small file holding where it points.
+    let staged = stage_all(&[format!("{p}\\a.txt"), format!("{p}\\hard.txt"), format!("{p}\\soft.txt")]).unwrap();
+    let read = |i: usize| fs::read(Path::new(&staged.paths[i])).unwrap();
+    assert_eq!((read(0), read(1), read(2)), (b"hello".to_vec(), b"hello".to_vec(), b"a.txt".to_vec()));
+    extract::remove_tree(Path::new(&staged.folder));
+}
+
+#[test]
+fn opens_single_compressed_files_as_a_folder_of_one() {
+    let dir = scratch("singles");
+    let log = "a line of the log\n".repeat(5000);
+    for codec in [Codec::Gz, Codec::Xz, Codec::Bz2, Codec::Zst, Codec::Lz4] {
+        let path = dir.join(format!("app.log.{}", codec.ext()));
+        fs::write(&path, compressed(log.as_bytes(), codec)).unwrap();
+        let p = text(&path);
+        let top = listing(&p);
+        assert_eq!(names(&top), ["app.log"], "{codec:?}");
+        assert_eq!(top.items[0].2, log.len() as u64, "{codec:?}: its exact size");
+        assert_eq!(fs::read_to_string(copy(&format!("{p}\\app.log"), Purpose::Preview).unwrap()).unwrap(), log, "{codec:?}");
+    }
+    // An xz file says how big it unpacks to in its index: nothing is decompressed to find out.
+    let xz = dir.join("app.log.xz");
+    assert_eq!(Codec::Xz.stated_size(&mut fs::File::open(&xz).unwrap()), Some(log.len() as u64));
+    assert_eq!(Codec::Gz.stated_size(&mut fs::File::open(dir.join("app.log.gz")).unwrap()), None, "gzip's size is modulo 4 GB");
+    // Two gzip members one after another (what `cat a.gz b.gz` makes) are one file.
+    let mut two = compressed(b"first, ", Codec::Gz);
+    two.extend(compressed(b"second", Codec::Gz));
+    let path = dir.join("two.txt.gz");
+    fs::write(&path, two).unwrap();
+    assert_eq!(fs::read_to_string(copy(&format!("{}\\two.txt", text(&path)), Purpose::Preview).unwrap()).unwrap(), "first, second");
+}
+
+#[test]
+fn extracts_here_next_to_the_archive() {
+    let dir = scratch("here");
+    let here = |path: &Path| tauri::async_runtime::block_on(archive_extract_here(text(path), "here".into(), Channel::new(|_| Ok(()))));
+    // A single compressed file comes out as the file, next to it, numbered when its name is taken.
+    let gz = dir.join("notes.txt.gz");
+    fs::write(&gz, compressed(b"some notes", Codec::Gz)).unwrap();
+    let first = here(&gz).unwrap();
+    assert_eq!((Path::new(&first.folder), fs::read(&first.folder).unwrap()), (dir.join("notes.txt").as_path(), b"some notes".to_vec()));
+    assert_eq!(Path::new(&here(&gz).unwrap().folder), dir.join("notes (2).txt"));
+    // A compressed tar goes into a folder named without its ".tar".
+    let tgz = dir.join("photos.tar.gz");
+    fs::write(&tgz, compressed(&write_tar(&[("a/b.txt", b"bee")]), Codec::Gz)).unwrap();
+    assert_eq!(Path::new(&here(&tgz).unwrap().folder), dir.join("photos"));
+    assert_eq!(fs::read(dir.join("photos").join("a").join("b.txt")).unwrap(), b"bee");
+    // Damaged past its index (which says how big it is): the extraction fails, and leaves nothing.
+    let mut seed = 7u32;
+    let noise: Vec<u8> = (0..40_000)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (seed >> 16) as u8
+        })
+        .collect();
+    let damaged = |data: &[u8]| {
+        let mut xz = compressed(data, Codec::Xz);
+        let middle = xz.len() / 2;
+        xz[middle] ^= 0x5A;
+        xz
+    };
+    let bad = dir.join("noise.bin.xz");
+    fs::write(&bad, damaged(&noise)).unwrap();
+    let error = here(&bad).unwrap_err();
+    assert!(error.contains("damaged"), "{error}");
+    assert!(!dir.join("noise.bin").exists());
+    // A tar.xz damaged the same way doesn't open: its first read goes on to the checksum at its end.
+    let bad = dir.join("noise.tar.xz");
+    fs::write(&bad, damaged(&write_tar(&[("noise.bin", &noise)]))).unwrap();
+    let error = list(&text(&bad), Instant::now()).unwrap().unwrap_err();
+    assert!(error.contains("damaged"), "{error}");
+}
+
+/// A tar.zst of a 128 MB file of zeros, in about 4 KB: a frame of the tar header as a raw block, then
+/// a thousand RLE blocks of 128 KB each (one stored byte apiece), made by hand rather than by
+/// compressing 128 MB.
+fn zstd_bomb() -> Vec<u8> {
+    let header = tar::testing::header("zeros.bin", b'0', 128 << 20, "");
+    let mut frame = vec![0x28, 0xB5, 0x2F, 0xFD];
+    // Single segment, with an 8-byte content size: the header, the zeros, and the end of the tar.
+    frame.push(0xE0);
+    frame.extend((512u64 + (128 << 20) + 1024).to_le_bytes());
+    let block = |frame: &mut Vec<u8>, kind: u32, size: u32, last: bool| frame.extend(&((size << 3) | (kind << 1) | last as u32).to_le_bytes()[..3]);
+    block(&mut frame, 0, 512, false);
+    frame.extend(header);
+    for i in 0..1024 {
+        block(&mut frame, 1, 128 << 10, false);
+        frame.push(0);
+        let _ = i;
+    }
+    block(&mut frame, 1, 1024, true);
+    frame.push(0);
+    frame
+}
+
+#[test]
+fn refuses_stream_bombs_and_stops_when_asked() {
+    let dir = scratch("streambombs");
+    // 128 MB of zeros in a tar.zst: listing reads it all, and stops it as a bomb.
+    let path = dir.join("bomb.tar.zst");
+    fs::write(&path, zstd_bomb()).unwrap();
+    assert!(fs::metadata(&path).unwrap().len() < 8 << 10);
+    let error = list(&text(&path), Instant::now()).unwrap().unwrap_err();
+    assert!(error.contains("zip bomb"), "{error}");
+    // A first read stopped: it says so, and nothing is kept.
+    let gz = dir.join("big.tar.gz");
+    fs::write(&gz, compressed(&write_tar(&[("a.bin", &vec![9u8; 4 << 20])]), Codec::Gz)).unwrap();
+    let scan = stream::Scan::new(0);
+    scan.stop.store(true, Ordering::SeqCst);
+    let stopped = Source::open(&gz, Format::Tar(Codec::Gz), &scan);
+    assert!(matches!(stopped, Err(Failure::Cancelled)), "{:?}", stopped.err());
+}
+
+#[test]
+fn peeks_at_big_streams_without_reading_them() {
+    let dir = scratch("peek");
+    let small = dir.join("small.tar.gz");
+    fs::write(&small, compressed(&write_tar(&[("a.txt", b"abc"), ("b/c.txt", b"defg")]), Codec::Gz)).unwrap();
+    let peek = tauri::async_runtime::block_on(archive_peek(text(&small))).unwrap();
+    assert_eq!((peek.format, peek.entries, peek.unpacked), ("tar.gz", Some(3), Some(7)));
+    // Past 64 MB, a compressed stream isn't read just because it's selected.
+    let big = dir.join("big.tar.gz");
+    let file = fs::File::create(&big).unwrap();
+    file.set_len(65 << 20).unwrap();
+    drop(file);
+    let mut bytes = fs::OpenOptions::new().write(true).open(&big).unwrap();
+    bytes.write_all(&[0x1F, 0x8B, 0x08]).unwrap();
+    drop(bytes);
+    let peek = tauri::async_runtime::block_on(archive_peek(text(&big))).unwrap();
+    assert_eq!((peek.format, peek.packed, peek.entries), ("tar.gz", 65 << 20, None));
+}
+
+#[test]
 fn reads_zstandard_entries() {
     let dir = scratch("zstd");
     let text_data = "Zstandard in a zip, as WinZip and Python 3.14 write it. ".repeat(500);
@@ -474,8 +708,18 @@ fn never_falls_over_on_damaged_archives() {
         zip.finish().unwrap();
     }
     archives.push(zip_bytes);
+    let tar = write_tar(&[("docs/a.txt", &[b'a'; 3000]), ("b.bin", &[7; 1000])]);
+    for codec in [Codec::Plain, Codec::Gz, Codec::Xz, Codec::Zst, Codec::Bz2, Codec::Lz4] {
+        archives.push(compressed(&tar, codec));
+    }
     for (n, original) in archives.iter().enumerate() {
-        let ext = if original.starts_with(b"7z") { "7z" } else { "zip" };
+        // By its first bytes, as Glint itself tells them apart.
+        let ext = match Format::detect(original) {
+            Some(Format::SevenZ) => "7z".to_string(),
+            Some(Format::Tar(_)) => "tar".to_string(),
+            Some(Format::Single(codec)) => format!("tar.{}", codec.ext()),
+            _ => "zip".to_string(),
+        };
         // Every byte flipped in turn, and every length cut off: an error at worst, never a panic.
         let step = (original.len() / 120).max(1);
         for at in (0..original.len()).step_by(step) {
@@ -568,7 +812,7 @@ fn lists_50000_entries_in_milliseconds() {
     let z = text(&zip);
     for _ in 0..3 {
         let started = Instant::now();
-        let (_, items) = Source::open(&zip, Format::Zip).unwrap();
+        let (_, items, _) = Source::open(&zip, Format::Zip, &stream::Scan::new(0)).unwrap();
         let read = ms_since(started);
         let started = Instant::now();
         let tree = Tree::build(&items);

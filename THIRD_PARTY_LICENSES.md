@@ -8,7 +8,7 @@ Glint ships these programs unmodified, as separate executables next to the app. 
 | [fd](https://github.com/sharkdp/fd) (`fd.exe`) | 10.5.0 | Finding files by name | MIT (dual-licensed MIT or Apache-2.0) |
 | [dust](https://github.com/bootandy/dust) (`dust.exe`) | 1.2.6 | Folder sizes | Apache-2.0 |
 
-Rust crates and npm packages compiled into the app keep their own licenses; see `src-tauri/Cargo.lock` and `package-lock.json`. The crates that read zip and 7z archives are listed under [Archive support](#archive-support-compiled-into-the-app), with the license texts their terms ask to be passed on.
+Rust crates and npm packages compiled into the app keep their own licenses; see `src-tauri/Cargo.lock` and `package-lock.json`. The crates that read archives and compressed files are listed under [Archive support](#archive-support-compiled-into-the-app), with the license texts their terms ask to be passed on.
 
 ## ripgrep
 
@@ -274,10 +274,12 @@ Apache License
 | :--- | :--- | :--- | :--- |
 | [zip](https://github.com/zip-rs/zip2) | 9.0.4 | Reading zip archives | MIT |
 | [sevenz-rust2](https://github.com/hasenbanck/sevenz-rust2) | 0.24.0 | Reading 7z archives | Apache-2.0 |
-| [lzma-rust2](https://github.com/hasenbanck/lzma-rust2) | 0.22.0 | LZMA, LZMA2 and XZ | Apache-2.0 |
-| [flate2](https://github.com/rust-lang/flate2-rs) and [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) | 1.1.10, 0.6.8 | Deflate | MIT or Apache-2.0; Zlib |
+| [lzma-rust2](https://github.com/hasenbanck/lzma-rust2) | 0.22.0 | LZMA, LZMA2 and XZ (.xz files too) | Apache-2.0 |
+| [flate2](https://github.com/rust-lang/flate2-rs) and [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) | 1.1.10, 0.6.8 | Deflate, and gzip (.gz files) | MIT or Apache-2.0; Zlib |
 | [deflate64](https://github.com/anatawa12/deflate64-rs) | 0.1.12 | Deflate64 (zip) | MIT |
-| [bzip2](https://github.com/trifectatechfoundation/bzip2-rs) and [libbz2-rs-sys](https://github.com/trifectatechfoundation/libbzip2-rs) | 0.6.1, 0.2.5 | BZip2 | MIT or Apache-2.0; bzip2-1.0.6 |
+| [bzip2](https://github.com/trifectatechfoundation/bzip2-rs) and [libbz2-rs-sys](https://github.com/trifectatechfoundation/libbzip2-rs) | 0.6.1, 0.2.5 | BZip2 (.bz2 files too) | MIT or Apache-2.0; bzip2-1.0.6 |
+| [ruzstd](https://github.com/KillingSpark/zstd-rs) | 0.9.1 | Zstandard (zip entries, .zst files) | MIT |
+| [lz4_flex](https://github.com/PSeitz/lz4_flex) | 0.14.0 | LZ4 (.lz4 files) | MIT |
 | [ppmd-rust](https://github.com/hasenbanck/ppmd-rust) | 1.5.0 | PPMd | CC0-1.0 or MIT-0 |
 | [bitstream-io](https://github.com/tuffy/bitstream-io) | 4.10.0 | Shrink, Reduce and Implode (very old zips) | MIT or Apache-2.0 |
 
@@ -336,6 +338,57 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+### ruzstd
+
+```text
+MIT License
+
+Copyright (c) 2019 Moritz Borcherding
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### lz4_flex
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2020 Pascal Seitz
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### zlib-rs

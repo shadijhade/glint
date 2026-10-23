@@ -6,7 +6,7 @@ import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isLocked, is
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
 import { isKnownType, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
-import { archiveExtract, listDir, readTextPreview } from "@/lib/fs";
+import { archiveExtract, type ArchivePeek, archivePeek, listDir, readTextPreview } from "@/lib/fs";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
@@ -111,13 +111,13 @@ function ArchivedMedia({ entry, kind }: { entry: FileEntry; kind: MediaKind }) {
     return <Media entry={entry} kind={kind} src={convertFileSrc(copy.path)} />;
 }
 
-/** A zip or 7z file: what's in it, from its list of entries (nothing is extracted). */
+/** An archive: what's in it, from its list of entries (nothing is extracted, and a big compressed tar isn't read until it's opened). */
 function ArchivePreview({ entry }: { entry: FileEntry }) {
-    const [summary, setSummary] = useState<{ items: number; bytes: number; format: string } | { error: string } | null>(null);
+    const [summary, setSummary] = useState<ArchivePeek | { error: string } | null>(null);
     useEffect(() => {
         let stale = false;
-        listDir(entry.path).then(
-            (listing) => !stale && setSummary({ items: listing.archive?.entries ?? listing.entries.length, bytes: listing.entries.reduce((sum, e) => sum + e.size, 0), format: listing.archive?.format ?? "" }),
+        archivePeek(entry.path).then(
+            (peek) => !stale && setSummary(peek),
             (e) => !stale && setSummary({ error: String(e) })
         );
         return () => {
@@ -130,15 +130,21 @@ function ArchivePreview({ entry }: { entry: FileEntry }) {
             {summary &&
                 ("error" in summary ? (
                     <p className="max-w-sm">{summary.error}</p>
+                ) : summary.entries === null || summary.unpacked === null ? (
+                    // A big compressed tar keeps no list of what's in it: it's read when opened, not on selection.
+                    <p className="max-w-sm">
+                        {formatSize(summary.packed)} as a {summary.format} file
+                        <span className="block text-xs text-muted-foreground">Opening it reads it from start to end once, to list what's in it.</span>
+                    </p>
                 ) : (
                     <>
                         <p>
-                            {formatCount(summary.items)} {summary.items === 1 ? "file or folder" : "files and folders"}
+                            {formatCount(summary.entries)} {summary.entries === 1 ? "file or folder" : "files and folders"}
                         </p>
                         <p className="text-foreground">
-                            <b className="font-semibold">{formatSize(summary.bytes)}</b> when extracted
+                            <b className="font-semibold">{formatSize(summary.unpacked)}</b> when extracted
                             <span className="block text-xs text-muted-foreground">
-                                {formatSize(entry.size)} as a {summary.format} file
+                                {formatSize(summary.packed)} as a {summary.format} file
                             </span>
                         </p>
                     </>

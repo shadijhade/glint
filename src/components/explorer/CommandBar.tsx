@@ -324,7 +324,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                         title={
                             closed
                                 ? "Windows keeps this folder closed to your account: nothing in it can be opened or changed here. Get access from the folder itself, or its right-click menu."
-                                : "Glint opens zip and 7z archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
+                                : "Glint opens archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
                         }
                         className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber-500/10 px-2 text-xs font-medium text-amber-800 dark:text-amber-400"
                     >
