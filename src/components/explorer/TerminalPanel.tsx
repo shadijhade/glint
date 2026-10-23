@@ -58,7 +58,8 @@ function hex(color: string) {
 }
 
 /** The terminal's colors, from the app's: its background and text, the primary color for the cursor. */
-function theme() {
+/** The terminal's colors, from the app's theme (a recording's preview plays in them too). */
+export function terminalTheme() {
     const style = getComputedStyle(document.documentElement);
     // The theme's variables hold bare HSL parts ("0 0% 14%").
     const css = (name: string) => hex(`hsl(${style.getPropertyValue(name).trim() || "0 0% 0%"})`);
@@ -110,7 +111,7 @@ function TerminalView({ tab, visible }: { tab: TermTab; visible: boolean }) {
         (async () => {
             renderer = await loadRenderer();
             if (disposed || !ref.current) return;
-            term = renderer.create({ fontFamily: "'Cascadia Mono', 'Cascadia Code', Consolas, monospace", fontSize: 13, cursorBlink: true, scrollback: 5000, theme: theme() });
+            term = renderer.create({ fontFamily: "'Cascadia Mono', 'Cascadia Code', Consolas, monospace", fontSize: 13, cursorBlink: true, scrollback: 5000, theme: terminalTheme() });
             fit = renderer.fit();
             term.loadAddon(fit);
             term.open(ref.current);
@@ -175,7 +176,7 @@ function TerminalView({ tab, visible }: { tab: TermTab; visible: boolean }) {
         if (ref.current) observer.observe(ref.current);
         // The app's theme switched: the terminal's colors follow.
         const recolor = new MutationObserver(() => {
-            if (term) renderer?.recolor(term, theme());
+            if (term) renderer?.recolor(term, terminalTheme());
         });
         recolor.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
         return () => {
