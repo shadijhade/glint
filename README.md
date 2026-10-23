@@ -201,6 +201,11 @@ The service only runs once you opt in, with every privilege removed except the t
 -   **Results that fold.** Click a file to fold its matches away, or collapse them all at once; a bar on each file shows which have the most matches.
 -   **Regex, case, whole word, exclusions.** Full regular expressions (multi-line with `Shift+Enter`), case sensitivity, whole words, and patterns to skip (`node_modules`, `.git`…).
 -   **Code patterns.** `Alt+A` searches code by its structure rather than its text, with [ast-grep](https://github.com/ast-grep/ast-grep) (installed with one click): `console.log($$$ARGS)` finds every call however it's spaced or split over lines, `$X.unwrap()` every unwrap, in 20-odd languages. With a rewrite in the replace box (`logger.info($$$ARGS)`), each result first shows what it becomes; **Replace all** again rewrites them in the files.
+-   **Documents.** `Alt+D` searches the text inside PDF, Word, Excel, PowerPoint, OpenDocument and EPUB files, with the same case, whole-word and regex rules, without Office or a search index. Each result says where it is ("p. 12", "slide 3", "Sales, row 40") and the preview shows the text around it.
+    -   PDFs are read by [pdf-extract](https://github.com/jrmuizel/pdf-extract), the rest from their own XML; scanned PDFs, which hold pictures of text, have none to find.
+    -   Documents are read by Glint's own worker processes, up to four at a time, each limited to 1 GB and 30 seconds a document, so a damaged or hostile file can't take the app down. The results say how many couldn't be read.
+    -   What's read stays in memory for the session (up to 256 MB), so searching the same folder again is quick; none of it is written to disk.
+    -   Skipped: hidden files and folders, the excluded folders, and files kept only in the cloud (reading them would download them). File patterns like `*.pdf` among the exclusions keep binary files out of text searches and don't apply here. Replace works in text files only.
 -   **Preview, history and export.** A syntax-highlighted preview of every result, recent searches one click away, and results exported to CSV or JSON.
 -   **Connected to Files.** **Search text** (`Ctrl+Shift+F`) searches the folder you're in; **Show in folder** on a result opens it in Files with the file selected.
 
@@ -211,7 +216,7 @@ The service only runs once you opt in, with every privilege removed except the t
 | Folder sizes | In Properties or a tooltip | In the list, for every folder |
 | What fills a drive | Not shown (Storage settings has categories) | A treemap of any folder, like WizTree's |
 | Find a file by name | Windows Search where it indexes, otherwise a walk through every folder | An index of every NTFS drive (opt-in), otherwise fd |
-| Search inside files | Indexed places and file types | ripgrep in any folder, with regex and replace |
+| Search inside files | Indexed places and file types | ripgrep in any folder, with regex and replace; PDFs' and Office documents' text too |
 | Preview | Preview pane | Preview pane with the same previewers (and tables, databases and programs of its own), and Quick Look on `Space` |
 | Compare two folders | Not available | Side by side, down through subfolders and by contents, with Sync |
 | Compare two files | Not available (`fc` in a terminal) | Side by side: code by its structure (Difftastic), pictures with a swipe, any file byte by byte |
@@ -307,6 +312,7 @@ Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen ma
 | `Ctrl+F` / `Ctrl+K` | Focus the search box |
 | `Ctrl+H` | Show or hide Replace |
 | `Alt+C` / `Alt+W` / `Alt+R` | Toggle match case / whole word / regex |
+| `Alt+A` / `Alt+D` | Toggle code patterns / documents |
 | `Ctrl+Shift+E` | Back to Files |
 | `Esc` | Leave the search box; again, stop a running search; close menus and dialogs |
 
