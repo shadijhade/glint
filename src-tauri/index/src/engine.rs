@@ -4,7 +4,7 @@
 use crate::proto::{self, unix_ms, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_HITS, FRAME_USAGE, NO_PARENT};
 use crate::query::{self, Excludes, NameMatcher};
 use crate::snapshot::{self, Meta};
-use crate::tree::{Search, Tree, NONE, ROOT};
+use crate::tree::{self, Search, Tree, NONE, ROOT};
 use crate::usn;
 use crate::volume::{self, Journal, JournalError, Volume};
 use rayon::prelude::*;
@@ -375,7 +375,7 @@ impl Engine {
         }
         // Read what each record holds now before taking the lock, so searches don't wait on the disk.
         // A record that can't be read right now is left as it is.
-        let states: Vec<_> = usn::touched(&records, since).into_iter().filter_map(|n| volume.record_state(n).ok().map(|s| (n, s))).collect();
+        let states = tree::parents_first(usn::touched(&records, since).into_iter().filter_map(|n| volume.record_state(n).ok().map(|s| (n, s))).collect());
         if !states.is_empty() {
             let mut tree = slot.tree.write().unwrap();
             for (number, state) in &states {
