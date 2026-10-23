@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -97,6 +98,13 @@ pub fn read(path: &str) -> Result<Lines, String> {
         "epub" => epub(path)?,
         // Images too (OCR): the text Windows reads in a picture, a line each.
         ext if crate::ocr::PICTURES.contains(&ext) => crate::ocr::lines(path)?.into_iter().enumerate().map(|(i, line)| (format!("line {}", i + 1), line)).collect(),
+        // Notes, for Meaning search: their lines as they are (each with its number in the file).
+        ext if NOTES.contains(&ext) => {
+            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            (&mut file).take(MAX_TEXT as u64).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            String::from_utf8_lossy(&bytes).lines().enumerate().filter(|(_, l)| !l.trim().is_empty()).map(|(i, l)| (format!("line {}", i + 1), l.trim().to_string())).collect()
+        }
         other => return Err(format!("not a document Glint reads: .{other}")),
     };
     let mut total = 0;
@@ -377,7 +385,7 @@ fn unescape_url(href: &str) -> String {
 // The search: documents found in a folder, read by workers (or from memory), matched here.
 
 /// A Documents search as Text mode asks for it.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DocSearch {
     pub query: String,
@@ -391,7 +399,16 @@ pub struct DocSearch {
     /// Pictures too: their text, read by Windows' OCR (ocr.rs).
     #[serde(default)]
     pub ocr: bool,
+    /// Passages ranked by meaning (meaning.rs) rather than matched; notes (.txt, .md…) read too.
+    #[serde(default)]
+    pub meaning: bool,
 }
+
+/// Notes, read as text for Meaning search (ripgrep searches their words).
+const NOTES: &[&str] = &["txt", "md", "markdown", "rst", "org", "adoc"];
+/// Meaning search shows at most this many passages, and none less alike than this.
+const MEANING_RESULTS: usize = 100;
+const MEANING_FLOOR: f32 = 0.2;
 
 /// The pattern as ripgrep would take it: smart case unless case-sensitive, a literal unless a regular
 /// expression, whole words when asked.
@@ -511,12 +528,12 @@ fn stop(run: u64) {
     let _ = RUN.compare_exchange(run, run + 1, Ordering::SeqCst, Ordering::SeqCst);
 }
 
-/// Whether Documents search reads a file of this name (Office's ~$ owner files aren't documents), and
-/// with `pictures`, a picture's.
-fn is_document(name: &str, pictures: bool) -> bool {
+/// Whether a search reads a file of this name: a document (Office's ~$ owner files aren't), and a
+/// picture with OCR, a note with meaning.
+fn is_document(name: &str, search: &DocSearch) -> bool {
     let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
     let of = |list: &[&str]| list.iter().any(|d| d.eq_ignore_ascii_case(ext));
-    (of(DOCUMENTS) || (pictures && of(crate::ocr::PICTURES))) && !name.starts_with("~$")
+    (of(DOCUMENTS) || (search.ocr && of(crate::ocr::PICTURES)) || (search.meaning && of(NOTES))) && !name.starts_with("~$")
 }
 
 /// The exclusions as a search applies them: exact names (lowercase), and patterns with * or ?, which
@@ -558,7 +575,7 @@ impl Skips {
 fn walk(folder: &Path, search: &DocSearch, run: u64, paths: mpsc::SyncSender<PathBuf>) {
     let skips = Skips::of(search);
     if folder.is_file() {
-        if folder.file_name().is_some_and(|n| is_document(&n.to_string_lossy(), search.ocr)) {
+        if folder.file_name().is_some_and(|n| is_document(&n.to_string_lossy(), search)) {
             let _ = paths.send(folder.to_path_buf());
         }
         return;
@@ -593,7 +610,7 @@ fn walk(folder: &Path, search: &DocSearch, run: u64, paths: mpsc::SyncSender<Pat
                         let name = entry.file_name();
                         let name = name.to_string_lossy();
                         let is_dir = kind.is_dir();
-                        if kind.is_symlink() || (!is_dir && !is_document(&name, search.ocr)) || skips.skip(&name, is_dir) {
+                        if kind.is_symlink() || (!is_dir && !is_document(&name, search)) || skips.skip(&name, is_dir) {
                             continue;
                         }
                         #[cfg(windows)]
@@ -762,21 +779,21 @@ fn read_all(queue: mpsc::Receiver<PathBuf>, run: u64, found: mpsc::Sender<Docume
     failed.into_inner()
 }
 
-/// A match as ripgrep's JSON line of one: its line number the line's place in the document, its label
-/// where that is ("p. 3").
-fn as_ripgrep(path: &Path, number: usize, label: &str, text: &str, spans: &[(usize, usize)]) -> String {
+/// A match as ripgrep's JSON line of one: its line number the place in the document of its first line
+/// (of `lines`), its label where that is ("p. 3"); a passage's, how many lines it spans.
+fn as_ripgrep(path: &Path, lines: Range<usize>, label: &str, text: &str, spans: &[(usize, usize)]) -> String {
     let submatches: Vec<_> = spans.iter().map(|&(s, e)| serde_json::json!({ "match": { "text": &text[s..e] }, "start": s, "end": e })).collect();
-    serde_json::json!({
-        "type": "match",
-        "data": {
-            "path": { "text": path.to_string_lossy() },
-            "lines": { "text": format!("{text}\n") },
-            "line_number": number,
-            "label": label,
-            "submatches": submatches,
-        }
-    })
-    .to_string()
+    let mut data = serde_json::json!({
+        "path": { "text": path.to_string_lossy() },
+        "lines": { "text": format!("{text}\n") },
+        "line_number": lines.start,
+        "label": label,
+        "submatches": submatches,
+    });
+    if lines.len() > 1 {
+        data["line_count"] = lines.len().into();
+    }
+    serde_json::json!({ "type": "match", "data": data }).to_string()
 }
 
 /// Runs Documents search `run` (from `begin`): finds the documents under `folder`, reads them, and
@@ -789,6 +806,10 @@ pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Reg
     let (found, documents) = mpsc::channel();
     let mut batch = Vec::new();
     let (mut matches, mut searched, mut with_match) = (0usize, 0usize, 0usize);
+    // By meaning: the model and what's typed as a vector (run_doc_search made sure of both), and the
+    // passages alike enough, ranked once every document is read.
+    let meaning = request.meaning.then(|| crate::meaning::model().ok().and_then(|model| model.embed(&request.query).map(|query| (model, query)))).flatten();
+    let mut ranked: Vec<(f32, Arc<PathBuf>, crate::meaning::Passage)> = Vec::new();
     let unreadable = std::thread::scope(|scope| {
         scope.spawn(move || walk(folder, request, run, paths));
         let readers = scope.spawn(move || read_all(queue, run, found));
@@ -798,11 +819,25 @@ pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Reg
                 break;
             }
             searched += 1;
+            if let Some((model, query)) = &meaning {
+                let path = Arc::new(document.path.clone());
+                for passage in crate::meaning::passages(&document.lines) {
+                    let alike = model.embed(&passage.2).map_or(0.0, |v| crate::meaning::similarity(query, &v));
+                    if alike >= MEANING_FLOOR {
+                        ranked.push((alike, path.clone(), passage));
+                    }
+                }
+                if ranked.len() > 4 * MEANING_RESULTS {
+                    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+                    ranked.truncate(MEANING_RESULTS);
+                }
+                continue;
+            }
             let before = matches;
             for (i, (label, text)) in document.lines.iter().enumerate() {
                 let spans: Vec<_> = pattern.find_iter(text).map(|m| (m.start(), m.end())).collect();
                 if !spans.is_empty() {
-                    batch.push(as_ripgrep(&document.path, i + 1, label, text, &spans));
+                    batch.push(as_ripgrep(&document.path, i + 1..i + 2, label, text, &spans));
                     matches += 1;
                     if matches >= max {
                         break;
@@ -821,6 +856,25 @@ pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Reg
         }
         readers.join().unwrap_or(0)
     });
+    if !ranked.is_empty() {
+        // The closest passages, each document's together (the documents in the order of their closest),
+        // each labelled with how alike it is.
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+        ranked.truncate(MEANING_RESULTS.min(max));
+        let mut order: Vec<Arc<PathBuf>> = Vec::new();
+        for (_, path, ..) in &ranked {
+            if !order.contains(path) {
+                order.push(path.clone());
+            }
+        }
+        for path in &order {
+            for (alike, _, (lines, label, text)) in ranked.iter().filter(|r| &r.1 == path) {
+                batch.push(as_ripgrep(path, lines.clone(), &format!("{label} · {}%", (alike * 100.0).round()), text, &[]));
+                matches += 1;
+            }
+        }
+        with_match = order.len();
+    }
     let elapsed = started.elapsed();
     batch.push(
         serde_json::json!({
@@ -892,7 +946,7 @@ mod tests {
 
     #[test]
     fn matches_as_ripgrep_would() {
-        let search = |query: &str, case_sensitive, whole_word, regex| DocSearch { query: query.into(), path: String::new(), case_sensitive, whole_word, regex, exclusions: vec![], everything: false, ocr: false };
+        let search = |query: &str, case_sensitive, whole_word, regex| DocSearch { query: query.into(), path: String::new(), case_sensitive, whole_word, regex, exclusions: vec![], everything: false, ocr: false, meaning: false };
         assert!(pattern(&search("glint", false, false, false)).unwrap().is_match("GLINT rocks"), "smart case: lowercase ignores case");
         assert!(!pattern(&search("Glint", false, false, false)).unwrap().is_match("glint"), "an uppercase letter matches exactly");
         assert!(!pattern(&search("glint", true, false, false)).unwrap().is_match("Glint"));
@@ -902,11 +956,14 @@ mod tests {
         assert!(pattern(&search("c.t|dog", false, true, true)).unwrap().is_match("the dog"));
         assert!(pattern(&search("[", false, false, true)).is_err());
 
-        let json: serde_json::Value = serde_json::from_str(&as_ripgrep(Path::new(r"C:\d\a.pdf"), 7, "p. 2", "find é here", &[(5, 7)])).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&as_ripgrep(Path::new(r"C:\d\a.pdf"), 7..8, "p. 2", "find é here", &[(5, 7)])).unwrap();
         assert_eq!(
             (json["data"]["line_number"].as_u64(), json["data"]["label"].as_str(), json["data"]["submatches"][0]["match"]["text"].as_str(), json["data"]["lines"]["text"].as_str()),
             (Some(7), Some("p. 2"), Some("é"), Some("find é here\n"))
         );
+        assert!(json["data"].get("line_count").is_none());
+        let passage: serde_json::Value = serde_json::from_str(&as_ripgrep(Path::new(r"C:\d\a.pdf"), 7..10, "p. 2 · 61%", "three lines", &[])).unwrap();
+        assert_eq!((passage["data"]["line_number"].as_u64(), passage["data"]["line_count"].as_u64()), (Some(7), Some(3)));
     }
 
     #[test]
@@ -916,8 +973,12 @@ mod tests {
         let wide = cut("¶ 1".into(), "é".repeat(1500));
         assert!(wide.len() == 2 && wide.iter().all(|(_, t)| t.len() <= MAX_LINE), "cut between characters");
 
-        assert!(is_document("Report.PDF", false) && is_document("a.b.xlsx", false) && !is_document("~$Report.docx", false) && !is_document("pdf", false) && !is_document("notes.txt", false));
-        assert!(!is_document("scan.png", false) && is_document("scan.PNG", true) && !is_document("notes.txt", true), "pictures with OCR only");
+        let plain = DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec![], everything: false, ocr: false, meaning: false };
+        let ocr = DocSearch { ocr: true, ..plain.clone() };
+        let meaning = DocSearch { meaning: true, ..plain.clone() };
+        assert!(is_document("Report.PDF", &plain) && is_document("a.b.xlsx", &plain) && !is_document("~$Report.docx", &plain) && !is_document("pdf", &plain) && !is_document("notes.txt", &plain));
+        assert!(!is_document("scan.png", &plain) && is_document("scan.PNG", &ocr) && !is_document("notes.txt", &ocr), "pictures with OCR only");
+        assert!(is_document("notes.md", &meaning) && !is_document("scan.png", &meaning), "notes with meaning only");
         assert!(glob("node_modules", "Node_Modules"));
         assert!(glob("*.pdf", "Report.PDF") && !glob("*.pdf", "report.pdf.bak"));
         assert!(glob("img_????.jpg", "IMG_0042.jpg") && !glob("img_????.jpg", "IMG_42.jpg"));
@@ -936,7 +997,7 @@ mod tests {
         for file in ["a.pdf", "sub/b.DOCX", "sub/notes.txt", "sub/~$b.docx", "node_modules/c.pdf", ".hidden/d.pdf", "skip.xlsx"] {
             std::fs::write(dir.join(file), b"x").unwrap();
         }
-        let request = |everything| DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec!["node_modules".into(), "*.pdf".into(), "skip.xlsx".into()], everything, ocr: false };
+        let request = |everything| DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec!["node_modules".into(), "*.pdf".into(), "skip.xlsx".into()], everything, ocr: false, meaning: false };
         let found = |everything| {
             let run = begin();
             let (tx, rx) = mpsc::sync_channel(64);

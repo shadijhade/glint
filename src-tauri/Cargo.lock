@@ -5558,6 +5558,8 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "unicode-normalization",
+ "unicode-properties",
  "unrar_sys",
  "webview2-com",
  "windows",

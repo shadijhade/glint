@@ -294,7 +294,11 @@ export function Results({ active, run, matches, searching, error, duration, file
                 <p className="font-medium text-foreground">No results</p>
                 {run.options.documents ? (
                     <p className="max-w-sm">
-                        {filesSearched === 0 ? `No PDF, Word, Excel, PowerPoint, OpenDocument or EPUB files in “${run.path}”. ` : ""}
+                        {filesSearched === 0
+                            ? `No ${run.options.meaning ? "documents or notes" : "PDF, Word, Excel, PowerPoint, OpenDocument or EPUB files"} in “${run.path}”. `
+                            : run.options.meaning
+                              ? "Nothing there is close enough in meaning: try saying it another way. "
+                              : ""}
                         {unreadable > 0 && `${fmt(unreadable)} couldn't be read. `}
                         {run.everything ? "Only files kept in the cloud were skipped." : "Skipped: hidden files and folders, files kept in the cloud, and the folders excluded in Settings."}
                     </p>

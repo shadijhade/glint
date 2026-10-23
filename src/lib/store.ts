@@ -21,6 +21,8 @@ export interface SearchOptions {
     documents: boolean;
     /** With documents: pictures' text too, read by Windows' OCR (ocr.rs). */
     ocr: boolean;
+    /** Documents' and notes' passages ranked by meaning (meaning.rs) rather than matched. */
+    meaning: boolean;
 }
 
 export type Mode = 'files' | 'text';
@@ -193,7 +195,7 @@ export const useStore = create<AppState>()(
             query: '',
             path: '',
             history: [],
-            options: { caseSensitive: false, wholeWord: false, regex: false, code: false, documents: false, ocr: false },
+            options: { caseSensitive: false, wholeWord: false, regex: false, code: false, documents: false, ocr: false, meaning: false },
             settings: DEFAULT_SETTINGS,
             mode: 'files',
             pinned: [],
@@ -216,7 +218,15 @@ export const useStore = create<AppState>()(
             })),
             setOption: (key, value) => set((state) => ({
                 // Code patterns and documents are searches of their own: turning one on turns the other off.
-                options: { ...state.options, [key]: value, ...(value && key === 'code' && { documents: false }), ...(value && key === 'documents' && { code: false }) }
+                // Meaning is a documents search, so it turns documents on, and off with them.
+                options: {
+                    ...state.options,
+                    [key]: value,
+                    ...(value && key === 'code' && { documents: false, meaning: false }),
+                    ...(value && key === 'documents' && { code: false }),
+                    ...(value && key === 'meaning' && { documents: true, code: false }),
+                    ...(!value && key === 'documents' && { meaning: false }),
+                }
             })),
             setSettings: (newSettings) => set((state) => ({
                 settings: { ...state.settings, ...newSettings }

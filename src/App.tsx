@@ -15,7 +15,7 @@ import { checkForUpdates, greetUpdate, useUpdater } from "./lib/updater";
 import { openItem, quickConfigure, setStartWithWindows } from "./lib/fs";
 import { cn, firstNotice } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
-import { AstGrepCard, RipgrepCard, SearchBar } from "./components/Search";
+import { AstGrepCard, MeaningCard, RipgrepCard, SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
 import { SettingsView } from "./components/SettingsView";
 import { openShortcuts, ShortcutsDialog } from "./components/ShortcutsDialog";
@@ -319,7 +319,7 @@ function App() {
   const replaceAll = async (replacement: string) => {
     // One at a time: a second Enter mid-way would replace in what the first just wrote. Documents are
     // zips and PDFs: replacing in their bytes as text would ruin them.
-    if (!run || searching || replacing.current || run.options.documents) return;
+    if (!run || searching || replacing.current || run.options.documents || run.options.meaning) return;
     const files = [...new Set(matches.map((m) => m.data.path?.text ?? ""))].filter(Boolean);
     if (!files.length) return;
     if (run.options.code) return rewriteAll(replacement, files.length);
@@ -427,7 +427,7 @@ function App() {
           <div className="flex shrink-0 border-b bg-chrome px-3 py-2.5">
             <SearchBar
               searching={searching}
-              canReplace={!searching && matches.length > 0 && !run?.options.documents}
+              canReplace={!searching && matches.length > 0 && !run?.options.documents && !run?.options.meaning}
               onSearch={searchCurrent}
               onStop={cancelSearch}
               onReplace={replaceAll}
@@ -436,6 +436,7 @@ function App() {
         )}
         {mode === "text" && <RipgrepCard />}
         {mode === "text" && <AstGrepCard />}
+        {mode === "text" && <MeaningCard />}
         {run ? (
           <Results
             key={run.id}

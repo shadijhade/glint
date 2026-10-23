@@ -14,6 +14,7 @@ import { knownShells, useTerminals } from "@/lib/terminal";
 import { cancelInstall, describeProgress, installTool, refreshTools, removeTool, useTool, useTools } from "@/lib/tools";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
+import { cancelMeaning, installMeaning, refreshMeaning, removeMeaning, useMeaning } from "@/lib/meaning";
 import { refreshZoxide } from "@/lib/zoxide";
 import { openShortcuts } from "./ShortcutsDialog";
 import { installHint } from "./ToolNeeded";
@@ -268,6 +269,34 @@ function ToolRow({ tool, progress }: { tool: ToolStatus; progress?: ToolProgress
     );
 }
 
+/** Meaning search's model, among the tools: downloaded or not, and Download, Stop or Remove. */
+function MeaningRow() {
+    const { installed, progress } = useMeaning();
+    useEffect(() => {
+        void refreshMeaning();
+    }, []);
+    return (
+        <Row label="Meaning model (potion-base-8M)" hint={`Meaning search in Text: passages ranked by what they're about (Model2Vec, 30 MB, MIT) · ${installed ? "Downloaded by Glint" : "Not downloaded"}`}>
+            {progress ? (
+                <>
+                    <span className="max-w-56 truncate text-xs text-muted-foreground">{describeProgress(progress)}</span>
+                    <Button variant="outline" size="sm" onClick={cancelMeaning}>
+                        Stop
+                    </Button>
+                </>
+            ) : installed ? (
+                <Button variant="outline" size="sm" onClick={() => void removeMeaning()}>
+                    Remove
+                </Button>
+            ) : (
+                <Button size="sm" onClick={() => void installMeaning()} title="Downloads it from Hugging Face and checks it against its pinned checksum">
+                    <Download /> Download
+                </Button>
+            )}
+        </Row>
+    );
+}
+
 /** The programs Glint drives: the ones that come with it, and the optional ones it installs when a feature needs them. */
 function ToolsSection() {
     const tools = useTools((s) => s.tools);
@@ -295,6 +324,7 @@ function ToolsSection() {
             {list.map((tool) => (
                 <ToolRow key={tool.id} tool={tool} progress={busy[tool.id]} />
             ))}
+            <MeaningRow />
             <p className="px-4 py-3 text-xs text-muted-foreground">
                 ripgrep, fd and dust come with Glint. Other tools install when a feature needs them, for your account only: with winget, or from the
                 tool's own GitHub release, which Glint checks against the checksum it knows for it before unpacking anything.
