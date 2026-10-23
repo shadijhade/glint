@@ -78,6 +78,9 @@ export interface Settings {
     growthDays: number;
     // The YARA rules files are checked with: a .yar file, or a folder of them ("" until chosen)
     yaraRules: string;
+    // A folder's README.md above its list, and whether it's open (or folded to its title)
+    showReadme: boolean;
+    readmeOpen: boolean;
 }
 
 /** The list's columns whose width can be dragged (the name takes what's left). */
@@ -134,6 +137,8 @@ export const DEFAULT_SETTINGS: Settings = {
     terminalFollow: true,
     growthDays: 7,
     yaraRules: '',
+    showReadme: true,
+    readmeOpen: false,
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */
