@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import {
     ArchiveRestore,
+    BrushCleaning,
     ChevronDown,
     ClipboardPaste,
     Columns2,
@@ -48,6 +49,7 @@ import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useMenu } from "../Menu";
 import { Button } from "../ui/button";
+import { openCleanup } from "./CleanupDialog";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { inspectLocks } from "./LocksDialog";
 import { inspectTimeline } from "./TimelineDialog";
@@ -251,6 +253,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             { label: "Recent changes in this folder", icon: FileClock, disabled: !inFolder, onSelect: () => inspectTimeline(path) },
             { heading: "Clean up" },
             { label: "Find duplicate files in this folder", icon: Files, disabled: !inFolder, onSelect: () => inspectDuplicates(path) },
+            { label: "Clean up this folder…", icon: BrushCleaning, disabled: !inFolder || readOnly, onSelect: () => openCleanup(path) },
         ]);
     };
 

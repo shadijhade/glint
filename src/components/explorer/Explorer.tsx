@@ -15,6 +15,7 @@ import {
     ArrowUp,
     Bookmark,
     BookmarkCheck,
+    BrushCleaning,
     ChevronLeft,
     ChevronRight,
     ClipboardCopy,
@@ -172,6 +173,7 @@ import { FIND_BOX_ID } from "./AddressBar";
 import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
+import { openCleanup } from "./CleanupDialog";
 import { DiskUsage } from "./DiskUsage";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { FileGrid } from "./FileGrid";
@@ -378,6 +380,7 @@ function folderMenu(
         !inArchive && !shut && { label: "Search text", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
         !inArchive && !shut && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
         !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
+        !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
         !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
         { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
         "separator",
@@ -589,6 +592,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !archive && !closedItems && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
             writable && !shut && action("timeline", "Recent changes in this folder", FileClock, () => inspectTimeline(t.path)),
             writable && !shut && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
+            writable && !shut && action("cleanup", "Clean up this folder: build output and package caches", BrushCleaning, () => openCleanup(t.path)),
             writable && !shut && action("export-ncdu", "Export this folder as ncdu JSON…", FileJson, () => void exportAsNcdu(t.path)),
             !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
@@ -1175,6 +1179,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one?.dir && !fixed && { label: "Search text", icon: TextSearch, onSelect: () => onSearchText(one.path) },
             one?.dir && !fixed && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(one.path) },
             one?.dir && !fixed && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(one.path) },
+            one?.dir && !fixed && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(one.path) },
             one?.dir && !fixed && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(one.path) },
             one && !one.dir && !fixed && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
             !archived && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },

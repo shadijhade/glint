@@ -1,6 +1,7 @@
 mod access;
 mod archive;
 mod batch_rename;
+mod cleanup;
 mod compare;
 mod data_lens;
 mod dedup;
@@ -482,6 +483,8 @@ pub fn run() {
             locks::who_locks,
             locks::stop_locking_process,
             pe::inspect_pe,
+            cleanup::cleanup_junk,
+            cleanup::cancel_cleanup,
             dedup::find_duplicates,
             dedup::cancel_dedup,
             compare::compare_folders,

@@ -1,5 +1,5 @@
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Flame, Layers, Loader2, Sparkles, Square, Zap } from "lucide-react";
+import { AlertTriangle, BrushCleaning, Flame, Layers, Loader2, Sparkles, Square, Zap } from "lucide-react";
 import { entriesOf, mapUsage, markUsageShown, refreshUsage, setUsage, stopUsage, type UsageRun, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { enableIndex, goUp, modalOpen, navigate, openEntry, selectOnly, tabName, updateTab, useExplorer } from "@/lib/explorer";
@@ -9,6 +9,7 @@ import { parentPath, samePath } from "@/lib/paths";
 import { BLOCK, FRAME, hitTest, isFolder, layoutUsage, type UsageLayout, type UsageMap } from "@/lib/usage";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+import { openCleanup } from "./CleanupDialog";
 
 type ColorMode = "type" | "age";
 
@@ -581,6 +582,16 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                         <Flame className="size-3" /> Age
                     </button>
                 </div>
+                {map && current && (map.engine === "index" || map.engine === "dust") && (
+                    <button
+                        type="button"
+                        onClick={() => openCleanup(run.path)}
+                        className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground"
+                        title="Clean up: build output and package caches below this folder that their projects' tools make again"
+                    >
+                        <BrushCleaning className="size-3" /> Free up space
+                    </button>
+                )}
                 {map && current && map.serviceTooOld && (
                     <button
                         onClick={enableIndex}
