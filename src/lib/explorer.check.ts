@@ -70,6 +70,16 @@ assert.equal(match("file: b"), "B.txt");
 assert.equal(match("dm:>1y"), "b,a.txt,c.md,B.txt");
 assert.equal(match("dm:7d"), "");
 assert.equal(match("size:big"), "");
+// git: asks the folder's Git marks (by lowercase name); without them (not a repository) it matches nothing.
+const marks = { "a.txt": "modified", "b.txt": "untracked", b: "staged", "c.md": "ignored" } as const;
+const gitMatch = (query: string) => names(listing.filter(matcher(query, marks) ?? (() => true)));
+assert.equal(gitMatch("git:changed"), "b,a.txt,B.txt");
+assert.equal(gitMatch("git:new"), "B.txt");
+assert.equal(gitMatch("git:staged"), "b");
+assert.equal(gitMatch("git:ignored"), "c.md");
+assert.equal(gitMatch("git:changed ext:txt"), "a.txt,B.txt");
+assert.equal(gitMatch("git:nonsense"), "");
+assert.equal(match("git:changed"), "");
 
 // Binary listings: built here with the layout fsx.rs's encode_listing writes (its test checks the offsets)
 type Item = { name: string; dir: boolean; size: number; modified: number; attrs: number };

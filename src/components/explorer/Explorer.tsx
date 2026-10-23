@@ -821,7 +821,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
 
     const deferredFilter = useDeferredValue(filter);
     const { rows: listRows, hidden } = useMemo(() => {
-        const match = matcher(deferredFilter);
+        const match = matcher(deferredFilter, gitMarks);
         const filterDiffs = !!comparison && diffOnly;
         if (!match && showHidden && !filterDiffs) return { rows: sorted, hidden: 0 };
         let hidden = 0;
@@ -834,7 +834,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             return !match || match(e);
         });
         return { rows, hidden };
-    }, [sorted, deferredFilter, showHidden, comparison, diffOnly]);
+    }, [sorted, deferredFilter, showHidden, comparison, diffOnly, gitMarks]);
     // A tab showing its disk-usage map has the map's items as rows.
     const mapRows = useMapRows(tabId);
     const rows = mapRows ?? listRows;

@@ -524,7 +524,8 @@ mod tests {
         repo.git(&["add", "."]).unwrap();
         repo.git(&["commit", "-q", "-m", "1"]).unwrap();
         repo.put("a.txt", "changed\n");
-        repo.git(&["config", "filter.evil.clean", "calc.exe"]).unwrap();
+        // As Git LFS sets it up. (No .gitattributes names it, so nothing runs it here either way.)
+        repo.git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let limited = view(&repo.at(""), &[], false, stop.clone()).unwrap().unwrap();
         assert!(limited.limited && limited.marks.is_empty());
