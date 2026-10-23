@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
     AlertTriangle,
     CheckCircle2,
+    CopyPlus,
     Files,
     FolderInput,
     Link2,
@@ -17,7 +18,7 @@ import {
 } from "lucide-react";
 import { fileOp, reload, revealInApp } from "@/lib/explorer";
 import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
-import { cancelDedup, type DedupReport, type DuplicateGroup, findDuplicates, hardlinkDuplicates } from "@/lib/fs";
+import { cancelDedup, cloneDuplicates, type DedupReport, type DuplicateGroup, findDuplicates, hardlinkDuplicates } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
@@ -96,23 +97,47 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
         return group.files.filter((f) => f.path !== keep).map((f) => f.path);
     };
 
+    // On a drive that clones blocks (ReFS, a Dev Drive), copies become clones of the one kept: their space
+    // is shared until one changes, and each stays a file of its own. Elsewhere, hard links: one file.
+    const how = report?.clones
+        ? {
+              verb: "Clone",
+              done: "Cloned",
+              icon: CopyPlus,
+              run: cloneDuplicates,
+              title: "Replace the other copies with block clones of the one you keep: the paths stay and the space is freed, and each stays a file of its own",
+              becomes: (freed: string) =>
+                  `with block clones of it?\n\nEvery path stays where it is and ${freed} is freed: the clones share its space on this drive until one of them changes, and each stays a file of its own, with its own dates. Each copy is compared byte for byte first, and its clone again before it takes its place.`,
+          }
+        : {
+              verb: "Hard-link",
+              done: "Linked",
+              icon: Link2,
+              run: hardlinkDuplicates,
+              title: "Replace the other copies with hard links to the one you keep: the paths stay, the space is freed, and they become one file",
+              becomes: (freed: string) =>
+                  `with hard links to it?\n\nEvery path stays where it is and ${freed} is freed, but they all become one file: changing any of them changes them all, and they share one set of dates and attributes. Each copy is compared byte for byte first.`,
+          };
+
     const linkOneGroup = async (group: DuplicateGroup) => {
         const keep = keptFor(group);
         const dups = dupsFor(group);
         if (!dups.length) return;
-        const ok = await confirm(
-            `Replace ${dups.length === 1 ? "the other copy" : `the ${dups.length} other copies`} of “${baseName(keep)}” with hard links to it?\n\nEvery path stays where it is and ${formatSize(group.wastedBytes)} is freed, but they all become one file: changing any of them changes them all, and they share one set of dates and attributes. Each copy is compared byte for byte first.`,
-            { title: "Hard-link duplicates", kind: "warning", okLabel: "Hard-link", cancelLabel: "Cancel" }
-        );
+        const ok = await confirm(`Replace ${dups.length === 1 ? "the other copy" : `the ${dups.length} other copies`} of “${baseName(keep)}” ${how.becomes(formatSize(group.wastedBytes))}`, {
+            title: `${how.verb} duplicates`,
+            kind: "warning",
+            okLabel: how.verb,
+            cancelLabel: "Cancel",
+        });
         if (!ok) return;
         setBusy(true);
         try {
-            const res = await hardlinkDuplicates(keep, dups);
-            toast.success(`Linked ${res.linked} ${res.linked === 1 ? "file" : "files"} · reclaimed ${formatSize(res.reclaimedBytes)} in ${formatDuration(res.elapsedMs)}`);
+            const res = await how.run(keep, dups);
+            toast.success(`${how.done} ${res.linked} ${res.linked === 1 ? "file" : "files"} · reclaimed ${formatSize(res.reclaimedBytes)} in ${formatDuration(res.elapsedMs)}`);
             reload();
             scan();
         } catch (e) {
-            toast.error("Couldn't hard-link the duplicates", { description: String(e) });
+            toast.error(`Couldn't ${how.verb.toLowerCase()} the duplicates`, { description: String(e) });
         } finally {
             setBusy(false);
         }
@@ -139,8 +164,10 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
     const linkAllGroups = async () => {
         if (!report || !report.groups.length) return;
         const ok = await confirm(
-            `Replace all ${formatCount(report.totalDuplicateFiles)} duplicate files in ${formatCount(report.groups.length)} groups with hard links to the copy you keep?\n\nEvery path stays where it is and ${formatSize(report.totalWastedBytes)} is freed, but each group becomes one file: changing any copy changes them all. Each copy is compared byte for byte first.`,
-            { title: "Hard-link all duplicates", kind: "warning", okLabel: "Hard-link all", cancelLabel: "Cancel" }
+            report.clones
+                ? `Replace all ${formatCount(report.totalDuplicateFiles)} duplicate files in ${formatCount(report.groups.length)} groups with block clones of the copy you keep?\n\nEvery path stays where it is and ${formatSize(report.totalWastedBytes)} is freed: each group's clones share its space until one changes, and each stays a file of its own. Each copy is compared byte for byte first.`
+                : `Replace all ${formatCount(report.totalDuplicateFiles)} duplicate files in ${formatCount(report.groups.length)} groups with hard links to the copy you keep?\n\nEvery path stays where it is and ${formatSize(report.totalWastedBytes)} is freed, but each group becomes one file: changing any copy changes them all. Each copy is compared byte for byte first.`,
+            { title: `${how.verb} all duplicates`, kind: "warning", okLabel: `${how.verb} all`, cancelLabel: "Cancel" }
         );
         if (!ok) return;
         setBusy(true);
@@ -148,17 +175,17 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
         let totalReclaimed = 0;
         for (const group of report.groups) {
             try {
-                const res = await hardlinkDuplicates(keptFor(group), dupsFor(group));
+                const res = await how.run(keptFor(group), dupsFor(group));
                 totalLinked += res.linked;
                 totalReclaimed += res.reclaimedBytes;
             } catch (e) {
-                toast.error(`Couldn't hard-link “${group.files[0]?.name}”`, { description: String(e) });
+                toast.error(`Couldn't ${how.verb.toLowerCase()} “${group.files[0]?.name}”`, { description: String(e) });
                 break;
             }
         }
         setBusy(false);
         if (totalLinked > 0) {
-            toast.success(`Linked ${formatCount(totalLinked)} files · reclaimed ${formatSize(totalReclaimed)}`);
+            toast.success(`${how.done} ${formatCount(totalLinked)} files · reclaimed ${formatSize(totalReclaimed)}`);
             reload();
             scan();
         }
@@ -213,6 +240,7 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
                             ? ` (${formatCount(report.hardlinksSkipped)} already hard-linked, skipped)`
                             : ""}
                     </span>
+                    {report.clones && <span title="On ReFS or a Dev Drive, a copy can be a clone of another file: it takes no space of its own until one of them changes">· this drive clones files, so copies can share their space</span>}
                 </div>
             )}
 
@@ -271,9 +299,9 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
                                                 disabled={busy}
                                                 onClick={() => linkOneGroup(group)}
                                                 className="h-6 gap-1 px-2 text-[0.6875rem]"
-                                                title="Replace the other copies with hard links to the one you keep: the paths stay, the space is freed, and they become one file"
+                                                title={how.title}
                                             >
-                                                <Link2 className="size-3 text-primary" /> Hard-link
+                                                <how.icon className="size-3 text-primary" /> {how.verb}
                                             </Button>
                                             <Button
                                                 variant="outline"
@@ -365,7 +393,7 @@ function DuplicatesModal({ root, onClose }: { root: string; onClose: () => void 
                             onClick={linkAllGroups}
                             className="h-6 gap-1 px-2 text-xs text-primary hover:bg-primary/10 hover:text-primary"
                         >
-                            <Link2 className="size-3" /> Hard-link all ({formatCount(report.totalDuplicateFiles)})
+                            <how.icon className="size-3" /> {how.verb} all ({formatCount(report.totalDuplicateFiles)})
                         </Button>
                         <Button
                             variant="ghost"
