@@ -114,6 +114,11 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
     .await
 }
 
+/// Moves `paths` to the Recycle Bin without asking first (pictures Convert replaced): where each went.
+pub(crate) fn recycle(owner: isize, paths: Vec<String>) -> Result<Performed, String> {
+    imp::file_op(owner, FileOp::Delete { paths, permanent: false, confirm: false })
+}
+
 /// The files on the clipboard (copied or cut), if any; what extracted copies may not be deleted for.
 pub fn clipboard_paths() -> Vec<String> {
     imp::clipboard_files(0).ok().flatten().map(|files| files.paths).unwrap_or_default()

@@ -267,6 +267,46 @@ export const fileOp = (op: FileOp) => invoke<Performed>("file_op", { op });
 /** Empties the Recycle Bin, every drive's, after Windows' own question: whether it's empty now. */
 export const recycleEmpty = () => invoke<boolean>("recycle_empty");
 
+export type ConvertFormat = "jpeg" | "png" | "webp" | "avif";
+
+/** Convert pictures (with rimage): to what, how well, how big, and where what's made goes. */
+export interface ConvertOptions {
+    format: ConvertFormat;
+    /** 1 to 100; PNG is lossless and has none. */
+    quality: number;
+    /** A share of its size, or its longest side at most (a smaller picture keeps its size); null keeps it. */
+    resize: { kind: "percent" | "longest"; value: number } | null;
+    /** Takes out what the picture says of itself: camera, place, when it was taken. */
+    strip: boolean;
+    output: { kind: "beside"; suffix: string } | { kind: "folder"; name: string } | { kind: "replace" };
+}
+
+export interface Converted {
+    from: string;
+    to: string;
+    /** Where the picture went in the Recycle Bin, when what was made took its place. */
+    recycled: string | null;
+    before: number;
+    after: number;
+}
+
+export interface ConvertReport {
+    converted: Converted[];
+    /** Each picture that wasn't converted, and why. */
+    failed: [string, string][];
+    stopped: boolean;
+    elapsedMs: number;
+}
+
+/** Converts `pictures`, a few at a time, saying how far it is after each. */
+export async function convertImages(pictures: string[], options: ConvertOptions, onProgress: (progress: { done: number; total: number; current: string }) => void) {
+    const channel = new Channel<{ done: number; total: number; current: string }>();
+    channel.onmessage = onProgress;
+    return invoke<ConvertReport>("convert_images", { pictures, options, onProgress: channel });
+}
+
+export const convertCancel = () => invoke("convert_cancel");
+
 export const clipboardSetFiles = (paths: string[], cut: boolean) => invoke("clipboard_set_files", { paths, cut });
 export const clipboardGetFiles = () => invoke<{ paths: string[]; cut: boolean } | null>("clipboard_get_files");
 /** With no files on the clipboard: its picture (a PNG) or text (a .txt) as a new file in `folder`; null when it holds neither. */
