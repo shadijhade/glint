@@ -245,10 +245,11 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                   ]
                 : []),
             { label: "Open in Terminal", icon: SquareTerminal, disabled: !inFolder, onSelect: terminal },
-            "separator",
+            { heading: "Inspect" },
             { label: "File X-Ray: hashes and hidden streams", icon: Fingerprint, disabled: !file, onSelect: () => file && inspectXRay(file.path) },
             { label: paths.length ? "What's locking the selection?" : "What's locking this folder?", icon: Lock, disabled: !inFolder && !paths.length, onSelect: () => inspectLocks(paths.length ? paths : [path]) },
             { label: "Recent changes in this folder", icon: FileClock, disabled: !inFolder, onSelect: () => inspectTimeline(path) },
+            { heading: "Clean up" },
             { label: "Find duplicate files in this folder", icon: Files, disabled: !inFolder, onSelect: () => inspectDuplicates(path) },
         ]);
     };

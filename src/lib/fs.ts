@@ -65,9 +65,40 @@ export const listDrives = () => invoke<Drive[]>("list_drives");
 
 /** Checks a typed location; a file resolves too, so its folder can be opened with it selected. */
 export const resolvePath = (path: string) => invoke<{ path: string; dir: boolean }>("resolve_path", { path });
-/** Where Text search's ripgrep comes from: next to the app, installed on the PC, or nowhere. */
-export const ripgrepStatus = () => invoke<"bundled" | "installed" | "missing">("ripgrep_status");
-export const installRipgrep = () => invoke<void>("install_ripgrep");
+/** A program Glint drives (tools.rs): one that comes with it, or an optional one installed on demand. */
+export interface ToolStatus {
+    id: string;
+    name: string;
+    usedFor: string;
+    /** What Install uses: "bundled" (comes with Glint; winget can put it back), "winget" or "release" (its GitHub release). */
+    source: "bundled" | "winget" | "release";
+    /** Where the copy that runs came from; null when it's missing. */
+    origin: "bundled" | "downloaded" | "installed" | null;
+    path: string | null;
+    version: string | null;
+    /** The version a release download gets. */
+    pinned: string | null;
+    /** Glint downloaded this copy, so it can remove it (one installed with winget is the person's to uninstall). */
+    removable: boolean;
+}
+
+/** How an install is going: what it's doing, and bytes when it's downloading (total 0: no bar). */
+export interface ToolProgress {
+    stage: string;
+    done: number;
+    total: number;
+}
+
+export const toolsStatus = () => invoke<ToolStatus[]>("tools_status");
+/** Installs a tool with winget or from its release (checked against its pinned SHA-256); rejects with "cancelled" when stopped. */
+export const toolInstall = (id: string, onProgress: (progress: ToolProgress) => void) => {
+    const channel = new Channel<ToolProgress>();
+    channel.onmessage = onProgress;
+    return invoke<ToolStatus>("tool_install", { id, onProgress: channel });
+};
+export const toolCancelInstall = (id: string) => invoke("tool_cancel_install", { id });
+/** Removes a copy of a tool Glint downloaded. */
+export const toolRemove = (id: string) => invoke<ToolStatus>("tool_remove", { id });
 /** Versions, tools and instant search's state, as text for a bug report. */
 export const diagnostics = () => invoke<string>("diagnostics");
 

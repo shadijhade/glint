@@ -54,6 +54,10 @@ sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip
 # are the NSIS setup.exe itself.
 tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-single-instance = "2.5"
+# Downloading the optional tools winget doesn't have (tools.rs): the HTTP client and TLS the updater
+# already brings (rustls with ring), so they add next to nothing.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"

@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { toast } from "sonner";
-import { CaseSensitive, Download, FolderOpen, Loader2, Regex, Replace, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
+import { CaseSensitive, FolderOpen, Regex, Replace, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
 import { defaultTextSearchFolder } from "@/lib/explorer";
-import { installRipgrep, ripgrepStatus } from "@/lib/fs";
 import { SearchOptions, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { ToolNeeded } from "./ToolNeeded";
 import { Button } from "./ui/button";
 
 const TOGGLES: { key: keyof SearchOptions; hotkey: string; icon: typeof Regex; label: string }[] = [
@@ -178,34 +176,5 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
  * one click installs it with winget, and Glint uses that copy.
  */
 export function RipgrepCard() {
-    const [status, setStatus] = useState<string | null>(null);
-    const [installing, setInstalling] = useState(false);
-    useEffect(() => {
-        ripgrepStatus().then(setStatus, () => setStatus(null));
-    }, []);
-    if (status !== "missing") return null;
-    const install = async () => {
-        setInstalling(true);
-        try {
-            await installRipgrep();
-            setStatus(await ripgrepStatus());
-            toast.success("ripgrep is installed", { description: "Text search is ready." });
-        } catch (e) {
-            toast.error("Couldn't install ripgrep", {
-                description: String(e),
-                action: { label: "Download", onClick: () => openUrl("https://github.com/BurntSushi/ripgrep/releases/latest") },
-            });
-        } finally {
-            setInstalling(false);
-        }
-    };
-    return (
-        <div className="mx-3 mt-3 flex items-center gap-3 rounded-lg border bg-primary/5 px-4 py-3">
-            <TextSearch className="size-4 shrink-0 text-primary" />
-            <span className="min-w-0 flex-1 text-sm">ripgrep, which searches inside files, is missing from this copy of Glint.</span>
-            <Button size="sm" disabled={installing} onClick={install} title="Installs ripgrep with winget">
-                {installing ? <Loader2 className="animate-spin" /> : <Download />} {installing ? "Installing…" : "Install ripgrep"}
-            </Button>
-        </div>
-    );
+    return <ToolNeeded id="ripgrep" icon={TextSearch} why="ripgrep, which searches inside files, is missing from this copy of Glint." className="mx-3 mt-3" />;
 }
