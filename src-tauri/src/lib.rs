@@ -646,6 +646,7 @@ pub fn run() {
             compare::compare_folders,
             compare::cancel_compare,
             dedup::hardlink_duplicates,
+            dedup::clone_duplicates,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,
