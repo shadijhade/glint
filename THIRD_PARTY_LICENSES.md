@@ -670,6 +670,7 @@ SOFTWARE.
 | [parquet](https://github.com/apache/arrow-rs) (Apache Arrow's, for Rust) | 60.0.0 | Parquet files as tables | Apache-2.0 |
 | [Zstandard](https://github.com/facebook/zstd) (through `zstd-sys`) | 1.5.7 | Parquet's Zstandard pages | BSD-3-Clause |
 | [snap](https://github.com/BurntSushi/rust-snappy) | 1.1.2 | Parquet's Snappy pages | BSD-3-Clause |
+| [SQLite](https://sqlite.org) (through [rusqlite](https://github.com/rusqlite/rusqlite), built in) | 3.x (rusqlite 0.40) | SQL in the Query view | Public domain (SQLite); MIT (rusqlite) |
 | [jaq](https://github.com/01mf02/jaq)'s readers (`jaq-json`, `jaq-fmts`, with `jaq-core` and `jaq-std`) | jaq-json 2.0.3, jaq-fmts 0.1.1 | Reading JSON, YAML and TOML for their tree (jq filters run in the jaq program, installed on demand) | MIT |
 
 ### comrak
@@ -1023,4 +1024,32 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### SQLite and rusqlite
+
+SQLite is in the public domain: "The author disclaims copyright to this source code. In place of a legal notice, here is a blessing: May you do good and not evil. May you find forgiveness for yourself and forgive others. May you share freely, never taking more than you give."
+
+rusqlite:
+
+```text
+Copyright (c) 2014 The rusqlite developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 ```
