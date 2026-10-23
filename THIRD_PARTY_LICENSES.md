@@ -278,8 +278,8 @@ Apache License
 | [flate2](https://github.com/rust-lang/flate2-rs) and [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) | 1.1.10, 0.6.8 | Deflate, and gzip (.gz files) | MIT or Apache-2.0; Zlib |
 | [deflate64](https://github.com/anatawa12/deflate64-rs) | 0.1.12 | Deflate64 (zip) | MIT |
 | [bzip2](https://github.com/trifectatechfoundation/bzip2-rs) and [libbz2-rs-sys](https://github.com/trifectatechfoundation/libbzip2-rs) | 0.6.1, 0.2.5 | BZip2 (.bz2 files too) | MIT or Apache-2.0; bzip2-1.0.6 |
-| [ruzstd](https://github.com/KillingSpark/zstd-rs) | 0.9.1 | Zstandard (zip entries, .zst files) | MIT |
-| [lz4_flex](https://github.com/PSeitz/lz4_flex) | 0.14.0 | LZ4 (.lz4 files) | MIT |
+| [ruzstd](https://github.com/KillingSpark/zstd-rs) | 0.9.1 | Zstandard (zip entries, 7z blocks, .zst files) | MIT |
+| [lz4_flex](https://github.com/PSeitz/lz4_flex) | 0.14.0 | LZ4 (7z blocks, .lz4 files) | MIT |
 | [ppmd-rust](https://github.com/hasenbanck/ppmd-rust) | 1.5.0 | PPMd | CC0-1.0 or MIT-0 |
 | [bitstream-io](https://github.com/tuffy/bitstream-io) | 4.10.0 | Shrink, Reduce and Implode (very old zips) | MIT or Apache-2.0 |
 

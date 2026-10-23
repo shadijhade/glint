@@ -615,6 +615,71 @@ fn reads_zstandard_entries() {
     assert!(matches!(error, Failure::Damaged(_)), "{error:?}");
 }
 
+/// A 7z of `files` compressed with `methods` (compressor first, then its filters): solid, one block,
+/// or with `solid` false a block per file.
+fn write_7z(path: &Path, methods: Vec<sevenz_rust2::EncoderConfiguration>, files: &[(&str, &[u8])], solid: bool) {
+    let mut writer = sevenz_rust2::ArchiveWriter::create(path).unwrap();
+    writer.set_content_methods(methods);
+    if solid {
+        let entries = files.iter().map(|(name, _)| sevenz_rust2::ArchiveEntry::new_file(name)).collect();
+        let readers = files.iter().map(|(_, data)| sevenz_rust2::SourceReader::new(*data)).collect();
+        writer.push_archive_entries(entries, readers).unwrap();
+    } else {
+        for (name, data) in files {
+            writer.push_archive_entry(sevenz_rust2::ArchiveEntry::new_file(name), Some(*data)).unwrap();
+        }
+    }
+    writer.finish().unwrap();
+}
+
+#[test]
+fn reads_7z_blocks_in_zstandard_and_lz4() {
+    use sevenz_rust2::encoder_options::DeltaOptions;
+    use sevenz_rust2::EncoderMethod;
+    let dir = scratch("7zextra");
+    // Calls for BCJ to rewrite, text, and 16-bit samples for Delta.
+    let code: Vec<u8> = (0..20_000u32).flat_map(|i| [0xE8, i as u8, (i >> 8) as u8, 0, 0, 0x90]).collect();
+    let words = "Zstandard in a 7z, as 7-Zip ZS and NanaZip write it. ".repeat(400);
+    let samples: Vec<u8> = (0..30_000u32).flat_map(|i| ((i * 7) as u16).to_le_bytes()).collect();
+    let files: &[(&str, &[u8])] = &[("bin/app.exe", &code), ("docs/readme.txt", words.as_bytes()), ("data/samples.raw", &samples)];
+    let chains: Vec<(&str, Vec<sevenz_rust2::EncoderConfiguration>)> = vec![
+        ("zstd", vec![EncoderMethod::ZSTD.into()]),
+        ("bcj-zstd", vec![EncoderMethod::ZSTD.into(), EncoderMethod::BCJ_X86_FILTER.into()]),
+        ("delta-zstd", vec![EncoderMethod::ZSTD.into(), DeltaOptions::from_distance(2).into()]),
+        ("lz4", vec![EncoderMethod::LZ4.into()]),
+    ];
+    for (name, methods) in chains {
+        // sevenz-rust2 0.24 writes a solid Delta + Zstandard block wrongly from its second file on
+        // (it can't read it back either), so that one is a block per file.
+        let kinds: &[bool] = if name == "delta-zstd" { &[false] } else { &[true, false] };
+        for &solid in kinds {
+            let path = dir.join(format!("{name}-{solid}.7z"));
+            write_7z(&path, methods.clone(), files, solid);
+            let p = text(&path);
+            let top = listing(&p);
+            assert_eq!(names(&top), ["bin", "data", "docs"], "{name}");
+            assert!(top.items.iter().all(|i| i.3 & UNREADABLE == 0), "{name} reads");
+            // All of it in one pass, then one file at a time, and the start of one.
+            let staged = stage_all(&[format!("{p}\\bin"), format!("{p}\\docs"), format!("{p}\\data")]).unwrap();
+            assert!(staged.skipped.is_empty(), "{name}: {:?}", staged.skipped);
+            assert_eq!(fs::read(Path::new(&staged.paths[0]).join("app.exe")).unwrap(), code, "{name}");
+            assert_eq!(fs::read(Path::new(&staged.paths[2]).join("samples.raw")).unwrap(), samples, "{name}");
+            extract::remove_tree(Path::new(&staged.folder));
+            assert_eq!(fs::read_to_string(copy(&format!("{p}\\docs\\readme.txt"), Purpose::Preview).unwrap()).unwrap(), words, "{name}");
+            assert_eq!(read_prefix(&format!("{p}\\data\\samples.raw"), 4).unwrap().unwrap().0, samples[..4], "{name}");
+        }
+    }
+    // Damaged in the middle of its Zstandard data: an error (a checksum, or the decoder's), not wrong bytes.
+    let path = dir.join("bad-zstd.7z");
+    write_7z(&path, vec![EncoderMethod::ZSTD.into()], &[("docs/readme.txt", words.as_bytes())], true);
+    let packed = sevenz_rust2::Archive::read(&mut fs::File::open(&path).unwrap(), &sevenz_rust2::Password::empty()).unwrap().pack_sizes()[0];
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[32 + packed as usize / 2] ^= 0x5A;
+    fs::write(&path, bytes).unwrap();
+    let error = copy(&format!("{}\\docs\\readme.txt", text(&path)), Purpose::Preview).unwrap_err();
+    assert!(matches!(error, Failure::Damaged(_)), "{error:?}");
+}
+
 #[test]
 fn says_when_entries_are_password_protected() {
     let dir = scratch("encrypted");
@@ -711,6 +776,12 @@ fn never_falls_over_on_damaged_archives() {
     let tar = write_tar(&[("docs/a.txt", &[b'a'; 3000]), ("b.bin", &[7; 1000])]);
     for codec in [Codec::Plain, Codec::Gz, Codec::Xz, Codec::Zst, Codec::Bz2, Codec::Lz4] {
         archives.push(compressed(&tar, codec));
+    }
+    // 7z blocks Glint decodes itself (Zstandard, after BCJ), and LZ4 ones.
+    for (n, methods) in [vec![sevenz_rust2::EncoderMethod::ZSTD.into(), sevenz_rust2::EncoderMethod::BCJ_X86_FILTER.into()], vec![sevenz_rust2::EncoderMethod::LZ4.into()]].into_iter().enumerate() {
+        let path = dir.join(format!("codec-{n}.7z"));
+        write_7z(&path, methods, &[("docs/a.txt", &[b'a'; 3000]), ("b.bin", &[7; 1000])], true);
+        archives.push(fs::read(&path).unwrap());
     }
     for (n, original) in archives.iter().enumerate() {
         // By its first bytes, as Glint itself tells them apart.
