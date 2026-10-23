@@ -4,7 +4,7 @@ import { crumbs, isFolderPath, isRecycleBin, isRoot, joinPath, linkedPath, paren
 import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, matcher, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
 import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
-import { cdCommand, isTyping } from "./cd.ts";
+import { cdCommand, isTyping, runLine } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { editsAllowed, frecency, fuzzyScore, typoDistance } from "./rank.ts";
@@ -229,6 +229,11 @@ assert.equal(cdCommand("cmd", "D:\\Work Files"), 'cd /d "D:\\Work Files"\r');
 assert.equal(cdCommand("bash", "C:\\it's"), `cd "$(cygpath -u 'C:\\it'\\''s')"\r`);
 assert.equal(cdCommand("nu", "C:\\a b"), 'cd "C:\\\\a b"\r');
 assert.ok(isTyping("ls\r") && isTyping("\x1b[A") && !isTyping("\x1b[I") && !isTyping("\x1b[O") && !isTyping("\x1b[12;40R"));
+// A script and the selection, as each shell runs them
+assert.equal(runLine("pwsh", "C:\\Scripts\\tidy.ps1", ["C:\\It's here", "D:\\b"]), "& 'C:\\Scripts\\tidy.ps1' 'C:\\It''s here' 'D:\\b'\r");
+assert.equal(runLine("cmd", "C:\\Scripts\\go.cmd", ["C:\\a b"]), '"C:\\Scripts\\go.cmd" "C:\\a b"\r');
+assert.equal(runLine("bash", "C:\\Scripts\\x.exe", ["C:\\it's"]), `"$(cygpath -u 'C:\\Scripts\\x.exe')" 'C:\\it'\\''s'\r`);
+assert.equal(runLine("nu", "C:\\Scripts\\x.exe", ['C:\\a "b"']), '^"C:\\\\Scripts\\\\x.exe" "C:\\\\a \\"b\\""\r');
 
 // Binary listings: built here with the layout fsx.rs's encode_listing writes (its test checks the offsets)
 type Item = { name: string; dir: boolean; size: number; modified: number; attrs: number };

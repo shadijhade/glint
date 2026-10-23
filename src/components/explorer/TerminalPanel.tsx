@@ -155,6 +155,13 @@ function TerminalView({ tab, visible }: { tab: TermTab; visible: boolean }) {
                     said = event.path;
                     session.idle = true;
                     updateTerminal(tab.key, { cwd: event.path });
+                    // Its first prompt: what it was opened to run goes in.
+                    const run = useTerminals.getState().tabs.find((t) => t.key === tab.key)?.run;
+                    if (run) {
+                        updateTerminal(tab.key, { run: undefined });
+                        session.idle = false;
+                        session.send(run);
+                    }
                     const s = useTerminals.getState();
                     if (!useStore.getState().settings.terminalFollow || !s.open || s.active !== tab.key) return;
                     const shown = currentPath();

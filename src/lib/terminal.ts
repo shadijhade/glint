@@ -104,6 +104,8 @@ export interface TermTab {
     title: string;
     /** How it ended (null: still running). */
     exited: number | null;
+    /** What's typed at its prompt once its shell first says where it is (a project's task, a script), Enter included. */
+    run?: string;
 }
 
 interface TerminalState {
@@ -158,6 +160,18 @@ export async function newTerminal(cwd: string, shell?: string) {
     const id = shell ?? (await defaultShell());
     const name = get().shells.find((s) => s.id === id)?.name ?? id;
     const tab: TermTab = { key: `t${++next}`, shell: id, cwd, title: name, exited: null };
+    set((s) => ({ tabs: [...s.tabs, tab], active: tab.key, open: true }));
+}
+
+/**
+ * Runs `line` (as `shell` takes it, built for it with `runLine`) in a new terminal tab in `cwd`, named
+ * `title`, shown: typed at its prompt once its shell is there. Not in WSL, whose tools aren't Windows'.
+ */
+export async function runInTerminal(cwd: string, line: (shell: string) => string, title: string) {
+    const shells = await knownShells();
+    const preferred = await defaultShell();
+    const shell = preferred === "wsl" ? (shells.find((s) => s.id !== "wsl")?.id ?? "cmd") : preferred;
+    const tab: TermTab = { key: `t${++next}`, shell, cwd, title, exited: null, run: line(shell) };
     set((s) => ({ tabs: [...s.tabs, tab], active: tab.key, open: true }));
 }
 

@@ -31,6 +31,7 @@ import {
     PanelRight,
     PenLine,
     PencilOff,
+    Play,
     RotateCcw,
     ScanSearch,
     Scissors,
@@ -67,6 +68,7 @@ import {
 import { openTerminal } from "@/lib/fs";
 import { TILE_SIZES, type TileSize, zoomTiles } from "@/lib/grid";
 import { isFolderPath, isRecycleBin, samePath } from "@/lib/paths";
+import { taskMenu, useProjectTasks } from "@/lib/projects";
 import { useStore } from "@/lib/store";
 import { toggleTerminal } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
@@ -241,8 +243,15 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
     const inFolder = isFolderPath(path);
     const paths = selected.map((e) => e.path);
     const terminal = () => openTerminal(path).catch((e) => toast.error("Couldn't open a terminal", { description: String(e) }));
-    const [ref, fold] = useFold(`${dual} ${readOnly} ${bin}`);
+    // What this folder's projects can run (its own, and those above it to the repository's root).
+    const tasks = useProjectTasks(inFolder && !readOnly && !find ? path : null);
+    const [ref, fold] = useFold(`${dual} ${readOnly} ${bin} ${tasks.length > 0}`);
     const menu = useMenu();
+
+    const showTasks = (e: React.MouseEvent<HTMLButtonElement>) => {
+        const below = e.currentTarget.getBoundingClientRect();
+        menu.open({ clientX: below.left, clientY: below.bottom + 4 }, taskMenu(tasks));
+    };
 
     /** The grid's tile sizes, under the arrow: choosing one shows the grid at it. */
     const showSizes = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -405,6 +414,12 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     ) : (
                         <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showTools} title="Tools: Terminal, File X-Ray, what's locking, recent changes, duplicate files">
                             <Wrench /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Tools</span>
+                            <ChevronDown className="-ml-1 size-3.5! opacity-70" />
+                        </Button>
+                    )}
+                    {tasks.length > 0 && (
+                        <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showTasks} title="Run: this project's scripts, recipes and commands, in the terminal under the files">
+                            <Play /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Run</span>
                             <ChevronDown className="-ml-1 size-3.5! opacity-70" />
                         </Button>
                     )}

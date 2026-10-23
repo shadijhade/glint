@@ -341,6 +341,18 @@ export interface RepoCard {
 
 /** The card of the repository whose folder `path` is; null when it isn't one's. */
 export const repoCard = (path: string) => invoke<RepoCard | null>("repo_card", { path });
+
+/** What a folder's project files say can be run there (projects.rs): a group per file, the nearest folder first. */
+export interface TaskGroup {
+    folder: string;
+    /** "npm", "pnpm", "yarn", "bun", "just", "cargo" or "uv". */
+    source: string;
+    tasks: { name: string; command: string; detail: string }[];
+    /** A tool these need that isn't installed, by its id. */
+    missing: string | null;
+}
+
+export const projectTasks = (folder: string) => invoke<TaskGroup[]>("project_tasks", { folder });
 /** Opens a folder or a file in the editor or terminal `id`. */
 export const openIn = (id: string, path: string) => invoke("open_in", { id, path });
 

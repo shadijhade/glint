@@ -157,6 +157,16 @@ pub static TOOLS: &[Tool] = &[
         source: Source::Winget { id: "XAMPPRocky.Tokei" },
         used_for: "Lines of code by language, on a Git repository's card",
     },
+    Tool { id: "just", name: "just", exe: "just", package: "casey.just", source: Source::Winget { id: "Casey.Just" }, used_for: "A justfile's recipes in the Run menu" },
+    Tool {
+        id: "uv",
+        name: "uv",
+        exe: "uv",
+        package: "astral-sh.uv",
+        source: Source::Winget { id: "astral-sh.uv" },
+        used_for: "Python projects' scripts in the Run menu, and Python scripts in Scripts",
+    },
+    Tool { id: "bun", name: "Bun", exe: "bun", package: "oven-sh.bun", source: Source::Winget { id: "Oven-sh.Bun" }, used_for: "TypeScript and JavaScript scripts in Scripts" },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {

@@ -27,6 +27,7 @@ mod ocr;
 mod openers;
 mod pe;
 mod proc;
+mod projects;
 mod quick;
 mod recycle;
 mod repo;
@@ -656,6 +657,7 @@ pub fn run() {
             openers::openers,
             openers::open_in,
             repo::repo_card,
+            projects::project_tasks,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,
