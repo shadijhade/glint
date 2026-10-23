@@ -18,11 +18,12 @@ import {
     Trash2,
 } from "lucide-react";
 import { formatCount, formatSize } from "@/lib/format";
-import { cancelXRay, type FileXRayReport, inspectFileXRay, removeNtfsStream } from "@/lib/fs";
+import { cancelXRay, type FileXRayReport, inspectFileXRay, removeNtfsStream, signable } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { Modal, ModalHeader } from "../Modal";
+import { describeSignature, TONES, useSignature } from "./SignatureChip";
 
 interface XRayState {
     open: boolean;
@@ -91,6 +92,38 @@ function CopyHashButton({ value, label }: { value: string; label: string }) {
     );
 }
 
+/** Whether the file's signature holds, and who signed it, as Windows checks it offline. */
+function SignatureSection({ path }: { path: string }) {
+    const signature = useSignature(path);
+    const described = signature && describeSignature(signature);
+    return (
+        <div className="space-y-2 rounded-lg border bg-card p-3.5">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="flex items-center gap-1.5 font-semibold text-foreground">
+                    <ShieldCheck className="size-3.5 text-primary" />
+                    Signature
+                </span>
+                {described ? (
+                    <span className={cn("rounded px-2 py-0.5 font-medium", TONES[described.tone])}>{described.text}</span>
+                ) : (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                        <Loader2 className="size-3 animate-spin" /> Checking…
+                    </span>
+                )}
+            </div>
+            {described && described.details.length > 0 && (
+                <ul className="space-y-0.5 pl-5 text-muted-foreground">
+                    {described.details.map((d) => (
+                        <li key={d} className="list-disc">
+                            {d}
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+}
+
 export function XRayDialog() {
     const { open, path, loading, full, report, error } = useXRayStore();
     const [expectedHash, setExpectedHash] = useState("");
@@ -103,12 +136,15 @@ export function XRayDialog() {
 
     if (!open) return null;
 
+    // SHA-256 and BLAKE3 are both 64 hex digits: a pasted one is compared with each.
     const cleanExpected = expectedHash.trim().toLowerCase();
     const matchedAlgo =
         report && cleanExpected
             ? cleanExpected === report.sha256.toLowerCase()
                 ? "SHA-256"
-                : cleanExpected === report.crc32.toLowerCase()
+                : cleanExpected === report.blake3.toLowerCase()
+                  ? "BLAKE3"
+                  : cleanExpected === report.crc32.toLowerCase()
                     ? "CRC32"
                     : null
             : null;
@@ -198,6 +234,8 @@ export function XRayDialog() {
                             </div>
                         )}
 
+                        {signable(path) && <SignatureSection path={path} />}
+
                         {/* 1. Checksums, and comparing one with a published one */}
                         <div className="space-y-2.5 rounded-lg border bg-card p-3.5">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -218,7 +256,8 @@ export function XRayDialog() {
                                         type="text"
                                         value={expectedHash}
                                         onChange={(e) => setExpectedHash(e.target.value)}
-                                        placeholder="Paste a SHA-256 or CRC32 to compare"
+                                        placeholder="Paste a checksum to compare"
+                                        title="A SHA-256, BLAKE3 or CRC32 checksum, as a download page publishes it"
                                         className="h-6 w-64 rounded border bg-background px-2 font-mono text-[0.6875rem] outline-hidden focus:border-primary"
                                     />
                                     {cleanExpected &&
@@ -241,6 +280,7 @@ export function XRayDialog() {
                             <div className="divide-y rounded-md border bg-muted/15 font-mono text-[0.6875rem]">
                                 {[
                                     { label: "SHA-256", value: report.sha256 },
+                                    { label: "BLAKE3", value: report.blake3 },
                                     { label: "CRC32", value: report.crc32 },
                                 ].map((row) => {
                                     const isMatch = matchedAlgo === row.label;
@@ -410,7 +450,7 @@ export function XRayDialog() {
 
             {/* Footer */}
             <div className="flex items-center justify-between border-t bg-muted/20 px-4 py-2.5 text-xs text-muted-foreground">
-                <span>{report ? (report.hashesComplete ? "SHA-256 and CRC32 of the whole file" : "SHA-256 and CRC32 of the first 256 MB") : ""}</span>
+                <span>{report ? (report.hashesComplete ? "SHA-256, BLAKE3 and CRC32 of the whole file" : "SHA-256, BLAKE3 and CRC32 of the first 256 MB") : ""}</span>
                 <Button variant="outline" size="sm" onClick={closeXRay}>
                     Close
                 </Button>

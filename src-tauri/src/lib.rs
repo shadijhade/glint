@@ -17,6 +17,7 @@ mod pe;
 mod proc;
 mod quick;
 mod shell;
+mod sign;
 mod snap;
 mod sizes;
 mod term;
@@ -516,6 +517,7 @@ pub fn run() {
             data_lens::inspect_tabular,
             batch_rename::batch_rename,
             xray::inspect_file_xray,
+            sign::verify_signature,
             native_preview::native_preview_show,
             native_preview::native_preview_place,
             native_preview::native_preview_close,

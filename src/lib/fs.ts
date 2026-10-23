@@ -542,6 +542,28 @@ export interface PeInfo {
 /** Zero-copy PE32/PE32+ binary inspection for .exe, .dll, .sys, .ocx, .cpl, .scr, .efi and .node files. */
 export const inspectPe = (path: string) => invoke<PeInfo>("inspect_pe", { path });
 
+/** A file's Authenticode signature, as Windows checks it offline (sign.rs). */
+export interface Signature {
+    state: "valid" | "unsigned" | "invalid" | "untrusted" | "expired" | "revoked" | "unknown";
+    /** Signed in a Windows catalog rather than in the file. */
+    catalog: boolean;
+    signer: string | null;
+    issuer: string | null;
+    /** When it was signed, by its timestamp (ms). */
+    signedAt: number | null;
+    /** What Windows said, when it doesn't hold. */
+    detail: string | null;
+}
+
+export const verifySignature = (path: string) => invoke<Signature>("verify_signature", { path });
+
+/**
+ * Kinds of file Authenticode signs: programs and drivers, installers and cabinets, catalogs, scripts
+ * and app packages. Others are only signed in a catalog, which isn't worth hashing them for.
+ */
+const SIGNABLE = new Set(["exe", "dll", "sys", "ocx", "scr", "cpl", "efi", "drv", "mui", "node", "msi", "msp", "msm", "msix", "msixbundle", "appx", "appxbundle", "cab", "cat", "ps1", "psm1", "psd1", "ps1xml", "vbs", "js", "wsf"]);
+export const signable = (path: string) => SIGNABLE.has(path.slice(path.lastIndexOf(".") + 1).toLowerCase()) && path.lastIndexOf(".") > path.lastIndexOf("\\");
+
 export interface DuplicateFile {
     path: string;
     name: string;
@@ -732,6 +754,7 @@ export interface FileXRayReport {
     asciiPct: number;
     highBytePct: number;
     sha256: string;
+    blake3: string;
     crc32: string;
     hashesComplete: boolean;
     elapsedMs: number;

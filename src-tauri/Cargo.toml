@@ -35,10 +35,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 notify = "8"
 shadui-index = { path = "index" }
-# The File X-Ray's checksums and the duplicate finder's content digests: RustCrypto's SHA-256 (with the
-# CPU's SHA instructions where it has them) and crc32fast, both already in the build through Tauri and flate2.
+# The File X-Ray's checksums: RustCrypto's SHA-256 (with the CPU's SHA instructions where it has them)
+# and crc32fast, both already in the build through Tauri and flate2, and BLAKE3, which the duplicate
+# finder hashes content with too (several times SHA-256's speed, with SIMD).
 sha2 = "0.10"
 crc32fast = "1.5"
+blake3 = "1.8"
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
 # original zip crate, fuzzed) with every common method but encryption (no passwords yet), and
 # sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's and
@@ -96,6 +98,10 @@ windows = { version = "0.62", features = [
     "Win32_Globalization",
     "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_WNet",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_Cryptography_Sip",
+    "Win32_Security_WinTrust",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_DataExchange",
