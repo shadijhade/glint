@@ -206,6 +206,55 @@ pub fn encode_listing<T: Listed>(path: &str, entries: &[T], elapsed: f64, archiv
     out
 }
 
+/// Flag 4 in a listing's header: its items each carry their own path (`encode_items`).
+const ITEMS: u32 = 4;
+
+/// Items that each have their own path, such as search results, as bytes: `encode_listing`'s header
+/// (with flag 4, its archive fields 0, and at 24 a u32 of columns: 1 when names follow the paths), then
+///   f64 size[count] · f64 modified[count] · u32 attrs[count] · u32 path length[count] · u32 name
+///   length[count] (UTF-16 units) · the location (UTF-8) · every path back to back (UTF-8) · and, only
+///   when some name isn't its path's last part, every name.
+/// Otherwise each name is the last `name length` units of its path, which search results always are.
+pub fn encode_items(location: &str, entries: &[Entry], elapsed: f64, from_index: bool) -> Vec<u8> {
+    let paths: Vec<&str> = entries.iter().map(|e| e.path.as_deref().unwrap_or(&e.name)).collect();
+    let tails = entries.iter().zip(&paths).all(|(e, p)| *p == e.name || p.strip_suffix(e.name.as_str()).is_some_and(|rest| rest.ends_with(['\\', '/'])));
+    let text: usize = paths.iter().map(|p| p.len()).sum::<usize>() + if tails { 0 } else { entries.iter().map(|e| e.name.len()).sum() };
+    let mut out = Vec::with_capacity(40 + 28 * entries.len() + location.len() + text);
+    out.extend((entries.len() as u32).to_le_bytes());
+    out.extend((location.len() as u32).to_le_bytes());
+    out.extend(elapsed.to_le_bytes());
+    out.extend(0u32.to_le_bytes());
+    out.extend(0u32.to_le_bytes());
+    out.extend(u32::from(!tails).to_le_bytes());
+    out.extend((ITEMS | if from_index { 2 } else { 0 }).to_le_bytes());
+    out.extend(0f64.to_le_bytes());
+    for e in entries {
+        out.extend((e.size as f64).to_le_bytes());
+    }
+    for e in entries {
+        out.extend((e.modified as f64).to_le_bytes());
+    }
+    for e in entries {
+        out.extend((e.attrs | if e.dir { 0x10 } else { 0 }).to_le_bytes());
+    }
+    for path in &paths {
+        out.extend((path.encode_utf16().count() as u32).to_le_bytes());
+    }
+    for e in entries {
+        out.extend((e.name.encode_utf16().count() as u32).to_le_bytes());
+    }
+    out.extend(location.as_bytes());
+    for path in &paths {
+        out.extend(path.as_bytes());
+    }
+    if !tails {
+        for e in entries {
+            out.extend(e.name.as_bytes());
+        }
+    }
+    out
+}
+
 /// What a change inside an archive is answered with.
 pub const READ_ONLY: &str = "Archives open read-only in Glint. Copy items out of the archive to change them.";
 
@@ -808,6 +857,30 @@ mod tests {
         // One listed from the index says so in its flags.
         let closed = encode_listing("C:\\PerfLogs", &entries, 0.5, None, true);
         assert_eq!(u32::from_le_bytes(closed[28..32].try_into().unwrap()), 2);
+    }
+
+    #[test]
+    fn encodes_items_with_their_own_paths() {
+        let entries = [
+            Entry { name: "é😀.txt".into(), path: Some("C:\\x\\é😀.txt".into()), dir: false, size: 7, modified: 9, attrs: 0x20 },
+            Entry { name: "D:\\".into(), path: Some("D:\\".into()), dir: true, size: 0, modified: 0, attrs: 0 },
+        ];
+        let bytes = encode_items("", &entries, 1.5, false);
+        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+        assert_eq!((u32_at(0), u32_at(4), f64_at(8)), (2, 0, 1.5));
+        // No names column (each is its path's end), and flag 4: items.
+        assert_eq!((u32_at(16), u32_at(20), u32_at(24), u32_at(28)), (0, 0, 0, 4));
+        assert_eq!((f64_at(40), f64_at(48), f64_at(56), f64_at(64)), (7.0, 0.0, 9.0, 0.0));
+        assert_eq!((u32_at(72), u32_at(76)), (0x20, 0x10));
+        // Paths, then names, in UTF-16 units: "C:\x\é😀.txt" is 12.
+        assert_eq!((u32_at(80), u32_at(84), u32_at(88), u32_at(92)), (12, 3, 7, 3));
+        assert_eq!(std::str::from_utf8(&bytes[96..]).unwrap(), "C:\\x\\é😀.txtD:\\");
+        // A name that isn't its path's end goes after the paths, and the columns say so.
+        let recycled = [Entry { name: "budget.xlsx".into(), path: Some("C:\\$Recycle.Bin\\$RQ2.xlsx".into()), dir: false, size: 1, modified: 1, attrs: 0 }];
+        let bytes = encode_items("", &recycled, 0.0, true);
+        assert_eq!((u32::from_le_bytes(bytes[24..28].try_into().unwrap()), u32::from_le_bytes(bytes[28..32].try_into().unwrap())), (1, 4 | 2));
+        assert!(std::str::from_utf8(&bytes[40 + 28..]).unwrap().ends_with("$RQ2.xlsxbudget.xlsx"));
     }
 
     #[test]

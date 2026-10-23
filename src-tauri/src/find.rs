@@ -3,7 +3,7 @@
 //! doesn't index, .gitignore rules). Results stream in either way, each with its size, date and
 //! attributes.
 
-use crate::fsx::{entry_for_path, ms_since, Entry};
+use crate::fsx::{encode_items, entry_for_path, ms_since, Entry};
 use crate::proc::Slot;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 
 #[derive(Deserialize, Clone)]
@@ -30,15 +30,21 @@ pub struct FindOptions {
     pub max_results: Option<usize>,
 }
 
+/// What a search says besides its results, as JSON; the results themselves go as bytes (`encode_items`).
 #[derive(Serialize, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FindEvent {
     /// Who answers: "index", "fd", or "index + fd" when the index covers only some of the folders.
     Started { engine: &'static str },
-    Entries { entries: Vec<Entry> },
     Error { message: String },
     #[serde(rename_all = "camelCase")]
     Finished { count: usize, elapsed: f64, limited: bool },
+}
+
+fn tell(channel: &Channel, event: FindEvent) {
+    if let Ok(json) = serde_json::to_string(&event) {
+        let _ = channel.send(InvokeResponseBody::Json(json));
+    }
 }
 
 /// The searches in flight, one per lane (each tab searches on its own), so a newer search in the
@@ -146,7 +152,7 @@ fn fd_args(query: &str, roots: &[String], options: &FindOptions) -> Result<Vec<S
 
 /// Sends results in batches: up to 10,000 at a time, at least every 40 ms.
 struct Out<'a> {
-    channel: &'a Channel<FindEvent>,
+    channel: &'a Channel,
     batch: Vec<Entry>,
     sent: Instant,
     count: usize,
@@ -156,7 +162,7 @@ struct Out<'a> {
 impl Out<'_> {
     fn started(&mut self, engine: &'static str) {
         if !std::mem::replace(&mut self.started, true) {
-            let _ = self.channel.send(FindEvent::Started { engine });
+            tell(self.channel, FindEvent::Started { engine });
         }
     }
 
@@ -170,7 +176,8 @@ impl Out<'_> {
 
     fn flush(&mut self) {
         if !self.batch.is_empty() {
-            let _ = self.channel.send(FindEvent::Entries { entries: std::mem::take(&mut self.batch) });
+            let _ = self.channel.send(InvokeResponseBody::Raw(encode_items("", &self.batch, 0.0, false)));
+            self.batch.clear();
             self.sent = Instant::now();
         }
     }
@@ -290,7 +297,7 @@ pub async fn find_files(
     roots: Vec<String>,
     query: String,
     options: FindOptions,
-    on_event: Channel<FindEvent>,
+    on_event: Channel,
     lane: String,
 ) -> Result<(), String> {
     let (terms, filters) = parse(&query)?;
@@ -319,11 +326,11 @@ pub async fn find_files(
                     }
                     Err(message) => {
                         out.flush();
-                        let _ = on_event.send(FindEvent::Error { message });
+                        tell(&on_event, FindEvent::Error { message });
                     }
                 }
                 out.flush();
-                let _ = on_event.send(FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited });
+                tell(&on_event, FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited });
                 finds.finished(&lane, &run);
                 return;
             }
@@ -342,14 +349,14 @@ pub async fn find_files(
                 Ok(hit_limit) => limited |= hit_limit,
                 Err(message) => {
                     out.flush();
-                    let _ = on_event.send(FindEvent::Error { message });
+                    tell(&on_event, FindEvent::Error { message });
                 }
             }
         } else if !fd_roots.is_empty() {
             limited = true;
         }
         out.flush();
-        let _ = on_event.send(FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited });
+        tell(&on_event, FindEvent::Finished { count: out.count, elapsed: ms_since(started), limited });
         finds.finished(&lane, &run);
     });
     Ok(())
