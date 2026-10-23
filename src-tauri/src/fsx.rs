@@ -272,18 +272,20 @@ pub struct Resolved {
     pub dir: bool,
 }
 
-/// Checks a typed or pasted location; a file resolves too, so the caller can open its folder. A zip
-/// or 7z archive is a folder, as are the folders in it.
+/// Checks a typed or pasted location; a file resolves too, so the caller can open its folder. An
+/// archive is a folder, as are the folders in it.
 #[tauri::command]
 pub async fn resolve_path(path: String) -> Result<Resolved, String> {
     blocking(move || {
         let path = normalize(&path)?;
+        // A first read stopped (a big .tar.gz) is "cancelled" as it is: there's nothing to report.
+        let archive_error = |e: String| if e == "cancelled" { e } else { format!("Can't open “{path}”. {e}") };
         if let Some(found) = crate::archive::resolve(&path) {
-            return found.map_err(|e| format!("Can't open “{path}”. {e}"));
+            return found.map_err(archive_error);
         }
         match std::fs::metadata(&path) {
             Ok(meta) => Ok(Resolved { dir: meta.is_dir(), path }),
-            Err(_) if crate::archive::sniff(&path) => crate::archive::resolve(&path).unwrap_or_else(|| Err(format!("Can't find “{path}”."))).map_err(|e| format!("Can't open “{path}”. {e}")),
+            Err(_) if crate::archive::sniff(&path) => crate::archive::resolve(&path).unwrap_or_else(|| Err(format!("Can't find “{path}”."))).map_err(archive_error),
             Err(e) => match stat(&path) {
                 // Seen from its folder, but its own permissions keep this user out (C:\PerfLogs): it
                 // opens, and says so.

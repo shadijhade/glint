@@ -347,13 +347,19 @@ interface NavOptions {
  */
 function showArchiveReading(target: string) {
     let id: string | number | undefined;
+    // Stop dismisses the notice: it isn't shown again while the read winds down.
+    let stopped = false;
+    const stop = () => {
+        stopped = true;
+        void cancelArchiveRead(target);
+    };
     let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(async function poll() {
         const progress = await archiveProgress(target).catch(() => null);
-        if (timer === undefined) return;
+        if (timer === undefined || stopped) return;
         if (progress) {
             const percent = progress.total ? Math.min(99, Math.floor((100 * progress.done) / progress.total)) : 0;
             const label = `Reading ${baseName(progress.path)}… ${percent}%`;
-            const options = { description: "It keeps no list of what's in it, so it's read from start to end once.", action: { label: "Stop", onClick: () => void cancelArchiveRead(target) }, duration: Infinity };
+            const options = { description: "It keeps no list of what's in it, so it's read from start to end once.", action: { label: "Stop", onClick: stop }, duration: Infinity };
             id = toast.loading(label, { ...options, id });
         }
         timer = setTimeout(poll, 250);
@@ -1595,12 +1601,16 @@ export async function goTo(text: string) {
     const value = text.trim();
     if (!value || /^this pc$/i.test(value)) return navigate(THIS_PC);
     const tab = activeTabId();
+    // Checking a path into a big .tar.gz reads it whole: that shows, with Stop.
+    const reading = showArchiveReading(value);
     try {
         const target = await resolvePath(value);
         return target.dir ? navigate(target.path, { tab }) : navigate(parentPath(target.path), { select: target.path, tab });
     } catch (e) {
-        toast.error(String(e));
+        if (String(e) !== "cancelled") toast.error(String(e));
         return false;
+    } finally {
+        reading();
     }
 }
 
