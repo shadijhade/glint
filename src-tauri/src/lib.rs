@@ -12,6 +12,7 @@ mod find;
 mod fsx;
 mod git;
 mod index;
+mod jq;
 mod launch;
 mod locks;
 mod markdown;
@@ -402,6 +403,12 @@ pub(crate) fn installed_by_setup() -> bool {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Glint started as the worker that reads data files for their tree (jq.rs): its exit code, once it has
+/// answered; None for the app.
+pub fn worker() -> Option<i32> {
+    jq::worker()
+}
+
 pub fn run() {
     // Folders from File Explorer, a double-click or a terminal. What the app can't open goes to File
     // Explorer before any window shows, and a launch with nothing left to open here ends there.
@@ -522,6 +529,8 @@ pub fn run() {
             xray::inspect_file_xray,
             xray::file_real_type,
             markdown::markdown_html,
+            jq::jq_query,
+            jq::jq_stop,
             sign::verify_signature,
             defender::defender_scan,
             defender::cancel_defender_scan,
