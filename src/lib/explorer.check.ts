@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
-import { archiveFormat, ATTR, compareEntries, decodeListing, type FileEntry, isArchived, isArchiveFile, isClosed, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
+import { archiveFormat, ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, isArchived, isArchiveFile, isClosed, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
@@ -146,6 +146,50 @@ assert.ok(!isArchived(entry("plain.txt")));
 // The archive's own top folder, and the crumbs into it: an archive's path is a folder path like any other.
 assert.deepEqual(crumbs(inside).map((c) => c.name), ["C:\\", "Dö", "photos.zip", "2024", "old.7z", "summer"]);
 assert.equal(parentPath("C:\\Dö\\photos.zip"), "C:\\Dö");
+
+// Search results: items that each carry their own path, built with the layout fsx.rs's encode_items writes (its test checks the offsets)
+function encodeItems(items: (Item & { path: string })[], withNames: boolean) {
+    const text = new TextEncoder().encode(items.map((e) => e.path).join("") + (withNames ? items.map((e) => e.name).join("") : ""));
+    const n = items.length;
+    const buffer = new ArrayBuffer(40 + 28 * n + text.length);
+    const view = new DataView(buffer);
+    view.setUint32(0, n, true);
+    view.setFloat64(8, 2.5, true);
+    view.setUint32(24, withNames ? 1 : 0, true);
+    view.setUint32(28, 4, true);
+    items.forEach((e, i) => {
+        view.setFloat64(40 + 8 * i, e.size, true);
+        view.setFloat64(40 + 8 * n + 8 * i, e.modified, true);
+        view.setUint32(40 + 16 * n + 4 * i, e.attrs | (e.dir ? 0x10 : 0), true);
+        view.setUint32(40 + 20 * n + 4 * i, e.path.length, true);
+        view.setUint32(40 + 24 * n + 4 * i, e.name.length, true);
+    });
+    new Uint8Array(buffer).set(text, 40 + 28 * n);
+    return buffer;
+}
+const results = decodeItems(
+    encodeItems(
+        [
+            { name: "😀 report.pdf", path: "C:\\Dö\\😀 report.pdf", dir: false, size: 5, modified: 1.7e12, attrs: 0x20 },
+            { name: "Windows", path: "C:\\Windows", dir: true, size: 0, modified: 4, attrs: 0 },
+            { name: "D:\\", path: "D:\\", dir: true, size: 0, modified: 0, attrs: 0 },
+        ],
+        false
+    )
+);
+assert.equal(results.elapsed, 2.5);
+assert.deepEqual(
+    results.entries.map((e) => [e.name, e.path, e.dir, e.size, e.ext]),
+    [
+        ["😀 report.pdf", "C:\\Dö\\😀 report.pdf", false, 5, "pdf"],
+        ["Windows", "C:\\Windows", true, 0, ""],
+        ["D:\\", "D:\\", true, 0, ""],
+    ]
+);
+// Names that aren't the end of their path (a Recycle Bin item's) follow the paths.
+const renamed = decodeItems(encodeItems([{ name: "budget.xlsx", path: "C:\\$Recycle.Bin\\S-1-5\\$RQ2Z1.xlsx", dir: false, size: 9, modified: 1, attrs: 0 }], true));
+assert.deepEqual(renamed.entries.map((e) => [e.name, e.path, e.ext]), [["budget.xlsx", "C:\\$Recycle.Bin\\S-1-5\\$RQ2Z1.xlsx", "xlsx"]]);
+assert.deepEqual(decodeItems(encodeItems([], false)).entries, []);
 
 // Disk-usage maps: built here with the layout usage.rs's encode_map writes (its test checks the offsets)
 type Node = { name: string; parent: number; dir: boolean; size: number; modified?: number; attrs?: number };

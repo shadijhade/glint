@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { decodeListing, type DiffStatus, type FileEntry, type Listing, withDetails } from "./entries";
+import { decodeItems, decodeListing, type DiffStatus, type FileEntry, type Listing } from "./entries";
 import { decodeUsage, type UsageMap } from "./usage";
 
 export type { Listing };
@@ -124,14 +124,12 @@ export type FindEvent =
 
 /**
  * Searches file names under `roots` (with the index when it runs, else fd), streaming results with
- * metadata. Each tab searches in its own `lane`: a new search stops only that tab's last one.
+ * metadata. Each tab searches in its own `lane`: a new search stops only that tab's last one. Results
+ * arrive as bytes (`encode_items` in fsx.rs), everything else as JSON.
  */
 export async function findFiles(roots: string[], query: string, options: FindOptions, lane: string, onEvent: (event: FindEvent) => void) {
-    const channel = new Channel<FindEvent>();
-    channel.onmessage = (event) => {
-        if (event.type === "entries") for (const entry of event.entries) withDetails(entry);
-        onEvent(event);
-    };
+    const channel = new Channel<Exclude<FindEvent, { type: "entries" }> | ArrayBuffer>();
+    channel.onmessage = (message) => onEvent(message instanceof ArrayBuffer ? { type: "entries", entries: decodeItems(message).entries } : message);
     await invoke("find_files", { roots, query, options, onEvent: channel, lane });
 }
 
