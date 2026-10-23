@@ -16,6 +16,7 @@ import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
+import { CastPreview } from "./CastPreview";
 import { ChangesView } from "./ChangesView";
 import { DataTree } from "./DataTree";
 import { HexView } from "./HexView";
@@ -366,6 +367,8 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     // Workbooks and Parquet files as tables, from disk; a workbook can show in Windows' previewer too (Excel's).
     const sheet = readable && !archived && isSheetCandidate(entry);
     const workbook = sheet && entry.ext !== "parquet";
+    // asciinema recordings play, or show as the JSON lines they are.
+    const cast = readable && entry.ext === "cast";
     // Tables and databases take SQL, from disk.
     const queryable = readable && !archived && (sheet || isTabularCandidate(entry) || isSqliteCandidate(entry));
     // A file Git has a change for can show what changed since its last commit instead.
@@ -378,9 +381,11 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
               ? { view: "file", label: "Tree", title: "Its values as a tree, with a jq filter" }
               : sheet
                 ? { view: "file", label: "Table", title: "Its rows, read by Glint" }
-                : { view: "file", label: "File", title: "The file as it is" },
+                : cast
+                  ? { view: "file", label: "Play", title: "The recording, played" }
+                  : { view: "file", label: "File", title: "The file as it is" },
         ...(markdown ? [{ view: "source" as const, label: "Source", title: "The Markdown as written" }] : []),
-        ...(data ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
+        ...(data || cast ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
         ...(workbook ? [{ view: "source" as const, label: "Previewer", title: "As Windows' previewer for it shows it (Excel's, with Office installed)" }] : []),
         ...(changed ? [{ view: "changes" as const, label: "Changes", title: "What changed since the last commit (Git)" }] : []),
         ...(queryable ? [{ view: "query" as const, label: "Query", title: "SQL over it, reading only" }] : []),
@@ -427,6 +432,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
             );
     else if (markdown) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <MarkdownPreview entry={entry} />;
     else if (data) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <DataTree entry={entry} format={data} />;
+    else if (cast) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <CastPreview entry={entry} />;
     // Unknown extensions get a text preview attempt; the backend spots binary files.
     else if (kind === "text" || !isKnownType(entry)) body = <TextPreview entry={entry} over={!!onClose} />;
     else if (!archived && isPeCandidate(entry)) body = <BinaryPreview entry={entry} />;

@@ -19,6 +19,7 @@ import {
     Link,
     type LucideIcon,
     Presentation,
+    SquareTerminal,
 } from "lucide-react";
 import type { FileEntry } from "./entries";
 
@@ -80,6 +81,7 @@ const KINDS: [string, Kind][] = [
     ["dll sys so dylib ocx drv cpl mui", { icon: FileCog, tone: "text-slate-500 dark:text-slate-400", label: "% system file", group: G.system }],
     ["ttf otf woff woff2 eot fon", { icon: FileType, tone: "text-rose-500", label: "% font", group: G.fonts }],
     ["iso img vhd vhdx vmdk dmg", { icon: Disc, tone: "text-indigo-500", label: "Disk image", group: G.disks }],
+    ["cast", { icon: SquareTerminal, tone: "text-emerald-600 dark:text-emerald-400", label: "Terminal recording", group: G.video }],
     ["lnk url", { icon: Link, tone: "text-cyan-600 dark:text-cyan-400", label: "Shortcut", group: G.other }],
     ["db sqlite sqlite3 mdb accdb", { icon: Database, tone: "text-teal-600 dark:text-teal-400", label: "Database", group: G.data }],
     ["parquet", { icon: Database, tone: "text-teal-600 dark:text-teal-400", label: "Parquet file", group: G.data }],

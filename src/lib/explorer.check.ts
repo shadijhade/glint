@@ -10,6 +10,7 @@ import { frecency, fuzzyScore } from "./rank.ts";
 import { markdownTitle, safeHref } from "./markdown.ts";
 import { initiallyOpen, isContainer, JsonNumber, jqPath, PAGE, parseJson, preview, treeRows } from "./jsonTree.ts";
 import { byteChar, byteClass, hex, parseOffset } from "./hex.ts";
+import { clock, outputUntil, parseCast } from "./cast.ts";
 import {
     BLOCK,
     decodeUsage,
@@ -114,6 +115,20 @@ assert.equal(parseOffset("8192"), 8192);
 assert.equal(parseOffset(" 1_000 "), 1000);
 assert.equal(parseOffset("12g"), null);
 assert.equal(parseOffset(""), null);
+
+// asciinema recordings: version 2 (times from the start) and 3 (since the last event), long pauses cut
+const v2 = parseCast('{"version": 2, "width": 100, "height": 30, "title": "demo"}\n[0.5, "o", "$ "]\n[1.0, "i", "l"]\n[1.5, "o", "ls\\r\\n"]\n[60.0, "o", "done"]\nnot json\n');
+assert.ok(v2);
+assert.deepEqual([v2.cols, v2.rows, v2.title], [100, 30, "demo"]);
+assert.deepEqual(v2.events.map((e) => e.t), [0.5, 1.5, 4.5], "the 58.5 s pause plays as 3");
+assert.equal(v2.duration, 4.5);
+assert.deepEqual(outputUntil(v2, 1.5), { data: "$ ls\r\n", count: 2 });
+const v3 = parseCast('{"version": 3, "term": {"cols": 80, "rows": 24}, "idle_time_limit": 1}\n[0.2, "o", "a"]\n[5, "o", "b"]\n[0.3, "r", "90x30"]\n[0.1, "o", "c"]\n');
+assert.ok(v3);
+assert.deepEqual(v3.events.map((e) => [Math.round(e.t * 1000) / 1000, e.data]), [[0.2, "a"], [1.2, "b"], [1.6, "c"]]);
+assert.equal(parseCast('{"version": 1}'), null);
+assert.equal(parseCast("plain text"), null);
+assert.equal(clock(65.4), "1:05");
 assert.deepEqual(crumbs(THIS_PC), []);
 
 // Natural order and sorting
