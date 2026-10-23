@@ -46,12 +46,14 @@ import { openTerminal } from "@/lib/fs";
 import { TILE_SIZES, type TileSize, zoomTiles } from "@/lib/grid";
 import { samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
+import { toggleTerminal } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { useMenu } from "../Menu";
 import { Button } from "../ui/button";
 import { openCleanup } from "./CleanupDialog";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { inspectLocks } from "./LocksDialog";
+import { terminalFolder } from "./TerminalPanel";
 import { inspectTimeline } from "./TimelineDialog";
 import { inspectXRay } from "./XRayDialog";
 
@@ -246,6 +248,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                       "separator" as const,
                   ]
                 : []),
+            { label: "Terminal here, under the files", icon: SquareTerminal, shortcut: "Ctrl+`", onSelect: () => toggleTerminal(terminalFolder()) },
             { label: "Open in Terminal", icon: SquareTerminal, disabled: !inFolder, onSelect: terminal },
             { heading: "Inspect" },
             { label: "File X-Ray: hashes and hidden streams", icon: Fingerprint, disabled: !file, onSelect: () => file && inspectXRay(file.path) },

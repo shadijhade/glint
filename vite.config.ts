@@ -36,6 +36,8 @@ export default defineConfig(async () => ({
     },
   },
   build: {
+    // ghostty-web carries its WebAssembly inline (637 kB), loaded only when a terminal opens.
+    chunkSizeWarningLimit: 700,
     rolldownOptions: {
       output: {
         manualChunks(id) {

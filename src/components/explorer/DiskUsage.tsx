@@ -363,7 +363,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
         if (!keys) return;
         const onKey = (e: KeyboardEvent) => {
             const target = e.target instanceof Element ? e.target : null;
-            if (e.defaultPrevented || modalOpen() || !boxRef.current?.offsetParent || target?.closest("input, textarea, select, [contenteditable=true], dialog, [popover]")) return;
+            if (e.defaultPrevented || modalOpen() || !boxRef.current?.offsetParent || target?.closest("input, textarea, select, [contenteditable=true], dialog, [popover], [data-terminal]")) return;
             const ctrl = e.ctrlKey || e.metaKey;
             const plain = !ctrl && !e.altKey;
             if (e.key === "Backspace" && plain) goUp();
