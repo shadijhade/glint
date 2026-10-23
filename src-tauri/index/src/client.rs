@@ -163,6 +163,29 @@ pub(crate) fn usage_on(pipe: Handle, request: &UsageRequest) -> Result<(Vec<Usag
     Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection")))
 }
 
+/// Everything right inside a folder, for one Windows keeps this user out of. An older service that
+/// doesn't know the request closes the pipe without an answer: an error like any other.
+pub fn list(path: &str) -> Result<Vec<Hit>, Error> {
+    list_on(connect()?, path)
+}
+
+pub(crate) fn list_on(pipe: Handle, path: &str) -> Result<Vec<Hit>, Error> {
+    let pipe = ask(pipe, &Request::List { path: path.to_string() })?;
+    let mut io = PipeIo(&pipe);
+    let mut hits = Vec::new();
+    while let Some((kind, payload)) = proto::read_frame(&mut io, MAX_FRAME).map_err(Error::Io)? {
+        if kind == FRAME_HITS {
+            hits.extend(proto::decode_hits(&payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?);
+            continue;
+        }
+        return match message(kind, &payload)? {
+            Message::Done { .. } => Ok(hits),
+            _ => Err(unexpected()),
+        };
+    }
+    Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection")))
+}
+
 pub enum Event {
     /// The roots the index answers for, and those it doesn't (to search some other way).
     Plan { indexed: Vec<String>, skipped: Vec<String> },

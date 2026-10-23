@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
-import { type FileEntry, type InArchive, isArchived, isArchiveFile, withDetails } from "./entries";
+import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, withDetails } from "./entries";
 import {
     archiveCompress,
     archiveExtract,
@@ -236,6 +236,20 @@ export function readOnlyNotice() {
     });
 }
 
+/** Whether Windows keeps a tab's folder (the active tab's by default) closed to this account: shown from the index, or not at all. */
+export const closedOf = (tab = activeTabId()) => !!tabState(tab)?.noAccess;
+
+/** Says so when something would open or change what's in a folder Windows keeps closed (once at a time), with Get access where it can help. */
+export function closedNotice(tab = activeTabId()) {
+    const t = tabState(tab);
+    const canGet = !!t?.noAccess && !t.noAccess.remote && !t.noAccess.refused;
+    toast.message(`Windows keeps “${baseName(t?.path ?? "") || t?.path}” closed`, {
+        id: "closed",
+        description: `${t?.listing?.fromIndex ? "Glint shows what's in it from instant search, but your" : "Your"} account may not open or change anything there.${canGet ? " Get access to open it." : ""}`,
+        action: canGet ? { label: "Get access", onClick: () => void getAccess(tab) } : undefined,
+    });
+}
+
 /** Changes a tab's state: the active tab's unless `tab` says otherwise. */
 export function updateTab(patch: Partial<TabState>, tab = activeTabId()) {
     set((s) => (s.tabs[tab] ? { tabs: { ...s.tabs, [tab]: { ...s.tabs[tab], ...patch } } } : {}));
@@ -355,8 +369,10 @@ export async function navigate(target: string, { select, history = true, quiet =
 
     const path = listing?.path ?? denied?.path ?? THIS_PC;
     const same = state.ready && (path === THIS_PC ? state.path === THIS_PC : state.path !== THIS_PC && samePath(path, state.path));
-    // A refresh keeps what Get access found out.
-    const noAccess = denied && (same && state.noAccess ? state.noAccess : { remote: denied.remote });
+    // Listed from the index or not at all, the folder is one Windows keeps closed; a refresh keeps
+    // what Get access found out.
+    const closed = denied ? { remote: denied.remote } : listing?.fromIndex ? { remote: false } : null;
+    const noAccess = closed && (same && state.noAccess ? state.noAccess : closed);
     // Select what was asked for; on a refresh keep the selection; a new tab selects what it was
     // opened with; going up selects where we came from.
     let wanted: string[] = [];
@@ -966,23 +982,31 @@ export function toggleDiffOnly() {
     set((s) => ({ diffOnly: !s.diffOnly }));
 }
 
-/** The folder open in the other pane, when there's one to copy or move into (an archive isn't one). */
+/** The folder open in the other pane, when there's one to copy or move into (an archive isn't one, nor a folder Windows keeps closed). */
 export function otherPaneFolder() {
     const s = get();
     if (!s.dual) return null;
     const other = s.panes[1 - s.activePane];
     const t = other && s.tabs[other.active];
-    return t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive ? { tab: t.id, path: t.path } : null;
+    return t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive && !t.noAccess ? { tab: t.id, path: t.path } : null;
 }
 
 /** Dual-pane view: copies (or moves) items to the folder open in the other pane, through Windows' file engine. */
 export async function copyToOtherPane(move: boolean, paths = [...(tabState()?.selection ?? [])]) {
     const target = otherPaneFolder();
     if (!target) {
-        toast.message(archiveOf(get().panes[1 - get().activePane]?.active) ? "Archives are read-only: open a folder in the other pane to copy into" : "Open a folder in the other pane first");
+        const other = get().panes[1 - get().activePane]?.active;
+        toast.message(
+            other && archiveOf(other)
+                ? "Archives are read-only: open a folder in the other pane to copy into"
+                : other && closedOf(other)
+                  ? "Windows keeps the other pane's folder closed: open another one there to copy into"
+                  : "Open a folder in the other pane first"
+        );
         return;
     }
     const tab = activeTabId();
+    if (move && closedOf(tab)) return closedNotice(tab);
     if (archiveOf(tab)) {
         if (move) readOnlyNotice();
         else copyOutOfArchive(paths, target);
@@ -1111,6 +1135,7 @@ export function compressEntries(entries: FileEntry[]) {
     const tab = activeTabId();
     if (!entries.length) return;
     if (entries.some(isArchived)) return readOnlyNotice();
+    if (entries.some(isClosed)) return closedNotice(tab);
     const first = entries[0];
     const folder = parentPath(first.path);
     const name = `${first.dir || !first.name.includes(".") ? first.name : first.name.slice(0, first.name.lastIndexOf("."))}.zip`;
@@ -1440,6 +1465,8 @@ export async function openFile(path: string, tab = activeTabId()) {
 }
 
 export function openEntry(entry: FileEntry) {
+    // Listed from the index: its folders open the same way, its files not at all.
+    if (isClosed(entry) && !entry.dir) return closedNotice();
     // A zip or 7z archive opens like a folder.
     if (entry.dir || isArchiveFile(entry)) return navigate(entry.path);
     if (isArchived(entry)) return openFromArchive(entry);
@@ -1544,6 +1571,7 @@ export async function goTo(text: string) {
 
 export async function copyToClipboard(paths: string[], cut: boolean) {
     if (!paths.length) return;
+    if (cut && closedOf()) return closedNotice();
     if (archiveOf()) {
         if (cut) return readOnlyNotice();
         // Extracted first: the clipboard carries files. Pasting (here or in File Explorer) copies them.
@@ -1571,6 +1599,7 @@ export async function paste(dest = currentPath()) {
     if (dest === THIS_PC) return;
     const tab = activeTabId();
     if (samePath(dest, tabState(tab)?.path ?? THIS_PC) && archiveOf(tab)) return readOnlyNotice();
+    if (samePath(dest, tabState(tab)?.path ?? THIS_PC) && closedOf(tab)) return closedNotice(tab);
     let files: Awaited<ReturnType<typeof clipboardGetFiles>>;
     try {
         files = await clipboardGetFiles();
@@ -1626,6 +1655,7 @@ export async function deletePaths(paths: string[], permanent: boolean, next?: st
     if (!paths.length) return;
     const tab = activeTabId();
     if (archiveOf(tab)) return readOnlyNotice();
+    if (closedOf(tab)) return closedNotice(tab);
     try {
         const confirm = useStore.getState().settings.confirmDelete;
         const done = await busy(`Deleting ${plural(paths.length, "item")}…`, fileOp({ kind: "delete", paths, permanent, confirm }));
@@ -1649,6 +1679,7 @@ export const INVALID_NAME_HINT = 'A name can\'t contain any of these characters:
 export async function renameEntry(entry: FileEntry, name: string, tab = activeTabId()) {
     updateTab({ renaming: null }, tab);
     if (isArchived(entry)) return readOnlyNotice();
+    if (isClosed(entry)) return closedNotice(tab);
     // Windows drops trailing dots and spaces itself.
     const trimmed = name.trim().replace(/[. ]+$/, "");
     if (!trimmed || trimmed === entry.name) return;
@@ -1676,6 +1707,7 @@ export async function newItem(dir: boolean) {
     const path = tabState(tab)?.path;
     if (!path || path === THIS_PC) return;
     if (archiveOf(tab)) return readOnlyNotice();
+    if (closedOf(tab)) return closedNotice(tab);
     try {
         const created = await createEntry(path, dir ? "New folder" : "New Text Document.txt", dir);
         rememberUndo(`new ${dir ? "folder" : "file"} “${baseName(created)}”`, () => performFileOp({ kind: "delete", paths: [created], permanent: false, confirm: false }));

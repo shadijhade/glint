@@ -8,7 +8,7 @@ import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, 
 import logo from "./assets/logo.svg";
 import { cancelSearch, RgMatch, searchBatched } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
-import { archiveOf, currentPath, defaultTextSearchFolder, openRequested, refreshIndex, revealInApp } from "./lib/explorer";
+import { archiveOf, closedNotice, closedOf, currentPath, defaultTextSearchFolder, openRequested, refreshIndex, revealInApp } from "./lib/explorer";
 import { THIS_PC } from "./lib/paths";
 import { replaceText, toRegExp } from "./lib/text";
 import { checkForUpdates, greetUpdate, useUpdater } from "./lib/updater";
@@ -114,6 +114,8 @@ function App() {
       toast.message("Text search can't look inside archives", { id: "archive-text", description: "It searches files on disk. Copy what you want to search out of the archive first." });
       return;
     }
+    // Nor files Windows keeps from this account.
+    if (!folder && closedOf()) return closedNotice();
     const target = folder ?? currentPath();
     const state = useStore.getState();
     if (target && target !== THIS_PC) {

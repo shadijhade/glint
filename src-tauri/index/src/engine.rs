@@ -474,6 +474,30 @@ impl Engine {
         Ok(Sizes { path: path.to_string(), total, sizes: tree.child_dirs(dir), elapsed: ms(started) })
     }
 
+    /// Answers what's right inside a folder: result frames, as for a search, then a summary.
+    pub fn list(&self, path: &str, out: &mut dyn Write) -> io::Result<()> {
+        let started = Instant::now();
+        let listed = (|| -> Result<(Vec<Vec<u8>>, usize), &str> {
+            let (letter, rest) = split_drive(path).ok_or("Not a folder on a local drive")?;
+            let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
+            // Encoded under the lock: names are only valid until the next change.
+            let tree = slot.tree.read().unwrap();
+            let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
+            let ids = tree.list(dir);
+            let drive = format!("{letter}:\\");
+            Ok((ids.par_chunks(BATCH).map(|ids| encode_hits(&tree, ids, &drive)).collect(), ids.len()))
+        })();
+        match listed {
+            Ok((frames, count)) => {
+                for frame in frames {
+                    proto::write_frame(out, FRAME_HITS, &frame)?;
+                }
+                proto::write_message(out, &Message::Done { count: count as u64, limited: false, elapsed: ms(started) })
+            }
+            Err(message) => proto::write_message(out, &Message::Error { message: message.into() }),
+        }
+    }
+
     /// Answers a disk-usage map: one frame with the map, then a summary.
     pub fn usage(&self, request: &UsageRequest, out: &mut dyn Write) -> io::Result<()> {
         match self.map(request) {

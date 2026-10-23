@@ -488,7 +488,7 @@ pub fn list(path: &str, started: Instant) -> Option<Result<Vec<u8>, String>> {
                     cached: spot.cached,
                     read_ms: spot.read_ms,
                 };
-                Ok(fsx::encode_listing(path, &children, ms_since(started), Some(&info)))
+                Ok(fsx::encode_listing(path, &children, ms_since(started), Some(&info), false))
             })
             .map_err(|e| e.message()),
     )

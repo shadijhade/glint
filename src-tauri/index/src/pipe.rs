@@ -214,6 +214,7 @@ fn answer(pipe: Handle, engine: &Engine) {
             proto::write_message(&mut io, &answer)
         }
         Request::Usage(request) => engine.usage(&request, &mut io),
+        Request::List { path } => engine.list(&path, &mut io),
     };
     match result {
         // Let the client read everything before the pipe goes away.
@@ -296,6 +297,27 @@ mod tests {
         assert_eq!(map(r"T:\", 1).unwrap().0.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["", "Users"]);
         assert!(matches!(map(r"T:\Users\me\report.pdf", 2), Err(Error::Service(_))));
         assert!(matches!(map(r"Z:\", 2), Err(Error::Service(_))));
+
+        let list = |path: &str| {
+            let hits = client::list_on(client::connect_to(&name, &trust).unwrap(), path)?;
+            let mut items: Vec<_> = hits.into_iter().map(|h| (h.path, h.dir, h.size, h.modified)).collect();
+            items.sort();
+            Ok::<_, Error>(items)
+        };
+        assert_eq!(
+            list(r"t:\users\me").unwrap(),
+            [(r"T:\Users\me\notes.txt".to_string(), false, 24, 0), (r"T:\Users\me\report.pdf".to_string(), false, 1000, 1_655_526_400_000)]
+        );
+        assert_eq!(list(r"T:\").unwrap(), [(r"T:\Users".to_string(), true, 1024, 0)]);
+        assert!(matches!(list(r"T:\Nowhere"), Err(Error::Service(_))));
+        // A request the service doesn't know (as List is to one from before it) gets the pipe closed,
+        // with no answer: the app takes that as an error, and does without.
+        let pipe = client::connect_to(&name, &trust).unwrap();
+        let mut io = PipeIo(&pipe);
+        let unknown = br#"{"op":"listAll"}"#;
+        io.write_all(&(unknown.len() as u32).to_le_bytes()).unwrap();
+        io.write_all(unknown).unwrap();
+        assert!(proto::read_frame(&mut io, proto::MAX_FRAME).unwrap().is_none());
         server.stop();
     }
 

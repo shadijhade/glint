@@ -1,4 +1,4 @@
-import { FileArchive, Fingerprint, Loader2, PenLine, Zap } from "lucide-react";
+import { FileArchive, Fingerprint, FolderLock, Loader2, PenLine, Zap } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
@@ -118,6 +118,18 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                 <span>shown in {formatDuration(shownIn)}</span>
             </span>
         );
+    } else if (path !== THIS_PC && listing?.fromIndex) {
+        // A folder Windows keeps closed: listed from what the index has in it.
+        work = (
+            <span
+                title={`Windows keeps this folder closed to your account, so Glint listed what instant search's index has in it, in ${formatDuration(listing.elapsed)}; it was on screen ${formatDuration(shownIn)} after the click. Nothing in it can be opened or changed here.`}
+                className="flex items-center gap-1"
+            >
+                <FolderLock className="size-3 text-amber-600 dark:text-amber-500" />
+                <span className="hidden @lg:inline">index · listed in {formatDuration(listing.elapsed)} ·</span>
+                <span>shown in {formatDuration(shownIn)}</span>
+            </span>
+        );
     } else if (path !== THIS_PC && listing) {
         const sized = sizes && `${sizes.engine} sized ${formatSize(sizes.total)} in ${formatDuration(sizes.elapsed)}`;
         // A narrow pane (two side by side) keeps the time to screen, and says the rest on hover.
@@ -135,12 +147,12 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     return (
         <div className="@container flex h-7 shrink-0 items-center gap-2 overflow-hidden border-t px-3 text-xs text-muted-foreground">
             <span className="shrink-0">
-                {noAccess && !find ? "No access" : items(shown)}
+                {noAccess && !listing && !find ? "No access" : items(shown)}
                 {hidden > 0 && !mapped && ` · ${formatCount(hidden)} hidden`}
                 {selected.length > 0 && ` · ${formatCount(selected.length)} selected`}
                 {selectedFiles.length > 0 && ` · ${formatSize(selectedBytes)}`}
             </span>
-            {!listing?.archive && selected.length === 1 && !selected[0].dir && (
+            {!listing?.archive && !noAccess && selected.length === 1 && !selected[0].dir && (
                 <button
                     type="button"
                     onClick={() => inspectXRay(selected[0].path)}
@@ -150,7 +162,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                     <Fingerprint className="size-3" /> X-Ray
                 </button>
             )}
-            {!listing?.archive && selected.length > 1 && (
+            {!listing?.archive && !noAccess && selected.length > 1 && (
                 <button
                     type="button"
                     onClick={() => openBatchRename(selected, listing?.entries ?? selected)}

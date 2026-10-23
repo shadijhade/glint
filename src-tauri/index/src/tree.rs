@@ -529,6 +529,24 @@ impl Tree {
         children.iter().map(|&id| (self.name(id).to_string(), self.recs[self.links[id as usize].rec as usize].size)).collect()
     }
 
+    /// Every name right inside folder `dir`, files and folders, empty ones too, as a listing of the
+    /// folder shows them (NTFS's own records left out): for a folder Windows keeps a user out of.
+    pub fn list(&self, dir: u32) -> Vec<u32> {
+        let folders = self.dirs.get(&dir).map_or(&[][..], Vec::as_slice);
+        // Files aren't listed by folder: one pass over every name finds them.
+        const CHUNK: usize = 1 << 14;
+        let files: Vec<Vec<u32>> = self
+            .links
+            .par_chunks(CHUNK)
+            .enumerate()
+            .map(|(chunk, links)| {
+                let inside = |link: &Link| link.flags & LINK_USED != 0 && link.parent == dir && link.rec >= FIRST_USER_RECORD && !self.recs[link.rec as usize].dir();
+                links.iter().enumerate().filter(|(_, link)| inside(link)).map(|(i, _)| (chunk * CHUNK + i) as u32).collect()
+            })
+            .collect();
+        folders.iter().copied().filter(|&id| self.links[id as usize].rec >= FIRST_USER_RECORD).chain(files.concat()).collect()
+    }
+
     /// A disk-usage map of folder `dir`: the files and folders in it and in its folders, down to
     /// `depth` levels, without empty ones. Only the `max` biggest are kept, with the folders they're
     /// in; the rest still count in their folders' sizes, and the second value says whether any were
@@ -1001,6 +1019,31 @@ mod tests {
         tree.set_record(22, &RecordState { seq: 2, ..file(5 * KB, &[(30, "new.txt")]) });
         assert_eq!((size(&tree, 21), size(&tree, 30)), (0, 125 * KB));
         assert_totals(&mut tree);
+    }
+
+    fn listed(tree: &Tree, dir: u32) -> Vec<String> {
+        let mut names: Vec<String> = tree.list(dir).into_iter().map(|id| tree.name(id).to_string()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn lists_what_is_right_inside_a_folder() {
+        let mut tree = sample();
+        // Empty files and folders are listed too, and hidden ones (the app hides them as it's set to);
+        // what's further down isn't.
+        tree.set_record(40, &file(0, &[(21, "empty.txt")]));
+        tree.set_record(41, &dir(1, &[(21, "New folder")]));
+        assert_eq!(listed(&tree, 21), ["New folder", "a.txt", "docs", "empty.txt"]);
+        assert_eq!(listed(&tree, 23), [".hidden", "b.pdf"]);
+        assert_eq!(listed(&tree, 41), Vec::<String>::new());
+        // NTFS's own records in the root aren't items.
+        tree.set_record(11, &dir(1, &[(ROOT, "$Extend")]));
+        tree.set_record(3, &file(10, &[(ROOT, "$Volume")]));
+        assert_eq!(listed(&tree, ROOT), ["Data", "Users"]);
+        // A hard link is listed in each folder it's in.
+        tree.set_record(42, &file(KB, &[(21, "one.dll"), (30, "two.dll")]));
+        assert!(listed(&tree, 21).contains(&"one.dll".to_string()) && listed(&tree, 30).contains(&"two.dll".to_string()));
     }
 
     #[test]

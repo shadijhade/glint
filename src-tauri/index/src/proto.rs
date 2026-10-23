@@ -22,6 +22,9 @@ pub enum Request {
     Sizes { path: String },
     /// A disk-usage map: the biggest files and folders below a folder, a few levels deep.
     Usage(UsageRequest),
+    /// Everything right inside a folder, for one Windows keeps the user out of: hit frames, as a
+    /// search's results come, then Done.
+    List { path: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
