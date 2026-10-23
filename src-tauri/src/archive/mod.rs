@@ -15,6 +15,7 @@
 //! fit on the drive don't start; encrypted entries and unknown methods get a clear message; and a
 //! damaged archive is an error, never a crash (every read runs under `catch_unwind`).
 
+mod codec;
 mod compress;
 mod extract;
 mod read;
