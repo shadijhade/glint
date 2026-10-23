@@ -673,6 +673,7 @@ SOFTWARE.
 | [SQLite](https://sqlite.org) (through [rusqlite](https://github.com/rusqlite/rusqlite), built in) | 3.x (rusqlite 0.40) | SQL in the Query view | Public domain (SQLite); MIT (rusqlite) |
 | [nom-exif](https://github.com/mindeng/nom-exif) | 3.8.0 | Photos' EXIF and videos' details | MIT |
 | [lofty](https://github.com/Serial-ATA/lofty-rs) | 0.25.4 | Songs' tags and covers | MIT or Apache-2.0 |
+| [imagesize](https://github.com/Roughsketch/imagesize) | 0.15.0 | Pictures' sizes in pixels, for width: and height: | MIT |
 | [jaq](https://github.com/01mf02/jaq)'s readers (`jaq-json`, `jaq-fmts`, with `jaq-core` and `jaq-std`) | jaq-json 2.0.3, jaq-fmts 0.1.1 | Reading JSON, YAML and TOML for their tree (jq filters run in the jaq program, installed on demand) | MIT |
 
 ### comrak
@@ -1088,6 +1089,32 @@ SOFTWARE.
 MIT License
 
 Copyright (c) 2020 Serial <69764315+Serial-ATA@users.noreply.github.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### imagesize
+
+```text
+MIT License
+
+Copyright (c) 2017 Maiddog
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -1,5 +1,6 @@
 import { ARCHIVE_FORMATS, type ArchiveFormat, BROWSED, ON_REQUEST } from "./archives.ts";
 import type { GitMark } from "./fs.ts";
+import type { MediaFacts } from "./media.ts";
 import { joinPath } from "./paths.ts";
 
 /** Windows FILE_ATTRIBUTE_* bits the explorer cares about, and two of Glint's own for archives (Windows doesn't use them). */
@@ -273,13 +274,108 @@ const GIT_FILTERS: Record<string, GitMark[]> = {
     ignored: ["ignored"],
 };
 
+/** At least and at most, both included (query.rs's Range). */
+type Range = { min: number | null; max: number | null };
+const inRange = (r: Range, n: number) => (r.min === null || n >= r.min) && (r.max === null || n <= r.max);
+
+/** `>1920`, `<=1080` or `1080` (exactly), each number read by `number`. */
+function range(value: string, number: (text: string) => number | null): Range | null {
+    const [, op, amount] = /^([<>=]*)(.*)$/.exec(value)!;
+    const n = number(amount);
+    if (n === null) return null;
+    if (op === ">") return { min: n + 1, max: null };
+    if (op === ">=") return { min: n, max: null };
+    if (op === "<") return n > 0 ? { min: null, max: n - 1 } : null;
+    if (op === "<=") return { min: null, max: n };
+    return op === "" || op === "=" ? { min: n, max: n } : null;
+}
+
+const whole = (text: string) => (/^\d+$/.test(text) ? Number(text) : null);
+
+/** "90" or "90s", "5m", "1.5h", "1:30" or "1:02:03", in seconds. */
+function seconds(text: string): number | null {
+    if (text.includes(":")) {
+        const parts = text.split(":");
+        if (parts.some((p, i) => !/^\d+$/.test(p) || (i > 0 && p.length > 2))) return null;
+        return parts.reduce((total, p) => total * 60 + Number(p), 0);
+    }
+    const [, number, unit] = /^([\d.]+)([a-z]*)$/i.exec(text) ?? [];
+    const scale: Record<string, number> = { "": 1, s: 1, sec: 1, m: 60, min: 60, h: 3600, hr: 3600 };
+    if (!number || Number.isNaN(Number(number)) || !(unit.toLowerCase() in scale)) return null;
+    return Math.round(Number(number) * scale[unit.toLowerCase()]);
+}
+
+/** `2024`, `2024-06` or `2024-06-15`: midnight here of its first day, and of the first day after. */
+function period(text: string): [number, number] | null {
+    const [, y, m, d] = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(text) ?? [];
+    if (!y) return null;
+    const year = Number(y);
+    if (!m) return [new Date(year, 0, 1).getTime(), new Date(year + 1, 0, 1).getTime()];
+    const month = Number(m);
+    if (month < 1 || month > 12) return null;
+    if (!d) return [new Date(year, month - 1, 1).getTime(), new Date(year, month, 1).getTime()];
+    const day = Number(d);
+    if (day < 1 || day > new Date(year, month, 0).getDate()) return null;
+    return [new Date(year, month - 1, day).getTime(), new Date(year, month - 1, day + 1).getTime()];
+}
+
+/** The keys of what photos, videos and songs say of themselves (query.rs's Prop). */
+const PROPS = /^(width|height|duration|taken|camera|artist|album):(.*)$/;
+
+/** Whether a search holds a property filter (width:, taken:…), which needs files read to apply. */
+export const hasPropFilter = (query: string) => terms(query.toLowerCase()).some((t) => PROPS.test(t));
+
+/**
+ * A property filter's test of what a file says (media.rs, as the search applies it), or null when it
+ * doesn't read right: `width:>1920`, `height:`, `duration:>5m`, `taken:2024` (2024-06, 2024-06-15, after
+ * `>` or `<`, or 7d and >1y as dm: goes), `camera:`, `artist:` and `album:` with some of their text.
+ */
+export function propTest(key: string, value: string, now = Date.now()): ((f: MediaFacts) => boolean) | null {
+    if (key === "width" || key === "height") {
+        const r = range(value, whole);
+        return r && ((f) => f[key] !== null && inRange(r, f[key]!));
+    }
+    if (key === "duration") {
+        const r = range(value, seconds);
+        return r && ((f) => f.duration !== null && inRange(r, Math.floor(f.duration)));
+    }
+    if (key === "taken") {
+        const [, op, amount] = /^([<>=]*)(.*)$/.exec(value)!;
+        const [, count, unit] = /^(\d+)([hdwy])$/.exec(amount) ?? [];
+        if (count) {
+            const since = now - Number(count) * AGE_UNITS[unit] * 1000;
+            return op.startsWith(">") ? (f) => f.taken !== null && f.taken < since : (f) => f.taken !== null && f.taken >= since;
+        }
+        const days = period(amount);
+        if (!days) return null;
+        const [start, end] = days;
+        const bounds: Record<string, [number | null, number | null]> = { "": [start, end], "=": [start, end], ">": [end, null], ">=": [start, null], "<": [null, start], "<=": [null, end] };
+        const [from, to] = bounds[op] ?? [];
+        if (from === undefined) return null;
+        return (f) => f.taken !== null && (from === null || f.taken >= from) && (to === null || f.taken < to);
+    }
+    const wanted = value.trim().toLowerCase();
+    const field = key as "camera" | "artist" | "album";
+    return (f) => f[field] !== null && f[field]!.includes(wanted);
+}
+
 /**
  * A filter term (ext:, size:, dm:, file:, folder:) as the index and fd read it (shadui_index::query::parse),
  * for what's on screen; undefined for a name term. One that doesn't read right matches nothing here
  * (the search says what's wrong with it). `git:changed` (modified, staged, new, conflict, ignored) asks
- * the folder's Git marks, so it filters what's on screen only.
+ * the folder's Git marks, so it filters what's on screen only. A property filter (width:, taken:…) asks
+ * what the file says (`facts`, undefined until it's read): without them it's left to the search.
  */
-function filterTest(term: string, git?: Readonly<Record<string, GitMark>>): ((e: FileEntry) => boolean) | undefined {
+function filterTest(term: string, git?: Readonly<Record<string, GitMark>>, facts?: (e: FileEntry) => MediaFacts | null | undefined): ((e: FileEntry) => boolean) | undefined {
+    const [, prop, wanted] = PROPS.exec(term) ?? [];
+    if (prop) {
+        if (!facts) return () => true;
+        const test = propTest(prop, wanted);
+        return (e) => {
+            const f = !e.dir && test ? facts(e) : null;
+            return !!f && test!(f);
+        };
+    }
     const [, key, value] = /^(ext|size|dm|files?|folders?|git):(.*)$/.exec(term) ?? [];
     if (!key) return undefined;
     if (key === "git") {
@@ -313,13 +409,13 @@ function filterTest(term: string, git?: Readonly<Record<string, GitMark>>): ((e:
  * The same matching fd does for a search, applied to what's on screen: every term must match the
  * name, case-insensitively; terms with * or ? match the whole name, others any part of it. Filters
  * (ext:pdf, size:>10mb, dm:7d, file:, folder:) narrow it as the index does; git:changed by `git`,
- * the folder's Git marks by lowercase name.
+ * the folder's Git marks by lowercase name; width:, taken: and the like by `facts`, what files say.
  */
-export function matcher(query: string, git?: Readonly<Record<string, GitMark>>): ((e: FileEntry) => boolean) | null {
+export function matcher(query: string, git?: Readonly<Record<string, GitMark>>, facts?: (e: FileEntry) => MediaFacts | null | undefined): ((e: FileEntry) => boolean) | null {
     const parts = terms(query.toLowerCase());
     if (!parts.length) return null;
     const tests = parts.map((term) => {
-        const filter = filterTest(term, git);
+        const filter = filterTest(term, git, facts);
         if (filter) return filter;
         if (!/[*?]/.test(term)) return (e: FileEntry) => e.lower.includes(term);
         const re = globToRegExp(term);

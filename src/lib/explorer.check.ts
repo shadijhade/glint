@@ -1,7 +1,8 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, linkedPath, parentPath, samePath, THIS_PC, volumeOf } from "./paths.ts";
-import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
+import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, matcher, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
+import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
@@ -192,6 +193,35 @@ assert.equal(gitMatch("git:ignored"), "c.md");
 assert.equal(gitMatch("git:changed ext:txt"), "a.txt,B.txt");
 assert.equal(gitMatch("git:nonsense"), "");
 assert.equal(match("git:changed"), "");
+
+// What photos, videos and songs say, as media.rs checks it (query.rs's and media.rs's cases)
+const day = (y: number, m: number, d: number) => new Date(y, m - 1, d).getTime();
+const photo: MediaFacts = { taken: day(2024, 6, 15) + 3_600_000, width: 4032, height: 3024, duration: null, camera: "canon eos r5", artist: null, album: null };
+const song: MediaFacts = { taken: null, width: null, height: null, duration: 187.4, camera: null, artist: "the beatles", album: "abbey road" };
+const today = day(2026, 10, 23);
+const holdAll = (facts: MediaFacts, query: string) =>
+    terms(query.toLowerCase()).every((t) => {
+        const [, key, value] = /^(\w+):(.*)$/.exec(t)!;
+        const test = propTest(key, value, today);
+        return !!test && test(facts);
+    });
+assert.ok(holdAll(photo, "width:>4000 height:>=3024 camera:eos"));
+assert.ok(!holdAll(photo, "width:>4032"));
+assert.ok(holdAll(photo, "taken:2024 taken:2024-06 taken:2024-06-15 taken:>2023 taken:<2025-01 taken:>1y"));
+assert.ok(!holdAll(photo, "taken:2024-06-16") && !holdAll(photo, "taken:>2024") && !holdAll(photo, "taken:30d"));
+assert.ok(holdAll(song, `duration:>3m duration:<=3:07 artist:beatles album:"abbey road"`));
+assert.ok(!holdAll(song, "duration:>3:07") && !holdAll(song, "width:>1") && !holdAll(photo, "artist:"));
+assert.ok(holdAll(song, "album:"), "a word left out: any album");
+for (const bad of ["width:wide", "width:<0", "height:>", "duration:5x", "duration:1:300", "taken:2023-02-29", "taken:2024-13", "taken:24", "taken:yesterday"]) {
+    const [, key, value] = /^(\w+):(.*)$/.exec(bad)!;
+    assert.equal(propTest(key, value), null, bad);
+}
+assert.ok(hasPropFilter("holiday Width:>10") && !hasPropFilter("holiday ext:jpg"));
+// In a folder, a file shows once what it says is read; in search results (no facts) the search checked them.
+const pictures = [entry("big.png", { size: 1 }), entry("small.png", { size: 1 }), entry("unread.png", { size: 1 }), entry("notes.txt", { size: 1 })];
+const said = new Map<string, MediaFacts | null>([["big.png", { ...photo, width: 3000 }], ["small.png", { ...photo, width: 800 }], ["notes.txt", null]]);
+assert.equal(names(pictures.filter(matcher("width:>1920", undefined, (e) => said.get(e.name))!)), "big.png");
+assert.equal(names(pictures.filter(matcher("width:>1920 big")!)), "big.png", "without facts, left to the search");
 
 // The terminal's cd, as each shell takes it; its own reports aren't typing
 assert.equal(cdCommand("pwsh", "C:\\It's mine"), "Set-Location -LiteralPath 'C:\\It''s mine'\r");

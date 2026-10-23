@@ -61,6 +61,9 @@ rusqlite = { version = "0.40", default-features = false, features = ["bundled", 
 # in the build through them).
 nom-exif = "3.8"
 lofty = "0.25"
+# A picture's size in pixels from its header, when it has no EXIF to say it (PNG, GIF, BMP, WebP…), for
+# width: and height: filters. Pure Rust, no dependencies.
+imagesize = "0.15"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
 # Documents search (doctext.rs): a PDF's text by pdf-extract (pure Rust, over lopdf), in a worker
