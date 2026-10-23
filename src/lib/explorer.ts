@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
+import { save } from "@tauri-apps/plugin-dialog";
 import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, withDetails } from "./entries";
 import {
     archiveCompress,
@@ -22,6 +23,7 @@ import {
     createEntry,
     type Drive,
     driveName,
+    exportNcdu,
     type FileOp,
     fileOp as performFileOp,
     findFiles,
@@ -46,7 +48,7 @@ import {
     takeLaunchTargets,
     watchDirs,
 } from "./fs";
-import { plural } from "./format";
+import { formatCount, plural } from "./format";
 import { zoomTiles } from "./grid";
 import { baseName, crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
@@ -1130,20 +1132,24 @@ function extracting<T>(paths: string[], purpose: "copy" | "out", then: (staged: 
  * Archive work with a progress toast (and Stop) once it takes a moment: extracting, compressing.
  * Reports the files it had to leave out, then hands over what it made.
  */
-async function staging<T>(say: { doing: string; failed: string; skipped: string }, run: (lane: string, onProgress: Progress) => Promise<Staged>, then: (staged: Staged) => Promise<T>): Promise<T | undefined> {
+async function staging<T>(
+    say: { doing: string; failed: string; skipped: string; unit?: string },
+    run: (lane: string, onProgress: Progress) => Promise<Staged>,
+    then: (staged: Staged) => Promise<T>
+): Promise<T | undefined> {
     const lane = activeTabId();
     let shown: string | number | undefined;
-    let percent = -1;
-    const label = (p: number) => `${say.doing}…${p >= 0 ? ` ${p}%` : ""}`;
-    const show = () => (shown = toast.loading(label(percent), { action: { label: "Stop", onClick: () => cancelArchiveStage(lane) }, duration: Infinity }));
+    let label = `${say.doing}…`;
+    const show = () => (shown = toast.loading(label, { action: { label: "Stop", onClick: () => cancelArchiveStage(lane) }, duration: Infinity }));
     const timer = setTimeout(show, 400);
     working++;
     try {
         const staged = await run(lane, (done, total) => {
-            const next = total ? Math.floor((100 * done) / total) : 0;
-            if (next === percent) return;
-            percent = next;
-            if (shown !== undefined) toast.loading(label(percent), { id: shown, action: { label: "Stop", onClick: () => cancelArchiveStage(lane) }, duration: Infinity });
+            // A percentage of what's known; with no total ahead (a folder walked), how many so far.
+            const next = total ? `${say.doing}… ${Math.floor((100 * done) / total)}%` : say.unit ? `${say.doing}… ${formatCount(done)} ${say.unit}` : `${say.doing}… 0%`;
+            if (next === label) return;
+            label = next;
+            if (shown !== undefined) toast.loading(label, { id: shown, action: { label: "Stop", onClick: () => cancelArchiveStage(lane) }, duration: Infinity });
         });
         clearTimeout(timer);
         if (shown !== undefined) toast.dismiss(shown);
@@ -1202,6 +1208,19 @@ export function extractHere(path: string) {
         const open = () => void (file ? navigate(parentPath(staged.folder), { select: staged.folder }) : navigate(staged.folder));
         if (t && !t.find && samePath(t.path, parentPath(path))) await navigate(t.path, { history: false, quiet: true, select: staged.folder, tab });
         else toast.success(`Extracted ${what} ${file ? "as" : "into"} “${baseName(staged.folder)}”`, { action: { label: file ? "Show" : "Open", onClick: open } });
+    });
+}
+
+/**
+ * Export as ncdu JSON…: the folder on disk walked into a file that ncdu (`ncdu -f`), and Glint, open again,
+ * where the save dialog says. Junctions and symlinks are listed, not followed.
+ */
+export async function exportAsNcdu(path: string) {
+    const what = `“${baseName(path) || path}”`;
+    const dest = await save({ defaultPath: `${baseName(path).replace(/[:\\]/g, "") || "drive"}.ncdu`, filters: [{ name: "ncdu export", extensions: ["ncdu", "json"] }] });
+    if (!dest) return;
+    return staging({ doing: `Exporting ${what}`, failed: `Couldn't export ${what}`, skipped: "exported", unit: "items" }, (lane, p) => exportNcdu(path, dest, lane, p), async () => {
+        toast.success(`Exported ${what} as “${baseName(dest)}”`, { action: { label: "Show", onClick: () => void navigate(parentPath(dest), { select: dest }) } });
     });
 }
 
