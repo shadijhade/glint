@@ -135,6 +135,10 @@ assert.equal(names(sortEntries(presorted, { key: "size", desc: true }, true, tru
 assert.equal(names(sortEntries(presorted, { key: "modified", desc: false }, false, true)), "b,c.md,B.txt,a.txt");
 assert.equal(names(sortEntries(presorted, { key: "type", desc: false }, true, true)), "b,c.md,a.txt,B.txt");
 assert.equal(names(sortEntries(presorted, { key: "size", desc: true }, true, true, (e) => (e.dir ? 100 : e.size))), "b,a.txt,B.txt,c.md");
+// Date taken: a photo's when it says, else the date modified.
+const shots = [entry("a.jpg", { modified: 50 }), entry("b.jpg", { modified: 10 }), entry("c.txt", { modified: 30 })];
+assert.equal(names(sortEntries(shots, { key: "taken", desc: false }, true, false, undefined, (e) => (e.name === "a.jpg" ? 5 : undefined))), "a.jpg,b.jpg,c.txt");
+assert.equal(names(sortEntries(shots, { key: "taken", desc: true }, true, false, undefined, (e) => (e.name === "a.jpg" ? 5 : null))), "c.txt,b.jpg,a.jpg");
 
 // Dual-pane comparison
 assert.equal(compareEntries(entry("a.txt", { size: 10, modified: 5000 }), undefined), "unique");

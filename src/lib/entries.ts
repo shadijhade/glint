@@ -171,7 +171,7 @@ export const isHidden = (e: FileEntry) => (e.attrs & ATTR.hidden) !== 0;
 /** OneDrive-style placeholders: reading them would start a download. */
 export const isOnlineOnly = (e: FileEntry) => (e.attrs & (ATTR.offline | ATTR.recallOnOpen | ATTR.recallOnDataAccess)) !== 0;
 
-export type SortKey = "name" | "modified" | "type" | "size";
+export type SortKey = "name" | "modified" | "taken" | "type" | "size";
 export interface Sort {
     key: SortKey;
     desc: boolean;
@@ -214,13 +214,22 @@ const byName = (a: FileEntry, b: FileEntry) => naturalCompare(a.lower, b.lower) 
  * Rust), so the default view costs nothing and ties keep name order. `sizeOf` lets folders sort by
  * their calculated size.
  */
-export function sortEntries(entries: FileEntry[], sort: Sort, foldersFirst: boolean, presorted: boolean, sizeOf = (e: FileEntry) => e.size) {
+export function sortEntries(
+    entries: FileEntry[],
+    sort: Sort,
+    foldersFirst: boolean,
+    presorted: boolean,
+    sizeOf = (e: FileEntry) => e.size,
+    takenOf: (e: FileEntry) => number | null | undefined = () => undefined
+) {
     if (presorted && foldersFirst && sort.key === "name" && !sort.desc) return entries;
     const direction = sort.desc ? -1 : 1;
     const group = (e: FileEntry) => (foldersFirst && e.dir ? 0 : 1);
     const compare: Record<SortKey, (a: FileEntry, b: FileEntry) => number> = {
         name: byName,
         modified: (a, b) => a.modified - b.modified,
+        // When a photo or video was taken, else when the file was modified.
+        taken: (a, b) => (takenOf(a) ?? a.modified) - (takenOf(b) ?? b.modified),
         size: (a, b) => sizeOf(a) - sizeOf(b),
         type: (a, b) => Number(b.dir) - Number(a.dir) || (a.ext < b.ext ? -1 : a.ext > b.ext ? 1 : 0),
     };

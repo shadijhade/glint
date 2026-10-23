@@ -154,6 +154,7 @@ export function FileGrid(props: FileGridProps) {
                 <span className="shrink-0">Sort by</span>
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
                 <Header sortKey="modified" sort={sort} onSort={onSort}>Date modified</Header>
+                <Header sortKey="taken" sort={sort} onSort={onSort}>Date taken</Header>
                 {!search && (
                     <Header sortKey="type" sort={sort} onSort={onSort}>
                         Type
