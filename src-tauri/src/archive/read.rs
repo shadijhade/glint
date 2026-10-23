@@ -1,7 +1,8 @@
-//! Reading zip and 7z archives: their list of entries (the zip central directory, the 7z header),
-//! and the data of the entries asked for, streamed out one at a time.
+//! Reading archives: their list of entries (the zip central directory, the 7z header; tars and
+//! compressed files in `stream.rs`), and the data of the entries asked for, streamed out one at a time.
 
-use super::codec::{Crc32Checked, Zstd};
+use super::codec::{Codec, Crc32Checked, Fused, Zstd};
+use super::stream::{self, Kind, Scan, StreamSource};
 use super::tree::{Item, ENCRYPTED, UNREADABLE};
 use super::Failure;
 use sevenz_rust2::{Archive as SevenZ, BlockDecoder, EncoderMethod, Password};
@@ -14,11 +15,15 @@ use zip::read::ZipArchiveMetadata;
 use zip::{CompressionMethod, HasZipMetadata, ZipArchive};
 
 /// How Glint reads an archive. Its `code` names it to the UI: in a listing's header, and as the
-/// engine of a disk-usage map (see `entries.ts` and `usage.ts`, which list the same labels in order).
+/// engine of a disk-usage map (see `archives.ts`, which lists the same labels in order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Zip,
     SevenZ,
+    /// A tar, plain or compressed (.tar.gz…).
+    Tar(Codec),
+    /// One compressed file (.gz, .xz…), shown as a folder holding what it unpacks to.
+    Single(Codec),
 }
 
 /// What a file's name says about it: Enter opens it like a folder (`Browse`), or opens it in its app
@@ -41,16 +46,35 @@ impl Format {
     /// What a name claims, by its extension. Every folder listed asks for every part of its path, so
     /// no copy of the name is made.
     pub fn claimed(name: &str) -> Option<(Format, Claim)> {
-        let ext = name.rsplit_once('.').map(|(stem, ext)| (!stem.is_empty()).then_some(ext))??;
-        if ext.eq_ignore_ascii_case("zip") {
-            Some((Format::Zip, Claim::Browse))
-        } else if ext.eq_ignore_ascii_case("7z") {
-            Some((Format::SevenZ, Claim::Browse))
-        } else if ZIP_INSIDE.iter().any(|z| ext.eq_ignore_ascii_case(z)) {
-            Some((Format::Zip, Claim::OnRequest))
+        let (stem, ext) = name.rsplit_once('.').filter(|(stem, _)| !stem.is_empty())?;
+        let is = |e: &str| ext.eq_ignore_ascii_case(e);
+        let tarred = stem.len() > 4 && stem.as_bytes()[stem.len() - 4..].eq_ignore_ascii_case(b".tar");
+        let format = if is("zip") {
+            Format::Zip
+        } else if is("7z") {
+            Format::SevenZ
+        } else if is("tar") {
+            Format::Tar(Codec::Plain)
+        } else if is("tgz") {
+            Format::Tar(Codec::Gz)
+        } else if is("txz") {
+            Format::Tar(Codec::Xz)
+        } else if is("tbz") || is("tbz2") {
+            Format::Tar(Codec::Bz2)
+        } else if is("tzst") {
+            Format::Tar(Codec::Zst)
+        } else if let Some(codec) = Codec::ALL.into_iter().find(|c| *c != Codec::Plain && is(c.ext())) {
+            if tarred {
+                Format::Tar(codec)
+            } else {
+                Format::Single(codec)
+            }
+        } else if ZIP_INSIDE.iter().any(|z| is(z)) {
+            return Some((Format::Zip, Claim::OnRequest));
         } else {
-            None
-        }
+            return None;
+        };
+        Some((format, Claim::Browse))
     }
 
     /// What Enter opens like a folder, by the name.
@@ -58,12 +82,17 @@ impl Format {
         Format::claimed(name).filter(|&(_, claim)| claim == Claim::Browse).map(|(format, _)| format)
     }
 
-    /// What a file is, by its first bytes, whatever it's called.
+    /// What a file is, by its first bytes, whatever it's called. A compressed stream is taken for a
+    /// single file until opening it shows whether it unpacks to a tar (`stream::kind_of`).
     pub fn detect(head: &[u8]) -> Option<Format> {
         if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") {
             Some(Format::Zip)
         } else if head.starts_with(b"7z\xBC\xAF\x27\x1C") {
             Some(Format::SevenZ)
+        } else if let Some(codec) = Codec::detect(head) {
+            Some(Format::Single(codec))
+        } else if super::tar::is_header(head) {
+            Some(Format::Tar(Codec::Plain))
         } else {
             None
         }
@@ -73,6 +102,8 @@ impl Format {
         match self {
             Format::Zip => 0,
             Format::SevenZ => 1,
+            Format::Tar(codec) => 2 + codec.index(),
+            Format::Single(codec) => 7 + codec.index(),
         }
     }
 
@@ -80,6 +111,13 @@ impl Format {
         match self {
             Format::Zip => "zip",
             Format::SevenZ => "7z",
+            Format::Tar(Codec::Plain) => "tar",
+            Format::Tar(Codec::Gz) => "tar.gz",
+            Format::Tar(Codec::Xz) => "tar.xz",
+            Format::Tar(Codec::Bz2) => "tar.bz2",
+            Format::Tar(Codec::Zst) => "tar.zst",
+            Format::Tar(Codec::Lz4) => "tar.lz4",
+            Format::Single(codec) => codec.ext(),
         }
     }
 }
@@ -96,6 +134,7 @@ const MAX_ZIP_DIRECTORY: u64 = 1 << 30;
 pub enum Source {
     Zip(ZipSource),
     SevenZ(Box<SevenZSource>),
+    Stream(Box<StreamSource>),
 }
 
 pub struct ZipSource {
@@ -124,32 +163,58 @@ struct BlockInfo {
 pub type ItemIndex = usize;
 
 impl Source {
-    /// Reads the archive's list of entries.
-    pub fn open(path: &Path, format: Format) -> Result<(Source, Vec<Item>), Failure> {
+    /// Reads the archive's list of entries (for a compressed tar, its whole stream, with progress and
+    /// Stop through `scan`). The format comes back corrected by the file's first bytes: a ".zip" that's
+    /// a 7z, a ".gz" that holds a tar.
+    pub fn open(path: &Path, format: Format, scan: &Scan) -> Result<(Source, Vec<Item>, Format), Failure> {
+        let format = match File::open(path).and_then(|f| {
+            let mut head = Vec::with_capacity(4096);
+            f.take(4096).read_to_end(&mut head).map(|_| head)
+        }) {
+            Ok(head) => match Format::detect(&head) {
+                Some(found @ (Format::Zip | Format::SevenZ)) => found,
+                Some(Format::Single(_) | Format::Tar(_)) => Format::Tar(Codec::Plain),
+                None => format,
+            },
+            Err(e) => return Err(Failure::from(e)),
+        };
         match format {
-            Format::Zip => open_zip(path),
-            Format::SevenZ => open_7z(path),
+            Format::Zip => open_zip(path).map(|(s, items)| (s, items, format)),
+            Format::SevenZ => open_7z(path).map(|(s, items)| (s, items, format)),
+            Format::Tar(_) | Format::Single(_) => {
+                let kind = stream::kind_of(path).ok_or_else(|| Failure::Damaged("it isn't a tar archive or a compressed file Glint reads".into()))?;
+                let (source, items) = StreamSource::open(path, kind, scan, MAX_ENTRIES)?;
+                let format = match kind {
+                    Kind::Tar(codec) => Format::Tar(codec),
+                    Kind::Single(codec) => Format::Single(codec),
+                };
+                Ok((Source::Stream(Box::new(source)), items, format))
+            }
         }
     }
 
-    /// What extracting `item` costs, in bytes to decompress: its size, plus, in a solid 7z block,
-    /// everything before it in the block (which must be decompressed to reach it).
+    /// What extracting `item` costs, in bytes to decompress: its size, plus, in a solid 7z block or a
+    /// compressed tar, everything before it (which must be decompressed to reach it).
     pub fn cost(&self, item: ItemIndex, size: u64) -> u64 {
         match self {
             Source::Zip(_) => size,
             Source::SevenZ(s) => s.place.get(item).copied().flatten().map_or(size, |(_, before)| before.saturating_add(size)),
+            Source::Stream(s) => s.cost(item, size),
         }
     }
 
-    /// The 7z block `item` is in (None in a zip, or for an empty 7z file).
+    /// The solid block `item` is in: a 7z block, or a compressed tar's one stream (None in a zip, a
+    /// plain tar, or for an empty 7z file).
     pub fn block_of(&self, item: ItemIndex) -> Option<usize> {
         match self {
             Source::Zip(_) => None,
             Source::SevenZ(s) => s.place.get(item).copied().flatten().map(|(block, _)| block),
+            Source::Stream(s) => s.block_of(item),
         }
     }
 
-    /// How many times over `item` expands what's stored of it (a 7z block's for a 7z entry).
+    /// How many times over `item` expands what's stored of it (a 7z block's for a 7z entry, the whole
+    /// stream's for a compressed tar's).
     pub fn ratio(&self, item: ItemIndex, size: u64) -> u64 {
         match self {
             Source::Zip(z) => z.meta.entry(item).map_or(1, |e| size / e.compressed_size().max(1)),
@@ -157,6 +222,7 @@ impl Source {
                 Some((block, _)) => s.blocks[block].unpacked / s.blocks[block].packed.max(1),
                 None => 1,
             },
+            Source::Stream(s) => s.ratio(),
         }
     }
 
@@ -166,6 +232,7 @@ impl Source {
         match self {
             Source::Zip(z) => z.problem(item),
             Source::SevenZ(s) => s.place.get(item).copied().flatten().and_then(|(block, _)| s.blocks[block].problem.clone()),
+            Source::Stream(s) => s.problem(item),
         }
     }
 
@@ -178,6 +245,7 @@ impl Source {
         match self {
             Source::Zip(z) => z.read_each(file, items, each),
             Source::SevenZ(s) => s.read_each(file, items, each, skipped),
+            Source::Stream(s) => s.read_each(file, items, each, skipped),
         }
     }
 }
@@ -360,8 +428,8 @@ fn zip_failure(e: zip::result::ZipError) -> Failure {
 
 /// A name as the zip stores it: UTF-8 when flagged so (or when it simply is valid UTF-8, as many
 /// tools write it without the flag); otherwise the PC's OEM code page, which is what File Explorer
-/// and 7-Zip use for names from old Windows zip tools.
-fn zip_name(raw: &[u8], utf8: bool) -> String {
+/// and 7-Zip use for names from old Windows zip tools. Tar names are read the same way.
+pub(super) fn zip_name(raw: &[u8], utf8: bool) -> String {
     if let Ok(name) = std::str::from_utf8(raw) {
         return name.to_string();
     }
@@ -864,7 +932,13 @@ impl SevenZSource {
                 next += 1;
                 if wanted.binary_search(&index).is_ok() {
                     done.push(index);
-                    if !each(index, reader) {
+                    // Damage stops the block here: lzma-rust2 can loop forever when read on after an error.
+                    let mut fused = Fused::new(reader);
+                    let go = each(index, &mut fused);
+                    if let Some(e) = fused.error() {
+                        return Err(e.into());
+                    }
+                    if !go {
                         stopped = true;
                         return Ok(false);
                     }

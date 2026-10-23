@@ -8,7 +8,9 @@ import {
     archiveExtract,
     archiveExtractHere,
     archiveStage,
+    archiveProgress,
     archiveUnstage,
+    cancelArchiveRead,
     cancelArchiveStage,
     cancelCompare,
     cancelFind,
@@ -232,7 +234,7 @@ export const archiveOf = (tab = activeTabId()): InArchive | undefined => tabStat
 export function readOnlyNotice() {
     toast.message("Archives are read-only", {
         id: "read-only",
-        description: "Glint opens zip and 7z archives to look inside and copy out. To change what's in one, copy it out first.",
+        description: "Glint opens archives to look inside and copy out. To change what's in one, copy it out first.",
     });
 }
 
@@ -339,6 +341,30 @@ interface NavOptions {
     tab?: string;
 }
 
+/**
+ * While a folder takes a moment to list, checks whether it's an archive being read whole (a big
+ * .tar.gz has no list of its entries) and says how far along that is, with Stop. Returns what ends it.
+ */
+function showArchiveReading(target: string) {
+    let id: string | number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(async function poll() {
+        const progress = await archiveProgress(target).catch(() => null);
+        if (timer === undefined) return;
+        if (progress) {
+            const percent = progress.total ? Math.min(99, Math.floor((100 * progress.done) / progress.total)) : 0;
+            const label = `Reading ${baseName(progress.path)}… ${percent}%`;
+            const options = { description: "It keeps no list of what's in it, so it's read from start to end once.", action: { label: "Stop", onClick: () => void cancelArchiveRead(target) }, duration: Infinity };
+            id = toast.loading(label, { ...options, id });
+        }
+        timer = setTimeout(poll, 250);
+    }, 400);
+    return () => {
+        clearTimeout(timer);
+        timer = undefined;
+        if (id !== undefined) toast.dismiss(id);
+    };
+}
+
 /** Opens a folder (or This PC) in a tab. Resolves false if it couldn't, or a newer navigation won. */
 export async function navigate(target: string, { select, history = true, quiet = false, silent = false, tab = activeTabId() }: NavOptions = {}) {
     const r = rt(tab);
@@ -349,6 +375,7 @@ export async function navigate(target: string, { select, history = true, quiet =
     // A folder Windows keeps this account out of opens all the same: its tab says why, with Get access.
     let denied: ListFailure | null = null;
     if (target !== THIS_PC) {
+        const reading = showArchiveReading(target);
         try {
             listing = await listDir(target);
         } catch (e) {
@@ -357,10 +384,13 @@ export async function navigate(target: string, { select, history = true, quiet =
             else {
                 if (seq === r.navSeq) {
                     updateTab({ loading: false }, tab);
-                    if (!silent) toast.error(`Can't open “${baseName(target)}”`, { description: failure?.message ?? String(e) });
+                    // Stopped reading an archive: nothing to report.
+                    if (!silent && failure?.message !== "cancelled") toast.error(`Can't open “${baseName(target)}”`, { description: failure?.message ?? String(e) });
                 }
                 return false;
             }
+        } finally {
+            reading();
         }
     }
     const state = get().tabs[tab];
@@ -1151,16 +1181,21 @@ export function compressEntries(entries: FileEntry[]) {
     });
 }
 
-/** Extract here: a zip or 7z on disk into a new folder next to it, named after it (Explorer's Extract All). Ctrl+Z takes it back. */
-/** Extracts the archive file at `path` (on disk, not in another archive) into a folder next to it. */
+/**
+ * Extract here: the archive file at `path` (on disk, not in another archive) into a new folder next to it, named
+ * after it (Explorer's Extract All); a single compressed file (.gz…) comes out as the file itself. Ctrl+Z takes it back.
+ */
 export function extractHere(path: string) {
     const tab = activeTabId();
     const what = `“${baseName(path)}”`;
     return staging({ doing: `Extracting ${what}`, failed: `Couldn't extract ${what}`, skipped: "extracted" }, (lane, p) => archiveExtractHere(path, lane, p), async (staged) => {
         rememberUndo(`extraction of ${what}`, () => performFileOp({ kind: "delete", paths: [staged.folder], permanent: false, confirm: false }));
         const t = tabState(tab);
+        // One file out of a .gz is shown where it is; a folder is opened.
+        const file = staged.paths.length === 1 && samePath(staged.paths[0], staged.folder);
+        const open = () => void (file ? navigate(parentPath(staged.folder), { select: staged.folder }) : navigate(staged.folder));
         if (t && !t.find && samePath(t.path, parentPath(path))) await navigate(t.path, { history: false, quiet: true, select: staged.folder, tab });
-        else toast.success(`Extracted ${what} into “${baseName(staged.folder)}”`, { action: { label: "Open", onClick: () => void navigate(staged.folder) } });
+        else toast.success(`Extracted ${what} ${file ? "as" : "into"} “${baseName(staged.folder)}”`, { action: { label: file ? "Show" : "Open", onClick: open } });
     });
 }
 
@@ -1467,7 +1502,7 @@ export async function openFile(path: string, tab = activeTabId()) {
 export function openEntry(entry: FileEntry) {
     // Listed from the index: its folders open the same way, its files not at all.
     if (isClosed(entry) && !entry.dir) return closedNotice();
-    // A zip or 7z archive opens like a folder.
+    // An archive opens like a folder.
     if (entry.dir || isArchiveFile(entry)) return navigate(entry.path);
     if (isArchived(entry)) return openFromArchive(entry);
     return openFile(entry.path);

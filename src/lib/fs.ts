@@ -278,6 +278,25 @@ export const archiveExtractHere = (path: string, lane: string, onProgress: Progr
 export const cancelArchiveStage = (lane: string) => invoke("cancel_archive_stage", { lane });
 export const archiveUnstage = (folder: string) => invoke("archive_unstage", { folder });
 
+/**
+ * How far the first read of the archive `path` goes into has got: a compressed tar (or a .gz whose size
+ * isn't stated) is read whole to list it. Null when nothing is being read.
+ */
+export const archiveProgress = (path: string) => invoke<{ path: string; done: number; total: number } | null>("archive_progress", { path });
+/** Stops that read; the listing waiting for it rejects with "cancelled". */
+export const cancelArchiveRead = (path: string) => invoke("cancel_archive_read", { path });
+
+/** What the preview pane says about an archive. A big compressed stream isn't read just to say it: then entries and unpacked are null. */
+export interface ArchivePeek {
+    format: ArchiveFormat;
+    /** Bytes on disk (or in the archive it's in). */
+    packed: number;
+    entries: number | null;
+    unpacked: number | null;
+}
+
+export const archivePeek = (path: string) => invoke<ArchivePeek>("archive_peek", { path });
+
 export const showProperties = (path: string) => invoke("show_properties", { path });
 export const openWith = (path: string) => invoke("open_with", { path });
 export const openTerminal = (path: string) => invoke("open_terminal", { path });
