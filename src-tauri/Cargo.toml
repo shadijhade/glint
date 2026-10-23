@@ -53,6 +53,9 @@ jaq-fmts = { version = "0.1", default-features = false, features = ["yaml", "tom
 # Zstandard is the C library's (0.4 MB).
 calamine = "0.37"
 parquet = { version = "60", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "zstd"] }
+# SQL in the preview: SQLite itself (built in, 1.7 MB), over a database opened read-only or a table file
+# loaded into memory (sql.rs); `hooks` for its authorizer and progress handler.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "hooks"] }
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
 # original zip crate, fuzzed) with every common method but encryption (no passwords yet), and
 # sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's and

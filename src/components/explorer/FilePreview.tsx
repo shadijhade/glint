@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
-import { create } from "zustand";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
 import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, type ArchivePeek, archivePeek, listDir, readTextPreview } from "@/lib/fs";
 import { useGitMark } from "@/lib/git";
+import { usePreviewView, type View } from "@/lib/preview";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
@@ -18,6 +18,7 @@ import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { ChangesView } from "./ChangesView";
 import { DataTree } from "./DataTree";
 import { HexView } from "./HexView";
+import { QueryView } from "./QueryView";
 import { isSheetCandidate, isSqliteCandidate, isTabularCandidate, SheetPreview, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
 import { MarkdownView } from "./MarkdownView";
@@ -337,12 +338,6 @@ function Details({ entry }: { entry: FileEntry }) {
     );
 }
 
-/** A file's other views: as written (Markdown's source, a tree's text), what Git says changed, or its bytes. */
-type View = "file" | "source" | "changes" | "hex";
-
-/** Which view the preview shows, kept while moving from file to file (where a file has no such view, it's shown as it is). */
-const usePreviewView = create<{ view: View }>(() => ({ view: "file" }));
-
 /** One item's preview with its name, actions and details; Quick Look shows it large, with a close button. */
 export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: () => void }) {
     const kind = previewKind(entry);
@@ -355,6 +350,8 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     // Workbooks and Parquet files as tables, from disk; a workbook can show in Windows' previewer too (Excel's).
     const sheet = readable && !archived && isSheetCandidate(entry);
     const workbook = sheet && entry.ext !== "parquet";
+    // Tables and databases take SQL, from disk.
+    const queryable = readable && !archived && (sheet || isTabularCandidate(entry) || isSqliteCandidate(entry));
     // A file Git has a change for can show what changed since its last commit instead.
     const mark = useGitMark(entry.path);
     const changed = !entry.dir && !archived && !!mark && mark !== "ignored";
@@ -370,6 +367,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
         ...(data ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
         ...(workbook ? [{ view: "source" as const, label: "Previewer", title: "As Windows' previewer for it shows it (Excel's, with Office installed)" }] : []),
         ...(changed ? [{ view: "changes" as const, label: "Changes", title: "What changed since the last commit (Git)" }] : []),
+        ...(queryable ? [{ view: "query" as const, label: "Query", title: "SQL over it, reading only" }] : []),
         ...(readable ? [{ view: "hex" as const, label: "Hex", title: "Its bytes, in hexadecimal" }] : []),
     ];
     const chosen = usePreviewView((s) => s.view);
@@ -377,6 +375,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     let body: React.ReactNode;
     if (view === "changes") body = <ChangesView entry={entry} />;
     else if (view === "hex") body = <HexView entry={entry} />;
+    else if (view === "query") body = <QueryView entry={entry} />;
     else if (entry.dir) body = <FolderPreview entry={entry} />;
     else if (isOnlineOnly(entry))
         body = (

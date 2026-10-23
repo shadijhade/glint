@@ -23,6 +23,7 @@ mod quick;
 mod sheet;
 mod shell;
 mod sign;
+mod sql;
 mod snap;
 mod sizes;
 mod term;
@@ -534,6 +535,8 @@ pub fn run() {
             jq::jq_query,
             jq::jq_stop,
             sheet::inspect_sheet,
+            sql::sql_tables,
+            sql::sql_run,
             sign::verify_signature,
             defender::defender_scan,
             defender::cancel_defender_scan,

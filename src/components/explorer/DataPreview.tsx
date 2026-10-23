@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Check, Copy, Database, FileCode, Hash, Search, Table2, ToggleLeft, Type } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Copy, Database, FileCode, Hash, Rows3, Search, Table2, ToggleLeft, Type } from "lucide-react";
 import { toast } from "sonner";
 import type { FileEntry } from "@/lib/entries";
 import { formatCount, formatSize } from "@/lib/format";
 import { inspectSheet, inspectSqlite, inspectTabular, readTextPreview, type SheetPreview as Sheet, type SqliteInfo, type TablePreview } from "@/lib/fs";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
+import { showQuery, sqlName } from "@/lib/preview";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
@@ -194,6 +195,16 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                                 <span className="ml-auto font-mono text-[0.625rem] text-muted-foreground tabular-nums">
                                     page #{obj.rootPage}
                                 </span>
+                                {(obj.kind === "table" || obj.kind === "view") && (
+                                    <button
+                                        type="button"
+                                        onClick={() => showQuery(entry.path, `SELECT * FROM ${sqlName(obj.name)} LIMIT 1000`)}
+                                        title="Its rows, in the Query view"
+                                        className="flex items-center gap-1 rounded px-1 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                    >
+                                        <Rows3 className="size-3" /> Rows
+                                    </button>
+                                )}
                                 {obj.sql && <CopySqlButton text={obj.sql} />}
                             </div>
                             {obj.sql ? (
@@ -270,9 +281,26 @@ export function SheetPreview({ entry }: { entry: FileEntry }) {
 
 /**
  * A table's rows, filtered and sorted by a click on a column; `raw` offers the file's text instead,
- * `types` are its columns' types (a Parquet file's), and `extra` goes in its header (a workbook's sheets).
+ * `types` are its columns' types (a Parquet file's), `extra` goes in its header (a workbook's sheets),
+ * and `more` says where the rest is when there's more.
  */
-function TableView({ entry, table, total, types, extra, raw }: { entry: FileEntry; table: TablePreview; total?: number; types?: string[]; extra?: React.ReactNode; raw?: boolean }) {
+export function TableView({
+    entry,
+    table,
+    total,
+    types,
+    extra,
+    raw,
+    more,
+}: {
+    entry: FileEntry;
+    table: TablePreview;
+    total?: number;
+    types?: string[];
+    extra?: React.ReactNode;
+    raw?: boolean;
+    more?: string;
+}) {
     const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
     const [mode, setMode] = useState<"grid" | "raw">("grid");
     const [rawText, setRawText] = useState<{ text: string; truncated: boolean } | null>(null);
@@ -444,9 +472,10 @@ function TableView({ entry, table, total, types, extra, raw }: { entry: FileEntr
                     </table>
                     {table.truncated && (
                         <p className="border-t bg-muted/10 px-3 py-2 text-[0.6875rem] text-muted-foreground">
-                            {total === undefined
-                                ? `Showing the first ${formatCount(table.rows.length)} rows sampled from the file header.`
-                                : `Showing the first ${formatCount(table.rows.length)} rows of ${formatCount(total)}. Open it to see the rest.`}
+                            {more ??
+                                (total === undefined
+                                    ? `Showing the first ${formatCount(table.rows.length)} rows sampled from the file header.`
+                                    : `Showing the first ${formatCount(table.rows.length)} rows of ${formatCount(total)}. Open it to see the rest, or ask Query.`)}
                         </p>
                     )}
                 </div>
