@@ -7,7 +7,7 @@ import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { VirtualList } from "../VirtualList";
-import { DIFF_BADGE, dropPath, type FileViewProps, Header, LockMark, relativeTo, RenameInput, sizeOf } from "./FileList";
+import { DIFF_BADGE, dropPath, type FileViewProps, gitOf, Header, LockMark, relativeTo, RenameInput, sizeOf } from "./FileList";
 import { Thumbnail } from "./Thumbnail";
 
 interface FileGridProps extends FileViewProps {
@@ -30,7 +30,7 @@ const WHEEL_STEP = 100;
  * driven by the same handlers, so selection, keys, menus, rename and drag and drop work alike.
  */
 export function FileGrid(props: FileGridProps) {
-    const { rows, search, scope, sizes, diffs, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
+    const { rows, search, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
     const [width, setWidth] = useState(() => lastWidth.get(pane) ?? 0);
     const cols = gridColumns(width - 2 * tile.pad, tile.width);
     // Where the tab left this grid is kept as the tiles at its top, so it comes back there even if the
@@ -77,6 +77,7 @@ export function FileGrid(props: FileGridProps) {
         const sizeText = size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : "";
         const diff = diffs?.get(entry.lower);
         const badge = diff && diff !== "same" ? DIFF_BADGE[diff] : undefined;
+        const tracked = gitOf(entry, git);
         return (
             <div
                 key={entry.path}
@@ -89,13 +90,15 @@ export function FileGrid(props: FileGridProps) {
                 onMouseDown={(e) => props.onRowMouseDown(e, i)}
                 onDoubleClick={() => props.onOpen(entry)}
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
-                title={[entry.name, where && `in ${where}`, entry.dir ? "" : `${typeLabel(entry)} · ${formatSize(entry.size)}`, formatFullDate(entry.modified)].filter(Boolean).join("\n")}
+                title={[entry.name, where && `in ${where}`, entry.dir ? "" : `${typeLabel(entry)} · ${formatSize(entry.size)}`, formatFullDate(entry.modified), tracked.badge?.title ?? (tracked.ignored ? "Git: left out by .gitignore" : "")]
+                    .filter(Boolean)
+                    .join("\n")}
                 className={cn(
                     "relative m-0.5 flex min-w-0 cursor-default flex-col items-center rounded-md px-1.5 pt-2 text-center",
                     selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
                     entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
-                    (isHidden(entry) || cut.has(entry.path)) && "opacity-55",
+                    (isHidden(entry) || cut.has(entry.path) || tracked.ignored) && "opacity-55",
                     diff === "same" && !selected && "opacity-60"
                 )}
             >
@@ -107,6 +110,14 @@ export function FileGrid(props: FileGridProps) {
                             className={cn(" absolute top-0.5 right-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[0.5625rem] font-medium leading-tight shadow-xs backdrop-blur-xs", badge.className)}
                         >
                             {badge.label}
+                        </span>
+                    )}
+                    {tracked.badge && (
+                        <span
+                            data-git
+                            className={cn("absolute top-0.5 left-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[0.5625rem] font-medium leading-tight shadow-xs backdrop-blur-xs", tracked.badge.className)}
+                        >
+                            {tracked.badge.label}
                         </span>
                     )}
                     {isOnlineOnly(entry) && <Cloud className="absolute bottom-0.5 right-0.5 size-4 fill-background text-sky-500" aria-label="Online-only" />}

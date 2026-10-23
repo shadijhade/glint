@@ -5,6 +5,7 @@ import { ATTR, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, 
 import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
+import type { GitMark } from "@/lib/fs";
 import { parentPath } from "@/lib/paths";
 import { type Column, useStore } from "@/lib/store";
 import { timeThumbnails } from "@/lib/thumbs";
@@ -20,6 +21,21 @@ export const DIFF_BADGE: Record<Exclude<DiffStatus, "same">, { label: string; ti
     older: { label: "Older", title: "Modified earlier than in the other pane", className: "bg-muted text-muted-foreground" },
 };
 
+/** What Git says of an item; a folder's tooltip says it of what's in it. Ignored items show faded instead. */
+export const GIT_BADGE: Record<Exclude<GitMark, "ignored">, { label: string; title: string; folder: string; className: string }> = {
+    conflicted: { label: "Conflict", title: "Git: a merge left conflicts in it", folder: "Git: a merge left conflicts in here", className: "bg-red-500/15 text-red-700 dark:text-red-300" },
+    modified: { label: "Changed", title: "Git: changed since it was committed", folder: "Git: something in here changed since it was committed", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
+    staged: { label: "Staged", title: "Git: changed and staged for the next commit", folder: "Git: changes in here are staged for the next commit", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
+    untracked: { label: "New", title: "Git: new, not added yet", folder: "Git: new files in here, not added yet", className: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
+};
+
+/** An item's Git badge, and whether .gitignore leaves it out (it shows faded). */
+export function gitOf(entry: FileEntry, git?: Readonly<Record<string, GitMark>>) {
+    const mark = git?.[entry.lower];
+    const badge = mark && mark !== "ignored" ? GIT_BADGE[mark] : undefined;
+    return { badge: badge && { ...badge, title: entry.dir ? badge.folder : badge.title }, ignored: mark === "ignored" };
+}
+
 /** What the list and the grid both show, and how they report what's done to them. */
 export interface FileViewProps {
     rows: FileEntry[];
@@ -29,6 +45,8 @@ export interface FileViewProps {
     sizes?: SizeRun;
     /** Lowercased name → comparison status against the other pane, when Compare Panes is active. */
     diffs?: ReadonlyMap<string, DiffStatus>;
+    /** Lowercased name → what Git says of it, when the folder is in a repository. */
+    git?: Readonly<Record<string, GitMark>>;
     sort: Sort;
     onSort: (key: SortKey) => void;
     selection: ReadonlySet<string>;
@@ -177,7 +195,7 @@ export function relativeTo(scope: string) {
 export const sizeOf = (entry: FileEntry, search: boolean, sizes?: SizeRun) => (entry.dir ? (search ? entry.size || undefined : sizes?.sizes.get(entry.name)) : entry.size);
 
 export function FileList(props: FileListProps) {
-    const { rows, rowHeight, search, scope, sizes, diffs, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    const { rows, rowHeight, search, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
     const focusPath = rows[focusIndex]?.path;
     const columns = useStore((s) => s.settings.columns);
     const relative = useMemo(() => relativeTo(scope), [scope]);
@@ -207,6 +225,7 @@ export function FileList(props: FileListProps) {
         const isHot = entry.modified > 0 && nowMs - entry.modified >= 0 && nowMs - entry.modified < 3_600_000;
         const diff = diffs?.get(entry.lower);
         const badge = diff && diff !== "same" ? DIFF_BADGE[diff] : undefined;
+        const tracked = gitOf(entry, git);
         return (
             <div
                 data-row
@@ -223,11 +242,11 @@ export function FileList(props: FileListProps) {
                     selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
                     entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
-                    (isHidden(entry) || cut.has(entry.path)) && "opacity-55",
+                    (isHidden(entry) || cut.has(entry.path) || tracked.ignored) && "opacity-55",
                     diff === "same" && !selected && "opacity-60"
                 )}
             >
-                <div className="flex min-w-0 items-center gap-2" title={entry.name}>
+                <div className="flex min-w-0 items-center gap-2" title={tracked.ignored ? `${entry.name}\nGit: left out by .gitignore` : entry.name}>
                     <span className="relative grid size-4 shrink-0 place-items-center">
                         <Thumbnail entry={entry} box={iconBox} lane={lane} enabled={thumbnails && isPictureOrVideo(entry) && !isLocked(entry) && !isListOnly(entry)} iconClassName="size-4" />
                     </span>
@@ -239,6 +258,11 @@ export function FileList(props: FileListProps) {
                     {badge && (
                         <span title={badge.title} className={cn("shrink-0 rounded-[4px] px-1.5 py-px text-[0.625rem] font-medium leading-tight", badge.className)}>
                             {badge.label}
+                        </span>
+                    )}
+                    {tracked.badge && (
+                        <span data-git title={tracked.badge.title} className={cn("shrink-0 rounded-[4px] px-1.5 py-px text-[0.625rem] font-medium leading-tight", tracked.badge.className)}>
+                            {tracked.badge.label}
                         </span>
                     )}
                     {isOnlineOnly(entry) && <Cloud className="size-3.5 shrink-0 text-sky-500" aria-label="Online-only" />}

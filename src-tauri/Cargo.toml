@@ -60,6 +60,11 @@ msi = "0.10"
 # RAR archives: RARLAB's UnRAR (C++, built with the MSVC compiler), only ever in test mode, its data
 # handed to a callback (it never writes files). The UnRAR license ships in THIRD_PARTY_LICENSES.md.
 unrar_sys = "0.5.8"
+# Git status in folders: gitoxide, pure Rust, reading the repository only (no network, credentials or
+# worktree changes), so it works without git installed. Its zlib is zlib-rs, already in the build;
+# imara-diff comes with its blob diffs. Status is most of its 3.6 MB in Glint.exe; `parallel` keeps it
+# interruptible (the deadline and Stop).
+gix = { version = "=0.90.0", default-features = false, features = ["sha1", "status", "parallel"] }
 
 [dev-dependencies]
 # Tests write their own cabinets (stored and MSZIP).

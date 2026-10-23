@@ -4,6 +4,7 @@ import { useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { enableIndex, useExplorer, useTab, viewKey } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
+import { type GitRun, useGit } from "@/lib/git";
 import { baseName, THIS_PC } from "@/lib/paths";
 import { type ThumbRun, useThumbRuns } from "@/lib/thumbs";
 import { openBatchRename } from "./BatchRenameDialog";
@@ -44,6 +45,32 @@ function ThumbWork({ run }: { run: ThumbRun }) {
     );
 }
 
+/** How Git status of the folder went: how long it took, or why it waits (trust, or F5). */
+function GitWork({ run }: { run: GitRun }) {
+    const { view } = run;
+    if (!view) return null;
+    const { counts } = view;
+    const changes = [
+        counts.conflicted && `${formatCount(counts.conflicted)} with conflicts`,
+        counts.modified && `${formatCount(counts.modified)} changed`,
+        counts.staged && `${formatCount(counts.staged)} staged`,
+        counts.untracked && `${formatCount(counts.untracked)} new`,
+    ].filter(Boolean);
+    const [said, title] = view.limited
+        ? ["git · waits for trust", "This repository's own settings name programs for Git status to run (filter drivers or core.fsmonitor), so Glint doesn't look at its status until you trust it, from the branch in the address bar."]
+        : view.onRequest
+          ? ["git · F5 for status", "This repository has too many files (or is on another computer) to look through on every visit: F5 shows its status."]
+          : [
+                `git · ${formatDuration(view.elapsed)}${view.partial ? " · partial" : ""}`,
+                `Git status of this folder in ${formatDuration(view.elapsed)}${view.partial ? ", stopped at 4 s: what's shown is what it found by then" : ""}: ${changes.length ? `${changes.join(", ")} in here and below` : "nothing changed in here"}${view.branch ? `, on ${view.branch}` : ""}.`,
+            ];
+    return (
+        <span title={title} className="hidden @xl:inline">
+            · {said}
+        </span>
+    );
+}
+
 /** Counts on the left; on the right, which tool did the work and how long it took. */
 export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     const { tab, path, listing, noAccess, find, shownIn, view } = useTab(
@@ -51,6 +78,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     );
     // A tab showing its disk-usage map tells how that was mapped; its rows are the map's items.
     const mapped = useUsage((s) => !!s[tab]) && !find;
+    const git = useGit((s) => s[tab]);
     const { sizes, drives, index } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length, index: s.index })));
     const scanning = index?.state === "on" ? index.volumes.find((v) => v.state === "scanning") : undefined;
     // Offered on This PC and after a search without it; a drive being read shows in every folder.
@@ -139,6 +167,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                 <span className="hidden @lg:inline">read in {formatDuration(listing.elapsed)} ·</span>
                 <span>shown in {formatDuration(shownIn)}</span>
                 {sized && <span className="hidden @xl:inline">· {sized}</span>}
+                {git && <GitWork run={git} />}
             </span>
         );
     }
