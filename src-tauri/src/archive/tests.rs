@@ -910,6 +910,66 @@ fn opens_installer_packages_as_what_they_install() {
     assert!(!sniff(&format!("{}\\x", text(&other))));
 }
 
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The RAR fixtures are from libarchive's tests (BSD-licensed), made with WinRAR; 7-Zip gives the
+/// same bytes for each.
+#[test]
+fn reads_rar_archives() {
+    let dir = scratch("rar");
+    let read = |path: &str| fs::read(copy(path, Purpose::Preview).unwrap()).unwrap();
+    // RAR 4: files, folders, an empty one, and a link.
+    let rar4 = fixture("rar4.rar", &dir);
+    assert_eq!(names(&listing(&rar4)), ["testdir", "testemptydir", "test.txt", "testlink"]);
+    assert_eq!(read(&format!("{rar4}\\testdir\\test.txt")), b"test text document\r\n");
+    // Its link's target is its data, which UnRAR passes on only to make the link itself.
+    let error = copy(&format!("{rar4}\\testlink"), Purpose::Preview).unwrap_err().message();
+    assert!(error.contains("symbolic link"), "{error}");
+    // RAR 5, and a solid one: all of it in one pass, the last file alone, and the start of one.
+    let rar5 = fixture("rar5.rar", &dir);
+    assert_eq!(sha256(&read(&format!("{rar5}\\test.bin"))), "588870a2dade35c2650fbb7898c9a9c7f21fce7c281198604e8d0c9737f2c375");
+    let solid = fixture("rar5-solid.rar", &dir);
+    let staged = stage_all(&(1..=4).map(|n| format!("{solid}\\test{n}.bin")).collect::<Vec<_>>()).unwrap();
+    assert!(staged.skipped.is_empty(), "{:?}", staged.skipped);
+    assert_eq!(sha256(&fs::read(Path::new(&staged.folder).join("test1.bin")).unwrap()), "7d89f86f9f69d744ffff3fc043e15bf89fc3ffc134ffcbb31d164a99bb8b67b0");
+    extract::remove_tree(Path::new(&staged.folder));
+    assert_eq!(sha256(&read(&format!("{solid}\\test4.bin"))), "2627f40180217252956edb9a426e8d3e344adaf89019d3bccbe04f6c3416dcdd");
+    assert_eq!(read_prefix(&format!("{solid}\\test4.bin"), 100).unwrap().unwrap().0.len(), 100);
+    // Password-protected files say so, and the others read; with the names encrypted too, the archive says so.
+    for name in ["rar4-encrypted.rar", "rar5-encrypted.rar"] {
+        let archive = fixture(name, &dir);
+        let top = listing(&archive);
+        assert_eq!(top.items.iter().map(|i| (i.0.as_str(), i.3 & ENCRYPTED != 0)).collect::<Vec<_>>(), [("a.txt", false), ("b.txt", true), ("c.txt", false), ("d.txt", true)], "{name}");
+        assert_eq!(read(&format!("{archive}\\c.txt")), b"This is from c.txt", "{name}");
+        assert!(matches!(copy(&format!("{archive}\\b.txt"), Purpose::Preview), Err(Failure::Encrypted)), "{name}");
+    }
+    for name in ["rar4-encrypted-names.rar", "rar5-encrypted-names.rar"] {
+        let error = list(&fixture(name, &dir), Instant::now()).unwrap().unwrap_err();
+        assert!(error.contains("password-protected"), "{name}: {error}");
+    }
+    // A hard link reads its target's bytes.
+    let links = fixture("rar5-hardlink.rar", &dir);
+    assert_eq!(read(&format!("{links}\\hardlink.txt")), b"1234\n");
+    assert_eq!(read(&format!("{links}\\file.txt")), b"1234\n");
+    // A set of volumes: opened from its first, or from a later one; without its last, it says so.
+    let html = "ee16390e87152d7dec632ae2b37566da6135966e46b5166e6f40a1c827fa61ad";
+    let parts: Vec<String> = (1..=3).map(|n| fixture(&format!("rar4-volumes.part{n}.rar"), &dir)).collect();
+    assert_eq!(sha256(&read(&format!("{}\\LibarchiveAddingTest.html", parts[0]))), html);
+    assert_eq!(names(&listing(&parts[1])), ["LibarchiveAddingTest.html"], "a later volume lists the set");
+    let short = dir.join("short");
+    fs::create_dir_all(&short).unwrap();
+    for n in 1..=2 {
+        fs::copy(&parts[n - 1], short.join(format!("rar4-volumes.part{n}.rar"))).unwrap();
+    }
+    let first = text(&short.join("rar4-volumes.part1.rar"));
+    assert!(listing(&first).items[0].3 & UNREADABLE != 0);
+    let error = copy(&format!("{first}\\LibarchiveAddingTest.html"), Purpose::Preview).unwrap_err().message();
+    assert!(error.contains("rar4-volumes.part3.rar") && error.contains("isn't there"), "{error}");
+}
+
 #[test]
 fn says_when_entries_are_password_protected() {
     let dir = scratch("encrypted");
@@ -1018,6 +1078,10 @@ fn never_falls_over_on_damaged_archives() {
     write_cab(&path, &[(::cab::CompressionType::MsZip, &[("docs\\a.txt", &[b'a'; 40_000])]), (::cab::CompressionType::None, &[("b.bin", &[7; 1000])])]);
     archives.push(fs::read(&path).unwrap());
     archives.push(fs::read(fixture("cab-lzx.cab", &dir)).unwrap());
+    // RAR 4 and 5, solid too: UnRAR is C++, and a crash in it would take the tests with it.
+    for name in ["rar4.rar", "rar5.rar", "rar5-solid.rar", "rar5-hardlink.rar"] {
+        archives.push(fs::read(fixture(name, &dir)).unwrap());
+    }
     // An installer package with its cabinet inside.
     let path = dir.join("codec.msi");
     let dirs: &[(&str, Option<&str>, &str)] = &[("TARGETDIR", None, "SourceDir"), ("ProgramFilesFolder", Some("TARGETDIR"), "PFiles"), ("APPDIR", Some("ProgramFilesFolder"), "App")];
@@ -1028,6 +1092,7 @@ fn never_falls_over_on_damaged_archives() {
         let ext = match Format::detect(original) {
             Some(Format::SevenZ) => "7z".to_string(),
             Some(Format::Cab) => "cab".to_string(),
+            Some(Format::Rar) => "rar".to_string(),
             Some(Format::Tar(_)) => "tar".to_string(),
             Some(Format::Single(codec)) => format!("tar.{}", codec.ext()),
             _ if original.starts_with(b"\xD0\xCF\x11\xE0") => "msi".to_string(),

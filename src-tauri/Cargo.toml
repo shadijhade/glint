@@ -57,6 +57,9 @@ lz4_flex = "0.14"
 lzxd = "0.2.7"
 # Windows Installer packages' tables and streams: its compound-file reader (cfb) is in the build already.
 msi = "0.10"
+# RAR archives: RARLAB's UnRAR (C++, built with the MSVC compiler), only ever in test mode, its data
+# handed to a callback (it never writes files). The UnRAR license ships in THIRD_PARTY_LICENSES.md.
+unrar_sys = "0.5.8"
 
 [dev-dependencies]
 # Tests write their own cabinets (stored and MSZIP).

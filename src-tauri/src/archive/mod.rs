@@ -1,5 +1,6 @@
-//! Archives opened like folders, read-only: zip, 7z, cabinets, tar and single compressed files. A
-//! path goes on into an archive the way it goes into a folder (`C:\Downloads\photos.zip\2024\summer`),
+//! Archives opened like folders, read-only: zip, 7z, RAR, cabinets, installer packages, tar and
+//! single compressed files. A path goes on into an archive the way it goes into a folder
+//! (`C:\Downloads\photos.zip\2024\summer`),
 //! and archives inside archives open the same way. An archive's list of entries (the zip central
 //! directory, the 7z header, a tar's headers) is read once, without extracting anything, into a tree
 //! of folders kept in memory while it's in use, so every folder in it lists in well under a
@@ -21,6 +22,7 @@ mod codec;
 mod compress;
 mod extract;
 mod msi;
+mod rar;
 mod read;
 mod stream;
 mod tar;
