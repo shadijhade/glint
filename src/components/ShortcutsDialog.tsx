@@ -17,7 +17,7 @@ const groups = (quick: string | null): [string, [string, string][]][] => [
         [
             ["Enter", "Open"],
             ["Space", "Quick Look"],
-            ["Ctrl+K", "Command palette: folders and commands"],
+            ["Ctrl+K", "Command palette: folders and commands (= and a sum works it out)"],
             ["Ctrl+F", "Search this folder; Enter searches subfolders too"],
             ["Ctrl+L", "Type a path"],
             ["Alt+← → ↑", "Back, forward, up"],
