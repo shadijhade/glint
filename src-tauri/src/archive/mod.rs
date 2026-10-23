@@ -22,6 +22,7 @@ mod codec;
 mod compress;
 mod extract;
 mod msi;
+mod ncdu;
 mod rar;
 mod read;
 mod stream;
@@ -883,8 +884,9 @@ pub struct Peek {
 pub async fn archive_peek(path: String) -> Result<Peek, String> {
     fsx::blocking(move || {
         let found = locate(&path).ok_or("It isn't an archive Glint reads")?;
-        // A big compressed stream on disk that isn't in memory yet: only what its name and size say.
-        let stream = matches!(found.format, Format::Tar(c) | Format::Single(c) if c != codec::Codec::Plain);
+        // A big compressed stream (or ncdu export) on disk that isn't in memory yet: only what its
+        // name and size say.
+        let stream = matches!(found.format, Format::Tar(c) | Format::Single(c) if c != codec::Codec::Plain) || matches!(found.format, Format::Ncdu(_));
         let in_memory = state().opened.iter().any(|o| o.path.eq_ignore_ascii_case(&path));
         if stream && found.inner.is_empty() && !in_memory {
             let packed = fsx::stat(&found.outer).map_or(0, |e| e.size);

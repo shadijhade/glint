@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
-import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, isArchived, isArchiveFile, isBrowsable, isClosed, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
+import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { inArchivePath } from "./paths.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
@@ -143,6 +143,9 @@ assert.deepEqual(nested.entries.map((e) => [e.path, isArchived(e), isLocked(e)])
     [`${inside}\\secret.txt`, true, true],
 ]);
 assert.ok(isArchiveFile(entry("x.Zip")) && isArchiveFile(entry("y.7z")) && !isArchiveFile(entry("z.zip/")) && !isArchiveFile(entry("w.docx")));
+assert.ok(isArchiveFile(entry("backup.RAR")) && isArchiveFile(entry("drivers.cab")) && isArchiveFile(entry("disk.ncdu")) && isBrowsable(entry("setup.msi")) && !isArchiveFile(entry("setup.msi")));
+// A file in an ncdu export has a name, a size and a date, and nothing to open; the bit means that only inside an archive.
+assert.ok(isListOnly(entry("a.jpg", { attrs: ATTR.inArchive | ATTR.listOnly })) && !isListOnly(entry("b.jpg", { attrs: ATTR.listOnly })) && !isLocked(entry("c.jpg", { attrs: ATTR.inArchive | ATTR.listOnly })));
 // A .docx or .jar is a zip that Enter opens in its app: "Open as archive" looks inside, and a path into it is an archive's.
 assert.ok(isBrowsable(entry("report.DOCX")) && isBrowsable(entry("lib.jar")) && !isBrowsable(entry("x.zip")) && !isBrowsable(entry("dir.docx/")));
 assert.ok(inArchivePath("C:\\a\\report.docx\\word") && inArchivePath("C:\\a\\b.7z") && !inArchivePath("C:\\a\\docx\\b") && !inArchivePath("C:\\a\\b.zipper"));

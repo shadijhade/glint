@@ -14,6 +14,8 @@ export const ATTR = {
     recallOnDataAccess: 0x400000,
     /** Compressed with a method Glint can't read. */
     unreadable: 0x10000000,
+    /** In an ncdu export (with `inArchive`): listed with its size and date, but its contents aren't there (see archive/ncdu.rs). */
+    listOnly: 0x20000000,
     /** In a zip or 7z archive: read-only, and extracted to be opened (see archive/tree.rs). */
     inArchive: 0x40000000,
     /** Listed from instant search's index, in a folder Windows keeps closed to this account: read-only, and it can't be opened (see index.rs). */
@@ -160,6 +162,8 @@ export const isClosed = (e: FileEntry) => (e.attrs & ATTR.closed) !== 0;
 
 /** In an archive, but can't be extracted: password-protected, or compressed in a way Glint can't read. */
 export const isLocked = (e: FileEntry) => (e.attrs & (ATTR.encrypted | ATTR.unreadable)) !== 0;
+/** A file in an ncdu export: a name, a size and a date, with nothing to open or preview. */
+export const isListOnly = (e: FileEntry) => (e.attrs & (ATTR.inArchive | ATTR.listOnly)) === (ATTR.inArchive | ATTR.listOnly);
 
 export const isHidden = (e: FileEntry) => (e.attrs & ATTR.hidden) !== 0;
 

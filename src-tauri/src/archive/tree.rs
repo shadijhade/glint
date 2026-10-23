@@ -18,6 +18,8 @@ pub const ENCRYPTED: u32 = 0x4000;
 pub const IN_ARCHIVE: u32 = 0x4000_0000;
 /// Compressed with a method Glint can't read.
 pub const UNREADABLE: u32 = 0x1000_0000;
+/// Listed, but holding no data: a file in an ncdu export.
+pub const LIST_ONLY: u32 = 0x2000_0000;
 /// The attributes an archive may set on its entries (read-only, hidden, system); the rest of what
 /// it stores is left out, so nothing in an archive looks like an online-only file or a link.
 pub const KEPT_ATTRIBUTES: u32 = 0x1 | 0x2 | 0x4;
@@ -172,13 +174,16 @@ impl Tree {
                 }
             };
             let last = &last;
-            let attrs = IN_ARCHIVE | (item.attrs & (KEPT_ATTRIBUTES | ENCRYPTED | UNREADABLE));
+            let attrs = IN_ARCHIVE | (item.attrs & (KEPT_ATTRIBUTES | ENCRYPTED | UNREADABLE | LIST_ONLY));
             if item.dir {
                 let node = tree.folder(parent, last);
                 let n = &mut tree.nodes[node as usize];
                 n.item = i as u32;
                 n.modified = item.modified;
                 n.attrs = IN_ARCHIVE | (attrs & KEPT_ATTRIBUTES);
+                // What's in it is usually next, and finds it by its path at once (a deep tree would
+                // otherwise walk its whole path for each).
+                seen.insert(path, node);
                 continue;
             }
             let file = Node { name: last.clone().into_boxed_str(), parent, item: i as u32, dir: false, size: item.size, modified: item.modified, attrs, children: Vec::new() };

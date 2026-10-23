@@ -46,6 +46,12 @@ struct Counted<'a, R> {
     scan: &'a Scan,
 }
 
+/// `inner` (a file) read with progress and Stop through `scan`, for other first reads of a whole
+/// file (an ncdu export's), whose failures `scan_failure` then tells apart.
+pub fn counted<'a, R: Read + 'a>(inner: R, scan: &'a Scan) -> impl Read + 'a {
+    Counted { inner, scan }
+}
+
 impl<R: Read> Read for Counted<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.scan.stop.load(Ordering::Relaxed) {
@@ -85,7 +91,7 @@ const BOMB: &str = "it expands more than a thousand times over";
 
 /// What a failed first read of a whole stream was: stopped, a bomb, the file unreadable, or (what
 /// the decompressor said) damage.
-fn scan_failure(e: Failure, scan: &Scan) -> Failure {
+pub fn scan_failure(e: Failure, scan: &Scan) -> Failure {
     match e {
         _ if scan.stop.load(Ordering::Relaxed) => Failure::Cancelled,
         Failure::Io(text) | Failure::Damaged(text) if text.contains(BOMB) => Failure::Bomb(BOMB.into()),

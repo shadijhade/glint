@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
-import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isLocked, isOnlineOnly } from "@/lib/entries";
+import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
 import { isKnownType, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
@@ -20,6 +20,8 @@ import { inspectXRay } from "./XRayDialog";
 
 const TEXT_BYTES = 256 * 1024;
 const TEXT_LINES = 2000;
+/** The start of an ncdu export: `[1,` its minor version, then its metadata naming the program (archive/ncdu.rs `looks_like`). */
+const NCDU_EXPORT = /^﻿?\s*\[\s*1\s*,\s*\d+\s*,\s*\{\s*"progname"/;
 
 function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
     const [dimensions, setDimensions] = useState("");
@@ -183,8 +185,18 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
     if (!state.text) return <Centered>This file is empty.</Centered>;
     const lines = state.text.split("\n");
     const cut = lines.length > TEXT_LINES;
+    // An ncdu export (`ncdu -o`) opens as the folders it describes.
+    const ncdu = !isArchived(entry) && NCDU_EXPORT.test(state.text);
     return (
         <div className="min-h-full select-text">
+            {ncdu && (
+                <div className="flex items-center gap-3 border-b px-4 py-2 text-xs text-muted-foreground">
+                    <span className="min-w-0 flex-1">An ncdu export: its folders and their sizes can be browsed.</span>
+                    <Button variant="outline" size="sm" onClick={() => navigate(entry.path)}>
+                        <FolderOpen /> Open like a folder
+                    </Button>
+                </div>
+            )}
             <SyntaxHighlighter
                 language={languageFor(entry.ext)}
                 useInlineStyles={false}
@@ -298,6 +310,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                 </p>
             </Centered>
         );
+    else if (isListOnly(entry)) body = <BigIcon entry={entry} note="This file is listed in an ncdu export, with its size and date. What's in it isn't there." />;
     else if (isArchiveFile(entry)) body = <ArchivePreview entry={entry} />;
     // In an archive, pictures, video, sound and PDFs are shown from a temp copy; text is read straight out of it.
     else if (kind === "image" || kind === "video" || kind === "audio" || kind === "pdf")
