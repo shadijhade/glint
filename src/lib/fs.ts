@@ -316,6 +316,31 @@ export interface Opener {
 }
 
 export const listOpeners = () => invoke<Opener[]>("openers");
+
+/** A Git repository's card (repo.rs): onefetch's and tokei's, each there when its tool is. */
+export interface RepoCard {
+    onefetch: boolean;
+    tokei: boolean;
+    name: string | null;
+    description: string | null;
+    head: string | null;
+    branch: string | null;
+    version: string | null;
+    created: string | null;
+    lastChange: string | null;
+    /** Each language's share of the code, in percent, biggest first. */
+    languages: [string, number][];
+    authors: { name: string; commits: number; share: number }[];
+    contributors: number | null;
+    commits: number | null;
+    url: string | null;
+    license: string | null;
+    lines: { language: string; code: number; comments: number; blanks: number }[];
+    total: { code: number; comments: number; blanks: number } | null;
+}
+
+/** The card of the repository whose folder `path` is; null when it isn't one's. */
+export const repoCard = (path: string) => invoke<RepoCard | null>("repo_card", { path });
 /** Opens a folder or a file in the editor or terminal `id`. */
 export const openIn = (id: string, path: string) => invoke("open_in", { id, path });
 

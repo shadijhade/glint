@@ -25,6 +25,7 @@ import { QueryView } from "./QueryView";
 import { isSheetCandidate, isSqliteCandidate, isTabularCandidate, SheetPreview, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
 import { MarkdownView } from "./MarkdownView";
+import { RepoCard } from "./RepoCard";
 import { ShellPreview } from "./ShellPreview";
 import { BigIcon, Centered, Waiting } from "./PreviewState";
 import { inspectXRay } from "./XRayDialog";
@@ -305,14 +306,15 @@ function LockedPreview({ entry }: { entry: FileEntry }) {
 function FolderPreview({ entry }: { entry: FileEntry }) {
     // A folder in the Recycle Bin comes with its size, as Windows noted it.
     const size = useExplorer((s) => s.sizes[parentPath(entry.path)]?.sizes.get(entry.name)) ?? (isRecycled(entry) ? entry.size : undefined);
-    const [counts, setCounts] = useState<{ folders: number; files: number; bytes: number } | { error: string } | null>(null);
+    const [counts, setCounts] = useState<{ folders: number; files: number; bytes: number; repo: boolean } | { error: string } | null>(null);
     useEffect(() => {
         let stale = false;
         listDir(entry.path).then(
             ({ entries }) => {
                 if (stale) return;
                 const files = entries.filter((e) => !e.dir);
-                setCounts({ folders: entries.length - files.length, files: files.length, bytes: files.reduce((sum, e) => sum + e.size, 0) });
+                // A repository's own folder has its .git (a file in a worktree): its card shows.
+                setCounts({ folders: entries.length - files.length, files: files.length, bytes: files.reduce((sum, e) => sum + e.size, 0), repo: entries.some((e) => e.lower === ".git") });
             },
             (e) => !stale && setCounts({ error: String(e) })
         );
@@ -346,6 +348,7 @@ function FolderPreview({ entry }: { entry: FileEntry }) {
                     </Button>
                 )
             )}
+            {counts && "repo" in counts && counts.repo && !isRecycled(entry) && <RepoCard path={entry.path} />}
         </Centered>
     );
 }
@@ -555,6 +558,8 @@ interface FolderSummary {
     total?: number;
     /** Windows keeps this account out of it: there's nothing listed to count. */
     noAccess?: boolean;
+    /** A Git repository's own folder: its card shows. */
+    repo?: boolean;
 }
 
 export function FilePreview({ selected, folder }: { selected: FileEntry[]; folder: FolderSummary }) {
@@ -606,6 +611,7 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
                     {folder.total !== undefined && ` · ${formatSize(folder.total)} in total`}
                 </p>
                 <p className="text-xs">Select a file to preview it</p>
+                {folder.repo && <RepoCard path={folder.path} />}
             </Centered>
         );
     }

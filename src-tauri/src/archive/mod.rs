@@ -245,6 +245,23 @@ pub fn is_read_only(path: &str) -> bool {
     locate(path).is_some()
 }
 
+/// One file out of a gzip-compressed tar (a tool's release, checked already): its bytes. `member` is
+/// its path in the tar, "./" in front or not; at most `limit` bytes of the tar are read.
+pub(crate) fn tar_gz_member(file: &Path, member: &str, limit: u64) -> Result<Vec<u8>, String> {
+    let mut tar = Vec::new();
+    flate2::read::GzDecoder::new(io::BufReader::new(std::fs::File::open(file).map_err(|e| e.to_string())?))
+        .take(limit)
+        .read_to_end(&mut tar)
+        .map_err(|e| e.to_string())?;
+    let entries = tar::walk(&mut io::Cursor::new(&tar[..]), 10_000, &mut |r: &mut io::Cursor<&[u8]>, n| tar::read_through(r, n)).map_err(|e| e.message())?;
+    let plain = |path: &str| path.replace('\\', "/").trim_start_matches("./").to_ascii_lowercase();
+    let wanted = plain(member);
+    match entries.iter().find(|e| plain(&e.item.path) == wanted).map(|e| &e.data) {
+        Some(tar::Data::At { offset, size }) => tar.get(*offset as usize..(*offset + *size) as usize).map(<[u8]>::to_vec).ok_or_else(|| format!("{member} is cut short in the download")),
+        _ => Err(format!("{member} isn't in the download")),
+    }
+}
+
 /// An archive read into memory: its entries as a tree, and how to get at their bytes.
 pub struct Opened {
     /// Its own path as the UI writes it: the archive file, or an entry of another archive.
