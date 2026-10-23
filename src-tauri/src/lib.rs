@@ -18,6 +18,7 @@ mod snap;
 mod sizes;
 mod thumbs;
 mod timeline;
+mod tools;
 mod usage;
 mod verbs;
 mod watch;
@@ -129,15 +130,15 @@ async fn diagnostics(app: tauri::AppHandle) -> Result<String, String> {
         let mut out = format!("Glint {version} ({kind})\n");
         #[cfg(windows)]
         let _ = writeln!(out, "{} · WebView2 {}", shadui_index::windows_version(), tauri::webview_version().unwrap_or_default());
-        for name in ["rg", "fd", "dust"] {
-            let said = proc::tool(name).ok().and_then(|mut c| c.arg("--version").stdin(Stdio::null()).output().ok());
-            let said = said.map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or_default().to_string()).unwrap_or_default();
-            let from = match proc::locate(name) {
+        for tool in tools::TOOLS {
+            let found = proc::locate(tool.exe);
+            let version = found.as_ref().and_then(|(path, _)| tools::version_of(path)).unwrap_or_default();
+            let from = match found {
                 None => "missing".to_string(),
-                Some((_, true)) => "bundled".to_string(),
-                Some((path, false)) => path.display().to_string(),
+                Some((_, proc::Origin::Bundled)) => "bundled".to_string(),
+                Some((path, _)) => path.display().to_string(),
             };
-            let _ = writeln!(out, "{name}: {said} ({from})");
+            let _ = writeln!(out, "{}: {version} ({from})", tool.name);
         }
         let index = index::info();
         let _ = write!(out, "Instant search: {}", index.state);
@@ -417,6 +418,7 @@ pub fn run() {
         .manage(watch::FolderWatcher::default())
         .manage(thumbs::Thumbs::default())
         .manage(quick::Quick::default())
+        .manage(tools::Installs::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 quick::on_close(window, api);
@@ -429,8 +431,10 @@ pub fn run() {
             read_file_chunk,
             write_file_content,
             run_ripgrep_batched,
-            proc::ripgrep_status,
-            proc::install_ripgrep,
+            tools::tools_status,
+            tools::tool_install,
+            tools::tool_cancel_install,
+            tools::tool_remove,
             quick::quick_configure,
             quick::quick_reveal,
             quick::quick_hide,
@@ -518,6 +522,9 @@ pub fn run() {
             {
                 use tauri::Manager;
                 app.state::<thumbs::Thumbs>().warm_up();
+                if let Ok(data) = app.path().app_local_data_dir() {
+                    tools::set_dir(data.join("tools"));
+                }
             }
             #[cfg(desktop)]
             if installed_by_setup() {

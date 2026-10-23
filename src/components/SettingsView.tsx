@@ -3,16 +3,18 @@ import { getVersion } from "@tauri-apps/api/app";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Archive, Binary, ClipboardCopy, ExternalLink, Folder, Heart, Image, Keyboard, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
+import { Archive, Binary, ClipboardCopy, Download, ExternalLink, Folder, Heart, Image, Keyboard, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
-import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration } from "@/lib/fs";
+import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { clearWithUndo, DEFAULT_SETTINGS, useStore } from "@/lib/store";
+import { cancelInstall, describeProgress, installTool, refreshTools, removeTool, useTools } from "@/lib/tools";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 import { openShortcuts } from "./ShortcutsDialog";
+import { installHint } from "./ToolNeeded";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -39,6 +41,7 @@ const SECTIONS: [string, string][] = [
     ["Quick search", "Quick search"],
     ["Search text (ripgrep)", "Search text"],
     ["Text search skips", "Text search skips"],
+    ["Tools", "Tools"],
     ["History", "History"],
     ["About", "About"],
 ];
@@ -223,6 +226,74 @@ function InstantSearch() {
                 Turning it on asks for administrator approval once: a small Windows service reads your NTFS drives' file tables, follows their change
                 journals, and answers only your account and administrators. Like Everything, it knows the name, size and date of every file on
                 those drives, including files your account can't open. Turning it off removes the service and its index files.
+            </p>
+        </Section>
+    );
+}
+
+/** One program Glint drives: its version, where it came from, and Install, Stop or Remove. */
+function ToolRow({ tool, progress }: { tool: ToolStatus; progress?: ToolProgress }) {
+    const where = { bundled: "Comes with Glint", downloaded: "Downloaded by Glint", installed: "Installed on this PC" }[tool.origin ?? "bundled"];
+    const outdated = tool.origin === "downloaded" && tool.pinned && tool.version !== tool.pinned;
+    return (
+        <Row label={tool.version ? `${tool.name} ${tool.version}` : tool.name} hint={`${tool.usedFor} · ${tool.origin ? where : "Not installed"}`}>
+            {progress ? (
+                <>
+                    <span className="max-w-56 truncate text-xs text-muted-foreground" title={describeProgress(progress)}>
+                        {describeProgress(progress)}
+                    </span>
+                    <Button variant="outline" size="sm" onClick={() => cancelInstall(tool.id)}>
+                        Stop
+                    </Button>
+                </>
+            ) : (
+                <>
+                    {(!tool.origin || outdated) && (
+                        <Button size="sm" onClick={() => void installTool(tool.id)} title={installHint(tool)}>
+                            <Download /> {tool.origin ? `Update to ${tool.pinned}` : "Install"}
+                        </Button>
+                    )}
+                    {tool.removable && (
+                        <Button variant="outline" size="sm" onClick={() => void removeTool(tool.id)} title={tool.path ?? undefined}>
+                            Remove
+                        </Button>
+                    )}
+                </>
+            )}
+        </Row>
+    );
+}
+
+/** The programs Glint drives: the ones that come with it, and the optional ones it installs when a feature needs them. */
+function ToolsSection() {
+    const tools = useTools((s) => s.tools);
+    const busy = useTools((s) => s.busy);
+    const [checking, setChecking] = useState(false);
+    const check = async () => {
+        setChecking(true);
+        await refreshTools();
+        setChecking(false);
+    };
+    useEffect(() => {
+        void check();
+    }, []);
+    const list = Object.values(tools);
+    return (
+        <Section
+            title="Tools"
+            action={
+                <Button variant="ghost" size="sm" className="h-7" disabled={checking} onClick={() => void check()} title="Look for each tool again">
+                    {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh
+                </Button>
+            }
+        >
+            {!list.length && <p className="px-4 py-3 text-sm text-muted-foreground">Looking for them…</p>}
+            {list.map((tool) => (
+                <ToolRow key={tool.id} tool={tool} progress={busy[tool.id]} />
+            ))}
+            <p className="px-4 py-3 text-xs text-muted-foreground">
+                ripgrep, fd and dust come with Glint. Other tools install when a feature needs them, for your account only: with winget, or from the
+                tool's own GitHub release, which Glint checks against the checksum it knows for it before unpacking anything.
             </p>
         </Section>
     );
@@ -506,6 +577,8 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
                         <PatternEditor value={settings.exclusions} onChange={(exclusions) => set({ exclusions })} placeholder="Add a pattern: folder, *.log, or file name" />
                     </div>
                 </Section>
+
+                <ToolsSection />
 
                 <Section title="History">
                     <SwitchRow label="Save search history" checked={settings.saveSearchHistory} onChange={(saveSearchHistory) => set({ saveSearchHistory })} />

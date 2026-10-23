@@ -42,6 +42,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/launch.rs`, `verbs.rs` | Folders from the command line and later launches (one copy runs at a time), and File Explorer's *Open in Glint* entries ([docs/explorer-integration.md](docs/explorer-integration.md)) |
 | `src-tauri/index/` | The opt-in instant-search service (NTFS MFT + USN journal) |
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `dust` executables |
+| `src-tauri/src/tools.rs`, `src/lib/tools.ts`, `src/components/ToolNeeded.tsx` | Every program Glint drives: the bundled ones, and optional ones installed on demand with winget or from their GitHub release (pinned by SHA-256); Settings → Tools, and the Install card a feature shows when its tool is missing |
 | `src/lib/updater.ts` | Finding and installing updates (tauri-plugin-updater) |
 | `scripts/` | `npm run release` and its helpers: update signatures, winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)) |
 

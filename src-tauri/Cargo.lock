@@ -3650,6 +3650,8 @@ version = "0.6.0"
 dependencies = [
  "crc32fast",
  "notify",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sevenz-rust2",

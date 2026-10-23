@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Holds one running sidecar (the text search, or a tab's file search or folder sizing):
@@ -93,15 +93,33 @@ pub fn tool(name: &str) -> Result<Command, String> {
     Ok(command)
 }
 
-/// Where a tool runs from, and whether it's the copy that came with the app. That one is next to the
-/// app (the setup program puts it there, tauri-build next to every dev build). Only when it's missing
-/// (a security tool quarantined it, a portable copy) does one installed on the PC run: winget's,
-/// Scoop's, Cargo's, Chocolatey's or one on PATH.
-pub fn locate(name: &str) -> Option<(PathBuf, bool)> {
+/// Where the copy of a program that runs came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Next to the app: the setup program puts rg, fd and dust there, tauri-build next to every dev build.
+    Bundled,
+    /// Glint's own tools folder, where it unpacks the optional tools it downloads (tools.rs).
+    Downloaded,
+    /// Installed on the PC: winget's, Scoop's, Cargo's, Chocolatey's or one on PATH.
+    Installed,
+}
+
+/// Where a program runs from (`rg`, or an optional tool such as `difft`). The copy that came with the
+/// app wins; only when it's missing (a security tool quarantined it, a portable copy) does one Glint
+/// downloaded or one installed on the PC run.
+pub fn locate(name: &str) -> Option<(PathBuf, Origin)> {
+    let tool = crate::tools::by_exe(name);
+    find(name, tool.map_or(name, |t| t.package), tool.and_then(|t| crate::tools::folder_of(t.id)).as_deref())
+}
+
+fn find(name: &str, package: &str, downloaded: Option<&std::path::Path>) -> Option<(PathBuf, Origin)> {
     let file = format!("{name}.exe");
     let bundled = std::env::current_exe().ok()?.with_file_name(&file);
     if bundled.is_file() {
-        return Some((bundled, true));
+        return Some((bundled, Origin::Bundled));
+    }
+    if let Some(own) = downloaded.map(|d| d.join(&file)).filter(|p| p.is_file()) {
+        return Some((own, Origin::Downloaded));
     }
     let env = |var: &str| std::env::var_os(var).map(PathBuf::from);
     // Relative PATH entries would resolve against wherever the app was started from.
@@ -111,9 +129,9 @@ pub fn locate(name: &str) -> Option<(PathBuf, bool)> {
     dirs.extend(env("USERPROFILE").into_iter().flat_map(|home| [home.join(r"scoop\shims"), home.join(r".cargo\bin")]));
     dirs.extend(env("ProgramData").map(|d| d.join(r"chocolatey\bin")));
     if let Some(found) = dirs.iter().map(|d| d.join(&file)).find(|p| p.is_file()) {
-        return Some((found, false));
+        return Some((found, Origin::Installed));
     }
-    in_winget_packages(&winget?.join("Packages"), if name == "rg" { "ripgrep" } else { name }, &file).map(|p| (p, false))
+    in_winget_packages(&winget?.join("Packages"), package, &file).map(|p| (p, Origin::Installed))
 }
 
 /// A winget install this session hasn't seen on PATH yet: Packages\<id>\[<release>\]rg.exe.
@@ -127,7 +145,7 @@ fn in_winget_packages(packages: &std::path::Path, package: &str, file: &str) -> 
         .find(|p| p.is_file())
 }
 
-fn no_window(command: &mut Command) {
+pub(crate) fn no_window(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -135,37 +153,6 @@ fn no_window(command: &mut Command) {
         command.creation_flags(CREATE_NO_WINDOW);
     }
     let _ = command;
-}
-
-/// Where Text search's ripgrep comes from: "bundled", "installed" on the PC, or "missing".
-#[tauri::command]
-pub fn ripgrep_status() -> &'static str {
-    match locate("rg") {
-        Some((_, true)) => "bundled",
-        Some(_) => "installed",
-        None => "missing",
-    }
-}
-
-/// Installs ripgrep with winget, when the user asks to from the card Text mode shows without it.
-#[tauri::command]
-pub async fn install_ripgrep() -> Result<(), String> {
-    crate::fsx::blocking(|| {
-        let mut winget = Command::new("winget");
-        winget
-            .args(["install", "--id", "BurntSushi.ripgrep.MSVC", "--exact", "--source", "winget", "--silent", "--disable-interactivity"])
-            .args(["--accept-package-agreements", "--accept-source-agreements"])
-            .stdin(Stdio::null());
-        no_window(&mut winget);
-        let out = winget.output().map_err(|e| format!("winget isn't available on this PC ({e})"))?;
-        if locate("rg").is_some() {
-            return Ok(());
-        }
-        // winget's last words, past its progress bars.
-        let said = String::from_utf8_lossy(&out.stdout).lines().map(str::trim).rfind(|l| l.chars().any(char::is_alphabetic)).map(str::to_string);
-        Err(said.unwrap_or_else(|| format!("winget stopped with {}", out.status)))
-    })
-    .await
 }
 
 #[cfg(test)]
