@@ -234,8 +234,8 @@ pub fn walk<R: Read>(reader: &mut R, max_entries: usize, skip_by: Skip<'_, R>) -
             // Devices and FIFOs have no data worth a file; a volume label isn't an entry.
             b'3' | b'4' | b'6' | b'V' => continue,
             b'S' | b'M' => {
-                let what = if kind == b'S' { "a sparse file (GNU tar's --sparse)" } else { "split across several tar volumes" };
-                Entry { item: item(false, size, attrs | UNREADABLE), data: Data::None, problem: Some(Failure::Unsupported(what.into())) }
+                let what = if kind == b'S' { "it's a sparse file (GNU tar's --sparse)" } else { "it's split across several tar volumes" };
+                Entry { item: item(false, size, attrs | UNREADABLE), data: Data::None, problem: Some(Failure::Unreadable(what.into())) }
             }
             // Regular files, contiguous files, and (as POSIX says to) any type not known.
             _ => Entry { item: item(false, size, attrs), data: Data::At { offset: data_at, size }, problem: None },
