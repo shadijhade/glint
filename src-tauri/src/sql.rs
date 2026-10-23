@@ -331,7 +331,7 @@ fn delimited(path: &str, ext: &str) -> Result<Loaded, String> {
             }
         }
     }
-    Ok(Loaded { name: "data".into(), columns, rows })
+    Ok(Loaded { name: "data".into(), columns, rows, first: 2, header: true })
 }
 
 /// A JSON-lines file as `data`: each line an object, its keys the columns (in the order first seen).
@@ -366,7 +366,7 @@ fn json_lines(path: &str) -> Result<Loaded, String> {
                 .collect()
         })
         .collect();
-    Ok(Loaded { name: "data".into(), columns, rows })
+    Ok(Loaded { name: "data".into(), columns, rows, first: 1, header: false })
 }
 
 /// Runs one statement that only reads, giving its first 1,000 rows.

@@ -134,13 +134,14 @@ fn json_safe(line: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Holds a process to its memory and to no child processes; closing it (dropping this) ends the process.
-struct Job(windows::Win32::Foundation::HANDLE);
+/// Documents search's workers are held in one too (doctext.rs).
+pub(crate) struct Job(windows::Win32::Foundation::HANDLE);
 
 // The handle is only closed, once, by its owner.
 unsafe impl Send for Job {}
 
 impl Job {
-    fn new(memory: usize) -> Result<Self, String> {
+    pub(crate) fn new(memory: usize) -> Result<Self, String> {
         use windows::Win32::System::JobObjects::*;
         unsafe {
             let job = Job(CreateJobObjectW(None, windows::core::PCWSTR::null()).map_err(|e| e.to_string())?);
@@ -154,7 +155,7 @@ impl Job {
         }
     }
 
-    fn assign(&self, child: &Child) -> Result<(), String> {
+    pub(crate) fn assign(&self, child: &Child) -> Result<(), String> {
         use std::os::windows::io::AsRawHandle;
         unsafe { windows::Win32::System::JobObjects::AssignProcessToJobObject(self.0, windows::Win32::Foundation::HANDLE(child.as_raw_handle())).map_err(|e| e.to_string()) }
     }
