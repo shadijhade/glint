@@ -7,6 +7,7 @@ mod data_lens;
 mod dedup;
 mod find;
 mod fsx;
+mod git;
 mod index;
 mod launch;
 mod locks;
@@ -417,6 +418,7 @@ pub fn run() {
         .manage(launch::Pending::new(request.open))
         .manage(AppState::default())
         .manage(watch::FolderWatcher::default())
+        .manage(git::RepoWatcher::default())
         .manage(thumbs::Thumbs::default())
         .manage(quick::Quick::default())
         .manage(tools::Installs::default())
@@ -485,6 +487,9 @@ pub fn run() {
             pe::inspect_pe,
             cleanup::cleanup_scan,
             cleanup::cancel_cleanup,
+            git::git_view,
+            git::cancel_git,
+            git::git_watch,
             dedup::find_duplicates,
             dedup::cancel_dedup,
             compare::compare_folders,

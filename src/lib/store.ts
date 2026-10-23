@@ -66,6 +66,9 @@ export interface Settings {
     // Widths dragged in the list's header and at the preview pane's edge, in pixels (unset: the defaults)
     columns: Partial<Record<Column, number>>;
     previewWidth: number | null;
+    // Git repositories (their roots) whose own settings name programs for status to run (filter
+    // drivers), trusted to run them
+    gitTrusted: string[];
 }
 
 /** The list's columns whose width can be dragged (the name takes what's left). */
@@ -116,6 +119,7 @@ export const DEFAULT_SETTINGS: Settings = {
     compareContents: false,
     columns: {},
     previewWidth: null,
+    gitTrusted: [],
 };
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */

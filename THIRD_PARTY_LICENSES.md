@@ -537,3 +537,12 @@ WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+## Git support (compiled into the app)
+
+| Crate | Version | Used for | License |
+| :--- | :--- | :--- | :--- |
+| [gitoxide](https://github.com/GitoxideLabs/gitoxide) (`gix` and its `gix-*` crates) | 0.90.0 | Reading Git repositories: status, branches, ahead and behind | MIT or Apache-2.0 |
+| [gix-imara-diff](https://github.com/GitoxideLabs/gitoxide) (imara-diff, as gitoxide ships it) | 0.3.2 | Line diffs | Apache-2.0 |
+
+The Apache License 2.0 is reproduced in full under [dust](#dust) above.

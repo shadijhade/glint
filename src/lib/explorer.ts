@@ -555,9 +555,13 @@ export function reloadFolder(folder: string) {
     }
 }
 
+/** Tabs refreshed with F5, until what waits for it (Git status in a very big repository) has run. */
+export const refreshedByHand = new Set<string>();
+
 /** F5: runs the search again when one is shown, otherwise re-reads the folder. */
 export const refresh = () => {
     const find = tabState()?.find;
+    if (!find) refreshedByHand.add(activeTabId());
     return find ? runFind(find.query, { scope: find.scope }) : reload();
 };
 

@@ -327,6 +327,40 @@ export interface CleanupReport {
 export const cleanupScan = (root: string, mode: CleanupMode, lane: string) => invoke<CleanupReport>("cleanup_scan", { root, mode, lane });
 export const cancelCleanup = (lane: string) => invoke("cancel_cleanup", { lane });
 
+/** What a name in a folder has in Git, weakest first: a folder shows the strongest of what's below it. */
+export type GitMark = "ignored" | "untracked" | "staged" | "modified" | "conflicted";
+
+/** Git in a folder: its repository's branch and upstream, and what changed in it (git.rs). */
+export interface GitView {
+    /** The repository's working folder. */
+    root: string;
+    /** The branch checked out; null when HEAD is detached. */
+    branch: string | null;
+    /** HEAD's commit, abbreviated; null before the first commit. */
+    head: string | null;
+    /** The branch it tracks ("origin/main"). */
+    upstream: string | null;
+    ahead: number;
+    behind: number;
+    /** What's right in the folder has, by lowercase name. */
+    marks: Record<string, GitMark>;
+    /** Changes in the folder and below it. */
+    counts: { modified: number; staged: number; untracked: number; conflicted: number };
+    /** Status ran out of time: what's shown is what it found by then. */
+    partial: boolean;
+    /** The repository's own settings would run programs: status waits until it's trusted. */
+    limited: boolean;
+    /** Too many files to look through on every visit (or on another computer): F5 shows status. */
+    onRequest: boolean;
+    elapsed: number;
+}
+
+/** Git in `folder` for the tab `lane` (null: not in a repository); `trusted` repositories may run programs their settings name; `force` (F5) runs status everywhere. */
+export const gitView = (folder: string, lane: string, trusted: string[], force: boolean) => invoke<GitView | null>("git_view", { folder, lane, trusted, force });
+export const cancelGit = (lane: string) => invoke("cancel_git", { lane });
+/** Watches exactly the repositories at `roots` (each emits "git-changed" with its root). */
+export const gitWatch = (roots: string[]) => invoke("git_watch", { roots });
+
 /** Export as ncdu JSON: the folder `path` walked into `dest` (written as `dest.part` until done); progress counts entries, with no total. */
 export const exportNcdu = (path: string, dest: string, lane: string, onProgress: Progress) =>
     invoke<Staged>("export_ncdu", { path, dest, lane, onProgress: progressChannel(onProgress) });
