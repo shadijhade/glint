@@ -32,11 +32,15 @@ export interface RgMatch {
     };
 }
 
-/** What Documents search reads (doctext.rs's DOCUMENTS). */
+/** What Documents search reads (doctext.rs's DOCUMENTS), and pictures, whose text OCR reads (ocr.rs's PICTURES). */
 const DOCUMENT_EXTENSIONS = new Set(["pdf", "docx", "docm", "dotx", "dotm", "pptx", "pptm", "ppsx", "potx", "xlsx", "xlsm", "xlsb", "xls", "ods", "odt", "ott", "odp", "epub"]);
+const PICTURE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "jpe", "jfif", "bmp", "gif", "tif", "tiff", "webp", "heic", "heif", "avif", "jxr"]);
 
-/** Whether Documents search reads this file. */
-export const isDocument = (path: string) => DOCUMENT_EXTENSIONS.has(path.slice(path.lastIndexOf(".") + 1).toLowerCase());
+/** Whether Documents search reads this file (a document, or a picture with OCR): its app opens it, not the text editor. */
+export const isDocument = (path: string) => {
+    const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+    return DOCUMENT_EXTENSIONS.has(ext) || PICTURE_EXTENSIONS.has(ext);
+};
 
 /** A document's lines `from` to `to` (1-based) as Documents search read them, each with where it is. */
 export const docLines = (path: string, from: number, to: number) => invoke<[string, string][]>("doc_lines", { path, from, to });
@@ -52,8 +56,9 @@ export interface SearchOptions {
     /** A code pattern, searched by ast-grep (codesearch.rs), and what each match becomes. */
     code?: boolean;
     rewrite?: string | null;
-    /** The text inside documents, read by Glint's workers (doctext.rs). */
+    /** The text inside documents, read by Glint's workers (doctext.rs), and with `ocr`, pictures' too. */
     documents?: boolean;
+    ocr?: boolean;
 }
 
 /** A code search's rewrite made in its files, by ast-grep: how many matches it rewrote. */
@@ -85,7 +90,7 @@ export async function searchBatched(
     try {
         // ripgrep's (or ast-grep's) arguments are built in Rust from these options. The folder comes back as searched.
         const exclusions = options.exclusions ?? [];
-        const text = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions, everything: !!options.everything };
+        const text = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions, everything: !!options.everything, ocr: !!options.ocr };
         const folder = options.code
             ? await invoke<string>("run_ast_grep", { request: { query, path, rewrite: options.rewrite || null, exclusions, everything: !!options.everything }, searchId, maxResults: options.maxResults })
             : await invoke<string>(options.documents ? "run_doc_search" : "run_ripgrep_batched", { request: text, searchId, maxResults: options.maxResults });

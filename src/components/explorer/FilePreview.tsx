@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
+import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, Loader2, ScanText, X } from "lucide-react";
+import { toast } from "sonner";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
 import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
-import { archiveExtract, type ArchivePeek, archivePeek, listDir, readTextPreview } from "@/lib/fs";
+import { archiveExtract, type ArchivePeek, archivePeek, listDir, ocrText, readTextPreview } from "@/lib/fs";
 import { useGitMark } from "@/lib/git";
 import { mapLink, useMediaDetails } from "@/lib/media";
 import { usePreviewView, type View } from "@/lib/preview";
@@ -36,6 +37,23 @@ const NCDU_EXPORT = /^﻿?\s*\[\s*1\s*,\s*\d+\s*,\s*\{\s*"progname"/;
 function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
     const [dimensions, setDimensions] = useState("");
     const [failed, setFailed] = useState(false);
+    const [reading, setReading] = useState(false);
+    // The text in it, read by Windows' OCR, to the clipboard (a picture on disk: not one in an archive).
+    const copyText = async () => {
+        setReading(true);
+        try {
+            const lines = await ocrText(entry.path);
+            if (!lines.length) toast.message("No text found in this picture");
+            else {
+                await navigator.clipboard.writeText(lines.join("\n"));
+                toast.success(`Copied ${lines.length === 1 ? "a line" : `${lines.length} lines`} of text`, { description: lines[0] });
+            }
+        } catch (e) {
+            toast.error("Couldn't read the text", { description: String(e) });
+        } finally {
+            setReading(false);
+        }
+    };
     if (failed) return <BigIcon entry={entry} note="This image can't be shown here" />;
     return (
         <Centered className="gap-2 p-4">
@@ -45,9 +63,16 @@ function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
                 draggable={false}
                 onLoad={(e) => setDimensions(`${e.currentTarget.naturalWidth} × ${e.currentTarget.naturalHeight}`)}
                 onError={() => setFailed(true)}
-                className="max-h-[calc(100%-1.5rem)] max-w-full rounded-sm object-contain shadow-sm [background:repeating-conic-gradient(hsl(var(--muted))_0%_25%,transparent_0%_50%)_50%/16px_16px]"
+                className="max-h-[calc(100%-2.75rem)] max-w-full rounded-sm object-contain shadow-sm [background:repeating-conic-gradient(hsl(var(--muted))_0%_25%,transparent_0%_50%)_50%/16px_16px]"
             />
-            {dimensions && <span className="text-xs tabular-nums">{dimensions} pixels</span>}
+            <div className="flex items-center gap-3">
+                {dimensions && <span className="text-xs tabular-nums">{dimensions} pixels</span>}
+                {!isArchived(entry) && (
+                    <Button variant="ghost" size="sm" className="h-7" disabled={reading} onClick={() => void copyText()} title="Copy the text in this picture, read by Windows' OCR">
+                        {reading ? <Loader2 className="animate-spin" /> : <ScanText />} Copy text
+                    </Button>
+                )}
+            </div>
         </Centered>
     );
 }

@@ -95,6 +95,8 @@ pub fn read(path: &str) -> Result<Lines, String> {
         "odp" => odf_slides(&part(path, "content.xml")?),
         "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => sheets(path)?,
         "epub" => epub(path)?,
+        // Images too (OCR): the text Windows reads in a picture, a line each.
+        ext if crate::ocr::PICTURES.contains(&ext) => crate::ocr::lines(path)?.into_iter().enumerate().map(|(i, line)| (format!("line {}", i + 1), line)).collect(),
         other => return Err(format!("not a document Glint reads: .{other}")),
     };
     let mut total = 0;
@@ -386,6 +388,9 @@ pub struct DocSearch {
     pub exclusions: Vec<String>,
     #[serde(default)]
     pub everything: bool,
+    /// Pictures too: their text, read by Windows' OCR (ocr.rs).
+    #[serde(default)]
+    pub ocr: bool,
 }
 
 /// The pattern as ripgrep would take it: smart case unless case-sensitive, a literal unless a regular
@@ -506,10 +511,12 @@ fn stop(run: u64) {
     let _ = RUN.compare_exchange(run, run + 1, Ordering::SeqCst, Ordering::SeqCst);
 }
 
-/// Whether Documents search reads a file of this name (Office's ~$ owner files aren't documents).
-fn is_document(name: &str) -> bool {
+/// Whether Documents search reads a file of this name (Office's ~$ owner files aren't documents), and
+/// with `pictures`, a picture's.
+fn is_document(name: &str, pictures: bool) -> bool {
     let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
-    DOCUMENTS.iter().any(|d| d.eq_ignore_ascii_case(ext)) && !name.starts_with("~$")
+    let of = |list: &[&str]| list.iter().any(|d| d.eq_ignore_ascii_case(ext));
+    (of(DOCUMENTS) || (pictures && of(crate::ocr::PICTURES))) && !name.starts_with("~$")
 }
 
 /// The exclusions as a search applies them: exact names (lowercase), and patterns with * or ?, which
@@ -551,7 +558,7 @@ impl Skips {
 fn walk(folder: &Path, search: &DocSearch, run: u64, paths: mpsc::SyncSender<PathBuf>) {
     let skips = Skips::of(search);
     if folder.is_file() {
-        if folder.file_name().is_some_and(|n| is_document(&n.to_string_lossy())) {
+        if folder.file_name().is_some_and(|n| is_document(&n.to_string_lossy(), search.ocr)) {
             let _ = paths.send(folder.to_path_buf());
         }
         return;
@@ -586,7 +593,7 @@ fn walk(folder: &Path, search: &DocSearch, run: u64, paths: mpsc::SyncSender<Pat
                         let name = entry.file_name();
                         let name = name.to_string_lossy();
                         let is_dir = kind.is_dir();
-                        if kind.is_symlink() || (!is_dir && !is_document(&name)) || skips.skip(&name, is_dir) {
+                        if kind.is_symlink() || (!is_dir && !is_document(&name, search.ocr)) || skips.skip(&name, is_dir) {
                             continue;
                         }
                         #[cfg(windows)]
@@ -885,7 +892,7 @@ mod tests {
 
     #[test]
     fn matches_as_ripgrep_would() {
-        let search = |query: &str, case_sensitive, whole_word, regex| DocSearch { query: query.into(), path: String::new(), case_sensitive, whole_word, regex, exclusions: vec![], everything: false };
+        let search = |query: &str, case_sensitive, whole_word, regex| DocSearch { query: query.into(), path: String::new(), case_sensitive, whole_word, regex, exclusions: vec![], everything: false, ocr: false };
         assert!(pattern(&search("glint", false, false, false)).unwrap().is_match("GLINT rocks"), "smart case: lowercase ignores case");
         assert!(!pattern(&search("Glint", false, false, false)).unwrap().is_match("glint"), "an uppercase letter matches exactly");
         assert!(!pattern(&search("glint", true, false, false)).unwrap().is_match("Glint"));
@@ -909,7 +916,8 @@ mod tests {
         let wide = cut("¶ 1".into(), "é".repeat(1500));
         assert!(wide.len() == 2 && wide.iter().all(|(_, t)| t.len() <= MAX_LINE), "cut between characters");
 
-        assert!(is_document("Report.PDF") && is_document("a.b.xlsx") && !is_document("~$Report.docx") && !is_document("pdf") && !is_document("notes.txt"));
+        assert!(is_document("Report.PDF", false) && is_document("a.b.xlsx", false) && !is_document("~$Report.docx", false) && !is_document("pdf", false) && !is_document("notes.txt", false));
+        assert!(!is_document("scan.png", false) && is_document("scan.PNG", true) && !is_document("notes.txt", true), "pictures with OCR only");
         assert!(glob("node_modules", "Node_Modules"));
         assert!(glob("*.pdf", "Report.PDF") && !glob("*.pdf", "report.pdf.bak"));
         assert!(glob("img_????.jpg", "IMG_0042.jpg") && !glob("img_????.jpg", "IMG_42.jpg"));
@@ -928,7 +936,7 @@ mod tests {
         for file in ["a.pdf", "sub/b.DOCX", "sub/notes.txt", "sub/~$b.docx", "node_modules/c.pdf", ".hidden/d.pdf", "skip.xlsx"] {
             std::fs::write(dir.join(file), b"x").unwrap();
         }
-        let request = |everything| DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec!["node_modules".into(), "*.pdf".into(), "skip.xlsx".into()], everything };
+        let request = |everything| DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec!["node_modules".into(), "*.pdf".into(), "skip.xlsx".into()], everything, ocr: false };
         let found = |everything| {
             let run = begin();
             let (tx, rx) = mpsc::sync_channel(64);

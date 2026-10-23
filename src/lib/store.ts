@@ -19,6 +19,8 @@ export interface SearchOptions {
     code: boolean;
     /** The text inside documents (PDF, Office, OpenDocument, EPUB) rather than files' own (doctext.rs). */
     documents: boolean;
+    /** With documents: pictures' text too, read by Windows' OCR (ocr.rs). */
+    ocr: boolean;
 }
 
 export type Mode = 'files' | 'text';
@@ -191,7 +193,7 @@ export const useStore = create<AppState>()(
             query: '',
             path: '',
             history: [],
-            options: { caseSensitive: false, wholeWord: false, regex: false, code: false, documents: false },
+            options: { caseSensitive: false, wholeWord: false, regex: false, code: false, documents: false, ocr: false },
             settings: DEFAULT_SETTINGS,
             mode: 'files',
             pinned: [],

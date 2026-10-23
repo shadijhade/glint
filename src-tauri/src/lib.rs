@@ -21,6 +21,7 @@ mod locks;
 mod markdown;
 mod media;
 mod native_preview;
+mod ocr;
 mod pe;
 mod proc;
 mod quick;
@@ -553,6 +554,7 @@ pub fn run() {
             zoxide::zoxide_folders,
             zoxide::zoxide_add,
             calc::calculate,
+            ocr::ocr_text,
             tools::tools_status,
             tools::tool_install,
             tools::tool_cancel_install,

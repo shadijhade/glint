@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Braces, CaseSensitive, FileText, FolderOpen, Regex, Replace, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
+import { Braces, CaseSensitive, FileText, FolderOpen, Regex, Replace, ScanText, Search as SearchIcon, Square, TextSearch, WholeWord } from "lucide-react";
 import { defaultTextSearchFolder } from "@/lib/explorer";
 import { useRewrite } from "@/lib/ripgrep";
 import { SearchOptions, useStore } from "@/lib/store";
@@ -14,6 +14,7 @@ const TOGGLES: { key: keyof SearchOptions; hotkey: string; icon: typeof Regex; l
     { key: "regex", hotkey: "r", icon: Regex, label: "Regular expression (Alt+R)" },
     { key: "code", hotkey: "a", icon: Braces, label: "Code pattern, by its structure (Alt+A): console.log($MSG), $X.unwrap() (ast-grep)" },
     { key: "documents", hotkey: "d", icon: FileText, label: "Documents (Alt+D): the text in PDF, Word, Excel, PowerPoint, OpenDocument and EPUB files" },
+    { key: "ocr", hotkey: "o", icon: ScanText, label: "Pictures too, with Documents (Alt+O): the text in them, read by Windows' OCR" },
 ];
 
 const fieldClass = "h-9 min-w-0 flex-1 bg-transparent px-2 text-sm outline-hidden placeholder:text-muted-foreground";
@@ -124,7 +125,7 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                             <Toggle
                                 key={key}
                                 pressed={!!options[key]}
-                                disabled={options.code && key !== "code" && key !== "documents"}
+                                disabled={(options.code && key !== "code" && key !== "documents") || (key === "ocr" && !options.documents)}
                                 onClick={() => setOption(key, !options[key])}
                                 title={label}
                                 aria-label={label}
