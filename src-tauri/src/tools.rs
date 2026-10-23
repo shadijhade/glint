@@ -38,7 +38,8 @@ pub enum Source {
     /// Comes with Glint, next to the app; winget puts a copy back when a security tool removed it.
     Bundled { winget: &'static str },
     Winget { id: &'static str },
-    /// A release zip on GitHub: the version it holds, its address, its SHA-256 and the program's path in it.
+    /// A release on GitHub: the version it holds, its address, its SHA-256 and the program's path in the
+    /// zip ("" when the download is the program itself).
     Release { version: &'static str, url: &'static str, sha256: &'static str, member: &'static str },
 }
 
@@ -92,6 +93,19 @@ pub static TOOLS: &[Tool] = &[
             member: "kingfisher.exe",
         },
         used_for: "Finding passwords, keys and tokens left in files before they're shared (MongoDB's secret scanner; nothing is sent anywhere)",
+    },
+    Tool {
+        id: "jaq",
+        name: "jaq",
+        exe: "jaq",
+        package: "01mf02.jaq",
+        source: Source::Release {
+            version: "3.1.1",
+            url: "https://github.com/01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-pc-windows-msvc.exe",
+            sha256: "7b2f5153d11118c3ccff01859743e09842cabc42ba08f8876489c1be30d1d08d",
+            member: "",
+        },
+        used_for: "jq filters over JSON, YAML and TOML files, in their preview (jq, rewritten in Rust)",
     },
 ];
 
@@ -377,7 +391,7 @@ async fn download(tool: &'static Tool, url: &str, sha256: &str, member: &str, st
         Ok(digest) if hex(&digest).eq_ignore_ascii_case(sha256) => {
             let _ = progress.send(Progress { stage: "Unpacking".into(), done: 0, total: 0 });
             let (temp, member, into, exe) = (temp.clone(), member.to_string(), dir.join(tool.id), tool.exe);
-            blocking(move || unpack(&temp, &member, &into, exe)).await
+            blocking(move || if member.is_empty() { place(&temp, &into, exe) } else { unpack(&temp, &member, &into, exe) }).await
         }
         Ok(_) => Err(format!("The download didn't match {}'s published checksum, so it was thrown away", tool.name)),
         Err(e) => Err(e),
@@ -404,11 +418,24 @@ fn unpack(zip: &Path, member: &str, into: &Path, exe: &str) -> Result<(), String
     let mut out = File::create(fresh.join(format!("{exe}.exe"))).map_err(|e| e.to_string())?;
     std::io::copy(&mut (&mut entry).take(MAX_DOWNLOAD), &mut out).map_err(|e| e.to_string())?;
     drop(out);
+    replace(into, &fresh)
+}
+
+/// Puts a checked download that's the program itself in place, in a fresh folder that then replaces the old one.
+fn place(download: &Path, into: &Path, exe: &str) -> Result<(), String> {
+    let fresh = into.with_extension("new");
+    let _ = fs::remove_dir_all(&fresh);
+    fs::create_dir_all(&fresh).map_err(|e| e.to_string())?;
+    fs::copy(download, fresh.join(format!("{exe}.exe"))).map_err(|e| e.to_string())?;
+    replace(into, &fresh)
+}
+
+fn replace(into: &Path, fresh: &Path) -> Result<(), String> {
     match fs::remove_dir_all(into) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("The copy there now is in use, so it can't be replaced yet ({e})")),
         _ => {}
     }
-    fs::rename(&fresh, into).map_err(|e| e.to_string())
+    fs::rename(fresh, into).map_err(|e| e.to_string())
 }
 
 /// Removes a copy Glint downloaded. One installed with winget may be the person's own, used outside
@@ -475,6 +502,11 @@ mod tests {
         assert!(!dir.join("difftastic").join("old.txt").exists(), "the old copy's folder was replaced");
         assert!(!dir.join("evil.exe").exists() && !std::env::temp_dir().join("evil.exe").exists());
         assert!(unpack(&zip_path, "missing.exe", &dir.join("x"), "x").is_err());
+        // A release that's the program itself (jaq's) goes in the same way.
+        fs::write(dir.join("jaq-x86_64-pc-windows-msvc.exe"), b"jaq").unwrap();
+        place(&dir.join("jaq-x86_64-pc-windows-msvc.exe"), &dir.join("difftastic"), "jaq").unwrap();
+        assert_eq!(fs::read(dir.join("difftastic").join("jaq.exe")).unwrap(), b"jaq");
+        assert!(!dir.join("difftastic").join("difft.exe").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

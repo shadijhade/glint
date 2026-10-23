@@ -70,7 +70,7 @@ const KINDS: [string, Kind][] = [
     ["xls xlsx xlsm ods numbers", { icon: FileSpreadsheet, tone: "text-green-600 dark:text-green-500", label: "Spreadsheet", group: G.documents }],
     ["csv tsv", { icon: FileSpreadsheet, tone: "text-green-600 dark:text-green-500", label: "% file", preview: "text", group: G.documents }],
     ["ppt pptx odp key", { icon: Presentation, tone: "text-orange-500", label: "Presentation", group: G.documents }],
-    ["json jsonc json5", { icon: FileJson, tone: "text-yellow-600 dark:text-yellow-500", label: "JSON file", preview: "text", group: G.code }],
+    ["json jsonc json5 geojson webmanifest har", { icon: FileJson, tone: "text-yellow-600 dark:text-yellow-500", label: "JSON file", preview: "text", group: G.code }],
     [
         "js mjs cjs ts mts cts tsx jsx rs go py rb java kt kts c h cpp hpp cc cs php swift scala sh bash zsh ps1 psm1 psd1 bat cmd lua sql vue svelte html htm css scss sass less xml xaml csproj sln props targets yml yaml toml ini cfg conf gradle dart r pl ex exs erl hs fs fsx clj zig nim dockerfile makefile cmake",
         { icon: FileCode, tone: "text-emerald-500", label: "% source file", preview: "text", group: G.code },
@@ -113,6 +113,19 @@ const MARKDOWN = new Set(["md", "markdown", "mdown", "mkd", "mkdn"]);
 
 /** Markdown, which the preview shows as it reads (or as written). */
 export const isMarkdown = (entry: FileEntry) => !entry.dir && MARKDOWN.has(entry.ext);
+
+const DATA = new Map<string, "json" | "yaml" | "toml">([
+    ["json", "json"],
+    ["geojson", "json"],
+    ["webmanifest", "json"],
+    ["har", "json"],
+    ["yaml", "yaml"],
+    ["yml", "yaml"],
+    ["toml", "toml"],
+]);
+
+/** JSON, YAML and TOML files, which the preview shows as a tree to run jq filters over. */
+export const dataFormat = (entry: FileEntry) => (entry.dir ? undefined : DATA.get(entry.ext));
 
 /** False for extensions we know nothing about (the preview tries those as text). */
 export const isKnownType = (entry: FileEntry) => kindOf(entry) !== GENERIC;
