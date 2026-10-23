@@ -1,19 +1,53 @@
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, BrushCleaning, Flame, Layers, Loader2, Sparkles, Square, Zap } from "lucide-react";
+import { AlertTriangle, BrushCleaning, Flame, Layers, Loader2, Sparkles, Square, TrendingUp, Zap } from "lucide-react";
 import { entriesOf, mapUsage, markUsageShown, refreshUsage, setUsage, stopUsage, type UsageRun, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { enableIndex, goUp, modalOpen, navigate, openEntry, selectOnly, tabName, updateTab, useExplorer } from "@/lib/explorer";
 import { TYPE_GROUPS, type TypeGroup, typeGroup, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
 import { parentPath, samePath } from "@/lib/paths";
-import { BLOCK, FRAME, hitTest, isFolder, layoutUsage, type UsageLayout, type UsageMap } from "@/lib/usage";
+import { useStore } from "@/lib/store";
+import { BLOCK, FRAME, grewBy, growthLeaders, hitTest, isFolder, layoutUsage, type UsageLayout, type UsageMap, WAS_NOT_THERE, WRITTEN_SINCE } from "@/lib/usage";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { openCleanup } from "./CleanupDialog";
 
-type ColorMode = "type" | "age";
+type ColorMode = "type" | "age" | "growth";
+const NEXT_MODE: Record<ColorMode, ColorMode> = { type: "age", age: "growth", growth: "type" };
 
 const DAY_MS = 86_400_000;
+
+/** What happened to an item since the index's mark: from new to shrank. */
+const GROWTH_BANDS = {
+    new: { name: "New", hue: 286, sat: 58 },
+    doubled: { name: "Doubled or more", hue: 0, sat: 74 },
+    grew: { name: "Grew", hue: 24, sat: 82 },
+    written: { name: "Written to", hue: 46, sat: 80 },
+    same: { name: "Same", hue: 220, sat: 7 },
+    shrank: { name: "Shrank", hue: 198, sat: 62 },
+} satisfies Record<string, TypeGroup>;
+const GROWTH_ORDER: TypeGroup[] = Object.values(GROWTH_BANDS);
+
+function growthBand(map: UsageMap, i: number): TypeGroup {
+    const [then, now] = [map.growth!.previous[i], map.size[i]];
+    if (then === WAS_NOT_THERE) return GROWTH_BANDS.new;
+    if (then === WRITTEN_SINCE) return GROWTH_BANDS.written;
+    // Doubling counts from a megabyte up: a few bytes more in a tiny folder isn't news.
+    if (now > then) return now >= 2 * then && now - then >= 1 << 20 ? GROWTH_BANDS.doubled : GROWTH_BANDS.grew;
+    return now < then ? GROWTH_BANDS.shrank : GROWTH_BANDS.same;
+}
+
+/** When a mark was taken, as people say it: "today at 9:02", "yesterday at 0:00", "Fri, Oct 16". */
+function markDate(ms: number) {
+    const at = new Date(ms);
+    const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(ms).setHours(0, 0, 0, 0)) / DAY_MS);
+    const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    if (days === 0) return `today at ${time}`;
+    if (days === 1) return `yesterday at ${time}`;
+    return at.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+const signed = (bytes: number) => `${bytes < 0 ? "−" : "+"}${formatSize(Math.abs(bytes))}`;
 
 /** Perceptual thermal spectrum from Hot (modified in the last 24h) to Frozen (untouched for >1 year). */
 const AGE_BANDS: (TypeGroup & { maxAgeMs: number })[] = [
@@ -358,7 +392,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
     const current = !!map && samePath(map.path, run.path);
 
     // Keys only a map has (the pane handles the rest, on the map's rows): Backspace goes back out, as
-    // Alt+Up does; F5 maps again; T switches between file-type and thermal-age coloring.
+    // Alt+Up does; F5 maps again; T goes from file-type to thermal-age to growth coloring.
     useEffect(() => {
         if (!keys) return;
         const onKey = (e: KeyboardEvent) => {
@@ -368,7 +402,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
             const plain = !ctrl && !e.altKey;
             if (e.key === "Backspace" && plain) goUp();
             else if (e.key === "F5" && plain) refreshUsage(tab);
-            else if (plain && e.key.toLowerCase() === "t") setColorMode((m) => (m === "type" ? "age" : "type"));
+            else if (plain && e.key.toLowerCase() === "t") setColorMode((m) => NEXT_MODE[m]);
             else if (MOVES.has(e.key) && !e.altKey) {
                 // nothing to move to
             } else if (ctrl && !e.altKey && (e.key.toLowerCase() === "a" || e.key === " ")) {
@@ -409,20 +443,22 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
 
     const layout = useMemo(() => (map && size.w > 0 && size.h > 0 ? layoutUsage(map, size.w, size.h) : null), [map, size.w, size.h]);
     const now = useMemo(() => Date.now(), [map]);
+    // Growth colors folders drawn whole too; without what grew (dust, an archive, an older service), types do.
+    const growing = colorMode === "growth" && !!map?.growth && entries.length === map.count;
     const groups = useMemo(
-        () => entries.map((e) => (e.dir ? null : colorMode === "age" ? ageBand(e.modified, now) : typeGroup(e))),
-        [entries, colorMode, now]
+        () => entries.map((e, i) => (growing ? growthBand(map!, i) : e.dir ? null : colorMode === "age" ? ageBand(e.modified, now) : typeGroup(e))),
+        [entries, colorMode, now, growing, map]
     );
     const fills = useMemo(
         () =>
             entries.map((e, i) =>
-                e.dir
-                    ? theme.folder
-                    : colorMode === "age"
-                      ? `hsl(${groups[i]!.hue} ${groups[i]!.sat}% ${theme.lightness}%)`
+                growing || (!e.dir && colorMode === "age")
+                    ? `hsl(${groups[i]!.hue} ${groups[i]!.sat}% ${theme.lightness}%)`
+                    : e.dir
+                      ? theme.folder
                       : tileColor(e, groups[i]!, theme)
             ),
-        [entries, groups, theme, colorMode]
+        [entries, groups, theme, colorMode, growing]
     );
     const byPath = useMemo(() => new Map(map ? map.paths.map((p, i) => [p, i]) : []), [map]);
     // What's under the pointer, worked out again when the map changes beneath a pointer that stays put.
@@ -490,17 +526,22 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
 
     const title = tabName(run.path, drives);
 
-    // Bytes per kind (or thermal age band) among the files shown: the legend.
+    // Bytes per kind (or thermal age band) among the files shown, or per growth band among the tiles
+    // shown: the legend.
     const legend = useMemo(() => {
         if (!map) return [];
         const totals = new Map<TypeGroup, number>();
+        if (growing) {
+            for (const i of layout?.order ?? []) if (layout!.kind[i] === BLOCK) totals.set(groups[i]!, (totals.get(groups[i]!) ?? 0) + map.size[i]);
+            return GROWTH_ORDER.filter((b) => totals.has(b)).map((b) => [b, totals.get(b)!] as [TypeGroup, number]);
+        }
         groups.forEach((g, i) => g && totals.set(g, (totals.get(g) ?? 0) + map.size[i]));
         if (colorMode === "age") {
             return AGE_BANDS.filter((b) => totals.has(b)).map((b) => [b, totals.get(b)!] as [TypeGroup, number]);
         }
         return [...totals].sort((a, b) => b[1] - a[1]).slice(0, 6);
-    }, [map, groups, colorMode]);
-    const wholeFolders = useMemo(() => !!map && !!layout && layout.order.some((i) => layout.kind[i] === BLOCK && isFolder(map, i)), [map, layout]);
+    }, [map, groups, colorMode, growing, layout]);
+    const wholeFolders = useMemo(() => !growing && !!map && !!layout && layout.order.some((i) => layout.kind[i] === BLOCK && isFolder(map, i)), [map, layout, growing]);
 
     let body: React.ReactNode = null;
     if (!current && run.running && (run.engine === "dust" || !map)) {
@@ -546,7 +587,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
         body = <Centered>{map.size[0] ? "Nothing in this folder is big enough to show." : "This folder is empty."}</Centered>;
     }
 
-    const tip = hover && map && current ? <Tooltip map={map} entry={entries[hover.node]} node={hover.node} rest={hover.rest} /> : null;
+    const tip = hover && map && current ? <Tooltip map={map} entry={entries[hover.node]} node={hover.node} rest={hover.rest} growth={growing} /> : null;
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -581,6 +622,18 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                     >
                         <Flame className="size-3" /> Age
                     </button>
+                    <button
+                        type="button"
+                        aria-pressed={colorMode === "growth"}
+                        onClick={() => setColorMode("growth")}
+                        title="Color tiles by what grew in the last day, week or month, from the instant search index's daily marks (T)"
+                        className={cn(
+                            "flex h-5 items-center gap-1 rounded-[4px] px-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:text-foreground",
+                            colorMode === "growth" && "bg-background text-primary shadow-xs dark:bg-foreground/[0.12]"
+                        )}
+                    >
+                        <TrendingUp className="size-3" /> Growth
+                    </button>
                 </div>
                 {map && current && (map.engine === "index" || map.engine === "dust") && (
                     <button
@@ -604,7 +657,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                 {/* What doesn't fit wraps onto a second line, out of sight, rather than being cut. */}
                 <div className="ml-auto flex h-full min-w-0 flex-wrap items-center justify-end gap-x-3 overflow-hidden text-muted-foreground">
                     {legend.map(([group, bytes]) => (
-                        <span key={group.name} className="flex h-full shrink-0 items-center gap-1.5" title={`${group.name}: ${formatSize(bytes)} among the files shown`}>
+                        <span key={group.name} className="flex h-full shrink-0 items-center gap-1.5" title={`${group.name}: ${formatSize(bytes)} among the ${growing ? "tiles" : "files"} shown`}>
                             <span className="size-2.5 rounded-xs" style={{ background: `hsl(${group.hue} ${group.sat}% ${theme.lightness}%)` }} />
                             {group.name}
                         </span>
@@ -617,6 +670,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                     )}
                 </div>
             </div>
+            {colorMode === "growth" && map && current && <GrowthStrip tab={tab} path={run.path} map={map} title={title} />}
             <div
                 ref={boxRef}
                 data-drop={run.path}
@@ -653,7 +707,90 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
     );
 }
 
-function Tooltip({ map, entry, node, rest }: { map: UsageMap; entry: FileEntry; node: number; rest: boolean }) {
+/** Above the map in Growth colors: the time span, and where the growth went. */
+function GrowthStrip({ tab, path, map, title }: { tab: string; path: string; map: UsageMap; title: string }) {
+    const days = useStore((s) => s.settings.growthDays);
+    const setSettings = useStore((s) => s.setSettings);
+    const indexOn = useExplorer((s) => s.index?.state === "on");
+    const leaders = useMemo(() => growthLeaders(map), [map]);
+    const growth = map.growth;
+    if (!growth) {
+        const [why, action] =
+            map.engine === "index"
+                ? ["The instant search service running is too old to keep daily marks of what grew.", "Update instant search"]
+                : map.engine === "dust"
+                  ? indexOn
+                      ? ["What grew comes from instant search, which doesn't cover this drive.", null]
+                      : ["What grew comes from instant search's daily marks.", "Turn on instant search"]
+                  : ["Nothing grows inside an archive.", null];
+        return (
+            <div className="flex h-7 shrink-0 items-center gap-2 overflow-hidden border-b px-3 text-xs text-muted-foreground">
+                <span className="truncate">{why}</span>
+                {action && (
+                    <button onClick={enableIndex} className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 font-medium text-primary hover:bg-primary/15" title="Windows asks for administrator approval">
+                        <Sparkles className="size-3" /> {action}
+                    </button>
+                )}
+            </div>
+        );
+    }
+    const grew = grewBy(map, 0);
+    const drive = map.path.slice(0, 2);
+    const atRoot = map.path.replace(/\\+$/, "").length <= 2;
+    // The marks don't reach back as far as asked: the oldest is shown.
+    const shorter = growth.since === growth.oldest && growth.oldest > Date.now() - (days - 0.5) * DAY_MS;
+    const relative = (i: number) => map.paths[i].slice(map.path.replace(/\\+$/, "").length + 1).split("\\").slice(-2).join("\\");
+    return (
+        <div className="flex h-7 shrink-0 items-center gap-2 overflow-hidden border-b px-3 text-xs text-muted-foreground">
+            <div role="group" aria-label="What grew in the last" className="flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
+                {[1, 7, 30].map((d) => (
+                    <button
+                        key={d}
+                        type="button"
+                        aria-pressed={days === d}
+                        onClick={() => {
+                            setSettings({ growthDays: d });
+                            mapUsage(tab, path);
+                        }}
+                        className={cn("h-5 rounded-[4px] px-1.5 text-[0.6875rem] font-medium hover:text-foreground", days === d && "bg-background text-primary shadow-xs dark:bg-foreground/[0.12]")}
+                    >
+                        {d === 1 ? "1 day" : `${d} days`}
+                    </button>
+                ))}
+            </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 overflow-hidden" style={{ height: "1.75rem" }}>
+                <span className="flex h-full shrink-0 items-center text-foreground">
+                    {title} {grew > 0 ? `grew ${formatSize(grew)}` : grew < 0 ? `shrank ${formatSize(-grew)}` : "hasn't changed size"} since {markDate(growth.since)}
+                    {shorter && <span className="ml-1 text-muted-foreground">(as far back as the marks go)</span>}
+                </span>
+                {leaders.map((i) => (
+                    <span key={i} className="flex h-full shrink-0 items-center" title={`${map.paths[i]}: ${signed(grewBy(map, i))}`}>
+                        · {relative(i)} {signed(grewBy(map, i))}
+                    </span>
+                ))}
+                {!atRoot && (
+                    <span className="flex h-full shrink-0 items-center" title={`The whole drive: ${formatSize(growth.driveThen)} then, ${formatSize(growth.driveNow)} now`}>
+                        · {drive} {signed(growth.driveNow - growth.driveThen)}
+                    </span>
+                )}
+            </div>
+        </div>
+    );
+}
+
+/** What an item was at the mark, against what it is. */
+function growthLine(map: UsageMap, i: number) {
+    const then = map.growth!.previous[i];
+    const when = markDate(map.growth!.since);
+    const on = /^(today|yesterday)/.test(when) ? when : `on ${when}`;
+    if (then === WAS_NOT_THERE) return `New since ${when}`;
+    if (then === WRITTEN_SINCE) return `Written to since ${when}`;
+    if (!isFolder(map, i)) return `Not written to since ${when}`;
+    const grew = map.size[i] - then;
+    return grew === 0 ? `As big as ${on}` : `Was ${formatSize(then)} ${on} · ${signed(grew)}`;
+}
+
+function Tooltip({ map, entry, node, rest, growth }: { map: UsageMap; entry: FileEntry; node: number; rest: boolean; growth: boolean }) {
     const total = map.size[0];
     if (rest) {
         const listed = Array.from({ length: map.end[node] - map.first[node] }, (_, k) => map.size[map.first[node] + k]).reduce((a, b) => a + b, 0);
@@ -679,6 +816,7 @@ function Tooltip({ map, entry, node, rest }: { map: UsageMap; entry: FileEntry; 
                 {formatSize(map.size[node])} · {share(map.size[node], total)} · {folder ? "Folder" : typeLabel(entry)}
                 {map.size[node] >= 1024 && <span className="text-muted-foreground"> · {formatCount(map.size[node])} bytes</span>}
             </p>
+            {growth && <p className="tabular-nums">{growthLine(map, node)}</p>}
             {entry.modified > 0 && <p className="text-muted-foreground">Modified {formatDate(entry.modified)}</p>}
             {node !== 0 && <p className="text-muted-foreground">{folder ? "Click to map this folder" : deeper ? "Click to go to its folder" : "Double-click to open"}</p>}
         </>

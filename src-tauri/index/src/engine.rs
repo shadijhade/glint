@@ -2,7 +2,10 @@
 //! the journal, then follow it), and the answers to the app's requests.
 
 use crate::growth::Growth;
-use crate::proto::{self, unix_ms, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_HITS, FRAME_USAGE, NO_PARENT};
+use crate::proto::{
+    self, unix_ms, GrowthSummary, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus, FRAME_GROWTH, FRAME_HITS, FRAME_USAGE,
+    NEW, NO_PARENT, WRITTEN,
+};
 use crate::query::{self, Excludes, NameMatcher};
 use crate::snapshot::{self, Meta};
 use crate::tree::{self, Search, Tree, NONE, ROOT};
@@ -114,6 +117,9 @@ impl Log {
         }
     }
 }
+
+/// A map's frame, what its items held at a mark (when asked), and its summary.
+type MapAnswer = (Vec<u8>, Option<Vec<u8>>, UsageSummary);
 
 /// One drive's index and how it's doing.
 struct Slot {
@@ -544,18 +550,22 @@ impl Engine {
         }
     }
 
-    /// Answers a disk-usage map: one frame with the map, then a summary.
+    /// Answers a disk-usage map: one frame with the map, one with what its items held at the mark
+    /// closest to `since` when that's asked for, then a summary.
     pub fn usage(&self, request: &UsageRequest, out: &mut dyn Write) -> io::Result<()> {
         match self.map(request) {
-            Ok((payload, summary)) => {
+            Ok((payload, earlier, summary)) => {
                 proto::write_frame(out, FRAME_USAGE, &payload)?;
+                if let Some(earlier) = earlier {
+                    proto::write_frame(out, FRAME_GROWTH, &earlier)?;
+                }
                 proto::write_message(out, &Message::Usage(summary))
             }
             Err(message) => proto::write_message(out, &Message::Error { message }),
         }
     }
 
-    fn map(&self, request: &UsageRequest) -> Result<(Vec<u8>, UsageSummary), String> {
+    fn map(&self, request: &UsageRequest) -> Result<MapAnswer, String> {
         let started = Instant::now();
         let (letter, rest) = split_drive(&request.path).ok_or("Not a folder on a local drive")?;
         let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
@@ -564,7 +574,9 @@ impl Engine {
         let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
         let depth = request.depth.clamp(1, MAX_USAGE_DEPTH);
         let (items, limited) = tree.usage(dir, depth, (request.max_items as usize).min(MAX_USAGE_ITEMS));
+        let mark = request.since.and_then(|since| tree.growth.closest(since));
         let mut payload = Vec::with_capacity(items.len() * 48);
+        let mut previous = Vec::with_capacity(if mark.is_some() { items.len() } else { 0 });
         for item in &items {
             let (rec, name, parent) = if item.link == NONE {
                 let name = tree.rec(dir).map_or(NONE, |r| r.first_link);
@@ -575,10 +587,26 @@ impl Engine {
             let Some(r) = tree.rec(rec) else { continue };
             let node = UsageNode { parent, name: name.to_string(), dir: item.dir, size: item.size, modified: unix_ms(r.modified), attrs: r.attrs };
             proto::encode_usage_node(&mut payload, &node);
+            if let Some(mark) = mark {
+                // Files: whether they were written since (what they held isn't kept).
+                previous.push(if item.dir {
+                    tree.growth.then(rec, r.seq, mark.epoch, item.size).unwrap_or(NEW)
+                } else if node.modified >= mark.at {
+                    WRITTEN
+                } else {
+                    item.size
+                });
+            }
         }
         let total = items.first().ok_or("Not a folder")?.size;
-        let summary = UsageSummary { path: request.path.clone(), total, items: items.len() as u64, limited, elapsed: ms(started) };
-        Ok((payload, summary))
+        let growth = mark.map(|m| GrowthSummary {
+            since: m.at,
+            oldest: tree.growth.oldest().map_or(m.at, |o| o.at),
+            drive_then: m.total,
+            drive_now: tree.rec(ROOT).map_or(0, |r| r.size),
+        });
+        let summary = UsageSummary { path: request.path.clone(), total, items: items.len() as u64, limited, elapsed: ms(started), growth };
+        Ok((payload, mark.map(|_| proto::encode_growth(&previous)), summary))
     }
 }
 
@@ -630,6 +658,46 @@ mod tests {
         assert_eq!(split_drive("C:docs"), None);
         assert_eq!(split_drive(r"\\server\share"), None);
         assert_eq!(split_drive("1:"), None);
+    }
+
+    #[test]
+    fn maps_what_grew_since_a_mark() {
+        use crate::tree::{make_ref, RecordState};
+        let dir = |parent: u32, name: &str| RecordState { seq: 1, dir: true, names: vec![(make_ref(parent, if parent == ROOT { 5 } else { 1 }), name.into())], ..Default::default() };
+        let file = |size: u64, modified_ms: i64, parent: u32, name: &str| RecordState {
+            seq: 1,
+            size,
+            modified: modified_ms * 10_000 + 116_444_736_000_000_000,
+            names: vec![(make_ref(parent, 1), name.into())],
+            ..Default::default()
+        };
+        let mut tree = Tree::default();
+        tree.set_record(ROOT, &RecordState { seq: 5, dir: true, ..Default::default() });
+        tree.set_record(20, &dir(ROOT, "Users"));
+        tree.set_record(21, &file(1000, 10, 20, "old.bin"));
+        tree.set_record(22, &file(500, 10, 20, "grows.log"));
+        tree.growth.mark(1_000, 1500);
+        // Since the mark: grows.log is written to, a new folder gets a file, and old.bin stays.
+        tree.set_record(22, &file(800, 2_000, 20, "grows.log"));
+        tree.set_record(30, &dir(20, "New"));
+        tree.set_record(31, &file(4000, 2_000, 30, "big.iso"));
+        tree.growth.mark(5_000, 5800);
+        let engine = Engine::with_tree('T', tree);
+
+        let ask = |since| engine.map(&UsageRequest { path: r"T:\Users".into(), depth: 3, max_items: 100, since }).unwrap();
+        let (payload, earlier, summary) = ask(Some(0));
+        let nodes = proto::decode_usage(&payload).unwrap();
+        let earlier = proto::decode_growth(&earlier.unwrap()).unwrap();
+        let grew: Vec<_> = nodes.iter().zip(&earlier).map(|(n, &e)| (n.name.as_str(), n.size, e)).collect();
+        assert_eq!(grew, [("Users", 5800, 1500), ("New", 4000, NEW), ("old.bin", 1000, 1000), ("grows.log", 800, WRITTEN), ("big.iso", 4000, WRITTEN)]);
+        assert_eq!(summary.growth, Some(GrowthSummary { since: 1_000, oldest: 1_000, drive_then: 1500, drive_now: 5800 }));
+        // The mark closest to what's asked: the second, where everything was as it is.
+        let (_, earlier, summary) = ask(Some(4_000));
+        assert_eq!(proto::decode_growth(&earlier.unwrap()).unwrap()[..2], [5800, 4000]);
+        assert_eq!(summary.growth.map(|g| g.since), Some(5_000));
+        // Not asked: nothing about growth.
+        let (_, earlier, summary) = ask(None);
+        assert!(earlier.is_none() && summary.growth.is_none());
     }
 
     #[test]

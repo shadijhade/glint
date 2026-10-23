@@ -7,7 +7,23 @@ import { cdCommand, isTyping } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { frecency, fuzzyScore } from "./rank.ts";
-import { BLOCK, decodeUsage, FRAME, hitTest, layoutUsage, NO_PARENT, pruneUsage, squarify, subUsage, usageEntries, type UsageMap } from "./usage.ts";
+import {
+    BLOCK,
+    decodeUsage,
+    FRAME,
+    grewBy,
+    growthLeaders,
+    hitTest,
+    layoutUsage,
+    NO_PARENT,
+    pruneUsage,
+    squarify,
+    subUsage,
+    usageEntries,
+    type UsageMap,
+    WAS_NOT_THERE,
+    WRITTEN_SINCE,
+} from "./usage.ts";
 
 // Paths
 assert.equal(joinPath("C:\\", "Users"), "C:\\Users");
@@ -218,27 +234,38 @@ assert.deepEqual(decodeItems(encodeItems([], false)).entries, []);
 
 // Disk-usage maps: built here with the layout usage.rs's encode_map writes (its test checks the offsets)
 type Node = { name: string; parent: number; dir: boolean; size: number; modified?: number; attrs?: number };
-function encodeMap(path: string, nodes: Node[], elapsed: number, engine: number, flags: number) {
+/** `growth`: the mark's since, oldest, drive then and now, and each item's size then. */
+function encodeMap(path: string, nodes: Node[], elapsed: number, engine: number, flags: number, growth?: { block: number[]; previous: number[] }) {
     const encoder = new TextEncoder();
     const pathBytes = encoder.encode(path);
     const names = encoder.encode(nodes.map((n) => n.name).join(""));
     const n = nodes.length;
-    const buffer = new ArrayBuffer(24 + 28 * n + pathBytes.length + names.length);
+    const buffer = new ArrayBuffer(24 + 28 * n + (growth ? 32 + 8 * n : 0) + pathBytes.length + names.length);
     const view = new DataView(buffer);
     view.setUint32(0, n, true);
     view.setUint32(4, pathBytes.length, true);
     view.setFloat64(8, elapsed, true);
     view.setUint32(16, engine, true);
-    view.setUint32(20, flags, true);
+    view.setUint32(20, flags | (growth ? 4 : 0), true);
+    growth?.block.forEach((v, k) => view.setFloat64(24 + 8 * k, v, true));
+    let at = growth ? 56 : 24;
     nodes.forEach((node, i) => {
-        view.setFloat64(24 + 8 * i, node.size, true);
-        view.setFloat64(24 + 8 * n + 8 * i, node.modified ?? 0, true);
-        view.setUint32(24 + 16 * n + 4 * i, (node.attrs ?? 0) | (node.dir ? 0x10 : 0), true);
-        view.setUint32(24 + 20 * n + 4 * i, node.parent, true);
-        view.setUint32(24 + 24 * n + 4 * i, node.name.length, true);
+        view.setFloat64(at + 8 * i, node.size, true);
+        view.setFloat64(at + 8 * n + 8 * i, node.modified ?? 0, true);
     });
-    new Uint8Array(buffer).set(pathBytes, 24 + 28 * n);
-    new Uint8Array(buffer).set(names, 24 + 28 * n + pathBytes.length);
+    at += 16 * n;
+    if (growth) {
+        growth.previous.forEach((v, i) => view.setFloat64(at + 8 * i, v, true));
+        at += 8 * n;
+    }
+    nodes.forEach((node, i) => {
+        view.setUint32(at + 4 * i, (node.attrs ?? 0) | (node.dir ? 0x10 : 0), true);
+        view.setUint32(at + 4 * n + 4 * i, node.parent, true);
+        view.setUint32(at + 8 * n + 4 * i, node.name.length, true);
+    });
+    at += 12 * n;
+    new Uint8Array(buffer).set(pathBytes, at);
+    new Uint8Array(buffer).set(names, at + pathBytes.length);
     return buffer;
 }
 // C:\ 1000: Windows 600 (System32 400 (big.dll 300), notes.txt 50), Users 300 (é😀.mkv 250), pagefile.sys 60;
@@ -265,6 +292,17 @@ assert.deepEqual([fallback.engine, fallback.limited, fallback.serviceTooOld], ["
 assert.deepEqual([2, 3].map((engine) => decodeUsage(encodeMap("C:\\a.zip", sample.slice(0, 1), 0, engine, 0)).engine), ["zip", "7z"]);
 const mapped = usageEntries(usage);
 assert.deepEqual([mapped[3].name, mapped[3].ext, mapped[3].attrs, mapped[4].dir, mapped[5].modified, mapped[6].ext], ["pagefile.sys", "sys", 0x26, true, 1.7e12, "mkv"]);
+assert.equal(usage.growth, null);
+// What grew since a mark comes with the dates: each item's size then (or that it wasn't there, or a
+// file written since). Windows grew 400 from 200, all of it System32 (new); Users shrank by 50.
+const grown = decodeUsage(encodeMap("C:\\", sample, 1, 0, 0, { block: [1e12, 9e11, 5000, 5300], previous: [700, 200, 350, 60, WAS_NOT_THERE, WRITTEN_SINCE, 250, 300] }));
+assert.deepEqual([grown.growth?.since, grown.growth?.oldest, grown.growth?.driveThen, grown.growth?.driveNow], [1e12, 9e11, 5000, 5300]);
+assert.deepEqual([grown.paths, [...grown.size]], [usage.paths, [...usage.size]]);
+assert.deepEqual([0, 1, 2, 4, 5].map((i) => grewBy(grown, i)), [300, 400, -50, 400, 0]);
+assert.deepEqual(growthLeaders(grown), [4], "System32 tells where Windows' growth went");
+assert.deepEqual([...subUsage(grown, 1).growth!.previous], [200, WAS_NOT_THERE, WRITTEN_SINCE, 300]);
+assert.deepEqual([...pruneUsage(grown, new Set(["C:\\Users"])).growth!.previous], [700, 200, 60, WAS_NOT_THERE, WRITTEN_SINCE, 300]);
+assert.equal(decodeUsage(encodeMap("C:\\", sample, 1, 0, 8)).growthTooOld, true);
 
 // Squarified layout: every value gets its share of the box, nothing overlaps, nothing is left over
 const boxes: number[][] = [];

@@ -2,7 +2,7 @@
 //! things, and turning it on or off, which runs the service executable elevated behind the UAC prompt.
 
 use crate::pipe::PipeIo;
-use crate::proto::{self, Hit, Message, Request, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, FRAME_HITS, FRAME_JSON, FRAME_USAGE, MAX_FRAME};
+use crate::proto::{self, Hit, Message, Request, SearchRequest, Sizes, Status, UsageMap, UsageRequest, FRAME_GROWTH, FRAME_HITS, FRAME_JSON, FRAME_USAGE, MAX_FRAME};
 use crate::win::{self, os_error, wide, Handle};
 use std::fmt;
 use std::io;
@@ -141,24 +141,32 @@ pub(crate) fn sizes_on(pipe: Handle, path: &str) -> Result<Sizes, Error> {
 }
 
 /// A disk-usage map of a folder (see `UsageRequest`). An older service that doesn't know the request
-/// closes the pipe without an answer: an error like any other.
-pub fn usage(request: &UsageRequest) -> Result<(Vec<UsageNode>, UsageSummary), Error> {
+/// closes the pipe without an answer: an error like any other. One from before growth leaves out
+/// what items held at a mark.
+pub fn usage(request: &UsageRequest) -> Result<UsageMap, Error> {
     usage_on(connect()?, request)
 }
 
-pub(crate) fn usage_on(pipe: Handle, request: &UsageRequest) -> Result<(Vec<UsageNode>, UsageSummary), Error> {
+pub(crate) fn usage_on(pipe: Handle, request: &UsageRequest) -> Result<UsageMap, Error> {
     let pipe = ask(pipe, &Request::Usage(request.clone()))?;
     let mut io = PipeIo(&pipe);
-    let mut nodes = None;
+    let (mut nodes, mut previous) = (None, None);
+    let invalid = |e: String| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e));
     while let Some((kind, payload)) = proto::read_frame(&mut io, MAX_FRAME).map_err(Error::Io)? {
-        if kind == FRAME_USAGE {
-            nodes = Some(proto::decode_usage(&payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?);
-            continue;
+        match kind {
+            FRAME_USAGE => nodes = Some(proto::decode_usage(&payload).map_err(invalid)?),
+            FRAME_GROWTH => previous = Some(proto::decode_growth(&payload).map_err(invalid)?),
+            _ => {
+                return match (message(kind, &payload)?, nodes) {
+                    (Message::Usage(summary), Some(nodes)) => {
+                        // Earlier sizes that don't line up with the map are no use.
+                        let previous = previous.filter(|p: &Vec<u64>| p.len() == nodes.len());
+                        Ok(UsageMap { nodes, previous, summary })
+                    }
+                    _ => Err(unexpected()),
+                };
+            }
         }
-        return match (message(kind, &payload)?, nodes) {
-            (Message::Usage(summary), Some(nodes)) => Ok((nodes, summary)),
-            _ => Err(unexpected()),
-        };
     }
     Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection")))
 }

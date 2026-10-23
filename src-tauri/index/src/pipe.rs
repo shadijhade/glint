@@ -244,6 +244,8 @@ mod tests {
         tree.set_record(21, &RecordState { seq: 1, dir: true, names: vec![(make_ref(20, 1), "me".into())], ..Default::default() });
         tree.set_record(22, &RecordState { seq: 1, size: 1000, modified: 133_000_000_000_000_000, attrs: 0x20, names: vec![(make_ref(21, 1), "report.pdf".into())], ..Default::default() });
         tree.set_record(23, &RecordState { seq: 1, size: 24, names: vec![(make_ref(21, 1), "notes.txt".into())], ..Default::default() });
+        // A mark of what grew, with nothing changed since.
+        tree.growth.mark(1_000, 1024);
         tree
     }
 
@@ -288,15 +290,22 @@ mod tests {
         assert_eq!((sizes.total, sizes.sizes), (1024, vec![("me".to_string(), 1024)]));
         assert!(matches!(client::sizes_on(client::connect_to(&name, &trust).unwrap(), r"T:\Nowhere"), Err(Error::Service(_))));
 
-        let map = |path: &str, depth| client::usage_on(client::connect_to(&name, &trust).unwrap(), &UsageRequest { path: path.into(), depth, max_items: 100 });
-        let (nodes, summary) = map(r"t:\users", 2).unwrap();
+        let map = |path: &str, depth, since| client::usage_on(client::connect_to(&name, &trust).unwrap(), &UsageRequest { path: path.into(), depth, max_items: 100, since });
+        let found = map(r"t:\users", 2, None).unwrap();
+        let (nodes, summary) = (&found.nodes, &found.summary);
         let shape: Vec<_> = nodes.iter().map(|n| (n.parent, n.name.as_str(), n.dir, n.size)).collect();
         assert_eq!(shape, [(NO_PARENT, "Users", true, 1024), (0, "me", true, 1024), (1, "report.pdf", false, 1000), (1, "notes.txt", false, 24)]);
         assert_eq!((nodes[2].modified, nodes[2].attrs), (1_655_526_400_000, 0x20));
         assert_eq!((summary.path.as_str(), summary.total, summary.items, summary.limited), (r"t:\users", 1024, 4, false));
-        assert_eq!(map(r"T:\", 1).unwrap().0.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["", "Users"]);
-        assert!(matches!(map(r"T:\Users\me\report.pdf", 2), Err(Error::Service(_))));
-        assert!(matches!(map(r"Z:\", 2), Err(Error::Service(_))));
+        assert_eq!((found.previous.as_ref(), summary.growth), (None, None));
+        // What each item held at the mark comes along when asked for: the folders as big, report.pdf
+        // written since.
+        let grew = map(r"t:\users", 2, Some(0)).unwrap();
+        assert_eq!(grew.previous, Some(vec![1024, 1024, proto::WRITTEN, 24]));
+        assert_eq!(grew.summary.growth.map(|g| (g.since, g.oldest, g.drive_then, g.drive_now)), Some((1_000, 1_000, 1024, 1024)));
+        assert_eq!(map(r"T:\", 1, None).unwrap().nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["", "Users"]);
+        assert!(matches!(map(r"T:\Users\me\report.pdf", 2, None), Err(Error::Service(_))));
+        assert!(matches!(map(r"Z:\", 2, None), Err(Error::Service(_))));
 
         let list = |path: &str| {
             let hits = client::list_on(client::connect_to(&name, &trust).unwrap(), path)?;
