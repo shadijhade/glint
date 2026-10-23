@@ -43,6 +43,7 @@ const SECTIONS: [string, string][] = [
     ["Search text (ripgrep)", "Search text"],
     ["Text search skips", "Text search skips"],
     ["Terminal", "Terminal"],
+    ["Check", "Check"],
     ["Tools", "Tools"],
     ["History", "History"],
     ["About", "About"],
@@ -335,6 +336,26 @@ function TerminalSection() {
     );
 }
 
+/** Checking files: the YARA rules they're checked with. */
+function CheckSection() {
+    const rules = useStore((s) => s.settings.yaraRules);
+    const set = useStore((s) => s.setSettings);
+    const browse = async () => {
+        const picked = await open({ directory: true, title: "A folder of YARA rules (.yar, .yara)", defaultPath: rules || undefined });
+        if (typeof picked === "string") set({ yaraRules: picked });
+    };
+    return (
+        <Section title="Check">
+            <Row label="YARA rules" hint="A folder of .yar and .yara files (its subfolders too), for Check with YARA rules: YARA-X compiles them each time">
+                <Input className="w-52" value={rules} onChange={(e) => set({ yaraRules: e.target.value })} placeholder="None chosen" />
+                <Button variant="outline" size="sm" onClick={() => void browse()}>
+                    Browse…
+                </Button>
+            </Row>
+        </Section>
+    );
+}
+
 function FileExplorerRows() {
     const [state, setState] = useState<ExplorerIntegration | null>(null);
     const [working, setWorking] = useState(false);
@@ -614,6 +635,8 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
                 </Section>
 
                 <TerminalSection />
+
+                <CheckSection />
 
                 <ToolsSection />
 
