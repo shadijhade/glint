@@ -4,6 +4,7 @@
 use super::cab::{self, Cabinet, FolderReader};
 use super::codec::{Codec, Crc32Checked, Fused, Zstd};
 use super::msi::{self, MsiSource};
+use super::rar::{self, RarSource};
 use super::stream::{self, Kind, Scan, StreamSource};
 use super::tree::{Item, ENCRYPTED, UNREADABLE};
 use super::Failure;
@@ -32,6 +33,8 @@ pub enum Format {
     Cab,
     /// A Windows Installer package or merge module, as the folders it installs.
     Msi,
+    /// A RAR archive (RAR 4 or 5, a volume of a set too).
+    Rar,
 }
 
 /// What a file's name says about it: Enter opens it like a folder (`Browse`), or opens it in its app
@@ -73,6 +76,8 @@ impl Format {
             Format::Tar(Codec::Zst)
         } else if is("cab") {
             Format::Cab
+        } else if is("rar") {
+            Format::Rar
         } else if let Some(codec) = Codec::ALL.into_iter().find(|c| *c != Codec::Plain && is(c.ext())) {
             if tarred {
                 Format::Tar(codec)
@@ -104,6 +109,8 @@ impl Format {
             Some(Format::SevenZ)
         } else if cab::is_cabinet(head) {
             Some(Format::Cab)
+        } else if head.starts_with(b"Rar!\x1A\x07\x00") || head.starts_with(b"Rar!\x1A\x07\x01\x00") {
+            Some(Format::Rar)
         } else if let Some(codec) = Codec::detect(head) {
             Some(Format::Single(codec))
         } else if super::tar::is_header(head) {
@@ -121,6 +128,7 @@ impl Format {
             Format::Single(codec) => 7 + codec.index(),
             Format::Cab => 13,
             Format::Msi => 14,
+            Format::Rar => 15,
         }
     }
 
@@ -137,6 +145,7 @@ impl Format {
             Format::Single(codec) => codec.ext(),
             Format::Cab => "cab",
             Format::Msi => "msi",
+            Format::Rar => "rar",
         }
     }
 }
@@ -156,6 +165,7 @@ pub enum Source {
     Stream(Box<StreamSource>),
     Cab(Box<CabSource>),
     Msi(Box<MsiSource>),
+    Rar(Box<RarSource>),
 }
 
 pub struct ZipSource {
@@ -195,7 +205,7 @@ impl Source {
             f.take(4096).read_to_end(&mut head).map(|_| head)
         }) {
             Ok(head) => match Format::detect(&head) {
-                Some(found @ (Format::Zip | Format::SevenZ | Format::Cab | Format::Msi)) => found,
+                Some(found @ (Format::Zip | Format::SevenZ | Format::Cab | Format::Msi | Format::Rar)) => found,
                 Some(Format::Single(_) | Format::Tar(_)) => Format::Tar(Codec::Plain),
                 None => format,
             },
@@ -206,6 +216,7 @@ impl Source {
             Format::SevenZ => open_7z(path).map(|(s, items)| (s, items, format)),
             Format::Cab => open_cab(path).map(|(s, items)| (s, items, format)),
             Format::Msi => msi::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Msi(Box::new(s)), items, format)),
+            Format::Rar => rar::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Rar(Box::new(s)), items, format)),
             Format::Tar(_) | Format::Single(_) => {
                 let kind = stream::kind_of(path).ok_or_else(|| Failure::Damaged("it isn't a tar archive or a compressed file Glint reads".into()))?;
                 let (source, items) = StreamSource::open(path, kind, scan, MAX_ENTRIES)?;
@@ -227,6 +238,7 @@ impl Source {
             Source::Stream(s) => s.cost(item, size),
             Source::Cab(c) => c.cabinet.files.get(item).map_or(size, |f| f.offset.saturating_add(size)),
             Source::Msi(m) => m.cost(item, size),
+            Source::Rar(r) => r.cost(item, size),
         }
     }
 
@@ -239,6 +251,7 @@ impl Source {
             Source::Stream(s) => s.block_of(item),
             Source::Cab(c) => c.cabinet.files.get(item).map(|f| f.folder),
             Source::Msi(m) => m.block_of(item),
+            Source::Rar(r) => r.block_of(item),
         }
     }
 
@@ -254,6 +267,7 @@ impl Source {
             Source::Stream(s) => s.ratio(),
             Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| c.cabinet.folders.get(f.folder)).map_or(1, |f| f.unpacked / f.packed.max(1)),
             Source::Msi(m) => m.ratio(item),
+            Source::Rar(r) => r.ratio(),
         }
     }
 
@@ -266,6 +280,7 @@ impl Source {
             Source::Stream(s) => s.problem(item),
             Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| f.problem.clone()),
             Source::Msi(m) => m.problem(item),
+            Source::Rar(r) => r.problem(item),
         }
     }
 
@@ -281,6 +296,7 @@ impl Source {
             Source::Stream(s) => s.read_each(file, items, each, skipped),
             Source::Cab(c) => c.read_each(file, items, each, skipped),
             Source::Msi(m) => m.read_each(file, items, each, skipped),
+            Source::Rar(r) => r.read_each(items, each, skipped),
         }
     }
 }
