@@ -36,6 +36,9 @@ const FOLD_MS: i64 = 10 * 60_000;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_TEMPORARY: u32 = 0x100;
 const MAX_DEPTH: usize = 4096;
+/// NTFS's `$Extend` folder, which the index leaves out: what's deleted while something still has it
+/// open is moved into its `$Deleted` folder first, and goes when the last handle closes.
+const EXTEND: u64 = 11;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +123,10 @@ impl<'a> Paths<'a> {
             if number == ROOT as u64 {
                 break;
             }
+            if number == EXTEND {
+                names.push("$Extend");
+                break;
+            }
             if names.len() >= MAX_DEPTH {
                 return None;
             }
@@ -172,6 +179,12 @@ fn name_of(path: &str) -> &str {
 
 fn in_bin(path: &str) -> bool {
     path.split('\\').nth(1).is_some_and(|top| top.eq_ignore_ascii_case("$Recycle.Bin"))
+}
+
+/// Where NTFS moves what's deleted while it's still open, until the last handle closes.
+fn set_aside(path: &str) -> bool {
+    let mut parts = path.split('\\').skip(1);
+    parts.next().is_some_and(|p| p.eq_ignore_ascii_case("$Extend")) && parts.next().is_some_and(|p| p.eq_ignore_ascii_case("$Deleted"))
 }
 
 /// The Recycle Bin's own files right in a user's bin: the `$I…` record beside each item, and its
@@ -266,14 +279,21 @@ impl History {
         } else if new {
             if let Some((from, _)) = self.renaming.remove(&r.file) {
                 if let Some(to) = path() {
-                    self.saved_over(&to, time);
-                    self.moved(r, from, to, time, dir);
+                    if set_aside(&to) {
+                        // Deleted while something had it open: NTFS moves it aside first, and its
+                        // delete there later is NTFS's own.
+                        let name = name_of(&from).to_string();
+                        self.deleted(r.file, &name, r.attrs, from, time, dir);
+                    } else {
+                        self.saved_over(&to, time);
+                        self.moved(r, from, to, time, dir);
+                    }
                 }
             }
         }
         if r.reason & REASON_FILE_DELETE != 0 && r.reason & REASON_CLOSE != 0 {
             if let Some(path) = path() {
-                self.deleted(r, path, time, dir);
+                self.deleted(r.file, &r.name, r.attrs, path, time, dir);
             }
         }
     }
@@ -344,15 +364,16 @@ impl History {
         self.push(Event { time, kind, dir, path: from, to: Some(to), was, file: r.file, items: 0, burst: false });
     }
 
-    fn deleted(&mut self, r: &UsnRecord, path: String, time: i64, dir: bool) {
+    /// Record `file`, named `name` with `attrs`, was deleted from `path`.
+    fn deleted(&mut self, file: u64, name: &str, attrs: u32, path: String, time: i64, dir: bool) {
         let bin = in_bin(&path);
-        if self.made_lately(r.file, time) || (bin && bin_record(&path)) {
+        if self.made_lately(file, time) || (bin && bin_record(&path)) {
             return;
         }
-        if !bin && (noise(&path) || scratch_name(&r.name) || r.attrs & FILE_ATTRIBUTE_TEMPORARY != 0) {
+        if !bin && (noise(&path) || scratch_name(name) || attrs & FILE_ATTRIBUTE_TEMPORARY != 0) {
             return;
         }
-        let was = if bin { self.recycled_from(r.file) } else { None };
+        let was = if bin { self.recycled_from(file) } else { None };
         let kind = if bin { Kind::Emptied } else { Kind::Deleted };
         let items = if dir { self.fold(&path, time) } else { 0 };
         // A burst of deletes in one folder: past its first ones, they're counted.
@@ -373,7 +394,7 @@ impl History {
                 }
             }
         } else {
-            self.push(Event { time, kind, dir, path, to: None, was, file: r.file, items, burst: false });
+            self.push(Event { time, kind, dir, path, to: None, was, file, items, burst: false });
             counted
         };
         self.bursts.insert(folder.to_lowercase(), (time, count, counted));
@@ -678,6 +699,35 @@ mod tests {
         for path in [r"C:\Users\me\Documents\Temp", r"C:\Users\me\Desktop\notes.txt", r"D:\Photos\cache.jpg"] {
             assert!(!noise(path), "{path}");
         }
+    }
+
+    #[test]
+    fn a_folder_deleted_while_open_is_moved_aside_first() {
+        // As a real journal tells PowerShell's Remove-Item -Recurse: what's in a folder is deleted,
+        // then the folder (still open) is moved into $Extend\$Deleted, and deleted there once closed.
+        let mut tree = tree();
+        let dir = |parent: u32, name: &str| RecordState { seq: 1, dir: true, names: vec![(make_ref(parent, 1), name.into())], ..Default::default() };
+        tree.set_record(29, &dir(EXTEND as u32, "$Deleted"));
+        tree.set_record(40, &dir(22, "Proj"));
+        tree.set_record(41, &dir(40, "src"));
+        let mut history = History::default();
+        feed(
+            &mut history,
+            &tree,
+            &[
+                r(1_000, 50, 41, DELETE, FILE, "f1.rs"),
+                r(1_001, 51, 41, DELETE, FILE, "f2.rs"),
+                r(1_002, 41, 40, OLD, DIR, "src"),
+                r(1_003, 41, 29, NEW, DIR, "$DeleteA1B2"),
+                r(1_004, 52, 40, DELETE, FILE, "README.md"),
+                r(1_005, 40, 22, OLD, DIR, "Proj"),
+                r(1_006, 40, 29, NEW, DIR, "$DeleteC3D4"),
+                r(1_007, 40, 29, DELETE | NEW, DIR, "$DeleteC3D4"),
+                r(1_008, 41, 29, DELETE | NEW, DIR, "$DeleteA1B2"),
+            ],
+        );
+        assert_eq!(told(&history), [r"Deleted C:\Users\me\Documents\Proj +4"]);
+        assert!(set_aside(r"C:\$Extend\$Deleted\x") && !set_aside(r"C:\$Extend\x") && !set_aside(r"C:\Users\$Deleted"));
     }
 
     #[test]
