@@ -5,6 +5,7 @@ mod cleanup;
 mod compare;
 mod data_lens;
 mod dedup;
+mod defender;
 mod filediff;
 mod find;
 mod fsx;
@@ -518,6 +519,8 @@ pub fn run() {
             batch_rename::batch_rename,
             xray::inspect_file_xray,
             sign::verify_signature,
+            defender::defender_scan,
+            defender::cancel_defender_scan,
             native_preview::native_preview_show,
             native_preview::native_preview_place,
             native_preview::native_preview_close,

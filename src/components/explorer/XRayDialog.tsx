@@ -17,6 +17,7 @@ import {
     ShieldCheck,
     Trash2,
 } from "lucide-react";
+import { scanWithDefender } from "@/lib/defender";
 import { formatCount, formatSize } from "@/lib/format";
 import { cancelXRay, type FileXRayReport, inspectFileXRay, removeNtfsStream, signable } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
@@ -176,6 +177,9 @@ export function XRayDialog() {
     return (
         <Modal label="File X-Ray" onClose={closeXRay} className="max-h-[88vh] max-w-3xl">
             <ModalHeader icon={Fingerprint} title={`File X-Ray: ${baseName(path) || path}`} subtitle={path} onClose={closeXRay} onRefresh={() => inspectXRay(path)} refreshing={loading}>
+                <Button variant="outline" size="sm" className="h-7" onClick={() => void scanWithDefender([path])} title="A custom scan of this file by Microsoft Defender">
+                    <ShieldCheck /> Scan with Defender
+                </Button>
                 {report && <span className="text-xs text-muted-foreground tabular-nums">{report.elapsedMs.toFixed(1)} ms</span>}
             </ModalHeader>
 

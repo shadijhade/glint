@@ -30,6 +30,7 @@ import {
     PenLine,
     PencilOff,
     Scissors,
+    ShieldCheck,
     SlidersHorizontal,
     SquareTerminal,
     TextSearch,
@@ -40,6 +41,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
+import { scanWithDefender } from "@/lib/defender";
 import { chooseView, toggleUsage, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
 import { calcSizes, copyToClipboard, copyToOtherPane, extractHere, newItem, paste, stopSizes, toggleComparePanes, toggleDual, useExplorer, useTab, type ViewMode } from "@/lib/explorer";
@@ -260,6 +262,13 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             { heading: "Clean up" },
             { label: "Find duplicate files in this folder", icon: Files, disabled: !inFolder, onSelect: () => inspectDuplicates(path) },
             { label: "Clean up this folder…", icon: BrushCleaning, disabled: !inFolder || readOnly, onSelect: () => openCleanup(path) },
+            { heading: "Check" },
+            {
+                label: paths.length ? "Scan the selection with Microsoft Defender" : "Scan this folder with Microsoft Defender",
+                icon: ShieldCheck,
+                disabled: readOnly || (!inFolder && !paths.length),
+                onSelect: () => void scanWithDefender(paths.length ? paths : [path]),
+            },
         ]);
     };
 
