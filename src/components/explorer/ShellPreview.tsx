@@ -29,9 +29,9 @@ function reassign() {
  * A file Glint can't show itself, as Windows' own previewer for its type shows it (Word, Excel and
  * PowerPoint documents, fonts…): drawn by that previewer in a window over this box (native_preview.rs),
  * hidden while a menu, dialog or toast covers it. Without one, or where it's blocked, `children` (the
- * icon) stays, with the reason.
+ * icon) stays, with the reason (unless `quiet`: the children show something of their own).
  */
-export function ShellPreview({ entry, over, children }: { entry: FileEntry; over?: boolean; children: React.ReactNode }) {
+export function ShellPreview({ entry, over, quiet, children }: { entry: FileEntry; over?: boolean; quiet?: boolean; children: React.ReactNode }) {
     const box = useRef<HTMLDivElement>(null);
     const [note, setNote] = useState("");
 
@@ -91,7 +91,7 @@ export function ShellPreview({ entry, over, children }: { entry: FileEntry; over
     return (
         <div ref={box} className="flex h-full flex-col">
             <div className="min-h-0 flex-1">{children}</div>
-            {note && <p className="px-6 pb-6 text-center text-sm text-muted-foreground">{note}</p>}
+            {note && !quiet && <p className="px-6 pb-6 text-center text-sm text-muted-foreground">{note}</p>}
         </div>
     );
 }
