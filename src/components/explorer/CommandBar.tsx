@@ -20,6 +20,7 @@ import {
     GitCompareArrows,
     HardDrive,
     History,
+    KeyRound,
     LayoutDashboard,
     LayoutGrid,
     List,
@@ -29,6 +30,7 @@ import {
     PanelRight,
     PenLine,
     PencilOff,
+    ScanSearch,
     Scissors,
     ShieldCheck,
     SlidersHorizontal,
@@ -53,6 +55,7 @@ import { toggleTerminal } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { useMenu } from "../Menu";
 import { Button } from "../ui/button";
+import { checkForSecrets, checkWithYara } from "./CheckDialog";
 import { openCleanup } from "./CleanupDialog";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { openHistory } from "./HistoryDialog";
@@ -269,6 +272,13 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 disabled: readOnly || (!inFolder && !paths.length),
                 onSelect: () => void scanWithDefender(paths.length ? paths : [path]),
             },
+            {
+                label: "Look for passwords and keys left in files",
+                icon: KeyRound,
+                disabled: readOnly || (!inFolder && paths.length !== 1),
+                onSelect: () => checkForSecrets(paths.length === 1 ? paths[0] : path),
+            },
+            { label: "Check with YARA rules", icon: ScanSearch, disabled: readOnly || (!inFolder && paths.length !== 1), onSelect: () => checkWithYara(paths.length === 1 ? paths[0] : path) },
         ]);
     };
 

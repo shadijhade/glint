@@ -23,6 +23,7 @@ import { Home, HistoryPopover, HISTORY_POPOVER_ID } from "./components/History";
 import { WindowControls } from "./components/WindowControls";
 import { AddressBar } from "./components/explorer/AddressBar";
 import { BatchRenameDialog } from "./components/explorer/BatchRenameDialog";
+import { CheckDialog } from "./components/explorer/CheckDialog";
 import { CleanupDialog } from "./components/explorer/CleanupDialog";
 import { CompareFilesDialog } from "./components/explorer/CompareFilesDialog";
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
@@ -428,6 +429,7 @@ function App() {
       <CompareFilesDialog />
       <TimelineDialog />
       <HistoryDialog />
+      <CheckDialog />
       <BatchRenameDialog />
       <XRayDialog />
       <ShortcutsDialog />

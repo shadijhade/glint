@@ -45,6 +45,7 @@ import {
     History,
     Info,
     Keyboard,
+    KeyRound,
     LayoutDashboard,
     LayoutGrid,
     List,
@@ -61,6 +62,7 @@ import {
     Plus,
     RotateCcw,
     RotateCw,
+    ScanSearch,
     Scissors,
     Search,
     SearchX,
@@ -177,6 +179,7 @@ import { FIND_BOX_ID } from "./AddressBar";
 import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
+import { checkForSecrets, checkWithYara, secretsCheckFirst } from "./CheckDialog";
 import { openCleanup } from "./CleanupDialog";
 import { compareFiles } from "./CompareFilesDialog";
 import { DiskUsage } from "./DiskUsage";
@@ -388,6 +391,8 @@ function folderMenu(
         !inArchive && !shut && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
         !inArchive && !shut && { label: "Moved and deleted here", icon: History, onSelect: () => openHistory(folder) },
         !inArchive && !shut && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender([folder]) },
+        !inArchive && !shut && { label: "Look for passwords and keys", icon: KeyRound, onSelect: () => checkForSecrets(folder) },
+        !inArchive && !shut && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(folder) },
         !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
         !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
         !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
@@ -599,7 +604,16 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
             action("compare-panes", s.dual && s.comparePanes ? "Stop comparing panes" : "Compare panes: highlight differences between both panes", GitCompareArrows, toggleComparePanes, "Ctrl+Shift+M"),
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
-            !archive && !closedItems && chosenEntries.length > 0 && action("compress", "Compress the selection to a zip file", FileArchive, () => compressEntries(chosenEntries)),
+            !archive &&
+                !closedItems &&
+                chosenEntries.length > 0 &&
+                action("compress", "Compress the selection to a zip file", FileArchive, () =>
+                    secretsCheckFirst(
+                        chosenEntries.map((e) => e.path),
+                        "Zip anyway",
+                        () => compressEntries(chosenEntries)
+                    )
+                ),
             !!oneArchive && !closedItems && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
             !!archive &&
                 samePath(t.path, archive.path) &&
@@ -632,6 +646,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 action("defender", chosen ? "Scan the selection with Microsoft Defender" : "Scan this folder with Microsoft Defender", ShieldCheck, () =>
                     scanWithDefender(chosen ? [...t.selection] : [t.path])
                 ),
+            !archive && !closedItems && (inFolder || t.selection.size === 1) && action("secrets", "Look for passwords and keys left in files", KeyRound, () => checkForSecrets(t.selection.size === 1 ? [...t.selection][0] : t.path)),
+            !archive && !closedItems && (inFolder || t.selection.size === 1) && action("yara", "Check with YARA rules", ScanSearch, () => checkWithYara(t.selection.size === 1 ? [...t.selection][0] : t.path)),
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
             writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
             // From the theme showing, which System leaves to Windows.
@@ -1211,7 +1227,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             dual && { label: "Copy to the other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
             dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || fixed, onSelect: () => copyToOtherPane(true, paths) },
             "separator",
-            !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => compressEntries(targets) },
+            !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
             "separator",
             one
                 ? { label: "Rename", icon: PenLine, shortcut: "F2", disabled: fixed, onSelect: () => startRename(one.path) }
@@ -1230,6 +1246,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one && !one.dir && !fixed && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
             !archived && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
             !fixed && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender(paths) },
+            one && !fixed && { label: "Look for passwords and keys", icon: KeyRound, onSelect: () => checkForSecrets(one.path) },
+            one && !fixed && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(one.path) },
             "separator",
             one && !archived && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
             !!archived && READ_ONLY_NOTE,

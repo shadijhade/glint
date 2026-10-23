@@ -557,6 +557,50 @@ export interface Signature {
 
 export const verifySignature = (path: string) => invoke<Signature>("verify_signature", { path });
 
+/** A file's type as Magika tells it from its content (xray.rs). */
+export interface RealType {
+    label: string;
+    /** e.g. "PE Windows executable". */
+    description: string;
+    /** "executable", "code", "image", "document"… */
+    group: string;
+    mime: string;
+    /** The extensions files of this type have. */
+    extensions: string[];
+    text: boolean;
+    /** How sure it is, 0 to 1. */
+    score: number;
+}
+
+/** What Magika says the file is; null when Magika isn't installed. */
+export const fileRealType = (path: string) => invoke<RealType | null>("file_real_type", { path });
+
+/** What a check found (check.rs): a YARA rule a file matched, or a secret in a file. */
+export interface Finding {
+    path: string;
+    /** Where in the file (secrets); 0 for a whole file (YARA rules). */
+    line: number;
+    /** The rule that matched. */
+    rule: string;
+    /** A secret's kind in words, or a YARA rule's namespace. */
+    title: string;
+    /** The secret, masked. */
+    value: string;
+    /** "high", "medium" or "low" (secrets). */
+    confidence: string;
+}
+
+export interface CheckReport {
+    findings: Finding[];
+    elapsedMs: number;
+}
+
+/** Scans `target` with the YARA rules in `rules` (YARA-X); rejects with "cancelled" when stopped. */
+export const yaraScan = (rules: string, target: string) => invoke<CheckReport>("yara_scan", { rules, target });
+/** Looks for passwords, keys and tokens in `target` (Kingfisher, offline); rejects with "cancelled" when stopped. */
+export const secretsScan = (target: string) => invoke<CheckReport>("secrets_scan", { target });
+export const cancelCheck = () => invoke("cancel_check");
+
 /**
  * Kinds of file Authenticode signs: programs and drivers, installers and cabinets, catalogs, scripts
  * and app packages. Others are only signed in a catalog, which isn't worth hashing them for.

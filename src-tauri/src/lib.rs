@@ -1,6 +1,7 @@
 mod access;
 mod archive;
 mod batch_rename;
+mod check;
 mod cleanup;
 mod compare;
 mod data_lens;
@@ -518,9 +519,13 @@ pub fn run() {
             data_lens::inspect_tabular,
             batch_rename::batch_rename,
             xray::inspect_file_xray,
+            xray::file_real_type,
             sign::verify_signature,
             defender::defender_scan,
             defender::cancel_defender_scan,
+            check::yara_scan,
+            check::secrets_scan,
+            check::cancel_check,
             native_preview::native_preview_show,
             native_preview::native_preview_place,
             native_preview::native_preview_close,

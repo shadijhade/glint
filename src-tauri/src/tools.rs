@@ -64,6 +64,35 @@ pub static TOOLS: &[Tool] = &[
     },
     // Any FFmpeg found is used; a new install is the smaller build, which reads every common video.
     Tool { id: "ffmpeg", name: "FFmpeg", exe: "ffmpeg", package: "gyan.ffmpeg", source: Source::Winget { id: "Gyan.FFmpeg.Essentials" }, used_for: "Reading videos for Clean up's look-alike videos" },
+    Tool {
+        id: "magika",
+        name: "Magika",
+        exe: "magika",
+        package: "google.magika",
+        source: Source::Winget { id: "Google.Magika" },
+        used_for: "A file's real type in the File X-Ray, told by its content (a program named photo.jpg, say)",
+    },
+    Tool {
+        id: "yara-x",
+        name: "YARA-X",
+        exe: "yr",
+        package: "virustotal.yara-x",
+        source: Source::Winget { id: "VirusTotal.YARA-X" },
+        used_for: "Scanning files with YARA rules, from a rules folder chosen in Settings",
+    },
+    Tool {
+        id: "kingfisher",
+        name: "Kingfisher",
+        exe: "kingfisher",
+        package: "kingfisher",
+        source: Source::Release {
+            version: "2.14.0",
+            url: "https://github.com/mongodb/kingfisher/releases/download/v2.14.0/kingfisher-windows-x64.zip",
+            sha256: "9f188b6fa16cec210203cb71439d3d661ab371a03305b3ada865f8defe601ffb",
+            member: "kingfisher.exe",
+        },
+        used_for: "Finding passwords, keys and tokens left in files before they're shared (MongoDB's secret scanner; nothing is sent anywhere)",
+    },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {
