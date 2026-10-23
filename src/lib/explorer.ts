@@ -1,7 +1,6 @@
 import { createContext, useContext } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { type FileEntry, type InArchive, isArchived, isArchiveFile, withDetails } from "./entries";
 import {
@@ -26,15 +25,18 @@ import {
     findFiles,
     type FolderDiff,
     folderSizes,
+    grantAccess,
     indexDisable,
     indexEnable,
     type IndexInfo,
     indexStatus,
     type LaunchTarget,
+    type ListFailure,
     type Progress,
     listDir,
     listDrives,
     type Listing,
+    openItem,
     resolvePath,
     type SizeEngine,
     type Staged,
@@ -93,6 +95,16 @@ export interface SizeRun {
     lane: string;
 }
 
+/** A folder Windows doesn't let this account open: its tab says why, and what can be done about it. */
+export interface NoAccess {
+    /** On another computer, which decides who may open it: File Explorer can ask for another user name and password. */
+    remote: boolean;
+    /** Get access was asked for, and even administrators may not change who opens it. */
+    refused?: boolean;
+    /** Get access gave this account permission, yet a rule in the folder's permissions denies it. */
+    stillDenied?: boolean;
+}
+
 /** One tab: a folder (or This PC, or search results) with its own history, selection and search. */
 export interface TabState {
     id: string;
@@ -100,6 +112,8 @@ export interface TabState {
     ready: boolean;
     path: string;
     listing: Listing | null;
+    /** Set (with no listing) when Windows doesn't let this account open the folder. */
+    noAccess: NoAccess | null;
     loading: boolean;
     /** From the click to the new list on screen, ms. */
     shownIn: number;
@@ -158,6 +172,7 @@ const blankTab = (id: string, path: string, view: ViewMode = "list", select?: st
     ready: false,
     path,
     listing: null,
+    noAccess: null,
     loading: false,
     shownIn: 0,
     back: [],
@@ -317,29 +332,31 @@ export async function navigate(target: string, { select, history = true, quiet =
     const started = performance.now();
     if (!quiet) updateTab({ loading: true }, tab);
     let listing: Listing | null = null;
+    // A folder Windows keeps this account out of opens all the same: its tab says why, with Get access.
+    let denied: ListFailure | null = null;
     if (target !== THIS_PC) {
         try {
             listing = await listDir(target);
         } catch (e) {
-            if (seq === r.navSeq) {
-                updateTab({ loading: false }, tab);
-                // File Explorer can ask for access where Glint was refused.
-                const denied = /denied|permission/i.test(String(e));
-                if (!silent)
-                    toast.error(`Can't open “${baseName(target)}”`, {
-                        description: String(e),
-                        action: denied ? { label: "Open in File Explorer", onClick: () => void openPath(target).catch(() => {}) } : undefined,
-                    });
+            const failure = e as Partial<ListFailure> | null;
+            if (failure?.kind === "denied" && failure.path) denied = failure as ListFailure;
+            else {
+                if (seq === r.navSeq) {
+                    updateTab({ loading: false }, tab);
+                    if (!silent) toast.error(`Can't open “${baseName(target)}”`, { description: failure?.message ?? String(e) });
+                }
+                return false;
             }
-            return false;
         }
     }
     const state = get().tabs[tab];
     // A newer navigation in this tab won, or the tab was closed meanwhile.
     if (seq !== r.navSeq || !state) return false;
 
-    const path = listing?.path ?? THIS_PC;
+    const path = listing?.path ?? denied?.path ?? THIS_PC;
     const same = state.ready && (path === THIS_PC ? state.path === THIS_PC : state.path !== THIS_PC && samePath(path, state.path));
+    // A refresh keeps what Get access found out.
+    const noAccess = denied && (same && state.noAccess ? state.noAccess : { remote: denied.remote });
     // Select what was asked for; on a refresh keep the selection; a new tab selects what it was
     // opened with; going up selects where we came from.
     let wanted: string[] = [];
@@ -361,6 +378,7 @@ export async function navigate(target: string, { select, history = true, quiet =
             ready: true,
             path,
             listing,
+            noAccess,
             loading: false,
             selection: new Set(selection),
             focus,
@@ -384,6 +402,27 @@ export async function navigate(target: string, { select, history = true, quiet =
     if (listing?.archive) archiveSizes(listing, tab);
     else if (listing && indexed(path)) autoSizes(tab);
     return true;
+}
+
+/**
+ * Get access, as File Explorer's Continue button does: this account may open the tab's folder, and
+ * everything in it, from then on. Windows asks for administrator approval, unless the folder is the
+ * account's own to change.
+ */
+export async function getAccess(tab = activeTabId()) {
+    const t = tabState(tab);
+    if (!t?.noAccess) return;
+    const { path } = t;
+    const name = baseName(path);
+    try {
+        const result = await busy(`Getting access to “${name}”…`, grantAccess(path));
+        const now = tabState(tab);
+        if (!now?.noAccess || !samePath(now.path, path)) return;
+        if (result === "granted") await navigate(path, { history: false, quiet: true, tab });
+        else updateTab({ noAccess: { ...now.noAccess, refused: result === "refused", stillDenied: result === "stillDenied" } }, tab);
+    } catch (e) {
+        if (String(e) !== "cancelled") toast.error(`Couldn't get access to “${name}”`, { description: String(e) });
+    }
 }
 
 /** A folder in an archive: its subfolders' totals are in its listing, as the archive has them. */
@@ -1144,7 +1183,7 @@ export async function dragFromArchive(paths: string[]) {
 }
 
 /** Opens a file in an archive with its app: a read-only temp copy of it, so changes can't be lost silently. */
-async function openFromArchive(entry: FileEntry, open: (path: string) => Promise<unknown> = openPath) {
+async function openFromArchive(entry: FileEntry, open: (path: string) => Promise<unknown> = openItem) {
     try {
         const copy = await busy(`Extracting “${entry.name}”…`, archiveExtract(entry.path, "open"));
         await open(copy);
@@ -1390,11 +1429,21 @@ export function selectAll(rows: FileEntry[]) {
 
 // Actions on files
 
+/** Opens a file with its app, as a double-click in File Explorer does; a shortcut to a folder opens the folder in `tab`. */
+export async function openFile(path: string, tab = activeTabId()) {
+    try {
+        const folder = await openItem(path);
+        if (folder) await navigate(folder, { tab });
+    } catch (e) {
+        toast.error(`Couldn't open “${baseName(path)}”`, { description: String(e) });
+    }
+}
+
 export function openEntry(entry: FileEntry) {
     // A zip or 7z archive opens like a folder.
     if (entry.dir || isArchiveFile(entry)) return navigate(entry.path);
     if (isArchived(entry)) return openFromArchive(entry);
-    return openPath(entry.path).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) }));
+    return openFile(entry.path);
 }
 
 // Undo (Ctrl+Z): the last file operations, newest last, each with what takes it back.

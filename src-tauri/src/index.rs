@@ -56,9 +56,9 @@ pub async fn index_status() -> Result<IndexInfo, String> {
 
 /// The service executable that ships next to the app's own. A dev build (`tauri dev` builds only the
 /// app) also takes one from the other build profile's folder. Whatever this returns is installed as a
-/// LocalSystem service, so release builds never look anywhere else.
+/// LocalSystem service (or run elevated to get into a folder), so release builds never look anywhere else.
 #[cfg(windows)]
-fn bundled() -> Result<std::path::PathBuf, String> {
+pub(crate) fn bundled() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let service = exe.with_file_name(shadui_index::SERVICE_EXE);
     if service.exists() {

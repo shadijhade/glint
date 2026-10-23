@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -33,6 +33,7 @@ import {
     Fingerprint,
     Folder,
     FolderInput,
+    FolderLock,
     FolderOpen,
     FolderOutput,
     FolderPlus,
@@ -61,6 +62,7 @@ import {
     Search,
     SearchX,
     Settings as SettingsIcon,
+    ShieldCheck,
     SlidersHorizontal,
     Square,
     SquarePlus,
@@ -95,6 +97,7 @@ import {
     dropFiles,
     duplicateTab,
     focusPane,
+    getAccess,
     goBack,
     goForward,
     goTo,
@@ -107,8 +110,10 @@ import {
     newItem,
     newTab,
     nextUndo,
+    type NoAccess,
     openEntry,
     openArchivedWith,
+    openFile,
     openInNewTab,
     otherPaneFolder,
     PaneProvider,
@@ -148,7 +153,7 @@ import {
     zoomGrid,
 } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
-import { driveName, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
+import { driveName, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, inArchivePath, samePath, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
@@ -211,12 +216,71 @@ function Centered({ children }: { children: React.ReactNode }) {
     );
 }
 
+/** A folder Windows keeps this account out of: why, and Get access (File Explorer's Continue button). */
+function NoAccessView({ tab, path, info }: { tab: string; path: string; info: NoAccess }) {
+    const [working, setWorking] = useState(false);
+    const name = baseName(path) || path;
+    const explorer = (
+        <Button variant="outline" size="sm" onClick={() => openPath(path).catch(report("Couldn't open File Explorer"))}>
+            <FolderSearch /> Open in File Explorer
+        </Button>
+    );
+    const security = (
+        <Button variant="outline" size="sm" onClick={() => properties(path)}>
+            <Info /> Properties
+        </Button>
+    );
+    let title = `You don't have permission to open “${name}”`;
+    let text: string;
+    let actions: React.ReactNode;
+    if (info.remote) {
+        text = "It's on another computer, which decides who may open it. File Explorer can ask for a different user name and password.";
+        actions = explorer;
+    } else if (info.refused) {
+        title = `Windows keeps “${name}” to itself`;
+        text = "Even administrators may not open it without taking it over, which can stop Windows, or the apps it holds, from working.";
+        actions = security;
+    } else if (info.stillDenied) {
+        title = `“${name}” still won't open`;
+        text = "Your account may open it now, but a rule in its permissions keeps you out. Its Properties show who may open it, on the Security tab.";
+        actions = security;
+    } else {
+        text = "Glint can give your account permission to open it and everything in it, as File Explorer's Continue button does. Windows asks for administrator approval.";
+        actions = (
+            <>
+                <Button
+                    size="sm"
+                    disabled={working}
+                    onClick={async () => {
+                        setWorking(true);
+                        await getAccess(tab);
+                        setWorking(false);
+                    }}
+                >
+                    {working ? <Loader2 className="animate-spin" /> : <ShieldCheck />} Get access
+                </Button>
+                {explorer}
+            </>
+        );
+    }
+    return (
+        <Centered>
+            <FolderLock className="size-8 stroke-[1.25] text-muted-foreground/60" />
+            <p className="max-w-md text-balance font-medium text-foreground">{title}</p>
+            <p className="max-w-sm text-balance">{text}</p>
+            <div className="mt-1 flex flex-wrap justify-center gap-2">{actions}</div>
+        </Centered>
+    );
+}
+
 /** What the active pane shows, for the toolbar and the preview pane, which sit outside the panes. */
 interface ActiveView {
     selected: FileEntry[];
     items: number;
     folder: string;
     total?: number;
+    /** Windows keeps this account out of the folder. */
+    noAccess?: boolean;
 }
 const useActiveView = create<ActiveView>(() => ({ selected: NO_ENTRIES, items: 0, folder: THIS_PC }));
 
@@ -239,27 +303,29 @@ interface MenuContext {
 
 /**
  * For a folder: the one open in a pane (right-click on empty space, `current`), or a place in the
- * sidebar. In an archive (`view.archive`), what would change it is greyed out.
+ * sidebar. In an archive (`view.archive`), what would change it is greyed out, as is what needs to
+ * look inside a folder Windows keeps this account out of (`view.noAccess`).
  */
-function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: { find: boolean; selectAll: () => void; archive?: InArchive }): MenuItem[] {
+function folderMenu(folder: string, current: boolean, ctx: MenuContext, view?: { find: boolean; selectAll: () => void; archive?: InArchive; noAccess?: boolean }): MenuItem[] {
     if (folder === THIS_PC) return [{ label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refreshDrives }];
     const isPinned = ctx.pinned.includes(folder);
     const find = !!view?.find;
     const archive = view?.archive;
+    const shut = !!view?.noAccess;
     // A pinned folder can be inside an archive too.
     const inArchive = !!archive || inArchivePath(folder);
     return [
         !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
         !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
-        current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find || !!archive, onSelect: () => newItem(true) },
-        current && { label: "New text document", icon: FilePlus, disabled: find || !!archive, onSelect: () => newItem(false) },
+        current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find || !!archive || shut, onSelect: () => newItem(true) },
+        current && { label: "New text document", icon: FilePlus, disabled: find || !!archive || shut, onSelect: () => newItem(false) },
         "separator",
         { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: (current && find) || inArchive, onSelect: () => paste(folder) },
         current && { label: undoLabel(), icon: Undo2, shortcut: "Ctrl+Z", disabled: !nextUndo(), onSelect: () => void undo() },
-        current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", onSelect: view.selectAll },
+        current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", disabled: shut, onSelect: view.selectAll },
         current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
         "separator",
-        current && { label: "Folder sizes", icon: HardDrive, disabled: find, onSelect: calcSizes },
+        current && { label: "Folder sizes", icon: HardDrive, disabled: find || shut, onSelect: calcSizes },
         !inArchive && { label: "Search text", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
         !inArchive && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
         !inArchive && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
@@ -416,13 +482,16 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const chosenEntries = useActiveView.getState().selected;
         const oneArchive = chosenEntries.length === 1 && isArchiveFile(chosenEntries[0]) && !archive ? chosenEntries[0] : undefined;
         const step = nextUndo();
+        // A folder Windows keeps this account out of has nothing to list, measure or rename yet.
+        const shut = t.noAccess;
         const actions: (Command | false)[] = [
-            writable && !t.find && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
-            writable && !t.find && action("new-file", "New text document", FilePlus, () => newItem(false)),
+            !!shut && !shut.remote && !shut.refused && action("get-access", "Get access to this folder", ShieldCheck, () => getAccess(t.id)),
+            writable && !t.find && !shut && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
+            writable && !t.find && !shut && action("new-file", "New text document", FilePlus, () => newItem(false)),
             action("find", "Find files in this folder", Search, focusFind, "Ctrl+F"),
             writable && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
-            inFolder && !t.find && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
-            inFolder && !t.find && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
+            inFolder && !t.find && !shut && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
+            inFolder && !t.find && !shut && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
             canGrid &&
                 (grid
                     ? action("view-list", "Show as a list", List, () => chooseView("list", t.id), "Ctrl+Shift+6")
@@ -459,7 +528,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!archive && action("explorer", "Show the archive in File Explorer", FileArchive, () => revealArchive(archive)),
             writable && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
-            writable && !t.find && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
+            writable && !t.find && !shut && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
             !archive && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
             writable && action("timeline", "Recent changes in this folder", FileClock, () => inspectTimeline(t.path)),
             writable && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
@@ -501,7 +570,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 
 /** The selection (or the folder) of the pane the keyboard acts on. Its left edge drags its width. */
 function PreviewPane() {
-    const { selected, items, folder, total } = useActiveView();
+    const { selected, items, folder, total, noAccess } = useActiveView();
     const width = useStore((s) => s.settings.previewWidth);
     const drag = useRef({ from: 0, now: 0, pane: null as HTMLElement | null });
     return (
@@ -529,7 +598,7 @@ function PreviewPane() {
                 }}
                 onReset={() => useStore.getState().setSettings({ previewWidth: null })}
             />
-            <FilePreview selected={selected} folder={{ path: folder, items, total }} />
+            <FilePreview selected={selected} folder={{ path: folder, items, total, noAccess }} />
         </aside>
     );
 }
@@ -555,6 +624,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         tabId,
         path,
         listing,
+        noAccess,
         loading,
         find,
         filter,
@@ -584,6 +654,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 tabId: t.id,
                 path: t.path,
                 listing: t.listing,
+                noAccess: t.noAccess,
                 loading: t.loading,
                 find: t.find,
                 filter: t.filter,
@@ -716,9 +787,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     // The toolbar and the preview pane show what the active pane shows.
     const folder = find?.scope ?? path;
     const total = sizeRun?.total;
+    const shut = !!noAccess && !find;
     useLayoutEffect(() => {
-        if (current) useActiveView.setState({ selected, items: rows.length, folder, total });
-    }, [current, selected, rows.length, folder, total]);
+        if (current) useActiveView.setState({ selected, items: rows.length, folder, total, noAccess: shut });
+    }, [current, selected, rows.length, folder, total, shut]);
 
     const rowsRef = useRef(rows);
     rowsRef.current = rows;
@@ -1001,7 +1073,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one && isArchiveFile(one) && {
                 label: "Open with its app",
                 icon: AppWindow,
-                onSelect: () => (archived ? openArchivedWith(one, (p) => openPath(p)) : openPath(one.path).catch(report("Couldn't open the file"))),
+                onSelect: () => (archived ? openArchivedWith(one, openItem) : openFile(one.path)),
             },
             one && !one.dir && !!editorName && {
                 label: `Open with ${editorName}`,
@@ -1058,7 +1130,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         menu.open(e, folderMenu(place, false, menuContext));
     };
 
-    const backgroundMenu = () => folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive });
+    const backgroundMenu = () => folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive, noAccess: !!noAccess });
 
     /**
      * The keyboard's right-click (the menu key, Shift+F10): what's selected gets its menu, at the item
@@ -1138,6 +1210,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </div>
             </Centered>
         );
+    } else if (noAccess) {
+        empty = <NoAccessView tab={tabId} path={path} info={noAccess} />;
     } else if (listing && !rows.length) {
         empty = filter ? (
             <Centered>

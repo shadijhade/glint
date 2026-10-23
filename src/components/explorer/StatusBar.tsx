@@ -46,7 +46,9 @@ function ThumbWork({ run }: { run: ThumbRun }) {
 
 /** Counts on the left; on the right, which tool did the work and how long it took. */
 export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
-    const { tab, path, listing, find, shownIn, view } = useTab(useShallow((t) => ({ tab: t.id, path: t.path, listing: t.listing, find: t.find, shownIn: t.shownIn, view: t.view })));
+    const { tab, path, listing, noAccess, find, shownIn, view } = useTab(
+        useShallow((t) => ({ tab: t.id, path: t.path, listing: t.listing, noAccess: !!t.noAccess, find: t.find, shownIn: t.shownIn, view: t.view }))
+    );
     // A tab showing its disk-usage map tells how that was mapped; its rows are the map's items.
     const mapped = useUsage((s) => !!s[tab]) && !find;
     const { sizes, drives, index } = useExplorer(useShallow((s) => ({ sizes: s.sizes[path], drives: s.drives.length, index: s.index })));
@@ -133,7 +135,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     return (
         <div className="@container flex h-7 shrink-0 items-center gap-2 overflow-hidden border-t px-3 text-xs text-muted-foreground">
             <span className="shrink-0">
-                {items(shown)}
+                {noAccess && !find ? "No access" : items(shown)}
                 {hidden > 0 && !mapped && ` · ${formatCount(hidden)} hidden`}
                 {selected.length > 0 && ` · ${formatCount(selected.length)} selected`}
                 {selectedFiles.length > 0 && ` · ${formatSize(selectedBytes)}`}
