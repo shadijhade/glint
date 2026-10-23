@@ -84,7 +84,7 @@ import { useShallow } from "zustand/react/shallow";
 import { SINGLE_FILE } from "@/lib/archives";
 import { scanWithDefender } from "@/lib/defender";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, isRecycled, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     archiveOf,
     calcSizes,
@@ -105,6 +105,7 @@ import {
     dragFromArchive,
     dropFiles,
     duplicateTab,
+    emptyRecycleBin,
     focusPane,
     getAccess,
     goBack,
@@ -127,13 +128,18 @@ import {
     otherPaneFolder,
     PaneProvider,
     paste,
+    purgeRecycled,
     readOnlyNotice,
+    recycleBinOf,
+    recycledNotice,
     refresh,
     refreshDrives,
     reload,
     reloadFolder,
+    reloadRecycleBins,
     renameEntry,
     reopenClosedTab,
+    restoreRecycled,
     revealInApp,
     runDeepCompare,
     runFind,
@@ -166,7 +172,7 @@ import { driveName, openItem, openTerminal, openWith, showProperties, startDrag 
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, inArchivePath, joinPath, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, isFolderPath, isRecycleBin, joinPath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
 import { toggleTerminal, useTerminals } from "@/lib/terminal";
@@ -363,9 +369,21 @@ function folderMenu(
     folder: string,
     current: boolean,
     ctx: MenuContext,
-    view?: { find: boolean; selectAll: () => void; archive?: InArchive; noAccess?: NoAccess | null; fromIndex?: boolean; tab?: string }
+    view?: { find: boolean; selectAll: () => void; archive?: InArchive; noAccess?: NoAccess | null; fromIndex?: boolean; tab?: string; restoreShown?: { label: string; run: () => void } }
 ): MenuItem[] {
     if (folder === THIS_PC) return [{ label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refreshDrives }];
+    // The Recycle Bin: its items go back, or for good.
+    if (isRecycleBin(folder))
+        return [
+            !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
+            !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
+            !!view?.restoreShown && { label: view.restoreShown.label, icon: RotateCcw, onSelect: view.restoreShown.run },
+            current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", onSelect: view.selectAll },
+            current && { label: undoLabel(), icon: Undo2, shortcut: "Ctrl+Z", disabled: !nextUndo(), onSelect: () => void undo() },
+            current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
+            "separator",
+            { label: "Empty the Recycle Bin", icon: Trash2, danger: true, onSelect: () => void emptyRecycleBin() },
+        ];
     const isPinned = ctx.pinned.includes(folder);
     const find = !!view?.find;
     const archive = view?.archive;
@@ -452,9 +470,13 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 
     useEffect(() => {
         initExplorer();
-        // Refresh the folders on screen when they change on disk; drives may come and go while we're away.
+        // Refresh the folders on screen when they change on disk; drives may come and go while we're away,
+        // and what's deleted elsewhere goes into the Recycle Bin.
         const unlisten = listen<string>("dir-changed", (event) => reloadFolder(event.payload));
-        const onFocus = () => refreshDrives();
+        const onFocus = () => {
+            refreshDrives();
+            reloadRecycleBins();
+        };
         window.addEventListener("focus", onFocus);
         return () => {
             unlisten.then((stop) => stop());
@@ -507,7 +529,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 
     const searchTextHere = () => {
         const folder = currentPath();
-        if (folder !== THIS_PC) onSearchText(folder);
+        if (isFolderPath(folder)) onSearchText(folder);
     };
 
     const onPlaceContextMenu = (e: React.MouseEvent, place: string) => {
@@ -521,7 +543,9 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const t = tabState()!;
         const { visits, settings: now } = useStore.getState();
         const dark = document.documentElement.classList.contains("dark");
-        const inFolder = t.path !== THIS_PC;
+        // The Recycle Bin is a place, not a folder: what's done to folders isn't done to it.
+        const bin = isRecycleBin(t.path) && !t.find;
+        const inFolder = isFolderPath(t.path);
         const seen = new Set<string>();
         const folders: Command[] = [];
         const addFolder = (folder: string, label: string, icon: Command["icon"], weight: number, iconClass?: string) => {
@@ -545,7 +569,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const tabs = s.panes[s.activePane].tabs.length;
         const other = otherPaneFolder();
         const chosen = t.selection.size > 0;
-        const canGrid = inFolder || !!t.find;
+        const canGrid = inFolder || bin || !!t.find;
         const grid = canGrid && t.view === "grid" && !showsUsage(t.id);
         // Each size, once something's typed ("large", "tiles"): the grid at that size.
         const tileSizes = TILE_SIZES.map(
@@ -579,7 +603,9 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!shut && !shut.remote && !shut.refused && action("get-access", "Get access to this folder", ShieldCheck, () => getAccess(t.id)),
             writable && !t.find && !shut && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
             writable && !t.find && !shut && action("new-file", "New text document", FilePlus, () => newItem(false)),
-            action("find", "Find files in this folder", Search, focusFind, "Ctrl+F"),
+            action("find", bin ? "Filter what's in the Recycle Bin" : "Find files in this folder", Search, focusFind, "Ctrl+F"),
+            bin && chosen && action("restore", "Restore the selection where it was deleted from", RotateCcw, () => void restoreRecycled(chosenEntries)),
+            bin && chosen && action("purge", "Delete the selection for good", Trash2, () => void purgeRecycled(chosenEntries)),
             writable && !shut && action("search-text", "Search text in this folder", TextSearch, () => onSearchText(t.path), "Ctrl+Shift+F"),
             inFolder && !t.find && !unlisted && action("sizes", "Calculate folder sizes", HardDrive, calcSizes),
             inFolder && !t.find && !unlisted && action("disk-usage", showsUsage(t.id) ? "Hide disk usage" : "Show disk usage", showsUsage(t.id) ? List : LayoutDashboard, () => toggleUsage(t.id)),
@@ -598,6 +624,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             t.forward.length > 0 && action("forward", "Forward", ArrowRight, goForward, "Alt+Right"),
             inFolder && action("up", "Up one folder", ArrowUp, goUp, "Alt+Up"),
             action("this-pc", "This PC", Monitor, () => navigate(THIS_PC)),
+            !bin && action("recycle-bin", "Recycle Bin", Trash2, () => navigate(RECYCLE_BIN)),
+            action("empty-bin", "Empty the Recycle Bin", Trash2, () => void emptyRecycleBin()),
             action("new-tab", "New tab", Plus, () => newTab(), "Ctrl+T"),
             (tabs > 1 || s.dual) && action("close-tab", "Close tab", X, () => closeTab(), "Ctrl+W"),
             tabs > 1 && action("close-other-tabs", "Close the other tabs", X, () => closeOtherTabs(t.id)),
@@ -611,6 +639,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
             !archive &&
                 !closedItems &&
+                !bin &&
                 chosenEntries.length > 0 &&
                 action("compress", "Compress the selection to a zip file", FileArchive, () =>
                     secretsCheckFirst(
@@ -624,8 +653,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 samePath(t.path, archive.path) &&
                 samePath(archive.path, archive.outer) &&
                 action("extract-all", SINGLE_FILE.includes(archive.format) ? "Extract the file next to the archive" : "Extract all: everything into a folder next to the archive", ArchiveRestore, () => extractHere(archive.outer)),
-            !!other && chosen && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
-            !!other && chosen && !archive && !shut && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
+            !!other && chosen && !bin && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
+            !!other && chosen && !archive && !shut && !bin && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
             action("terminal-pane", useTerminals.getState().open ? "Hide the terminal" : "Terminal here, under the files", SquareTerminal, () => toggleTerminal(terminalFolder()), "Ctrl+`"),
             writable && !shut && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
@@ -770,7 +799,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             const t = s.tabs[(s.panes[index] ?? s.panes[0]).active];
             const otherPane = s.dual && s.comparePanes ? s.panes[1 - index] : undefined;
             const otherTab = otherPane ? s.tabs[otherPane.active] : undefined;
-            const otherReady = !!otherTab?.ready && otherTab.path !== THIS_PC && !otherTab.find;
+            const otherReady = !!otherTab?.ready && isFolderPath(otherTab.path) && !otherTab.find;
             return {
                 tabId: t.id,
                 path: t.path,
@@ -847,14 +876,14 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const deepSync = deepResult ? (index === 0 ? deepResult.toRight : deepResult.toLeft) : null;
     // The left pane asks for it, when both show folders on disk.
     const deepOn = settings.compareSubfolders || settings.compareContents;
-    const asks = index === 0 && dual && comparePanes && deepOn && !find && path !== THIS_PC && !!listing && !listing.archive && otherWritable && !!otherPath;
+    const asks = index === 0 && dual && comparePanes && deepOn && !find && isFolderPath(path) && !!listing && !listing.archive && otherWritable && !!otherPath;
     useEffect(() => {
         if (asks) void runDeepCompare(path, otherPath!);
         else if (index === 0 && useDeepCompare.getState().key) stopDeepCompare();
     }, [asks, index, path, otherPath, listing, otherListing, settings.compareSubfolders, settings.compareContents, showHidden, settings.findExclusions]);
 
     const comparison = useMemo(() => {
-        if (!dual || !comparePanes || find || path === THIS_PC || !listing || !otherListing) return null;
+        if (!dual || !comparePanes || find || !isFolderPath(path) || !listing || !otherListing) return null;
         const otherMap = new Map<string, FileEntry>();
         for (const e of otherListing.entries) {
             if (showHidden || !isHidden(e)) otherMap.set(e.lower, e);
@@ -914,7 +943,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const mapRows = useMapRows(tabId);
     // The folder's README, folded above its list (not over search results, the map, or a closed folder).
     const readme = useMemo(
-        () => (settings.showReadme && !find && !mapRows && path !== THIS_PC && listing && !listing.fromIndex ? readmeOf(listing.entries) : undefined),
+        () => (settings.showReadme && !find && !mapRows && isFolderPath(path) && listing && !listing.fromIndex ? readmeOf(listing.entries) : undefined),
         [settings.showReadme, find, mapRows, path, listing]
     );
     const rows = mapRows ?? listRows;
@@ -929,9 +958,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
 
     useLayoutEffect(() => markShown(tabId), [tabId, listing]);
 
+    // The Recycle Bin: each item says where it was deleted from; each folder comes with its size.
+    const bin = isRecycleBin(path) && !find;
+    const binTotal = useMemo(() => (bin && listing ? listing.entries.reduce((sum, e) => sum + e.size, 0) : undefined), [bin, listing]);
     // The toolbar and the preview pane show what the active pane shows.
     const folder = find?.scope ?? path;
-    const total = sizeRun?.total;
+    const total = binTotal ?? sizeRun?.total;
     const shut = !!noAccess && !find;
     useLayoutEffect(() => {
         if (current) useActiveView.setState({ selected, items: rows.length, folder, total, noAccess: shut });
@@ -949,6 +981,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const startBatchRename = () => {
         if (tabState(tabRef.current)?.listing?.archive) return readOnlyNotice();
         if (tabState(tabRef.current)?.noAccess) return closedNotice(tabRef.current);
+        if (recycleBinOf(tabRef.current)) return recycledNotice();
         const chosen = selectedNow();
         openBatchRename(chosen.length ? chosen : rowsRef.current, rowsRef.current);
     };
@@ -957,6 +990,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const t = tabState(tabRef.current);
         if (t?.listing?.archive) return readOnlyNotice();
         if (t?.noAccess) return closedNotice(tabRef.current);
+        if (recycleBinOf(tabRef.current)) return recycledNotice();
         if (!target) {
             const chosen = selectedNow();
             if (chosen.length > 1) {
@@ -977,7 +1011,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const first = rows.indexOf(chosen[0]);
         const last = rows.indexOf(chosen[chosen.length - 1]);
         const next = rows.slice(last + 1).find((r) => !picked.has(r.path)) ?? rows.slice(0, first).reverse().find((r) => !picked.has(r.path));
-        deletePaths([...picked], permanent, next?.path);
+        // In the Recycle Bin, Delete is for good (asked first), as in File Explorer.
+        if (recycleBinOf(tabRef.current)) void purgeRecycled(chosen, next?.path);
+        else deletePaths([...picked], permanent, next?.path);
     };
 
     const openSelected = async () => {
@@ -991,7 +1027,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
 
     /** Ctrl+Enter: each selected folder (and archive) in a new tab. */
     const openSelectedInTabs = () => {
-        for (const entry of selectedNow()) if (entry.dir || isArchiveFile(entry)) openInNewTab(entry.path);
+        for (const entry of selectedNow()) if ((entry.dir || isArchiveFile(entry)) && !isRecycled(entry)) openInNewTab(entry.path);
     };
 
     useEffect(() => {
@@ -1051,6 +1087,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "Enter") {
                     // Properties are File Explorer's, for files on disk; the preview pane has an archived item's details.
                     if (s.listing?.archive) toast.message("Properties are for files on disk", { id: "archive-properties", description: "For something inside an archive, the preview pane (Alt+P) shows its details." });
+                    else if (isRecycleBin(s.path)) recycledNotice();
                     else properties(s.focus ?? s.path);
                 }
                 else if (key === "d") useExplorer.setState({ editingAddress: true });
@@ -1133,7 +1170,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         if (e.button === 1) {
             // Middle-click: the folder (or archive) in a new tab, and no autoscroll.
             e.preventDefault();
-            if (entry.dir || isArchiveFile(entry)) openInNewTab(entry.path);
+            if ((entry.dir || isArchiveFile(entry)) && !isRecycled(entry)) openInNewTab(entry.path);
             return;
         }
         const selection = tabState(tabRef.current)?.selection ?? new Set();
@@ -1159,7 +1196,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 press.current = null;
                 const chosen = selectedNow();
                 const paths = chosen.map((r) => r.path);
-                if (!paths.length) return;
+                // Out of the Recycle Bin, an item would land named as Windows keeps it there: Restore it instead.
+                if (!paths.length || chosen.some(isRecycled)) return;
                 // Out of an archive: extracted first, and dragged as copies.
                 if (chosen.some(isArchived)) {
                     dragFromArchive(paths);
@@ -1189,7 +1227,31 @@ function PaneView({ index, active, menuContext }: PaneProps) {
 
     const { pinned, togglePin, onSearchText } = menuContext;
     const editorName = baseName(editorPath.trim()).replace(/\.exe$/i, "");
+    /** In the Recycle Bin: back where it was deleted from, a look at it, or gone for good. */
+    const recycledMenu = (targets: FileEntry[]): MenuItem[] => {
+        const one = targets.length === 1 ? targets[0] : null;
+        const originals = targets.map((t) => joinPath(t.origin ?? "", t.name));
+        return [
+            { label: one ? "Restore" : `Restore ${targets.length} items`, icon: RotateCcw, onSelect: () => void restoreRecycled(targets) },
+            one && {
+                label: "Quick Look",
+                icon: Eye,
+                shortcut: "Space",
+                onSelect: () => {
+                    updateTab({ focus: one.path }, tabRef.current);
+                    useExplorer.setState({ quickLook: true });
+                },
+            },
+            !!one?.origin && { label: "Open the folder it was deleted from", icon: FolderOpen, onSelect: () => navigate(one.origin!) },
+            "separator",
+            { label: one ? "Copy original path" : "Copy original paths", icon: ClipboardCopy, onSelect: () => copyText(originals.join("\r\n"), one ? "path" : "paths") },
+            "separator",
+            { label: "Delete for good", icon: Trash2, shortcut: "Del", danger: true, onSelect: () => void purgeRecycled(targets) },
+        ];
+    };
+
     const itemMenu = (targets: FileEntry[]): MenuItem[] => {
+        if (targets.some(isRecycled)) return recycledMenu(targets);
         const one = targets.length === 1 ? targets[0] : null;
         const paths = targets.map((t) => t.path);
         // Archives open like folders: in a new tab too.
@@ -1294,8 +1356,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         menu.open(e, folderMenu(place, false, menuContext));
     };
 
+    // In the Recycle Bin, everything it shows can go back at once (what's typed in the box narrows it).
+    const restoreShown =
+        bin && rows.length > 0 ? { label: rows.length === listing?.entries.length ? "Restore all items" : `Restore the ${formatCount(rows.length)} items shown`, run: () => void restoreRecycled(rowsRef.current) } : undefined;
     const backgroundMenu = () =>
-        folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive, noAccess, fromIndex: !!listing?.fromIndex, tab: tabId });
+        folderMenu(path, true, menuContext, { find: !!find, selectAll: () => selectAll(rowsRef.current), archive: listing?.archive, noAccess, fromIndex: !!listing?.fromIndex, tab: tabId, restoreShown });
 
     /**
      * The keyboard's right-click (the menu key, Shift+F10): what's selected gets its menu, at the item
@@ -1396,10 +1461,18 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         empty = filter ? (
             <Centered>
                 <SearchX className="size-6" />
-                <p>Nothing in this folder matches “{filter}”.</p>
-                <Button variant="outline" size="sm" onClick={() => runFind(filter)}>
-                    <Search /> Search subfolders too
-                </Button>
+                <p>Nothing in {bin ? "the Recycle Bin" : "this folder"} matches “{filter}”.</p>
+                {!bin && (
+                    <Button variant="outline" size="sm" onClick={() => runFind(filter)}>
+                        <Search /> Search subfolders too
+                    </Button>
+                )}
+            </Centered>
+        ) : bin && !listing.entries.length ? (
+            <Centered>
+                <Trash2 className="size-8 stroke-[1.25] text-muted-foreground/60" />
+                <p className="font-medium text-foreground">The Recycle Bin is empty</p>
+                <p className="text-xs">What you delete waits here, to be restored or deleted for good.</p>
             </Centered>
         ) : comparison && diffOnly && comparison.same > 0 ? (
             <Centered>
@@ -1435,6 +1508,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const viewProps = {
         rows,
         search: !!find,
+        recycled: bin,
         scope: find?.scope ?? path,
         sizes: sizeRun,
         diffs: comparison?.diffs,
@@ -1539,7 +1613,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </div>
             )}
             {listing?.fromIndex && !find && <ClosedBar tab={tabId} info={noAccess} />}
-            {dual && comparePanes && !find && path !== THIS_PC && (
+            {dual && comparePanes && !find && isFolderPath(path) && (
                 <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-1.5 border-b bg-primary/5 px-2.5 py-1 text-xs">
                     <GitCompareArrows className="size-3.5 shrink-0 text-primary" />
                     {comparison ? (

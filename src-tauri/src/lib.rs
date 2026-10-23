@@ -26,6 +26,7 @@ mod ocr;
 mod pe;
 mod proc;
 mod quick;
+mod recycle;
 mod sheet;
 mod shell;
 mod sign;
@@ -569,6 +570,7 @@ pub fn run() {
             meaning::meaning_install,
             meaning::meaning_status,
             meaning::meaning_remove,
+            recycle::recycle_empty,
             tools::tools_status,
             tools::tool_install,
             tools::tool_cancel_install,

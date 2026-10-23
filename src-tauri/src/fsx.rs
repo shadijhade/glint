@@ -58,11 +58,15 @@ impl ListError {
 /// into a zip or 7z archive lists the folder in the archive. A link Windows won't list, such as
 /// "Documents and Settings" (kept for old apps, it lets no one look inside), lists where it points;
 /// a folder Windows keeps this user out of lists what instant search's index has in it, if it can.
+/// The Recycle Bin (`recycle::PLACE`) lists its items, each with a path of its own (`encode_items`).
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
     let asked = path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
+        if crate::recycle::is_place(path.trim()) {
+            return crate::recycle::listing(started).map(tauri::ipc::Response::new).map_err(|e| ListError::other(crate::recycle::PLACE, e));
+        }
         let path = normalize(&path).map_err(|e| ListError::other(&path, e))?;
         if let Some(listing) = crate::archive::list(&path, started) {
             return listing.map(tauri::ipc::Response::new).map_err(|e| ListError::other(&path, e));
@@ -218,22 +222,26 @@ pub fn encode_listing<T: Listed>(path: &str, entries: &[T], elapsed: f64, archiv
 const ITEMS: u32 = 4;
 
 /// Items that each have their own path, such as search results, as bytes: `encode_listing`'s header
-/// (with flag 4, its archive fields 0, and at 24 a u32 of columns: 1 when names follow the paths), then
+/// (with flag 4, its archive fields 0, and at 24 a u32 of columns: 1 when names follow the paths, 2
+/// when origins do), then
 ///   f64 size[count] · f64 modified[count] · u32 attrs[count] · u32 path length[count] · u32 name
-///   length[count] (UTF-16 units) · the location (UTF-8) · every path back to back (UTF-8) · and, only
-///   when some name isn't its path's last part, every name.
+///   length[count] · u32 origin length[count] when there are origins (UTF-16 units) · the location
+///   (UTF-8) · every path back to back (UTF-8) · only when some name isn't its path's last part, every
+///   name · and the origins.
 /// Otherwise each name is the last `name length` units of its path, which search results always are.
-pub fn encode_items(location: &str, entries: &[Entry], elapsed: f64, from_index: bool) -> Vec<u8> {
+/// `origins`, one per entry or none: where each came from (the Recycle Bin's, where it was deleted from).
+pub fn encode_items(location: &str, entries: &[Entry], origins: &[String], elapsed: f64, from_index: bool) -> Vec<u8> {
     let paths: Vec<&str> = entries.iter().map(|e| e.path.as_deref().unwrap_or(&e.name)).collect();
     let tails = entries.iter().zip(&paths).all(|(e, p)| *p == e.name || p.strip_suffix(e.name.as_str()).is_some_and(|rest| rest.ends_with(['\\', '/'])));
-    let text: usize = paths.iter().map(|p| p.len()).sum::<usize>() + if tails { 0 } else { entries.iter().map(|e| e.name.len()).sum() };
-    let mut out = Vec::with_capacity(40 + 28 * entries.len() + location.len() + text);
+    let with_origins = !origins.is_empty();
+    let text: usize = paths.iter().map(|p| p.len()).sum::<usize>() + if tails { 0 } else { entries.iter().map(|e| e.name.len()).sum() } + origins.iter().map(|o| o.len()).sum::<usize>();
+    let mut out = Vec::with_capacity(40 + 32 * entries.len() + location.len() + text);
     out.extend((entries.len() as u32).to_le_bytes());
     out.extend((location.len() as u32).to_le_bytes());
     out.extend(elapsed.to_le_bytes());
     out.extend(0u32.to_le_bytes());
     out.extend(0u32.to_le_bytes());
-    out.extend(u32::from(!tails).to_le_bytes());
+    out.extend((u32::from(!tails) | u32::from(with_origins) << 1).to_le_bytes());
     out.extend((ITEMS | if from_index { 2 } else { 0 }).to_le_bytes());
     out.extend(0f64.to_le_bytes());
     for e in entries {
@@ -251,6 +259,9 @@ pub fn encode_items(location: &str, entries: &[Entry], elapsed: f64, from_index:
     for e in entries {
         out.extend((e.name.encode_utf16().count() as u32).to_le_bytes());
     }
+    for origin in origins {
+        out.extend((origin.encode_utf16().count() as u32).to_le_bytes());
+    }
     out.extend(location.as_bytes());
     for path in &paths {
         out.extend(path.as_bytes());
@@ -259,6 +270,9 @@ pub fn encode_items(location: &str, entries: &[Entry], elapsed: f64, from_index:
         for e in entries {
             out.extend(e.name.as_bytes());
         }
+    }
+    for origin in origins {
+        out.extend(origin.as_bytes());
     }
     out
 }
@@ -277,6 +291,9 @@ pub struct Resolved {
 #[tauri::command]
 pub async fn resolve_path(path: String) -> Result<Resolved, String> {
     blocking(move || {
+        if crate::recycle::is_place(path.trim()) {
+            return Ok(Resolved { path: crate::recycle::PLACE.into(), dir: true });
+        }
         let path = normalize(&path)?;
         // A first read stopped (a big .tar.gz) is "cancelled" as it is: there's nothing to report.
         let archive_error = |e: String| if e == "cancelled" { e } else { format!("Can't open “{path}”. {e}") };
@@ -877,7 +894,7 @@ mod tests {
             Entry { name: "é😀.txt".into(), path: Some("C:\\x\\é😀.txt".into()), dir: false, size: 7, modified: 9, attrs: 0x20 },
             Entry { name: "D:\\".into(), path: Some("D:\\".into()), dir: true, size: 0, modified: 0, attrs: 0 },
         ];
-        let bytes = encode_items("", &entries, 1.5, false);
+        let bytes = encode_items("", &entries, &[], 1.5, false);
         let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
         assert_eq!((u32_at(0), u32_at(4), f64_at(8)), (2, 0, 1.5));
@@ -890,9 +907,15 @@ mod tests {
         assert_eq!(std::str::from_utf8(&bytes[96..]).unwrap(), "C:\\x\\é😀.txtD:\\");
         // A name that isn't its path's end goes after the paths, and the columns say so.
         let recycled = [Entry { name: "budget.xlsx".into(), path: Some("C:\\$Recycle.Bin\\$RQ2.xlsx".into()), dir: false, size: 1, modified: 1, attrs: 0 }];
-        let bytes = encode_items("", &recycled, 0.0, true);
+        let bytes = encode_items("", &recycled, &[], 0.0, true);
         assert_eq!((u32::from_le_bytes(bytes[24..28].try_into().unwrap()), u32::from_le_bytes(bytes[28..32].try_into().unwrap())), (1, 4 | 2));
         assert!(std::str::from_utf8(&bytes[40 + 28..]).unwrap().ends_with("$RQ2.xlsxbudget.xlsx"));
+        // Where each came from, after the names, its length after theirs.
+        let bytes = encode_items("shell:RecycleBinFolder", &recycled, &["C:\\Users\\me\\Désktop".into()], 0.0, false);
+        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!((u32_at(4), u32_at(24)), (22, 1 | 2));
+        assert_eq!((u32_at(40 + 20), u32_at(40 + 24), u32_at(40 + 28)), (25, 11, 19));
+        assert_eq!(std::str::from_utf8(&bytes[40 + 32..]).unwrap(), "shell:RecycleBinFolderC:\\$Recycle.Bin\\$RQ2.xlsxbudget.xlsxC:\\Users\\me\\Désktop");
     }
 
     #[test]

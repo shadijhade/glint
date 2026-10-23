@@ -7,7 +7,7 @@ import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { VirtualList } from "../VirtualList";
-import { DIFF_BADGE, dropPath, type FileViewProps, gitOf, Header, LockMark, relativeTo, RenameInput, sizeOf } from "./FileList";
+import { DIFF_BADGE, dropPath, type FileViewProps, gitOf, Header, LockMark, relativeTo, RenameInput, sizeOf, whereOf } from "./FileList";
 import { Thumbnail } from "./Thumbnail";
 
 interface FileGridProps extends FileViewProps {
@@ -30,14 +30,16 @@ const WHEEL_STEP = 100;
  * driven by the same handlers, so selection, keys, menus, rename and drag and drop work alike.
  */
 export function FileGrid(props: FileGridProps) {
-    const { rows, search, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
+    const { rows, search, recycled, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
+    // Items from many folders (search results, the Recycle Bin's) say where each is, under its name.
+    const located = search || !!recycled;
     const [width, setWidth] = useState(() => lastWidth.get(pane) ?? 0);
     const cols = gridColumns(width - 2 * tile.pad, tile.width);
     // Where the tab left this grid is kept as the tiles at its top, so it comes back there even if the
     // tiles were zoomed meanwhile (in another tab, or the other pane).
     const layout = { cols, rowHeight: tile.height };
     const focusPath = rows[focusIndex]?.path;
-    const relative = useMemo(() => relativeTo(scope), [scope]);
+    const whereIs = useMemo(() => whereOf(relativeTo(scope)), [scope]);
     useLayoutEffect(() => timeThumbnails(lane, thumbScope), [lane, thumbScope]);
 
     // Ctrl+wheel zooms the tiles. It's listened for here rather than with onWheel, which React makes
@@ -71,8 +73,8 @@ export function FileGrid(props: FileGridProps) {
 
     const renderTile = (i: number) => {
         const entry = rows[i];
-        const size = sizeOf(entry, search, sizes);
-        const where = search ? relative(entry.path) : "";
+        const size = sizeOf(entry, located, sizes);
+        const where = located ? whereIs(entry) : "";
         const selected = selection.has(entry.path);
         const sizeText = size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : "";
         const diff = diffs?.get(entry.lower);
@@ -90,7 +92,13 @@ export function FileGrid(props: FileGridProps) {
                 onMouseDown={(e) => props.onRowMouseDown(e, i)}
                 onDoubleClick={() => props.onOpen(entry)}
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
-                title={[entry.name, where && `in ${where}`, entry.dir ? "" : `${typeLabel(entry)} · ${formatSize(entry.size)}`, formatFullDate(entry.modified), tracked.badge?.title ?? (tracked.ignored ? "Git: left out by .gitignore" : "")]
+                title={[
+                    entry.name,
+                    where && `${recycled ? "deleted from" : "in"} ${where}`,
+                    entry.dir ? "" : `${typeLabel(entry)} · ${formatSize(entry.size)}`,
+                    `${recycled ? "Deleted " : ""}${formatFullDate(entry.modified)}`,
+                    tracked.badge?.title ?? (tracked.ignored ? "Git: left out by .gitignore" : ""),
+                ]
                     .filter(Boolean)
                     .join("\n")}
                 className={cn(
@@ -153,9 +161,9 @@ export function FileGrid(props: FileGridProps) {
             <div className="flex h-8 shrink-0 items-center gap-4 overflow-hidden border-b px-3 text-xs font-medium text-muted-foreground">
                 <span className="shrink-0">Sort by</span>
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
-                <Header sortKey="modified" sort={sort} onSort={onSort}>Date modified</Header>
+                <Header sortKey="modified" sort={sort} onSort={onSort}>{recycled ? "Date deleted" : "Date modified"}</Header>
                 <Header sortKey="taken" sort={sort} onSort={onSort}>Date taken</Header>
-                {!search && (
+                {!located && (
                     <Header sortKey="type" sort={sort} onSort={onSort}>
                         Type
                     </Header>
@@ -167,7 +175,7 @@ export function FileGrid(props: FileGridProps) {
                     data-file-grid
                     role="listbox"
                     aria-multiselectable
-                    aria-label={search ? "Search results" : "Files"}
+                    aria-label={search ? "Search results" : recycled ? "Recycle Bin" : "Files"}
                     aria-activedescendant={focusIndex >= 0 ? `${lane}-tile-${focusIndex}` : undefined}
                     tabIndex={0}
                     data-cols={cols}

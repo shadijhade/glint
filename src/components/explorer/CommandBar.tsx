@@ -30,6 +30,7 @@ import {
     PanelRight,
     PenLine,
     PencilOff,
+    RotateCcw,
     ScanSearch,
     Scissors,
     ShieldCheck,
@@ -46,10 +47,25 @@ import { useShallow } from "zustand/react/shallow";
 import { scanWithDefender } from "@/lib/defender";
 import { chooseView, toggleUsage, useUsage } from "@/lib/diskUsage";
 import type { FileEntry } from "@/lib/entries";
-import { calcSizes, copyToClipboard, copyToOtherPane, extractHere, newItem, paste, stopSizes, toggleComparePanes, toggleDual, useExplorer, useTab, type ViewMode } from "@/lib/explorer";
+import {
+    calcSizes,
+    copyToClipboard,
+    copyToOtherPane,
+    emptyRecycleBin,
+    extractHere,
+    newItem,
+    paste,
+    restoreRecycled,
+    stopSizes,
+    toggleComparePanes,
+    toggleDual,
+    useExplorer,
+    useTab,
+    type ViewMode,
+} from "@/lib/explorer";
 import { openTerminal } from "@/lib/fs";
 import { TILE_SIZES, type TileSize, zoomTiles } from "@/lib/grid";
-import { samePath, THIS_PC } from "@/lib/paths";
+import { isFolderPath, isRecycleBin, samePath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { toggleTerminal } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
@@ -183,15 +199,18 @@ interface CommandBarProps {
 
 /** Acts on the active pane (its tab and selection). */
 export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
-    const { path, find, tab, view, readOnly, closed, wholeArchive } = useTab(
+    const { path, find, tab, view, readOnly, closed, bin, wholeArchive } = useTab(
         useShallow((t) => {
             const archive = t.listing?.archive;
+            const bin = isRecycleBin(t.path) && !t.find;
             return {
                 path: t.path,
                 find: !!t.find,
                 tab: t.id,
                 view: t.view,
-                readOnly: !!archive || !!t.noAccess,
+                readOnly: !!archive || !!t.noAccess || bin,
+                // The Recycle Bin: its items go back where they were deleted from, or for good.
+                bin,
                 // Windows keeps the folder closed to this account: nothing in it opens or changes.
                 closed: !!t.noAccess,
                 // At the top of an archive on disk (not one inside another): it can be extracted whole.
@@ -209,7 +228,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 sizing: !!s.sizes[path]?.running,
                 dual: s.dual,
                 comparePanes: s.comparePanes,
-                other: !!t?.ready && t.path !== THIS_PC && !t.find && !t.listing?.archive && !t.noAccess,
+                other: !!t?.ready && isFolderPath(t.path) && !t.find && !t.listing?.archive && !t.noAccess,
             };
         })
     );
@@ -217,10 +236,10 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
         useShallow((s) => ({ showHidden: s.settings.showHidden, showPreviewPane: s.settings.showPreviewPane, tileSize: s.settings.tileSize }))
     );
     const setSettings = useStore((s) => s.setSettings);
-    const inFolder = path !== THIS_PC;
+    const inFolder = isFolderPath(path);
     const paths = selected.map((e) => e.path);
     const terminal = () => openTerminal(path).catch((e) => toast.error("Couldn't open a terminal", { description: String(e) }));
-    const [ref, fold] = useFold(`${dual} ${readOnly}`);
+    const [ref, fold] = useFold(`${dual} ${readOnly} ${bin}`);
     const menu = useMenu();
 
     /** The grid's tile sizes, under the arrow: choosing one shows the grid at it. */
@@ -285,7 +304,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
     /** When even the icons don't fit, the view toggles in a menu (and narrower still, list or grid). */
     const showToggles = (e: React.MouseEvent<HTMLButtonElement>) => {
         const below = e.currentTarget.getBoundingClientRect();
-        const canView = inFolder || find;
+        const canView = inFolder || find || bin;
         menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
             ...(fold >= 5
                 ? [
@@ -318,64 +337,79 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
 
     return (
         <div ref={ref} className="flex h-10 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-chrome px-2">
-            <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find || readOnly} title="New folder (Ctrl+Shift+N)">
-                <FolderPlus /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>New folder</span>
-            </Button>
-            {fold < MOST ? (
+            {bin ? (
                 <>
+                    <Button variant="ghost" size="sm" onClick={() => void restoreRecycled(selected)} disabled={!selected.length} title="Restore: the selection back into the folder each was deleted from">
+                        <RotateCcw /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Restore</span>
+                    </Button>
+                    <Tool icon={Trash2} label="Delete for good (Del)" disabled={!paths.length} onClick={onDelete} />
                     <Divider />
-                    <Tool icon={Scissors} label="Cut (Ctrl+X)" disabled={!paths.length || readOnly} onClick={() => copyToClipboard(paths, true)} />
-                    <Tool icon={Copy} label={readOnly && !closed ? "Copy (Ctrl+C): extracted, to paste anywhere" : "Copy (Ctrl+C)"} disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
-                    <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || find || readOnly} onClick={() => paste()} />
-                    {dual && (
-                        <>
-                            <Tool icon={CopyPlus} label="Copy to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(false, paths)} />
-                            <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other || readOnly} onClick={() => copyToOtherPane(true, paths)} />
-                        </>
-                    )}
-                    <Tool
-                        icon={PenLine}
-                        label={selected.length > 1 ? `Rename ${selected.length} items (F2)` : "Rename (F2) · Ctrl+Shift+R renames many"}
-                        disabled={!selected.length || readOnly}
-                        onClick={onRename}
-                    />
-                    <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length || readOnly} onClick={onDelete} />
+                    <Button variant="ghost" size="sm" onClick={() => void emptyRecycleBin()} title="Empty the Recycle Bin: everything in it, on every drive, deleted for good (Windows asks first)">
+                        <Trash2 /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Empty the Recycle Bin</span>
+                    </Button>
                 </>
             ) : (
-                <Tool icon={Ellipsis} label="Cut, copy, paste, rename, delete" aria-haspopup="menu" onClick={showEdits} />
-            )}
-            <Divider />
-            {/* In an archive, or a folder Windows keeps closed, where the tools would be (they're for folders on disk you may read): why the rest is greyed out. */}
-            {readOnly ? (
                 <>
-                    <span
-                        title={
-                            closed
-                                ? "Windows keeps this folder closed to your account: nothing in it can be opened or changed here. Get access from the folder itself, or its right-click menu."
-                                : "Glint opens archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
-                        }
-                        className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber-500/10 px-2 text-xs font-medium text-amber-800 dark:text-amber-400"
-                    >
-                        {closed ? <FolderLock className="size-3.5" /> : <PencilOff className="size-3.5" />}
-                        <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>
-                            {closed ? "No access" : "Read-only archive"}
-                        </span>
-                    </span>
-                    {wholeArchive && (
-                        <Button variant="ghost" size="sm" onClick={() => extractHere(wholeArchive)} title="Extract all: everything into a folder next to the archive">
-                            <ArchiveRestore /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Extract all</span>
+                    <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find || readOnly} title="New folder (Ctrl+Shift+N)">
+                        <FolderPlus /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>New folder</span>
+                    </Button>
+                    {fold < MOST ? (
+                        <>
+                            <Divider />
+                            <Tool icon={Scissors} label="Cut (Ctrl+X)" disabled={!paths.length || readOnly} onClick={() => copyToClipboard(paths, true)} />
+                            <Tool icon={Copy} label={readOnly && !closed ? "Copy (Ctrl+C): extracted, to paste anywhere" : "Copy (Ctrl+C)"} disabled={!paths.length} onClick={() => copyToClipboard(paths, false)} />
+                            <Tool icon={ClipboardPaste} label="Paste (Ctrl+V)" disabled={!inFolder || find || readOnly} onClick={() => paste()} />
+                            {dual && (
+                                <>
+                                    <Tool icon={CopyPlus} label="Copy to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(false, paths)} />
+                                    <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other || readOnly} onClick={() => copyToOtherPane(true, paths)} />
+                                </>
+                            )}
+                            <Tool
+                                icon={PenLine}
+                                label={selected.length > 1 ? `Rename ${selected.length} items (F2)` : "Rename (F2) · Ctrl+Shift+R renames many"}
+                                disabled={!selected.length || readOnly}
+                                onClick={onRename}
+                            />
+                            <Tool icon={Trash2} label="Delete (Del) · Shift+Del deletes permanently" disabled={!paths.length || readOnly} onClick={onDelete} />
+                        </>
+                    ) : (
+                        <Tool icon={Ellipsis} label="Cut, copy, paste, rename, delete" aria-haspopup="menu" onClick={showEdits} />
+                    )}
+                    <Divider />
+                    {/* In an archive, or a folder Windows keeps closed, where the tools would be (they're for folders on disk you may read): why the rest is greyed out. */}
+                    {readOnly ? (
+                        <>
+                            <span
+                                title={
+                                    closed
+                                        ? "Windows keeps this folder closed to your account: nothing in it can be opened or changed here. Get access from the folder itself, or its right-click menu."
+                                        : "Glint opens archives read-only. Copy (Ctrl+C), copy to the other pane or drag items to get them out; to change what's in the archive, copy it out first."
+                                }
+                                className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber-500/10 px-2 text-xs font-medium text-amber-800 dark:text-amber-400"
+                            >
+                                {closed ? <FolderLock className="size-3.5" /> : <PencilOff className="size-3.5" />}
+                                <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>
+                                    {closed ? "No access" : "Read-only archive"}
+                                </span>
+                            </span>
+                            {wholeArchive && (
+                                <Button variant="ghost" size="sm" onClick={() => extractHere(wholeArchive)} title="Extract all: everything into a folder next to the archive">
+                                    <ArchiveRestore /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Extract all</span>
+                                </Button>
+                            )}
+                        </>
+                    ) : (
+                        <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showTools} title="Tools: Terminal, File X-Ray, what's locking, recent changes, duplicate files">
+                            <Wrench /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Tools</span>
+                            <ChevronDown className="-ml-1 size-3.5! opacity-70" />
                         </Button>
                     )}
                 </>
-            ) : (
-                <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showTools} title="Tools: Terminal, File X-Ray, what's locking, recent changes, duplicate files">
-                    <Wrench /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Tools</span>
-                    <ChevronDown className="-ml-1 size-3.5! opacity-70" />
-                </Button>
             )}
 
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
-                {fold < 5 && <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find} tileSize={tileSize} onChange={(v) => chooseView(v, tab)} onSizes={showSizes} />}
+                {fold < 5 && <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find && !bin} tileSize={tileSize} onChange={(v) => chooseView(v, tab)} onSizes={showSizes} />}
                 {fold < 4 && (
                 <>
                 <Button

@@ -14,6 +14,8 @@ export const ATTR = {
     encrypted: 0x4000,
     recallOnOpen: 0x40000,
     recallOnDataAccess: 0x400000,
+    /** In the Recycle Bin: its path is its file there, its `origin` the folder it was deleted from (see recycle.rs). */
+    recycled: 0x08000000,
     /** Compressed with a method Glint can't read. */
     unreadable: 0x10000000,
     /** In an ncdu export (with `inArchive`): listed with its size and date, but its contents aren't there (see archive/ncdu.rs). */
@@ -36,6 +38,8 @@ export interface FileEntry {
     lower: string;
     /** Lowercased extension without the dot; "" for folders and names without one. */
     ext: string;
+    /** In the Recycle Bin: the folder it was deleted from (`modified` is when). */
+    origin?: string;
 }
 
 /** An entry as the backend sends it; listings leave out the path. */
@@ -87,6 +91,11 @@ const HEADER = 40;
  */
 export function decodeListing(buffer: ArrayBuffer): Listing {
     const view = new DataView(buffer);
+    // Items each with a path of their own (flag 4): the Recycle Bin's.
+    if (view.getUint32(28, true) & 4) {
+        const { location, entries, elapsed } = decodeItems(buffer);
+        return { path: location, entries, elapsed };
+    }
     const count = view.getUint32(0, true);
     const pathBytes = view.getUint32(4, true);
     const elapsed = view.getFloat64(8, true);
@@ -122,30 +131,38 @@ export function decodeListing(buffer: ArrayBuffer): Listing {
 
 /**
  * Reads items that each carry their own path, such as search results (layout documented on
- * `encode_items` in fsx.rs): a name is the end of its path unless the names follow the paths.
+ * `encode_items` in fsx.rs): a name is the end of its path unless the names follow the paths, and
+ * where each came from follows them when the Recycle Bin says.
  */
 export function decodeItems(buffer: ArrayBuffer): { location: string; entries: FileEntry[]; elapsed: number } {
     const view = new DataView(buffer);
     const count = view.getUint32(0, true);
     const locationBytes = view.getUint32(4, true);
     const elapsed = view.getFloat64(8, true);
-    const withNames = (view.getUint32(24, true) & 1) !== 0;
+    const columns = view.getUint32(24, true);
+    const withNames = (columns & 1) !== 0;
+    const withOrigins = (columns & 2) !== 0;
     const sizes = new Float64Array(buffer, HEADER, count);
     const modified = new Float64Array(buffer, HEADER + 8 * count, count);
     const attrs = new Uint32Array(buffer, HEADER + 16 * count, count);
     const pathLengths = new Uint32Array(buffer, HEADER + 20 * count, count);
     const nameLengths = new Uint32Array(buffer, HEADER + 24 * count, count);
-    const textAt = HEADER + 28 * count;
+    const originLengths = withOrigins ? new Uint32Array(buffer, HEADER + 28 * count, count) : null;
+    const textAt = HEADER + (withOrigins ? 32 : 28) * count;
     const location = utf8.decode(new Uint8Array(buffer, textAt, locationBytes));
-    // Every path (and name) decodes in one go, then is cut up by its length in UTF-16 units.
+    // Every path (and name, and origin) decodes in one go, then is cut up by its length in UTF-16 units.
     const text = utf8.decode(new Uint8Array(buffer, textAt + locationBytes));
     let names = 0;
-    if (withNames) for (let i = 0; i < count; i++) names += pathLengths[i];
+    for (let i = 0; i < count; i++) names += pathLengths[i];
+    let origins = names;
+    if (withNames) for (let i = 0; i < count; i++) origins += nameLengths[i];
     const entries = new Array<FileEntry>(count);
     for (let i = 0, at = 0; i < count; i++) {
         const path = text.slice(at, (at += pathLengths[i]));
         const name = withNames ? text.slice(names, (names += nameLengths[i])) : path.slice(path.length - nameLengths[i]);
-        entries[i] = withDetails({ name, path, dir: (attrs[i] & 0x10) !== 0, size: sizes[i], modified: modified[i], attrs: attrs[i] });
+        const entry = withDetails({ name, path, dir: (attrs[i] & 0x10) !== 0, size: sizes[i], modified: modified[i], attrs: attrs[i] });
+        if (originLengths) entry.origin = text.slice(origins, (origins += originLengths[i]));
+        entries[i] = entry;
     }
     return { location, entries, elapsed };
 }
@@ -161,6 +178,9 @@ export const isArchived = (e: FileEntry) => (e.attrs & ATTR.inArchive) !== 0;
 
 /** Listed from the index, in a folder Windows keeps closed to this account: read-only, and it can't be opened. */
 export const isClosed = (e: FileEntry) => (e.attrs & ATTR.closed) !== 0;
+
+/** In the Recycle Bin: restored, or deleted for good, but not opened or changed where it is. */
+export const isRecycled = (e: FileEntry) => (e.attrs & ATTR.recycled) !== 0;
 
 /** In an archive, but can't be extracted: password-protected, or compressed in a way Glint can't read. */
 export const isLocked = (e: FileEntry) => (e.attrs & (ATTR.encrypted | ATTR.unreadable)) !== 0;

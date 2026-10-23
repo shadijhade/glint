@@ -14,6 +14,7 @@ import {
     Monitor,
     RotateCw,
     Search as SearchIcon,
+    Trash2,
     X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -22,7 +23,7 @@ import { type FileEntry, isArchiveFile, isHidden } from "@/lib/entries";
 import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName, listDir } from "@/lib/fs";
 import { useGit } from "@/lib/git";
-import { crumbs, samePath, THIS_PC } from "@/lib/paths";
+import { crumbs, isRecycleBin, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { editsAllowed, typoDistance } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -83,7 +84,7 @@ interface Suggestion {
 }
 
 function AddressInput({ path }: { path: string }) {
-    const [text, setText] = useState(path === THIS_PC ? "This PC" : path);
+    const [text, setText] = useState(path === THIS_PC ? "This PC" : isRecycleBin(path) ? "Recycle Bin" : path);
     const [dirEntries, setDirEntries] = useState<{ dir: string; entries: FileEntry[] } | null>(null);
     const [activeIndex, setActiveIndex] = useState(-1);
     const ref = useRef<HTMLInputElement>(null);
@@ -340,7 +341,8 @@ export function AddressBar() {
         const drive = drives.find((d) => samePath(d.path, root));
         return drive ? driveName(drive) : root;
     };
-    const crumbName = (i: number) => (i === 0 ? rootName(trail[0].path) : trail[i].name);
+    // A drive by its name; the Recycle Bin, a place, by its own.
+    const crumbName = (i: number) => (i === 0 && !isRecycleBin(trail[0].path) ? rootName(trail[0].path) : trail[i].name);
     /** A crumb in the "…" menu: the drive's own icon for the first. */
     const crumbItem = (crumb: { path: string }, i: number): Suggestion => {
         const drive = i === 0 ? drives.find((d) => samePath(d.path, crumb.path)) : undefined;
@@ -375,6 +377,7 @@ export function AddressBar() {
             const roots: Suggestion[] = [
                 ...drives.map((d) => ({ name: driveName(d), detail: d.fs, path: d.path, dir: true, icon: DRIVE_ICONS[d.kind] })),
                 ...known.map((k) => ({ name: k.name, path: k.path, dir: true, icon: KNOWN_ICONS[k.id] })),
+                { name: "Recycle Bin", path: RECYCLE_BIN, dir: true, icon: Trash2 },
             ];
             setFlyoutItems(roots);
             return;
@@ -527,13 +530,14 @@ export function AddressBar() {
                                         type="button"
                                         onClick={() => navigate(crumb.path)}
                                         onMouseDown={middleClickOpens(crumb.path)}
-                                        title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : crumb.path}
+                                        title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : isRecycleBin(crumb.path) ? "What you deleted, to restore or delete for good" : crumb.path}
                                         className={cn("flex h-6 min-w-0 items-center gap-1 rounded-[4px] px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
                                     >
                                         {isArchive(crumb.path) && <FileArchive className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
                                         <span className="truncate">{crumbName(i)}</span>
                                     </button>
-                                    {chevron(i)}
+                                    {/* What's in the Recycle Bin isn't a folder to go into. */}
+                                    {!isRecycleBin(crumb.path) && chevron(i)}
                                 </div>
                             ))}
                         </div>

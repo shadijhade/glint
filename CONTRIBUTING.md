@@ -35,6 +35,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/archive/` | Archives opened like folders (zip, 7z, RAR, cabinets, installer packages, tar, compressed files): reading their list of entries, the folder tree, extracting on demand and into staging folders, safety limits ([docs/archives.md](docs/archives.md)) |
 | `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, dust folder sizes and disk-usage maps (or the index when it's on) |
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop, Properties |
+| `src-tauri/src/recycle.rs` | The Recycle Bin as a place: its items from the shell and their `$I` records, and emptying it ([docs/recycle-bin.md](docs/recycle-bin.md)) |
 | `src-tauri/src/compare.rs` | Compare panes down through subfolders and by contents, and what Sync copies |
 | `src-tauri/src/native_preview.rs`, `src/components/explorer/ShellPreview.tsx` | Windows' preview handlers (Office, fonts…) drawing over the preview pane, on a thread of their own |
 | `src-tauri/src/quick.rs`, `src/components/QuickSearch.tsx` | Quick search from anywhere: the shortcut, its window, the tray and starting with Windows |

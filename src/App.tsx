@@ -9,7 +9,7 @@ import logo from "./assets/logo.svg";
 import { astGrepApply, cancelSearch, isDocument, RgMatch, searchBatched, useRewrite } from "./lib/ripgrep";
 import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
 import { archiveOf, closedNotice, closedOf, currentPath, defaultTextSearchFolder, openRequested, refreshIndex, revealInApp } from "./lib/explorer";
-import { THIS_PC } from "./lib/paths";
+import { isFolderPath } from "./lib/paths";
 import { replaceText, toRegExp } from "./lib/text";
 import { checkForUpdates, greetUpdate, useUpdater } from "./lib/updater";
 import { openItem, quickConfigure, setStartWithWindows } from "./lib/fs";
@@ -126,7 +126,7 @@ function App() {
     if (!folder && closedOf()) return closedNotice();
     const target = folder ?? currentPath();
     const state = useStore.getState();
-    if (target && target !== THIS_PC) {
+    if (target && isFolderPath(target)) {
       state.setPath(target);
     } else if (!state.path.trim()) {
       const fallback = defaultTextSearchFolder();

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Cloud, FileX, KeyRound } from "lucide-react";
-import { ATTR, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, isListOnly, isLocked, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
+import { ATTR, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, isListOnly, isLocked, isOnlineOnly, isRecycled, type Sort, type SortKey } from "@/lib/entries";
 import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
@@ -41,6 +41,8 @@ export interface FileViewProps {
     rows: FileEntry[];
     /** Search results: each one shows where it is, relative to `scope`. */
     search: boolean;
+    /** The Recycle Bin: each item shows the folder it was deleted from, and when (its date). */
+    recycled?: boolean;
     scope: string;
     sizes?: SizeRun;
     /** Lowercased name → comparison status against the other pane, when Compare Panes is active. */
@@ -180,8 +182,8 @@ export function LockMark({ entry, className }: { entry: FileEntry; className: st
     return <Icon className={className} aria-label={lockReason(entry)} />;
 }
 
-/** A folder that files dragged in can be dropped on: not one in an archive, which is read-only, nor one Windows keeps closed. */
-export const dropPath = (entry: FileEntry) => (entry.dir && !isArchived(entry) && !isClosed(entry) ? entry.path : undefined);
+/** A folder that files dragged in can be dropped on: not one in an archive, which is read-only, nor one Windows keeps closed, nor one in the Recycle Bin. */
+export const dropPath = (entry: FileEntry) => (entry.dir && !isArchived(entry) && !isClosed(entry) && !isRecycled(entry) ? entry.path : undefined);
 
 /** Where a search result is, below the folder that was searched ("" when right in it). */
 export function relativeTo(scope: string) {
@@ -195,25 +197,32 @@ export function relativeTo(scope: string) {
     };
 }
 
-/** A folder's size: the index's total for a search result, else its size measured here (folders sized as they open). */
-export const sizeOf = (entry: FileEntry, search: boolean, sizes?: SizeRun) => (entry.dir ? (search ? entry.size || undefined : sizes?.sizes.get(entry.name)) : entry.size);
+/** A folder's size: the index's total for a search result (or the Recycle Bin's, with `located`), else its size measured here (folders sized as they open). */
+export const sizeOf = (entry: FileEntry, located: boolean, sizes?: SizeRun) => (entry.dir ? (located ? entry.size || undefined : sizes?.sizes.get(entry.name)) : entry.size);
+
+/** Where an item is, in a list of items from many folders: a search result's folder (below `scope`), or the folder a recycled one was deleted from. */
+export function whereOf(relative: (path: string) => string) {
+    return (entry: FileEntry) => (isRecycled(entry) ? (entry.origin ?? "") : relative(entry.path));
+}
 
 export function FileList(props: FileListProps) {
-    const { rows, rowHeight, search, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, takenOf, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    const { rows, rowHeight, search, recycled, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, takenOf, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    // Items from many folders (search results, the Recycle Bin's) say where each is, in a column of its own.
+    const located = search || !!recycled;
     // Sorted by date taken, the date column shows it (a file that says none, its date modified).
     const byTaken = sort.key === "taken";
     const focusPath = rows[focusIndex]?.path;
     const columns = useStore((s) => s.settings.columns);
-    const relative = useMemo(() => relativeTo(scope), [scope]);
+    const where = useMemo(() => whereOf(relativeTo(scope)), [scope]);
     const maxSize = useMemo(() => {
         let max = 0;
         const limit = Math.min(rows.length, 4000);
         for (let i = 0; i < limit; i++) {
-            const s = sizeOf(rows[i], search, sizes);
+            const s = sizeOf(rows[i], located, sizes);
             if (s !== undefined && s > max) max = s;
         }
         return max;
-    }, [rows, search, sizes]);
+    }, [rows, located, sizes]);
     const nowMs = Date.now();
 
     useLayoutEffect(() => {
@@ -223,12 +232,12 @@ export function FileList(props: FileListProps) {
     const renderRow = (i: number) => {
         const entry = rows[i];
         // Folders found by the index come with their total; fd's come without one (0).
-        const size = sizeOf(entry, search, sizes);
+        const size = sizeOf(entry, located, sizes);
         const selected = selection.has(entry.path);
         // A bar only where it says something: 8% of the biggest here or more (smaller ones would be slivers).
         const share = size && maxSize > 0 ? (size / maxSize) * 100 : 0;
         const sizePct = share >= 8 ? Math.round(share) : 0;
-        const isHot = entry.modified > 0 && nowMs - entry.modified >= 0 && nowMs - entry.modified < 3_600_000;
+        const isHot = !recycled && entry.modified > 0 && nowMs - entry.modified >= 0 && nowMs - entry.modified < 3_600_000;
         const diff = diffs?.get(entry.lower);
         const badge = diff && diff !== "same" ? DIFF_BADGE[diff] : undefined;
         const tracked = gitOf(entry, git);
@@ -238,7 +247,7 @@ export function FileList(props: FileListProps) {
                 id={`${lane}-row-${i}`}
                 role="option"
                 aria-selected={selected}
-                data-search={search || undefined}
+                data-search={located || undefined}
                 data-drop={dropPath(entry)}
                 onMouseDown={(e) => props.onRowMouseDown(e, i)}
                 onDoubleClick={() => props.onOpen(entry)}
@@ -274,22 +283,25 @@ export function FileList(props: FileListProps) {
                     {isOnlineOnly(entry) && <Cloud className="size-3.5 shrink-0 text-sky-500" aria-label="Online-only" />}
                     {isLocked(entry) && <LockMark entry={entry} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
                 </div>
-                {search && (
-                    <span className="truncate text-xs text-muted-foreground" title={parentPath(entry.path)}>
-                        {relative(entry.path)}
+                {located && (
+                    <span className="truncate text-xs text-muted-foreground" title={recycled ? entry.origin : parentPath(entry.path)}>
+                        {where(entry)}
                     </span>
                 )}
                 {byTaken && typeof takenOf?.(entry) === "number" ? (
-                    <span className={cn("truncate text-xs tabular-nums text-foreground/80", search ? "col-optional" : "col-narrow")} title={`Taken ${formatFullDate(takenOf(entry)!)}`}>
+                    <span className={cn("truncate text-xs tabular-nums text-foreground/80", located ? "col-optional" : "col-narrow")} title={`Taken ${formatFullDate(takenOf(entry)!)}`}>
                         {formatDate(takenOf(entry)!)}
                     </span>
                 ) : (
-                    <span className={cn("flex items-center gap-1.5 truncate text-xs tabular-nums text-muted-foreground", search ? "col-optional" : "col-narrow")} title={formatFullDate(entry.modified)}>
+                    <span
+                        className={cn("flex items-center gap-1.5 truncate text-xs tabular-nums text-muted-foreground", located ? "col-optional" : "col-narrow")}
+                        title={`${recycled ? "Deleted " : ""}${formatFullDate(entry.modified)}`}
+                    >
                         {isHot && <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title="Modified within the last hour" />}
                         <span className="truncate">{formatDate(entry.modified)}</span>
                     </span>
                 )}
-                {!search && <span className="col-optional truncate text-xs text-muted-foreground">{typeLabel(entry)}</span>}
+                {!located && <span className="col-optional truncate text-xs text-muted-foreground">{typeLabel(entry)}</span>}
                 <span className="relative flex h-5 items-center justify-end overflow-hidden rounded-[3px] px-1 text-right text-xs tabular-nums text-muted-foreground">
                     {sizePct > 0 && (
                         <span
@@ -310,16 +322,16 @@ export function FileList(props: FileListProps) {
             style={Object.fromEntries(Object.entries(columns).map(([column, width]) => [`--col-${column}`, `${width}px`]))}
         >
             <div
-                data-search={search || undefined}
+                data-search={located || undefined}
                 onContextMenu={onHeaderMenu}
                 className="file-row h-8 shrink-0 overflow-y-hidden border-b px-3 text-xs font-medium text-muted-foreground [scrollbar-gutter:stable]"
             >
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
-                {search && <span className="truncate">Folder</span>}
-                <Header sortKey={byTaken ? "taken" : "modified"} sort={sort} onSort={onSort} column="date" className={search ? "col-optional" : "col-narrow"}>
-                    {byTaken ? "Date taken" : "Date modified"}
+                {located && <span className="truncate">{recycled ? "Deleted from" : "Folder"}</span>}
+                <Header sortKey={byTaken ? "taken" : "modified"} sort={sort} onSort={onSort} column="date" className={located ? "col-optional" : "col-narrow"}>
+                    {byTaken ? "Date taken" : recycled ? "Date deleted" : "Date modified"}
                 </Header>
-                {!search && (
+                {!located && (
                     <Header sortKey="type" sort={sort} onSort={onSort} column="type" className="col-optional">
                         Type
                     </Header>
@@ -333,7 +345,7 @@ export function FileList(props: FileListProps) {
                     data-file-list
                     role="listbox"
                     aria-multiselectable
-                    aria-label={search ? "Search results" : "Files"}
+                    aria-label={search ? "Search results" : recycled ? "Recycle Bin" : "Files"}
                     aria-activedescendant={focusIndex >= 0 ? `${lane}-row-${focusIndex}` : undefined}
                     tabIndex={0}
                     count={rows.length}

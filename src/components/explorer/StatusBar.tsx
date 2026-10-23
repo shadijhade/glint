@@ -5,7 +5,7 @@ import type { FileEntry } from "@/lib/entries";
 import { enableIndex, useExplorer, useTab, viewKey } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { type GitRun, useGit } from "@/lib/git";
-import { baseName, THIS_PC } from "@/lib/paths";
+import { baseName, isRecycleBin, THIS_PC } from "@/lib/paths";
 import { type ThumbRun, useThumbRuns } from "@/lib/thumbs";
 import { openBatchRename } from "./BatchRenameDialog";
 import { UsageWork } from "./DiskUsage";
@@ -181,7 +181,8 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                 {selected.length > 0 && ` · ${formatCount(selected.length)} selected`}
                 {selectedFiles.length > 0 && ` · ${formatSize(selectedBytes)}`}
             </span>
-            {!listing?.archive && !noAccess && selected.length === 1 && !selected[0].dir && (
+            {/* An archive's items, a closed folder's and the Recycle Bin's aren't files to look into or rename here. */}
+            {!listing?.archive && !noAccess && !isRecycleBin(path) && selected.length === 1 && !selected[0].dir && (
                 <button
                     type="button"
                     onClick={() => inspectXRay(selected[0].path)}
@@ -191,7 +192,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                     <Fingerprint className="size-3" /> X-Ray
                 </button>
             )}
-            {!listing?.archive && !noAccess && selected.length > 1 && (
+            {!listing?.archive && !noAccess && !isRecycleBin(path) && selected.length > 1 && (
                 <button
                     type="button"
                     onClick={() => openBatchRename(selected, listing?.entries ?? selected)}

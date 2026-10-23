@@ -3,14 +3,21 @@ import { ARCHIVE_IN_PATH } from "./archives.ts";
 /** The "This PC" view (drives and known folders) has no real path. */
 export const THIS_PC = "";
 
+/** The Recycle Bin, by File Explorer's name for it: a place, not a folder, whose items each have a path of their own (recycle.rs). */
+export const RECYCLE_BIN = "shell:RecycleBinFolder";
+export const isRecycleBin = (path: string) => path.toLowerCase() === "shell:recyclebinfolder";
+
+/** A folder (on disk, or in an archive) rather than This PC or the Recycle Bin: what's in it has its path. */
+export const isFolderPath = (path: string) => path !== THIS_PC && !isRecycleBin(path);
+
 const SEPARATORS = /[\\/]+$/;
 
 /** In an archive (or the archive itself), by its names: read-only, and not on disk for other tools. */
 export const inArchivePath = (path: string) => ARCHIVE_IN_PATH.test(path);
 
-/** "C:\", "C:", "\\server\share" and "/" are roots. */
+/** "C:\", "C:", "\\server\share" and "/" are roots, and so is the Recycle Bin (This PC is above it). */
 export function isRoot(path: string) {
-    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/";
+    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/" || isRecycleBin(path);
 }
 
 export function joinPath(dir: string, name: string) {
@@ -71,6 +78,7 @@ export function linkedPath(url: string, folder: string, root: string): string | 
 /** The breadcrumb trail: root first, then each folder down to `path`. */
 export function crumbs(path: string): { name: string; path: string }[] {
     if (path === THIS_PC) return [];
+    if (isRecycleBin(path)) return [{ name: "Recycle Bin", path: RECYCLE_BIN }];
     const unc = path.match(/^(\\\\[^\\]+\\[^\\]+)(.*)$/);
     let root: string;
     let rest: string;
