@@ -4,12 +4,15 @@
 //!
 //! The export is `[1, minor, {metadata}, root]`, where a folder is an array of its own info and its
 //! children, and a file is its info object. It's read as a stream with a stack of the folders it's
-//! in, rather than recursively, so a deep one can't run the stack out.
+//! in, rather than recursively, so a deep one can't run the stack out. `export` writes one, from a
+//! walk of a folder on disk (Export as ncdu JSON).
 
 use super::tree::{Item, IN_ARCHIVE, LIST_ONLY};
 use super::Failure;
 use std::collections::HashSet;
-use std::io::{BufRead, ErrorKind};
+use std::io::{self, BufRead, ErrorKind, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Folders nested deeper than this are taken for damage (real disks stop long before).
 const MAX_DEPTH: usize = 2048;
@@ -343,6 +346,139 @@ pub fn read(r: impl BufRead, max_entries: usize) -> Result<Vec<Item>, Failure> {
         }
     }
     Ok(items)
+}
+
+/// What an export wrote: entries, and the bytes of the files in them.
+#[derive(Debug, Default)]
+pub struct Exported {
+    pub entries: u64,
+    pub bytes: u64,
+}
+
+/// A JSON string: quotes and backslashes escaped, control characters as \u escapes, the rest as UTF-8.
+fn json_string(out: &mut impl Write, s: &str) -> io::Result<()> {
+    out.write_all(b"\"")?;
+    let mut from = 0;
+    for (at, c) in s.char_indices() {
+        let escape = match c {
+            '"' => Some("\\\"".to_string()),
+            '\\' => Some("\\\\".to_string()),
+            c if (c as u32) < 0x20 => Some(format!("\\u{:04x}", c as u32)),
+            _ => None,
+        };
+        if let Some(escape) = escape {
+            out.write_all(&s.as_bytes()[from..at])?;
+            out.write_all(escape.as_bytes())?;
+            from = at + c.len_utf8();
+        }
+    }
+    out.write_all(&s.as_bytes()[from..])?;
+    out.write_all(b"\"")
+}
+
+/// The volume's cluster size, which a file's disk usage is rounded up to (4 KB when unknown).
+#[cfg(windows)]
+fn cluster_size(path: &Path) -> u64 {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceW, GetVolumePathNameW};
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut volume = vec![0u16; 1024];
+    let (mut sectors, mut bytes, mut free, mut total) = (0u32, 0u32, 0u32, 0u32);
+    let found = unsafe { GetVolumePathNameW(PCWSTR(wide.as_ptr()), &mut volume).is_ok() && GetDiskFreeSpaceW(PCWSTR(volume.as_ptr()), Some(&mut sectors), Some(&mut bytes), Some(&mut free), Some(&mut total)).is_ok() };
+    if found && sectors > 0 && bytes > 0 {
+        sectors as u64 * bytes as u64
+    } else {
+        4096
+    }
+}
+
+#[cfg(not(windows))]
+fn cluster_size(_: &Path) -> u64 {
+    4096
+}
+
+fn seconds(time: io::Result<std::time::SystemTime>) -> u64 {
+    time.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
+}
+
+/// One info object: a folder's (no size of its own on Windows) or a file's, with ncdu's markers for
+/// a folder that couldn't be read and for what isn't a regular file (a link not followed).
+fn write_info(out: &mut impl Write, name: &str, file: Option<(u64, u64)>, mtime: u64, read_error: bool, not_regular: bool) -> io::Result<()> {
+    out.write_all(b"{\"name\":")?;
+    json_string(out, name)?;
+    if let Some((asize, dsize)) = file {
+        write!(out, ",\"asize\":{asize},\"dsize\":{dsize}")?;
+    }
+    write!(out, ",\"mtime\":{mtime}")?;
+    if read_error {
+        out.write_all(b",\"read_error\":true")?;
+    }
+    if not_regular {
+        out.write_all(b",\"notreg\":true")?;
+    }
+    out.write_all(b"}")
+}
+
+/// Writes the folder `root` as ncdu's JSON export to `out`, walking it without recursion and
+/// without following junctions or symlinks (they're listed, as ncdu lists links). Folders that
+/// can't be read are marked as ncdu marks them. `progress` gets the entries so far, now and then;
+/// `cancel` stops it.
+pub fn export(root: &Path, out: impl Write, cancel: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Result<Exported, Failure> {
+    use std::os::windows::fs::MetadataExt;
+    const REPARSE_POINT: u32 = 0x400;
+    let mut out = io::BufWriter::with_capacity(1 << 20, out);
+    let cluster = cluster_size(root);
+    let disk = |size: u64| size.div_ceil(cluster) * cluster;
+    let top = std::fs::read_dir(root)?;
+    write!(out, "[1,2,{{\"progname\":\"Glint\",\"progver\":\"{}\",\"timestamp\":{}}},\n[", env!("CARGO_PKG_VERSION"), seconds(Ok(std::time::SystemTime::now())))?;
+    write_info(&mut out, &root.to_string_lossy(), None, seconds(std::fs::metadata(root).and_then(|m| m.modified())), false, false)?;
+    let mut stack = vec![top];
+    let mut done = Exported::default();
+    let mut last = std::time::Instant::now();
+    while let Some(dir) = stack.last_mut() {
+        let Some(entry) = dir.next() else {
+            out.write_all(b"]")?;
+            stack.pop();
+            continue;
+        };
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Failure::Cancelled);
+        }
+        let Ok(entry) = entry else { continue };
+        // From the folder's listing itself: no file is opened.
+        let Ok(meta) = entry.metadata() else { continue };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let link = meta.file_attributes() & REPARSE_POINT != 0;
+        let mtime = seconds(meta.modified());
+        done.entries += 1;
+        if last.elapsed() >= std::time::Duration::from_millis(100) {
+            last = std::time::Instant::now();
+            progress(done.entries);
+        }
+        if meta.is_dir() && !link {
+            out.write_all(b",\n[")?;
+            match std::fs::read_dir(entry.path()) {
+                Ok(inside) => {
+                    write_info(&mut out, &name, None, mtime, false, false)?;
+                    stack.push(inside);
+                }
+                Err(_) => {
+                    write_info(&mut out, &name, None, mtime, true, false)?;
+                    out.write_all(b"]")?;
+                }
+            }
+        } else {
+            let size = if link { 0 } else { meta.len() };
+            done.bytes += size;
+            out.write_all(b",\n")?;
+            write_info(&mut out, &name, Some((size, disk(size))), mtime, false, link)?;
+        }
+    }
+    out.write_all(b"]\n")?;
+    out.flush()?;
+    progress(done.entries);
+    Ok(done)
 }
 
 #[cfg(test)]

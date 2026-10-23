@@ -1004,6 +1004,35 @@ fn browses_ncdu_exports() {
 }
 
 #[test]
+fn exports_folders_as_ncdu_json() {
+    let dir = scratch("export");
+    let root = dir.join("project");
+    fs::create_dir_all(root.join("src").join("deep")).unwrap();
+    fs::create_dir_all(root.join("empty")).unwrap();
+    fs::write(root.join("readme.txt"), b"hello").unwrap();
+    fs::write(root.join("src").join("main.rs"), vec![b'x'; 5000]).unwrap();
+    fs::write(root.join("src").join("deep").join("été 😀.txt"), b"accents").unwrap();
+    // A junction back to the top: listed, not followed.
+    let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(root.join("loop")).arg(&root).output().unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stdout));
+    let dest = dir.join("project.ncdu");
+    let staged = tauri::async_runtime::block_on(export_ncdu(text(&root), text(&dest), "export".into(), Channel::new(|_| Ok(())))).unwrap();
+    assert_eq!((staged.bytes, Path::new(&staged.paths[0])), (5 + 5000 + 7, dest.as_path()));
+    assert!(!dir.join("project.ncdu.part").exists());
+    // It reads back as the same folders, with their sizes.
+    let p = text(&dest);
+    let top = listing(&p);
+    assert_eq!(names(&top), ["empty", "src", "loop", "readme.txt"]);
+    assert_eq!(top.items.iter().map(|i| i.2).collect::<Vec<_>>(), [0, 5007, 0, 5]);
+    assert_eq!(names(&listing(&format!("{p}\\src\\deep"))), ["été 😀.txt"]);
+    // Stopped: an error, and the command leaves no file (nor its .part).
+    let mut sink = Vec::new();
+    assert!(matches!(ncdu::export(&root, &mut sink, &AtomicBool::new(true), &mut |_| {}), Err(Failure::Cancelled)));
+    // Only folders on disk export.
+    assert!(tauri::async_runtime::block_on(export_ncdu(format!("{p}\\src"), text(&dir.join("x.ncdu")), "export".into(), Channel::new(|_| Ok(())))).is_err());
+}
+
+#[test]
 fn says_when_entries_are_password_protected() {
     let dir = scratch("encrypted");
     for name in ["aes.zip", "zipcrypto.zip", "encrypted.7z"] {

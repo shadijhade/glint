@@ -1026,6 +1026,33 @@ pub async fn archive_extract_here(path: String, lane: String, on_progress: Chann
     .await
 }
 
+/// Export as ncdu JSON: the folder `path` on disk walked into `dest` as ncdu's JSON export (which
+/// ncdu, and Glint, open again), written to `dest.part` and renamed when done. Progress counts
+/// entries (there's no total to know ahead); Stop (the tab `lane`) or a failure leaves nothing.
+/// The export is `paths[0]` of what comes back.
+#[tauri::command]
+pub async fn export_ncdu(path: String, dest: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
+    if is_inside(&path) || locate(&path).is_some() {
+        return Err("Only folders on disk can be exported".into());
+    }
+    in_lane(lane, move |cancel| {
+        let part = format!("{dest}.part");
+        let written = std::fs::File::create(&part).map_err(Failure::from).and_then(|file| {
+            ncdu::export(Path::new(&path), file, cancel, &mut |done| {
+                let _ = on_progress.send(StageProgress { done, total: 0 });
+            })
+        });
+        match written.and_then(|done| std::fs::rename(&part, &dest).map(|_| done).map_err(Failure::from)) {
+            Ok(done) => Ok(Staged { folder: path, paths: vec![dest], skipped: Vec::new(), bytes: done.bytes }),
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                Err(e.message())
+            }
+        }
+    })
+    .await
+}
+
 /// A compressed tar's name without its ".tar" ("photos" for the "photos.tar" of photos.tar.gz).
 fn without_tar(stem: &str) -> &str {
     match stem.len().checked_sub(4).and_then(|at| stem.get(at..).map(|end| (at, end))) {

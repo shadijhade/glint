@@ -478,6 +478,7 @@ pub fn run() {
             archive::archive_progress,
             archive::cancel_archive_read,
             archive::archive_peek,
+            archive::export_ncdu,
             locks::who_locks,
             locks::stop_locking_process,
             pe::inspect_pe,
