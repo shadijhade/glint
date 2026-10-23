@@ -706,6 +706,8 @@ export interface DedupReport {
     sizeCandidates: number;
     edgeCandidates: number;
     hardlinksSkipped: number;
+    /** The folder's drive clones blocks (ReFS, a Dev Drive): copies can be clones of the one kept. */
+    clones: boolean;
     elapsedMs: number;
 }
 
@@ -718,6 +720,8 @@ export interface HardlinkResult {
 export const findDuplicates = (root: string, minBytes?: number) => invoke<DedupReport>("find_duplicates", { root, minBytes });
 export const cancelDedup = () => invoke<void>("cancel_dedup");
 export const hardlinkDuplicates = (keep: string, duplicates: string[]) => invoke<HardlinkResult>("hardlink_duplicates", { keep, duplicates });
+/** On ReFS or a Dev Drive: each copy replaced with a block clone of `keep`, sharing its space yet a file of its own (`linked` says how many). */
+export const cloneDuplicates = (keep: string, duplicates: string[]) => invoke<HardlinkResult>("clone_duplicates", { keep, duplicates });
 
 export interface LiveFsEvent {
     path: string;

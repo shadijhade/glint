@@ -8,7 +8,9 @@
 //! Stage 3: Computes a full BLAKE3 content digest across remaining candidates in parallel.
 //!
 //! Hard-linking compares each pair byte for byte first, so a file that changed since the scan (or a
-//! digest that somehow agreed) is never replaced.
+//! digest that somehow agreed) is never replaced. On a volume that clones blocks (ReFS, a Dev Drive),
+//! Clone replaces each copy with a block clone of the one kept instead: they share their space until
+//! one changes, yet stay separate files.
 
 use crate::fsx::{self, blocking};
 use serde::Serialize;
@@ -54,9 +56,12 @@ pub struct DedupReport {
     pub size_candidates: usize,
     pub edge_candidates: usize,
     pub hardlinks_skipped: usize,
+    /// The folder's volume clones blocks (ReFS, a Dev Drive), so copies can be clones of the one kept.
+    pub clones: bool,
     pub elapsed_ms: f64,
 }
 
+/// What hard-linking (or cloning) a group did: `linked` copies replaced.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HardlinkResult {
@@ -81,6 +86,17 @@ pub async fn find_duplicates(root: String, min_bytes: Option<u64>) -> Result<Ded
 #[tauri::command]
 pub async fn hardlink_duplicates(keep: String, duplicates: Vec<String>) -> Result<HardlinkResult, String> {
     blocking(move || link_group(&keep, &duplicates)).await
+}
+
+#[tauri::command]
+pub async fn clone_duplicates(keep: String, duplicates: Vec<String>) -> Result<HardlinkResult, String> {
+    blocking(move || clone_group(&keep, &duplicates)).await
+}
+
+/// Whether `path`'s volume clones blocks (ReFS, a Dev Drive): a file's clone shares its space until
+/// either changes.
+pub fn clones_supported(path: &str) -> bool {
+    reflink_copy::check_reflink_support(path, path).is_ok_and(|support| support == reflink_copy::ReflinkSupport::Supported)
 }
 
 #[derive(Clone, Debug)]
@@ -315,6 +331,7 @@ pub fn scan_duplicates(root: &str, min_bytes: u64, cancel: &AtomicBool) -> Resul
         size_candidates,
         edge_candidates,
         hardlinks_skipped,
+        clones: clones_supported(root),
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
 }
@@ -434,6 +451,105 @@ pub fn link_group(keep: &str, duplicates: &[String]) -> Result<HardlinkResult, S
     })
 }
 
+/// Replaces each file in `duplicates` with a block clone of `keep`, on a volume that clones blocks (ReFS,
+/// a Dev Drive): they share their space until one changes, yet stay separate files, each with its own
+/// dates and attributes. Each one is compared with `keep` byte for byte first, and its clone with it
+/// again before the clone takes its place; the first that differs or fails stops the batch with nothing
+/// of it replaced.
+pub fn clone_group(keep: &str, duplicates: &[String]) -> Result<HardlinkResult, String> {
+    let start = Instant::now();
+    let keep_meta = fs::metadata(keep).map_err(|e| format!("{keep}: {e}"))?;
+    if !keep_meta.is_file() {
+        return Err("Target to keep is not a regular file".into());
+    }
+    plain_file(keep, &keep_meta)?;
+    let keep_size = keep_meta.len();
+    let keep_id = File::open(keep).ok().and_then(|f| file_identity(&f));
+    let (mut cloned, mut reclaimed_bytes) = (0usize, 0u64);
+
+    for dup in duplicates {
+        if dup.eq_ignore_ascii_case(keep) {
+            continue;
+        }
+        let dup_meta = fs::metadata(dup).map_err(|e| format!("{dup}: {e}"))?;
+        if !dup_meta.is_file() {
+            return Err(format!("“{dup}” is not a regular file"));
+        }
+        plain_file(dup, &dup_meta)?;
+        if dup_meta.len() != keep_size {
+            return Err(format!("“{dup}” changed size, so it was left as it is"));
+        }
+        // A hard link to the file kept is that file already.
+        if keep_id.is_some() && File::open(dup).ok().and_then(|f| file_identity(&f)) == keep_id {
+            continue;
+        }
+        if !same_content(keep, dup)? {
+            return Err(format!("“{dup}” no longer has the same content as “{keep}”, so it was left as it is"));
+        }
+        let clone = Path::new(dup).with_extension(format!("glint-clone-tmp-{}", std::process::id()));
+        reflink_copy::reflink(keep, &clone).map_err(|e| format!("Couldn't clone “{keep}” beside “{dup}”: {e}"))?;
+        // The clone holds what the copy it replaces held, or it goes.
+        let checked = same_content(&clone.to_string_lossy(), dup);
+        if !matches!(checked, Ok(true)) {
+            let _ = fs::remove_file(&clone);
+            return Err(checked.err().unwrap_or_else(|| format!("The clone of “{keep}” didn't match “{dup}”, so it was left as it is")));
+        }
+        if let Err(e) = swap_in(&clone, Path::new(dup), &dup_meta) {
+            let _ = fs::remove_file(&clone);
+            return Err(format!("Couldn't put the clone in place of “{dup}”: {e}"));
+        }
+        cloned += 1;
+        reclaimed_bytes += keep_size;
+    }
+
+    Ok(HardlinkResult {
+        linked: cloned,
+        reclaimed_bytes,
+        elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+    })
+}
+
+fn make_writable(path: &Path) -> io::Result<()> {
+    let mut perms = fs::metadata(path)?.permissions();
+    if perms.readonly() {
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+/// Gives `path` the attributes `was` had: read-only, hidden, system, archive, not indexed.
+#[cfg(windows)]
+fn set_attributes(path: &Path, was: &fs::Metadata) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_FLAGS_AND_ATTRIBUTES};
+    const KEPT: u32 = 0x1 | 0x2 | 0x4 | 0x20 | 0x2000;
+    unsafe { SetFileAttributesW(&HSTRING::from(path.as_os_str()), FILE_FLAGS_AND_ATTRIBUTES(was.file_attributes() & KEPT)) }.map_err(io::Error::from)
+}
+
+#[cfg(not(windows))]
+fn set_attributes(path: &Path, was: &fs::Metadata) -> io::Result<()> {
+    fs::set_permissions(path, was.permissions())
+}
+
+/// Puts `replacement` in the place of `file`, as `file` was: its dates and its attributes.
+fn swap_in(replacement: &Path, file: &Path, was: &fs::Metadata) -> io::Result<()> {
+    // Writable for its dates to be set, and the file it replaces too, which a rename can't replace otherwise.
+    make_writable(replacement)?;
+    let times = fs::FileTimes::new().set_accessed(was.accessed()?).set_modified(was.modified()?);
+    #[cfg(windows)]
+    let times = std::os::windows::fs::FileTimesExt::set_created(times, was.created()?);
+    fs::OpenOptions::new().write(true).open(replacement)?.set_times(times)?;
+    make_writable(file)?;
+    if let Err(e) = fs::rename(replacement, file) {
+        let _ = set_attributes(file, was);
+        return Err(e);
+    }
+    set_attributes(file, was)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,7 +609,70 @@ mod tests {
         assert!(err.contains("same content"), "{err}");
         assert_eq!(fs::read(&a).unwrap(), one);
         assert_eq!(fs::read(&b).unwrap(), other);
+        let err = clone_group(&a.to_string_lossy(), &[b.to_string_lossy().into_owned()]).unwrap_err();
+        assert!(err.contains("same content"), "{err}");
+        assert_eq!(fs::read(&b).unwrap(), other);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clones_only_where_the_volume_clones() {
+        let dir = std::env::temp_dir().join(format!("glint-dedup-clone-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let content = vec![0x5au8; 70 * 1024];
+        let (a, b) = (dir.join("a.bin"), dir.join("b.bin"));
+        fs::write(&a, &content).unwrap();
+        fs::write(&b, &content).unwrap();
+        let id = |path: &Path| File::open(path).ok().and_then(|f| file_identity(&f));
+        let before = id(&b);
+        match clone_group(&a.to_string_lossy(), &[b.to_string_lossy().into_owned()]) {
+            // NTFS, as on most PCs: it says so, and nothing changes.
+            Err(e) => {
+                assert!(!clones_supported(&dir.to_string_lossy()));
+                assert!(e.contains("Couldn't clone"), "{e}");
+                assert_eq!(id(&b), before, "the copy is the same file still");
+            }
+            // ReFS or a Dev Drive: a clone in its place, a file of its own.
+            Ok(done) => {
+                assert!(clones_supported(&dir.to_string_lossy()));
+                assert_eq!(done.linked, 1);
+                assert_ne!(id(&b), id(&a));
+            }
+        }
+        assert_eq!(fs::read(&b).unwrap(), content);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2, "no clone left beside it");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replacement_takes_the_files_place_as_it_was() {
+        let dir = std::env::temp_dir().join(format!("glint-dedup-swap-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (file, replacement) = (dir.join("report.txt"), dir.join("report.glint-clone-tmp"));
+        fs::write(&file, "the old one").unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        File::options().write(true).open(&file).unwrap().set_times(fs::FileTimes::new().set_modified(old).set_accessed(old)).unwrap();
+        // Read-only and hidden, which a rename couldn't replace as it is.
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_FLAGS_AND_ATTRIBUTES};
+            SetFileAttributesW(&windows::core::HSTRING::from(file.as_os_str()), FILE_FLAGS_AND_ATTRIBUTES(0x1 | 0x2)).unwrap();
+        }
+        fs::write(&replacement, "the new one").unwrap();
+        let was = fs::metadata(&file).unwrap();
+        swap_in(&replacement, &file, &was).unwrap();
+
+        assert_eq!(fs::read_to_string(&file).unwrap(), "the new one");
+        assert!(!replacement.exists());
+        let now = fs::metadata(&file).unwrap();
+        assert_eq!(now.modified().unwrap(), old);
+        assert!(now.permissions().readonly());
+        #[cfg(windows)]
+        assert!(std::os::windows::fs::MetadataExt::file_attributes(&now) & 0x2 != 0, "hidden still");
+        make_writable(&file).unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
 }

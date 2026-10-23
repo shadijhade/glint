@@ -1238,6 +1238,14 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
+## Block clones (compiled into the app)
+
+| Crate | Version | Used for | License |
+| :--- | :--- | :--- | :--- |
+| [reflink-copy](https://github.com/cargo-bins/reflink-copy) | 0.1.30 | Find duplicates' Clone on ReFS and Dev Drives | MIT or Apache-2.0 |
+
+The Apache License 2.0 is reproduced in full under [dust](#dust) above.
+
 ## Calculator (compiled into the app)
 
 | Crate | Version | Used for | License |
