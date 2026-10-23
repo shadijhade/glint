@@ -18,7 +18,7 @@ import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { ChangesView } from "./ChangesView";
 import { DataTree } from "./DataTree";
 import { HexView } from "./HexView";
-import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
+import { isSheetCandidate, isSqliteCandidate, isTabularCandidate, SheetPreview, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
 import { MarkdownView } from "./MarkdownView";
 import { ShellPreview } from "./ShellPreview";
@@ -352,6 +352,9 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     const markdown = readable && isMarkdown(entry);
     // JSON, YAML and TOML as a tree (up to the 64 MB the jq worker reads).
     const data = readable && entry.size <= 64 * 1024 * 1024 ? dataFormat(entry) : undefined;
+    // Workbooks and Parquet files as tables, from disk; a workbook can show in Windows' previewer too (Excel's).
+    const sheet = readable && !archived && isSheetCandidate(entry);
+    const workbook = sheet && entry.ext !== "parquet";
     // A file Git has a change for can show what changed since its last commit instead.
     const mark = useGitMark(entry.path);
     const changed = !entry.dir && !archived && !!mark && mark !== "ignored";
@@ -360,9 +363,12 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
             ? { view: "file", label: "Rendered", title: "The Markdown as it reads" }
             : data
               ? { view: "file", label: "Tree", title: "Its values as a tree, with a jq filter" }
-              : { view: "file", label: "File", title: "The file as it is" },
+              : sheet
+                ? { view: "file", label: "Table", title: "Its rows, read by Glint" }
+                : { view: "file", label: "File", title: "The file as it is" },
         ...(markdown ? [{ view: "source" as const, label: "Source", title: "The Markdown as written" }] : []),
         ...(data ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
+        ...(workbook ? [{ view: "source" as const, label: "Previewer", title: "As Windows' previewer for it shows it (Excel's, with Office installed)" }] : []),
         ...(changed ? [{ view: "changes" as const, label: "Changes", title: "What changed since the last commit (Git)" }] : []),
         ...(readable ? [{ view: "hex" as const, label: "Hex", title: "Its bytes, in hexadecimal" }] : []),
     ];
@@ -395,6 +401,15 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     // Databases and tables are read from disk, so not from inside an archive (there they show as text).
     else if (!archived && isSqliteCandidate(entry)) body = <SqlitePreview entry={entry} />;
     else if (!archived && isTabularCandidate(entry)) body = <TabularPreview entry={entry} />;
+    else if (sheet)
+        body =
+            view === "source" ? (
+                <ShellPreview entry={entry} over={!!onClose}>
+                    <BigIcon entry={entry} />
+                </ShellPreview>
+            ) : (
+                <SheetPreview entry={entry} />
+            );
     else if (markdown) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <MarkdownPreview entry={entry} />;
     else if (data) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <DataTree entry={entry} format={data} />;
     // Unknown extensions get a text preview attempt; the backend spots binary files.

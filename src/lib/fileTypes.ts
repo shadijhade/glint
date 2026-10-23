@@ -67,7 +67,7 @@ const KINDS: [string, Kind][] = [
     ["ncdu", { icon: FileArchive, tone: "text-amber-600 dark:text-amber-500", label: "ncdu export", group: G.archives }],
     ["pdf", { icon: FileText, tone: "text-red-500", label: "PDF document", preview: "pdf", group: G.documents }],
     ["doc docx odt rtf pages", { icon: FileText, tone: "text-blue-600 dark:text-blue-400", label: "Word document", group: G.documents }],
-    ["xls xlsx xlsm ods numbers", { icon: FileSpreadsheet, tone: "text-green-600 dark:text-green-500", label: "Spreadsheet", group: G.documents }],
+    ["xls xlsx xlsm xlsb xltx ods numbers", { icon: FileSpreadsheet, tone: "text-green-600 dark:text-green-500", label: "Spreadsheet", group: G.documents }],
     ["csv tsv", { icon: FileSpreadsheet, tone: "text-green-600 dark:text-green-500", label: "% file", preview: "text", group: G.documents }],
     ["ppt pptx odp key", { icon: Presentation, tone: "text-orange-500", label: "Presentation", group: G.documents }],
     ["json jsonc json5 geojson webmanifest har", { icon: FileJson, tone: "text-yellow-600 dark:text-yellow-500", label: "JSON file", preview: "text", group: G.code }],
@@ -82,6 +82,7 @@ const KINDS: [string, Kind][] = [
     ["iso img vhd vhdx vmdk dmg", { icon: Disc, tone: "text-indigo-500", label: "Disk image", group: G.disks }],
     ["lnk url", { icon: Link, tone: "text-cyan-600 dark:text-cyan-400", label: "Shortcut", group: G.other }],
     ["db sqlite sqlite3 mdb accdb", { icon: Database, tone: "text-teal-600 dark:text-teal-400", label: "Database", group: G.data }],
+    ["parquet", { icon: Database, tone: "text-teal-600 dark:text-teal-400", label: "Parquet file", group: G.data }],
     ["epub mobi azw3 cbz cbr", { icon: BookOpen, tone: "text-amber-700 dark:text-amber-400", label: "E-book", group: G.documents }],
     ["pem key crt cer pfx p12 gpg asc", { icon: FileLock, tone: "text-yellow-700 dark:text-yellow-500", label: "Certificate or key", group: G.other }],
 ];

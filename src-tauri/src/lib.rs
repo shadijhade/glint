@@ -20,6 +20,7 @@ mod native_preview;
 mod pe;
 mod proc;
 mod quick;
+mod sheet;
 mod shell;
 mod sign;
 mod snap;
@@ -532,6 +533,7 @@ pub fn run() {
             markdown::markdown_html,
             jq::jq_query,
             jq::jq_stop,
+            sheet::inspect_sheet,
             sign::verify_signature,
             defender::defender_scan,
             defender::cancel_defender_scan,

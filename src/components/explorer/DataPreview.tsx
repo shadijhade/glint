@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, Check, Copy, Database, FileCode, Hash, Search, Tabl
 import { toast } from "sonner";
 import type { FileEntry } from "@/lib/entries";
 import { formatCount, formatSize } from "@/lib/format";
-import { inspectSqlite, inspectTabular, readTextPreview, type SqliteInfo, type TablePreview } from "@/lib/fs";
+import { inspectSheet, inspectSqlite, inspectTabular, readTextPreview, type SheetPreview as Sheet, type SqliteInfo, type TablePreview } from "@/lib/fs";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,7 @@ import { BigIcon, Waiting } from "./PreviewState";
 
 const SQLITE_EXTS = new Set(["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"]);
 const TABULAR_EXTS = new Set(["csv", "tsv", "jsonl", "ndjson"]);
+const SHEET_EXTS = new Set(["xlsx", "xlsm", "xltx", "xltm", "xlam", "xlsb", "xls", "xla", "xlt", "ods", "parquet"]);
 
 export function isSqliteCandidate(entry: FileEntry): boolean {
     return !entry.dir && SQLITE_EXTS.has(entry.ext);
@@ -19,6 +20,11 @@ export function isSqliteCandidate(entry: FileEntry): boolean {
 
 export function isTabularCandidate(entry: FileEntry): boolean {
     return !entry.dir && TABULAR_EXTS.has(entry.ext);
+}
+
+/** Workbooks (Excel's, OpenDocument's) and Parquet files, read as tables without Office (sheet.rs). */
+export function isSheetCandidate(entry: FileEntry): boolean {
+    return !entry.dir && SHEET_EXTS.has(entry.ext);
 }
 
 function CopySqlButton({ text }: { text: string }) {
@@ -205,19 +211,12 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
     );
 }
 
+/** CSV, TSV and JSON-lines files: their first rows as a table, or their text. */
 export function TabularPreview({ entry }: { entry: FileEntry }) {
-    const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
-    const [mode, setMode] = useState<"grid" | "raw">("grid");
     const [state, setState] = useState<{ table: TablePreview } | { error: string } | null>(null);
-    const [rawText, setRawText] = useState<{ text: string; truncated: boolean } | null>(null);
-    const [query, setQuery] = useState("");
-    const [sortCol, setSortCol] = useState<{ index: number; desc: boolean } | null>(null);
-
     useEffect(() => {
         let stale = false;
         setState(null);
-        setRawText(null);
-        setSortCol(null);
         inspectTabular(entry.path).then(
             (table) => !stale && setState({ table }),
             (e) => !stale && setState({ error: String(e) })
@@ -226,6 +225,59 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
             stale = true;
         };
     }, [entry.path, entry.modified]);
+    if (!state) return <Waiting what="Reading the table…" />;
+    if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
+    return <TableView key={entry.path} entry={entry} table={state.table} raw />;
+}
+
+/** A workbook's sheet (with its others to pick from), or a Parquet file with its columns' types, as a table. */
+export function SheetPreview({ entry }: { entry: FileEntry }) {
+    const [sheet, setSheet] = useState<number | undefined>(undefined);
+    const [state, setState] = useState<Sheet | { error: string } | null>(null);
+    useEffect(() => {
+        let stale = false;
+        inspectSheet(entry.path, sheet).then(
+            (read) => !stale && setState(read),
+            (e) => !stale && setState({ error: String(e) })
+        );
+        return () => {
+            stale = true;
+        };
+    }, [entry.path, entry.modified, sheet]);
+    if (!state) return <Waiting what="Reading the table…" />;
+    if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
+    const picker = state.sheets.length > 1 && (
+        <div role="tablist" aria-label="Sheets" className="flex min-w-0 max-w-full gap-0.5 overflow-x-auto">
+            {state.sheets.map((name, i) => (
+                <button
+                    key={name}
+                    type="button"
+                    role="tab"
+                    aria-selected={i === state.sheet}
+                    onClick={() => setSheet(i)}
+                    className={cn(
+                        "h-6 shrink-0 rounded px-2 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+                        i === state.sheet && "bg-background font-medium text-primary shadow-xs dark:bg-foreground/[0.12]"
+                    )}
+                >
+                    {name}
+                </button>
+            ))}
+        </div>
+    );
+    return <TableView key={`${entry.path}:${state.sheet}`} entry={entry} table={state.table} total={state.totalRows} types={state.types} extra={picker} />;
+}
+
+/**
+ * A table's rows, filtered and sorted by a click on a column; `raw` offers the file's text instead,
+ * `types` are its columns' types (a Parquet file's), and `extra` goes in its header (a workbook's sheets).
+ */
+function TableView({ entry, table, total, types, extra, raw }: { entry: FileEntry; table: TablePreview; total?: number; types?: string[]; extra?: React.ReactNode; raw?: boolean }) {
+    const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
+    const [mode, setMode] = useState<"grid" | "raw">("grid");
+    const [rawText, setRawText] = useState<{ text: string; truncated: boolean } | null>(null);
+    const [query, setQuery] = useState("");
+    const [sortCol, setSortCol] = useState<{ index: number; desc: boolean } | null>(null);
 
     useEffect(() => {
         if (mode !== "raw" || rawText) return;
@@ -240,14 +292,11 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
     }, [mode, rawText, entry.path]);
 
     const rows = useMemo(() => {
-        if (!state || "error" in state) return [];
         const q = query.trim().toLowerCase();
-        const filtered = q
-            ? state.table.rows.filter((r) => r.some((cell) => cell.toLowerCase().includes(q)))
-            : state.table.rows;
+        const filtered = q ? table.rows.filter((r) => r.some((cell) => cell.toLowerCase().includes(q))) : table.rows;
         if (!sortCol) return filtered;
         const { index, desc } = sortCol;
-        const colKind = state.table.columns[index]?.kind ?? "text";
+        const colKind = table.columns[index]?.kind ?? "text";
         const dir = desc ? -1 : 1;
         return [...filtered].sort((a, b) => {
             const va = a[index] ?? "";
@@ -259,12 +308,7 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
             }
             return va.localeCompare(vb, undefined, { numeric: true, sensitivity: "base" }) * dir;
         });
-    }, [state, query, sortCol]);
-
-    if (!state) return <Waiting what="Reading the table…" />;
-    if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
-
-    const { table } = state;
+    }, [table, query, sortCol]);
 
     const ColumnTypeIcon = ({ kind }: { kind: "number" | "boolean" | "text" }) => {
         if (kind === "number") return <Hash className="size-3 shrink-0 text-amber-500" />;
@@ -281,11 +325,12 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                 </span>
                 <span className="text-muted-foreground">
                     <b className="font-semibold text-foreground">{formatCount(table.columns.length)}</b> cols ·{" "}
-                    <b className="font-semibold text-foreground">{formatCount(table.totalRowsSampled)}</b>
-                    {table.truncated ? "+" : ""} rows
+                    <b className="font-semibold text-foreground">{formatCount(total ?? table.totalRowsSampled)}</b>
+                    {table.truncated && total === undefined ? "+" : ""} rows
                 </span>
                 <span className="font-mono text-[0.625rem] text-muted-foreground tabular-nums">{table.elapsedMs.toFixed(2)} ms</span>
 
+                {extra}
                 <div className="ml-auto flex items-center gap-1">
                     {mode === "grid" && (
                         <div className="relative w-36">
@@ -299,16 +344,18 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                             />
                         </div>
                     )}
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-6 px-2 text-[0.6875rem]"
-                        onClick={() => setMode((m) => (m === "grid" ? "raw" : "grid"))}
-                        title={mode === "grid" ? "Switch to raw text view" : "Switch to structured table grid"}
-                    >
-                        {mode === "grid" ? <FileCode /> : <Table2 />}
-                        {mode === "grid" ? "Raw" : "Table"}
-                    </Button>
+                    {raw && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-[0.6875rem]"
+                            onClick={() => setMode((m) => (m === "grid" ? "raw" : "grid"))}
+                            title={mode === "grid" ? "Switch to raw text view" : "Switch to structured table grid"}
+                        >
+                            {mode === "grid" ? <FileCode /> : <Table2 />}
+                            {mode === "grid" ? "Raw" : "Table"}
+                        </Button>
+                    )}
                 </div>
             </div>
 
@@ -353,9 +400,10 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                                         >
                                             <div className="flex items-center gap-1.5">
                                                 <ColumnTypeIcon kind={col.kind} />
-                                                <span className="truncate" title={col.name}>
+                                                <span className="truncate" title={types?.[idx] ? `${col.name} · ${types[idx]}` : col.name}>
                                                     {col.name}
                                                 </span>
+                                                {types?.[idx] && <span className="shrink-0 text-[0.625rem] font-normal text-muted-foreground">{types[idx]}</span>}
                                                 {sorted &&
                                                     (sortCol.desc ? (
                                                         <ArrowDown className="ml-auto size-3 shrink-0 text-primary" />
@@ -396,7 +444,9 @@ export function TabularPreview({ entry }: { entry: FileEntry }) {
                     </table>
                     {table.truncated && (
                         <p className="border-t bg-muted/10 px-3 py-2 text-[0.6875rem] text-muted-foreground">
-                            Showing the first {formatCount(table.rows.length)} rows sampled from the file header.
+                            {total === undefined
+                                ? `Showing the first ${formatCount(table.rows.length)} rows sampled from the file header.`
+                                : `Showing the first ${formatCount(table.rows.length)} rows of ${formatCount(total)}. Open it to see the rest.`}
                         </p>
                     )}
                 </div>

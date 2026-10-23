@@ -789,6 +789,20 @@ export interface TablePreview {
 export const inspectSqlite = (path: string) => invoke<SqliteInfo>("inspect_sqlite", { path });
 export const inspectTabular = (path: string, maxBytes = 256 * 1024) => invoke<TablePreview>("inspect_tabular", { path, maxBytes });
 
+export interface SheetPreview {
+    table: TablePreview;
+    /** A workbook's sheets that aren't hidden (none for Parquet), and the one shown. */
+    sheets: string[];
+    sheet: number;
+    /** A Parquet file's columns' types ("INT64", "BYTE_ARRAY · String"…). */
+    types: string[];
+    totalRows: number;
+    totalCols: number;
+}
+
+/** A workbook's sheet (the first one not hidden, unless `sheet` says), or a Parquet file, as a table: its first 1,000 rows. */
+export const inspectSheet = (path: string, sheet?: number) => invoke<SheetPreview>("inspect_sheet", { path, sheet: sheet ?? null });
+
 export interface RenamePair {
     from: string;
     to: string;
