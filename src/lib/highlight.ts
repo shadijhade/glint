@@ -34,4 +34,12 @@ const LANGUAGE_BY_EXT: Record<string, keyof typeof LANGUAGES> = {
 
 export const languageFor = (ext: string) => LANGUAGE_BY_EXT[ext] ?? "text";
 
+const ALIASES: Record<string, keyof typeof LANGUAGES> = { "c++": "cpp", "c#": "csharp", shell: "bash", zsh: "bash", console: "bash", pwsh: "powershell", ps: "powershell" };
+
+/** A code block's language as Markdown names it (```rust, ```ts, ```c++…). */
+export function languageNamed(name: string) {
+    const lower = name.toLowerCase();
+    return Object.prototype.hasOwnProperty.call(LANGUAGES, lower) ? lower : (ALIASES[lower] ?? languageFor(lower));
+}
+
 export { SyntaxHighlighter };

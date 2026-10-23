@@ -41,6 +41,8 @@ shadui-index = { path = "index" }
 sha2 = "0.10"
 crc32fast = "1.5"
 blake3 = "1.8"
+# Markdown previews: GitHub's flavor (tables, task lists, footnotes), its raw HTML shown as text.
+comrak = { version = "0.57", default-features = false }
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
 # original zip crate, fuzzed) with every common method but encryption (no passwords yet), and
 # sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's and

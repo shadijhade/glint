@@ -1,6 +1,6 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
-import { crumbs, isRoot, joinPath, parentPath, samePath, THIS_PC } from "./paths.ts";
+import { crumbs, isRoot, joinPath, linkedPath, parentPath, samePath, THIS_PC, volumeOf } from "./paths.ts";
 import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, matcher, naturalCompare, sortEntries, terms, withDetails } from "./entries.ts";
 import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping } from "./cd.ts";
@@ -38,6 +38,23 @@ assert.ok(isRoot("D:") && isRoot("D:\\") && isRoot("\\\\nas\\media") && !isRoot(
 assert.ok(samePath("c:\\users\\", "C:\\Users"));
 assert.deepEqual(crumbs("C:\\Users\\me").map((c) => c.path), ["C:\\", "C:\\Users", "C:\\Users\\me"]);
 assert.deepEqual(crumbs("\\\\nas\\media\\tv").map((c) => c.name), ["\\\\nas\\media", "tv"]);
+
+// Links in Markdown: relative to its folder, / to the repository, never to another scheme or a share by name
+const repo = "C:\\src\\app";
+const docs = "C:\\src\\app\\docs";
+assert.equal(linkedPath("guide.md", docs, repo), "C:\\src\\app\\docs\\guide.md");
+assert.equal(linkedPath("./img/a%20b.png?raw=true#x", docs, repo), "C:\\src\\app\\docs\\img\\a b.png");
+assert.equal(linkedPath("../../../../x.md", docs, repo), "C:\\x.md");
+assert.equal(linkedPath("/LICENSE", docs, repo), "C:\\src\\app\\LICENSE");
+assert.equal(linkedPath("\\\\evil\\share\\pic.png", docs, repo), "C:\\src\\app\\evil\\share\\pic.png");
+assert.equal(linkedPath("D:/notes/todo.md", docs, repo), "D:\\notes\\todo.md");
+assert.equal(linkedPath("https://example.com/a.png", docs, repo), null);
+assert.equal(linkedPath("mailto:me@example.com", docs, repo), null);
+assert.equal(linkedPath("#heading", docs, repo), null);
+assert.equal(linkedPath("100%.md", docs, repo), "C:\\src\\app\\docs\\100%.md");
+assert.equal(linkedPath("pic.png", "\\\\nas\\media\\docs", "\\\\nas\\media\\"), "\\\\nas\\media\\docs\\pic.png");
+assert.equal(volumeOf("\\\\nas\\media\\docs\\a"), "\\\\nas\\media");
+assert.equal(volumeOf("c:\\x"), "c:");
 assert.deepEqual(crumbs(THIS_PC), []);
 
 // Natural order and sorting

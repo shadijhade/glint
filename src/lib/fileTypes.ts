@@ -75,7 +75,7 @@ const KINDS: [string, Kind][] = [
         "js mjs cjs ts mts cts tsx jsx rs go py rb java kt kts c h cpp hpp cc cs php swift scala sh bash zsh ps1 psm1 psd1 bat cmd lua sql vue svelte html htm css scss sass less xml xaml csproj sln props targets yml yaml toml ini cfg conf gradle dart r pl ex exs erl hs fs fsx clj zig nim dockerfile makefile cmake",
         { icon: FileCode, tone: "text-emerald-500", label: "% source file", preview: "text", group: G.code },
     ],
-    ["txt md markdown log nfo text env gitignore gitattributes editorconfig properties lock", { icon: FileText, tone: "text-muted-foreground", label: "% file", preview: "text", group: G.code }],
+    ["txt md markdown mdown mkd mkdn log nfo text env gitignore gitattributes editorconfig properties lock", { icon: FileText, tone: "text-muted-foreground", label: "% file", preview: "text", group: G.code }],
     ["exe msi com scr appx msix appinstaller", { icon: AppWindow, tone: "text-slate-500 dark:text-slate-400", label: "Application", group: G.programs }],
     ["dll sys so dylib ocx drv cpl mui", { icon: FileCog, tone: "text-slate-500 dark:text-slate-400", label: "% system file", group: G.system }],
     ["ttf otf woff woff2 eot fon", { icon: FileType, tone: "text-rose-500", label: "% font", group: G.fonts }],
@@ -108,6 +108,11 @@ export function typeLabel(entry: FileEntry) {
 
 /** What the preview pane can show for a file. */
 export const previewKind = (entry: FileEntry) => kindOf(entry).preview;
+
+const MARKDOWN = new Set(["md", "markdown", "mdown", "mkd", "mkdn"]);
+
+/** Markdown, which the preview shows as it reads (or as written). */
+export const isMarkdown = (entry: FileEntry) => !entry.dir && MARKDOWN.has(entry.ext);
 
 /** False for extensions we know nothing about (the preview tries those as text). */
 export const isKnownType = (entry: FileEntry) => kindOf(entry) !== GENERIC;
