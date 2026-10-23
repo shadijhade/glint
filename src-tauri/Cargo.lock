@@ -5551,6 +5551,7 @@ dependencies = [
  "notify",
  "parquet",
  "pdf-extract",
+ "png 0.18.1",
  "portable-pty",
  "quick-xml",
  "reflink-copy",
