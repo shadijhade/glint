@@ -159,6 +159,7 @@ import {
 } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
 import { driveName, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
+import { useGit } from "@/lib/git";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, inArchivePath, samePath, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
@@ -742,6 +743,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const settings = useStore((s) => s.settings);
     const { sort, foldersFirst, showHidden, editorPath } = settings;
     const { setSettings } = useStore.getState();
+    // What Git says of what's in the folder, when it's in a repository.
+    const gitMarks = useGit((s) => (find ? undefined : s[tabId]?.view?.marks));
     const menu = useMenu();
     const height = rowHeight(settings.fontSize);
     const tile = useMemo(() => gridTile(settings.fontSize, settings.tileSize), [settings.fontSize, settings.tileSize]);
@@ -1331,6 +1334,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         scope: find?.scope ?? path,
         sizes: sizeRun,
         diffs: comparison?.diffs,
+        git: gitMarks,
         sort,
         onSort,
         selection,
