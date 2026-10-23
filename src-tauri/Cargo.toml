@@ -40,10 +40,12 @@ shadui-index = { path = "index" }
 sha2 = "0.10"
 crc32fast = "1.5"
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
-# original zip crate, fuzzed) with every common method except Zstandard (C code) and encryption (no
-# passwords yet), and sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers).
+# original zip crate, fuzzed) with every common method but encryption (no passwords yet), and
+# sevenz-rust2 (the maintained fork of sevenz-rust, hardened against crafted headers). zip-rs's own
+# Zstandard is C, so Zstandard entries are decoded with ruzstd, a pure Rust decoder.
 zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64", "bzip2", "lzma", "xz", "ppmd", "legacy-zip"] }
 sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate"] }
+ruzstd = "0.9.1"
 
 [dev-dependencies]
 # Tests write their own 7z archives.
