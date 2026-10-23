@@ -24,6 +24,7 @@ import { WindowControls } from "./components/WindowControls";
 import { AddressBar } from "./components/explorer/AddressBar";
 import { BatchRenameDialog } from "./components/explorer/BatchRenameDialog";
 import { CleanupDialog } from "./components/explorer/CleanupDialog";
+import { CompareFilesDialog } from "./components/explorer/CompareFilesDialog";
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
 import { Explorer } from "./components/explorer/Explorer";
 import { LocksDialog } from "./components/explorer/LocksDialog";
@@ -423,6 +424,7 @@ function App() {
       <LocksDialog />
       <DuplicatesDialog />
       <CleanupDialog />
+      <CompareFilesDialog />
       <TimelineDialog />
       <BatchRenameDialog />
       <XRayDialog />

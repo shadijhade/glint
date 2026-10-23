@@ -54,6 +54,14 @@ pub static TOOLS: &[Tool] = &[
         source: Source::Winget { id: "qarmin.czkawka.cli" },
         used_for: "Look-alike pictures, videos and music, broken files and wrong extensions in Clean up",
     },
+    Tool {
+        id: "difftastic",
+        name: "Difftastic",
+        exe: "difft",
+        package: "wilfred.difftastic",
+        source: Source::Winget { id: "Wilfred.difftastic" },
+        used_for: "Comparing code by its structure (Compare two files): what changed in it, not its layout",
+    },
     // Any FFmpeg found is used; a new install is the smaller build, which reads every common video.
     Tool { id: "ffmpeg", name: "FFmpeg", exe: "ffmpeg", package: "gyan.ffmpeg", source: Source::Winget { id: "Gyan.FFmpeg.Essentials" }, used_for: "Reading videos for Clean up's look-alike videos" },
 ];
