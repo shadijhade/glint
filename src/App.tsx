@@ -23,6 +23,7 @@ import { Home, HistoryPopover, HISTORY_POPOVER_ID } from "./components/History";
 import { WindowControls } from "./components/WindowControls";
 import { AddressBar } from "./components/explorer/AddressBar";
 import { BatchRenameDialog } from "./components/explorer/BatchRenameDialog";
+import { CleanupDialog } from "./components/explorer/CleanupDialog";
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
 import { Explorer } from "./components/explorer/Explorer";
 import { LocksDialog } from "./components/explorer/LocksDialog";
@@ -421,6 +422,7 @@ function App() {
       {/* Over either mode: Text's results open X-Ray and the locks dialog too. */}
       <LocksDialog />
       <DuplicatesDialog />
+      <CleanupDialog />
       <TimelineDialog />
       <BatchRenameDialog />
       <XRayDialog />
