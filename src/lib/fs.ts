@@ -106,6 +106,9 @@ export const diagnostics = () => invoke<string>("diagnostics");
 export const readTextPreview = (path: string, maxBytes: number) =>
     invoke<{ text: string; truncated: boolean; binary: boolean }>("read_text_preview", { path, maxBytes });
 
+/** Markdown as HTML (GitHub's flavor, by comrak), its raw HTML escaped and links that could run something emptied. */
+export const markdownHtml = (text: string) => invoke<string>("markdown_html", { text });
+
 /** Creates a folder or empty file, numbered like "New folder (2)" if the name is taken; returns its path. */
 export const createEntry = (parent: string, name: string, dir: boolean) => invoke<string>("create_entry", { parent, name, dir });
 

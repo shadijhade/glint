@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
+import { create } from "zustand";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
-import { isKnownType, previewKind, typeLabel } from "@/lib/fileTypes";
+import { isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, type ArchivePeek, archivePeek, listDir, readTextPreview } from "@/lib/fs";
-import { useChangesView, useGitMark } from "@/lib/git";
+import { useGitMark } from "@/lib/git";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
@@ -17,6 +18,7 @@ import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { ChangesView } from "./ChangesView";
 import { isSqliteCandidate, isTabularCandidate, SqlitePreview, TabularPreview } from "./DataPreview";
 import { LockMark } from "./FileList";
+import { MarkdownView } from "./MarkdownView";
 import { ShellPreview } from "./ShellPreview";
 import { BigIcon, Centered, Waiting } from "./PreviewState";
 import { inspectXRay } from "./XRayDialog";
@@ -161,8 +163,8 @@ function ArchivePreview({ entry }: { entry: FileEntry }) {
     );
 }
 
-function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
-    const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
+/** The start of a file as text, for its preview. */
+function useText(entry: FileEntry) {
     const [state, setState] = useState<{ text: string; truncated: boolean; binary: boolean } | { error: string } | null>(null);
     useEffect(() => {
         let stale = false;
@@ -174,6 +176,14 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
             stale = true;
         };
     }, [entry.path, entry.modified]);
+    return state;
+}
+
+const SHOWS_START = "Preview shows the beginning of the file. Open it to see the rest.";
+
+function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
+    const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
+    const state = useText(entry);
 
     if (!state) return <Waiting />;
     if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
@@ -210,7 +220,22 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
             >
                 {cut ? lines.slice(0, TEXT_LINES).join("\n") : state.text}
             </SyntaxHighlighter>
-            {(cut || state.truncated) && <p className="px-4 pb-3 text-xs text-muted-foreground">Preview shows the beginning of the file. Open it to see the rest.</p>}
+            {(cut || state.truncated) && <p className="px-4 pb-3 text-xs text-muted-foreground">{SHOWS_START}</p>}
+        </div>
+    );
+}
+
+/** Markdown as it reads, its pictures and links relative to its folder. */
+function MarkdownPreview({ entry }: { entry: FileEntry }) {
+    const state = useText(entry);
+    if (!state) return <Waiting />;
+    if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
+    if (state.binary) return <BigIcon entry={entry} note="This file isn't text inside." />;
+    if (!state.text.trim()) return <Centered>This file is empty.</Centered>;
+    return (
+        <div className="min-h-full select-text px-5 py-4">
+            <MarkdownView text={state.text} file={entry.path} archived={isArchived(entry)} />
+            {state.truncated && <p className="mt-2 text-xs text-muted-foreground">{SHOWS_START}</p>}
         </div>
     );
 }
@@ -309,17 +334,31 @@ function Details({ entry }: { entry: FileEntry }) {
     );
 }
 
+/** A file's other views: as written (Markdown's source), or what Git says changed. */
+type View = "file" | "source" | "changes";
+
+/** Which view the preview shows, kept while moving from file to file (where a file has no such view, it's shown as it is). */
+const usePreviewView = create<{ view: View }>(() => ({ view: "file" }));
+
 /** One item's preview with its name, actions and details; Quick Look shows it large, with a close button. */
 export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: () => void }) {
     const kind = previewKind(entry);
     const archived = isArchived(entry);
     const archive = archived ? archiveOf() : undefined;
+    const readable = !entry.dir && !isOnlineOnly(entry) && !isClosed(entry) && !isLocked(entry) && !isListOnly(entry);
+    const markdown = readable && isMarkdown(entry);
     // A file Git has a change for can show what changed since its last commit instead.
     const mark = useGitMark(entry.path);
     const changed = !entry.dir && !archived && !!mark && mark !== "ignored";
-    const showChanges = useChangesView((s) => s.on) && changed;
+    const views: { view: View; label: string; title: string }[] = [
+        markdown ? { view: "file", label: "Rendered", title: "The Markdown as it reads" } : { view: "file", label: "File", title: "The file as it is" },
+        ...(markdown ? [{ view: "source" as const, label: "Source", title: "The Markdown as written" }] : []),
+        ...(changed ? [{ view: "changes" as const, label: "Changes", title: "What changed since the last commit (Git)" }] : []),
+    ];
+    const chosen = usePreviewView((s) => s.view);
+    const view = views.some((v) => v.view === chosen) ? chosen : "file";
     let body: React.ReactNode;
-    if (showChanges) body = <ChangesView entry={entry} />;
+    if (view === "changes") body = <ChangesView entry={entry} />;
     else if (entry.dir) body = <FolderPreview entry={entry} />;
     else if (isOnlineOnly(entry))
         body = (
@@ -344,6 +383,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     // Databases and tables are read from disk, so not from inside an archive (there they show as text).
     else if (!archived && isSqliteCandidate(entry)) body = <SqlitePreview entry={entry} />;
     else if (!archived && isTabularCandidate(entry)) body = <TabularPreview entry={entry} />;
+    else if (markdown) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <MarkdownPreview entry={entry} />;
     // Unknown extensions get a text preview attempt; the backend spots binary files.
     else if (kind === "text" || !isKnownType(entry)) body = <TextPreview entry={entry} over={!!onClose} />;
     else if (!archived && isPeCandidate(entry)) body = <BinaryPreview entry={entry} />;
@@ -367,21 +407,18 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                 <span className="truncate text-sm font-medium" title={entry.path}>
                     {entry.name}
                 </span>
-                {changed && (
+                {views.length > 1 && (
                     <div role="group" aria-label="Show" className="ml-auto flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
-                        {[
-                            { on: false, label: "File", title: "The file as it is" },
-                            { on: true, label: "Changes", title: "What changed since the last commit (Git)" },
-                        ].map((choice) => (
+                        {views.map((choice) => (
                             <button
-                                key={choice.label}
+                                key={choice.view}
                                 type="button"
-                                aria-pressed={showChanges === choice.on}
+                                aria-pressed={view === choice.view}
                                 title={choice.title}
-                                onClick={() => useChangesView.setState({ on: choice.on })}
+                                onClick={() => usePreviewView.setState({ view: choice.view })}
                                 className={cn(
                                     "h-5 rounded-[4px] px-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:text-foreground",
-                                    showChanges === choice.on && "bg-background text-primary shadow-xs dark:bg-foreground/[0.12]"
+                                    view === choice.view && "bg-background text-primary shadow-xs dark:bg-foreground/[0.12]"
                                 )}
                             >
                                 {choice.label}
@@ -389,7 +426,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                         ))}
                     </div>
                 )}
-                <div className={cn("flex shrink-0", !changed && "ml-auto")}>
+                <div className={cn("flex shrink-0", views.length < 2 && "ml-auto")}>
                     {!entry.dir && !archived && !closed && (
                         <Button variant="ghost" size="icon" className="size-7" onClick={() => inspectXRay(entry.path)} title="File X-Ray: hashes and hidden streams">
                             <Fingerprint />

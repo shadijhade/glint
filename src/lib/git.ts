@@ -56,9 +56,6 @@ export function useGitMark(path: string) {
     });
 }
 
-/** Whether the preview shows a changed file's changes rather than the file: kept as one moves through them. */
-export const useChangesView = create<{ on: boolean }>(() => ({ on: false }));
-
 /** Trusts a repository whose own settings name programs for status to run, and shows its status. */
 export function trustRepository(root: string) {
     const { settings, setSettings } = useStore.getState();
