@@ -23,6 +23,8 @@ pub struct UsnRecord {
     /// When the change was recorded (FILETIME).
     pub time: i64,
     pub reason: u32,
+    /// FILE_ATTRIBUTE_* bits then (FILE_ATTRIBUTE_DIRECTORY tells folders).
+    pub attrs: u32,
     pub name: String,
 }
 
@@ -51,6 +53,7 @@ fn parse_record(r: &[u8]) -> Option<UsnRecord> {
         usn: u64_at(r, rest)? as i64,
         time: u64_at(r, rest + 8)? as i64,
         reason: u32_at(r, rest + 16)?,
+        attrs: u32_at(r, rest + 28)?,
         file,
         parent,
         name: String::from_utf16_lossy(&units),
@@ -115,6 +118,7 @@ mod tests {
         r[24..32].copy_from_slice(&usn.to_le_bytes());
         r[32..40].copy_from_slice(&(usn * 10).to_le_bytes());
         r[40..44].copy_from_slice(&reason.to_le_bytes());
+        r[52..56].copy_from_slice(&(if name.contains('.') { 0x20u32 } else { 0x10 }).to_le_bytes());
         r[56..58].copy_from_slice(&((2 * units.len()) as u16).to_le_bytes());
         r[58..60].copy_from_slice(&60u16.to_le_bytes());
         for (i, u) in units.iter().enumerate() {
@@ -136,6 +140,7 @@ mod tests {
         assert_eq!(next, 9000);
         assert_eq!(records.len(), 5);
         assert_eq!((records[1].usn, records[1].file, records[1].name.as_str()), (110, 201 | 1 << 48, "notes.txt"));
+        assert_eq!((records[0].attrs, records[1].attrs), (0x10, 0x20));
         assert_eq!(records[4].name, "été.txt");
         assert_eq!(touched(&records, None), [200, 30, 201, 202, 31]);
         assert_eq!(touched(&records, Some(1150)), [201, 202, 31]);
