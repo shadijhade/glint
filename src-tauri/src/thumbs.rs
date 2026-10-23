@@ -545,6 +545,17 @@ mod win {
 
     pub fn outcome(path: &str, size: u32, lookup: bool) -> Outcome {
         let started = Instant::now();
+        // A type Windows has no thumbnail handler for, and Glint makes its own of: nothing is cached to
+        // look up, so it's made with the rest, on the threads that make.
+        if own_thumbnail(path) {
+            if lookup {
+                return Outcome::NotCached;
+            }
+            return match pdf_page(path, size) {
+                Ok(bmp) => Outcome::Found { bmp, ms: (started.elapsed().as_secs_f64() * 1000.0) as f32 },
+                Err(_) => Outcome::Nothing { lasting: true },
+            };
+        }
         let made = if lookup {
             from_shell(path, size, true)
         } else if photo_provider(path) {
@@ -618,6 +629,66 @@ mod win {
             && user_choice(&ext).and_then(|prog_id| handler(&prog_id)).is_none_or(|h| h.eq_ignore_ascii_case(PHOTO_PROVIDER));
         known.lock().unwrap_or_else(|e| e.into_inner()).insert(ext, photo);
         photo
+    }
+
+    /// What Glint makes thumbnails of itself, where Windows has no handler for them: a PDF's first page.
+    const OWN: [&str; 1] = [".pdf"];
+
+    /// Whether files like `path` get their thumbnail from Glint: a type in `OWN` with no thumbnail
+    /// handler, for its extension or for the app chosen to open it (Acrobat's, say, wins). Asked once
+    /// per extension.
+    pub fn own_thumbnail(path: &str) -> bool {
+        static KNOWN: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+        let Some(ext) = Path::new(path).extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())) else { return false };
+        if !OWN.contains(&ext.as_str()) {
+            return false;
+        }
+        let known = KNOWN.get_or_init(Default::default);
+        if let Some(&own) = known.lock().unwrap_or_else(|e| e.into_inner()).get(&ext) {
+            return own;
+        }
+        let own = handler(&ext).is_none() && user_choice(&ext).and_then(|prog_id| handler(&prog_id)).is_none();
+        known.lock().unwrap_or_else(|e| e.into_inner()).insert(ext, own);
+        own
+    }
+
+    /// A PDF's first page, `size` pixels on its long side, as a BMP: drawn by Windows' own PDF renderer
+    /// (Windows.Data.Pdf, Edge's), on a thread of the multithreaded apartment, where its async calls are
+    /// waited for. A PDF that needs a password to open has none.
+    pub fn pdf_page(path: &str, size: u32) -> windows::core::Result<Vec<u8>> {
+        use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
+        use windows::Graphics::Imaging::BitmapEncoder;
+        use windows::Storage::StorageFile;
+        use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+        use windows::Win32::System::Com::COINIT_MULTITHREADED;
+        let path = HSTRING::from(path);
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| -> windows::core::Result<Vec<u8>> {
+                    unsafe {
+                        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                    }
+                    let file = StorageFile::GetFileFromPathAsync(&path)?.join()?;
+                    let document = PdfDocument::LoadFromFileAsync(&file)?.join()?;
+                    let page = document.GetPage(0)?;
+                    let page_size = page.Size()?;
+                    let scale = size as f32 / page_size.Width.max(page_size.Height).max(1.0);
+                    let options = PdfPageRenderOptions::new()?;
+                    options.SetDestinationWidth(((page_size.Width * scale).round() as u32).max(1))?;
+                    options.SetDestinationHeight(((page_size.Height * scale).round() as u32).max(1))?;
+                    options.SetBitmapEncoderId(BitmapEncoder::BmpEncoderId()?)?;
+                    let stream = InMemoryRandomAccessStream::new()?;
+                    page.RenderWithOptionsToStreamAsync(&stream, &options)?.join()?;
+                    let length = stream.Size()? as u32;
+                    let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
+                    reader.LoadAsync(length)?.join()?;
+                    let mut bmp = vec![0u8; length as usize];
+                    reader.ReadBytes(&mut bmp)?;
+                    Ok(bmp)
+                })
+                .join()
+                .unwrap_or_else(|_| Err(E_FAIL.into()))
+        })
     }
 
     /// The thumbnail handler registered for `assoc` (an extension or a ProgID), as a CLSID string.
@@ -909,5 +980,43 @@ mod tests {
         // Only photo types are made in this process; text files have no handler, nameless ones no type.
         assert!(!win::photo_provider(r"C:\Windows\win.ini") && !win::photo_provider(r"C:\Windows\no-extension"));
         assert!(matches!(win::outcome(r"C:\no\such\file.jpg", 96, true), Outcome::Nothing { lasting: true }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn draws_a_pdfs_first_page() {
+        // A one-page PDF (200 × 100 points, a filled rectangle), its cross-references worked out as it's written.
+        let content = "0 0 1 rg 20 20 160 60 re f";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf += &format!("{} 0 obj\n{object}\nendobj\n", i + 1);
+        }
+        let xref = pdf.len();
+        pdf += &format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+        for offset in offsets {
+            pdf += &format!("{offset:010} 00000 n \n");
+        }
+        pdf += &format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1);
+        let dir = std::env::temp_dir().join(format!("glint-thumbs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("page.pdf");
+        std::fs::write(&path, pdf).unwrap();
+        let bmp = win::pdf_page(path.to_str().unwrap(), 96);
+        let missing = win::pdf_page(dir.join("nope.pdf").to_str().unwrap(), 96);
+        let _ = std::fs::remove_dir_all(&dir);
+        let bmp = bmp.unwrap();
+        assert_eq!(&bmp[..2], b"BM");
+        let width = i32::from_le_bytes(bmp[18..22].try_into().unwrap());
+        let height = i32::from_le_bytes(bmp[22..26].try_into().unwrap()).abs();
+        assert_eq!((width, height), (96, 48), "the long side at the size asked, the shape kept");
+        assert!(missing.is_err());
     }
 }

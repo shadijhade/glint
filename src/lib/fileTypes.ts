@@ -59,7 +59,8 @@ interface Kind {
 const G = TYPE_GROUPS;
 const KINDS: [string, Kind][] = [
     ["png jpg jpeg gif webp bmp ico svg avif", { icon: FileImage, tone: "text-sky-500", label: "% image", preview: "image", group: G.images }],
-    ["tif tiff heic heif psd raw cr2 nef arw dng", { icon: FileImage, tone: "text-sky-500", label: "% image", group: G.images }],
+    // Pictures the webview can't show: Windows' codecs and previewer do (JPEG XL's with its extension).
+    ["tif tiff heic heif jxl psd raw cr2 nef arw dng", { icon: FileImage, tone: "text-sky-500", label: "% image", group: G.images }],
     ["mp4 webm m4v mov ogv", { icon: FileVideo, tone: "text-violet-500", label: "% video", preview: "video", group: G.video }],
     ["mkv avi wmv flv mpg mpeg 3gp m2ts", { icon: FileVideo, tone: "text-violet-500", label: "% video", group: G.video }],
     ["mp3 wav ogg oga opus m4a aac flac", { icon: FileAudio, tone: "text-pink-500", label: "% audio", preview: "audio", group: G.audio }],
