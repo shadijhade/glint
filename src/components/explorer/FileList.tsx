@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Cloud, FileX, KeyRound } from "lucide-react";
-import { ATTR, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, isLocked, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
+import { ATTR, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, isListOnly, isLocked, isOnlineOnly, type Sort, type SortKey } from "@/lib/entries";
 import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
@@ -229,7 +229,7 @@ export function FileList(props: FileListProps) {
             >
                 <div className="flex min-w-0 items-center gap-2" title={entry.name}>
                     <span className="relative grid size-4 shrink-0 place-items-center">
-                        <Thumbnail entry={entry} box={iconBox} lane={lane} enabled={thumbnails && isPictureOrVideo(entry) && !isLocked(entry)} iconClassName="size-4" />
+                        <Thumbnail entry={entry} box={iconBox} lane={lane} enabled={thumbnails && isPictureOrVideo(entry) && !isLocked(entry) && !isListOnly(entry)} iconClassName="size-4" />
                     </span>
                     {renaming === entry.path ? (
                         <RenameInput entry={entry} onCommit={(name) => props.onRename(entry, name)} onCancel={props.onCancelRename} />
