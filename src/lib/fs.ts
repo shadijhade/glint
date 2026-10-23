@@ -143,6 +143,8 @@ export interface FindOptions {
     respectIgnore: boolean;
     exclude: string[];
     maxResults: number | null;
+    /** When nothing matches as typed, the index looks again with typos allowed (fd doesn't). */
+    fuzzy?: boolean;
 }
 
 export type FindEvent =
@@ -150,7 +152,8 @@ export type FindEvent =
     | { type: "started"; engine: string }
     | { type: "entries"; entries: FileEntry[] }
     | { type: "error"; message: string }
-    | { type: "finished"; count: number; elapsed: number; limited: boolean };
+    /** `fuzzy`: nothing matched as typed, and these are the index's close matches. */
+    | { type: "finished"; count: number; elapsed: number; limited: boolean; fuzzy: boolean };
 
 /**
  * Searches file names under `roots` (with the index when it runs, else fd), streaming results with

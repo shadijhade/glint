@@ -151,11 +151,117 @@ fn contains_ascii(hay: &[u8], needle: &[u8]) -> bool {
     false
 }
 
+/// How many edits a word of a search for close matches may be from a name's: one from 4 letters, two
+/// from 8 (as search engines allow typos); a shorter word must be there as typed.
+pub fn edits(letters: usize) -> u8 {
+    match letters {
+        0..=3 => 0,
+        4..=7 => 1,
+        _ => 2,
+    }
+}
+
+/// Words longer than this aren't matched with typos.
+const MAX_NEAR: usize = 32;
+/// Names are at most 255 UTF-16 units: no more characters than this.
+const MAX_NAME: usize = 256;
+
+/// A name's lowercase characters, and where its words start: at its start, after anything but a
+/// letter or digit, between letters and digits, and (ASCII names) at a capital after a small letter.
+struct Words {
+    chars: [char; MAX_NAME],
+    starts: [bool; MAX_NAME],
+    len: usize,
+}
+
+impl Words {
+    /// None for a name that isn't UTF-8 (the index's names are).
+    fn of(name: &[u8], folded: Option<&[u8]>) -> Option<Self> {
+        let mut words = Words { chars: ['\0'; MAX_NAME], starts: [false; MAX_NAME], len: 0 };
+        let mut previous: Option<char> = None;
+        let mut push = |words: &mut Words, original: char, lower: char| {
+            if words.len == MAX_NAME {
+                return;
+            }
+            let start = match previous {
+                None => true,
+                Some(p) => !p.is_alphanumeric() || (p.is_alphabetic() && original.is_numeric()) || (p.is_numeric() && original.is_alphabetic()) || (p.is_lowercase() && original.is_uppercase()),
+            };
+            words.chars[words.len] = lower;
+            words.starts[words.len] = start;
+            words.len += 1;
+            previous = Some(original);
+        };
+        match folded {
+            None => name.iter().for_each(|&b| push(&mut words, b as char, b.to_ascii_lowercase() as char)),
+            // A name with other characters: its lowercase copy, so no capitals to start words at.
+            Some(folded) => std::str::from_utf8(folded).ok()?.chars().for_each(|c| push(&mut words, c, c)),
+        }
+        Some(words)
+    }
+}
+
+/// A word of a search for close matches: found within `k` edits of the start of one of a name's
+/// words (prefix, so "reprot" finds "Reports"). A typo in the first letter isn't looked for, only a
+/// swap of the first two.
+#[derive(Debug, Clone)]
+struct Near {
+    word: Vec<char>,
+    k: u8,
+}
+
+impl Near {
+    fn distance(&self, words: &Words) -> Option<u8> {
+        let (first, second) = (self.word[0], self.word.get(1).copied());
+        let mut best: Option<u8> = None;
+        for start in (0..words.len).filter(|&i| words.starts[i]) {
+            let c = words.chars[start];
+            if c != first && Some(c) != second {
+                continue;
+            }
+            // A prefix more than k letters longer than the word is more than k edits away.
+            let end = (start + self.word.len() + self.k as usize).min(words.len);
+            if let Some(d) = prefix_distance(&self.word, &words.chars[start..end], self.k) {
+                best = Some(best.map_or(d, |b| b.min(d)));
+            }
+        }
+        best
+    }
+}
+
+/// The fewest edits (a letter added, dropped or changed, or two neighbours swapped) that make `word`
+/// a prefix of `text`, if that's at most `k`. The edit table, a column at a time (the last two kept
+/// for swaps).
+fn prefix_distance(word: &[char], text: &[char], k: u8) -> Option<u8> {
+    let m = word.len();
+    let (mut before, mut last, mut column) = ([0u8; MAX_NEAR + 1], [0u8; MAX_NEAR + 1], [0u8; MAX_NEAR + 1]);
+    for (i, cell) in last.iter_mut().enumerate().take(m + 1) {
+        *cell = i as u8;
+    }
+    let mut best = last[m];
+    for j in 1..=text.len() {
+        column[0] = j as u8;
+        for i in 1..=m {
+            let changed = u8::from(word[i - 1] != text[j - 1]);
+            let mut d = (last[i] + 1).min(column[i - 1] + 1).min(last[i - 1] + changed);
+            if i > 1 && j > 1 && word[i - 1] == text[j - 2] && word[i - 2] == text[j - 1] {
+                d = d.min(before[i - 2] + 1);
+            }
+            column[i] = d;
+        }
+        best = best.min(column[m]);
+        (before, last) = (last, column);
+    }
+    (best <= k).then_some(best)
+}
+
 #[derive(Debug, Clone)]
 enum Term {
     /// Anywhere in the name; lowercase.
     Contains { folded: String, ascii: bool },
     Glob(Glob),
+    /// Close to the start of a word of the name, with a typo or two.
+    Near(Near),
 }
 
 /// A parsed query: every term must match.
@@ -187,15 +293,66 @@ impl NameMatcher {
         NameMatcher { terms }
     }
 
+    /// The same terms with typos allowed: each word of 4 letters or more may be an edit or two from
+    /// the start of a word of the name (see `edits`); globs, numbers and shorter words match as typed.
+    /// None when no word is long enough to have typos looked for.
+    pub fn near(terms: Vec<String>) -> Option<Self> {
+        let mut near = false;
+        let terms = terms
+            .into_iter()
+            .map(|t| {
+                let word: Vec<char> = fold(&t).chars().collect();
+                let k = edits(word.len());
+                if t.contains(['*', '?']) || k == 0 || word.len() > MAX_NEAR || word.iter().all(|c| c.is_numeric()) {
+                    return NameMatcher::from_terms(vec![t]).terms.remove(0);
+                }
+                near = true;
+                Term::Near(Near { word, k })
+            })
+            .collect();
+        near.then_some(NameMatcher { terms })
+    }
+
+    /// Whether this looks for close matches rather than the terms as typed.
+    pub fn is_near(&self) -> bool {
+        self.terms.iter().any(|t| matches!(t, Term::Near(_)))
+    }
+
     /// `name` is the name as stored; `folded` its lowercase form, given when the name isn't ASCII.
     pub fn matches(&self, name: &[u8], folded: Option<&[u8]>) -> bool {
-        self.terms.iter().all(|term| match term {
-            Term::Contains { folded: needle, ascii } => match folded {
-                None => *ascii && contains_ascii(name, needle.as_bytes()),
-                Some(folded) => memchr::memmem::find(folded, needle.as_bytes()).is_some(),
-            },
-            Term::Glob(glob) => glob.matches(name, folded),
-        })
+        self.distance(name, folded).is_some()
+    }
+
+    /// How many edits away the name is, when it matches (0 for terms matched as typed).
+    pub fn distance(&self, name: &[u8], folded: Option<&[u8]>) -> Option<u32> {
+        let mut words: Option<Words> = None;
+        let mut total = 0;
+        for term in &self.terms {
+            match term {
+                Term::Contains { folded: needle, ascii } => {
+                    let found = match folded {
+                        None => *ascii && contains_ascii(name, needle.as_bytes()),
+                        Some(folded) => memchr::memmem::find(folded, needle.as_bytes()).is_some(),
+                    };
+                    if !found {
+                        return None;
+                    }
+                }
+                Term::Glob(glob) => {
+                    if !glob.matches(name, folded) {
+                        return None;
+                    }
+                }
+                Term::Near(near) => {
+                    let words = match &words {
+                        Some(words) => words,
+                        None => words.insert(Words::of(name, folded)?),
+                    };
+                    total += u32::from(near.distance(words)?);
+                }
+            }
+        }
+        Some(total)
     }
 }
 
@@ -462,6 +619,81 @@ mod tests {
         assert!(is_hidden(0x2, b"AppData"));
         assert!(is_hidden(0, b".git"));
         assert!(!is_hidden(0x4, b"pagefile.sys"));
+    }
+
+    fn near(query: &str, name: &str) -> Option<u32> {
+        let folded = (!name.is_ascii()).then(|| fold(name));
+        NameMatcher::near(terms(query))?.distance(name.as_bytes(), folded.as_deref().map(str::as_bytes))
+    }
+
+    #[test]
+    fn close_matches_allow_a_typo_or_two_at_a_word_start() {
+        assert_eq!(near("reprot", "Q3 Report.pdf"), Some(1), "two letters swapped are one edit");
+        assert_eq!(near("dowloads", "Downloads"), Some(1), "a letter missing");
+        assert_eq!(near("donwloads", "Downloads"), Some(1));
+        assert_eq!(near("downlaods", "my-downloads-old"), Some(1));
+        assert_eq!(near("invoise", "Invoices 2026"), Some(1), "a letter changed, and the name's word goes on");
+        assert_eq!(near("buget", "budget.xlsx"), Some(1));
+        assert_eq!(near("reprot", "MyReportFinal.docx"), Some(1), "a word starting at a capital");
+        assert_eq!(near("reprot", "report2026.docx"), Some(1), "letters then digits");
+        assert_eq!(near("photgraphs", "Photographs"), Some(1));
+        assert_eq!(near("phtograhps", "Photographs"), Some(2), "two edits from 8 letters");
+        assert_eq!(near("reprot", "Reports"), Some(1));
+        assert_eq!(near("erport", "report"), Some(1), "the first two letters swapped");
+        assert_eq!(near("rpeort", "report"), Some(1));
+        assert_eq!(near("eport", "report"), None, "nor a typo in the first letter");
+        assert_eq!(near("report", "the report"), Some(0), "a word as typed is no edit");
+        assert_eq!(near("reprot", "freport.txt"), None, "only at a word's start");
+        assert_eq!(near("reprot", "Replay.mp4"), None, "too far");
+        assert_eq!(near("bdget 2026", "budget-2025.xlsx"), None, "a number must be there as typed");
+        assert_eq!(near("bdget cat", "budget dog.xlsx"), None, "and a short word");
+        assert_eq!(near("bdget 2026", "budget-2026.xlsx"), Some(1));
+        assert_eq!(near("résumé", "Mon résume.pdf"), Some(1), "non-ASCII names");
+        assert_eq!(near("café", "CAFÉ menu"), Some(0));
+        assert!(NameMatcher::near(terms("cat *.pdf")).is_none(), "no word long enough to look for typos in");
+        assert!(NameMatcher::near(terms("reprot")).unwrap().is_near() && !NameMatcher::new("reprot").unwrap().is_near());
+    }
+
+    /// The edit table, filled whole: the reference `prefix_distance` is checked against.
+    fn table_distance(word: &[char], text: &[char]) -> u8 {
+        let (m, n) = (word.len(), text.len());
+        let mut d = vec![vec![0u8; n + 1]; m + 1];
+        for (i, row) in d.iter_mut().enumerate() {
+            row[0] = i as u8;
+        }
+        for (j, cell) in d[0].iter_mut().enumerate() {
+            *cell = j as u8;
+        }
+        for i in 1..=m {
+            for j in 1..=n {
+                let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + u8::from(word[i - 1] != text[j - 1]));
+                if i > 1 && j > 1 && word[i - 1] == text[j - 2] && word[i - 2] == text[j - 1] {
+                    v = v.min(d[i - 2][j - 2] + 1);
+                }
+                d[i][j] = v;
+            }
+        }
+        (0..=n).map(|j| d[m][j]).min().unwrap()
+    }
+
+    #[test]
+    fn prefix_distance_is_the_edit_tables() {
+        // Every pair of short words over a small alphabet, where edits collide most.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..20_000 {
+            let word: Vec<char> = (0..1 + next() % 8).map(|_| (b'a' + (next() % 3) as u8) as char).collect();
+            let text: Vec<char> = (0..next() % 12).map(|_| (b'a' + (next() % 3) as u8) as char).collect();
+            let expected = table_distance(&word, &text);
+            for k in 0..3 {
+                assert_eq!(prefix_distance(&word, &text, k), (expected <= k).then_some(expected), "{word:?} in {text:?}");
+            }
+        }
     }
 
     #[test]

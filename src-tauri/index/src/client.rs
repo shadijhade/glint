@@ -219,7 +219,8 @@ pub enum Event {
     Plan { indexed: Vec<String>, skipped: Vec<String> },
     Hits(Vec<Hit>),
     /// `elapsed` is the service's own time, in ms.
-    Done { count: u64, limited: bool, elapsed: f64 },
+    /// `fuzzy`: nothing matched as typed, and these were close matches.
+    Done { count: u64, limited: bool, elapsed: f64, fuzzy: bool },
 }
 
 /// Runs a search, handing each event to `on` as it arrives; `on` returns false to stop listening
@@ -237,7 +238,7 @@ pub(crate) fn search_on(pipe: Handle, request: &SearchRequest, mut on: impl FnMu
         } else {
             match message(kind, &payload)? {
                 Message::Plan { indexed, skipped } => Event::Plan { indexed, skipped },
-                Message::Done { count, limited, elapsed } => Event::Done { count, limited, elapsed },
+                Message::Done { count, limited, elapsed, fuzzy } => Event::Done { count, limited, elapsed, fuzzy },
                 _ => return Err(unexpected()),
             }
         };

@@ -23,6 +23,7 @@ import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, r
 import { driveName, listDir } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { crumbs, samePath, THIS_PC } from "@/lib/paths";
+import { editsAllowed, typoDistance } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { GitChip } from "./GitChip";
@@ -143,6 +144,9 @@ function AddressInput({ path }: { path: string }) {
         if (!dirEntries) return [];
         const starts: Suggestion[] = [];
         const contains: Suggestion[] = [];
+        // Typed with a typo ("Dowloads"): names a letter or two off, fewest first, after the rest.
+        const close: { item: Suggestion; edits: number }[] = [];
+        const typos = editsAllowed(prefix) > 0;
         for (const e of dirEntries.entries) {
             if (!showHidden && isHidden(e)) continue;
             const archive = isArchiveFile(e);
@@ -153,17 +157,22 @@ function AddressInput({ path }: { path: string }) {
                 : archive
                   ? "text-amber-600 dark:text-amber-500"
                   : "text-muted-foreground";
+            const item = { name: e.name, path: e.path, dir: browsable, archive, icon, iconClass };
             if (!prefix || e.lower.startsWith(prefix)) {
-                starts.push({ name: e.name, path: e.path, dir: browsable, archive, icon, iconClass });
+                starts.push(item);
             } else if (e.lower.includes(prefix)) {
-                contains.push({ name: e.name, path: e.path, dir: browsable, archive, icon, iconClass });
+                contains.push(item);
+            } else if (typos) {
+                const edits = typoDistance(prefix, e.name);
+                if (edits !== null) close.push({ item, edits });
             }
             if (starts.length + contains.length >= 48) break;
         }
         const rank = (a: Suggestion, b: Suggestion) => (a.dir === b.dir ? 0 : a.dir ? -1 : 1);
         starts.sort(rank);
         contains.sort(rank);
-        return [...starts, ...contains].slice(0, 10);
+        close.sort((a, b) => a.edits - b.edits || rank(a.item, b.item));
+        return [...starts, ...contains, ...close.map((c) => c.item)].slice(0, 10);
     }, [parentDir, prefix, dirEntries, drives, known, showHidden]);
 
     useEffect(() => {
