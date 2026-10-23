@@ -1,10 +1,12 @@
 //! Saves a volume's index to disk and loads it back, so a restart only has to replay the journal
 //! from where the snapshot left off instead of reading the whole MFT again.
 //!
-//! Layout (little-endian): magic, format version, the volume serial number, journal id and next
-//! USN the index is current to, the save time, the three array lengths, then the records (28 bytes
-//! each), the links (20 bytes each), the name arena, and a checksum of everything before it.
+//! Layout (little-endian): magic, format version, the growth horizon, the volume serial number,
+//! journal id and next USN the index is current to, the save time, the five array lengths, then the
+//! records (28 bytes each), the links (20 bytes each), the name arena, the growth marks (24 bytes
+//! each) and notes (16 bytes each), and a checksum of everything before it.
 
+use crate::growth::{Growth, Mark, Note};
 use crate::tree::{Link, Rec, Tree, LINK_FOLDED, LINK_USED, NONE};
 use std::fs;
 use std::io::{self, Write};
@@ -13,11 +15,13 @@ use std::path::Path;
 const MAGIC: &[u8; 8] = b"SHUIIDX\0";
 /// Bumped whenever what the arrays mean changes (2: NTFS-internal attribute bits dropped; 3: what
 /// was made in a folder that took a deleted file's record is no longer lost, and one fresh scan
-/// finds what an older service lost that way).
-const FORMAT: u32 = 3;
-const HEADER: usize = 8 + 4 + 4 + 8 * 4 + 8 * 3;
+/// finds what an older service lost that way; 4: folders' sizes at daily marks).
+const FORMAT: u32 = 4;
+const HEADER: usize = 8 + 4 + 4 + 8 * 4 + 8 * 5;
 const REC: usize = 28;
 const LINK: usize = 20;
+const MARK: usize = 24;
+const NOTE: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Meta {
@@ -77,14 +81,15 @@ pub fn save(path: &Path, tree: &Tree, meta: &Meta) -> io::Result<()> {
         file.write_all(bytes)
     };
 
+    let (horizon, marks, notes) = tree.growth.parts();
     let mut header = Vec::with_capacity(HEADER);
     header.extend_from_slice(MAGIC);
     header.extend_from_slice(&FORMAT.to_le_bytes());
-    header.extend_from_slice(&0u32.to_le_bytes());
+    header.extend_from_slice(&(horizon as u32).to_le_bytes());
     for value in [meta.volume_serial, meta.journal_id, meta.next_usn as u64, meta.saved_at as u64] {
         header.extend_from_slice(&value.to_le_bytes());
     }
-    for len in [tree.recs.len(), tree.links.len(), tree.names.len()] {
+    for len in [tree.recs.len(), tree.links.len(), tree.names.len(), marks.len(), notes.len()] {
         header.extend_from_slice(&(len as u64).to_le_bytes());
     }
     put(&mut file, &header)?;
@@ -115,6 +120,23 @@ pub fn save(path: &Path, tree: &Tree, meta: &Meta) -> io::Result<()> {
         put(&mut file, &buf)?;
     }
     put(&mut file, &tree.names)?;
+    buf.clear();
+    for m in marks {
+        buf.extend_from_slice(&(m.epoch as u64).to_le_bytes());
+        buf.extend_from_slice(&m.at.to_le_bytes());
+        buf.extend_from_slice(&m.total.to_le_bytes());
+    }
+    put(&mut file, &buf)?;
+    for chunk in notes.chunks(4096) {
+        buf.clear();
+        for n in chunk {
+            buf.extend_from_slice(&n.rec.to_le_bytes());
+            buf.extend_from_slice(&n.seq.to_le_bytes());
+            buf.extend_from_slice(&n.epoch.to_le_bytes());
+            buf.extend_from_slice(&n.before.to_le_bytes());
+        }
+        put(&mut file, &buf)?;
+    }
     file.write_all(&sum.finish().to_le_bytes())?;
     file.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     fs::rename(&temp, path)
@@ -134,7 +156,11 @@ fn decode(bytes: &[u8]) -> Result<(Tree, Meta), String> {
     }
     let meta = Meta { volume_serial: u64_at(16), journal_id: u64_at(24), next_usn: u64_at(32) as i64, saved_at: u64_at(40) as i64 };
     let (recs, links, names) = (u64_at(48) as usize, u64_at(56) as usize, u64_at(64) as usize);
-    let body = recs.checked_mul(REC).and_then(|r| links.checked_mul(LINK)?.checked_add(r)?.checked_add(names));
+    let (marks, notes) = (u64_at(72) as usize, u64_at(80) as usize);
+    let body = recs.checked_mul(REC).and_then(|r| {
+        let growth = marks.checked_mul(MARK)?.checked_add(notes.checked_mul(NOTE)?)?;
+        links.checked_mul(LINK)?.checked_add(r)?.checked_add(names)?.checked_add(growth)
+    });
     if body.and_then(|b| b.checked_add(HEADER + 8)) != Some(bytes.len()) {
         return Err("snapshot size doesn't match its header".into());
     }
@@ -170,7 +196,20 @@ fn decode(bytes: &[u8]) -> Result<(Tree, Meta), String> {
         });
         at += LINK;
     }
-    let arena = bytes[at..end].to_vec();
+    let arena = bytes[at..at + names].to_vec();
+    at += names;
+    let mut mark_list = Vec::with_capacity(marks);
+    for _ in 0..marks {
+        mark_list.push(Mark { epoch: u64_at(at) as u16, at: u64_at(at + 8) as i64, total: u64_at(at + 16) });
+        at += MARK;
+    }
+    let mut note_list = Vec::with_capacity(notes);
+    for _ in 0..notes {
+        note_list.push(Note { rec: u32_at(at), seq: u16_at(at + 4), epoch: u16_at(at + 6), before: u64_at(at + 8) });
+        at += NOTE;
+    }
+    // Notes that don't hang together only cost what grew: the index itself is fine.
+    let growth = Growth::from_parts(u32_at(12) as u16, mark_list, note_list).unwrap_or_default();
 
     // Everything the index will follow must stay in bounds, whatever the file says.
     let valid_link = |id: u32| id == NONE || (id as usize) < link_list.len();
@@ -203,7 +242,9 @@ fn decode(bytes: &[u8]) -> Result<(Tree, Meta), String> {
             (id, steps) = (link.next, steps + 1);
         }
     }
-    Ok((Tree::from_parts(rec_list, link_list, arena), meta))
+    let mut tree = Tree::from_parts(rec_list, link_list, arena);
+    tree.growth = growth;
+    Ok((tree, meta))
 }
 
 #[cfg(test)]
@@ -229,7 +270,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("C.idx");
         let meta = Meta { volume_serial: 0xABCD, journal_id: 7, next_usn: 123_456, saved_at: 1 };
-        let tree = sample();
+        let mut tree = sample();
+        // A mark, then a.txt grows: its folder's size before is noted.
+        tree.growth.mark(1, 42);
+        tree.set_record(21, &RecordState { seq: 1, size: 50, modified: 9, attrs: 0x20, names: vec![(make_ref(20, 1), "a.txt".into())], ..Default::default() });
         save(&path, &tree, &meta).unwrap();
         let (loaded, loaded_meta) = load(&path).unwrap();
         assert_eq!(loaded_meta, meta);
@@ -240,7 +284,9 @@ mod tests {
         let excludes = Excludes::default();
         let found = loaded.search(&Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: true, excludes: &excludes });
         assert_eq!(found.iter().map(|&id| loaded.path(id, &mut HashMap::new()).unwrap()).collect::<Vec<_>>(), [r"Üsers\a.txt"]);
-        assert_eq!(loaded.rec(20).unwrap().size, 42);
+        assert_eq!(loaded.rec(20).unwrap().size, 50);
+        assert_eq!(loaded.growth.last().map(|m| (m.at, m.total)), Some((1, 42)));
+        assert_eq!(loaded.growth.then(20, 1, 0, 50), Some(42));
 
         let mut bytes = fs::read(&path).unwrap();
         bytes[HEADER + 3] ^= 1;
