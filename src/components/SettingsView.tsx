@@ -520,6 +520,12 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
                         checked={settings.listThumbnails}
                         onChange={(listThumbnails) => set({ listThumbnails })}
                     />
+                    <SwitchRow
+                        label="A folder's README above the list"
+                        hint="Its README.md, folded to its title until you open it"
+                        checked={settings.showReadme}
+                        onChange={(showReadme) => set({ showReadme })}
+                    />
                     <Row label="Tile size in the grid" hint="Ctrl+wheel, Ctrl+= and Ctrl+- in the grid">
                         <Segmented value={settings.tileSize} onChange={(tileSize) => set({ tileSize })} options={TILE_SIZES.map(({ size, label }): [TileSize, string] => [size, label])} />
                     </Row>
