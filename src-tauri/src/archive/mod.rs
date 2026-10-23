@@ -140,21 +140,38 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, Failure>) -> Result<T, Failure> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(Failure::Damaged("Glint couldn't make sense of it".into())))
 }
 
-/// Whether Glint opens files with this name like folders.
+/// Whether Enter opens files with this name like folders (zip, 7z…). A .docx or .jar is a zip too,
+/// but Enter opens it in its app; "Open as archive" looks inside.
 pub fn is_archive_name(name: &str) -> bool {
     Format::of(name).is_some()
 }
 
-/// The archive file on disk that `path` goes into (or is), and the path inside it ("\" between
-/// folders, "" for its top). None for anything else, including a folder named like an archive.
-/// Only parts of the path named like archives are looked at on disk, so plain folders cost nothing.
-pub fn locate(path: &str) -> Option<(String, String)> {
+/// Where a path goes into an archive: the archive file on disk, the path inside it ("\" between
+/// folders, "" for its top), and how the archive is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Located {
+    pub outer: String,
+    pub inner: String,
+    pub format: Format,
+}
+
+/// The archive file on disk that `path` goes into (or is). None for anything else, including a
+/// folder named like an archive. Only parts of the path named like archives (or found to be one by
+/// `sniff`) are looked at on disk, so plain folders cost nothing.
+pub fn locate(path: &str) -> Option<Located> {
+    let any_sniffed = !state().sniffed.is_empty();
     let mut start = 0;
     loop {
         let end = path[start..].find(['\\', '/']).map_or(path.len(), |i| start + i);
-        if is_archive_name(&path[start..end]) && fsx::stat(&path[..end]).is_some_and(|e| !e.dir) {
+        let claimed = Format::claimed(&path[start..end]).map(|(format, _)| format);
+        let format = match claimed {
+            Some(format) => fsx::stat(&path[..end]).is_some_and(|e| !e.dir).then_some(format),
+            None if any_sniffed => sniffed(&path[..end]),
+            None => None,
+        };
+        if let Some(format) = format {
             let inner = path.get(end + 1..).unwrap_or("").trim_matches(['\\', '/']).replace('/', "\\");
-            return Some((path[..end].to_string(), inner));
+            return Some(Located { outer: path[..end].to_string(), inner, format });
         }
         if end >= path.len() {
             return None;
@@ -163,9 +180,50 @@ pub fn locate(path: &str) -> Option<(String, String)> {
     }
 }
 
+/// A file `sniff` found to be an archive, if it's still the same file.
+fn sniffed(path: &str) -> Option<Format> {
+    let key = path.to_lowercase();
+    let (stamp, format) = *state().sniffed.get(&key)?;
+    if stamp_of(path).ok() == Some(stamp) {
+        return Some(format);
+    }
+    state().sniffed.remove(&key);
+    None
+}
+
+/// What a file is by its first bytes, if it's an archive Glint reads.
+fn detect_file(path: &Path) -> Option<Format> {
+    let mut head = Vec::with_capacity(4096);
+    std::fs::File::open(path).ok()?.take(4096).read_to_end(&mut head).ok()?;
+    Format::detect(&head)
+}
+
+/// For a path that leads into or is a file not named like an archive (a renamed zip, a .bin that's
+/// a 7z, an archive opened with "Open as archive"): reads the first bytes of the deepest file on the
+/// way, and remembers it when it's an archive, so `locate` finds it from then on. True when it is one.
+/// Called only once a path fails as a folder, so plain folders never pay for it.
+pub fn sniff(path: &str) -> bool {
+    let mut end = path.trim_end_matches(['\\', '/']).len();
+    loop {
+        let prefix = &path[..end];
+        if let Some(found) = fsx::stat(prefix) {
+            if found.dir || Format::claimed(prefix).is_some() {
+                return false;
+            }
+            let Some(format) = detect_file(Path::new(prefix)) else { return false };
+            state().sniffed.insert(prefix.to_lowercase(), ((found.size, found.modified), format));
+            return true;
+        }
+        match prefix.rfind(['\\', '/']) {
+            Some(at) if at > 2 => end = at,
+            _ => return false,
+        }
+    }
+}
+
 /// Whether `path` is something inside an archive (not the archive file itself).
 pub fn is_inside(path: &str) -> bool {
-    locate(path).is_some_and(|(_, inner)| !inner.is_empty())
+    locate(path).is_some_and(|found| !found.inner.is_empty())
 }
 
 /// Whether files can't be written into `path`: an archive, or a folder in one.
@@ -203,6 +261,9 @@ struct State {
     reading: HashMap<Unit, Arc<Mutex<()>>>,
     /// Running copies out of archives, by the tab that started each, to stop them.
     stages: HashMap<String, Arc<AtomicBool>>,
+    /// Files `sniff` found to be archives though their names don't say so (lowercase path), with the
+    /// size and date they had then.
+    sniffed: HashMap<String, ((u64, i64), Format)>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
@@ -270,13 +331,12 @@ impl Spot {
 
 /// Where `path` leads in the archive it goes into; None when it doesn't go into one.
 fn spot(path: &str) -> Option<Result<Spot, Failure>> {
-    let (outer, inner) = locate(path)?;
-    Some(guarded(|| spot_in(&outer, &inner)))
+    let found = locate(path)?;
+    Some(guarded(|| spot_in(&found.outer, &found.inner, found.format)))
 }
 
-fn spot_in(outer: &str, inner: &str) -> Result<Spot, Failure> {
+fn spot_in(outer: &str, inner: &str, format: Format) -> Result<Spot, Failure> {
     let stamp = stamp_of(outer)?;
-    let format = Format::of(outer).ok_or(Failure::NotFound)?;
     let (mut archive, mut cached) = opened(outer, outer, stamp, format, || Ok(PathBuf::from(outer)))?;
     let mut read_ms = if cached { 0.0 } else { archive.read_ms };
     let mut node = ROOT;
@@ -295,10 +355,14 @@ fn spot_in(outer: &str, inner: &str) -> Result<Spot, Failure> {
     Ok(Spot { archive, node, cached, read_ms })
 }
 
-/// The archive that the file `node` of `parent` is, opened from a temp copy of it.
+/// The archive that the file `node` of `parent` is, opened from a temp copy of it: one named like
+/// an archive (a .jar too), or one whose first bytes say it's one.
 fn enter(parent: &Arc<Opened>, node: u32) -> Result<(Arc<Opened>, bool), Failure> {
     let n = parent.tree.node(node);
-    let format = Format::of(&n.name).ok_or(Failure::NotAFolder)?;
+    let format = match Format::claimed(&n.name) {
+        Some((format, _)) => format,
+        None => head_of(parent, node, 4096).ok().and_then(|(head, _)| Format::detect(&head)).ok_or(Failure::NotAFolder)?,
+    };
     let path = format!("{}\\{}", parent.path, parent.tree.path_of(node));
     opened(&path, &parent.outer, parent.stamp, format, || copy_of(parent, node, Purpose::Nested))
 }
@@ -487,6 +551,7 @@ pub fn list(path: &str, started: Instant) -> Option<Result<Vec<u8>, String>> {
                     entries: tree.len() as u32,
                     cached: spot.cached,
                     read_ms: spot.read_ms,
+                    format: spot.archive.format.code(),
                 };
                 Ok(fsx::encode_listing(path, &children, ms_since(started), Some(&info), false))
             })
@@ -507,42 +572,43 @@ pub fn read_prefix(path: &str, limit: usize) -> Option<Result<(Vec<u8>, bool), S
         return None;
     }
     let found = spot(path)?;
-    let read = found.and_then(|spot| {
-        guarded(|| {
-            let n = spot.node();
-            if n.dir {
-                return Err(Failure::NotAFolder);
-            }
-            let item = n.item as ItemIndex;
-            if let Some(problem) = spot.archive.source.problem(item) {
-                return Err(problem);
-            }
-            let cost = spot.archive.source.cost(item, 0).saturating_add((limit as u64).min(n.size));
-            if cost > PREVIEW_BUDGET {
-                return Err(Failure::TooBig { size: cost, what: "preview" });
-            }
-            let mut bytes = Vec::new();
-            let mut error = None;
-            let failed = spot.archive.source.read_each(
-                &spot.archive.file,
-                &[item],
-                &mut |_, reader| {
-                    if let Err(e) = reader.take(limit as u64 + 1).read_to_end(&mut bytes) {
-                        error = Some(Failure::from(e));
-                    }
-                    false
-                },
-                &mut |_| true,
-            );
-            if let Some(e) = error.or_else(|| failed.into_iter().map(|(_, e)| e).find(|e| !matches!(e, Failure::Cancelled))) {
-                return Err(e);
-            }
-            let more = bytes.len() > limit;
-            bytes.truncate(limit);
-            Ok((bytes, more))
-        })
-    });
+    let read = found.and_then(|spot| guarded(|| head_of(&spot.archive, spot.node, limit)));
     Some(read.map_err(|e| e.message()))
+}
+
+/// The first `limit` bytes of the file `node` of `archive`, and whether there's more.
+fn head_of(archive: &Opened, node: u32, limit: usize) -> Result<(Vec<u8>, bool), Failure> {
+    let n = archive.tree.node(node);
+    if n.dir {
+        return Err(Failure::NotAFolder);
+    }
+    let item = n.item as ItemIndex;
+    if let Some(problem) = archive.source.problem(item) {
+        return Err(problem);
+    }
+    let cost = archive.source.cost(item, 0).saturating_add((limit as u64).min(n.size));
+    if cost > PREVIEW_BUDGET {
+        return Err(Failure::TooBig { size: cost, what: "preview" });
+    }
+    let mut bytes = Vec::new();
+    let mut error = None;
+    let failed = archive.source.read_each(
+        &archive.file,
+        &[item],
+        &mut |_, reader| {
+            if let Err(e) = reader.take(limit as u64 + 1).read_to_end(&mut bytes) {
+                error = Some(Failure::from(e));
+            }
+            false
+        },
+        &mut |_| true,
+    );
+    if let Some(e) = error.or_else(|| failed.into_iter().map(|(_, e)| e).find(|e| !matches!(e, Failure::Cancelled))) {
+        return Err(e);
+    }
+    let more = bytes.len() > limit;
+    bytes.truncate(limit);
+    Ok((bytes, more))
 }
 
 /// A folder's total, each of its subfolders' (by name), and the engine that answered ("zip", "7z").

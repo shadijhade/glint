@@ -93,15 +93,52 @@ fn finds_where_a_path_goes_into_an_archive() {
     // A folder named like an archive is a folder.
     fs::create_dir_all(dir.join("folder.zip").join("inner")).unwrap();
     let z = text(&zip);
-    assert_eq!(locate(&z), Some((z.clone(), String::new())));
-    assert_eq!(locate(&format!("{z}\\2024\\summer\\")), Some((z.clone(), "2024\\summer".into())));
-    assert_eq!(locate(&format!("{z}/2024/x.jpg")), Some((z.clone(), "2024\\x.jpg".into())));
+    let at = |outer: &str, inner: &str| Some(Located { outer: outer.into(), inner: inner.into(), format: Format::Zip });
+    assert_eq!(locate(&z), at(&z, ""));
+    assert_eq!(locate(&format!("{z}\\2024\\summer\\")), at(&z, "2024\\summer"));
+    assert_eq!(locate(&format!("{z}/2024/x.jpg")), at(&z, "2024\\x.jpg"));
     assert_eq!(locate(&text(&dir.join("folder.zip").join("inner"))), None);
     assert_eq!(locate(&text(&dir.join("missing.zip").join("x"))), None);
     assert_eq!(locate(&text(&dir)), None);
     assert!(is_inside(&format!("{z}\\a.txt")) && !is_inside(&z) && is_read_only(&z));
     assert_eq!(prefix_units("C:\\é😀\\b.zip\\c", 3), "C:\\é😀\\b.zip".encode_utf16().count() as u32);
     assert_eq!(prefix_units("\\\\server\\share\\x.7z\\y", 3), 19);
+}
+
+#[test]
+fn opens_zips_by_other_names_on_request_and_by_their_bytes() {
+    let dir = scratch("claims");
+    // A .docx is a zip: Enter opens it in Word, but a path into it goes into it.
+    let docx = dir.join("report.docx");
+    write_zip(&docx, &[("word/document.xml", b"<w:document/>"), ("[Content_Types].xml", b"<Types/>")], zip::CompressionMethod::Deflated);
+    let d = text(&docx);
+    assert!(!is_archive_name(&d) && Format::claimed("report.DOCX") == Some((Format::Zip, read::Claim::OnRequest)));
+    assert_eq!(names(&listing(&d)), ["word", "[Content_Types].xml"]);
+    assert_eq!(names(&listing(&format!("{d}\\word"))), ["document.xml"]);
+    // A zip named .bin is found by its first bytes, once a path into it fails as a folder.
+    let bin = dir.join("data.bin");
+    write_zip(&bin, &[("inside.txt", b"hi")], zip::CompressionMethod::Stored);
+    let b = text(&bin);
+    assert_eq!(locate(&format!("{b}\\inside.txt")), None, "not before it's sniffed");
+    assert!(sniff(&format!("{b}\\inside.txt")));
+    assert_eq!(locate(&format!("{b}\\inside.txt")).map(|l| (l.inner, l.format)), Some(("inside.txt".into(), Format::Zip)));
+    assert_eq!(names(&listing(&b)), ["inside.txt"]);
+    // Nothing else is sniffed into an archive: a text file, a folder, a missing path.
+    fs::write(dir.join("notes.txt"), "PK? no").unwrap();
+    assert!(!sniff(&text(&dir.join("notes.txt").join("x"))));
+    assert!(!sniff(&text(&dir.join("nowhere").join("x"))));
+    assert!(!sniff(&text(&dir)));
+    // A zip in a zip under another name opens by its bytes too.
+    let mut inner = Vec::new();
+    {
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(&mut inner));
+        z.start_file("deep.txt", SimpleFileOptions::default()).unwrap();
+        z.write_all(b"deep").unwrap();
+        z.finish().unwrap();
+    }
+    let outer = dir.join("outer.zip");
+    write_zip(&outer, &[("blob.dat", &inner)], zip::CompressionMethod::Stored);
+    assert_eq!(names(&listing(&format!("{}\\blob.dat", text(&outer)))), ["deep.txt"]);
 }
 
 #[test]

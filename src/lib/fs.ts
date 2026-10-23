@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { ArchiveFormat } from "./archives";
 import { decodeItems, decodeListing, type DiffStatus, type FileEntry, type Listing } from "./entries";
 import { decodeUsage, type UsageMap } from "./usage";
 
@@ -143,8 +144,8 @@ export const quickHide = () => invoke("quick_hide");
 /** Starts Glint in the tray when this user signs in, or stops doing so. */
 export const setStartWithWindows = (enabled: boolean) => invoke("set_start_with_windows", { enabled });
 
-/** Who measured a folder: the index, dust, or (in an archive) the archive's own list of entries. */
-export type SizeEngine = "index" | "dust" | "zip" | "7z";
+/** Who measured a folder: the index, dust, or (in an archive) the archive's own list of entries, by its format. */
+export type SizeEngine = "index" | "dust" | ArchiveFormat;
 
 export interface FolderSizes {
     path: string;

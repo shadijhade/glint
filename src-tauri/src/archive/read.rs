@@ -12,23 +12,66 @@ use std::sync::Arc;
 use zip::read::ZipArchiveMetadata;
 use zip::{CompressionMethod, HasZipMetadata, ZipArchive};
 
+/// How Glint reads an archive. Its `code` names it to the UI: in a listing's header, and as the
+/// engine of a disk-usage map (see `entries.ts` and `usage.ts`, which list the same labels in order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Zip,
     SevenZ,
 }
 
+/// What a file's name says about it: Enter opens it like a folder (`Browse`), or opens it in its app
+/// while "Open as archive" looks inside (`OnRequest`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    Browse,
+    OnRequest,
+}
+
+/// Files that are zips by another name: Office and OpenDocument files, Java and Android packages,
+/// NuGet packages, VSIX extensions, Python wheels, EPUBs, MSIX and AppX packages, Firefox add-ons,
+/// KMZ and 3MF. Enter opens them in their app; "Open as archive" looks inside.
+const ZIP_INSIDE: [&str; 36] = [
+    "docx", "docm", "dotx", "dotm", "xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "potx", "potm", "odt", "ods", "odp", "odg", "ott", "ots", "otp", "jar", "war", "ear", "apk", "aab", "nupkg", "vsix",
+    "whl", "epub", "msix", "msixbundle", "appx", "appxbundle", "xpi", "kmz", "3mf", "ipa",
+];
+
 impl Format {
-    /// By the name's extension: what Glint opens like a folder.
+    /// What a name claims, by its extension. Every folder listed asks for every part of its path, so
+    /// no copy of the name is made.
+    pub fn claimed(name: &str) -> Option<(Format, Claim)> {
+        let ext = name.rsplit_once('.').map(|(stem, ext)| (!stem.is_empty()).then_some(ext))??;
+        if ext.eq_ignore_ascii_case("zip") {
+            Some((Format::Zip, Claim::Browse))
+        } else if ext.eq_ignore_ascii_case("7z") {
+            Some((Format::SevenZ, Claim::Browse))
+        } else if ZIP_INSIDE.iter().any(|z| ext.eq_ignore_ascii_case(z)) {
+            Some((Format::Zip, Claim::OnRequest))
+        } else {
+            None
+        }
+    }
+
+    /// What Enter opens like a folder, by the name.
     pub fn of(name: &str) -> Option<Format> {
-        // Every folder listed asks, so no copy of the name is made.
-        let ends = |ext: &[u8]| name.len() > ext.len() && name.as_bytes()[name.len() - ext.len()..].eq_ignore_ascii_case(ext);
-        if ends(b".zip") {
+        Format::claimed(name).filter(|&(_, claim)| claim == Claim::Browse).map(|(format, _)| format)
+    }
+
+    /// What a file is, by its first bytes, whatever it's called.
+    pub fn detect(head: &[u8]) -> Option<Format> {
+        if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") {
             Some(Format::Zip)
-        } else if ends(b".7z") {
+        } else if head.starts_with(b"7z\xBC\xAF\x27\x1C") {
             Some(Format::SevenZ)
         } else {
             None
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            Format::Zip => 0,
+            Format::SevenZ => 1,
         }
     }
 

@@ -16,9 +16,9 @@ use tauri::State;
 
 const ENGINE_INDEX: u32 = 0;
 const ENGINE_DUST: u32 = 1;
-/// A folder in an archive, mapped from the archive's own list of entries.
-const ENGINE_ZIP: u32 = 2;
-const ENGINE_7Z: u32 = 3;
+/// A folder in an archive, mapped from the archive's own list of entries: this plus the archive's
+/// format code (2 a zip, 3 a 7z…).
+const ENGINE_ARCHIVE: u32 = 2;
 /// Flags: smaller items were left out; the index service runs but is too old to map.
 const LIMITED: u32 = 1;
 const SERVICE_TOO_OLD: u32 = 2;
@@ -64,7 +64,7 @@ pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, ma
     if let Some(found) = blocking(move || Ok(crate::archive::usage(&asked, depth, max_items))).await? {
         slot.kill();
         let (nodes, limited, format) = found?;
-        let engine = if format == crate::archive::Format::Zip { ENGINE_ZIP } else { ENGINE_7Z };
+        let engine = ENGINE_ARCHIVE + format.code() as u32;
         return Ok(Response::new(encode_map(&path, &nodes, ms_since(started), engine, if limited { LIMITED } else { 0 })));
     }
     let asked = path.clone();
@@ -188,7 +188,7 @@ fn fill_in(nodes: &mut [(UsageNode, String)]) {
 /// A map as bytes for the UI, laid out like a listing (`fsx::encode_listing`) so each array can be
 /// viewed in place as a typed array. All little-endian:
 ///   0: u32 count · 4: u32 path length (UTF-8 bytes) · 8: f64 milliseconds spent
-///   16: u32 engine (0 index, 1 dust, 2 a zip's list of entries, 3 a 7z's) · 20: u32 flags (1: smaller items left out; 2: the index service
+///   16: u32 engine (0 index, 1 dust, 2 plus an archive's format code for its list of entries: 2 a zip's, 3 a 7z's…) · 20: u32 flags (1: smaller items left out; 2: the index service
 ///   runs but is too old to map)
 ///   24: f64 size[count] · then f64 modified[count] · u32 attrs[count] (the directory bit set on
 ///   folders) · u32 parent[count] (u32::MAX for the folder mapped, always first) · u32 name

@@ -1,3 +1,4 @@
+import { ARCHIVE_FORMATS, type ArchiveFormat, BROWSED, ON_REQUEST } from "./archives.ts";
 import { joinPath } from "./paths.ts";
 
 /** Windows FILE_ATTRIBUTE_* bits the explorer cares about, and two of Glint's own for archives (Windows doesn't use them). */
@@ -52,7 +53,7 @@ export interface InArchive {
     path: string;
     /** The archive file on disk everything is in (the same, unless archives nest). */
     outer: string;
-    format: "zip" | "7z";
+    format: ArchiveFormat;
     /** Files and folders in the whole archive. */
     entries: number;
     /** Its list of entries was already in memory; otherwise it took `readMs` to read. */
@@ -101,13 +102,14 @@ export function decodeListing(buffer: ArrayBuffer): Listing {
     if (view.getUint32(28, true) & 2) listing.fromIndex = true;
     const archiveUnits = view.getUint32(16, true);
     if (archiveUnits) {
-        const archive = path.slice(0, archiveUnits);
+        const flags = view.getUint32(28, true);
         listing.archive = {
-            path: archive,
+            path: path.slice(0, archiveUnits),
             outer: path.slice(0, view.getUint32(20, true)),
-            format: archiveFormat(archive) ?? "zip",
+            // The format's code plus one, in bits 8 to 15.
+            format: ARCHIVE_FORMATS[((flags >> 8) & 0xff) - 1] ?? "zip",
             entries: view.getUint32(24, true),
-            cached: (view.getUint32(28, true) & 1) !== 0,
+            cached: (flags & 1) !== 0,
             readMs: view.getFloat64(32, true),
         };
     }
@@ -144,14 +146,11 @@ export function decodeItems(buffer: ArrayBuffer): { location: string; entries: F
     return { location, entries, elapsed };
 }
 
-/** "zip" or "7z" for a name Glint opens like a folder (whatever's before it), else null. */
-export function archiveFormat(name: string): InArchive["format"] | null {
-    const lower = name.toLowerCase();
-    return lower.endsWith(".zip") ? "zip" : lower.endsWith(".7z") ? "7z" : null;
-}
+/** An archive file (on disk or in another archive) Enter opens like a folder: a zip, a 7z… */
+export const isArchiveFile = (e: FileEntry) => !e.dir && BROWSED.includes(e.ext);
 
-/** A zip or 7z file (on disk or in another archive): Enter opens it like a folder. */
-export const isArchiveFile = (e: FileEntry) => !e.dir && (e.ext === "zip" || e.ext === "7z");
+/** A file that's an archive by another name (a .docx, a .jar…): Enter opens it in its app, "Open as archive" looks inside. */
+export const isBrowsable = (e: FileEntry) => !e.dir && ON_REQUEST.includes(e.ext);
 
 /** Something inside an archive: read-only, and extracted to be opened or copied. */
 export const isArchived = (e: FileEntry) => (e.attrs & ATTR.inArchive) !== 0;
