@@ -241,12 +241,9 @@ pub fn parse_pe_file(path: &str) -> Result<PeInfo, String> {
     let (security_off, security_size) = dir_entry(4);
     let (clr_rva, clr_size) = dir_entry(14);
 
+    // A signature in the file (sign.rs says whether it holds, and finds one in a catalog).
     let is_signed = security_off > 0 && security_size > 0;
     let is_dotnet = clr_rva > 0 && clr_size > 0;
-    // Only that a signature is attached: whether it's valid and trusted, Properties → Digital Signatures says.
-    if is_signed {
-        features.insert(0, "Signature attached (not verified)".into());
-    }
     if is_dotnet {
         features.insert(0, ".NET / CLR Managed".into());
     }

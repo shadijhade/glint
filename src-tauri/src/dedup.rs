@@ -5,14 +5,13 @@
 //! Stage 2: Checks physical file identity (`GetFileInformationByHandle`) so existing hardlinks to the
 //!          same MFT record are not double-counted, and hashes the first 4 KB + last 4 KB of same-size
 //!          candidates.
-//! Stage 3: Computes a full SHA-256 content digest across remaining candidates in parallel.
+//! Stage 3: Computes a full BLAKE3 content digest across remaining candidates in parallel.
 //!
 //! Hard-linking compares each pair byte for byte first, so a file that changed since the scan (or a
 //! digest that somehow agreed) is never replaced.
 
 use crate::fsx::{self, blocking};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -134,8 +133,8 @@ fn hex_string(bytes: &[u8]) -> String {
 fn edge_digest(path: &str, size: u64) -> Option<(Option<FileId>, [u8; 32])> {
     let mut file = File::open(path).ok()?;
     let id = file_identity(&file);
-    let mut hasher = Sha256::new();
-    hasher.update(size.to_le_bytes());
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&size.to_le_bytes());
 
     let mut buf = [0u8; EDGE_BYTES as usize];
     let n = file.read(&mut buf).ok()?;
@@ -149,12 +148,12 @@ fn edge_digest(path: &str, size: u64) -> Option<(Option<FileId>, [u8; 32])> {
             }
         }
     }
-    Some((id, hasher.finalize().into()))
+    Some((id, *hasher.finalize().as_bytes()))
 }
 
 fn full_digest(path: &str) -> Option<[u8; 32]> {
     let mut file = File::open(path).ok()?;
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let n = file.read(&mut buf).ok()?;
@@ -163,7 +162,7 @@ fn full_digest(path: &str) -> Option<[u8; 32]> {
         }
         hasher.update(&buf[..n]);
     }
-    Some(hasher.finalize().into())
+    Some(*hasher.finalize().as_bytes())
 }
 
 pub fn scan_duplicates(root: &str, min_bytes: u64, cancel: &AtomicBool) -> Result<DedupReport, String> {
@@ -252,7 +251,8 @@ pub fn scan_duplicates(root: &str, min_bytes: u64, cancel: &AtomicBool) -> Resul
         .collect();
     let edge_candidates = edge_matches.len();
 
-    // Stage 3: Full parallel BLAKE2b-256 content verification for candidates > 8 KB (<= 8 KB are already fully hashed!).
+    // Stage 3: a full BLAKE3 digest of each candidate's content, in parallel (files of 8 KB or less were
+    // all hashed in stage 2 already, and hash the same again here).
     let workers = std::thread::available_parallelism().map(|n| n.get().clamp(2, 8)).unwrap_or(4);
     let work = Arc::new(Mutex::new(edge_matches.into_iter()));
     let by_full: Arc<Mutex<CandidateGroups>> = Arc::new(Mutex::new(HashMap::new()));

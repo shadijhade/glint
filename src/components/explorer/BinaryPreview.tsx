@@ -6,6 +6,7 @@ import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
 import { inspectPe, type PeInfo } from "@/lib/fs";
 import { cn } from "@/lib/utils";
+import { SignatureChip } from "./SignatureChip";
 
 const PE_EXTS = new Set(["exe", "dll", "sys", "ocx", "drv", "cpl", "scr", "efi", "pyd", "node", "mui"]);
 
@@ -88,14 +89,7 @@ export function BinaryPreview({ entry }: { entry: FileEntry }) {
                     {info.format} · {info.isDll ? "DLL" : "Executable"}
                 </span>
                 <span className="rounded-md border bg-background px-2 py-0.5 text-muted-foreground">{info.subsystem}</span>
-                {info.isSigned && (
-                    <span
-                        className="rounded-md border bg-background px-2 py-0.5 text-muted-foreground"
-                        title="A digital signature is attached. Whether it's valid and who signed it: Properties → Digital Signatures."
-                    >
-                        Signature attached
-                    </span>
-                )}
+                <SignatureChip path={entry.path} className="max-w-full" />
                 {info.isDotnet && (
                     <span className="rounded-md bg-violet-500/15 px-2 py-0.5 font-medium text-violet-600 dark:text-violet-400">.NET CLR</span>
                 )}
