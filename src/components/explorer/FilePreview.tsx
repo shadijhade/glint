@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, X } from "lucide-react";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, useExplorer } from "@/lib/explorer";
@@ -8,6 +8,7 @@ import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/l
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
 import { archiveExtract, type ArchivePeek, archivePeek, listDir, readTextPreview } from "@/lib/fs";
 import { useGitMark } from "@/lib/git";
+import { mapLink, useMediaDetails } from "@/lib/media";
 import { usePreviewView, type View } from "@/lib/preview";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, parentPath } from "@/lib/paths";
@@ -61,14 +62,19 @@ function Media({ entry, kind, src }: { entry: FileEntry; kind: MediaKind; src: s
                 <video src={src} controls className="max-h-full max-w-full rounded-sm" />
             </Centered>
         );
-    if (kind === "audio")
-        return (
-            <Centered>
-                <BigIcon entry={entry} />
-                <audio src={src} controls className="w-full max-w-sm" />
-            </Centered>
-        );
+    if (kind === "audio") return <AudioPreview entry={entry} src={src} />;
     return <PdfPreview entry={entry} src={src} />;
+}
+
+/** A song with its cover, when it has one, over its player. */
+function AudioPreview({ entry, src }: { entry: FileEntry; src: string }) {
+    const cover = useMediaDetails(entry, !isArchived(entry))?.cover;
+    return (
+        <Centered>
+            {cover ? <img src={cover} alt="Cover" draggable={false} className="size-44 rounded-md object-cover shadow-md" /> : <BigIcon entry={entry} />}
+            <audio src={src} controls className="w-full max-w-sm" />
+        </Centered>
+    );
 }
 
 /**
@@ -318,7 +324,11 @@ function FolderPreview({ entry }: { entry: FileEntry }) {
 }
 
 function Details({ entry }: { entry: FileEntry }) {
+    // A photo's camera, exposure, date taken and place, a song's artist and album…, read from the file.
+    const media = useMediaDetails(entry, !isArchived(entry));
+    const place = media?.place;
     const rows: [string, string][] = [
+        ...(media?.rows ?? []),
         ["Type", typeLabel(entry)],
         ...(!entry.dir ? [["Size", `${formatSize(entry.size)} (${formatCount(entry.size)} bytes)`] as [string, string]] : []),
         ["Modified", formatFullDate(entry.modified)],
@@ -330,7 +340,13 @@ function Details({ entry }: { entry: FileEntry }) {
                 <div key={label} className="contents">
                     <dt className="text-muted-foreground">{label}</dt>
                     <dd className="select-text truncate" title={value}>
-                        {value}
+                        {label === "Place" && place ? (
+                            <button type="button" onClick={() => void openUrl(mapLink(place))} title="Show it on OpenStreetMap" className="text-primary hover:underline">
+                                {value}
+                            </button>
+                        ) : (
+                            value
+                        )}
                     </dd>
                 </div>
             ))}

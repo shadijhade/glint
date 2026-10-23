@@ -469,6 +469,28 @@ export async function compareBytes(left: string, right: string, offset: number, 
     };
 }
 
+export interface MediaDetails {
+    /** Label and value, in the order the preview shows them. */
+    rows: [string, string][];
+    /** When it was taken (or recorded): milliseconds, the local time it says. */
+    taken: number | null;
+    camera: string | null;
+    artist: string | null;
+    album: string | null;
+    title: string | null;
+    track: number | null;
+    /** Latitude and longitude. */
+    place: [number, number] | null;
+    /** A song's cover, as a data: URL. */
+    cover: string | null;
+}
+
+/** A photo's, video's or song's details (media.rs); null for other files. */
+export const mediaDetails = (path: string) => invoke<MediaDetails | null>("media_details", { path });
+
+/** Many files' details at once, without covers. */
+export const mediaDetailsMany = (paths: string[]) => invoke<(MediaDetails | null)[]>("media_details_many", { paths });
+
 /** `len` bytes of a file from `offset` (at most 1 MB), and the file's size. */
 export async function fileBytes(path: string, offset: number, len: number) {
     const buffer = await invoke<ArrayBuffer>("file_bytes", { path, offset, len });

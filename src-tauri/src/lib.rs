@@ -16,6 +16,7 @@ mod jq;
 mod launch;
 mod locks;
 mod markdown;
+mod media;
 mod native_preview;
 mod pe;
 mod proc;
@@ -537,6 +538,8 @@ pub fn run() {
             sheet::inspect_sheet,
             sql::sql_tables,
             sql::sql_run,
+            media::media_details,
+            media::media_details_many,
             sign::verify_signature,
             defender::defender_scan,
             defender::cancel_defender_scan,

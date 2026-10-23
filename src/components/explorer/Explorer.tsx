@@ -164,6 +164,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { driveName, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
+import { readTaken, takenKey, useTaken } from "@/lib/media";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, inArchivePath, joinPath, samePath, THIS_PC } from "@/lib/paths";
 import { frecency } from "@/lib/rank";
@@ -811,11 +812,17 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const found = useDeferredValue(find?.entries ?? NO_ENTRIES);
     const source = find ? found : (listing?.entries ?? NO_ENTRIES);
     const sizeRun = find ? undefined : sizes;
+    // Sorted by date taken: the photos' and videos' dates are read in the background, and sort as they come.
+    const takenMap = useTaken((s) => (sort.key === "taken" ? s.taken : null));
+    const takenOf = useMemo(() => (takenMap ? (e: FileEntry) => takenMap.get(takenKey(e)) : undefined), [takenMap]);
+    useEffect(() => {
+        if (sort.key === "taken") void readTaken(source);
+    }, [sort.key, source]);
     const sorted = useMemo(() => {
         const sizeOf = sizeRun ? (e: FileEntry) => (e.dir ? (sizeRun.sizes.get(e.name) ?? -1) : e.size) : undefined;
         // Listings arrive sorted by name from Rust, so the default view needs no work here.
-        return sortEntries(source, sort, foldersFirst, source === listing?.entries, sizeOf);
-    }, [source, listing, sort, foldersFirst, sizeRun]);
+        return sortEntries(source, sort, foldersFirst, source === listing?.entries, sizeOf, takenOf);
+    }, [source, listing, sort, foldersFirst, sizeRun, takenOf]);
 
     // Compared deeper (the compare bar's Subfolders and Contents): Rust's answer for these two folders, once it's in.
     const deep = useDeepCompare();
@@ -1297,7 +1304,22 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         menu.open(e, backgroundMenu());
     };
 
-    const onSort = (key: SortKey) => setSettings({ sort: { key, desc: sort.key === key ? !sort.desc : key === "modified" || key === "size" } });
+    const onSort = (key: SortKey) => setSettings({ sort: { key, desc: sort.key === key ? !sort.desc : key === "modified" || key === "taken" || key === "size" } });
+    // The header's own menu: what to sort by, Date taken among them (read from photos and videos).
+    const onHeaderMenu = (e: React.MouseEvent) => {
+        e.preventDefault();
+        const labels: [SortKey, string][] = [
+            ["name", "Name"],
+            ["modified", "Date modified"],
+            ["taken", "Date taken (photos and videos)"],
+            ["type", "Type"],
+            ["size", "Size"],
+        ];
+        menu.open(
+            e,
+            labels.map(([key, label]) => ({ label, toggle: true, checked: sort.key === key, onSelect: () => sort.key !== key && onSort(key) }))
+        );
+    };
 
     let empty: React.ReactNode = null;
     if (find?.error) {
@@ -1405,6 +1427,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         git: gitMarks,
         sort,
         onSort,
+        onHeaderMenu,
+        takenOf,
         selection,
         focusIndex,
         renaming,
