@@ -66,6 +66,9 @@ lofty = "0.25"
 imagesize = "0.15"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
+# The calculator in Ctrl+K (= 3 ft to cm): fend, a units-aware calculator in pure Rust with no
+# dependencies (1.2 MB; numbat, planned first, was 3.3 MB).
+fend-core = "1.5"
 # Documents search (doctext.rs): a PDF's text by pdf-extract (pure Rust, over lopdf), in a worker
 # process; Office's, OpenDocument's and EPUB's XML by quick-xml and the pattern by the regex crate,
 # both in the build already.
