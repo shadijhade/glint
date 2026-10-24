@@ -5,6 +5,7 @@
 //! runs in a folder of Glint's own in the temp folder (what's sent is read where it is), and a receive
 //! in a hidden one in the folder it's received into, out of which what came is moved, under a free name.
 //! A working folder left by a run Glint didn't see end (it crashed, or was ended) goes at the next start.
+//! Sharing on this network (lan.rs) runs dufs in the same way, held and stopped as these are.
 
 use crate::fsx::blocking;
 use crate::proc::Job;
@@ -19,26 +20,28 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::ipc::Channel;
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
+pub(crate) static NEXT: AtomicU64 = AtomicU64::new(1);
 
-/// A send or a receive running: dropping it ends its process (closing its job), after which the thread
-/// that waits on it tidies up.
-struct Running {
-    id: u64,
-    _job: Job,
-    stopped: Arc<AtomicBool>,
-    /// sendme's working folder, removed once it's ended.
-    work: PathBuf,
-    _lock: File,
+/// A send, a receive or a share running: dropping it ends its process (closing its job), after which
+/// the thread that waits on it tidies up.
+pub(crate) struct Running {
+    pub id: u64,
+    /// Held for its drop, which ends the process.
+    pub _job: Job,
+    /// Set when it's stopped (rather than ending by itself).
+    pub stopped: Arc<AtomicBool>,
+    /// sendme's working folder, removed once it's ended, and its lock.
+    pub work: Option<PathBuf>,
+    pub _lock: Option<File>,
 }
 
 static RUNNING: Mutex<Vec<Running>> = Mutex::new(Vec::new());
 
-fn running() -> MutexGuard<'static, Vec<Running>> {
+pub(crate) fn running() -> MutexGuard<'static, Vec<Running>> {
     RUNNING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Stops a send (its ticket stops working) or a receive (what came so far goes).
+/// Stops a send (its ticket stops working), a receive (what came so far goes) or a share on the network.
 #[tauri::command]
 pub fn share_stop(id: u64) {
     let mut list = running();
@@ -48,10 +51,10 @@ pub fn share_stop(id: u64) {
     }
 }
 
-/// Glint's closing: every send and receive ends, and their working files go.
+/// Glint's closing: every send, receive and share ends, and their working files go.
 pub fn stop_all() {
     let ended = std::mem::take(&mut *running());
-    let works: Vec<PathBuf> = ended.iter().map(|r| r.work.clone()).collect();
+    let works: Vec<PathBuf> = ended.iter().filter_map(|r| r.work.clone()).collect();
     for r in &ended {
         r.stopped.store(true, Ordering::Relaxed);
     }
@@ -115,10 +118,10 @@ fn tidy(work: &Path) {
     }
 }
 
-/// Starts `command` held in a job of its own, which ends it with Glint.
-fn start(command: &mut Command) -> Result<(Job, Child), String> {
+/// Starts `command` (`program`'s) held in a job of its own, which ends it with Glint.
+pub(crate) fn start(command: &mut Command, program: &str) -> Result<(Job, Child), String> {
     let job = Job::ending()?;
-    let mut child = command.spawn().map_err(|e| format!("Couldn't start sendme: {e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("Couldn't start {program}: {e}"))?;
     if let Err(e) = job.assign(&child) {
         let _ = child.kill();
         return Err(e);
@@ -128,7 +131,7 @@ fn start(command: &mut Command) -> Result<(Job, Child), String> {
 
 /// Reads what a process says on `stream`, line by line, to `each`; ends with its last lines, for
 /// saying why it failed.
-fn listen(stream: Option<impl Read + Send + 'static>, each: impl Fn(&str) + Send + 'static) -> JoinHandle<Vec<String>> {
+pub(crate) fn listen(stream: Option<impl Read + Send + 'static>, each: impl Fn(&str) + Send + 'static) -> JoinHandle<Vec<String>> {
     std::thread::spawn(move || {
         let mut last = Vec::new();
         for line in stream.into_iter().flat_map(|s| BufReader::new(s).lines().map_while(Result::ok)) {
@@ -144,8 +147,8 @@ fn listen(stream: Option<impl Read + Send + 'static>, each: impl Fn(&str) + Send
     })
 }
 
-/// Why sendme ended, from its last words: its error, without clap's advice.
-fn why(last: &[String], code: Option<i32>) -> String {
+/// Why `program` ended, from its last words: its error, without clap's advice.
+pub(crate) fn why(last: &[String], code: Option<i32>, program: &str) -> String {
     let said = last.iter().rev().map(|l| l.trim()).find(|l| !l.starts_with("For more information") && !l.starts_with("You can remove"));
     match said {
         Some(line) => {
@@ -154,14 +157,14 @@ fn why(last: &[String], code: Option<i32>) -> String {
             chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
         }
         None => match code {
-            Some(0) => "sendme ended".into(),
-            Some(code) => format!("sendme ended with code {code}"),
-            None => "sendme was ended".into(),
+            Some(0) => format!("{program} ended"),
+            Some(code) => format!("{program} ended with code {code}"),
+            None => format!("{program} was ended"),
         },
     }
 }
 
-/// `text` as a QR code: an SVG, dark on light.
+/// `text` as a QR code: an SVG, dark on light (the low error correction keeps a long ticket's readable).
 pub(crate) fn qr_svg(text: &str) -> String {
     use qrcode::render::svg;
     qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::L)
@@ -192,9 +195,9 @@ pub async fn send_start(path: String, on_event: Channel<SendEvent>) -> Result<u6
         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
         let held = lock(&work).inspect_err(|_| tidy(&work))?;
         command.args(["send", "--no-progress", "--"]).arg(&path).current_dir(&work).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let (job, mut child) = start(&mut command).inspect_err(|_| tidy(&work))?;
+        let (job, mut child) = start(&mut command, "sendme").inspect_err(|_| tidy(&work))?;
         let stopped = Arc::new(AtomicBool::new(false));
-        running().push(Running { id, _job: job, stopped: stopped.clone(), work: work.clone(), _lock: held });
+        running().push(Running { id, _job: job, stopped: stopped.clone(), work: Some(work.clone()), _lock: Some(held) });
         let said = listen(child.stderr.take(), |_| {});
         let stdout = child.stdout.take();
         std::thread::spawn(move || {
@@ -209,7 +212,7 @@ pub async fn send_start(path: String, on_event: Channel<SendEvent>) -> Result<u6
             running().retain(|r| r.id != id);
             tidy(&work);
             if !stopped.load(Ordering::Relaxed) {
-                let _ = on_event.send(SendEvent::Ended { message: why(&last, code) });
+                let _ = on_event.send(SendEvent::Ended { message: why(&last, code, "sendme") });
             }
         });
         Ok(id)
@@ -334,9 +337,9 @@ pub async fn receive_start(folder: String, ticket: String, on_event: Channel<Rec
         note(&work);
         let held = lock(&work).inspect_err(|_| tidy(&work))?;
         command.args(["receive", "--no-progress", "--"]).arg(&ticket).current_dir(&work).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let (job, mut child) = start(&mut command).inspect_err(|_| tidy(&work))?;
+        let (job, mut child) = start(&mut command, "sendme").inspect_err(|_| tidy(&work))?;
         let stopped = Arc::new(AtomicBool::new(false));
-        running().push(Running { id, _job: job, stopped: stopped.clone(), work: work.clone(), _lock: held });
+        running().push(Running { id, _job: job, stopped: stopped.clone(), work: Some(work.clone()), _lock: Some(held) });
         let events = on_event.clone();
         let said = listen(child.stderr.take(), move |line| {
             if let Some((files, size)) = getting(line) {
@@ -374,7 +377,7 @@ pub async fn receive_start(folder: String, ticket: String, on_event: Channel<Rec
                     Ok(path) => ReceiveEvent::Done { path },
                     Err(message) => ReceiveEvent::Failed { message },
                 },
-                status => ReceiveEvent::Failed { message: why(&last, status.ok().and_then(|s| s.code())) },
+                status => ReceiveEvent::Failed { message: why(&last, status.ok().and_then(|s| s.code()), "sendme") },
             };
             tidy(&work);
             let _ = on_event.send(event);
@@ -405,10 +408,10 @@ mod tests {
         assert_eq!(bytes_of("812 B"), 812);
 
         let last = ["getting collection 2b81 2 files, 24.00 MiB".to_string(), "error: target C:\\a\\one.txt already exists".into()];
-        assert_eq!(why(&last, Some(1)), "Target C:\\a\\one.txt already exists");
+        assert_eq!(why(&last, Some(1), "sendme"), "Target C:\\a\\one.txt already exists");
         let clap = ["error: invalid value 'blobx' for '<TICKET>': non-zero trailing bits at 9".to_string(), "For more information, try '--help'.".into()];
-        assert_eq!(why(&clap, Some(2)), "Invalid value 'blobx' for '<TICKET>': non-zero trailing bits at 9");
-        assert_eq!(why(&[], Some(3)), "sendme ended with code 3");
+        assert_eq!(why(&clap, Some(2), "sendme"), "Invalid value 'blobx' for '<TICKET>': non-zero trailing bits at 9");
+        assert_eq!(why(&[], Some(3), "sendme"), "sendme ended with code 3");
     }
 
     #[test]

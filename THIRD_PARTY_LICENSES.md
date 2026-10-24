@@ -1250,9 +1250,9 @@ The Apache License 2.0 is reproduced in full under [dust](#dust) above.
 
 | Crate | Version | Used for | License |
 | :--- | :--- | :--- | :--- |
-| [qrcode](https://github.com/kennytm/qrcode-rust) | 0.14.1 | A send's ticket as a QR code | MIT or Apache-2.0 |
+| [qrcode](https://github.com/kennytm/qrcode-rust) | 0.14.1 | A send's ticket, and a network share's link, as QR codes | MIT or Apache-2.0 |
 
-The Apache License 2.0 is reproduced in full under [dust](#dust) above. sendme itself isn't part of Glint: it's installed with winget when it's first wanted.
+The Apache License 2.0 is reproduced in full under [dust](#dust) above. sendme and dufs themselves aren't part of Glint: each is installed with winget when it's first wanted.
 
 ## Calculator (compiled into the app)
 

@@ -42,6 +42,7 @@ import {
     SquareTerminal,
     TextSearch,
     Trash2,
+    Wifi,
     Wrench,
     ZoomIn,
     ZoomOut,
@@ -79,7 +80,7 @@ import { Button } from "../ui/button";
 import { checkForSecrets, checkWithYara } from "./CheckDialog";
 import { canConvert, convertPictures } from "./ConvertDialog";
 import { openCleanup } from "./CleanupDialog";
-import { offerToPC } from "./ShareDialog";
+import { offerOnNetwork, offerToPC } from "./ShareDialog";
 import { openReceive } from "@/lib/share";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { openHistory } from "./HistoryDialog";
@@ -306,6 +307,12 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 icon: Send,
                 disabled: readOnly || bin || paths.length > 1 || (!inFolder && paths.length !== 1),
                 onSelect: () => offerToPC(paths.length === 1 ? paths[0] : path),
+            },
+            {
+                label: paths.length === 1 ? "Share the selection on this network…" : "Share this folder on this network…",
+                icon: Wifi,
+                disabled: readOnly || bin || paths.length > 1 || (!inFolder && paths.length !== 1),
+                onSelect: () => offerOnNetwork(paths.length === 1 ? paths[0] : path),
             },
             { label: "Receive from another PC here…", icon: Download, disabled: !inFolder || readOnly || find, onSelect: () => openReceive(path) },
             { heading: "Check" },

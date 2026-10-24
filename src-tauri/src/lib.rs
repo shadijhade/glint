@@ -32,6 +32,7 @@ mod quick;
 mod recycle;
 mod repo;
 mod scripts;
+mod lan;
 mod share;
 mod sheet;
 mod shell;
@@ -665,6 +666,8 @@ pub fn run() {
             share::send_start,
             share::receive_start,
             share::share_stop,
+            lan::lan_addresses,
+            lan::lan_share_start,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,

@@ -1,7 +1,8 @@
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import { revealInApp } from "./explorer";
-import { receiveStart, sendStart, shareStop } from "./fs";
+import { lanShareStart, type LanOptions, receiveStart, sendStart, shareStop } from "./fs";
 import { baseName, samePath } from "./paths";
 
 /** A file or folder offered to another PC with sendme (share.rs), from Glint's start to its Stop. */
@@ -33,25 +34,54 @@ export interface Receiving {
     failed?: string;
 }
 
+/** A folder or a file shared on this network with dufs (lan.rs): its link once dufs is listening. */
+export interface Serving {
+    key: number;
+    path: string;
+    id: number | null;
+    uploads: boolean;
+    url?: string;
+    qr?: string;
+    /** When it ends by itself (ms since 1970). */
+    ends?: number | null;
+    /** What was asked for: how many requests, from which addresses, and the last. */
+    visits: number;
+    from: string[];
+    last?: { from: string; request: string; status: number; at: number };
+    ended?: string;
+}
+
+export type ShareView = "send" | "receive" | "network";
+
 interface ShareState {
     /** What the dialog shows, while it's open. */
-    open: "send" | "receive" | null;
+    open: ShareView | null;
     sends: Sending[];
     receive: Receiving | null;
     /** Where Receive puts what comes. */
     into: string;
+    serving: Serving[];
+    /** What Share on this network was opened on, to be shared. */
+    offer: string;
 }
 
-export const useShare = create<ShareState>(() => ({ open: null, sends: [], receive: null, into: "" }));
+export const useShare = create<ShareState>(() => ({ open: null, sends: [], receive: null, into: "", serving: [], offer: "" }));
 const set = useShare.setState;
 const get = useShare.getState;
 let next = 0;
 
 export const closeShare = () => set({ open: null });
-export const showShare = (open: "send" | "receive") => set({ open });
+export const showShare = (open: ShareView) => set({ open });
 
-/** How many sends are on: the title bar says so while there are. */
-export const useSharing = () => useShare((s) => s.sends.filter((x) => !x.ended).length);
+/** How many sends and shares are on, and which the title bar opens: it says so while there are. */
+export const useSharing = () =>
+    useShare(
+        useShallow((s) => {
+            const sends = s.sends.filter((x) => !x.ended).length;
+            const serving = s.serving.filter((x) => !x.ended).length;
+            return { count: sends + serving, view: (sends ? "send" : "network") as ShareView };
+        })
+    );
 
 const patchSend = (key: number, patch: Partial<Sending>) => set((s) => ({ sends: s.sends.map((x) => (x.key === key ? { ...x, ...patch } : x)) }));
 
@@ -112,4 +142,39 @@ export function stopReceive() {
     const r = get().receive;
     if (r?.id != null && !r.done && !r.failed) void shareStop(r.id);
     set({ receive: null });
+}
+
+/** Opens Share on this network on `path`, to share it from there. */
+export const openNetworkShare = (path: string) => set({ open: "network", offer: path });
+
+const patchServing = (key: number, patch: (s: Serving) => Partial<Serving>) => set((s) => ({ serving: s.serving.map((x) => (x.key === key ? { ...x, ...patch(x) } : x)) }));
+
+/** Shares `path` on this network as `options` say, its link showing once dufs is listening. */
+export async function serve(path: string, options: LanOptions) {
+    set({ offer: "" });
+    if (get().serving.some((s) => samePath(s.path, path) && !s.ended)) return;
+    const key = ++next;
+    set((s) => ({ serving: [...s.serving, { key, path, id: null, uploads: options.uploads, visits: 0, from: [] }] }));
+    try {
+        const id = await lanShareStart(path, options, (e) =>
+            patchServing(key, (now) =>
+                e.kind === "ready"
+                    ? { url: e.url, qr: e.qr, ends: e.ends }
+                    : e.kind === "visit"
+                      ? { visits: now.visits + 1, from: now.from.includes(e.from) ? now.from : [...now.from, e.from], last: { from: e.from, request: e.request, status: e.status, at: Date.now() } }
+                      : { ended: e.message }
+            )
+        );
+        if (!get().serving.some((s) => s.key === key)) return void shareStop(id);
+        patchServing(key, () => ({ id }));
+    } catch (e) {
+        patchServing(key, () => ({ ended: String(e) }));
+    }
+}
+
+/** Stops sharing it on the network (its link stops working), or takes away one that ended. */
+export function stopServing(key: number) {
+    const one = get().serving.find((s) => s.key === key);
+    if (one?.id != null && !one.ended) void shareStop(one.id);
+    set((s) => ({ serving: s.serving.filter((x) => x.key !== key) }));
 }

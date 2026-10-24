@@ -1,11 +1,30 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, Copy, Download, FolderOpen, Loader2, Send, Square, X } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { AlertTriangle, CheckCircle2, Copy, Download, ExternalLink, FolderOpen, Loader2, Send, Square, Wifi, X } from "lucide-react";
 import { currentPath, revealInApp } from "@/lib/explorer";
 import { formatSize, plural } from "@/lib/format";
-import { baseName } from "@/lib/paths";
-import { closeShare, openReceive, receive, type Receiving, type Sending, sendToPC, showShare, stopReceive, stopSend, useShare, useSharing } from "@/lib/share";
+import { type LanAddress, lanAddresses } from "@/lib/fs";
+import { baseName, samePath } from "@/lib/paths";
+import {
+    closeShare,
+    openNetworkShare,
+    openReceive,
+    receive,
+    type Receiving,
+    type Sending,
+    serve,
+    type Serving,
+    type ShareView,
+    sendToPC,
+    showShare,
+    stopReceive,
+    stopSend,
+    stopServing,
+    useShare,
+    useSharing,
+} from "@/lib/share";
 import { useTool } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { ToolNeeded } from "../ToolNeeded";
@@ -19,13 +38,19 @@ const TICKET = /^(sendme rec(?:eive|v)\s+)?blob[a-z2-7]{56,}$/i;
 /** Sends `path` to another PC, after a look for passwords and keys in it (when Kingfisher's there). */
 export const offerToPC = (path: string) => void secretsCheckFirst([path], "Send anyway", () => void sendToPC(path));
 
-/** In the title bar while something's being sent: the way back to its ticket, and Stop. */
+/** Shares `path` on this network (its choices first), after the same look. */
+export const offerOnNetwork = (path: string) => void secretsCheckFirst([path], "Share anyway", () => openNetworkShare(path));
+
+const copy = (text: string, what: string) => void navigator.clipboard.writeText(text).then(() => toast.success(`Copied the ${what}`, { duration: 1500 }), () => toast.error(`Couldn't copy the ${what}`));
+
+/** In the title bar while something's sent or shared: the way back to it, and Stop. */
 export function SharingButton() {
-    const sending = useSharing();
-    if (!sending) return null;
+    const { count, view } = useSharing();
+    if (!count) return null;
+    const label = count === 1 && view === "send" ? "Sending" : count > 1 ? `Sharing ${count}` : "Sharing";
     return (
-        <Button variant="ghost" size="sm" className="text-primary hover:text-primary" onClick={() => showShare("send")} title="What you're sending to another PC: its ticket, and Stop">
-            <Send /> Sending{sending > 1 ? ` ${sending}` : ""}
+        <Button variant="ghost" size="sm" className="text-primary hover:text-primary" onClick={() => showShare(view)} title="What you're sending or sharing: its ticket or link, and Stop">
+            {view === "send" ? <Send /> : <Wifi />} {label}
         </Button>
     );
 }
@@ -36,33 +61,48 @@ export function ShareDialog() {
     return <ShareModal open={open} />;
 }
 
-function ShareModal({ open }: { open: "send" | "receive" }) {
-    const title = open === "send" ? "Send to another PC" : "Receive from another PC";
+const VIEWS: { view: ShareView; tab: string; title: string; subtitle: string }[] = [
+    { view: "send", tab: "Send", title: "Send to another PC", subtitle: "With sendme: PC to PC, encrypted end to end" },
+    { view: "receive", tab: "Receive", title: "Receive from another PC", subtitle: "With sendme: from the ticket it shows" },
+    { view: "network", tab: "On this network", title: "Share on this network", subtitle: "With dufs: a link for a phone's browser" },
+];
+
+function ShareModal({ open }: { open: ShareView }) {
+    const { title, subtitle } = VIEWS.find((v) => v.view === open)!;
     return (
         <Modal label={title} onClose={closeShare} className="max-h-[88vh] max-w-xl">
-            <ModalHeader icon={open === "send" ? Send : Download} title={title} subtitle="With sendme: encrypted end to end, straight between the two PCs where they can reach each other" onClose={closeShare}>
-                <div role="tablist" aria-label="Send or receive" className="flex shrink-0 rounded-md border p-0.5 text-xs">
-                    {(["send", "receive"] as const).map((mode) => (
+            <ModalHeader icon={open === "network" ? Wifi : open === "send" ? Send : Download} title={title} subtitle={subtitle} onClose={closeShare}>
+                <div role="tablist" aria-label="Send, receive or share" className="flex shrink-0 rounded-md border p-0.5 text-xs">
+                    {VIEWS.map(({ view, tab }) => (
                         <button
-                            key={mode}
+                            key={view}
                             type="button"
                             role="tab"
-                            aria-selected={open === mode}
-                            onClick={() => (mode === "send" ? showShare("send") : openReceive(useShare.getState().into || currentPath()))}
-                            className={cn("rounded px-2 py-0.5 transition-colors", open === mode ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground")}
+                            aria-selected={open === view}
+                            onClick={() => (view === "receive" ? openReceive(useShare.getState().into || currentPath()) : showShare(view))}
+                            className={cn("rounded px-2 py-0.5 whitespace-nowrap transition-colors", open === view ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground")}
                         >
-                            {mode === "send" ? "Send" : "Receive"}
+                            {tab}
                         </button>
                     ))}
                 </div>
             </ModalHeader>
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 text-sm">
-                <ToolNeeded
-                    id="sendme"
-                    icon={Send}
-                    why="sendme sends files and folders straight to another PC, encrypted end to end, with no account and no size limit. The other PC needs it too."
-                />
-                {open === "send" ? <SendView /> : <ReceiveView />}
+                {open === "network" ? (
+                    <>
+                        <ToolNeeded id="dufs" icon={Wifi} why="dufs serves a folder to browsers on this network: a phone opens its link, or scans its QR code, to see and download what's in it." />
+                        <NetworkView />
+                    </>
+                ) : (
+                    <>
+                        <ToolNeeded
+                            id="sendme"
+                            icon={Send}
+                            why="sendme sends files and folders straight to another PC, encrypted end to end, with no account and no size limit. The other PC needs it too."
+                        />
+                        {open === "send" ? <SendView /> : <ReceiveView />}
+                    </>
+                )}
             </div>
         </Modal>
     );
@@ -84,43 +124,57 @@ function SendView() {
     );
 }
 
+/** A card's head: what it is, where, and its Stop (or Remove, once it's ended). */
+function Head({ path, detail, ended, stop, stopLabel }: { path: string; detail?: string; ended?: string; stop: () => void; stopLabel: string }) {
+    return (
+        <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">
+                    {baseName(path) || path}
+                    {detail && <span className="font-normal text-muted-foreground"> · {detail}</span>}
+                </p>
+                <p className="truncate text-xs text-muted-foreground" title={path}>
+                    {path}
+                </p>
+            </div>
+            <Button variant="outline" size="sm" className="h-7" onClick={stop}>
+                {ended ? (
+                    <>
+                        <X /> Remove
+                    </>
+                ) : (
+                    <>
+                        <Square className="size-3! fill-current" /> {stopLabel}
+                    </>
+                )}
+            </Button>
+        </div>
+    );
+}
+
+const Ended = ({ message }: { message: string }) => (
+    <p className="flex items-start gap-2 text-xs text-destructive">
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> {message}
+    </p>
+);
+
+const Qr = ({ svg, alt, className }: { svg: string; alt: string; className?: string }) => (
+    <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`} alt={alt} className={cn("shrink-0 rounded-md bg-white p-1", className)} />
+);
+
 function SendCard({ send }: { send: Sending }) {
-    const copy = () => void navigator.clipboard.writeText(send.ticket!).then(() => toast.success("Copied the ticket", { duration: 1500 }), () => toast.error("Couldn't copy the ticket"));
     return (
         <section className="space-y-2.5 rounded-lg border p-3">
-            <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">
-                        {baseName(send.path) || send.path}
-                        {send.size && <span className="font-normal text-muted-foreground"> · {send.size}</span>}
-                    </p>
-                    <p className="truncate text-xs text-muted-foreground" title={send.path}>
-                        {send.path}
-                    </p>
-                </div>
-                <Button variant="outline" size="sm" className="h-7" onClick={() => stopSend(send.key)}>
-                    {send.ended ? (
-                        <>
-                            <X /> Remove
-                        </>
-                    ) : (
-                        <>
-                            <Square className="size-3! fill-current" /> Stop sending
-                        </>
-                    )}
-                </Button>
-            </div>
+            <Head path={send.path} detail={send.size} ended={send.ended} stop={() => stopSend(send.key)} stopLabel="Stop sending" />
             {send.ended ? (
-                <p className="flex items-start gap-2 text-xs text-destructive">
-                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> {send.ended}
-                </p>
+                <Ended message={send.ended} />
             ) : !send.ticket ? (
                 <p className="flex items-center gap-2 text-muted-foreground">
                     <Loader2 className="size-4 animate-spin text-primary" /> Reading it through for its ticket…
                 </p>
             ) : (
                 <div className="flex gap-3">
-                    {send.qr && <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(send.qr)}`} alt="The ticket as a QR code" className="size-32 shrink-0 rounded-md bg-white p-1" />}
+                    {send.qr && <Qr svg={send.qr} alt="The ticket as a QR code" className="size-32" />}
                     <div className="flex min-w-0 flex-1 flex-col gap-2">
                         <textarea
                             readOnly
@@ -129,7 +183,7 @@ function SendCard({ send }: { send: Sending }) {
                             onFocus={(e) => e.currentTarget.select()}
                             className="min-h-20 flex-1 resize-none rounded-md border bg-muted/40 p-2 font-mono text-[0.6875rem] leading-snug break-all outline-hidden focus:border-primary"
                         />
-                        <Button size="sm" className="self-start" onClick={copy}>
+                        <Button size="sm" className="self-start" onClick={() => copy(send.ticket!, "ticket")}>
                             <Copy /> Copy the ticket
                         </Button>
                     </div>
@@ -250,5 +304,156 @@ function ReceiveProgress({ receiving: r }: { receiving: Receiving }) {
                 </>
             )}
         </div>
+    );
+}
+
+const LENGTHS = [
+    { label: "15 minutes", minutes: 15 },
+    { label: "An hour", minutes: 60 },
+    { label: "4 hours", minutes: 240 },
+    { label: "When I stop it", minutes: 0 },
+];
+
+/** The choices made last time, for the next (while Glint runs). */
+let last = { uploads: false, minutes: 60 };
+
+function NetworkView() {
+    const { offer, serving } = useShare(useShallow((s) => ({ offer: s.offer, serving: s.serving })));
+    const asked = !!offer && !serving.some((s) => samePath(s.path, offer) && !s.ended);
+    return (
+        <>
+            {asked && <ServeForm path={offer} />}
+            {serving.map((s) => (
+                <ServingCard key={s.key} serving={s} />
+            ))}
+            {!asked && !serving.length && <p className="py-6 text-center text-muted-foreground">Right-click a folder or a file and choose Share on this network, or find it in Ctrl+K.</p>}
+            <p className="text-xs text-muted-foreground">
+                Anyone on this network who has the link can see and download all that's in it, and it isn't encrypted on its way, so share on networks you trust. The first time, Windows asks
+                whether dufs may accept connections: allow it on private networks, or other devices can't reach it.
+            </p>
+        </>
+    );
+}
+
+function ServeForm({ path }: { path: string }) {
+    const tool = useTool("dufs");
+    const [addresses, setAddresses] = useState<LanAddress[] | null>(null);
+    const [address, setAddress] = useState("");
+    const [choice, setChoice] = useState(last);
+    useEffect(() => {
+        lanAddresses().then(
+            (list) => {
+                setAddresses(list);
+                setAddress(list[0]?.address ?? "");
+            },
+            () => setAddresses([])
+        );
+    }, []);
+    const choose = (patch: Partial<typeof last>) => setChoice((c) => (last = { ...c, ...patch }));
+    return (
+        <section className="space-y-3 rounded-lg border p-3">
+            <div className="min-w-0">
+                <p className="truncate font-medium">{baseName(path) || path}</p>
+                <p className="truncate text-xs text-muted-foreground" title={path}>
+                    {path}
+                </p>
+            </div>
+            {addresses?.length === 0 && <p className="text-xs text-destructive">This PC isn't on a network.</p>}
+            {addresses && addresses.length > 1 && (
+                <label className="flex items-center gap-3">
+                    <span className="w-20 shrink-0 text-xs font-semibold text-muted-foreground">Network</span>
+                    <select value={address} onChange={(e) => setAddress(e.target.value)} aria-label="Network" className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm outline-hidden focus:border-primary">
+                        {addresses.map((a) => (
+                            <option key={a.address} value={a.address}>
+                                {a.name} · {a.address}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+            )}
+            <label className="flex items-center gap-3">
+                <span className="w-20 shrink-0 text-xs font-semibold text-muted-foreground">Stop it</span>
+                <select
+                    value={choice.minutes}
+                    onChange={(e) => choose({ minutes: Number(e.target.value) })}
+                    aria-label="Stop it"
+                    className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm outline-hidden focus:border-primary"
+                >
+                    {LENGTHS.map((l) => (
+                        <option key={l.minutes} value={l.minutes}>
+                            {l.minutes ? `After ${l.label.toLowerCase()}` : l.label}
+                        </option>
+                    ))}
+                </select>
+            </label>
+            <label className="flex items-start gap-2 pl-[5.75rem]">
+                <input type="checkbox" checked={choice.uploads} onChange={(e) => choose({ uploads: e.target.checked })} className="mt-0.5 accent-primary" />
+                <span>
+                    Let them add files to it
+                    <span className="block text-xs text-muted-foreground">Whoever has the link can then save files into it, but not replace or delete what's there.</span>
+                </span>
+            </label>
+            <Button disabled={!tool?.origin || !addresses?.length} onClick={() => void serve(path, { uploads: choice.uploads, minutes: choice.minutes, address: address || null })}>
+                <Wifi /> Share it
+            </Button>
+        </section>
+    );
+}
+
+/** Now, a second at a time while `on`: for a countdown, and how long ago. */
+function useNow(on: boolean) {
+    const [now, setNow] = useState(Date.now);
+    useEffect(() => {
+        if (!on) return;
+        setNow(Date.now());
+        const tick = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(tick);
+    }, [on]);
+    return now;
+}
+
+const ago = (ms: number) => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} s ago` : `${Math.round(ms / 60_000)} min ago`);
+
+function ServingCard({ serving: s }: { serving: Serving }) {
+    const now = useNow(!s.ended && (!!s.ends || !!s.last));
+    const left = s.ends ? Math.max(0, s.ends - now) : null;
+    return (
+        <section className="space-y-2.5 rounded-lg border p-3">
+            <Head path={s.path} detail={s.uploads ? "they can add files" : "read-only"} ended={s.ended} stop={() => stopServing(s.key)} stopLabel="Stop sharing" />
+            {s.ended ? (
+                <Ended message={s.ended} />
+            ) : !s.url ? (
+                <p className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin text-primary" /> Starting…
+                </p>
+            ) : (
+                <div className="flex gap-3">
+                    {s.qr && <Qr svg={s.qr} alt="The link as a QR code" className="size-36" />}
+                    <div className="flex min-w-0 flex-1 flex-col gap-2">
+                        <p className="font-mono text-xs break-all select-all" aria-label="Link">
+                            {s.url}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                            <Button size="sm" onClick={() => copy(s.url!, "link")}>
+                                <Copy /> Copy the link
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => void openUrl(s.url!)} title="Open it in your browser here, as others see it">
+                                <ExternalLink /> Open
+                            </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground tabular-nums">
+                            {left == null
+                                ? "Shared till you stop it."
+                                : `Stops at ${new Date(s.ends!).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, in ${left < 60_000 ? "under a minute" : plural(Math.ceil(left / 60_000), "minute")}.`}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                            {s.last
+                                ? `${plural(s.visits, "request")} from ${plural(s.from.length, "device")}; the last ${ago(now - s.last.at)}: ${s.last.request}${s.last.status >= 400 ? ` (${s.last.status})` : ""}`
+                                : "Nobody's opened it yet."}
+                        </p>
+                    </div>
+                </div>
+            )}
+        </section>
     );
 }
