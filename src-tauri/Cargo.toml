@@ -39,6 +39,9 @@ shadui-index = { path = "index" }
 # and crc32fast, both already in the build through Tauri and flate2, and BLAKE3, which the duplicate
 # finder hashes content with too (several times SHA-256's speed, with SIMD).
 sha2 = "0.10"
+# Remote connections' URLs (remote/), as reqwest already has them.
+percent-encoding = "2"
+url = "2"
 crc32fast = "1.5"
 blake3 = "1.8"
 # Paste as file: a picture on the clipboard as a PNG (already in the build through Tauri).
@@ -152,6 +155,7 @@ windows = { version = "0.62", features = [
     "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WNet",
     "Win32_Networking_WinSock",
+    "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
     "Win32_Security_Cryptography_Catalog",
     "Win32_Security_Cryptography_Sip",
