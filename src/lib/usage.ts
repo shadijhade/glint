@@ -5,10 +5,10 @@ import { joinPath } from "./paths.ts";
 /** The folder mapped has no parent. */
 export const NO_PARENT = 0xffffffff;
 
-/** Who drew a map: the index, dust, or (a folder in an archive) the archive's own list of entries, by its format. */
-export type UsageEngine = "index" | "dust" | ArchiveFormat;
+/** Who drew a map: the index, pdu, or (a folder in an archive) the archive's own list of entries, by its format. */
+export type UsageEngine = "index" | "pdu" | ArchiveFormat;
 /** By the number usage.rs's encode_map writes: 2 and up are archives, by their format's code. */
-const ENGINES: UsageEngine[] = ["index", "dust", ...ARCHIVE_FORMATS];
+const ENGINES: UsageEngine[] = ["index", "pdu", ...ARCHIVE_FORMATS];
 
 /**
  * A disk-usage map of a folder: its biggest files and folders a few levels down. Node 0 is the folder
@@ -16,13 +16,13 @@ const ENGINES: UsageEngine[] = ["index", "dust", ...ARCHIVE_FORMATS];
  */
 export interface UsageMap {
     path: string;
-    /** The index, dust, or (a folder in an archive) the archive's own list of entries. */
+    /** The index, pdu, or (a folder in an archive) the archive's own list of entries. */
     engine: UsageEngine;
-    /** Milliseconds Rust spent: the index's answer, or dust's whole run. */
+    /** Milliseconds Rust spent: the index's answer, or pdu's whole run. */
     elapsed: number;
     /** Smaller items were left out; they still count in their folders' sizes. */
     limited: boolean;
-    /** dust drew it because the instant search service runs, but is a version from before maps. */
+    /** pdu drew it because the instant search service runs, but is a version from before maps. */
     serviceTooOld: boolean;
     /** What grew was asked for, but the instant search service running is a version from before it. */
     growthTooOld: boolean;
@@ -67,7 +67,7 @@ export function decodeUsage(buffer: ArrayBuffer): UsageMap {
     const count = view.getUint32(0, true);
     const pathBytes = view.getUint32(4, true);
     const elapsed = view.getFloat64(8, true);
-    const engine = ENGINES[view.getUint32(16, true)] ?? "dust";
+    const engine = ENGINES[view.getUint32(16, true)] ?? "pdu";
     const flags = view.getUint32(20, true);
     const [limited, serviceTooOld, grew, growthTooOld] = [(flags & 1) !== 0, (flags & 2) !== 0, (flags & 4) !== 0, (flags & 8) !== 0];
     // With what grew, the mark's numbers come first and each item's earlier size after its date.

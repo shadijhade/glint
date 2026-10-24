@@ -28,7 +28,7 @@ pub const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rec {
     /// Files: bytes in the unnamed data stream. Folders: everything below them, every hard link counted
-    /// where it is (as Explorer and dust count them).
+    /// where it is (as Explorer and pdu count them).
     pub size: u64,
     /// Last write time as a FILETIME (100 ns ticks since 1601).
     pub modified: i64,

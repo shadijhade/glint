@@ -1,11 +1,10 @@
 //! Folder sizes, which Explorer never shows: from the instant search index when it has the folder
-//! (instant, and kept current), otherwise measured with the bundled dust.
+//! (instant, and kept current), otherwise measured with the bundled pdu (parallel-disk-usage).
 
 use crate::fsx::{blocking, ms_since};
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
-use std::path::Path;
 use std::process::Stdio;
 use std::time::Instant;
 use tauri::State;
@@ -18,40 +17,35 @@ pub struct FolderSizes {
     /// Subfolder name → bytes.
     pub sizes: Vec<(String, u64)>,
     pub elapsed: f64,
-    /// "index" or "dust", or the archive's format ("zip", "7z") for a folder in one.
+    /// "index" or "pdu", or the archive's format ("zip", "7z") for a folder in one.
     pub engine: &'static str,
 }
 
-/// dust -j prints {"size":"123B","name":"C:\\dir","children":[…]} when sizes are in bytes (-o b);
-/// every name is a full path.
+/// pdu --json-output prints {"unit":"bytes","tree":{"name":"C:\\dir","size":123,"children":[…]}}: the
+/// tree's top named as it was asked for (several at once: "(total)", with each under it by its path),
+/// what's in a folder by its own name.
 #[derive(Deserialize)]
 pub(crate) struct Node {
-    pub size: String,
+    pub size: u64,
     pub name: String,
     #[serde(default)]
     pub children: Vec<Node>,
 }
 
-pub(crate) fn bytes(size: &str) -> u64 {
-    size.trim_end_matches('B').parse().unwrap_or(0)
+#[derive(Deserialize)]
+struct Output {
+    tree: Node,
 }
 
-/// dust's whole tree.
+/// pdu's whole tree.
 pub(crate) fn parse_tree(json: &str) -> Result<Node, String> {
-    serde_json::from_str(json.trim()).map_err(|e| format!("Unexpected output from dust: {e}"))
+    serde_json::from_str::<Output>(json.trim()).map(|o| o.tree).map_err(|e| format!("Unexpected output from pdu: {e}"))
 }
 
 fn parse(json: &str) -> Result<(u64, Vec<(String, u64)>), String> {
     let root = parse_tree(json)?;
-    let sizes = root
-        .children
-        .iter()
-        .map(|c| {
-            let name = Path::new(&c.name).file_name().map_or_else(|| c.name.clone(), |n| n.to_string_lossy().into_owned());
-            (name, bytes(&c.size))
-        })
-        .collect();
-    Ok((bytes(&root.size), sizes))
+    let sizes = root.children.iter().map(|c| (c.name.clone(), c.size)).collect();
+    Ok((root.size, sizes))
 }
 
 /// The index's answer for `path`, if its service runs and has the folder. Junctions and links are
@@ -68,7 +62,7 @@ fn index_sizes(_: &str) -> Option<(u64, Vec<(String, u64)>)> {
     None
 }
 
-/// Sizes of every subfolder of `path`. With `index_only`, fails instead of running dust when the
+/// Sizes of every subfolder of `path`. With `index_only`, fails instead of running pdu when the
 /// index can't answer (for sizing every folder as it opens, which only makes sense when it's instant).
 /// Each tab asks in its own `lane`, so sizing a folder in one pane doesn't stop the other's.
 #[tauri::command]
@@ -84,23 +78,24 @@ pub async fn folder_sizes(state: State<'_, AppState>, path: String, index_only: 
     }
     let asked = path.clone();
     if let Some((total, sizes)) = blocking(move || Ok(index_sizes(&asked))).await? {
-        // A dust run still going in this tab is for a folder no longer wanted.
+        // A pdu run still going in this tab is for a folder no longer wanted.
         slot.kill();
         return Ok(FolderSizes { path, total, sizes, elapsed: ms_since(started), engine: "index" });
     }
     if index_only == Some(true) {
         return Err("not indexed".into());
     }
-    let mut command = crate::proc::tool("dust")?;
-    // One level deep, folders only, apparent sizes (what Explorer's Properties calls "Size") in exact bytes.
+    let mut command = crate::proc::tool("pdu")?;
+    // One level deep (files come too: the list takes folders' sizes only), apparent sizes (what Explorer's
+    // Properties calls "Size") in bytes, nothing left out.
     command
-        .args(["-j", "-d", "1", "-D", "-s", "-o", "b", "-P", "-n", "1000000", "--"])
+        .args(["--json-output", "--quantity", "apparent-size", "--max-depth", "2", "--min-ratio", "0", "--silent-errors", "--"])
         .arg(&path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|e| format!("Failed to start dust: {e}"))?;
-    let mut stdout = child.stdout.take().ok_or("Failed to open dust's output")?;
+    let mut child = command.spawn().map_err(|e| format!("Failed to start pdu: {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("Failed to open pdu's output")?;
     let pid = slot.replace(child);
     blocking(move || {
         let mut json = String::new();
@@ -109,7 +104,7 @@ pub async fn folder_sizes(state: State<'_, AppState>, path: String, index_only: 
             return Err("cancelled".into());
         }
         let (total, sizes) = parse(&json)?;
-        Ok(FolderSizes { path, total, sizes, elapsed: ms_since(started), engine: "dust" })
+        Ok(FolderSizes { path, total, sizes, elapsed: ms_since(started), engine: "pdu" })
     })
     .await
 }
@@ -126,8 +121,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn parses_dust_json() {
-        let json = r#" {"size":"12076482B","name":"C:\\repo","children":[{"size":"5778575B","name":"C:\\repo\\.git","children":[]},{"size":"92090B","name":"C:\\repo\\src","children":[]}]}"#;
+    fn parses_pdu_json() {
+        let json = r#" {"schema-version":"2026-04-02","pdu":"0.24.0","unit":"bytes","tree":{"name":"C:\\repo","size":12076482,"children":[{"name":".git","size":5778575,"children":[]},{"name":"src","size":92090,"children":[]}]}}"#;
         let (total, sizes) = parse(json).unwrap();
         assert_eq!(total, 12_076_482);
         assert_eq!(sizes, [(".git".to_string(), 5_778_575), ("src".to_string(), 92_090)]);

@@ -60,7 +60,7 @@
     "externalBin": [
       "binaries/rg",
       "binaries/fd",
-      "binaries/dust"
+      "binaries/pdu"
     ],
     "resources": {
       "../LICENSE": "LICENSE.txt",

@@ -5,7 +5,7 @@ import { formatSize } from "./format";
 import { toolCancelInstall, toolInstall, type ToolProgress, toolRemove, type ToolStatus, toolsStatus } from "./fs";
 
 /**
- * The programs Glint drives: rg, fd and dust come with it, the optional ones (difftastic, ast-grep…)
+ * The programs Glint drives: rg, fd and pdu come with it, the optional ones (difftastic, ast-grep…)
  * install on demand, with winget or from their GitHub release (tools.rs).
  */
 interface ToolsState {

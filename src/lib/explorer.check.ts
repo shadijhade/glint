@@ -470,9 +470,9 @@ assert.deepEqual([usage.path, usage.engine, usage.elapsed, usage.limited, usage.
 assert.deepEqual(usage.paths, ["C:\\", "C:\\Windows", "C:\\Users", "C:\\pagefile.sys", "C:\\Windows\\System32", "C:\\Windows\\notes.txt", "C:\\Users\\é😀.mkv", "C:\\Windows\\System32\\big.dll"]);
 assert.deepEqual([...usage.first], [1, 4, 6, 0, 7, 0, 0, 0]);
 assert.deepEqual([...usage.end], [4, 6, 7, 0, 8, 0, 0, 0]);
-// dust drew it, because the index service is too old to map.
+// pdu drew it, because the index service is too old to map.
 const fallback = decodeUsage(encodeMap("D:\\x", sample.slice(0, 1), 0, 1, 2));
-assert.deepEqual([fallback.engine, fallback.limited, fallback.serviceTooOld], ["dust", false, true]);
+assert.deepEqual([fallback.engine, fallback.limited, fallback.serviceTooOld], ["pdu", false, true]);
 // A folder in an archive is mapped from the archive's own list of entries.
 assert.deepEqual([2, 3].map((engine) => decodeUsage(encodeMap("C:\\a.zip", sample.slice(0, 1), 0, engine, 0)).engine), ["zip", "7z"]);
 const mapped = usageEntries(usage);

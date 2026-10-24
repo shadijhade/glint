@@ -355,7 +355,7 @@ function ToolsSection() {
             ))}
             <MeaningRow />
             <p className="px-4 py-3 text-xs text-muted-foreground">
-                ripgrep, fd and dust come with Glint. Other tools install when a feature needs them, for your account only: with winget, or from the
+                ripgrep, fd and pdu come with Glint. Other tools install when a feature needs them, for your account only: with winget, or from the
                 tool's own GitHub release, which Glint checks against the checksum it knows for it before unpacking anything.
             </p>
         </Section>
@@ -743,7 +743,7 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
                             <div className="text-xs text-muted-foreground">
                                 {version && `Version ${version} · `}Made with <Heart className="inline size-3 fill-pink-500 text-pink-500" /> by Shadi Saadi
                             </div>
-                            <div className="text-xs text-muted-foreground">Powered by ripgrep, fd, dust and an NTFS index</div>
+                            <div className="text-xs text-muted-foreground">Powered by ripgrep, fd, pdu and an NTFS index</div>
                         </div>
                         <Button variant="outline" size="sm" onClick={() => openUrl(REPO_URL)}>
                             <ExternalLink /> GitHub

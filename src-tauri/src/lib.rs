@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, State, Window};
 
 /// The work in flight: the ripgrep text search, and each tab's file search (fd and the index) and
-/// dust measuring folder sizes or a disk-usage map.
+/// pdu measuring folder sizes or a disk-usage map.
 #[derive(Default)]
 pub struct AppState {
     pub search: Slot,
@@ -216,7 +216,7 @@ fn cancel_search(state: State<AppState>) {
 }
 
 /// Stops every sidecar that runs (the text search, and each tab's file search, folder sizes and
-/// disk-usage map), so an update's installer can replace rg, fd and dust.
+/// disk-usage map), so an update's installer can replace rg, fd and pdu.
 #[tauri::command]
 fn stop_tools(state: State<AppState>) {
     state.search.kill();

@@ -85,7 +85,7 @@ fn stop(mut child: Child) {
     let _ = child.wait();
 }
 
-/// A bundled CLI tool (`rg`, `fd`, `dust`), run without a console window.
+/// A bundled CLI tool (`rg`, `fd`, `pdu`), run without a console window.
 pub fn tool(name: &str) -> Result<Command, String> {
     let (exe, _) = locate(name).ok_or_else(|| format!("{name}.exe is missing next to the app; reinstall the app"))?;
     let mut command = Command::new(exe);
@@ -96,7 +96,7 @@ pub fn tool(name: &str) -> Result<Command, String> {
 /// Where the copy of a program that runs came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
-    /// Next to the app: the setup program puts rg, fd and dust there, tauri-build next to every dev build.
+    /// Next to the app: the setup program puts rg, fd and pdu there, tauri-build next to every dev build.
     Bundled,
     /// Glint's own tools folder, where it unpacks the optional tools it downloads (tools.rs).
     Downloaded,

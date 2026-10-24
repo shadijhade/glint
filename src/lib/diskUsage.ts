@@ -10,7 +10,7 @@ import { pruneUsage, subUsage, type UsageEngine, type UsageMap, usageEntries } f
 const DEPTH = 6;
 const ITEMS = 20_000;
 
-/** A tab's disk-usage map, from the index or dust. */
+/** A tab's disk-usage map, from the index or pdu. */
 export interface UsageRun {
     id: number;
     /** The folder being mapped. */
@@ -25,7 +25,7 @@ export interface UsageRun {
     started: number;
     /** From that click to the map on screen, ms; 0 until it's drawn. */
     shownIn: number;
-    /** The map shown is this folder's part of an earlier map, while dust measures it. */
+    /** The map shown is this folder's part of an earlier map, while pdu measures it. */
     preview: boolean;
 }
 
@@ -60,7 +60,7 @@ export function setUsage(tab: string, on: boolean) {
     const path = t?.path ?? THIS_PC;
     // A name being edited is the list's.
     if (t?.renaming) updateTab({ renaming: null }, tab);
-    save(tab, { id: 0, path, map: null, running: false, engine: "dust", error: "", started: 0, shownIn: 0, preview: false });
+    save(tab, { id: 0, path, map: null, running: false, engine: "pdu", error: "", started: 0, shownIn: 0, preview: false });
     if (isFolderPath(path)) mapUsage(tab, path);
 }
 
@@ -74,22 +74,22 @@ export function chooseView(view: ViewMode, tab = activeTabId()) {
 }
 
 /**
- * Maps dust measured lately, by folder: going back to one shows it again instead of measuring it
+ * Maps pdu measured lately, by folder: going back to one shows it again instead of measuring it
  * again (F5 does). Index maps are always asked for afresh; they take milliseconds.
  */
-const dustMaps = new Map<string, UsageMap>();
+const measuredMaps = new Map<string, UsageMap>();
 
 function remember(map: UsageMap) {
     const key = map.path.toLowerCase();
-    dustMaps.delete(key);
-    dustMaps.set(key, map);
-    if (dustMaps.size > 8) dustMaps.delete(dustMaps.keys().next().value!);
+    measuredMaps.delete(key);
+    measuredMaps.set(key, map);
+    if (measuredMaps.size > 8) measuredMaps.delete(measuredMaps.keys().next().value!);
 }
 
-/** The folder's part of a map on hand, to show while dust measures it. */
+/** The folder's part of a map on hand, to show while pdu measures it. */
 function partOfKnownMap(path: string, current: UsageMap | null): UsageMap | null {
     const wanted = path.toLowerCase();
-    for (const map of [current, ...[...dustMaps.values()].reverse()]) {
+    for (const map of [current, ...[...measuredMaps.values()].reverse()]) {
         const i = map?.paths.findIndex((p) => p.length === wanted.length && p.toLowerCase() === wanted) ?? -1;
         if (map && i > 0 && map.end[i] > map.first[i]) return subUsage(map, i);
     }
@@ -97,13 +97,13 @@ function partOfKnownMap(path: string, current: UsageMap | null): UsageMap | null
 }
 
 let seq = 0;
-/** The index service answered as a version from before maps: expect dust until one comes from the index. */
+/** The index service answered as a version from before maps: expect pdu until one comes from the index. */
 let serviceTooOld = false;
 const remapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
- * Maps `path` in a tab that shows its map: from the index when it has the folder, else with dust.
- * `started` is when the click or key that asked for it happened; `again` measures a folder dust
+ * Maps `path` in a tab that shows its map: from the index when it has the folder, else with pdu.
+ * `started` is when the click or key that asked for it happened; `again` measures a folder pdu
  * measured before instead of showing that map.
  */
 export async function mapUsage(tab: string, path: string, started = inputTime(), again = false) {
@@ -112,10 +112,10 @@ export async function mapUsage(tab: string, path: string, started = inputTime(),
     if (!before || !isFolderPath(path)) return;
     const id = ++seq;
     // A folder in an archive is mapped from the archive's own list of entries, at once.
-    const engine: UsageEngine = tabState(tab)?.listing?.archive?.format ?? (indexed(path) && !serviceTooOld ? "index" : "dust");
+    const engine: UsageEngine = tabState(tab)?.listing?.archive?.format ?? (indexed(path) && !serviceTooOld ? "index" : "pdu");
     const run: UsageRun = { id, path, map: before.map, running: true, engine, error: "", started, shownIn: 0, preview: false };
-    if (engine === "dust") {
-        const known = !again && dustMaps.get(path.toLowerCase());
+    if (engine === "pdu") {
+        const known = !again && measuredMaps.get(path.toLowerCase());
         if (known) return save(tab, { ...run, map: known, running: false });
         const part = partOfKnownMap(path, before.map);
         if (part) Object.assign(run, { map: part, preview: true });
@@ -129,14 +129,14 @@ export async function mapUsage(tab: string, path: string, started = inputTime(),
         // The index tells what grew too, for the Growth colors (it costs it a millisecond or two).
         const map = await diskUsage(path, DEPTH, ITEMS, tab, Date.now() - useStore.getState().settings.growthDays * 86_400_000);
         serviceTooOld = map.serviceTooOld;
-        if (map.engine === "dust") remember(map);
+        if (map.engine === "pdu") remember(map);
         update({ map, running: false, engine: map.engine, preview: false });
     } catch (e) {
         update({ running: false, error: String(e) === "cancelled" ? "" : String(e) });
     }
 }
 
-/** F5 on a map: reads the folder again and maps it again (measures it again when dust drew it). */
+/** F5 on a map: reads the folder again and maps it again (measures it again when pdu drew it). */
 export async function refreshUsage(tab = activeTabId()) {
     const started = inputTime();
     await reload(tab);
@@ -150,7 +150,7 @@ export function markUsageShown(tab: string, id: number) {
     if (run?.id === id && !run.running && !run.shownIn) save(tab, { ...run, shownIn: performance.now() - run.started });
 }
 
-/** Stops a tab's map that dust is still measuring. */
+/** Stops a tab's map that pdu is still measuring. */
 export function stopUsage(tab = activeTabId()) {
     clearTimeout(remapTimers.get(tab));
     if (runs()[tab]?.running) cancelDiskUsage(tab);
@@ -158,7 +158,7 @@ export function stopUsage(tab = activeTabId()) {
 
 /**
  * After the tab's folder was read again (it changed, or files were pasted or deleted), maps it again
- * from the index once the index has the change: it reads the change journal every 250 ms. A dust map
+ * from the index once the index has the change: it reads the change journal every 250 ms. A pdu map
  * stays as measured until F5.
  */
 function remapSoon(tab: string) {
@@ -168,7 +168,7 @@ function remapSoon(tab: string) {
         setTimeout(() => {
             const run = runs()[tab];
             const path = tabState(tab)?.path;
-            if (run && !run.running && run.map && run.map.engine !== "dust" && path && samePath(run.path, path)) mapUsage(tab, path, performance.now());
+            if (run && !run.running && run.map && run.map.engine !== "pdu" && path && samePath(run.path, path)) mapUsage(tab, path, performance.now());
         }, 1000)
     );
 }
@@ -181,7 +181,7 @@ async function dropGone(tab: string, selected: ReadonlySet<string> | undefined) 
     const missing = await Promise.all(inMap.map((p) => resolvePath(p).then(() => null, () => p)));
     const gone = new Set(missing.filter((p): p is string => p !== null));
     if (!gone.size) return;
-    for (const [key, known] of dustMaps) dustMaps.set(key, pruneUsage(known, gone));
+    for (const [key, known] of measuredMaps) measuredMaps.set(key, pruneUsage(known, gone));
     const run = runs()[tab];
     if (run?.map) save(tab, { ...run, map: pruneUsage(run.map, gone) });
 }
