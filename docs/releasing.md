@@ -4,7 +4,7 @@ Releases are built one of two ways: by the release workflow on GitHub when a `vX
 
 ## How it works
 
-1.  **`npm run release`** ([`scripts/release.mjs`](../scripts/release.mjs)) checks that `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` agree on the version and that everything is committed, then builds the NSIS installer (code-signed when signing is set up) and signs it for the in-app updater. It writes `latest.json` and checks the update the way the app will: the signature must verify with the public key the app is built with and be bound to the version `latest.json` announces. It also writes the winget and Scoop manifests. Everything lands in `release/vX.Y.Z/`, and it prints the `gh release create` command that makes the draft release.
+1.  **`npm run release`** ([`scripts/release.mjs`](../scripts/release.mjs)) checks that `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` agree on the version, that everything is committed and that the crates pass their checks ([below](#5-release-notes-and-the-crates-checks)), then builds the NSIS installer (code-signed when signing is set up) and signs it for the in-app updater. It writes `latest.json` and checks the update the way the app will: the signature must verify with the public key the app is built with and be bound to the version `latest.json` announces. It also writes the winget and Scoop manifests. Everything lands in `release/vX.Y.Z/`, and it prints the `gh release create` command that makes the draft release.
 2.  **Publishing the draft** makes it the latest release. Copies of the app installed with the setup program read `https://github.com/shadijhade/glint/releases/latest/download/latest.json` at start and every 12 hours, say *Update available* once, and keep an **Update** button in the header. **Install** (in the notice or in **Settings → About**) downloads the installer, verifies its signature, waits for any copy or move to finish, closes the app, installs over it with a progress bar and opens the new version.
 
 Copies that the setup program didn't install (Scoop, a portable copy, a dev build) don't install updates themselves: the app tells them about the new version and links to it. A release without `latest.json` gets the same treatment from every copy, through GitHub's latest-release API.
@@ -91,6 +91,16 @@ For later versions, submit the new folder the same way (or let `wingetcreate upd
 
 Once a package is live, add its install command to the README's Install section.
 
+### 5. Release notes and the crates' checks
+
+Three tools help with each release, and `npm run release` skips (with a warning) the checks whose tool isn't installed:
+
+-   **[git-cliff](https://git-cliff.org/)** drafts the release notes from the commits' subjects (`feat(preview): Markdown as it reads`): what's new by area, then what's faster and what's fixed. [`cliff.toml`](../cliff.toml) names the areas; give a new scope a name there. Install it with `winget install orhun.git-cliff`.
+-   **[cargo-deny](https://github.com/EmbarkStudios/cargo-deny)** checks every crate in the Windows build against [RustSec's advisory database](https://rustsec.org/) (known vulnerabilities, and unmaintained crates Glint depends on directly), the licenses in [`src-tauri/deny.toml`](../src-tauri/deny.toml), and that crates come only from crates.io. Run it any time with `cargo deny --manifest-path src-tauri/Cargo.toml check`. For a vulnerability, update the crate (`cargo update --manifest-path src-tauri/Cargo.toml -p <crate>`), or, if Glint doesn't use what's affected, add its ID with the reason to `ignore` under `[advisories]` in `deny.toml`. A crate under a license that isn't listed there needs a decision before it goes in.
+-   **[cargo-about](https://github.com/EmbarkStudios/cargo-about)** writes [`THIRD_PARTY_CRATES.md`](../THIRD_PARTY_CRATES.md), every crate in the app with its license's text, which the installer carries (`npm run licenses`, from [`src-tauri/about.toml`](../src-tauri/about.toml) and `about.hbs`). Run it when crates change and commit the file: `npm run release` stops while it's out of date.
+
+Install the last two with `cargo install --locked cargo-deny cargo-about`, or put the `x86_64-pc-windows-msvc` builds from their GitHub releases on `PATH`.
+
 ## Every release
 
 1.  **Bump the version** to the same `X.Y.Z` in three places:
@@ -98,26 +108,28 @@ Once a package is live, add its install command to the README's Install section.
     -   `src-tauri/Cargo.toml`: `[workspace.package] version`, which the app and the instant search service share; then `cargo check --manifest-path src-tauri/Cargo.toml` to update `Cargo.lock`
     -   `src-tauri/tauri.conf.json`: `version`
 2.  **Commit** (`Release vX.Y.Z`) and push to `master`.
-3.  **Build the release** (5 to 10 minutes):
+3.  **Draft the notes**: `npm run notes` writes `release/vX.Y.Z/notes.md` with what changed since the last release. Read it and edit it: it lists commits, and the notes are for people using Glint.
+4.  **Build the release** (5 to 10 minutes):
 
     ```powershell
     $env:TAURI_SIGNING_PRIVATE_KEY = "$HOME\.tauri\shadui-ripgrep.key"
     npm run release
     ```
 
-    with the code-signing variables or `--sign-config` from above if you sign.
-4.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads the `-setup.exe`, its `.sig` and `latest.json`, and the tag is made at your commit when you publish.
-5.  **On GitHub**, write the release notes (the app's *What's new* opens this page), try the installer, and **publish**. Running copies find the update within 12 hours or at their next start.
-6.  **Submit** `release/vX.Y.Z/package-manifests` to winget and Scoop.
+    with the code-signing variables or `--sign-config` from above if you sign. It checks the crates first and stops on a known vulnerability, a license `deny.toml` doesn't allow, or an out-of-date `THIRD_PARTY_CRATES.md` ([what to do](#5-release-notes-and-the-crates-checks)).
+5.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads the `-setup.exe`, its `.sig` and `latest.json`, with your notes, and the tag is made at your commit when you publish.
+6.  **On GitHub**, read the release notes (the app's *What's new* opens this page), try the installer, and **publish**. Running copies find the update within 12 hours or at their next start.
+7.  **Submit** `release/vX.Y.Z/package-manifests` to winget and Scoop.
 
 ### With the release workflow
 
 Steps 1 and 2 as above, then:
 
 3.  **Try it** (optional): **Actions → Release → Run workflow** on `master` runs every check and builds (and signs) the installer without making a release; its files are in the run's `release-vX.Y.Z` artifact.
-4.  **Tag and push**: `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The workflow checks that the three versions and the tag agree, runs the checks, signs with SignPath when it's set up (approve the requests there), signs the update, and creates a draft release with the `-setup.exe`, its `.sig` and `latest.json`.
-5.  **On GitHub**, as in step 5 above.
-6.  **Submit** the manifests from the run's `release-vX.Y.Z` artifact (`package-manifests/`) to winget and Scoop.
+4.  **Tag and push**: `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The workflow checks that the three versions and the tag agree, runs the checks, signs with SignPath when it's set up (approve the requests there), signs the update, and creates a draft release with the `-setup.exe`, its `.sig` and `latest.json`. It doesn't run cargo-deny or cargo-about, so run those here first (`cargo deny --manifest-path src-tauri/Cargo.toml check` and `npm run licenses`).
+5.  **Notes**: `npm run notes`, edit `release/vX.Y.Z/notes.md`, and put it on the draft with `gh release edit vX.Y.Z --notes-file release/vX.Y.Z/notes.md`.
+6.  **On GitHub**, as in step 6 above.
+7.  **Submit** the manifests from the run's `release-vX.Y.Z` artifact (`package-manifests/`) to winget and Scoop.
 
 Use one way per release: publishing a draft made by `npm run release` creates its tag, and the workflow then leaves that release as it is.
 

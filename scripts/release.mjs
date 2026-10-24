@@ -1,6 +1,7 @@
-// Builds a release on this machine (docs/releasing.md): the NSIS installer, code-signed when signing is
-// set up, its update signature and latest.json for the app's updater, checked the way the app checks
-// them, and the winget and Scoop manifests. Everything lands in release/v<version>/, ready to upload.
+// Builds a release on this machine (docs/releasing.md): the crates checked first (cargo-deny, and
+// THIRD_PARTY_CRATES.md current), then the NSIS installer, code-signed when signing is set up, its update
+// signature and latest.json for the app's updater, checked the way the app checks them, and the winget
+// and Scoop manifests. Everything lands in release/v<version>/, ready to upload.
 //
 // Usage: npm run release [-- --sign-config <tauri config overlay>] [--allow-dirty]
 //
@@ -50,6 +51,15 @@ if (changes && !allowDirty) {
 const commit = run("git", ["rev-parse", "HEAD"]).stdout.trim();
 const pushed = run("git", ["branch", "-r", "--contains", commit]).stdout.includes("origin/master");
 console.log(`Releasing ${version} from ${commit.slice(0, 7)}${pushed ? "" : " (not on origin/master yet: push it before publishing)"}`);
+
+// The crates: no known vulnerability and licenses that can ship (cargo-deny), and THIRD_PARTY_CRATES.md,
+// which the installer carries, current (cargo-about). A check whose tool isn't installed is skipped.
+const deny = run("cargo", ["deny", "--manifest-path", "src-tauri/Cargo.toml", "check"]);
+if (/no such (command|subcommand)/.test(deny.stderr)) console.warn("! cargo-deny isn't installed (cargo install --locked cargo-deny), so the crates weren't checked.");
+else if (deny.status) fail(`cargo deny found a problem with the crates (src-tauri/deny.toml):\n${deny.stderr.trim()}`);
+const licenses = run(process.execPath, [join(root, "scripts", "licenses.mjs"), "--check"]);
+if (licenses.status === 2) console.warn(`! ${licenses.stderr.trim()}`);
+else if (licenses.status) fail(licenses.stderr.trim());
 
 const work = mkdtempSync(join(tmpdir(), "glint-release-"));
 process.on("exit", () => rmSync(work, { recursive: true, force: true }));
@@ -157,9 +167,12 @@ const manifests = [join(root, "scripts", "package-manifests.mjs"), version, join
 if (run(process.execPath, manifests, { stdio: "inherit" }).status) fail("Couldn't write the winget and Scoop manifests");
 
 const assets = [name, ...(pubkey ? [`${name}.sig`, "latest.json"] : [])].map((f) => `release/v${version}/${f}`).join(" ");
+// The notes `npm run notes` drafted, or GitHub's list of the changes.
+const drafted = existsSync(join(out, "notes.md"));
+const notes = drafted ? `--notes-file release/v${version}/notes.md` : "--generate-notes";
 console.log(`
 ✓ release/v${version} is ready. Next (docs/releasing.md):
   1. Create the draft release:
-       gh release create v${version} ${assets} --draft --target ${commit} --title "${config.productName} v${version}" --generate-notes
-  2. Read it on GitHub, write the notes, try the installer, and publish it.
+       gh release create v${version} ${assets} --draft --target ${commit} --title "${config.productName} v${version}" ${notes}
+  2. Read it on GitHub, ${drafted ? "check the notes" : "write the notes (npm run notes drafts them)"}, try the installer, and publish it.
   3. Submit release/v${version}/package-manifests to winget and Scoop.`);

@@ -45,7 +45,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `pdu` executables |
 | `src-tauri/src/tools.rs`, `src/lib/tools.ts`, `src/components/ToolNeeded.tsx` | Every program Glint drives: the bundled ones, and optional ones installed on demand with winget or from their GitHub release (pinned by SHA-256); Settings → Tools, and the Install card a feature shows when its tool is missing |
 | `src/lib/updater.ts` | Finding and installing updates (tauri-plugin-updater) |
-| `scripts/` | `npm run release` and its helpers: update signatures, winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)) |
+| `scripts/` | `npm run release` and its helpers (update signatures, winget and Scoop manifests), `npm run notes` (a release's notes, by git-cliff from `cliff.toml`) and `npm run licenses` (`THIRD_PARTY_CRATES.md`, by cargo-about) ([docs/releasing.md](docs/releasing.md)) |
 
 ## Principles
 
@@ -66,6 +66,10 @@ node src/lib/text.check.ts
 ```
 
 Try UI changes in the app with `npm run tauri dev`, and add a screenshot or GIF to the pull request. Release builds run once per app identifier and hand their folders to a Glint that's already running, so try a release build under its own name and identifier ([how](docs/explorer-integration.md#trying-it-without-touching-your-glint)).
+
+## Adding or updating a crate
+
+Prefer crates that are light and pure Rust, and say what one adds to `Glint.exe`'s size. After changing crates, run `npm run licenses` and commit `THIRD_PARTY_CRATES.md` with them, and run `cargo deny --manifest-path src-tauri/Cargo.toml check` (both tools: `cargo install --locked cargo-deny cargo-about`). A crate under a license that `src-tauri/deny.toml` doesn't list needs an issue first.
 
 ## Updating a bundled tool
 

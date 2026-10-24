@@ -1,0 +1,47 @@
+# cargo-deny's checks of the crates Glint is built from (docs/releasing.md):
+#   cargo deny --manifest-path src-tauri/Cargo.toml check
+# known vulnerabilities and unmaintained crates (RustSec's advisory database), licenses that can ship
+# in an MIT-licensed app, and crates only from crates.io.
+
+[graph]
+# The one build that ships.
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+# Unmaintained crates are reported for Glint's own dependencies, not for what those pull in.
+unmaintained = "workspace"
+
+[licenses]
+# A crate under several licenses (MIT OR Apache-2.0) needs one of them here.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "bzip2-1.0.6",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    # Its source has to stay available: crates.io keeps it, and THIRD_PARTY_CRATES.md says where.
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.93
+# Glint's own crates (MIT, like the app).
+private = { ignore = true }
+
+[bans]
+# Two versions of a crate (windows-sys has several) cost size, not correctness.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

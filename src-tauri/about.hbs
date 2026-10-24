@@ -1,0 +1,21 @@
+# Rust crates in Glint
+
+Glint (`Glint.exe` and the instant search service, `shadui-index.exe`) is built from these crates from [crates.io](https://crates.io), each under its own license, whose text follows with the crates it covers. The programs Glint ships beside it (ripgrep, fd and pdu), and the notices some of these crates ask for, are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+This file is made by [cargo-about](https://github.com/EmbarkStudios/cargo-about) from `src-tauri/Cargo.lock` with `src-tauri/about.toml` and `src-tauri/about.hbs`: `npm run licenses` writes it again.
+
+| License | Crates |
+| :--- | ---: |
+{{#each overview}}
+| {{{name}}} | {{count}} |
+{{/each}}
+{{#each licenses}}
+
+## {{{name}}}
+
+{{#each used_by}}{{#if @first}}{{else}}, {{/if}}[{{crate.name}} {{crate.version}}]({{#if crate.repository}}{{{crate.repository}}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}){{/each}}
+
+````text
+{{{text}}}
+````
+{{/each}}

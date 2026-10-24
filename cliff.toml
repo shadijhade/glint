@@ -1,0 +1,61 @@
+# git-cliff's draft of a release's notes, from the commits' subjects (`feat(preview): Markdown as it
+# reads`): what's new by area, then what's faster and what's fixed. `npm run notes` writes it for the
+# next release (docs/releasing.md).
+
+[changelog]
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% if group is containing("New") %}{% for area, commits in commits | group_by(attribute="scope") %}
+**{{ area | replace(from="_", to=" ") }}**
+{% for commit in commits %}
+- {{ commit.message | upper_first }}{% endfor %}
+{% endfor %}{% else %}{% for commit in commits %}
+- {{ commit.scope | replace(from="_", to=" ") }}: {{ commit.message }}{% endfor %}
+{% endif %}{% endfor %}
+"""
+trim = true
+postprocessors = [{ pattern = '\n{3,}', replace = "\n\n" }]
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+# Each area's name in the notes (an underscore is a space), and one for commits that name none.
+commit_preprocessors = [
+    { pattern = '^(\w+)(!?): ', replace = '${1}(Across_Glint)${2}: ' },
+    { pattern = '^(\w+)\(archives\)', replace = '${1}(Archives)' },
+    { pattern = '^(\w+)\(check\)', replace = '${1}(Safety)' },
+    { pattern = '^(\w+)\(cleanup\)', replace = '${1}(Clean_up)' },
+    { pattern = '^(\w+)\(compare\)', replace = '${1}(Compare)' },
+    { pattern = '^(\w+)\(defender\)', replace = '${1}(Safety)' },
+    { pattern = '^(\w+)\(duplicates\)', replace = '${1}(Find_duplicates)' },
+    { pattern = '^(\w+)\(files\)', replace = '${1}(Files_and_folders)' },
+    { pattern = '^(\w+)\(git\)', replace = '${1}(Git)' },
+    { pattern = '^(\w+)\(history\)', replace = '${1}(History)' },
+    { pattern = '^(\w+)\(index\)', replace = '${1}(Instant_search)' },
+    { pattern = '^(\w+)\(ocr\)', replace = '${1}(Text_in_pictures)' },
+    { pattern = '^(\w+)\(palette\)', replace = '${1}(Command_palette)' },
+    { pattern = '^(\w+)\(preview\)', replace = '${1}(Previews)' },
+    { pattern = '^(\w+)\(quick\)', replace = '${1}(Quick_search)' },
+    { pattern = '^(\w+)\(remote\)', replace = '${1}(Remote_folders)' },
+    { pattern = '^(\w+)\(rules\)', replace = '${1}(Folder_rules)' },
+    { pattern = '^(\w+)\(search\)', replace = '${1}(Search)' },
+    { pattern = '^(\w+)\(security\)', replace = '${1}(Security)' },
+    { pattern = '^(\w+)\(share\)', replace = '${1}(Sharing)' },
+    { pattern = '^(\w+)\(sizes\)', replace = '${1}(Folder_sizes)' },
+    { pattern = '^(\w+)\(terminal\)', replace = '${1}(Terminal)' },
+    { pattern = '^(\w+)\(text\)', replace = '${1}(Text_search)' },
+    { pattern = '^(\w+)\(thumbnails\)', replace = '${1}(Thumbnails)' },
+    { pattern = '^(\w+)\(tools\)', replace = '${1}(Tools)' },
+    { pattern = '^(\w+)\(ui\)', replace = '${1}(Look_and_feel)' },
+    { pattern = '^(\w+)\(usage\)', replace = '${1}(Disk_usage)' },
+    { pattern = '^(\w+)\(xray\)', replace = '${1}(X-Ray)' },
+]
+commit_parsers = [
+    { message = "^feat", group = "<!-- 0 -->New" },
+    { message = "^perf", group = "<!-- 1 -->Faster" },
+    { message = "^fix", group = "<!-- 2 -->Fixed" },
+    { message = ".*", skip = true },
+]
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "oldest"
