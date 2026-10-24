@@ -390,7 +390,7 @@ fn is_drive_root(path: &str) -> bool {
 }
 
 /// Expands Windows-style %NAME% variables; unknown names are left as typed.
-fn expand_vars(text: &str) -> String {
+pub(crate) fn expand_vars(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(start) = rest.find('%') {

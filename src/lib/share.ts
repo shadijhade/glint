@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import { revealInApp } from "./explorer";
-import { lanShareStart, type LanOptions, receiveStart, sendStart, shareStop } from "./fs";
+import { lanReach, type LanReach, lanShareStart, type LanOptions, receiveStart, sendStart, shareStop } from "./fs";
 import { baseName, samePath } from "./paths";
 
 /** A file or folder offered to another PC with sendme (share.rs), from Glint's start to its Stop. */
@@ -42,6 +42,10 @@ export interface Serving {
     uploads: boolean;
     url?: string;
     qr?: string;
+    /** The address it's served at, once it's listening. */
+    address?: string;
+    /** What may keep other devices from it, as Windows has it: read once it's listening, and again when Glint's back in front. */
+    reach?: LanReach;
     /** When it ends by itself (ms since 1970). */
     ends?: number | null;
     /** What was asked for: how many requests, from which addresses, and the last. */
@@ -156,21 +160,33 @@ export async function serve(path: string, options: LanOptions) {
     const key = ++next;
     set((s) => ({ serving: [...s.serving, { key, path, id: null, uploads: options.uploads, visits: 0, from: [] }] }));
     try {
-        const id = await lanShareStart(path, options, (e) =>
+        const id = await lanShareStart(path, options, (e) => {
             patchServing(key, (now) =>
                 e.kind === "ready"
-                    ? { url: e.url, qr: e.qr, ends: e.ends }
+                    ? { url: e.url, qr: e.qr, ends: e.ends, address: new URL(e.url).hostname }
                     : e.kind === "visit"
                       ? { visits: now.visits + 1, from: now.from.includes(e.from) ? now.from : [...now.from, e.from], last: { from: e.from, request: e.request, status: e.status, at: Date.now() } }
                       : { ended: e.message }
-            )
-        );
+            );
+            if (e.kind === "ready") void checkReach(key);
+        });
         if (!get().serving.some((s) => s.key === key)) return void shareStop(id);
         patchServing(key, () => ({ id }));
     } catch (e) {
         patchServing(key, () => ({ ended: String(e) }));
     }
 }
+
+/** Reads what may keep other devices from a share, as Windows has it now (its prompt answered, Settings changed). */
+async function checkReach(key: number) {
+    const address = get().serving.find((s) => s.key === key && !s.ended)?.address;
+    if (!address) return;
+    const reach = await lanReach(address).catch(() => undefined);
+    if (reach) patchServing(key, () => ({ reach }));
+}
+
+/** When Glint's back in front: what may keep other devices from each share, read again. */
+export const recheckShares = () => get().serving.forEach((s) => void checkReach(s.key));
 
 /** Stops sharing it on the network (its link stops working), or takes away one that ended. */
 export function stopServing(key: number) {

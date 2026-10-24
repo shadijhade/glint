@@ -159,6 +159,10 @@ windows = { version = "0.62", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WNet",
+    # Whether Windows lets other devices reach a share on this network: its firewall's rules for dufs,
+    # and the kind of network the share's address is on (lan.rs).
+    "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_Networking_NetworkListManager",
     "Win32_Networking_WinSock",
     "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
@@ -175,6 +179,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_System_Time",
+    "Win32_System_Variant",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",

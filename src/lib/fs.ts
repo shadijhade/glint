@@ -407,6 +407,17 @@ export type LanEvent =
 
 export const lanAddresses = () => invoke<LanAddress[]>("lan_addresses");
 
+/** What may keep other devices from a share at one of this PC's addresses (lan.rs): the kind of network Windows has it on, and Windows Firewall's say on dufs there. */
+export interface LanReach {
+    network: "public" | "private" | "domain" | null;
+    /** Off there; a rule lets dufs in; one keeps it out; none says, so it's kept out (Windows asks the first time); or it couldn't be told. */
+    firewall: "off" | "allowed" | "blocked" | "unset" | "unknown";
+}
+
+export const lanReach = (address: string) => invoke<LanReach>("lan_reach", { address });
+/** Opens Windows' page for a share's network (where it's set as public or private), or its firewall's allowed apps. */
+export const lanOpenSettings = (page: "network" | "firewall", address: string) => invoke("lan_open_settings", { page, address });
+
 /** Shares `path` on this network until `shareStop` (or its time's up); resolves to its id. */
 export function lanShareStart(path: string, options: LanOptions, onEvent: (event: LanEvent) => void) {
     const channel = new Channel<LanEvent>();

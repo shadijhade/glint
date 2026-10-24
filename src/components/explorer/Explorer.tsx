@@ -191,7 +191,7 @@ import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
 import { openInItems, refreshOpeners, useOpeners } from "@/lib/openers";
 import { knownTasks, runTask } from "@/lib/projects";
 import { openScriptsFolder, refreshScripts, runScript, scriptItems, useScripts } from "@/lib/scripts";
-import { openReceive, showShare, useShare } from "@/lib/share";
+import { openReceive, recheckShares, showShare, useShare } from "@/lib/share";
 import { toggleTerminal, useTerminals } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
@@ -526,8 +526,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         refreshOpeners();
         refreshScripts();
         // Refresh the folders on screen when they change on disk; drives may come and go while we're away,
-        // what's deleted elsewhere goes into the Recycle Bin, an editor may have been installed, and a
-        // script written.
+        // what's deleted elsewhere goes into the Recycle Bin, an editor may have been installed, a
+        // script written, and Windows told to let a share's visitors in.
         const unlisten = listen<string>("dir-changed", (event) => {
             reloadFolder(event.payload);
             const scripts = useScripts.getState().folder;
@@ -538,6 +538,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             reloadRecycleBins();
             refreshOpeners();
             refreshScripts();
+            recheckShares();
         };
         window.addEventListener("focus", onFocus);
         return () => {
