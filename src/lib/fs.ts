@@ -386,6 +386,33 @@ export function receiveStart(folder: string, ticket: string, onEvent: (event: Re
 }
 
 export const shareStop = (id: number) => invoke("share_stop", { id });
+
+/** One of this PC's addresses on a network (lan.rs), and its adapter's name ("Wi-Fi"). */
+export interface LanAddress {
+    address: string;
+    name: string;
+}
+
+/** How a folder's shared on this network: whether what's sent can be saved into it, for how long (0: till it's stopped), at which address. */
+export interface LanOptions {
+    uploads: boolean;
+    minutes: number;
+    address: string | null;
+}
+
+export type LanEvent =
+    | { kind: "ready"; url: string; qr: string; ends: number | null }
+    | { kind: "visit"; from: string; request: string; status: number }
+    | { kind: "ended"; message: string };
+
+export const lanAddresses = () => invoke<LanAddress[]>("lan_addresses");
+
+/** Shares `path` on this network until `shareStop` (or its time's up); resolves to its id. */
+export function lanShareStart(path: string, options: LanOptions, onEvent: (event: LanEvent) => void) {
+    const channel = new Channel<LanEvent>();
+    channel.onmessage = onEvent;
+    return invoke<number>("lan_share_start", { path, options, onEvent: channel });
+}
 /** The Scripts folder, made (with a script to start from) the first time. */
 export const scriptsFolder = () => invoke<string>("scripts_folder");
 /** Opens a folder or a file in the editor or terminal `id`. */

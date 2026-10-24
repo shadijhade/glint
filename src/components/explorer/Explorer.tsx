@@ -82,6 +82,7 @@ import {
     TextSearch,
     Trash2,
     Undo2,
+    Wifi,
     X,
     ZoomIn,
     ZoomOut,
@@ -197,7 +198,7 @@ import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
 import { checkForSecrets, checkWithYara, secretsCheckFirst } from "./CheckDialog";
-import { offerToPC } from "./ShareDialog";
+import { offerOnNetwork, offerToPC } from "./ShareDialog";
 import { openCleanup } from "./CleanupDialog";
 import { compareFiles } from "./CompareFilesDialog";
 import { canConvert, convertPictures } from "./ConvertDialog";
@@ -431,6 +432,7 @@ function folderMenu(
         !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
         !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
         !inArchive && !shut && isFolderPath(folder) && { label: current ? "Send this folder to another PC…" : "Send to another PC…", icon: Send, onSelect: () => offerToPC(folder) },
+        !inArchive && !shut && isFolderPath(folder) && { label: current ? "Share this folder on this network…" : "Share on this network…", icon: Wifi, onSelect: () => offerOnNetwork(folder) },
         current && !inArchive && !shut && !find && isFolderPath(folder) && { label: "Receive from another PC here…", icon: Download, onSelect: () => openReceive(folder) },
         { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
         "separator",
@@ -734,8 +736,17 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 action("send-pc", chosenEntries.length === 1 ? `Send “${chosenEntries[0].name}” to another PC` : "Send this folder to another PC", Send, () =>
                     offerToPC(chosenEntries.length === 1 ? chosenEntries[0].path : t.path)
                 ),
+            !archive &&
+                !closedItems &&
+                !bin &&
+                !shut &&
+                (chosenEntries.length === 1 || (inFolder && !chosen)) &&
+                action("share-network", chosenEntries.length === 1 ? `Share “${chosenEntries[0].name}” on this network: a link for a phone` : "Share this folder on this network: a link for a phone", Wifi, () =>
+                    offerOnNetwork(chosenEntries.length === 1 ? chosenEntries[0].path : t.path)
+                ),
             writable && !shut && !t.find && action("receive-pc", "Receive from another PC here", Download, () => openReceive(t.path)),
             useShare.getState().sends.length > 0 && action("sending", "Sending to another PC: the tickets, and Stop", Send, () => showShare("send")),
+            useShare.getState().serving.length > 0 && action("serving", "Shared on this network: the links, and Stop", Wifi, () => showShare("network")),
             !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
             !archive &&
                 !closedItems &&
@@ -1385,6 +1396,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             "separator",
             !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
             one && !fixed && { label: "Send to another PC…", icon: Send, onSelect: () => offerToPC(one.path) },
+            one && !fixed && { label: "Share on this network…", icon: Wifi, onSelect: () => offerOnNetwork(one.path) },
             pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
             "separator",
             one
