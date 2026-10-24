@@ -330,7 +330,7 @@ class MapBoundary extends Component<{ tab: string; folder: string; children: Rea
     }
 }
 
-/** Seconds since `since`, ticking, for a dust run that can take a while. */
+/** Seconds since `since`, ticking, for a pdu run that can take a while. */
 function Elapsed({ since }: { since: number }) {
     const [now, setNow] = useState(performance.now());
     useEffect(() => {
@@ -443,7 +443,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
 
     const layout = useMemo(() => (map && size.w > 0 && size.h > 0 ? layoutUsage(map, size.w, size.h) : null), [map, size.w, size.h]);
     const now = useMemo(() => Date.now(), [map]);
-    // Growth colors folders drawn whole too; without what grew (dust, an archive, an older service), types do.
+    // Growth colors folders drawn whole too; without what grew (pdu, an archive, an older service), types do.
     const growing = colorMode === "growth" && !!map?.growth && entries.length === map.count;
     const groups = useMemo(
         () => entries.map((e, i) => (growing ? growthBand(map!, i) : e.dir ? null : colorMode === "age" ? ageBand(e.modified, now) : typeGroup(e))),
@@ -544,16 +544,16 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
     const wholeFolders = useMemo(() => !growing && !!map && !!layout && layout.order.some((i) => layout.kind[i] === BLOCK && isFolder(map, i)), [map, layout, growing]);
 
     let body: React.ReactNode = null;
-    if (!current && run.running && (run.engine === "dust" || !map)) {
+    if (!current && run.running && (run.engine === "pdu" || !map)) {
         body = (
             <Centered>
                 <Loader2 className="size-5 animate-spin text-primary" />
-                {run.engine !== "dust" ? (
+                {run.engine !== "pdu" ? (
                     <p>Mapping “{title}”…</p>
                 ) : (
                     <>
                         <p className="text-foreground">
-                            Measuring “{title}” with dust… <Elapsed since={run.started} />
+                            Measuring “{title}” with pdu… <Elapsed since={run.started} />
                         </p>
                         <p className="max-w-sm text-xs">Big folders take a while. With instant search on (in Settings), folders on indexed drives are mapped in milliseconds.</p>
                         <Button variant="outline" size="sm" className="mt-1" onClick={() => stopUsage(tab)}>
@@ -635,7 +635,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                         <TrendingUp className="size-3" /> Growth
                     </button>
                 </div>
-                {map && current && (map.engine === "index" || map.engine === "dust") && (
+                {map && current && (map.engine === "index" || map.engine === "pdu") && (
                     <button
                         type="button"
                         onClick={() => openCleanup(run.path)}
@@ -649,7 +649,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                     <button
                         onClick={enableIndex}
                         className="flex min-w-0 items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 font-medium text-primary hover:bg-primary/15"
-                        title="dust measured this map: the instant search service running is a version from before maps. Updated (Windows asks for administrator approval), it maps folders on indexed drives in milliseconds."
+                        title="pdu measured this map: the instant search service running is a version from before maps. Updated (Windows asks for administrator approval), it maps folders on indexed drives in milliseconds."
                     >
                         <Sparkles className="size-3 shrink-0" /> <span className="truncate">Update instant search</span>
                     </button>
@@ -718,7 +718,7 @@ function GrowthStrip({ tab, path, map, title }: { tab: string; path: string; map
         const [why, action] =
             map.engine === "index"
                 ? ["The instant search service running is too old to keep daily marks of what grew.", "Update instant search"]
-                : map.engine === "dust"
+                : map.engine === "pdu"
                   ? indexOn
                       ? ["What grew comes from instant search, which doesn't cover this drive.", null]
                       : ["What grew comes from instant search's daily marks.", "Turn on instant search"]
@@ -838,14 +838,14 @@ export function UsageWork({ tab }: { tab: string }) {
     if (run.running && (run.preview || !current)) {
         return (
             <>
-                <Loader2 className="size-3 animate-spin text-primary" /> {run.engine === "dust" ? "dust · measuring…" : `${run.engine} · mapping…`}
+                <Loader2 className="size-3 animate-spin text-primary" /> {run.engine === "pdu" ? "pdu · measuring…" : `${run.engine} · mapping…`}
             </>
         );
     }
     if (!current) return null;
     return (
         <span
-            title={`${current.engine === "index" ? "The instant search index" : current.engine === "dust" ? "dust" : "The archive's own list of entries"} mapped this folder in ${formatDuration(current.elapsed)}; it was on screen ${formatDuration(run.shownIn)} after the click.`}
+            title={`${current.engine === "index" ? "The instant search index" : current.engine === "pdu" ? "pdu" : "The archive's own list of entries"} mapped this folder in ${formatDuration(current.elapsed)}; it was on screen ${formatDuration(run.shownIn)} after the click.`}
             className="flex items-center gap-1"
         >
             <Zap className="size-3 text-primary" /> {current.engine} · mapped {formatSize(current.size[0])} in {formatDuration(current.elapsed)}

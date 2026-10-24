@@ -270,9 +270,9 @@ function requestFor(key: ModeKey, options: Options): CleanupMode {
     }
 }
 
-const ENGINE_NAMES: Record<string, string> = { index: "the index", fd: "fd", dust: "dust", czkawka: "Czkawka" };
+const ENGINE_NAMES: Record<string, string> = { index: "the index", fd: "fd", pdu: "pdu", czkawka: "Czkawka" };
 
-/** "index + fd + dust" → "the index, fd and dust". */
+/** "index + fd + pdu" → "the index, fd and pdu". */
 function engineText(engine: string) {
     const parts = engine.split(" + ").map((p) => ENGINE_NAMES[p] ?? p);
     return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];

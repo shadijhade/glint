@@ -491,7 +491,7 @@ pub fn entry_for_path(path: &str, dir_hint: bool) -> Entry {
 }
 
 #[cfg(windows)]
-pub use win::{probe, read_dir, stat};
+pub use win::{probe, read_dir, stat, stat_sized};
 #[cfg(windows)]
 pub(crate) use win::{io_error, wide};
 
@@ -610,10 +610,17 @@ mod win {
 
     /// Metadata without opening the file (GetFileAttributesExW), so it's cheap and never triggers a cloud download.
     pub fn stat(path: &str) -> Option<Entry> {
+        stat_sized(path).map(|(entry, _)| entry)
+    }
+
+    /// `stat`, and the size Windows gives the item itself: for a folder, which `stat` sizes as 0, its own
+    /// entry (its index of names: none for the smallest on NTFS, 4 KB and up for the rest).
+    pub fn stat_sized(path: &str) -> Option<(Entry, u64)> {
         let mut data = WIN32_FILE_ATTRIBUTE_DATA::default();
         let wide = wide(Path::new(path));
         unsafe { GetFileAttributesExW(PCWSTR(wide.as_ptr()), GetFileExInfoStandard, &mut data as *mut _ as *mut _) }.ok()?;
-        Some(entry(String::new(), data.dwFileAttributes, data.nFileSizeHigh, data.nFileSizeLow, data.ftLastWriteTime))
+        let size = ((data.nFileSizeHigh as u64) << 32) | data.nFileSizeLow as u64;
+        Some((entry(String::new(), data.dwFileAttributes, data.nFileSizeHigh, data.nFileSizeLow, data.ftLastWriteTime), size))
     }
 }
 
@@ -635,9 +642,14 @@ pub fn probe(dir: &str) -> io::Result<()> {
 
 #[cfg(not(windows))]
 pub fn stat(path: &str) -> Option<Entry> {
+    stat_sized(path).map(|(entry, _)| entry)
+}
+
+#[cfg(not(windows))]
+pub fn stat_sized(path: &str) -> Option<(Entry, u64)> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     let name = Path::new(path).file_name()?.to_string_lossy().into_owned();
-    Some(portable_entry(name, Some(&meta)))
+    Some((portable_entry(name, Some(&meta)), meta.len()))
 }
 
 #[cfg(not(windows))]

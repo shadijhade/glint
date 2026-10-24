@@ -73,6 +73,9 @@ Var OldDesktopShortcut
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Glint measured folders with dust until pdu took over: an update removes the dust.exe it left.
+  Delete "$INSTDIR\dust.exe"
+
   ${If} $NoShortcutMode <> 1
     ${If} $OldStartMenuShortcut = 1
     ${AndIfNot} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"

@@ -10,7 +10,7 @@
 //! - With Czkawka (an optional tool): **look-alike** pictures, videos (FFmpeg reads them) and music,
 //!   **broken** files, and files whose extension isn't what's in them.
 //!
-//! Found from the instant search index where it answers, otherwise with fd (and sized with dust).
+//! Found from the instant search index where it answers, otherwise with fd (and sized with pdu).
 //! Windows' own folder, the Recycle Bin and System Volume Information are left out. Nothing is
 //! removed here: the UI recycles what's chosen (or gives a misnamed file its extension), which
 //! Ctrl+Z takes back.
@@ -213,7 +213,7 @@ impl Found {
 pub struct Report {
     pub items: Vec<Found>,
     pub total: u64,
-    /// Who found (and sized) them: "index", "fd + dust", "index + fd"…
+    /// Who found (and sized) them: "index", "fd + pdu", "index + fd"…
     pub engine: String,
     pub elapsed: f64,
     /// How many more were found than [`MAX_LISTED`] (the biggest are listed).
@@ -230,12 +230,12 @@ const MAX_LISTED: usize = 5_000;
 struct Engines {
     index: bool,
     fd: bool,
-    dust: bool,
+    pdu: bool,
 }
 
 impl Engines {
     fn name(&self) -> String {
-        [(self.index, "index"), (self.fd, "fd"), (self.dust, "dust")].iter().filter(|(on, _)| *on).map(|(_, name)| *name).collect::<Vec<_>>().join(" + ")
+        [(self.index, "index"), (self.fd, "fd"), (self.pdu, "pdu")].iter().filter(|(on, _)| *on).map(|(_, name)| *name).collect::<Vec<_>>().join(" + ")
     }
 }
 
@@ -403,29 +403,24 @@ fn fd_paths(flags: &[&str], pattern: Option<&str>, roots: &[String], skip: &[&st
     Ok(found)
 }
 
-/// Sizes of `paths` (full paths) with dust: a run per hundred, so the command line stays short.
+/// Sizes of `paths` (full paths) with pdu: a run per hundred, so the command line stays short.
 fn sizes(paths: &[String], run: &Run) -> Result<HashMap<String, u64>, String> {
     let mut sizes = HashMap::new();
     for chunk in paths.chunks(100) {
-        let mut command = crate::proc::tool("dust")?;
-        command.args(["-j", "-d", "0", "-s", "-o", "b", "-P", "--"]).args(chunk).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-        let mut child = command.spawn().map_err(|e| format!("Failed to start dust: {e}"))?;
-        let mut stdout = child.stdout.take().ok_or("Failed to open dust's output")?;
+        let mut command = crate::proc::tool("pdu")?;
+        command.args(["--json-output", "--quantity", "apparent-size", "--max-depth", "2", "--min-ratio", "0", "--silent-errors", "--"]).args(chunk).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = command.spawn().map_err(|e| format!("Failed to start pdu: {e}"))?;
+        let mut stdout = child.stdout.take().ok_or("Failed to open pdu's output")?;
         let pid = run.child.replace(child);
         let mut json = String::new();
         let _ = stdout.read_to_string(&mut json);
         run.child.finish(pid);
         run.stopped()?;
         let tree = crate::sizes::parse_tree(&json)?;
-        // Several paths are children of a "(total)"; one is the tree itself.
-        let nodes = if tree.name == "(total)" { tree.children } else { vec![tree] };
-        let asked: Vec<String> = chunk.iter().map(|p| p.to_lowercase()).collect();
+        // Several paths are children of a "(total)", each by its path as asked; one is the tree itself.
+        let nodes = if tree.name == "(total)" && chunk.len() > 1 { tree.children } else { vec![tree] };
         for node in nodes {
-            // dust tells same-named folders apart with their parent's name after them:
-            // "…\web\node_modules(web)". The path asked for is what it's kept under.
-            let name = node.name.to_lowercase();
-            let key = asked.iter().find(|p| name == **p || name.strip_prefix(p.as_str()).is_some_and(|rest| rest.starts_with('(') && rest.ends_with(')'))).cloned().unwrap_or(name);
-            sizes.insert(key, crate::sizes::bytes(&node.size));
+            sizes.insert(node.name.to_lowercase(), node.size);
         }
     }
     Ok(sizes)
@@ -543,7 +538,7 @@ fn find_junk(root: &str, run: &Run, use_index: bool) -> Result<Report, String> {
     }
     let kept = keep_junk(candidates);
     let to_measure: Vec<String> = kept.iter().filter(|(c, _)| c.size.is_none()).map(|(c, _)| c.path.clone()).collect();
-    engines.dust = !to_measure.is_empty();
+    engines.pdu = !to_measure.is_empty();
     let measured = if to_measure.is_empty() { HashMap::new() } else { sizes(&to_measure, run)? };
     // Each project once (its node_modules and .next share one), dated by what's in it.
     let skip: HashSet<String> = kept.iter().map(|(c, _)| c.path.to_lowercase()).collect();

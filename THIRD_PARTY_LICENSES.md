@@ -6,7 +6,7 @@ Glint ships these programs unmodified, as separate executables next to the app. 
 | :--- | :--- | :--- | :--- |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg.exe`) | 15.2.0 | Searching inside files | MIT (dual-licensed MIT or Unlicense) |
 | [fd](https://github.com/sharkdp/fd) (`fd.exe`) | 10.5.0 | Finding files by name | MIT (dual-licensed MIT or Apache-2.0) |
-| [dust](https://github.com/bootandy/dust) (`dust.exe`) | 1.2.6 | Folder sizes | Apache-2.0 |
+| [pdu](https://github.com/KSXGitHub/parallel-disk-usage) (`pdu.exe`, parallel-disk-usage) | 0.24.0 | Folder sizes and disk-usage maps | Apache-2.0 |
 
 Rust crates and npm packages compiled into the app keep their own licenses; see `src-tauri/Cargo.lock` and `package-lock.json`. The crates that read archives and compressed files are listed under [Archive support](#archive-support-compiled-into-the-app), with the license texts their terms ask to be passed on.
 
@@ -62,10 +62,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## dust
+## pdu
 
 ```text
-Apache License
+                                 Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
 
@@ -253,7 +253,7 @@ Apache License
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright [2023] [andrew boot]
+   Copyright 2021 Hoàng Văn Khải
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -286,7 +286,7 @@ Apache License
 | [ppmd-rust](https://github.com/hasenbanck/ppmd-rust) | 1.5.0 | PPMd | CC0-1.0 or MIT-0 |
 | [bitstream-io](https://github.com/tuffy/bitstream-io) | 4.10.0 | Shrink, Reduce and Implode (very old zips) | MIT or Apache-2.0 |
 
-The Apache License 2.0 is reproduced in full under [dust](#dust) above; CC0 and MIT-0 ask for no notice. This software uses bzip2 by Julian Seward, as its license appreciates being told.
+The Apache License 2.0 is reproduced in full under [pdu](#pdu) above; CC0 and MIT-0 ask for no notice. This software uses bzip2 by Julian Seward, as its license appreciates being told.
 
 ### zip
 
@@ -545,7 +545,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 | [gitoxide](https://github.com/GitoxideLabs/gitoxide) (`gix` and its `gix-*` crates) | 0.90.0 | Reading Git repositories: status, branches, ahead and behind | MIT or Apache-2.0 |
 | [gix-imara-diff](https://github.com/GitoxideLabs/gitoxide) (imara-diff, as gitoxide ships it) | 0.3.2 | Line diffs | Apache-2.0 |
 
-The Apache License 2.0 is reproduced in full under [dust](#dust) above.
+The Apache License 2.0 is reproduced in full under [pdu](#pdu) above.
 
 ## Terminal (compiled into the app)
 
@@ -944,7 +944,7 @@ THE SOFTWARE.
 
 ### parquet
 
-Licensed under the Apache License 2.0, reproduced in full under [dust](#dust) above. Its NOTICE:
+Licensed under the Apache License 2.0, reproduced in full under [pdu](#pdu) above. Its NOTICE:
 
 ```text
 Apache Arrow
@@ -1244,7 +1244,7 @@ DEALINGS IN THE SOFTWARE.
 | :--- | :--- | :--- | :--- |
 | [reflink-copy](https://github.com/cargo-bins/reflink-copy) | 0.1.30 | Find duplicates' Clone on ReFS and Dev Drives | MIT or Apache-2.0 |
 
-The Apache License 2.0 is reproduced in full under [dust](#dust) above.
+The Apache License 2.0 is reproduced in full under [pdu](#pdu) above.
 
 ## Sharing (compiled into the app)
 
@@ -1252,7 +1252,7 @@ The Apache License 2.0 is reproduced in full under [dust](#dust) above.
 | :--- | :--- | :--- | :--- |
 | [qrcode](https://github.com/kennytm/qrcode-rust) | 0.14.1 | A send's ticket, and a network share's link, as QR codes | MIT or Apache-2.0 |
 
-The Apache License 2.0 is reproduced in full under [dust](#dust) above. sendme and dufs themselves aren't part of Glint: each is installed with winget when it's first wanted.
+The Apache License 2.0 is reproduced in full under [pdu](#pdu) above. sendme and dufs themselves aren't part of Glint: each is installed with winget when it's first wanted.
 
 ## Calculator (compiled into the app)
 

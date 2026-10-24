@@ -1,7 +1,7 @@
 //! Optional tools: programs Glint drives for a feature or two but doesn't ship, so the download stays
 //! small for everyone who never uses those features. Each installs when asked: with winget when it has
 //! the package, else from the tool's own release on GitHub, pinned by its SHA-256 and checked before
-//! anything is unpacked. Their arguments are built in Rust from typed options, like rg's, fd's and dust's.
+//! anything is unpacked. Their arguments are built in Rust from typed options, like rg's, fd's and pdu's.
 
 use crate::fsx::blocking;
 use crate::proc::{self, Lanes, Origin};
@@ -46,7 +46,7 @@ pub enum Source {
 pub static TOOLS: &[Tool] = &[
     Tool { id: "ripgrep", name: "ripgrep", exe: "rg", package: "ripgrep", source: Source::Bundled { winget: "BurntSushi.ripgrep.MSVC" }, used_for: "Searching inside files" },
     Tool { id: "fd", name: "fd", exe: "fd", package: "sharkdp.fd", source: Source::Bundled { winget: "sharkdp.fd" }, used_for: "Finding files by name where instant search doesn't" },
-    Tool { id: "dust", name: "dust", exe: "dust", package: "bootandy.dust", source: Source::Bundled { winget: "bootandy.dust" }, used_for: "Folder sizes and disk-usage maps where instant search doesn't" },
+    Tool { id: "pdu", name: "pdu", exe: "pdu", package: "parallel-disk-usage", source: Source::Bundled { winget: "" }, used_for: "Folder sizes and disk-usage maps where instant search doesn't" },
     Tool {
         id: "czkawka",
         name: "Czkawka",
@@ -314,6 +314,8 @@ impl Installs {
 pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: State<'_, Installs>) -> Result<ToolStatus, String> {
     let tool = get(&id).ok_or_else(|| format!("No tool is called {id}"))?;
     match tool.source {
+        // pdu isn't on winget: it comes back with Glint itself.
+        Source::Bundled { winget: "" } => return Err(format!("{} comes with Glint: install Glint again to put it back", tool.name)),
         Source::Bundled { winget } | Source::Winget { id: winget } => {
             let lane = installs.winget.clone();
             blocking(move || winget_install(winget, &lane, tool.id, &on_progress)).await?;

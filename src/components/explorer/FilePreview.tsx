@@ -557,7 +557,7 @@ function useSettled<T>(value: T, ms = 70) {
 interface FolderSummary {
     path: string;
     items: number;
-    /** Everything inside, once sized (by the index or dust). */
+    /** Everything inside, once sized (by the index or pdu). */
     total?: number;
     /** Windows keeps this account out of it: there's nothing listed to count. */
     noAccess?: boolean;

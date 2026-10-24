@@ -33,7 +33,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src/components/Results.tsx`, `Search.tsx` | Text search (ripgrep) |
 | `src-tauri/src/fsx.rs` | Folder listing (Win32 `FindFirstFileExW`, binary transfer to the UI) |
 | `src-tauri/src/archive/` | Archives opened like folders (zip, 7z, RAR, cabinets, installer packages, tar, compressed files): reading their list of entries, the folder tree, extracting on demand and into staging folders, safety limits ([docs/archives.md](docs/archives.md)) |
-| `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, dust folder sizes and disk-usage maps (or the index when it's on) |
+| `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, pdu folder sizes and disk-usage maps (or the index when it's on) |
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop, Properties |
 | `src-tauri/src/recycle.rs` | The Recycle Bin as a place: its items from the shell and their `$I` records, and emptying it ([docs/recycle-bin.md](docs/recycle-bin.md)) |
 | `src-tauri/src/compare.rs` | Compare panes down through subfolders and by contents, and what Sync copies |
@@ -42,7 +42,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/thumbs.rs` | Thumbnails from Windows' thumbnail cache (`IShellItemImageFactory`, `IThumbnailCache`) on worker threads, in a queue per tab |
 | `src-tauri/src/launch.rs`, `verbs.rs` | Folders from the command line and later launches (one copy runs at a time), and File Explorer's *Open in Glint* entries ([docs/explorer-integration.md](docs/explorer-integration.md)) |
 | `src-tauri/index/` | The opt-in instant-search service (NTFS MFT + USN journal) |
-| `src-tauri/binaries/` | Bundled `rg`, `fd` and `dust` executables |
+| `src-tauri/binaries/` | Bundled `rg`, `fd` and `pdu` executables |
 | `src-tauri/src/tools.rs`, `src/lib/tools.ts`, `src/components/ToolNeeded.tsx` | Every program Glint drives: the bundled ones, and optional ones installed on demand with winget or from their GitHub release (pinned by SHA-256); Settings → Tools, and the Install card a feature shows when its tool is missing |
 | `src/lib/updater.ts` | Finding and installing updates (tauri-plugin-updater) |
 | `scripts/` | `npm run release` and its helpers: update signatures, winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)) |
