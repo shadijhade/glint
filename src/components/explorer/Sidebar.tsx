@@ -1,9 +1,11 @@
-import { Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Search, Server, Trash2, Usb, X } from "lucide-react";
+import { Cloud, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, Trash2, Usb, X } from "lucide-react";
+import { remotePath, remoteWhere } from "@/lib/remotes";
+import { addRemote } from "./RemoteDialog";
 import { useShallow } from "zustand/react/shallow";
 import { type KnownFolder, middleClickOpens, navigate, runSavedSearch, useExplorer, useTab } from "@/lib/explorer";
 import { type Drive, driveName } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
-import { baseName, inArchivePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, isRemotePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { type SavedSearch, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -77,8 +79,8 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
     const dropping = useExplorer((s) => s.dropTarget === path);
     return (
         <button
-            // A pinned folder in an archive takes no drops: archives are read-only.
-            data-drop={inArchivePath(path) ? undefined : path}
+            // A pinned folder in an archive takes no drops, nor does a remote's: they're read-only.
+            data-drop={inArchivePath(path) || isRemotePath(path) ? undefined : path}
             onClick={() => navigate(path)}
             onMouseDown={middleClickOpens(path)}
             onContextMenu={(e) => onContextMenu(e, path)}
@@ -129,6 +131,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
     const { known, drives } = useExplorer(useShallow((s) => ({ known: s.known, drives: s.drives })));
     const pinned = useStore((s) => s.pinned);
     const saved = useStore((s) => s.savedSearches);
+    const remotes = useStore((s) => s.remotes);
     const here = (p: string) => path !== THIS_PC && samePath(p, path);
 
     return (
@@ -176,6 +179,15 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                     title="What you deleted, to restore or delete for good. Files dropped here are deleted."
                     onContextMenu={onContextMenu}
                 />
+            </Section>
+            <Section title="Remote">
+                {remotes.map((r) => (
+                    <Place key={r.id} icon={r.kind === "s3" ? Cloud : Server} label={r.name} path={remotePath(r)} active={here(remotePath(r))} title={remoteWhere(r)} onContextMenu={onContextMenu} />
+                ))}
+                <button onClick={addRemote} title="Add a remote connection: an S3 bucket, or a WebDAV server" aria-label="Add a remote connection" className={cn(PLACE, "text-muted-foreground")}>
+                    <Plus className="size-4 shrink-0" />
+                    <span className="hidden truncate md:inline">Add a connection</span>
+                </button>
             </Section>
         </nav>
     );

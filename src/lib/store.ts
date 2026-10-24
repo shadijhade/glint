@@ -153,6 +153,26 @@ export const DEFAULT_SETTINGS: Settings = {
     zoxide: false,
 };
 
+/**
+ * A remote connection (remote/), as its folders are reached at `remote:<id>`: no secret, which Windows
+ * Credential Manager keeps. `id` is made from the first name it's given, and kept through renames.
+ */
+export interface RemoteConnection {
+    id: string;
+    name: string;
+    kind: "s3" | "webdav";
+    /** S3: the service's address (Amazon's, from the region, when empty); WebDAV: the server's URL. */
+    endpoint: string;
+    region: string;
+    bucket: string;
+    /** S3's access key ID; WebDAV's user name. */
+    user: string;
+    /** The folder on it to start at. */
+    root: string;
+    /** Pictures in the grid get thumbnails, which downloads each one shown (up to 16 MB): off unless asked for. */
+    thumbnails?: boolean;
+}
+
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */
 export interface SavedSearch {
     query: string;
@@ -168,6 +188,7 @@ interface AppState {
     mode: Mode;
     pinned: string[];
     savedSearches: SavedSearch[];
+    remotes: RemoteConnection[];
     lastFolder: string | null;
     session: Session | null;
     /** Folders opened, for ranking in the command palette. */
@@ -182,6 +203,9 @@ interface AppState {
     togglePin: (path: string) => void;
     /** Keeps the search in the sidebar, or takes it out if it's there. */
     toggleSavedSearch: (search: SavedSearch) => void;
+    /** Adds a connection, or changes the one with its id. */
+    saveRemote: (remote: RemoteConnection) => void;
+    removeRemote: (id: string) => void;
     setLastFolder: (path: string) => void;
     setSession: (session: Session) => void;
     recordVisit: (path: string) => void;
@@ -200,6 +224,7 @@ export const useStore = create<AppState>()(
             mode: 'files',
             pinned: [],
             savedSearches: [],
+            remotes: [],
             lastFolder: null,
             session: null,
             visits: {},
@@ -239,6 +264,10 @@ export const useStore = create<AppState>()(
                 const same = (s: SavedSearch) => s.query === search.query && s.folder.toLowerCase() === search.folder.toLowerCase();
                 return { savedSearches: state.savedSearches.some(same) ? state.savedSearches.filter((s) => !same(s)) : [...state.savedSearches, search] };
             }),
+            saveRemote: (remote) => set((state) => ({
+                remotes: state.remotes.some((r) => r.id === remote.id) ? state.remotes.map((r) => (r.id === remote.id ? remote : r)) : [...state.remotes, remote],
+            })),
+            removeRemote: (id) => set((state) => ({ remotes: state.remotes.filter((r) => r.id !== id) })),
             setLastFolder: (lastFolder) => set({ lastFolder }),
             setSession: (session) => set({ session }),
             recordVisit: (path) => set((state) => {

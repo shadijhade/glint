@@ -70,7 +70,7 @@ import {
 } from "@/lib/explorer";
 import { openTerminal } from "@/lib/fs";
 import { TILE_SIZES, type TileSize, zoomTiles } from "@/lib/grid";
-import { isFolderPath, isRecycleBin, samePath } from "@/lib/paths";
+import { isFolderPath, isRecycleBin, isRemotePath, samePath } from "@/lib/paths";
 import { taskMenu, useProjectTasks } from "@/lib/projects";
 import { useStore } from "@/lib/store";
 import { toggleTerminal } from "@/lib/terminal";
@@ -217,7 +217,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                 find: !!t.find,
                 tab: t.id,
                 view: t.view,
-                readOnly: !!archive || !!t.noAccess || bin,
+                readOnly: !!archive || !!t.noAccess || bin || isRemotePath(t.path),
                 // The Recycle Bin: its items go back where they were deleted from, or for good.
                 bin,
                 // Windows keeps the folder closed to this account: nothing in it opens or changes.
@@ -335,7 +335,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
     /** When even the icons don't fit, the view toggles in a menu (and narrower still, list or grid). */
     const showToggles = (e: React.MouseEvent<HTMLButtonElement>) => {
         const below = e.currentTarget.getBoundingClientRect();
-        const canView = inFolder || find || bin;
+        const canView = inFolder || find || bin || isRemotePath(path);
         menu.open({ clientX: below.left, clientY: below.bottom + 4 }, [
             ...(fold >= 5
                 ? [

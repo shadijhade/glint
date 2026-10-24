@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
-import { crumbs, isFolderPath, isRecycleBin, isRoot, joinPath, linkedPath, parentPath, RECYCLE_BIN, samePath, THIS_PC, volumeOf } from "./paths.ts";
-import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, matcher, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
+import { crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, linkedPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC, volumeOf } from "./paths.ts";
+import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, isRemote, matcher, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
 import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping, runLine } from "./cd.ts";
@@ -391,6 +391,31 @@ assert.ok(isRecycleBin(RECYCLE_BIN) && isRecycleBin("SHELL:recyclebinfolder") &&
 assert.ok(isRoot(RECYCLE_BIN) && parentPath(RECYCLE_BIN) === THIS_PC);
 assert.ok(!isFolderPath(RECYCLE_BIN) && !isFolderPath(THIS_PC) && isFolderPath("C:\\") && isFolderPath("C:\\a.zip\\b"));
 assert.deepEqual(crumbs(RECYCLE_BIN), [{ name: "Recycle Bin", path: RECYCLE_BIN }]);
+
+// A remote connection's folders: remote:<id>\…, its top a root (This PC above it), none of them on disk.
+assert.ok(isRemotePath("remote:photos") && isRemotePath("REMOTE:photos\\2024") && !isRemotePath("C:\\remote:x") && !isRemotePath("rem"));
+assert.equal(remoteIdOf("remote:photos\\2024\\a.jpg"), "photos");
+assert.equal(remoteIdOf("C:\\photos"), "");
+assert.ok(isRoot("remote:photos") && isRoot("remote:photos\\") && !isRoot("remote:photos\\2024"));
+assert.equal(parentPath("remote:photos\\2024\\beach"), "remote:photos\\2024");
+assert.equal(parentPath("remote:photos\\2024"), "remote:photos");
+assert.equal(parentPath("remote:photos"), THIS_PC);
+assert.equal(joinPath("remote:photos", "2024"), "remote:photos\\2024");
+assert.ok(!isFolderPath("remote:photos") && !isFolderPath("remote:photos\\2024"));
+assert.deepEqual(crumbs("remote:photos\\2024\\beach"), [
+    { name: "photos", path: "remote:photos" },
+    { name: "2024", path: "remote:photos\\2024" },
+    { name: "beach", path: "remote:photos\\2024\\beach" },
+]);
+{
+    // A remote's listing (fsx.rs's flag 8), its items read through copies as an archive's are, and remote.
+    const remoteAttrs = ATTR.inArchive | ATTR.remote;
+    const entry = withDetails({ name: "beach.zip", dir: false, size: 3, modified: 0, attrs: remoteAttrs }, "remote:photos");
+    assert.equal(entry.path, "remote:photos\\beach.zip");
+    assert.ok(isRemote(entry) && isArchived(entry));
+    // An archive there is a file like any: Glint doesn't look inside archives on a remote.
+    assert.ok(!isArchiveFile(entry) && !isBrowsable({ ...entry, name: "a.docx", ext: "docx" }));
+}
 
 // Disk-usage maps: built here with the layout usage.rs's encode_map writes (its test checks the offsets)
 type Node = { name: string; parent: number; dir: boolean; size: number; modified?: number; attrs?: number };

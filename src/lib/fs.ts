@@ -461,7 +461,8 @@ function progressChannel(onProgress: Progress) {
     return channel;
 }
 
-export const archiveStage = (paths: string[], purpose: "copy" | "out", lane: string, onProgress: Progress) =>
+/** `open`: a remote's file, downloaded read-only to be opened. */
+export const archiveStage = (paths: string[], purpose: "copy" | "out" | "open", lane: string, onProgress: Progress) =>
     invoke<Staged>("archive_stage", { paths, purpose, lane, onProgress: progressChannel(onProgress) });
 
 /** Compress to zip: the zip, numbered if `name` is taken in `folder`, is `paths[0]` of what comes back. */
