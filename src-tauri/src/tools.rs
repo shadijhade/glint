@@ -168,6 +168,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool { id: "bun", name: "Bun", exe: "bun", package: "oven-sh.bun", source: Source::Winget { id: "Oven-sh.Bun" }, used_for: "TypeScript and JavaScript scripts in Scripts" },
     Tool { id: "sendme", name: "sendme", exe: "sendme", package: "n0-computer.sendme", source: Source::Winget { id: "n0-computer.sendme" }, used_for: "Sending files and folders to another PC" },
+    Tool { id: "dufs", name: "dufs", exe: "dufs", package: "sigoden.dufs", source: Source::Winget { id: "sigoden.Dufs" }, used_for: "Sharing a folder with a phone on this network" },
     Tool { id: "nushell", name: "Nushell", exe: "nu", package: "nushell.nushell", source: Source::Winget { id: "Nushell.Nushell" }, used_for: "A shell for the terminal, and Nushell scripts in Scripts" },
 ];
 
