@@ -25,9 +25,13 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 
 | Path | What it is |
 | :--- | :--- |
-| `src/components/explorer/` | The Files mode UI: panes and tabs, list and grid, disk-usage map, sidebar, address bar, preview, command bar |
+| `src/components/explorer/` | The Files mode UI: panes and tabs, list and grid, disk-usage map, sidebar, address bar, preview, command bar, terminal, and the dialogs (Clean up, Find duplicates, X-Ray, Compare two files, Send, Remote, Rules…) |
 | `src/lib/explorer.ts` | Explorer state and actions: tabs and panes, navigation, selection, search, file operations |
 | `src/lib/fs.ts` | Typed wrappers for every Rust command |
+| `src/lib/store.ts`, `paths.ts`, `entries.ts` | Settings, the session and saved things (in localStorage); paths and places (`shell:RecycleBinFolder`, `remote:<id>\…`); listings decoded from Rust's binary buffers |
+| `src/lib/<feature>.ts` beside `src-tauri/src/<feature>.rs` | That feature's state in the UI and its calls into Rust (`share.ts`, `remotes.ts`, `meaning.ts`, `projects.ts`, `scripts.ts`…) |
+| `src/lib/preview.ts`, `markdown.ts`, `jsonTree.ts`, `hex.ts`, `cast.ts`, `highlight.ts`, `fileTypes.ts` | The preview's views (Markdown's links, the tree, hex rows, asciinema playback, syntax highlighting) and what kind of file is what |
+| `src/lib/ripgrep.ts`, `text.ts`, `rank.ts`, `format.ts` | Text search's state and Replace all, ranking folders by how often and recently they're opened, and how sizes, counts and times read |
 | `src/lib/usage.ts`, `diskUsage.ts` | Disk-usage maps: decoding and the squarified treemap layout; each tab's map |
 | `src/lib/thumbs.ts`, `grid.ts` | Thumbnails for the tiles and rows on screen (asking, dropping, keeping them); the grid's tile sizes, columns and keys, and keeping its place as they change |
 | `src/components/Results.tsx`, `Search.tsx` | Text search (ripgrep) |
@@ -37,13 +41,25 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop, Properties |
 | `src-tauri/src/recycle.rs` | The Recycle Bin as a place: its items from the shell and their `$I` records, and emptying it ([docs/recycle-bin.md](docs/recycle-bin.md)) |
 | `src-tauri/src/compare.rs` | Compare panes down through subfolders and by contents, and what Sync copies |
+| `src-tauri/src/filediff.rs` | Compare two files: text side by side (Difftastic's structural diff, or line by line), pictures, and bytes |
 | `src-tauri/src/native_preview.rs`, `src/components/explorer/ShellPreview.tsx` | Windows' preview handlers (Office, fonts…) drawing over the preview pane, on a thread of their own |
+| `src-tauri/src/markdown.rs`, `jq.rs`, `sheet.rs`, `data_lens.rs`, `sql.rs`, `pe.rs`, `media.rs` | Glint's own previews: Markdown (comrak), JSON, YAML and TOML as a tree with jq filters (jaq, in a process of its own), Excel, OpenDocument and Parquet tables, CSV and SQLite, Query (SQL, read-only), programs and DLLs, and photo, video and music details |
+| `src-tauri/src/git.rs`, `repo.rs`, `src/lib/git.ts` | Git status in folders, the branch, `git:` filters and a changed file's changes, read with gitoxide (nothing written); a repository's card (onefetch, tokei) |
+| `src-tauri/src/term.rs`, `projects.rs`, `scripts.rs`, `src/lib/terminal.ts` | The terminal under the files (ConPTY through portable-pty, the folder each prompt reports), the Run menu (package.json, justfile, Cargo, uv) and script actions from the Scripts folder |
+| `src-tauri/src/codesearch.rs`, `doctext.rs`, `ocr.rs`, `meaning.rs` | Text mode's code patterns (ast-grep), documents (PDF, Office, OpenDocument, EPUB, read in worker processes), text in pictures (Windows' OCR) and meaning search (Model2Vec) |
+| `src-tauri/src/cleanup.rs`, `dedup.rs`, `convert.rs`, `batch_rename.rs` | Clean up (Czkawka's modes too), Find duplicates (hard links, block clones), Convert pictures (rimage) and batch rename |
+| `src-tauri/src/xray.rs`, `sign.rs`, `check.rs`, `defender.rs`, `locks.rs`, `timeline.rs` | The File X-Ray (checksums, streams, signatures), YARA-X and Kingfisher checks, Defender scans, what's locking a file (Restart Manager) and recent changes |
+| `src-tauri/src/share.rs`, `lan.rs` | Send to another PC (sendme) and Share on this network (dufs) |
+| `src-tauri/src/remote/` | Remote connections as read-only folders: S3 (signed requests) and WebDAV over HTTPS, SFTP through Windows' own `sftp.exe`, secrets in Credential Manager ([docs/remote.md](docs/remote.md)) |
+| `src-tauri/src/rules.rs`, `src/lib/rules.ts` | Folder rules: watching, telling when a file is complete, the actions, and the log with Undo |
 | `src-tauri/src/quick.rs`, `src/components/QuickSearch.tsx` | Quick search from anywhere: the shortcut, its window, the tray and starting with Windows |
 | `src-tauri/src/thumbs.rs` | Thumbnails from Windows' thumbnail cache (`IShellItemImageFactory`, `IThumbnailCache`) on worker threads, in a queue per tab |
-| `src-tauri/src/launch.rs`, `verbs.rs` | Folders from the command line and later launches (one copy runs at a time), and File Explorer's *Open in Glint* entries ([docs/explorer-integration.md](docs/explorer-integration.md)) |
-| `src-tauri/index/` | The opt-in instant-search service (NTFS MFT + USN journal) |
+| `src-tauri/src/watch.rs` | Live folders: notify watches the folders on screen |
+| `src-tauri/src/launch.rs`, `verbs.rs`, `access.rs` | Folders from the command line and later launches (one copy runs at a time), File Explorer's *Open in Glint* entries ([docs/explorer-integration.md](docs/explorer-integration.md)), and Get access for folders Windows keeps you out of |
+| `src-tauri/src/openers.rs`, `calc.rs`, `zoxide.rs`, `snap.rs` | Open in… (the editors and terminals found), the calculator in `Ctrl+K` (fend), folder history shared with zoxide, and Windows 11's snap layouts on the maximize button |
+| `src-tauri/index/`, `src-tauri/src/index.rs` | The opt-in instant-search service (NTFS MFT + USN journal): names, folder sizes, maps, what grew and what moved ([docs/instant-search.md](docs/instant-search.md)); turning it on and off |
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `pdu` executables |
-| `src-tauri/src/tools.rs`, `src/lib/tools.ts`, `src/components/ToolNeeded.tsx` | Every program Glint drives: the bundled ones, and optional ones installed on demand with winget or from their GitHub release (pinned by SHA-256); Settings → Tools, and the Install card a feature shows when its tool is missing |
+| `src-tauri/src/tools.rs`, `proc.rs`, `src/lib/tools.ts`, `src/components/ToolNeeded.tsx` | Every program Glint drives: the bundled ones, and optional ones installed on demand with winget or from their GitHub release (pinned by SHA-256) ([docs/tools.md](docs/tools.md)); finding and running them, a lane per tab; Settings → Tools, and the Install card a feature shows when its tool is missing |
 | `src/lib/updater.ts` | Finding and installing updates (tauri-plugin-updater) |
 | `scripts/` | `npm run release` and its helpers (update signatures, winget and Scoop manifests), `npm run notes` (a release's notes, by git-cliff from `cliff.toml`) and `npm run licenses` (`THIRD_PARTY_CRATES.md`, by cargo-about) ([docs/releasing.md](docs/releasing.md)) |
 
