@@ -5,7 +5,7 @@ use serde::Serialize;
 #[cfg(test)]
 use std::cmp::Ordering;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Serialize, Clone, Debug)]
@@ -472,6 +472,8 @@ pub fn entry_for_path(path: &str, dir_hint: bool) -> Entry {
 
 #[cfg(windows)]
 pub use win::{probe, read_dir, stat};
+#[cfg(windows)]
+pub(crate) use win::{io_error, wide};
 
 #[cfg(windows)]
 mod win {
@@ -796,13 +798,8 @@ pub fn create_numbered(parent: &str, name: &str, dir: bool) -> Result<String, St
     if crate::archive::is_read_only(parent) {
         return Err(READ_ONLY.into());
     }
-    let (stem, ext) = match name.rfind('.') {
-        Some(dot) if !dir && dot > 0 => name.split_at(dot),
-        _ => (name, ""),
-    };
     for n in 1..10_000 {
-        let candidate = if n == 1 { name.to_string() } else { format!("{stem} ({n}){ext}") };
-        let path = Path::new(parent).join(candidate);
+        let path = Path::new(parent).join(numbered(name, dir, n));
         let created = if dir {
             std::fs::create_dir(&path)
         } else {
@@ -812,6 +809,31 @@ pub fn create_numbered(parent: &str, name: &str, dir: bool) -> Result<String, St
             Ok(()) => return Ok(path.to_string_lossy().into_owned()),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("Couldn't find a free name".into())
+}
+
+/// `name`, or its `n`th form: "name (2).txt" (a folder's whole name is its stem).
+fn numbered(name: &str, dir: bool, n: u32) -> String {
+    if n == 1 {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if !dir && dot > 0 => name.split_at(dot),
+        _ => (name, ""),
+    };
+    format!("{stem} ({n}){ext}")
+}
+
+/// Moves `from` into `parent` as `name`, or as "name (2)" and on when that's taken: nothing's replaced.
+pub fn move_numbered(from: &Path, parent: &Path, name: &str, dir: bool) -> Result<PathBuf, String> {
+    for n in 1..10_000 {
+        let to = parent.join(numbered(name, dir, n));
+        match crate::batch_rename::move_no_replace(from, &to) {
+            Ok(()) => return Ok(to),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(file_error(e)),
         }
     }
     Err("Couldn't find a free name".into())

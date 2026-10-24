@@ -365,6 +365,27 @@ export interface Script {
 }
 
 export const listScripts = () => invoke<{ folder: string; scripts: Script[] }>("scripts_list");
+
+/** A send to another PC (share.rs): its ticket once sendme has read what's sent, or why it ended. */
+export type SendEvent = { kind: "ready"; ticket: string; size: string; qr: string } | { kind: "ended"; message: string };
+/** A receive: what's coming, how much is here, and where it went (or why it didn't). */
+export type ReceiveEvent = { kind: "getting"; files: number; size: string; bytes: number } | { kind: "progress"; bytes: number } | { kind: "done"; path: string } | { kind: "failed"; message: string };
+
+/** Offers `path` to another PC until `shareStop`; resolves to its id. */
+export function sendStart(path: string, onEvent: (event: SendEvent) => void) {
+    const channel = new Channel<SendEvent>();
+    channel.onmessage = onEvent;
+    return invoke<number>("send_start", { path, onEvent: channel });
+}
+
+/** Receives what a sendme ticket offers into `folder`; resolves to its id. */
+export function receiveStart(folder: string, ticket: string, onEvent: (event: ReceiveEvent) => void) {
+    const channel = new Channel<ReceiveEvent>();
+    channel.onmessage = onEvent;
+    return invoke<number>("receive_start", { folder, ticket, onEvent: channel });
+}
+
+export const shareStop = (id: number) => invoke("share_stop", { id });
 /** The Scripts folder, made (with a script to start from) the first time. */
 export const scriptsFolder = () => invoke<string>("scripts_folder");
 /** Opens a folder or a file in the editor or terminal `id`. */

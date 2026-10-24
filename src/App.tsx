@@ -25,6 +25,7 @@ import { AddressBar } from "./components/explorer/AddressBar";
 import { BatchRenameDialog } from "./components/explorer/BatchRenameDialog";
 import { CheckDialog } from "./components/explorer/CheckDialog";
 import { ConvertDialog } from "./components/explorer/ConvertDialog";
+import { ShareDialog, SharingButton } from "./components/explorer/ShareDialog";
 import { CleanupDialog } from "./components/explorer/CleanupDialog";
 import { CompareFilesDialog } from "./components/explorer/CompareFilesDialog";
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
@@ -403,6 +404,7 @@ function App() {
         <ModeSwitch mode={mode} onChange={setMode} />
         {mode === "files" ? <AddressBar /> : <div className="min-w-0 flex-1" />}
         <div className="flex shrink-0 items-center gap-0.5">
+          <SharingButton />
           {update && (
             <Button variant="ghost" size="sm" className="text-primary hover:text-primary" onClick={openAbout} title={`Version ${update.version} is available`}>
               {updating ? <Loader2 className="animate-spin" /> : <Sparkles />} Update
@@ -471,6 +473,7 @@ function App() {
       <HistoryDialog />
       <CheckDialog />
       <ConvertDialog />
+      <ShareDialog />
       <BatchRenameDialog />
       <XRayDialog />
       <ShortcutsDialog />

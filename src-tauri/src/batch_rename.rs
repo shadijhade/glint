@@ -44,17 +44,17 @@ pub async fn batch_rename(ops: Vec<RenamePair>) -> Result<BatchRenameResult, Str
 /// Renames without replacing anything at `to` (std's rename would): if something appeared there after
 /// the checks, the batch rolls back instead of overwriting it.
 #[cfg(windows)]
-fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
+pub(crate) fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    use crate::fsx::wide;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVE_FILE_FLAGS};
-    let wide = |p: &Path| p.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     let (from, to) = (wide(from), wide(to));
-    unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), MOVE_FILE_FLAGS(0)) }.map_err(io::Error::from)
+    // As a Win32 error, so a name that's taken is AlreadyExists.
+    unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), MOVE_FILE_FLAGS(0)) }.map_err(crate::fsx::io_error)
 }
 
 #[cfg(not(windows))]
-fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     if to.exists() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "already exists"));
     }

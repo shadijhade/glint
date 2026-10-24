@@ -8,7 +8,7 @@
 //! the session (256 MB of it), by path, size and date, so searching the same documents again reads
 //! none, and nothing of it is written to disk.
 
-use crate::jq::Job;
+use crate::proc::Job;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
