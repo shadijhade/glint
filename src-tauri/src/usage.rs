@@ -1,8 +1,8 @@
 //! Disk usage: a map of what fills a folder, its biggest files and folders a few levels down, like
 //! WizTree or WinDirStat draw. From the instant search index when it has the folder (one request,
-//! milliseconds), otherwise measured with the bundled dust.
+//! milliseconds), otherwise measured with the bundled pdu (parallel-disk-usage).
 
-use crate::fsx::{blocking, ms_since, stat};
+use crate::fsx::{blocking, ms_since, stat_sized};
 use crate::sizes::{self, Node};
 use crate::AppState;
 use shadui_index::proto::{GrowthSummary, UsageNode, NEW, NO_PARENT, WRITTEN};
@@ -15,7 +15,7 @@ use tauri::ipc::Response;
 use tauri::State;
 
 const ENGINE_INDEX: u32 = 0;
-const ENGINE_DUST: u32 = 1;
+const ENGINE_PDU: u32 = 1;
 /// A folder in an archive, mapped from the archive's own list of entries: this plus the archive's
 /// format code (2 a zip, 3 a 7z…).
 const ENGINE_ARCHIVE: u32 = 2;
@@ -58,8 +58,8 @@ fn index_usage(_: &str, _: u32, _: u32, _: Option<i64>) -> Indexed {
 
 /// Maps `path` down to `depth` levels with at most `max_items` items (the biggest), as one binary
 /// buffer (see `encode_map`); with `since` (Unix ms), what each item held at the index's daily mark
-/// closest to then comes along. Each tab maps in its own `lane`, so one pane's dust run doesn't stop
-/// the other's. Rejects with "cancelled" when a newer map in the lane, or Stop, ended its dust run.
+/// closest to then comes along. Each tab maps in its own `lane`, so one pane's pdu run doesn't stop
+/// the other's. Rejects with "cancelled" when a newer map in the lane, or Stop, ended its pdu run.
 #[tauri::command]
 pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, max_items: u32, lane: String, since: Option<f64>) -> Result<Response, String> {
     let started = Instant::now();
@@ -76,7 +76,7 @@ pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, ma
     let asked = path.clone();
     let too_old = match blocking(move || Ok(index_usage(&asked, depth, max_items, since))).await? {
         Indexed::Map(nodes, limited, growth) => {
-            // A dust run still going in this tab is for a map no longer wanted.
+            // A pdu run still going in this tab is for a map no longer wanted.
             slot.kill();
             let mut flags = if limited { LIMITED } else { 0 };
             if since.is_some() && growth.is_none() {
@@ -88,16 +88,18 @@ pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, ma
         Indexed::TooOld => SERVICE_TOO_OLD,
         Indexed::No => 0,
     };
-    let mut command = crate::proc::tool("dust")?;
-    // Files and folders, `depth` levels, the biggest `max_items`, apparent sizes in exact bytes.
+    let mut command = crate::proc::tool("pdu")?;
+    // Files and folders, `depth` levels below, apparent sizes in bytes; what's under a fifth of
+    // `max_items`' share of the whole is left out by pdu, the rest cut to the biggest `max_items` here.
+    let ratio = format!("{:.12}", 1.0 / (f64::from(max_items) * 5.0));
     command
-        .args(["-j", "-s", "-o", "b", "-P", "-d", &depth.to_string(), "-n", &max_items.to_string(), "--"])
+        .args(["--json-output", "--quantity", "apparent-size", "--max-depth", &(depth + 1).to_string(), "--min-ratio", &ratio, "--silent-errors", "--"])
         .arg(&path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|e| format!("Failed to start dust: {e}"))?;
-    let mut stdout = child.stdout.take().ok_or("Failed to open dust's output")?;
+    let mut child = command.spawn().map_err(|e| format!("Failed to start pdu: {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("Failed to open pdu's output")?;
     let pid = slot.replace(child);
     blocking(move || {
         let mut json = String::new();
@@ -105,60 +107,92 @@ pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, ma
         if slot.finish(pid).is_none() {
             return Err("cancelled".into());
         }
-        let mut nodes = dust_nodes(sizes::parse_tree(&json)?);
-        fill_in(&mut nodes);
-        let mut nodes: Vec<UsageNode> = nodes.into_iter().map(|(node, _)| node).collect();
-        // dust stops at `max_items`; short of it, nothing was left out.
-        let limited = nodes.len() > max_items as usize;
-        if !limited {
-            nodes = without_folder_entries(nodes, depth);
-        }
-        Ok(Response::new(encode_map(&path, &nodes, ms_since(started), ENGINE_DUST, too_old | if limited { LIMITED } else { 0 }, None)))
+        let mut nodes = biggest(pdu_nodes(sizes::parse_tree(&json)?, &path), max_items as usize);
+        let own = fill_in(&mut nodes);
+        let (nodes, limited) = without_folder_entries(nodes.into_iter().map(|(node, _)| node).collect(), &own, depth);
+        Ok(Response::new(encode_map(&path, &nodes, ms_since(started), ENGINE_PDU, too_old | if limited { LIMITED } else { 0 }, None)))
     })
     .await
 }
 
-/// Stops the tab's dust run (Stop, the map closed, or the tab closed).
+/// Stops the tab's pdu run (Stop, the map closed, or the tab closed).
 #[tauri::command]
 pub fn cancel_disk_usage(state: State<AppState>, lane: String) {
     state.usage.close(&lane);
 }
 
-/// dust's tree in the index's order: the folder first, then breadth first, each folder's items
-/// together and biggest first, empty ones left out; each with its full path. Only items with
-/// something below them are known to be folders yet (see `fill_in`).
-fn dust_nodes(root: Node) -> Vec<(UsageNode, String)> {
+/// pdu's tree in the index's order: the folder first, then breadth first, each folder's items
+/// together and biggest first, empty ones left out; each with its full path (pdu names what's in a
+/// folder by its own name, the top `top`). Only items with something below them are known to be
+/// folders yet (see `fill_in`).
+fn pdu_nodes(root: Node, top: &str) -> Vec<(UsageNode, String)> {
     let mut nodes = Vec::new();
-    let mut queue = VecDeque::from([(root, NO_PARENT)]);
-    while let Some((mut node, parent)) = queue.pop_front() {
+    let mut queue = VecDeque::from([(root, NO_PARENT, top.to_string())]);
+    while let Some((mut node, parent, path)) = queue.pop_front() {
         let mut children = std::mem::take(&mut node.children);
-        children.retain(|c| sizes::bytes(&c.size) > 0);
-        children.sort_by(|a, b| sizes::bytes(&b.size).cmp(&sizes::bytes(&a.size)).then_with(|| a.name.cmp(&b.name)));
-        let name = if parent == NO_PARENT { String::new() } else { Path::new(&node.name).file_name().map_or_else(|| node.name.clone(), |n| n.to_string_lossy().into_owned()) };
+        children.retain(|c| c.size > 0);
+        children.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.name.cmp(&b.name)));
+        let name = if parent == NO_PARENT { String::new() } else { node.name.clone() };
         let dir = parent == NO_PARENT || !children.is_empty();
         let at = nodes.len() as u32;
-        nodes.push((UsageNode { parent, name, dir, size: sizes::bytes(&node.size), modified: 0, attrs: 0 }, node.name));
-        queue.extend(children.into_iter().map(|c| (c, at)));
+        queue.extend(children.into_iter().map(|c| {
+            let below = Path::new(&path).join(&c.name).to_string_lossy().into_owned();
+            (c, at, below)
+        }));
+        nodes.push((UsageNode { parent, name, dir, size: node.size, modified: 0, attrs: 0 }, path));
     }
     nodes
 }
 
-/// dust counts each folder's own entry (4 KB on NTFS for any but the smallest) in its size. With
-/// nothing left out, a folder above the depth limit becomes the sum of what's in it, as Explorer's
-/// Properties and the index count it; otherwise every folder would show a sliver of "smaller items".
-/// Folders that then hold nothing go.
-fn without_folder_entries(mut nodes: Vec<UsageNode>, depth: u32) -> Vec<UsageNode> {
+/// The biggest `most` of `nodes` (a folder is at least as big as what's in it, so each one kept has
+/// its folder kept too), in their order. What's cut goes into its folder's smaller items.
+fn biggest(nodes: Vec<(UsageNode, String)>, most: usize) -> Vec<(UsageNode, String)> {
+    if nodes.len() <= most {
+        return nodes;
+    }
+    let mut order: Vec<usize> = (0..nodes.len()).collect();
+    order.sort_by(|&a, &b| nodes[b].0.size.cmp(&nodes[a].0.size).then(a.cmp(&b)));
+    let mut wanted = vec![false; nodes.len()];
+    for &i in order.iter().take(most) {
+        wanted[i] = true;
+    }
+    let mut place = vec![NO_PARENT; nodes.len()];
+    let mut kept = Vec::with_capacity(most);
+    for (i, (node, path)) in nodes.into_iter().enumerate() {
+        let parent = if i == 0 { NO_PARENT } else { place[node.parent as usize] };
+        if i == 0 || (wanted[i] && parent != NO_PARENT) {
+            place[i] = kept.len() as u32;
+            kept.push((UsageNode { parent, ..node }, path));
+        }
+    }
+    kept
+}
+
+/// pdu counts a folder's own entry in its size (`own`: its index of names, none for the smallest
+/// folders on NTFS, 4 KB and up for the rest, 18 MB for WinSxS). Taken out, a folder above the depth
+/// limit is what's in it plus what was left out of it (by pdu's cut or `biggest`), its "smaller
+/// items", as Explorer's Properties and the index count it; left in, folders would show smaller items
+/// that aren't there, most of the map for a folder of tiny files. Folders that then hold nothing go.
+/// Also says whether anything was left out.
+fn without_folder_entries(mut nodes: Vec<UsageNode>, own: &[u64], depth: u32) -> (Vec<UsageNode>, bool) {
     let mut level = vec![0u32; nodes.len()];
     for i in 1..nodes.len() {
         level[i] = level[nodes[i].parent as usize] + 1;
     }
+    // What's listed in each folder, as pdu counted it and as it's drawn.
+    let mut counted = vec![0u64; nodes.len()];
     let mut inside = vec![0u64; nodes.len()];
-    // Items come after their folder, so going backwards sums every folder after what's in it.
+    let mut left_out = false;
+    // Items come after their folder, so going backwards sees every folder after what's in it.
     for i in (0..nodes.len()).rev() {
+        let size = nodes[i].size;
         if nodes[i].dir && level[i] < depth {
-            nodes[i].size = inside[i];
+            let smaller = size.saturating_sub(own[i]).saturating_sub(counted[i]);
+            left_out |= smaller > 0;
+            nodes[i].size = inside[i] + smaller;
         }
         if i > 0 {
+            counted[nodes[i].parent as usize] += size;
             inside[nodes[i].parent as usize] += nodes[i].size;
         }
     }
@@ -172,34 +206,40 @@ fn without_folder_entries(mut nodes: Vec<UsageNode>, depth: u32) -> Vec<UsageNod
             kept.push(UsageNode { parent, ..node });
         }
     }
-    kept
+    (kept, left_out)
 }
 
 /// Reads each item's attributes and date (without opening it, so online-only files stay online),
-/// which also tells the folders dust shows without contents (at the depth limit, or with only small
-/// items) from files. Several threads, since a map can have thousands of items.
-fn fill_in(nodes: &mut [(UsageNode, String)]) {
+/// which also tells the folders pdu shows without contents (at the depth limit, or with only small
+/// items) from files; and gives each folder's own entry, which pdu counts in its size. Several
+/// threads, since a map can have thousands of items.
+fn fill_in(nodes: &mut [(UsageNode, String)]) -> Vec<u64> {
+    let mut own = vec![0u64; nodes.len()];
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
     let chunk = nodes.len().div_ceil(threads).max(256);
     std::thread::scope(|scope| {
-        for part in nodes.chunks_mut(chunk) {
+        for (part, own) in nodes.chunks_mut(chunk).zip(own.chunks_mut(chunk)) {
             scope.spawn(move || {
-                for (node, path) in part {
-                    if let Some(found) = stat(path) {
+                for ((node, path), own) in part.iter_mut().zip(own) {
+                    if let Some((found, size)) = stat_sized(path) {
                         node.dir |= found.dir;
                         node.attrs = found.attrs;
                         node.modified = found.modified;
+                        if found.dir {
+                            *own = size;
+                        }
                     }
                 }
             });
         }
     });
+    own
 }
 
 /// A map as bytes for the UI, laid out like a listing (`fsx::encode_listing`) so each array can be
 /// viewed in place as a typed array. All little-endian:
 ///   0: u32 count · 4: u32 path length (UTF-8 bytes) · 8: f64 milliseconds spent
-///   16: u32 engine (0 index, 1 dust, 2 plus an archive's format code for its list of entries: 2 a zip's, 3 a 7z's…) · 20: u32 flags (1: smaller items left out; 2: the index service
+///   16: u32 engine (0 index, 1 pdu, 2 plus an archive's format code for its list of entries: 2 a zip's, 3 a 7z's…) · 20: u32 flags (1: smaller items left out; 2: the index service
 ///   runs but is too old to map; 4: what grew comes along; 8: what grew was asked for, but the index
 ///   service is too old to say)
 ///   24, with flag 4: f64 since (the mark's Unix ms) · f64 oldest mark · f64 the drive's total then
@@ -263,10 +303,10 @@ mod tests {
             UsageNode { parent: NO_PARENT, name: String::new(), dir: true, size: 3 << 40, modified: 0, attrs: 0x16 },
             UsageNode { parent: 0, name: "é😀.mkv".into(), dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x20 },
         ];
-        let bytes = encode_map(r"D:\", &nodes, 2.5, ENGINE_DUST, LIMITED | SERVICE_TOO_OLD, None);
+        let bytes = encode_map(r"D:\", &nodes, 2.5, ENGINE_PDU, LIMITED | SERVICE_TOO_OLD, None);
         let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-        assert_eq!((u32_at(0), u32_at(4), f64_at(8), u32_at(16), u32_at(20)), (2, 3, 2.5, ENGINE_DUST, LIMITED | SERVICE_TOO_OLD));
+        assert_eq!((u32_at(0), u32_at(4), f64_at(8), u32_at(16), u32_at(20)), (2, 3, 2.5, ENGINE_PDU, LIMITED | SERVICE_TOO_OLD));
         assert_eq!((f64_at(24), f64_at(32)), ((3u64 << 40) as f64, (1u64 << 40) as f64));
         assert_eq!((f64_at(40), f64_at(48)), (0.0, 1_700_000_000_000.0));
         assert_eq!((u32_at(56), u32_at(60)), (0x16, 0x20));
@@ -288,13 +328,13 @@ mod tests {
     }
 
     #[test]
-    fn orders_dust_trees_like_the_index() {
-        let json = r#"{"size":"1000B","name":"C:\\x","children":[
-            {"size":"100B","name":"C:\\x\\small","children":[{"size":"100B","name":"C:\\x\\small\\a.txt","children":[]}]},
-            {"size":"0B","name":"C:\\x\\empty","children":[]},
-            {"size":"800B","name":"C:\\x\\big","children":[{"size":"500B","name":"C:\\x\\big\\deep","children":[]},{"size":"300B","name":"C:\\x\\big\\b.bin","children":[]}]},
-            {"size":"100B","name":"C:\\x\\c.log","children":[]}]}"#;
-        let nodes = dust_nodes(sizes::parse_tree(json).unwrap());
+    fn orders_pdu_trees_like_the_index() {
+        let json = r#"{"schema-version":"2026-04-02","pdu":"0.24.0","unit":"bytes","tree":{"name":"C:\\x","size":1000,"children":[
+            {"name":"small","size":100,"children":[{"name":"a.txt","size":100,"children":[]}]},
+            {"name":"empty","size":0,"children":[]},
+            {"name":"big","size":800,"children":[{"name":"deep","size":500,"children":[]},{"name":"b.bin","size":300,"children":[]}]},
+            {"name":"c.log","size":100,"children":[]}]}}"#;
+        let nodes = pdu_nodes(sizes::parse_tree(json).unwrap(), r"C:\x");
         let shape: Vec<_> = nodes.iter().map(|(n, path)| (n.parent, n.name.as_str(), n.dir, n.size, path.as_str())).collect();
         assert_eq!(
             shape,
@@ -308,16 +348,25 @@ mod tests {
                 (3, "a.txt", false, 100, r"C:\x\small\a.txt"),
             ]
         );
+        // The biggest 4, each with its folder; what's cut is the top folder's smaller items.
+        let kept = biggest(nodes.clone(), 4);
+        let shape: Vec<_> = kept.iter().map(|(n, _)| (n.parent, n.name.as_str())).collect();
+        assert_eq!(shape, [(NO_PARENT, ""), (0, "big"), (1, "deep"), (1, "b.bin")]);
+        let (kept, left_out) = without_folder_entries(kept.into_iter().map(|(n, _)| n).collect(), &[0; 4], 2);
+        assert_eq!((kept[0].size, kept[1].size, left_out), (1000, 800, true));
+        let all = biggest(nodes.clone(), 100);
+        assert_eq!(all.len(), nodes.len());
+        assert!(!without_folder_entries(all.into_iter().map(|(n, _)| n).collect(), &[0; 7], 2).1);
     }
 
     #[test]
-    fn leaves_out_dusts_folder_entries() {
+    fn leaves_out_folder_entries() {
         let node = |parent, name: &str, dir, size| UsageNode { parent, name: name.into(), dir, size, modified: 0, attrs: 0 };
-        // Two levels of C:\x as dust counts them: x's own 4 KB entry, sub (its entry and a.txt), deep (its
-        // entry and inner, which is at the depth limit: its entry and 4 bytes below), empty (only its
-        // entry) and b.bin.
+        // Two levels of C:\x as pdu counts them, with each folder's own 4 KB entry: sub (its entry and
+        // a.txt), deep (its entry and inner, which is at the depth limit: its entry and 4 bytes below),
+        // empty (only its entry) and b.bin.
         let nodes = vec![
-            node(NO_PARENT, "", true, 20788),
+            node(NO_PARENT, "", true, 20784),
             node(0, "sub", true, 4196),
             node(0, "deep", true, 8196),
             node(0, "empty", true, 4096),
@@ -325,25 +374,39 @@ mod tests {
             node(1, "a.txt", false, 100),
             node(2, "inner", true, 4100),
         ];
-        let fixed = without_folder_entries(nodes, 2);
+        let own = [4096, 4096, 4096, 4096, 0, 0, 4096];
+        let (fixed, left_out) = without_folder_entries(nodes.clone(), &own, 2);
         let shape: Vec<_> = fixed.iter().map(|n| (n.parent, n.name.as_str(), n.size)).collect();
-        // Folders above the limit are what's in them; inner keeps dust's count, as nothing below it is known.
-        assert_eq!(shape, [(NO_PARENT, "", 4400), (0, "sub", 100), (0, "deep", 4100), (0, "b.bin", 200), (1, "a.txt", 100), (2, "inner", 4100)]);
+        // Folders above the limit are what's in them; inner keeps its count, as nothing below it is known.
+        let expected = vec![(NO_PARENT, "", 4400), (0, "sub", 100), (0, "deep", 4100), (0, "b.bin", 200), (1, "a.txt", 100), (2, "inner", 4100)];
+        assert_eq!((shape, left_out), (expected, false));
+        // 50 bytes in sub that pdu left out (under its cut) are sub's smaller items, and count above it.
+        let mut short = nodes;
+        short[0].size += 50;
+        short[1].size += 50;
+        let (fixed, left_out) = without_folder_entries(short, &own, 2);
+        assert_eq!((fixed[0].size, fixed[1].size, fixed[4].name.as_str(), fixed[4].size, left_out), (4450, 150, "a.txt", 100, true));
     }
 
     #[test]
-    fn reads_what_dust_leaves_out() {
+    fn reads_what_pdu_leaves_out() {
         let dir = std::env::temp_dir().join(format!("shadui-usage-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("a.txt"), b"hello").unwrap();
         let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
         let node = |parent, dir| UsageNode { parent, name: String::new(), dir, size: 5, modified: 0, attrs: 0 };
-        // dust shows a folder at its depth limit with no children: only reading it says it's a folder.
+        // pdu shows a folder at its depth limit with no children: only reading it says it's a folder.
         let mut nodes = vec![(node(NO_PARENT, true), path("")), (node(0, false), path("sub")), (node(0, false), path("a.txt")), (node(0, false), path("gone"))];
-        fill_in(&mut nodes);
+        let own = fill_in(&mut nodes);
         assert_eq!(nodes.iter().map(|(n, _)| n.dir).collect::<Vec<_>>(), [true, true, false, false]);
         assert!(nodes[2].0.modified > 1_600_000_000_000);
-        assert_eq!(nodes[3].0.modified, 0);
+        assert_eq!((nodes[3].0.modified, own[2], own[3]), (0, 0, 0));
+        // A folder's own entry, as pdu reads it (on NTFS 96 KB for these 300 names, none for a few).
+        for i in 0..300 {
+            std::fs::write(dir.join("sub").join(format!("a file with a longish name {i}.txt")), b"x").unwrap();
+        }
+        let own = fill_in(&mut nodes);
+        assert_eq!(own[1], std::fs::symlink_metadata(dir.join("sub")).unwrap().len());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -458,7 +458,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     onClick={() => toggleUsage(tab)}
                     disabled={!inFolder || find}
                     aria-pressed={mapped}
-                    title={mapped ? "Back to the file list" : "Disk usage: a map of what fills this folder, from the instant search index when it has it, otherwise measured with dust"}
+                    title={mapped ? "Back to the file list" : "Disk usage: a map of what fills this folder, from the instant search index when it has it, otherwise measured with pdu"}
                     className={cn(mapped && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary")}
                 >
                     <LayoutDashboard /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Disk usage</span>
@@ -468,7 +468,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     size="sm"
                     onClick={sizing ? stopSizes : calcSizes}
                     disabled={!inFolder || find}
-                    title={sizing ? "Stop calculating" : "Size every folder here: from the instant search index when it has them, otherwise measured with dust"}
+                    title={sizing ? "Stop calculating" : "Size every folder here: from the instant search index when it has them, otherwise measured with pdu"}
                 >
                     {sizing ? <Loader2 className="animate-spin" /> : <HardDrive />} <span data-fold="2" className={cn(fold >= 2 && "sr-only")}>{sizing ? "Stop" : "Folder sizes"}</span>
                 </Button>

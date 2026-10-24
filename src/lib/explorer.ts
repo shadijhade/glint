@@ -94,13 +94,13 @@ export interface Wider {
     skipNothing?: boolean;
 }
 
-/** Subfolder sizes for one folder, from the index or dust. */
+/** Subfolder sizes for one folder, from the index or pdu. */
 export interface SizeRun {
     sizes: Map<string, number>;
     total: number;
     elapsed: number;
     running: boolean;
-    /** The index or dust, or the archive's format for a folder in one (its sizes come with its listing). */
+    /** The index or pdu, or the archive's format for a folder in one (its sizes come with its listing). */
     engine: SizeEngine;
     /** The tab measuring it, so Stop stops the right run. */
     lane: string;
@@ -1426,7 +1426,7 @@ export function clearFind() {
     if (find) reload(tab);
 }
 
-/** Sizes of every subfolder of the open folder: from the index when it has the folder, else with dust. */
+/** Sizes of every subfolder of the open folder: from the index when it has the folder, else with pdu. */
 export const calcSizes = () => sizeFolder(activeTabId(), false);
 
 /** As a folder opens: from the index only, and quietly nothing when it can't answer. */
@@ -1441,7 +1441,7 @@ async function sizeFolder(tab: string, auto: boolean) {
         set({ sizes: run ? { ...rest, [path]: run } : rest });
     };
     // The index answers in a millisecond or two: no "calculating…" flash for it.
-    if (!auto) save({ sizes: previous?.sizes ?? new Map(), total: previous?.total ?? 0, elapsed: previous?.elapsed ?? 0, running: true, engine: previous?.engine ?? "dust", lane: tab });
+    if (!auto) save({ sizes: previous?.sizes ?? new Map(), total: previous?.total ?? 0, elapsed: previous?.elapsed ?? 0, running: true, engine: previous?.engine ?? "pdu", lane: tab });
     try {
         const result = await folderSizes(path, tab, auto);
         save({ sizes: new Map(result.sizes), total: result.total, elapsed: result.elapsed, running: false, engine: result.engine, lane: tab });

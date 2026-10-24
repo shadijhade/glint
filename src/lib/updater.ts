@@ -120,7 +120,7 @@ export async function installUpdate() {
         if (operationsRunning()) toast.loading("Installing once the file operation finishes…", { id });
         await operationsDone();
         toast.loading(`Installing version ${version}…`, { id });
-        // The installer replaces rg, fd and dust too, which it can't while one of them is running.
+        // The installer replaces rg, fd and pdu too, which it can't while one of them is running.
         await stopTools().catch(() => {});
         await update.install(); // on Windows the app exits here, and the installer reopens it
     } catch (e) {

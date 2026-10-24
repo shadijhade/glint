@@ -44,7 +44,7 @@ const wrong = Object.entries(versions).filter(([, v]) => v !== version);
 if (wrong.length) fail(`The versions differ:\n${Object.entries(versions).map(([file, v]) => `  ${file}: ${v}`).join("\n")}`);
 const changes = run("git", ["status", "--porcelain", "--untracked-files=no"]).stdout.trimEnd();
 if (changes && !allowDirty) {
-    const tools = changes.includes("src-tauri/binaries/") ? "\n(A signed build that was cut short leaves rg, fd and dust signed: git checkout -- src-tauri/binaries)" : "";
+    const tools = changes.includes("src-tauri/binaries/") ? "\n(A signed build that was cut short leaves rg, fd and pdu signed: git checkout -- src-tauri/binaries)" : "";
     fail(`Commit your changes first, so the release matches a commit:\n${changes}${tools}`);
 }
 const commit = run("git", ["rev-parse", "HEAD"]).stdout.trim();
@@ -113,7 +113,7 @@ async function artifactSigning(endpoint, account, profile) {
 }
 
 // 4. Build. Tauri signs every bundled executable, then the installer, then makes the update signature.
-// It signs rg, fd and dust where they are, in src-tauri/binaries, which keeps the official files: the
+// It signs rg, fd and pdu where they are, in src-tauri/binaries, which keeps the official files: the
 // signed copies only go into the installer.
 const cli = join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
 const tools = join(root, "src-tauri", "binaries");

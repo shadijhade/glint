@@ -182,8 +182,8 @@ export const quickHide = () => invoke("quick_hide");
 /** Starts Glint in the tray when this user signs in, or stops doing so. */
 export const setStartWithWindows = (enabled: boolean) => invoke("set_start_with_windows", { enabled });
 
-/** Who measured a folder: the index, dust, or (in an archive) the archive's own list of entries, by its format. */
-export type SizeEngine = "index" | "dust" | ArchiveFormat;
+/** Who measured a folder: the index, pdu, or (in an archive) the archive's own list of entries, by its format. */
+export type SizeEngine = "index" | "pdu" | ArchiveFormat;
 
 export interface FolderSizes {
     path: string;
@@ -195,7 +195,7 @@ export interface FolderSizes {
 }
 
 /**
- * Sizes of every subfolder: from the index when it has the folder, else calculated by dust (unless
+ * Sizes of every subfolder: from the index when it has the folder, else calculated by pdu (unless
  * `indexOnly`, which rejects instead). Rejects with "cancelled" when superseded in its `lane` (the
  * tab asking) or stopped.
  */
@@ -204,7 +204,7 @@ export const cancelFolderSizes = (lane: string) => invoke("cancel_folder_sizes",
 
 /**
  * A disk-usage map of `path`: its biggest files and folders (at most `maxItems`), `depth` levels down,
- * from the index when it has the folder, else measured by dust. Each tab maps in its own `lane`;
+ * from the index when it has the folder, else measured by pdu. Each tab maps in its own `lane`;
  * rejects with "cancelled" when superseded there or stopped.
  */
 /** A map of `path`; `since` (ms) also asks what each item held at the index's daily mark closest to then. */
@@ -235,7 +235,7 @@ export const thumbnail = (request: ThumbRequest) => invoke<ArrayBuffer>("thumbna
 /** Drops a tab's thumbnail requests up to number `upTo`: for `paths`, or all of them (null). */
 export const cancelThumbnails = (lane: string, paths: string[] | null, upTo: number) => invoke("cancel_thumbnails", { lane, paths, upTo });
 
-/** Stops every running rg, fd and dust, in every tab (before an update replaces them). */
+/** Stops every running rg, fd and pdu, in every tab (before an update replaces them). */
 export const stopTools = () => invoke("stop_tools");
 
 export type FileOp =
@@ -512,7 +512,7 @@ export interface CleanupReport {
     /** Biggest first (empty folders: by path). */
     items: CleanupItem[];
     total: number;
-    /** Who found and sized them: "index", "fd + dust", "index + fd"… */
+    /** Who found and sized them: "index", "fd + pdu", "index + fd"… */
     engine: string;
     elapsed: number;
     /** How many more were found than listed (the biggest are). */
