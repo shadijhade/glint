@@ -85,6 +85,7 @@ import {
     TextSearch,
     Trash2,
     Undo2,
+    Wand2,
     Wifi,
     X,
     ZoomIn,
@@ -205,6 +206,7 @@ import { type Command, CommandPalette } from "./CommandPalette";
 import { checkForSecrets, checkWithYara, secretsCheckFirst } from "./CheckDialog";
 import { offerOnNetwork, offerToPC } from "./ShareDialog";
 import { addRemote, editRemote, removeRemote } from "./RemoteDialog";
+import { openRules } from "./RulesDialog";
 import { openCleanup } from "./CleanupDialog";
 import { compareFiles } from "./CompareFilesDialog";
 import { canConvert, convertPictures } from "./ConvertDialog";
@@ -457,6 +459,7 @@ function folderMenu(
         !inArchive && !shut && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(folder) },
         !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
         !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
+        !inArchive && !shut && isFolderPath(folder) && { label: "A rule for this folder…", icon: Wand2, onSelect: () => openRules(folder) },
         !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
         !inArchive && !shut && isFolderPath(folder) && { label: current ? "Send this folder to another PC…" : "Send to another PC…", icon: Send, onSelect: () => offerToPC(folder) },
         !inArchive && !shut && isFolderPath(folder) && { label: current ? "Share this folder on this network…" : "Share on this network…", icon: Wifi, onSelect: () => offerOnNetwork(folder) },
@@ -796,6 +799,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
             action("shortcuts", "Keyboard shortcuts", Keyboard, openShortcuts, "F1"),
             action("add-remote", "Add a remote connection: an S3 bucket, a WebDAV or an SFTP server", PlugZap, addRemote),
+            action("rules", "Folder rules: sort out what comes into a folder, and what they did", Wand2, () => openRules()),
+            writable && !shut && !t.find && action("rule-here", "A rule for this folder: move, rename or clear out what comes in", Wand2, () => openRules(t.path)),
         ];
         return [...folders, ...actions.filter((a): a is Command => !!a)];
     };

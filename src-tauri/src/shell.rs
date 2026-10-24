@@ -119,6 +119,11 @@ pub(crate) fn recycle(owner: isize, paths: Vec<String>) -> Result<Performed, Str
     imp::file_op(owner, FileOp::Delete { paths, permanent: false, confirm: false })
 }
 
+/// Puts items back from the Recycle Bin, with no window to ask from (a folder rule's Undo).
+pub(crate) fn restore(items: Vec<Back>) -> Result<Performed, String> {
+    imp::file_op(0, FileOp::Restore { items })
+}
+
 /// The files on the clipboard (copied or cut), if any; what extracted copies may not be deleted for.
 pub fn clipboard_paths() -> Vec<String> {
     imp::clipboard_files(0).ok().flatten().map(|files| files.paths).unwrap_or_default()
