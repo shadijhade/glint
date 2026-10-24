@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
-import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, withDetails } from "./entries";
+import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, withDetails } from "./entries";
 import {
     archiveCompress,
     archiveExtract,
@@ -52,7 +52,8 @@ import {
 } from "./fs";
 import { formatCount, plural } from "./format";
 import { zoomTiles } from "./grid";
-import { baseName, crumbs, isFolderPath, isRecycleBin, isRoot, joinPath, parentPath, RECYCLE_BIN, samePath, THIS_PC } from "./paths";
+import { baseName, crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC } from "./paths";
+import { initRemotes, remoteName } from "./remotes";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
 import { shareVisit } from "./zoxide";
 import { dropThumbnails } from "./thumbs";
@@ -237,8 +238,16 @@ export const currentPath = () => tabState()?.path ?? THIS_PC;
 /** The archive a tab's folder is in (the active tab's by default), from its listing; undefined for a folder on disk. */
 export const archiveOf = (tab = activeTabId()): InArchive | undefined => tabState(tab)?.listing?.archive;
 
-/** Archives open read-only: says so when something would change one (once at a time). */
-export function readOnlyNotice() {
+/** Whether a tab (the active tab by default) shows a remote connection's folder: read-only, its files downloaded to be read. */
+export const remoteOf = (tab = activeTabId()) => isRemotePath(tabState(tab)?.path ?? THIS_PC);
+
+/** Archives and remotes open read-only: says so when something would change one (once at a time). */
+export function readOnlyNotice(tab = activeTabId()) {
+    if (remoteOf(tab))
+        return void toast.message("Remote connections are read-only here", {
+            id: "read-only",
+            description: "Glint opens them to look and to copy out. To change what's on one, use its own app or website.",
+        });
     toast.message("Archives are read-only", {
         id: "read-only",
         description: "Glint opens archives to look inside and copy out. To change what's in one, copy it out first.",
@@ -268,6 +277,11 @@ export function closedNotice(tab = activeTabId()) {
         description: `${t?.listing?.fromIndex ? "Glint shows what's in it from instant search, but your" : "Your"} account may not open or change anything there.${canGet ? " Get access to open it." : ""}`,
         action: canGet ? { label: "Get access", onClick: () => void getAccess(tab) } : undefined,
     });
+}
+
+/** A remote connection removed: the tabs showing its folders go to This PC. */
+export function leaveRemote(id: string) {
+    for (const t of Object.values(get().tabs)) if (remoteIdOf(t.path).toLowerCase() === id) void navigate(THIS_PC, { tab: t.id });
 }
 
 /** Changes a tab's state: the active tab's unless `tab` says otherwise. */
@@ -303,6 +317,7 @@ export function zoomGrid(steps: number) {
 /** "This PC", "Recycle Bin", a drive's name, or the folder's. */
 export function tabName(path: string, drives: Drive[]) {
     if (path === THIS_PC) return "This PC";
+    if (isRemotePath(path) && isRoot(path)) return remoteName(path);
     if (isRecycleBin(path)) return "Recycle Bin";
     if (!isRoot(path)) return baseName(path);
     const drive = drives.find((d) => samePath(d.path, path));
@@ -635,6 +650,8 @@ let restored = false;
 export const initExplorer = () => (initialized ??= init());
 
 async function init() {
+    // Rust has the remote connections before a tab on one opens.
+    await initRemotes();
     // Drives fill in when they answer; a sleeping network drive mustn't hold up the first folder.
     refreshDrives();
     // Asked first (briefly), so the first folder can already show its sizes from the index.
@@ -1058,8 +1075,8 @@ export async function copyToOtherPane(move: boolean, paths = [...(tabState()?.se
     if (!target) {
         const other = get().panes[1 - get().activePane]?.active;
         toast.message(
-            other && archiveOf(other)
-                ? "Archives are read-only: open a folder in the other pane to copy into"
+            other && (archiveOf(other) || remoteOf(other))
+                ? `${remoteOf(other) ? "Remote connections" : "Archives"} are read-only: open a folder in the other pane to copy into`
                 : other && closedOf(other)
                   ? "Windows keeps the other pane's folder closed: open another one there to copy into"
                   : "Open a folder in the other pane first"
@@ -1069,8 +1086,8 @@ export async function copyToOtherPane(move: boolean, paths = [...(tabState()?.se
     const tab = activeTabId();
     if (move && closedOf(tab)) return closedNotice(tab);
     if (recycleBinOf(tab)) return recycledNotice();
-    if (archiveOf(tab)) {
-        if (move) readOnlyNotice();
+    if (archiveOf(tab) || remoteOf(tab)) {
+        if (move) readOnlyNotice(tab);
         else copyOutOfArchive(paths, target);
         return;
     }
@@ -1143,13 +1160,16 @@ export async function syncInto(items: { path: string; folder: string }[]) {
 // Archives: what's copied out of one is extracted first, then copied by Windows' file engine.
 
 /**
- * Extracts `paths` (in an archive) for Windows' file engine to copy, with progress once it takes a
- * moment and a Stop button, then runs `then` on the copies. Says which files couldn't be extracted.
- * Resolves undefined when it was stopped or failed (and said so).
+ * Extracts `paths` (in an archive) for Windows' file engine to copy, or downloads them (on a remote),
+ * with progress once it takes a moment and a Stop button, then runs `then` on the copies. Says which
+ * files couldn't be had. Resolves undefined when it was stopped or failed (and said so).
  */
-function extracting<T>(paths: string[], purpose: "copy" | "out", then: (staged: Staged) => Promise<T>): Promise<T | undefined> {
-    const what = plural(paths.length, "item");
-    return staging({ doing: `Extracting ${what} from the archive`, failed: `Couldn't extract ${what}`, skipped: "extracted" }, (lane, p) => archiveStage(paths, purpose, lane, p), then);
+function extracting<T>(paths: string[], purpose: "copy" | "out" | "open", then: (staged: Staged) => Promise<T>): Promise<T | undefined> {
+    const what = paths.length === 1 ? `“${baseName(paths[0])}”` : plural(paths.length, "item");
+    const say = paths.some(isRemotePath)
+        ? { doing: `Downloading ${what}`, failed: `Couldn't download ${what}`, skipped: "downloaded" }
+        : { doing: `Extracting ${what} from the archive`, failed: `Couldn't extract ${what}`, skipped: "extracted" };
+    return staging(say, (lane, p) => archiveStage(paths, purpose, lane, p), then);
 }
 
 /**
@@ -1293,6 +1313,11 @@ export async function dragFromArchive(paths: string[]) {
 
 /** Opens a file in an archive with its app: a read-only temp copy of it, so changes can't be lost silently. */
 async function openFromArchive(entry: FileEntry, open: (path: string) => Promise<unknown> = openItem) {
+    // A remote's file is downloaded (with how far, and Stop), read-only, then opened.
+    if (isRemote(entry))
+        return void extracting([entry.path], "open", async (staged) => {
+            await open(staged.paths[0]).catch((e) => toast.error(`Couldn't open “${entry.name}”`, { description: String(e) }));
+        });
     try {
         const copy = await busy(`Extracting “${entry.name}”…`, archiveExtract(entry.path, "open"));
         await open(copy);
@@ -1726,7 +1751,7 @@ export async function copyToClipboard(paths: string[], cut: boolean) {
     if (!paths.length) return;
     if (cut && closedOf()) return closedNotice();
     if (recycleBinOf()) return recycledNotice();
-    if (archiveOf()) {
+    if (archiveOf() || remoteOf()) {
         if (cut) return readOnlyNotice();
         // Extracted first: the clipboard carries files. Pasting (here or in File Explorer) copies them.
         return extracting(paths, "out", async (staged) => {
@@ -1750,6 +1775,7 @@ export async function copyToClipboard(paths: string[], cut: boolean) {
 
 /** Pastes files copied or cut here or in File Explorer into `dest` (default: the open folder). */
 export async function paste(dest = currentPath()) {
+    if (isRemotePath(dest)) return readOnlyNotice();
     if (!isFolderPath(dest)) return;
     const tab = activeTabId();
     if (samePath(dest, tabState(tab)?.path ?? THIS_PC) && archiveOf(tab)) return readOnlyNotice();
@@ -1805,6 +1831,7 @@ async function pasteAsFile(dest: string, tab: string) {
 
 /** Files dropped in from outside: moved within a drive, copied across drives, as Explorer does; on the Recycle Bin, recycled. */
 export async function dropFiles(paths: string[], dest: string) {
+    if (isRemotePath(dest)) return readOnlyNotice();
     if (isRecycleBin(dest)) {
         const what = plural(paths.length, "item");
         try {
@@ -1839,7 +1866,7 @@ export async function dropFiles(paths: string[], dest: string) {
 export async function deletePaths(paths: string[], permanent: boolean, next?: string) {
     if (!paths.length) return;
     const tab = activeTabId();
-    if (archiveOf(tab)) return readOnlyNotice();
+    if (archiveOf(tab) || remoteOf(tab)) return readOnlyNotice(tab);
     if (closedOf(tab)) return closedNotice(tab);
     try {
         const confirm = useStore.getState().settings.confirmDelete;

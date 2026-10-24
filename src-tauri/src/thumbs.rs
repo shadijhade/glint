@@ -385,6 +385,17 @@ pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modifi
     }
     // A file in an archive: the thumbnail is made of a temp copy of it (extracted once, within a
     // budget); one that can't be extracted has none.
+    // A picture on a remote: made of a download, where its connection allows (until it does, asked
+    // again next time); nothing else there has one.
+    if crate::remote::is_remote(&path) {
+        if !crate::remote::thumbnails_allowed(&path) {
+            return Ok(Response::new(Thumb::none(false).encode(FROM_CACHE)));
+        }
+        return match crate::remote::thumbnail_source(&path, bytes as u64).await {
+            Some(copy) => Box::pin(thumbnail(state, copy, size, modified, bytes, cached_only, lane, seq)).await,
+            None => Ok(Response::new(Thumb::none(true).encode(FROM_CACHE))),
+        };
+    }
     let asked = path.clone();
     let path = match crate::fsx::blocking(move || Ok(crate::archive::thumbnail_source(&asked))).await? {
         None => path,

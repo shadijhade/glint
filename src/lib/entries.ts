@@ -12,6 +12,8 @@ export const ATTR = {
     offline: 0x1000,
     /** In an archive: password-protected. */
     encrypted: 0x4000,
+    /** On a remote connection (with `inArchive`, as its files are read through copies too): see remote/. */
+    remote: 0x04000000,
     recallOnOpen: 0x40000,
     recallOnDataAccess: 0x400000,
     /** In the Recycle Bin: its path is its file there, its `origin` the folder it was deleted from (see recycle.rs). */
@@ -78,6 +80,8 @@ export interface Listing {
     archive?: InArchive;
     /** Listed from instant search's index: Windows keeps the folder closed to this account, so it's read-only and nothing in it opens. */
     fromIndex?: boolean;
+    /** A folder on a remote connection: read-only, its files downloaded to be read. */
+    remote?: boolean;
 }
 
 const utf8 = new TextDecoder();
@@ -113,6 +117,7 @@ export function decodeListing(buffer: ArrayBuffer): Listing {
     }
     const listing: Listing = { path, entries, elapsed };
     if (view.getUint32(28, true) & 2) listing.fromIndex = true;
+    if (view.getUint32(28, true) & 8) listing.remote = true;
     const archiveUnits = view.getUint32(16, true);
     if (archiveUnits) {
         const flags = view.getUint32(28, true);
@@ -168,13 +173,17 @@ export function decodeItems(buffer: ArrayBuffer): { location: string; entries: F
 }
 
 /** An archive file (on disk or in another archive) Enter opens like a folder: a zip, a 7z… */
-export const isArchiveFile = (e: FileEntry) => !e.dir && BROWSED.includes(e.ext);
+/** (On a remote it's a file like any: Glint doesn't look inside archives there.) */
+export const isArchiveFile = (e: FileEntry) => !e.dir && (e.attrs & ATTR.remote) === 0 && BROWSED.includes(e.ext);
 
 /** A file that's an archive by another name (a .docx, a .jar…): Enter opens it in its app, "Open as archive" looks inside. */
-export const isBrowsable = (e: FileEntry) => !e.dir && ON_REQUEST.includes(e.ext);
+export const isBrowsable = (e: FileEntry) => !e.dir && (e.attrs & ATTR.remote) === 0 && ON_REQUEST.includes(e.ext);
 
 /** Something inside an archive: read-only, and extracted to be opened or copied. */
 export const isArchived = (e: FileEntry) => (e.attrs & ATTR.inArchive) !== 0;
+
+/** On a remote connection: read-only, and downloaded to be opened, previewed or copied (it's `isArchived` too). */
+export const isRemote = (e: FileEntry) => (e.attrs & ATTR.remote) !== 0;
 
 /** Listed from the index, in a folder Windows keeps closed to this account: read-only, and it can't be opened. */
 export const isClosed = (e: FileEntry) => (e.attrs & ATTR.closed) !== 0;

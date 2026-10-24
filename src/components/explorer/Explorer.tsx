@@ -20,6 +20,7 @@ import {
     ChevronRight,
     ClipboardCopy,
     ClipboardPaste,
+    Cloud,
     Code,
     Columns2,
     Copy,
@@ -63,6 +64,7 @@ import {
     Pin,
     PinOff,
     Play,
+    PlugZap,
     Plus,
     RotateCcw,
     RotateCw,
@@ -72,6 +74,7 @@ import {
     Search,
     SearchX,
     Send,
+    Server,
     Settings as SettingsIcon,
     ShieldCheck,
     SlidersHorizontal,
@@ -91,7 +94,7 @@ import { useShallow } from "zustand/react/shallow";
 import { SINGLE_FILE } from "@/lib/archives";
 import { scanWithDefender } from "@/lib/defender";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, isRecycled, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, isRecycled, isRemote, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     archiveOf,
     calcSizes,
@@ -138,6 +141,7 @@ import {
     purgeRecycled,
     readOnlyNotice,
     recycleBinOf,
+    remoteOf,
     recycledNotice,
     refresh,
     refreshDrives,
@@ -179,7 +183,8 @@ import { driveName, openIn, openItem, openTerminal, openWith, showProperties, st
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, inArchivePath, isFolderPath, isRecycleBin, joinPath, parentPath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { remoteOfPath, remotePath } from "@/lib/remotes";
 import { useStore } from "@/lib/store";
 import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
 import { openInItems, refreshOpeners, useOpeners } from "@/lib/openers";
@@ -199,6 +204,7 @@ import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
 import { checkForSecrets, checkWithYara, secretsCheckFirst } from "./CheckDialog";
 import { offerOnNetwork, offerToPC } from "./ShareDialog";
+import { addRemote, editRemote, removeRemote } from "./RemoteDialog";
 import { openCleanup } from "./CleanupDialog";
 import { compareFiles } from "./CompareFilesDialog";
 import { canConvert, convertPictures } from "./ConvertDialog";
@@ -233,6 +239,8 @@ const properties = (path: string) => showProperties(path).catch(report("Couldn't
 const revealArchive = (archive: InArchive) => revealItemInDir(archive.outer).catch(report("Couldn't open File Explorer"));
 /** A menu's last line in an archive: why the commands that change things are greyed out. */
 const READ_ONLY_NOTE = { label: "Read-only: inside an archive", icon: PencilOff, disabled: true, onSelect: () => {} };
+/** On a remote connection: why nothing changes. */
+const REMOTE_NOTE = { label: "Read-only: on a remote connection", icon: PencilOff, disabled: true, onSelect: () => {} };
 /** In a folder listed from the index: why nothing opens or changes. */
 const CLOSED_NOTE = { label: "Read-only: Windows keeps this folder closed", icon: FolderLock, disabled: true, onSelect: () => {} };
 /** Undo, saying what it takes back (the background menu, the palette). */
@@ -387,6 +395,25 @@ function folderMenu(
     view?: { find: boolean; selectAll: () => void; archive?: InArchive; noAccess?: NoAccess | null; fromIndex?: boolean; tab?: string; restoreShown?: { label: string; run: () => void } }
 ): MenuItem[] {
     if (folder === THIS_PC) return [{ label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refreshDrives }];
+    // A remote's folder: read-only; its connection is changed from its top.
+    if (isRemotePath(folder)) {
+        const remote = isRoot(folder) ? remoteOfPath(folder) : undefined;
+        const pinned = ctx.pinned.includes(folder);
+        return [
+            !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
+            !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
+            current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", onSelect: view.selectAll },
+            current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
+            "separator",
+            { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
+            !remote && { label: pinned ? "Unpin from sidebar" : "Pin to sidebar", icon: pinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
+            !!remote && "separator",
+            !!remote && { label: "Edit the connection…", icon: PlugZap, onSelect: () => editRemote(remote) },
+            !!remote && { label: "Remove the connection…", icon: Trash2, onSelect: () => void removeRemote(remote) },
+            "separator",
+            REMOTE_NOTE,
+        ];
+    }
     // The Recycle Bin: its items go back, or for good.
     if (isRecycleBin(folder))
         return [
@@ -578,6 +605,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         // The Recycle Bin is a place, not a folder: what's done to folders isn't done to it.
         const bin = isRecycleBin(t.path) && !t.find;
         const inFolder = isFolderPath(t.path);
+        // A remote's folder: read-only, its files downloaded to be read.
+        const remote = isRemotePath(t.path);
         const seen = new Set<string>();
         const folders: Command[] = [];
         const addFolder = (folder: string, label: string, icon: Command["icon"], weight: number, iconClass?: string) => {
@@ -591,6 +620,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         // Used most, here and (with history shared with zoxide) in terminals.
         for (const folder of usedFolders(visits, 60)) addFolder(folder, baseName(folder), Folder, 0, "fill-amber-400/80 text-amber-500");
         for (const d of s.drives) addFolder(d.path, driveName(d), DRIVE_ICONS[d.kind], 0);
+        for (const r of useStore.getState().remotes) addFolder(remotePath(r), r.name, r.kind === "s3" ? Cloud : Server, 0.5);
         for (const saved of useStore.getState().savedSearches) {
             const where = saved.folder || "every drive";
             folders.push({ id: `search:${where}\n${saved.query}`, label: saved.query, detail: `Saved search in ${where}`, icon: Search, kind: "folder", weight: 1.5, run: () => void runSavedSearch(saved) });
@@ -601,7 +631,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const tabs = s.panes[s.activePane].tabs.length;
         const other = otherPaneFolder();
         const chosen = t.selection.size > 0;
-        const canGrid = inFolder || bin || !!t.find;
+        const canGrid = inFolder || bin || remote || !!t.find;
         const grid = canGrid && t.view === "grid" && !showsUsage(t.id);
         // Each size, once something's typed ("large", "tiles"): the grid at that size.
         const tileSizes = TILE_SIZES.map(
@@ -669,7 +699,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
             action("compare-panes", s.dual && s.comparePanes ? "Stop comparing panes" : "Compare panes: highlight differences between both panes", GitCompareArrows, toggleComparePanes, "Ctrl+Shift+M"),
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
-            !archive &&
+            !archive && !remote &&
                 !closedItems &&
                 !bin &&
                 chosenEntries.length > 0 &&
@@ -687,7 +717,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 samePath(archive.path, archive.outer) &&
                 action("extract-all", SINGLE_FILE.includes(archive.format) ? "Extract the file next to the archive" : "Extract all: everything into a folder next to the archive", ArchiveRestore, () => extractHere(archive.outer)),
             !!other && chosen && !bin && action("copy-other", "Copy the selection to the other pane", CopyPlus, () => copyToOtherPane(false)),
-            !!other && chosen && !archive && !shut && !bin && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
+            !!other && chosen && !archive && !remote && !shut && !bin && action("move-other", "Move the selection to the other pane", FolderOutput, () => copyToOtherPane(true)),
             inFolder && action("copy-path", "Copy this folder's path", ClipboardCopy, () => copyText(t.path, "path")),
             action("terminal-pane", useTerminals.getState().open ? "Hide the terminal" : "Terminal here, under the files", SquareTerminal, () => toggleTerminal(terminalFolder()), "Ctrl+`"),
             writable && !shut && action("terminal", "Open in Terminal", SquareTerminal, () => terminal(t.path)),
@@ -695,7 +725,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             ...(writable && !shut && !t.find
                 ? knownTasks(t.path).flatMap((g) => (g.missing ? [] : g.tasks.map((task) => action(`run:${g.folder}:${task.command}`, `Run ${task.command}`, Play, () => runTask(g, task.command)))))
                 : []),
-            ...(!archive && !shut && !closedItems && !bin && (inFolder || chosenEntries.length > 0)
+            ...(!archive && !remote && !shut && !closedItems && !bin && (inFolder || chosenEntries.length > 0)
                 ? useScripts.getState().list.map((script) => {
                       const on = chosenEntries.length > 0 ? chosenEntries.map((e) => e.path) : [t.path];
                       const cwd = inFolder ? t.path : parentPath(on[0]);
@@ -717,8 +747,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             writable && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
             writable && !t.find && !shut && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
-            !archive && !closedItems && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
-            !archive &&
+            !archive && !remote && !closedItems && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
+            !archive && !remote &&
                 !closedItems &&
                 chosenEntries.length === 2 &&
                 chosenEntries.every((e) => !e.dir) &&
@@ -728,7 +758,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             writable && !shut && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
             writable && !shut && action("cleanup", "Clean up this folder: build output and package caches", BrushCleaning, () => openCleanup(t.path)),
             writable && !shut && action("export-ncdu", "Export this folder as ncdu JSON…", FileJson, () => void exportAsNcdu(t.path)),
-            !archive &&
+            !archive && !remote &&
                 !closedItems &&
                 !bin &&
                 !shut &&
@@ -736,7 +766,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 action("send-pc", chosenEntries.length === 1 ? `Send “${chosenEntries[0].name}” to another PC` : "Send this folder to another PC", Send, () =>
                     offerToPC(chosenEntries.length === 1 ? chosenEntries[0].path : t.path)
                 ),
-            !archive &&
+            !archive && !remote &&
                 !closedItems &&
                 !bin &&
                 !shut &&
@@ -747,15 +777,15 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             writable && !shut && !t.find && action("receive-pc", "Receive from another PC here", Download, () => openReceive(t.path)),
             useShare.getState().sends.length > 0 && action("sending", "Sending to another PC: the tickets, and Stop", Send, () => showShare("send")),
             useShare.getState().serving.length > 0 && action("serving", "Shared on this network: the links, and Stop", Wifi, () => showShare("network")),
-            !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
-            !archive &&
+            !archive && !remote && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
+            !archive && !remote &&
                 !closedItems &&
                 (inFolder || chosen) &&
                 action("defender", chosen ? "Scan the selection with Microsoft Defender" : "Scan this folder with Microsoft Defender", ShieldCheck, () =>
                     scanWithDefender(chosen ? [...t.selection] : [t.path])
                 ),
-            !archive && !closedItems && (inFolder || t.selection.size === 1) && action("secrets", "Look for passwords and keys left in files", KeyRound, () => checkForSecrets(t.selection.size === 1 ? [...t.selection][0] : t.path)),
-            !archive && !closedItems && (inFolder || t.selection.size === 1) && action("yara", "Check with YARA rules", ScanSearch, () => checkWithYara(t.selection.size === 1 ? [...t.selection][0] : t.path)),
+            !archive && !remote && !closedItems && (inFolder || t.selection.size === 1) && action("secrets", "Look for passwords and keys left in files", KeyRound, () => checkForSecrets(t.selection.size === 1 ? [...t.selection][0] : t.path)),
+            !archive && !remote && !closedItems && (inFolder || t.selection.size === 1) && action("yara", "Check with YARA rules", ScanSearch, () => checkWithYara(t.selection.size === 1 ? [...t.selection][0] : t.path)),
             !!archive && action("properties", "Archive properties", Info, () => properties(archive.outer)),
             writable && action("properties", "Properties", Info, () => properties(t.path), "Alt+Enter"),
             // From the theme showing, which System leaves to Windows.
@@ -765,6 +795,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!step && action("undo", `Undo the ${step.label}`, Undo2, () => undo(), "Ctrl+Z"),
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
             action("shortcuts", "Keyboard shortcuts", Keyboard, openShortcuts, "F1"),
+            action("add-remote", "Add a remote connection: an S3 bucket, or a WebDAV server", PlugZap, addRemote),
         ];
         return [...folders, ...actions.filter((a): a is Command => !!a)];
     };
@@ -1054,7 +1085,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     };
 
     const startBatchRename = () => {
-        if (tabState(tabRef.current)?.listing?.archive) return readOnlyNotice();
+        if (tabState(tabRef.current)?.listing?.archive || remoteOf(tabRef.current)) return readOnlyNotice();
         if (tabState(tabRef.current)?.noAccess) return closedNotice(tabRef.current);
         if (recycleBinOf(tabRef.current)) return recycledNotice();
         const chosen = selectedNow();
@@ -1063,7 +1094,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
 
     const startRename = (target?: string) => {
         const t = tabState(tabRef.current);
-        if (t?.listing?.archive) return readOnlyNotice();
+        if (t?.listing?.archive || remoteOf(tabRef.current)) return readOnlyNotice();
         if (t?.noAccess) return closedNotice(tabRef.current);
         if (recycleBinOf(tabRef.current)) return recycledNotice();
         if (!target) {
@@ -1336,7 +1367,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const archived = targets.some(isArchived) ? archiveOf(tabRef.current) : undefined;
         // Listed from the index (Windows keeps their folder closed): nothing changes, and only folders open.
         const closed = targets.some(isClosed);
-        const fixed = !!archived || closed;
+        // On a remote: read-only, and downloaded to be opened or copied, as an archive's are extracted.
+        const remote = targets.some(isRemote);
+        const fixed = !!archived || closed || remote;
         const browses = !!one && (one.dir || isArchiveFile(one));
         const pictures = targets.filter(canConvert);
         // Two files side by side: the two chosen, or (comparing panes) one and its namesake in the other pane.
@@ -1372,20 +1405,21 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one && !one.dir && !closed && !!editorName && {
                 label: `Open with ${editorName}`,
                 icon: Code,
-                onSelect: () => (archived ? openArchivedWith(one, (p) => openPath(p, editorPath.trim())) : openPath(one.path, editorPath.trim()).catch(report("Couldn't open the file"))),
+                onSelect: () => (archived || remote ? openArchivedWith(one, (p) => openPath(p, editorPath.trim())) : openPath(one.path, editorPath.trim()).catch(report("Couldn't open the file"))),
             },
             one && !one.dir && !closed && {
                 label: "Open with…",
                 icon: AppWindow,
-                onSelect: () => (archived ? openArchivedWith(one, openWith) : openWith(one.path).catch(report("Couldn't open the app picker"))),
+                onSelect: () => (archived || remote ? openArchivedWith(one, openWith) : openWith(one.path).catch(report("Couldn't open the app picker"))),
             },
             one?.dir && !fixed && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
             one && !fixed && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(one.path) },
             !fixed && { label: "Scripts", icon: ScrollText, items: scriptItems(isFolderPath(path) ? path : parentPath(paths[0]), paths) },
             find && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
-            archived
-                ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }
-                : { label: "Show in File Explorer", icon: FolderSearch, onSelect: () => revealItemInDir(paths).catch(report("Couldn't open File Explorer")) },
+            !remote &&
+                (archived
+                    ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }
+                    : { label: "Show in File Explorer", icon: FolderSearch, onSelect: () => revealItemInDir(paths).catch(report("Couldn't open File Explorer")) }),
             "separator",
             { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", disabled: fixed, onSelect: () => copyToClipboard(paths, true) },
             { label: "Copy", icon: Copy, shortcut: "Ctrl+C", onSelect: () => copyToClipboard(paths, false) },
@@ -1414,13 +1448,14 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             pair && { label: "Compare the two files", icon: GitCompareArrows, onSelect: () => compareFiles(pair[0].path, pair[1].path) },
             !!namesake && one && { label: "Compare with the other pane's", icon: GitCompareArrows, onSelect: () => (index === 0 ? compareFiles(one.path, namesake) : compareFiles(namesake, one.path)) },
             one && !one.dir && !fixed && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
-            !archived && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
+            !archived && !remote && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
             !fixed && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender(paths) },
             one && !fixed && { label: "Look for passwords and keys", icon: KeyRound, onSelect: () => checkForSecrets(one.path) },
             one && !fixed && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(one.path) },
             "separator",
-            one && !archived && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
+            one && !archived && !remote && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
             !!archived && READ_ONLY_NOTE,
+            remote && REMOTE_NOTE,
             closed && CLOSED_NOTE,
         ];
     };

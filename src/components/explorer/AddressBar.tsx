@@ -15,6 +15,7 @@ import {
     RotateCw,
     Search as SearchIcon,
     Trash2,
+    Cloud,
     X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -23,7 +24,8 @@ import { type FileEntry, isArchiveFile, isHidden } from "@/lib/entries";
 import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName, listDir } from "@/lib/fs";
 import { useGit } from "@/lib/git";
-import { crumbs, isRecycleBin, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { crumbs, isRecycleBin, isRemotePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { remoteName, remotePath } from "@/lib/remotes";
 import { editsAllowed, typoDistance } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -338,6 +340,7 @@ export function AddressBar() {
     }, [path, drives, editing, folded]);
 
     const rootName = (root: string) => {
+        if (isRemotePath(root)) return remoteName(root);
         const drive = drives.find((d) => samePath(d.path, root));
         return drive ? driveName(drive) : root;
     };
@@ -378,6 +381,7 @@ export function AddressBar() {
                 ...drives.map((d) => ({ name: driveName(d), detail: d.fs, path: d.path, dir: true, icon: DRIVE_ICONS[d.kind] })),
                 ...known.map((k) => ({ name: k.name, path: k.path, dir: true, icon: KNOWN_ICONS[k.id] })),
                 { name: "Recycle Bin", path: RECYCLE_BIN, dir: true, icon: Trash2 },
+                ...useStore.getState().remotes.map((r) => ({ name: r.name, path: remotePath(r), dir: true, icon: Cloud })),
             ];
             setFlyoutItems(roots);
             return;
@@ -530,10 +534,11 @@ export function AddressBar() {
                                         type="button"
                                         onClick={() => navigate(crumb.path)}
                                         onMouseDown={middleClickOpens(crumb.path)}
-                                        title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : isRecycleBin(crumb.path) ? "What you deleted, to restore or delete for good" : crumb.path}
+                                        title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : isRecycleBin(crumb.path) ? "What you deleted, to restore or delete for good" : i === 0 && isRemotePath(crumb.path) ? "A remote connection, opened read-only" : crumb.path}
                                         className={cn("flex h-6 min-w-0 items-center gap-1 rounded-[4px] px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
                                     >
                                         {isArchive(crumb.path) && <FileArchive className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
+                                        {i === 0 && isRemotePath(crumb.path) && <Cloud className="size-3.5 shrink-0 text-sky-500" />}
                                         <span className="truncate">{crumbName(i)}</span>
                                     </button>
                                     {/* What's in the Recycle Bin isn't a folder to go into. */}

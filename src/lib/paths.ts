@@ -7,17 +7,23 @@ export const THIS_PC = "";
 export const RECYCLE_BIN = "shell:RecycleBinFolder";
 export const isRecycleBin = (path: string) => path.toLowerCase() === "shell:recyclebinfolder";
 
-/** A folder (on disk, or in an archive) rather than This PC or the Recycle Bin: what's in it has its path. */
-export const isFolderPath = (path: string) => path !== THIS_PC && !isRecycleBin(path);
+/** A remote connection's folders (remote/): `remote:<id>` and below, read-only, their files downloaded to be read. */
+export const REMOTE = "remote:";
+export const isRemotePath = (path: string) => path.slice(0, REMOTE.length).toLowerCase() === REMOTE;
+/** The id of the connection a remote path is on ("" for any other path). */
+export const remoteIdOf = (path: string) => (isRemotePath(path) ? (path.slice(REMOTE.length).split(/[\\/]/)[0] ?? "") : "");
+
+/** A folder on this PC (on disk, or in an archive) rather than This PC, the Recycle Bin or a remote: what's in it has its path, for other tools too. */
+export const isFolderPath = (path: string) => path !== THIS_PC && !isRecycleBin(path) && !isRemotePath(path);
 
 const SEPARATORS = /[\\/]+$/;
 
 /** In an archive (or the archive itself), by its names: read-only, and not on disk for other tools. */
 export const inArchivePath = (path: string) => ARCHIVE_IN_PATH.test(path);
 
-/** "C:\", "C:", "\\server\share" and "/" are roots, and so is the Recycle Bin (This PC is above it). */
+/** "C:\", "C:", "\\server\share" and "/" are roots, and so are the Recycle Bin and a remote's top (This PC is above them). */
 export function isRoot(path: string) {
-    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/" || isRecycleBin(path);
+    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/" || isRecycleBin(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
 }
 
 export function joinPath(dir: string, name: string) {
@@ -79,6 +85,13 @@ export function linkedPath(url: string, folder: string, root: string): string | 
 export function crumbs(path: string): { name: string; path: string }[] {
     if (path === THIS_PC) return [];
     if (isRecycleBin(path)) return [{ name: "Recycle Bin", path: RECYCLE_BIN }];
+    // A remote's top is named for its connection's id (the address bar shows the connection's name).
+    if (isRemotePath(path)) {
+        const [id, ...rest] = path.slice(REMOTE.length).split(/[\\/]/).filter(Boolean);
+        const trail = [{ name: id ?? "", path: REMOTE + (id ?? "") }];
+        for (const part of rest) trail.push({ name: part, path: joinPath(trail[trail.length - 1].path, part) });
+        return trail;
+    }
     const unc = path.match(/^(\\\\[^\\]+\\[^\\]+)(.*)$/);
     let root: string;
     let rest: string;

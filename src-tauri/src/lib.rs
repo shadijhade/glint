@@ -30,6 +30,7 @@ mod proc;
 mod projects;
 mod quick;
 mod recycle;
+mod remote;
 mod repo;
 mod scripts;
 mod lan;
@@ -668,6 +669,11 @@ pub fn run() {
             share::share_stop,
             lan::lan_addresses,
             lan::lan_share_start,
+            remote::remote_configure,
+            remote::remote_secret_set,
+            remote::remote_secret_delete,
+            remote::remote_secret_saved,
+            remote::remote_test,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,
@@ -724,6 +730,9 @@ pub fn run() {
                 app.state::<thumbs::Thumbs>().warm_up();
                 if let Ok(data) = app.path().app_local_data_dir() {
                     tools::set_dir(data.join("tools"));
+                }
+                if let Some(name) = &app.config().product_name {
+                    remote::init(name);
                 }
             }
             #[cfg(desktop)]

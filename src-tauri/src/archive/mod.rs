@@ -20,14 +20,14 @@
 mod cab;
 mod codec;
 mod compress;
-mod extract;
+pub(crate) mod extract;
 mod msi;
 mod ncdu;
 mod rar;
 mod read;
 mod stream;
 mod tar;
-mod tree;
+pub(crate) mod tree;
 
 use crate::fsx::{self, ms_since, Entry, InArchive, Resolved};
 pub use read::Format;
@@ -242,7 +242,7 @@ pub fn is_inside(path: &str) -> bool {
 
 /// Whether files can't be written into `path`: an archive, or a folder in one.
 pub fn is_read_only(path: &str) -> bool {
-    locate(path).is_some()
+    crate::remote::is_remote(path) || locate(path).is_some()
 }
 
 /// One file out of a gzip-compressed tar (a tool's release, checked already): its bytes. `member` is
@@ -839,6 +839,10 @@ pub fn finish() {
 /// budget) or open it ("open"). The copy is read-only: changes to it can't go back into the archive.
 #[tauri::command]
 pub async fn archive_extract(path: String, purpose: String) -> Result<String, String> {
+    // A remote's file is downloaded, as an archive's is extracted.
+    if crate::remote::is_remote(&path) {
+        return crate::remote::copy_of(&path, &purpose).await;
+    }
     let purpose = if purpose == "open" { Purpose::Open } else { Purpose::Preview };
     fsx::blocking(move || {
         let spot = spot(&path).ok_or("That isn't in an archive")?.map_err(|e| e.message())?;
@@ -850,8 +854,8 @@ pub async fn archive_extract(path: String, purpose: String) -> Result<String, St
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct StageProgress {
-    done: u64,
-    total: u64,
+    pub(crate) done: u64,
+    pub(crate) total: u64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -922,20 +926,20 @@ pub async fn archive_peek(path: String) -> Result<Peek, String> {
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Skipped {
-    path: String,
-    reason: String,
+    pub(crate) path: String,
+    pub(crate) reason: String,
 }
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Staged {
     /// The folder they're in, to delete once they're copied.
-    folder: String,
+    pub(crate) folder: String,
     /// The copy of each item asked for (in that order) that could be made, folders with what they hold.
-    paths: Vec<String>,
+    pub(crate) paths: Vec<String>,
     /// Files that couldn't be extracted, and why.
-    skipped: Vec<Skipped>,
-    bytes: u64,
+    pub(crate) skipped: Vec<Skipped>,
+    pub(crate) bytes: u64,
 }
 
 /// One file to extract: where it is and where it goes.
@@ -954,6 +958,9 @@ struct Job {
 /// and reported; fails when nothing could be.
 #[tauri::command]
 pub async fn archive_stage(paths: Vec<String>, purpose: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
+    if paths.iter().any(|p| crate::remote::is_remote(p)) {
+        return in_lane(lane, move |cancel| tauri::async_runtime::block_on(crate::remote::stage(&paths, &purpose, cancel, &on_progress))).await;
+    }
     in_lane(lane, move |cancel| stage(&paths, &purpose, cancel, &on_progress).map_err(|e| e.message())).await
 }
 

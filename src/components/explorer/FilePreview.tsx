@@ -3,7 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, Loader2, RotateCcw, ScanText, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
-import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly, isRecycled } from "@/lib/entries";
+import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly, isRecycled, isRemote } from "@/lib/entries";
 import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, restoreRecycled, useExplorer } from "@/lib/explorer";
 import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
@@ -149,7 +149,7 @@ function ArchivedMedia({ entry, kind }: { entry: FileEntry; kind: MediaKind }) {
             stale = true;
         };
     }, [entry.path, entry.modified]);
-    if (!copy) return <Waiting what="Extracting from the archive…" />;
+    if (!copy) return <Waiting what={isRemote(entry) ? "Downloading…" : "Extracting from the archive…"} />;
     if ("error" in copy) return <BigIcon entry={entry} note={copy.error} />;
     return <Media entry={entry} kind={kind} src={convertFileSrc(copy.path)} />;
 }
@@ -520,9 +520,12 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                         </Button>
                     ) : (
                         <>
-                            <Button variant="ghost" size="icon" className="size-7" onClick={reveal} title={archive ? "Show the archive in File Explorer" : "Show in File Explorer"}>
-                                <FolderSearch />
-                            </Button>
+                            {/* A remote's file isn't anywhere File Explorer shows. */}
+                            {!isRemote(entry) && (
+                                <Button variant="ghost" size="icon" className="size-7" onClick={reveal} title={archive ? "Show the archive in File Explorer" : "Show in File Explorer"}>
+                                    <FolderSearch />
+                                </Button>
+                            )}
                             <Button variant="ghost" size="icon" className="size-7" onClick={open} title="Open (Enter)">
                                 <ExternalLink />
                             </Button>

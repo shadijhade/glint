@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
-import { Folder, HardDrive, Monitor, Plus, Search, Trash2, X } from "lucide-react";
+import { Cloud, Folder, HardDrive, Monitor, Plus, Search, Trash2, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { activateTab, closeTab, newTab, placeTab, tabName, useExplorer } from "@/lib/explorer";
-import { isRecycleBin, isRoot, THIS_PC } from "@/lib/paths";
+import { isRecycleBin, isRemotePath, isRoot, THIS_PC } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 
 /** A tab being dragged, and where it would go: a pane, its place among that pane's tabs, and where to mark it (x in the strip). */
@@ -74,7 +74,7 @@ function Tab({ id, selected, current, canClose, onContextMenu }: TabProps) {
     const name = query ?? tabName(path, drives);
     const where = path === THIS_PC ? "This PC" : isRecycleBin(path) ? "Recycle Bin" : path;
     const folder = query === null && path !== THIS_PC && !isRoot(path);
-    const Icon = query !== null ? Search : path === THIS_PC ? Monitor : isRecycleBin(path) ? Trash2 : folder ? Folder : HardDrive;
+    const Icon = query !== null ? Search : path === THIS_PC ? Monitor : isRecycleBin(path) ? Trash2 : isRemotePath(path) && isRoot(path) ? Cloud : folder ? Folder : HardDrive;
     return (
         <div
             ref={ref}

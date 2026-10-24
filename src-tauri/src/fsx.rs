@@ -58,10 +58,14 @@ impl ListError {
 /// into a zip or 7z archive lists the folder in the archive. A link Windows won't list, such as
 /// "Documents and Settings" (kept for old apps, it lets no one look inside), lists where it points;
 /// a folder Windows keeps this user out of lists what instant search's index has in it, if it can.
-/// The Recycle Bin (`recycle::PLACE`) lists its items, each with a path of its own (`encode_items`).
+/// The Recycle Bin (`recycle::PLACE`) lists its items, each with a path of its own (`encode_items`),
+/// and a remote connection's folder (`remote:<id>\…`) what's in it there.
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
     let asked = path.clone();
+    if crate::remote::is_remote(path.trim()) {
+        return crate::remote::listing(path.trim(), Instant::now()).await.map(tauri::ipc::Response::new).map_err(|e| ListError::other(path.trim(), e));
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
         if crate::recycle::is_place(path.trim()) {
@@ -180,8 +184,8 @@ pub struct InArchive {
 ///   16: u32 archive (UTF-16 units of the path that are the archive the folder is in; 0 for a
 ///   folder on disk) · 20: u32 outer (those that are the archive file on disk, when archives nest)
 ///   24: u32 entries in the archive · 28: u32 flags (1: the archive's list of entries was in memory;
-///   2: listed from instant search's index, as Windows keeps the folder closed to this user; bits
-///   8 to 15: the archive's format code plus one)
+///   2: listed from instant search's index, as Windows keeps the folder closed to this user; 8: a
+///   remote's folder; bits 8 to 15: the archive's format code plus one)
 ///   32: f64 milliseconds reading the archive's list of entries
 ///   40: f64 size[count] · then f64 modified[count] · u32 attrs[count] · u32 name length[count]
 ///   (UTF-16 units, how JavaScript counts) · the path (UTF-8) · every name back to back (UTF-8).
@@ -220,6 +224,15 @@ pub fn encode_listing<T: Listed>(path: &str, entries: &[T], elapsed: f64, archiv
 
 /// Flag 4 in a listing's header: its items each carry their own path (`encode_items`).
 const ITEMS: u32 = 4;
+
+/// Flag 8: a folder on a remote connection (remote.rs), read-only, its files downloaded to be read.
+const REMOTE: u32 = 8;
+
+/// Marks a listing (`encode_listing`'s) as a remote's.
+pub fn mark_remote(listing: &mut [u8]) {
+    let flags = u32::from_le_bytes([listing[28], listing[29], listing[30], listing[31]]) | REMOTE;
+    listing[28..32].copy_from_slice(&flags.to_le_bytes());
+}
 
 /// Items that each have their own path, such as search results, as bytes: `encode_listing`'s header
 /// (with flag 4, its archive fields 0, and at 24 a u32 of columns: 1 when names follow the paths, 2
@@ -290,6 +303,9 @@ pub struct Resolved {
 /// archive is a folder, as are the folders in it.
 #[tauri::command]
 pub async fn resolve_path(path: String) -> Result<Resolved, String> {
+    if crate::remote::is_remote(path.trim()) {
+        return crate::remote::resolve(path.trim()).await;
+    }
     blocking(move || {
         if crate::recycle::is_place(path.trim()) {
             return Ok(Resolved { path: crate::recycle::PLACE.into(), dir: true });
@@ -338,6 +354,10 @@ fn describe(e: &io::Error) -> String {
 /// Turns what someone typed or pasted into an absolute path: quotes trimmed, %VARS% and ~ expanded,
 /// "c:" made "C:\", slashes flipped, and no trailing separator except on drive roots.
 pub fn normalize(input: &str) -> Result<String, String> {
+    // Not a path on disk, and one Windows would read as a file's stream ("remote" with ":<id>").
+    if crate::remote::is_remote(input.trim()) {
+        return Err("That's on a remote connection, which Glint only reads".into());
+    }
     let trimmed = input.trim().trim_matches('"').trim();
     if trimmed.is_empty() {
         return Err("No folder given".into());
@@ -744,6 +764,11 @@ pub struct TextPreview {
 /// The start of a file as text for the preview pane: BOM-aware, and binary files are detected, not decoded.
 #[tauri::command]
 pub async fn read_text_preview(path: String, max_bytes: usize) -> Result<TextPreview, String> {
+    // A remote's file: its first bytes, asked for as a range.
+    if crate::remote::is_remote(&path) {
+        let (bytes, truncated) = crate::remote::read_prefix(&path, max_bytes.clamp(1024, 4 << 20)).await?;
+        return Ok(decode_text(&bytes, truncated));
+    }
     blocking(move || {
         let limit = max_bytes.clamp(1024, 4 << 20);
         if let Some(read) = crate::archive::read_prefix(&path, limit) {
@@ -815,7 +840,7 @@ pub fn create_numbered(parent: &str, name: &str, dir: bool) -> Result<String, St
 }
 
 /// `name`, or its `n`th form: "name (2).txt" (a folder's whole name is its stem).
-fn numbered(name: &str, dir: bool, n: u32) -> String {
+pub(crate) fn numbered(name: &str, dir: bool, n: u32) -> String {
     if n == 1 {
         return name.to_string();
     }
