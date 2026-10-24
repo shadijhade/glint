@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { AlertTriangle, CheckCircle2, Copy, Download, ExternalLink, FolderOpen, Loader2, Send, Square, Wifi, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Download, ExternalLink, FolderOpen, Loader2, Network, Send, Shield, ShieldAlert, Square, Wifi, X } from "lucide-react";
 import { currentPath, revealInApp } from "@/lib/explorer";
 import { formatSize, plural } from "@/lib/format";
-import { type LanAddress, lanAddresses } from "@/lib/fs";
+import { type LanAddress, lanAddresses, lanOpenSettings, type LanReach } from "@/lib/fs";
 import { baseName, samePath } from "@/lib/paths";
 import {
     closeShare,
@@ -329,7 +329,7 @@ function NetworkView() {
             {!asked && !serving.length && <p className="py-6 text-center text-muted-foreground">Right-click a folder or a file and choose Share on this network, or find it in Ctrl+K.</p>}
             <p className="text-xs text-muted-foreground">
                 Anyone on this network who has the link can see and download all that's in it, and it isn't encrypted on its way, so share on networks you trust. The first time, Windows asks
-                whether dufs may accept connections: allow it on private networks, or other devices can't reach it.
+                whether dufs may accept connections: allow it, or other devices can't open the link. A share says so when Windows keeps them out.
             </p>
         </>
     );
@@ -427,33 +427,75 @@ function ServingCard({ serving: s }: { serving: Serving }) {
                     <Loader2 className="size-4 animate-spin text-primary" /> Starting…
                 </p>
             ) : (
-                <div className="flex gap-3">
-                    {s.qr && <Qr svg={s.qr} alt="The link as a QR code" className="size-36" />}
-                    <div className="flex min-w-0 flex-1 flex-col gap-2">
-                        <p className="font-mono text-xs break-all select-all" aria-label="Link">
-                            {s.url}
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                            <Button size="sm" onClick={() => copy(s.url!, "link")}>
-                                <Copy /> Copy the link
-                            </Button>
-                            <Button size="sm" variant="outline" onClick={() => void openUrl(s.url!)} title="Open it in your browser here, as others see it">
-                                <ExternalLink /> Open
-                            </Button>
+                <>
+                    {s.reach && s.address && <ReachNote reach={s.reach} address={s.address} />}
+                    <div className="flex gap-3">
+                        {s.qr && <Qr svg={s.qr} alt="The link as a QR code" className="size-36" />}
+                        <div className="flex min-w-0 flex-1 flex-col gap-2">
+                            <p className="font-mono text-xs break-all select-all" aria-label="Link">
+                                {s.url}
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                                <Button size="sm" onClick={() => copy(s.url!, "link")}>
+                                    <Copy /> Copy the link
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => void openUrl(s.url!)} title="Open it in your browser here, as others see it">
+                                    <ExternalLink /> Open
+                                </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground tabular-nums">
+                                {left == null
+                                    ? "Shared till you stop it."
+                                    : `Stops at ${new Date(s.ends!).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, in ${left < 60_000 ? "under a minute" : plural(Math.ceil(left / 60_000), "minute")}.`}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                                {s.last
+                                    ? `${plural(s.visits, "request")} from ${plural(s.from.length, "device")}; the last ${ago(now - s.last.at)}: ${s.last.request}${s.last.status >= 400 ? ` (${s.last.status})` : ""}`
+                                    : "Nobody's opened it yet."}
+                            </p>
                         </div>
-                        <p className="text-xs text-muted-foreground tabular-nums">
-                            {left == null
-                                ? "Shared till you stop it."
-                                : `Stops at ${new Date(s.ends!).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, in ${left < 60_000 ? "under a minute" : plural(Math.ceil(left / 60_000), "minute")}.`}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                            {s.last
-                                ? `${plural(s.visits, "request")} from ${plural(s.from.length, "device")}; the last ${ago(now - s.last.at)}: ${s.last.request}${s.last.status >= 400 ? ` (${s.last.status})` : ""}`
-                                : "Nobody's opened it yet."}
-                        </p>
                     </div>
-                </div>
+                </>
             )}
         </section>
+    );
+}
+
+/** What keeps other devices from opening a share's link, as Windows has it, and where that's changed: nothing when nothing does. Glint only opens those pages. */
+function ReachNote({ reach, address }: { reach: LanReach; address: string }) {
+    if (reach.firewall !== "blocked" && reach.firewall !== "unset") return null;
+    const kind = reach.network ?? "private";
+    const isPublic = reach.network === "public";
+    const where = isPublic ? ", and Windows has this network as public" : "";
+    const said =
+        reach.firewall === "blocked"
+            ? `Other devices can't open the link: Windows Firewall blocks dufs on ${kind} networks${where}.`
+            : `Other devices can't open the link yet: Windows Firewall hasn't been told dufs may take connections on ${kind} networks${where}.`;
+    const fix =
+        reach.firewall === "blocked"
+            ? isPublic
+                ? "If it's your home or work network, set it to private and share again. Or let dufs in on public networks, in the firewall's allowed apps."
+                : `Let dufs in on ${kind} networks, in the firewall's allowed apps.`
+            : isPublic
+              ? "If Windows asks, allow it with Public networks ticked. Or, if it's your home or work network, set it to private and share again."
+              : "If Windows asks, allow it. Or let dufs in, in the firewall's allowed apps.";
+    const open = (page: "network" | "firewall") => void lanOpenSettings(page, address).catch((e) => toast.error(String(e)));
+    return (
+        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs" role="status">
+            <p className="flex items-start gap-2 font-medium">
+                <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-500" /> {said}
+            </p>
+            <p className="text-muted-foreground">{fix}</p>
+            <div className="flex flex-wrap gap-2">
+                {isPublic && (
+                    <Button size="sm" variant="outline" onClick={() => open("network")} title="Settings for this network, where it's set as public or private">
+                        <Network /> Network settings
+                    </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={() => open("firewall")} title="Windows Firewall's allowed apps (changing them asks for administrator approval)">
+                    <Shield /> Allowed apps
+                </Button>
+            </div>
+        </div>
     );
 }
