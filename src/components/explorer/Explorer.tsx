@@ -24,6 +24,7 @@ import {
     Columns2,
     Copy,
     CopyPlus,
+    Download,
     ExternalLink,
     Eye,
     EyeOff,
@@ -70,6 +71,7 @@ import {
     ScrollText,
     Search,
     SearchX,
+    Send,
     Settings as SettingsIcon,
     ShieldCheck,
     SlidersHorizontal,
@@ -182,6 +184,7 @@ import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
 import { openInItems, refreshOpeners, useOpeners } from "@/lib/openers";
 import { knownTasks, runTask } from "@/lib/projects";
 import { openScriptsFolder, refreshScripts, runScript, scriptItems, useScripts } from "@/lib/scripts";
+import { openReceive, showShare, useShare } from "@/lib/share";
 import { toggleTerminal, useTerminals } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
@@ -194,6 +197,7 @@ import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
 import { checkForSecrets, checkWithYara, secretsCheckFirst } from "./CheckDialog";
+import { offerToPC } from "./ShareDialog";
 import { openCleanup } from "./CleanupDialog";
 import { compareFiles } from "./CompareFilesDialog";
 import { canConvert, convertPictures } from "./ConvertDialog";
@@ -426,6 +430,8 @@ function folderMenu(
         !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
         !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
         !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
+        !inArchive && !shut && isFolderPath(folder) && { label: current ? "Send this folder to another PC…" : "Send to another PC…", icon: Send, onSelect: () => offerToPC(folder) },
+        current && !inArchive && !shut && !find && isFolderPath(folder) && { label: "Receive from another PC here…", icon: Download, onSelect: () => openReceive(folder) },
         { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
         "separator",
         archive
@@ -720,6 +726,16 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             writable && !shut && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
             writable && !shut && action("cleanup", "Clean up this folder: build output and package caches", BrushCleaning, () => openCleanup(t.path)),
             writable && !shut && action("export-ncdu", "Export this folder as ncdu JSON…", FileJson, () => void exportAsNcdu(t.path)),
+            !archive &&
+                !closedItems &&
+                !bin &&
+                !shut &&
+                (chosenEntries.length === 1 || (inFolder && !chosen)) &&
+                action("send-pc", chosenEntries.length === 1 ? `Send “${chosenEntries[0].name}” to another PC` : "Send this folder to another PC", Send, () =>
+                    offerToPC(chosenEntries.length === 1 ? chosenEntries[0].path : t.path)
+                ),
+            writable && !shut && !t.find && action("receive-pc", "Receive from another PC here", Download, () => openReceive(t.path)),
+            useShare.getState().sends.length > 0 && action("sending", "Sending to another PC: the tickets, and Stop", Send, () => showShare("send")),
             !archive && (inFolder || chosen) && action("who-locks", chosen ? "What's locking the selection?" : "What's locking this folder?", Lock, () => inspectLocks(chosen ? [...t.selection] : [t.path])),
             !archive &&
                 !closedItems &&
@@ -1368,6 +1384,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || fixed, onSelect: () => copyToOtherPane(true, paths) },
             "separator",
             !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
+            one && !fixed && { label: "Send to another PC…", icon: Send, onSelect: () => offerToPC(one.path) },
             pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
             "separator",
             one

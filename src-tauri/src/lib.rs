@@ -32,6 +32,7 @@ mod quick;
 mod recycle;
 mod repo;
 mod scripts;
+mod share;
 mod sheet;
 mod shell;
 mod sign;
@@ -661,6 +662,9 @@ pub fn run() {
             projects::project_tasks,
             scripts::scripts_list,
             scripts::scripts_folder,
+            share::send_start,
+            share::receive_start,
+            share::share_stop,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,
@@ -727,6 +731,7 @@ pub fn run() {
             std::thread::spawn(move || verbs::repair(&handle));
             // What earlier runs extracted from archives goes, except what's still on the clipboard.
             std::thread::spawn(|| archive::sweep(&shell::clipboard_paths()));
+            std::thread::spawn(share::sweep);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -735,6 +740,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 archive::finish();
                 term::close_all();
+                share::stop_all();
             }
         });
 }

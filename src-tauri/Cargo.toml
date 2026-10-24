@@ -46,6 +46,7 @@ png = "0.18"
 # Find duplicates' Clone on ReFS and Dev Drives: block clones (FSCTL_DUPLICATE_EXTENTS_TO_FILE), over the
 # windows crate already in the build.
 reflink-copy = "0.1"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Markdown previews: GitHub's flavor (tables, task lists, footnotes), its HTML kept to an allowlist by
 # the preview.
 comrak = { version = "0.57", default-features = false }

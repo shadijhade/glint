@@ -8,6 +8,7 @@ import {
     Command,
     Copy,
     CopyPlus,
+    Download,
     Ellipsis,
     Eye,
     EyeOff,
@@ -35,6 +36,7 @@ import {
     RotateCcw,
     ScanSearch,
     Scissors,
+    Send,
     ShieldCheck,
     SlidersHorizontal,
     SquareTerminal,
@@ -77,6 +79,8 @@ import { Button } from "../ui/button";
 import { checkForSecrets, checkWithYara } from "./CheckDialog";
 import { canConvert, convertPictures } from "./ConvertDialog";
 import { openCleanup } from "./CleanupDialog";
+import { offerToPC } from "./ShareDialog";
+import { openReceive } from "@/lib/share";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { openHistory } from "./HistoryDialog";
 import { inspectLocks } from "./LocksDialog";
@@ -296,6 +300,14 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             { label: "Find duplicate files in this folder", icon: Files, disabled: !inFolder, onSelect: () => inspectDuplicates(path) },
             { label: "Clean up this folder…", icon: BrushCleaning, disabled: !inFolder || readOnly, onSelect: () => openCleanup(path) },
             { label: "Convert the selected pictures…", icon: ImageDown, disabled: !selected.some(canConvert), onSelect: () => convertPictures(selected) },
+            { heading: "Share" },
+            {
+                label: paths.length === 1 ? "Send the selection to another PC…" : "Send this folder to another PC…",
+                icon: Send,
+                disabled: readOnly || bin || paths.length > 1 || (!inFolder && paths.length !== 1),
+                onSelect: () => offerToPC(paths.length === 1 ? paths[0] : path),
+            },
+            { label: "Receive from another PC here…", icon: Download, disabled: !inFolder || readOnly || find, onSelect: () => openReceive(path) },
             { heading: "Check" },
             {
                 label: paths.length ? "Scan the selection with Microsoft Defender" : "Scan this folder with Microsoft Defender",

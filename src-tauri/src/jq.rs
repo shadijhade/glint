@@ -10,12 +10,14 @@
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+use crate::proc::Job;
 
 const WORKER_ARG: &str = "--data-worker";
 /// The biggest file read (the preview offers the tree up to this size).
@@ -131,42 +133,6 @@ fn json_safe(line: &str) -> std::borrow::Cow<'_, str> {
         rest = &rest[c.len_utf8()..];
     }
     out.into()
-}
-
-/// Holds a process to its memory and to no child processes; closing it (dropping this) ends the process.
-/// Documents search's workers are held in one too (doctext.rs).
-pub(crate) struct Job(windows::Win32::Foundation::HANDLE);
-
-// The handle is only closed, once, by its owner.
-unsafe impl Send for Job {}
-
-impl Job {
-    pub(crate) fn new(memory: usize) -> Result<Self, String> {
-        use windows::Win32::System::JobObjects::*;
-        unsafe {
-            let job = Job(CreateJobObjectW(None, windows::core::PCWSTR::null()).map_err(|e| e.to_string())?);
-            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            info.BasicLimitInformation.LimitFlags =
-                JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-            info.BasicLimitInformation.ActiveProcessLimit = 1;
-            info.ProcessMemoryLimit = memory;
-            SetInformationJobObject(job.0, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of_val(&info) as u32).map_err(|e| e.to_string())?;
-            Ok(job)
-        }
-    }
-
-    pub(crate) fn assign(&self, child: &Child) -> Result<(), String> {
-        use std::os::windows::io::AsRawHandle;
-        unsafe { windows::Win32::System::JobObjects::AssignProcessToJobObject(self.0, windows::Win32::Foundation::HANDLE(child.as_raw_handle())).map_err(|e| e.to_string()) }
-    }
-}
-
-impl Drop for Job {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(self.0);
-        }
-    }
 }
 
 /// The query running, which a newer one (or Stop) ends by dropping its job.
