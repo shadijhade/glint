@@ -1,9 +1,11 @@
 [package]
 name = "shadui-ripgrep"
 version.workspace = true
+license.workspace = true
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+publish = false
 # The app; src/bin/shadui-index.rs is the instant search service bundled with it.
 default-run = "shadui-ripgrep"
 
@@ -16,6 +18,7 @@ members = ["index"]
 # whenever the two differ, so every release bumps both (see docs/releasing.md).
 [workspace.package]
 version = "0.6.0"
+license = "MIT"
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
