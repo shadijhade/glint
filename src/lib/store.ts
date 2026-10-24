@@ -177,6 +177,30 @@ export interface RemoteConnection {
     thumbnails?: boolean;
 }
 
+/**
+ * A folder rule (rules.rs): what it looks at (a folder, its subfolders if asked), what it takes (names,
+ * sizes, age), and what it does. Off until it's turned on, after a look at what it would do.
+ */
+export interface FolderRule {
+    id: string;
+    name: string;
+    on: boolean;
+    folder: string;
+    subfolders: boolean;
+    /** Patterns with * and ?, separated by ";" or "," ("*.pdf; invoice*"): empty for any name. */
+    names: string;
+    /** Bytes (0: no bound). */
+    minSize: number;
+    maxSize: number;
+    /** Last changed at least this many days ago (0: any). */
+    olderThanDays: number;
+    action: "move" | "rename" | "recycle" | "unblock" | "extract";
+    /** Move: where to ({year}, {month}, {day} of the file's date may be in it). */
+    target: string;
+    /** Rename: the new name, of {name}, {ext}, {date}, {time}, {year}, {month}, {day}. */
+    pattern: string;
+}
+
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */
 export interface SavedSearch {
     query: string;
@@ -193,6 +217,7 @@ interface AppState {
     pinned: string[];
     savedSearches: SavedSearch[];
     remotes: RemoteConnection[];
+    rules: FolderRule[];
     lastFolder: string | null;
     session: Session | null;
     /** Folders opened, for ranking in the command palette. */
@@ -210,6 +235,9 @@ interface AppState {
     /** Adds a connection, or changes the one with its id. */
     saveRemote: (remote: RemoteConnection) => void;
     removeRemote: (id: string) => void;
+    /** Adds a rule, or changes the one with its id. */
+    saveRule: (rule: FolderRule) => void;
+    removeRule: (id: string) => void;
     setLastFolder: (path: string) => void;
     setSession: (session: Session) => void;
     recordVisit: (path: string) => void;
@@ -229,6 +257,7 @@ export const useStore = create<AppState>()(
             pinned: [],
             savedSearches: [],
             remotes: [],
+            rules: [],
             lastFolder: null,
             session: null,
             visits: {},
@@ -272,6 +301,10 @@ export const useStore = create<AppState>()(
                 remotes: state.remotes.some((r) => r.id === remote.id) ? state.remotes.map((r) => (r.id === remote.id ? remote : r)) : [...state.remotes, remote],
             })),
             removeRemote: (id) => set((state) => ({ remotes: state.remotes.filter((r) => r.id !== id) })),
+            saveRule: (rule) => set((state) => ({
+                rules: state.rules.some((r) => r.id === rule.id) ? state.rules.map((r) => (r.id === rule.id ? rule : r)) : [...state.rules, rule],
+            })),
+            removeRule: (id) => set((state) => ({ rules: state.rules.filter((r) => r.id !== id) })),
             setLastFolder: (lastFolder) => set({ lastFolder }),
             setSession: (session) => set({ session }),
             recordVisit: (path) => set((state) => {

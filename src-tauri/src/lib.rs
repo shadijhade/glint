@@ -30,6 +30,7 @@ mod proc;
 mod projects;
 mod quick;
 mod recycle;
+mod rules;
 mod remote;
 mod repo;
 mod scripts;
@@ -676,6 +677,12 @@ pub fn run() {
             remote::remote_test,
             remote::remote_host_keys,
             remote::remote_trust_host,
+            rules::rules_set,
+            rules::rules_preview,
+            rules::rules_apply,
+            rules::rules_log,
+            rules::rules_clear_log,
+            rules::rules_undo,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,

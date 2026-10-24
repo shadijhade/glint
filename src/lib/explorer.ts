@@ -54,6 +54,7 @@ import { formatCount, plural } from "./format";
 import { zoomTiles } from "./grid";
 import { baseName, crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC } from "./paths";
 import { initRemotes, remoteName } from "./remotes";
+import { initRules } from "./rules";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
 import { shareVisit } from "./zoxide";
 import { dropThumbnails } from "./thumbs";
@@ -650,8 +651,9 @@ let restored = false;
 export const initExplorer = () => (initialized ??= init());
 
 async function init() {
-    // Rust has the remote connections before a tab on one opens.
+    // Rust has the remote connections before a tab on one opens; folder rules start watching.
     await initRemotes();
+    void initRules();
     // Drives fill in when they answer; a sleeping network drive mustn't hold up the first folder.
     refreshDrives();
     // Asked first (briefly), so the first folder can already show its sizes from the index.
