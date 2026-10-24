@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, CheckCircle2, Cloud, Loader2, PlugZap, Server, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cloud, KeyRound, Loader2, PlugZap, Server, SquareTerminal, Trash2 } from "lucide-react";
 import { leaveRemote, navigate } from "@/lib/explorer";
-import { remoteId, remotePath, remoteSecretDelete, remoteSecretSaved, remoteSecretSet, remoteTest } from "@/lib/remotes";
+import { remoteHostKeys, remoteId, remotePath, remoteSecretDelete, remoteSecretSaved, remoteSecretSet, remoteTest, remoteTrustHost, UNKNOWN_HOST } from "@/lib/remotes";
 import { type RemoteConnection, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
@@ -42,6 +42,7 @@ const BLANK: RemoteConnection = { id: "", name: "", kind: "s3", endpoint: "", re
 const KINDS = [
     { kind: "s3" as const, label: "S3-compatible storage", hint: "Amazon S3, Cloudflare R2, Backblaze B2, MinIO…", icon: Cloud },
     { kind: "webdav" as const, label: "WebDAV", hint: "Nextcloud, a NAS, dufs…", icon: Server },
+    { kind: "sftp" as const, label: "SFTP", hint: "A server you reach with SSH", icon: SquareTerminal },
 ];
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
@@ -63,15 +64,19 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
     const [secret, setSecret] = useState("");
     const [kept, setKept] = useState(false);
     const [test, setTest] = useState<{ running: boolean; ok?: string; error?: string } | null>(null);
+    // An SFTP server whose host key isn't trusted yet: its fingerprints, to trust or not.
+    const [hostKeys, setHostKeys] = useState<{ fingerprints: string[]; keys: string } | null>(null);
     useEffect(() => {
         if (editing) remoteSecretSaved(editing.id).then(setKept, () => {});
     }, [editing]);
     const change = (patch: Partial<RemoteConnection>) => {
         setForm((f) => ({ ...f, ...patch }));
         setTest(null);
+        setHostKeys(null);
     };
     const s3 = form.kind === "s3";
-    const ready = !!form.name.trim() && (s3 ? !!form.bucket.trim() : !!form.endpoint.trim());
+    const sftp = form.kind === "sftp";
+    const ready = !!form.name.trim() && (s3 ? !!form.bucket.trim() : sftp ? !!form.host?.trim() : !!form.endpoint.trim());
     const connection = (): RemoteConnection => ({
         ...form,
         id: editing?.id ?? remoteId(form.name),
@@ -81,14 +86,29 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
         bucket: form.bucket.trim(),
         user: form.user.trim(),
         root: form.root.trim(),
+        ...(sftp ? { host: form.host?.trim() ?? "", port: form.port ?? 0, key: form.key?.trim() ?? "" } : {}),
     });
     // What's typed, or (editing, nothing typed) the secret kept.
     const typed = () => (secret ? secret : editing && kept ? null : "");
 
     const runTest = async () => {
         setTest({ running: true });
+        setHostKeys(null);
         try {
             setTest({ running: false, ok: await remoteTest(connection(), typed()) });
+        } catch (e) {
+            setTest({ running: false, error: String(e) });
+            // A server not trusted yet: what its host keys are, for the person to decide.
+            if (sftp && String(e).startsWith(UNKNOWN_HOST))
+                remoteHostKeys(form.host?.trim() ?? "", form.port ?? 0).then(setHostKeys, (k) => setTest({ running: false, error: String(k) }));
+        }
+    };
+
+    const trust = async () => {
+        if (!hostKeys) return;
+        try {
+            await remoteTrustHost(hostKeys.keys);
+            await runTest();
         } catch (e) {
             setTest({ running: false, error: String(e) });
         }
@@ -113,7 +133,7 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
             <ModalHeader icon={PlugZap} title={title} subtitle="Its folders open read-only; what you open or copy is downloaded" onClose={close} />
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm">
                 {!editing && (
-                    <div role="radiogroup" aria-label="Kind" className="grid grid-cols-2 gap-1.5">
+                    <div role="radiogroup" aria-label="Kind" className="grid grid-cols-3 gap-1.5">
                         {KINDS.map(({ kind, label, hint, icon: Icon }) => (
                             <button
                                 key={kind}
@@ -167,6 +187,45 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
                             <input value={form.root} onChange={(e) => change({ root: e.target.value })} placeholder="photos/2024" spellCheck={false} aria-label="Folder in it" className={INPUT} />
                         </Field>
                     </>
+                ) : sftp ? (
+                    <>
+                        <Field label="Server" hint="Its name or address; a name ~/.ssh/config knows will do.">
+                            <input value={form.host ?? ""} onChange={(e) => change({ host: e.target.value })} placeholder="nas.local" spellCheck={false} aria-label="Server" className={INPUT} />
+                        </Field>
+                        <Field label="Port">
+                            <input
+                                value={form.port ? String(form.port) : ""}
+                                onChange={(e) => change({ port: Number(e.target.value.replace(/\D/g, "")) || 0 })}
+                                placeholder="22"
+                                inputMode="numeric"
+                                aria-label="Port"
+                                className={INPUT}
+                            />
+                        </Field>
+                        <Field label="User name">
+                            <input value={form.user} onChange={(e) => change({ user: e.target.value })} spellCheck={false} autoComplete="off" aria-label="User name" className={INPUT} />
+                        </Field>
+                        <Field label="Password" hint="Or a key's passphrase. Empty to sign in as ssh does: with your SSH agent, or your keys in ~/.ssh.">
+                            <input
+                                type="password"
+                                value={secret}
+                                onChange={(e) => {
+                                    setSecret(e.target.value);
+                                    setTest(null);
+                                }}
+                                placeholder={kept ? "Kept in Credential Manager: type to change it" : ""}
+                                autoComplete="off"
+                                aria-label="Password"
+                                className={INPUT}
+                            />
+                        </Field>
+                        <Field label="Key file" hint="Empty for ssh's own choice.">
+                            <input value={form.key ?? ""} onChange={(e) => change({ key: e.target.value })} placeholder="~/.ssh/id_ed25519" spellCheck={false} aria-label="Key file" className={INPUT} />
+                        </Field>
+                        <Field label="Folder on it" hint="Where it opens: below the folder it signs in to, or from / when it starts with one.">
+                            <input value={form.root} onChange={(e) => change({ root: e.target.value })} placeholder="photos" spellCheck={false} aria-label="Folder on it" className={INPUT} />
+                        </Field>
+                    </>
                 ) : (
                     <>
                         <Field label="Address">
@@ -208,6 +267,25 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
                         <span className="block text-[0.6875rem] text-muted-foreground">Downloads each picture shown (up to 16 MB){s3 ? ", which a paid bucket charges for" : ""}.</span>
                     </span>
                 </label>
+                {hostKeys && (
+                    <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+                        <p className="flex items-start gap-2 font-medium">
+                            <KeyRound className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-500" /> Glint hasn't seen this server before. Its host key:
+                        </p>
+                        <ul className="space-y-0.5 pl-5.5 font-mono break-all">
+                            {hostKeys.fingerprints.map((f) => (
+                                <li key={f}>{f}</li>
+                            ))}
+                        </ul>
+                        <p className="text-muted-foreground">
+                            Trust it only if that's the server's: whoever runs it can tell you (on the server, <code>ssh-keygen -lf</code> on its key). Glint keeps it in a list of its own, and
+                            won't connect if it ever changes.
+                        </p>
+                        <Button size="sm" variant="outline" onClick={() => void trust()}>
+                            <KeyRound /> Trust it and test again
+                        </Button>
+                    </div>
+                )}
                 {test && (
                     <p className={cn("flex items-start gap-2 text-xs", test.error ? "text-destructive" : "text-muted-foreground")} role="status">
                         {test.running ? (
@@ -225,7 +303,10 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
                         )}
                     </p>
                 )}
-                <p className="text-xs text-muted-foreground">Glint only reads it: nothing there is changed. {s3 ? "The secret access key" : "The password"} stays in Windows Credential Manager, never in Glint's settings.</p>
+                <p className="text-xs text-muted-foreground">
+                    Glint only reads it: nothing there is changed. {s3 ? "The secret access key" : "The password"} stays in Windows Credential Manager, never in Glint's settings
+                    {sftp ? ", and reaches ssh (Windows' own) only when it asks." : "."}
+                </p>
             </div>
             <div className="flex shrink-0 items-center gap-2 border-t px-4 py-3">
                 <Button variant="outline" size="sm" disabled={!ready || !!test?.running} onClick={() => void runTest()}>
