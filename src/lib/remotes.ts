@@ -34,9 +34,16 @@ export function remoteId(name: string) {
 /** Where a connection goes, in a few words (the sidebar's tooltip). */
 export function remoteWhere(r: RemoteConnection) {
     const folder = r.root.trim() ? `, in ${r.root.trim()}` : "";
+    if (r.kind === "sftp") return `SFTP at ${r.user ? `${r.user}@` : ""}${r.host ?? ""}${r.port && r.port !== 22 ? `:${r.port}` : ""}${folder}`;
     return r.kind === "s3" ? `S3 bucket “${r.bucket}” at ${r.endpoint.trim() || `Amazon S3 (${r.region.trim() || "us-east-1"})`}${folder}` : `WebDAV at ${r.endpoint}${folder}`;
 }
 
+/** How an SFTP sign-in's failure starts when the server's host key isn't trusted yet (remote/sftp.rs). */
+export const UNKNOWN_HOST = "Its host key isn't known yet";
+/** An SFTP server's host keys, and their fingerprints, to see before trusting them. */
+export const remoteHostKeys = (host: string, port: number) => invoke<{ fingerprints: string[]; keys: string }>("remote_host_keys", { host, port });
+/** Trusts them (Glint's own list; ~/.ssh/known_hosts isn't changed). */
+export const remoteTrustHost = (keys: string) => invoke("remote_trust_host", { keys });
 export const remoteSecretSet = (id: string, secret: string) => invoke("remote_secret_set", { id, secret });
 export const remoteSecretDelete = (id: string) => invoke("remote_secret_delete", { id });
 export const remoteSecretSaved = (id: string) => invoke<boolean>("remote_secret_saved", { id });

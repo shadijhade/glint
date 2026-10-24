@@ -1,5 +1,6 @@
-//! Remote connections: an S3-compatible bucket (Amazon S3, Cloudflare R2, Backblaze B2, MinIO…) or a
-//! WebDAV server (Nextcloud, a NAS, dufs), browsed as a read-only folder at `remote:<id>\…` (the id is
+//! Remote connections: an S3-compatible bucket (Amazon S3, Cloudflare R2, Backblaze B2, MinIO…), a
+//! WebDAV server (Nextcloud, a NAS, dufs) or an SFTP server (through Windows' own OpenSSH client:
+//! sftp.rs), browsed as a read-only folder at `remote:<id>\…` (the id is
 //! made once from the connection's name, and kept through renames). Connections come from the app's
 //! settings without their secrets, which Windows Credential Manager keeps ("<app>/remote/<id>").
 //!
@@ -11,6 +12,7 @@
 
 mod dav;
 mod s3;
+mod sftp;
 mod time;
 
 use crate::archive::{extract, Skipped, StageProgress, Staged};
@@ -18,7 +20,7 @@ use crate::fsx::{Entry, Resolved};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tauri::ipc::Channel;
@@ -50,14 +52,19 @@ pub fn is_remote(path: &str) -> bool {
 pub struct Connection {
     pub id: String,
     pub name: String,
-    /// "s3" or "webdav".
+    /// "s3", "webdav" or "sftp".
     pub kind: String,
     /// S3: the service's address (Amazon's, from the region, when it's empty); WebDAV: the server's URL.
     pub endpoint: String,
     pub region: String,
     pub bucket: String,
-    /// S3's access key ID; WebDAV's user name.
+    /// S3's access key ID; WebDAV's and SFTP's user name.
     pub user: String,
+    /// SFTP: the server (a name ~/.ssh/config knows will do), its port (22 when 0), and a private key
+    /// file to sign in with ("" for ssh's own choice: its agent, or the keys it'd try).
+    pub host: String,
+    pub port: u16,
+    pub key: String,
     /// The folder on it to start at.
     pub root: String,
     /// Pictures shown in the grid get thumbnails, which downloads each one (up to 16 MB).
@@ -77,6 +84,7 @@ pub struct Item {
 enum Backend {
     S3(s3::Bucket),
     Dav(dav::Server),
+    Sftp(sftp::Server),
 }
 
 impl Backend {
@@ -84,6 +92,7 @@ impl Backend {
         match self {
             Backend::S3(b) => b.list(path).await,
             Backend::Dav(d) => d.list(path).await,
+            Backend::Sftp(s) => s.list(path).await,
         }
     }
 
@@ -91,6 +100,7 @@ impl Backend {
         match self {
             Backend::S3(b) => b.stat(path).await,
             Backend::Dav(d) => d.stat(path).await,
+            Backend::Sftp(s) => s.stat(path).await,
         }
     }
 
@@ -98,6 +108,7 @@ impl Backend {
         match self {
             Backend::S3(b) => b.get(path, first).await,
             Backend::Dav(d) => d.get(path, first).await,
+            Backend::Sftp(_) => Err("SFTP isn't read over HTTP".into()),
         }
     }
 }
@@ -164,6 +175,23 @@ fn make(connection: &Connection, secret: &str) -> Result<Backend, String> {
                 base.set_path(&format!("{}/", base.path()));
             }
             Ok(Backend::Dav(dav::Server { client: client()?, base, user: connection.user.trim().into(), password: secret.into(), root }))
+        }
+        "sftp" => {
+            let host = connection.host.trim();
+            if host.is_empty() {
+                return Err("Which server? Its name or address goes in the connection".into());
+            }
+            // From / when it starts with one; else below the folder the server signs in to.
+            let root = connection.root.trim().replace('\\', "/");
+            let root = if root == "/" { root } else { root.trim_end_matches('/').to_string() };
+            Ok(Backend::Sftp(sftp::Server {
+                host: host.into(),
+                port: connection.port,
+                user: connection.user.trim().into(),
+                root,
+                key: connection.key.trim().into(),
+                askpass: (!secret.is_empty()).then(|| secrets::target(&connection.id)),
+            }))
         }
         other => Err(format!("Glint doesn't know connections of the kind “{other}”")),
     }
@@ -269,12 +297,42 @@ pub async fn resolve(path: &str) -> Result<Resolved, String> {
 /// come; `tick` gets the bytes as they come and stops it by returning false ("cancelled"). The file
 /// gets `modified` as its date, and is made read-only for opening. On any failure it's deleted.
 async fn download(backend: &Backend, raw: &str, dest: &Path, expected: Option<u64>, modified: i64, read_only: bool, tick: &mut (dyn FnMut(u64) -> bool + Send)) -> Result<u64, String> {
-    use std::io::Write;
     let result = async {
-        let mut response = backend.get(raw, None).await?;
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
+        let written = match backend {
+            Backend::Sftp(server) => sftp_fetch(server, raw, dest, expected.unwrap_or(0), tick).await?,
+            _ => http_fetch(backend, raw, dest, expected, tick).await?,
+        };
+        finish(dest, modified, read_only)?;
+        Ok(written)
+    }
+    .await;
+    if result.is_err() {
+        let _ = std::fs::remove_file(dest);
+    }
+    result
+}
+
+/// A download's date, and read-only for opening.
+fn finish(dest: &Path, modified: i64, read_only: bool) -> Result<(), String> {
+    if modified > 0 {
+        let _ = std::fs::File::options().write(true).open(dest).and_then(|f| f.set_modified(UNIX_EPOCH + Duration::from_millis(modified as u64)));
+    }
+    if read_only {
+        let mut permissions = std::fs::metadata(dest).map_err(|e| e.to_string())?.permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(dest, permissions).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// An HTTP download (S3's, WebDAV's), streamed to `dest`.
+async fn http_fetch(backend: &Backend, raw: &str, dest: &Path, expected: Option<u64>, tick: &mut (dyn FnMut(u64) -> bool + Send)) -> Result<u64, String> {
+    use std::io::Write;
+    {
+        let mut response = backend.get(raw, None).await?;
         let mut file = std::fs::File::create(dest).map_err(crate::fsx::file_error)?;
         let mut written = 0u64;
         while let Some(chunk) = response.chunk().await.map_err(|e| reach_failure(&e))? {
@@ -290,22 +348,35 @@ async fn download(backend: &Backend, raw: &str, dest: &Path, expected: Option<u6
         if let Some(n) = expected.filter(|&n| n != written) {
             return Err(format!("It ended after {written} of its {n} bytes"));
         }
-        if modified > 0 {
-            let _ = file.set_modified(UNIX_EPOCH + Duration::from_millis(modified as u64));
-        }
-        drop(file);
-        if read_only {
-            let mut permissions = std::fs::metadata(dest).map_err(|e| e.to_string())?.permissions();
-            permissions.set_readonly(true);
-            std::fs::set_permissions(dest, permissions).map_err(|e| e.to_string())?;
-        }
         Ok(written)
     }
-    .await;
-    if result.is_err() {
-        let _ = std::fs::remove_file(dest);
+}
+
+/// An SFTP download, sftp running on a thread of its own, how far it is told to `tick` as it goes.
+async fn sftp_fetch(server: &sftp::Server, raw: &str, dest: &Path, size: u64, tick: &mut (dyn FnMut(u64) -> bool + Send)) -> Result<u64, String> {
+    let (server, files) = (server.settings(), vec![(raw.to_string(), dest.to_path_buf(), size)]);
+    let done = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (now, halt) = (done.clone(), stop.clone());
+    let handle = tokio::task::spawn_blocking(move || {
+        server.download(&files, &|n| {
+            now.store(n, Ordering::Relaxed);
+            !halt.load(Ordering::Relaxed)
+        })
+    });
+    let mut told = 0;
+    while !handle.is_finished() {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let n = done.load(Ordering::Relaxed);
+        if n > told {
+            if !tick(n - told) {
+                stop.store(true, Ordering::Relaxed);
+            }
+            told = n;
+        }
     }
-    result
+    let outcome = handle.await.map_err(|e| e.to_string())??;
+    outcome.into_iter().next().unwrap_or_else(|| Err("It didn't come".into()))
 }
 
 /// A file on a remote downloaded for a preview (within its budget, kept while Glint runs) or to open
@@ -341,6 +412,9 @@ pub async fn read_prefix(path: &str, limit: usize) -> Result<(Vec<u8>, bool), St
     let (id, shown) = parts(path).ok_or("That isn't on a remote")?;
     let (_, backend) = backend(id)?;
     let raw = raw(id, &shown);
+    if let Backend::Sftp(server) = &*backend {
+        return sftp_prefix(server, &raw, limit).await;
+    }
     let mut response = match backend.get(&raw, Some(limit as u64 + 1)).await {
         // A range the server won't give: the whole file, read only as far as needed.
         Err(e) if e == UNSATISFIABLE => backend.get(&raw, None).await?,
@@ -354,6 +428,33 @@ pub async fn read_prefix(path: &str, limit: usize) -> Result<(Vec<u8>, bool), St
             break;
         }
     }
+    let more = bytes.len() > limit;
+    bytes.truncate(limit);
+    Ok((bytes, more))
+}
+
+/// The first `limit` bytes of a file over SFTP, which reads files whole: sftp is stopped once there's
+/// more than that.
+async fn sftp_prefix(server: &sftp::Server, raw: &str, limit: usize) -> Result<(Vec<u8>, bool), String> {
+    use std::io::Read;
+    let item = server.stat(raw).await?.ok_or(s3::NOT_FOUND)?;
+    let folder = extract::new_folder("preview").map_err(|e| e.message())?;
+    let dest = folder.join("start");
+    let want = (limit as u64 + 1).min(item.size);
+    let (server, files) = (server.settings(), vec![(raw.to_string(), dest.clone(), item.size)]);
+    let ran = tokio::task::spawn_blocking(move || server.download(&files, &|n| n < want)).await.map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(&dest).and_then(|f| f.take(limit as u64 + 1).read_to_end(&mut bytes));
+    extract::remove_tree(&folder);
+    match ran {
+        // Stopped on purpose, with enough of it.
+        Err(e) if e == "cancelled" => {}
+        Err(e) => return Err(e),
+        Ok(outcome) => {
+            outcome.into_iter().next().unwrap_or_else(|| Err("It didn't come".into()))?;
+        }
+    }
+    read.map_err(|e| e.to_string())?;
     let more = bytes.len() > limit;
     bytes.truncate(limit);
     Ok((bytes, more))
@@ -450,6 +551,31 @@ async fn stage_into(folder: &Path, paths: &[String], read_only: bool, cancel: &A
     let _ = progress.send(StageProgress { done: 0, total });
     let mut done = 0u64;
     let mut last = Instant::now();
+    // SFTP's in one sftp run for each connection (each run signs in again); the others one at a time.
+    let (batched, jobs): (Vec<Job>, Vec<Job>) = jobs.into_iter().partition(|j| matches!(*j.backend, Backend::Sftp(_)));
+    let mut runs: Vec<(Arc<Backend>, Vec<Job>)> = Vec::new();
+    for job in batched {
+        match runs.iter_mut().find(|(b, _)| Arc::ptr_eq(b, &job.backend)) {
+            Some((_, list)) => list.push(job),
+            None => runs.push((job.backend.clone(), vec![job])),
+        }
+    }
+    for (backend, list) in runs {
+        let Backend::Sftp(server) = &*backend else { continue };
+        let files: Vec<(String, PathBuf, u64)> = list.iter().map(|j| (j.raw.clone(), j.dest.clone(), j.size)).collect();
+        let base = done;
+        // This runs on a thread of its own (archive_stage's lane), so sftp is waited on here.
+        let outcomes = server.download(&files, &|n| {
+            let _ = progress.send(StageProgress { done: base + n, total });
+            !cancel.load(Ordering::Relaxed)
+        })?;
+        for (job, outcome) in list.into_iter().zip(outcomes) {
+            match outcome.and_then(|n| finish(&job.dest, job.modified, read_only).map(|_| n)) {
+                Ok(n) => done += n,
+                Err(reason) => skipped.push(Skipped { path: job.shown, reason }),
+            }
+        }
+    }
     for job in jobs {
         let mut tick = |n: u64| {
             done += n;
@@ -617,13 +743,47 @@ pub fn remote_secret_saved(id: String) -> bool {
 /// at its top, or why it didn't connect.
 #[tauri::command]
 pub async fn remote_test(connection: Connection, secret: Option<String>) -> Result<String, String> {
+    let typed = secret.clone().filter(|s| !s.is_empty());
     let secret = secret.unwrap_or_else(|| secrets::read(&connection.id).unwrap_or_default());
-    let items = make(&connection, &secret)?.list("").await?;
+    let mut made = make(&connection, &secret)?;
+    // ssh takes an SFTP password only from Credential Manager (as Glint answers SSH_ASKPASS): one typed
+    // and not kept yet is kept for the test, and forgotten after it.
+    let trial = match (&mut made, typed) {
+        (Backend::Sftp(server), Some(typed)) => {
+            let target = format!("{}~test", secrets::target(&connection.id));
+            secrets::write_target(&target, &typed)?;
+            server.askpass = Some(target.clone());
+            Some(target)
+        }
+        _ => None,
+    };
+    let listed = made.list("").await;
+    if let Some(target) = trial {
+        let _ = secrets::delete_target(&target);
+    }
+    let items = listed?;
     Ok(match items.len() {
         0 => "Connected: there's nothing there yet".into(),
         1 => "Connected: 1 item at its top".into(),
         n => format!("Connected: {n} items at its top"),
     })
+}
+
+/// An SFTP server's host keys and their fingerprints, for the person to see before trusting them.
+#[tauri::command]
+pub async fn remote_host_keys(host: String, port: u16) -> Result<sftp::HostKeys, String> {
+    sftp::host_keys(host, port).await
+}
+
+/// Trusts the host keys `remote_host_keys` read: in Glint's own list (~/.ssh/known_hosts isn't changed).
+#[tauri::command]
+pub fn remote_trust_host(keys: String) -> Result<(), String> {
+    sftp::trust(&keys)
+}
+
+/// Glint run by ssh as its SSH_ASKPASS (sftp.rs): answers, and exits, before anything of the app runs.
+pub fn askpass() -> Option<i32> {
+    sftp::askpass()
 }
 
 /// The app's name, for its secrets' names in Credential Manager (a test copy's stay apart).
@@ -638,13 +798,26 @@ mod secrets {
     use windows::core::{HSTRING, PWSTR};
     use windows::Win32::Security::Credentials::{CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC};
 
-    fn target(id: &str) -> HSTRING {
-        HSTRING::from(format!("{}/remote/{id}", super::APP.get().map_or("Glint", String::as_str)))
+    /// A connection's credential's name.
+    pub fn target(id: &str) -> String {
+        format!("{}/remote/{id}", super::APP.get().map_or("Glint", String::as_str))
     }
 
     pub fn write(id: &str, secret: &str) -> Result<(), String> {
-        let target = target(id);
-        let user = HSTRING::from(id);
+        write_target(&target(id), secret)
+    }
+
+    pub fn read(id: &str) -> Option<String> {
+        read_target(&target(id))
+    }
+
+    pub fn delete(id: &str) -> Result<(), String> {
+        delete_target(&target(id))
+    }
+
+    pub fn write_target(target: &str, secret: &str) -> Result<(), String> {
+        let user = HSTRING::from(target.rsplit('/').next().unwrap_or(target));
+        let target = HSTRING::from(target);
         let blob = secret.as_bytes().to_vec();
         let credential = CREDENTIALW {
             Type: CRED_TYPE_GENERIC,
@@ -658,17 +831,17 @@ mod secrets {
         unsafe { CredWriteW(&credential, 0) }.map_err(|e| e.message())
     }
 
-    pub fn read(id: &str) -> Option<String> {
+    pub fn read_target(target: &str) -> Option<String> {
         let mut found: *mut CREDENTIALW = std::ptr::null_mut();
-        unsafe { CredReadW(&target(id), CRED_TYPE_GENERIC, None, &mut found) }.ok()?;
+        unsafe { CredReadW(&HSTRING::from(target), CRED_TYPE_GENERIC, None, &mut found) }.ok()?;
         let credential = unsafe { &*found };
         let bytes = unsafe { std::slice::from_raw_parts(credential.CredentialBlob, credential.CredentialBlobSize as usize) }.to_vec();
         unsafe { CredFree(found as *const std::ffi::c_void) };
         String::from_utf8(bytes).ok()
     }
 
-    pub fn delete(id: &str) -> Result<(), String> {
-        unsafe { CredDeleteW(&target(id), CRED_TYPE_GENERIC, None) }.map_err(|e| e.message())
+    pub fn delete_target(target: &str) -> Result<(), String> {
+        unsafe { CredDeleteW(&HSTRING::from(target), CRED_TYPE_GENERIC, None) }.map_err(|e| e.message())
     }
 }
 

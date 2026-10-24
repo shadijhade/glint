@@ -620,7 +620,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         // Used most, here and (with history shared with zoxide) in terminals.
         for (const folder of usedFolders(visits, 60)) addFolder(folder, baseName(folder), Folder, 0, "fill-amber-400/80 text-amber-500");
         for (const d of s.drives) addFolder(d.path, driveName(d), DRIVE_ICONS[d.kind], 0);
-        for (const r of useStore.getState().remotes) addFolder(remotePath(r), r.name, r.kind === "s3" ? Cloud : Server, 0.5);
+        for (const r of useStore.getState().remotes) addFolder(remotePath(r), r.name, r.kind === "s3" ? Cloud : r.kind === "sftp" ? SquareTerminal : Server, 0.5);
         for (const saved of useStore.getState().savedSearches) {
             const where = saved.folder || "every drive";
             folders.push({ id: `search:${where}\n${saved.query}`, label: saved.query, detail: `Saved search in ${where}`, icon: Search, kind: "folder", weight: 1.5, run: () => void runSavedSearch(saved) });
@@ -795,7 +795,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!step && action("undo", `Undo the ${step.label}`, Undo2, () => undo(), "Ctrl+Z"),
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
             action("shortcuts", "Keyboard shortcuts", Keyboard, openShortcuts, "F1"),
-            action("add-remote", "Add a remote connection: an S3 bucket, or a WebDAV server", PlugZap, addRemote),
+            action("add-remote", "Add a remote connection: an S3 bucket, a WebDAV or an SFTP server", PlugZap, addRemote),
         ];
         return [...folders, ...actions.filter((a): a is Command => !!a)];
     };
