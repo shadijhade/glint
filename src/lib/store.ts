@@ -160,13 +160,17 @@ export const DEFAULT_SETTINGS: Settings = {
 export interface RemoteConnection {
     id: string;
     name: string;
-    kind: "s3" | "webdav";
+    kind: "s3" | "webdav" | "sftp";
     /** S3: the service's address (Amazon's, from the region, when empty); WebDAV: the server's URL. */
     endpoint: string;
     region: string;
     bucket: string;
-    /** S3's access key ID; WebDAV's user name. */
+    /** S3's access key ID; WebDAV's and SFTP's user name. */
     user: string;
+    /** SFTP: the server (a name ~/.ssh/config knows will do), its port (22 when 0), and a key file ("" for ssh's own choice). */
+    host?: string;
+    port?: number;
+    key?: string;
     /** The folder on it to start at. */
     root: string;
     /** Pictures in the grid get thumbnails, which downloads each one shown (up to 16 MB): off unless asked for. */

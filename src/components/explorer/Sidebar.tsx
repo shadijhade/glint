@@ -1,4 +1,4 @@
-import { Cloud, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, Trash2, Usb, X } from "lucide-react";
+import { Cloud, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Usb, X } from "lucide-react";
 import { remotePath, remoteWhere } from "@/lib/remotes";
 import { addRemote } from "./RemoteDialog";
 import { useShallow } from "zustand/react/shallow";
@@ -182,9 +182,9 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
             </Section>
             <Section title="Remote">
                 {remotes.map((r) => (
-                    <Place key={r.id} icon={r.kind === "s3" ? Cloud : Server} label={r.name} path={remotePath(r)} active={here(remotePath(r))} title={remoteWhere(r)} onContextMenu={onContextMenu} />
+                    <Place key={r.id} icon={r.kind === "s3" ? Cloud : r.kind === "sftp" ? SquareTerminal : Server} label={r.name} path={remotePath(r)} active={here(remotePath(r))} title={remoteWhere(r)} onContextMenu={onContextMenu} />
                 ))}
-                <button onClick={addRemote} title="Add a remote connection: an S3 bucket, or a WebDAV server" aria-label="Add a remote connection" className={cn(PLACE, "text-muted-foreground")}>
+                <button onClick={addRemote} title="Add a remote connection: an S3 bucket, a WebDAV server or an SFTP server" aria-label="Add a remote connection" className={cn(PLACE, "text-muted-foreground")}>
                     <Plus className="size-4 shrink-0" />
                     <span className="hidden truncate md:inline">Add a connection</span>
                 </button>

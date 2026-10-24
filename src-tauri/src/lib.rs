@@ -526,7 +526,7 @@ pub(crate) fn installed_by_setup() -> bool {
 /// Glint started as a worker: the one that reads data files for their tree (jq.rs), or one that reads
 /// documents for Documents search (doctext.rs). Its exit code, once it has answered; None for the app.
 pub fn worker() -> Option<i32> {
-    jq::worker().or_else(doctext::worker)
+    jq::worker().or_else(doctext::worker).or_else(remote::askpass)
 }
 
 pub fn run() {
@@ -674,6 +674,8 @@ pub fn run() {
             remote::remote_secret_delete,
             remote::remote_secret_saved,
             remote::remote_test,
+            remote::remote_host_keys,
+            remote::remote_trust_host,
             timeline::scan_timeline,
             timeline::cancel_timeline,
             data_lens::inspect_sqlite,

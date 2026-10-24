@@ -42,6 +42,8 @@ sha2 = "0.10"
 # Remote connections' URLs (remote/), as reqwest already has them.
 percent-encoding = "2"
 url = "2"
+# SFTP's runs waited on off the async threads (remote/sftp.rs), as Tauri's tokio already has it.
+tokio = { version = "1", features = ["rt", "time"] }
 crc32fast = "1.5"
 blake3 = "1.8"
 # Paste as file: a picture on the clipboard as a PNG (already in the build through Tauri).
