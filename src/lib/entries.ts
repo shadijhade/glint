@@ -172,8 +172,7 @@ export function decodeItems(buffer: ArrayBuffer): { location: string; entries: F
     return { location, entries, elapsed };
 }
 
-/** An archive file (on disk or in another archive) Enter opens like a folder: a zip, a 7z… */
-/** (On a remote it's a file like any: Glint doesn't look inside archives there.) */
+/** An archive file (on disk or in another archive) Enter opens like a folder: a zip, a 7z… (On a remote it's a file like any: Glint doesn't look inside archives there.) */
 export const isArchiveFile = (e: FileEntry) => !e.dir && (e.attrs & ATTR.remote) === 0 && BROWSED.includes(e.ext);
 
 /** A file that's an archive by another name (a .docx, a .jar…): Enter opens it in its app, "Open as archive" looks inside. */

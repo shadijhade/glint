@@ -1337,7 +1337,6 @@ export function openArchivedWith(entry: FileEntry, open: (path: string) => Promi
 
 let findSeq = 0;
 
-/** Searches the open folder and its subfolders (or every drive from This PC) by name: index, else fd. */
 /** A search kept in the sidebar: its folder in this tab, searched for its query (shown in the box to change). */
 export async function runSavedSearch({ query, folder }: SavedSearch) {
     const tab = activeTabId();
@@ -1346,6 +1345,7 @@ export async function runSavedSearch({ query, folder }: SavedSearch) {
     return runFind(query);
 }
 
+/** Searches the open folder and its subfolders (or every drive from This PC) by name: index, else fd. */
 export async function runFind(query: string, wider: Wider = {}) {
     if (!query.trim()) return clearFind();
     const tab = activeTabId();

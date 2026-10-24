@@ -270,7 +270,6 @@ function ToolRow({ tool, progress }: { tool: ToolStatus; progress?: ToolProgress
     );
 }
 
-/** Meaning search's model, among the tools: downloaded or not, and Download, Stop or Remove. */
 /** The code editors found on this PC, to open files with: picking one fills in its path. */
 function EditorPicker({ value, onPick }: { value: string; onPick: (path: string) => void }) {
     const editors = useOpeners((s) => s.list).filter((o) => !o.terminal);
@@ -299,6 +298,7 @@ function EditorPicker({ value, onPick }: { value: string; onPick: (path: string)
     );
 }
 
+/** Meaning search's model, among the tools: downloaded or not, and Download, Stop or Remove. */
 function MeaningRow() {
     const { installed, progress } = useMeaning();
     useEffect(() => {
@@ -362,7 +362,6 @@ function ToolsSection() {
     );
 }
 
-/** File Explorer's "Open in Glint", and opening folders here when they're double-clicked. */
 /** The terminal under the files (Ctrl+`): the shell new ones start, and whether they follow the folder shown. */
 function TerminalSection() {
     const shells = useTerminals((s) => s.shells);
@@ -416,6 +415,7 @@ function CheckSection() {
     );
 }
 
+/** File Explorer's "Open in Glint", and opening folders here when they're double-clicked. */
 function FileExplorerRows() {
     const [state, setState] = useState<ExplorerIntegration | null>(null);
     const [working, setWorking] = useState(false);

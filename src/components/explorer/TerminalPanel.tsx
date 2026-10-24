@@ -57,8 +57,7 @@ function hex(color: string) {
     return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
 }
 
-/** The terminal's colors, from the app's: its background and text, the primary color for the cursor. */
-/** The terminal's colors, from the app's theme (a recording's preview plays in them too). */
+/** The terminal's colors, from the app's theme: its background and text, the primary color for the cursor (a recording's preview plays in them too). */
 export function terminalTheme() {
     const style = getComputedStyle(document.documentElement);
     // The theme's variables hold bare HSL parts ("0 0% 14%").
