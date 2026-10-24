@@ -421,4 +421,4 @@ Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The bundled ripgrep, fd and pdu, and the crates that read archives, keep their own licenses; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+MIT, see [LICENSE](LICENSE). The bundled ripgrep, fd and pdu, and the crates that read archives, keep their own licenses; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), and [THIRD_PARTY_CRATES.md](THIRD_PARTY_CRATES.md) for every crate in the app.

@@ -64,7 +64,8 @@
     ],
     "resources": {
       "../LICENSE": "LICENSE.txt",
-      "../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md"
+      "../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md",
+      "../THIRD_PARTY_CRATES.md": "THIRD_PARTY_CRATES.md"
     },
     "windows": {
       "nsis": {

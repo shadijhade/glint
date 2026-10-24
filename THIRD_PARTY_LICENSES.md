@@ -8,7 +8,7 @@ Glint ships these programs unmodified, as separate executables next to the app. 
 | [fd](https://github.com/sharkdp/fd) (`fd.exe`) | 10.5.0 | Finding files by name | MIT (dual-licensed MIT or Apache-2.0) |
 | [pdu](https://github.com/KSXGitHub/parallel-disk-usage) (`pdu.exe`, parallel-disk-usage) | 0.24.0 | Folder sizes and disk-usage maps | Apache-2.0 |
 
-Rust crates and npm packages compiled into the app keep their own licenses; see `src-tauri/Cargo.lock` and `package-lock.json`. The crates that read archives and compressed files are listed under [Archive support](#archive-support-compiled-into-the-app), with the license texts their terms ask to be passed on.
+Every Rust crate compiled into the app is listed with its license's text in [THIRD_PARTY_CRATES.md](THIRD_PARTY_CRATES.md), which the installer carries too (made by [cargo-about](https://github.com/EmbarkStudios/cargo-about): `npm run licenses`). npm packages bundled into the UI keep their own licenses; see `package-lock.json`. The crates that read archives and compressed files are also listed under [Archive support](#archive-support-compiled-into-the-app), with the license texts their terms ask to be passed on.
 
 ## ripgrep
 
