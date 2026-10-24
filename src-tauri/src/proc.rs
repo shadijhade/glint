@@ -146,6 +146,56 @@ fn in_winget_packages(packages: &std::path::Path, package: &str, file: &str) -> 
         .find(|p| p.is_file())
 }
 
+/// A Windows job holding processes Glint started: closing it (dropping this) ends them, as Glint's own
+/// end does, however it ends.
+pub(crate) struct Job(windows::Win32::Foundation::HANDLE);
+
+// The handle is only closed, once, by its owner.
+unsafe impl Send for Job {}
+
+impl Job {
+    /// One that also holds its process to `memory` and to no child processes of its own: jq's, and
+    /// Documents search's workers (doctext.rs).
+    pub(crate) fn new(memory: usize) -> Result<Self, String> {
+        use windows::Win32::System::JobObjects::*;
+        unsafe {
+            let job = Job(CreateJobObjectW(None, windows::core::PCWSTR::null()).map_err(|e| e.to_string())?);
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+            info.BasicLimitInformation.ActiveProcessLimit = 1;
+            info.ProcessMemoryLimit = memory;
+            SetInformationJobObject(job.0, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of_val(&info) as u32).map_err(|e| e.to_string())?;
+            Ok(job)
+        }
+    }
+
+    /// One that only ends what it holds: a send's or a share's (share.rs), which mustn't outlive Glint.
+    pub(crate) fn ending() -> Result<Self, String> {
+        use windows::Win32::System::JobObjects::*;
+        unsafe {
+            let job = Job(CreateJobObjectW(None, windows::core::PCWSTR::null()).map_err(|e| e.to_string())?);
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(job.0, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of_val(&info) as u32).map_err(|e| e.to_string())?;
+            Ok(job)
+        }
+    }
+
+    pub(crate) fn assign(&self, child: &Child) -> Result<(), String> {
+        use std::os::windows::io::AsRawHandle;
+        unsafe { windows::Win32::System::JobObjects::AssignProcessToJobObject(self.0, windows::Win32::Foundation::HANDLE(child.as_raw_handle())).map_err(|e| e.to_string()) }
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
 pub(crate) fn no_window(command: &mut Command) {
     #[cfg(windows)]
     {
