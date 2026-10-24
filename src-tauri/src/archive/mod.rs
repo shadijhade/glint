@@ -1013,41 +1013,45 @@ pub async fn archive_compress(paths: Vec<String>, folder: String, name: String, 
 /// one file) is `folder` of what comes back.
 #[tauri::command]
 pub async fn archive_extract_here(path: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
-    in_lane(lane, move |cancel| {
-        let archive = Path::new(&path);
-        let (Some(parent), Some(stem)) = (archive.parent(), archive.file_stem()) else { return Err(Failure::NotFound.message()) };
-        let spot = spot(&path).ok_or_else(|| Failure::NotFound.message())?.map_err(|e| e.message())?;
-        let tree = &spot.archive.tree;
-        let tops: Vec<(String, &str)> = tree.node(spot.node).children.iter().map(|&c| (format!("{path}\\{}", tree.node(c).name), &*tree.node(c).name)).collect();
-        let parent = parent.to_string_lossy();
-        if let (Format::Single(_), [(top, name)]) = (spot.archive.format, tops.as_slice()) {
-            let file = fsx::create_numbered(&parent, name, false)?;
-            let named = Path::new(&file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            return match guarded(|| stage_into(Path::new(&*parent), std::slice::from_ref(top), Some(&named), cancel, &on_progress)) {
-                Ok(staged) if !staged.paths.is_empty() && staged.skipped.is_empty() => Ok(Staged { folder: file, ..staged }),
-                other => {
-                    let _ = std::fs::remove_file(&file);
-                    Err(match other {
-                        Ok(staged) => staged.skipped.into_iter().next().map_or_else(|| Failure::NotFound.message(), |s| s.reason),
-                        Err(e) => e.message(),
-                    })
-                }
-            };
-        }
-        let tops: Vec<String> = tops.into_iter().map(|(top, _)| top).collect();
-        let folder = fsx::create_numbered(&parent, without_tar(&stem.to_string_lossy()), true)?;
-        match guarded(|| stage_into(Path::new(&folder), &tops, None, cancel, &on_progress)) {
-            Ok(staged) if !staged.paths.is_empty() => Ok(Staged { folder, ..staged }),
+    in_lane(lane, move |cancel| extract_beside(&path, cancel, &on_progress)).await
+}
+
+/// Extract here's work: the archive at `path` (on disk) into a new folder next to it, or a single
+/// compressed file as the file itself; `folder` of what comes back is what was made. Folder rules
+/// extract with it too.
+pub(crate) fn extract_beside(path: &str, cancel: &AtomicBool, on_progress: &Channel<StageProgress>) -> Result<Staged, String> {
+    let archive = Path::new(path);
+    let (Some(parent), Some(stem)) = (archive.parent(), archive.file_stem()) else { return Err(Failure::NotFound.message()) };
+    let spot = spot(path).ok_or_else(|| Failure::NotFound.message())?.map_err(|e| e.message())?;
+    let tree = &spot.archive.tree;
+    let tops: Vec<(String, &str)> = tree.node(spot.node).children.iter().map(|&c| (format!("{path}\\{}", tree.node(c).name), &*tree.node(c).name)).collect();
+    let parent = parent.to_string_lossy();
+    if let (Format::Single(_), [(top, name)]) = (spot.archive.format, tops.as_slice()) {
+        let file = fsx::create_numbered(&parent, name, false)?;
+        let named = Path::new(&file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        return match guarded(|| stage_into(Path::new(&*parent), std::slice::from_ref(top), Some(&named), cancel, on_progress)) {
+            Ok(staged) if !staged.paths.is_empty() && staged.skipped.is_empty() => Ok(Staged { folder: file, ..staged }),
             other => {
-                let _ = std::fs::remove_dir_all(&folder);
+                let _ = std::fs::remove_file(&file);
                 Err(match other {
-                    Ok(staged) => staged.skipped.into_iter().next().map_or_else(|| "The archive is empty".into(), |s| s.reason),
+                    Ok(staged) => staged.skipped.into_iter().next().map_or_else(|| Failure::NotFound.message(), |s| s.reason),
                     Err(e) => e.message(),
                 })
             }
+        };
+    }
+    let tops: Vec<String> = tops.into_iter().map(|(top, _)| top).collect();
+    let folder = fsx::create_numbered(&parent, without_tar(&stem.to_string_lossy()), true)?;
+    match guarded(|| stage_into(Path::new(&folder), &tops, None, cancel, on_progress)) {
+        Ok(staged) if !staged.paths.is_empty() => Ok(Staged { folder, ..staged }),
+        other => {
+            let _ = std::fs::remove_dir_all(&folder);
+            Err(match other {
+                Ok(staged) => staged.skipped.into_iter().next().map_or_else(|| "The archive is empty".into(), |s| s.reason),
+                Err(e) => e.message(),
+            })
         }
-    })
-    .await
+    }
 }
 
 /// Export as ncdu JSON: the folder `path` on disk walked into `dest` as ncdu's JSON export (which

@@ -42,6 +42,7 @@ import {
     SquareTerminal,
     TextSearch,
     Trash2,
+    Wand2,
     Wifi,
     Wrench,
     ZoomIn,
@@ -82,6 +83,7 @@ import { canConvert, convertPictures } from "./ConvertDialog";
 import { openCleanup } from "./CleanupDialog";
 import { offerOnNetwork, offerToPC } from "./ShareDialog";
 import { openReceive } from "@/lib/share";
+import { openRules } from "./RulesDialog";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { openHistory } from "./HistoryDialog";
 import { inspectLocks } from "./LocksDialog";
@@ -301,6 +303,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             { label: "Find duplicate files in this folder", icon: Files, disabled: !inFolder, onSelect: () => inspectDuplicates(path) },
             { label: "Clean up this folder…", icon: BrushCleaning, disabled: !inFolder || readOnly, onSelect: () => openCleanup(path) },
             { label: "Convert the selected pictures…", icon: ImageDown, disabled: !selected.some(canConvert), onSelect: () => convertPictures(selected) },
+            { label: "Folder rules: sort out what comes in…", icon: Wand2, onSelect: () => openRules(inFolder && !readOnly ? path : undefined) },
             { heading: "Share" },
             {
                 label: paths.length === 1 ? "Send the selection to another PC…" : "Send this folder to another PC…",
