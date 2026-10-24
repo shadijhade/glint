@@ -670,6 +670,8 @@ pub fn run() {
             share::share_stop,
             lan::lan_addresses,
             lan::lan_share_start,
+            lan::lan_reach,
+            lan::lan_open_settings,
             remote::remote_configure,
             remote::remote_secret_set,
             remote::remote_secret_delete,
