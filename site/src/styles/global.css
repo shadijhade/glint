@@ -51,7 +51,7 @@
   --header-h: 76px;
   --radius: 22px;
   --radius-sm: 14px;
-  --section-pad: clamp(104px, 14vw, 200px);
+  --section-pad: clamp(80px, 9vw, 140px);
   color-scheme: dark;
 }
 

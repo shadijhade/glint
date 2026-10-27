@@ -1,5 +1,5 @@
 ---
-/* 07 Get Glint: the download, the other ways in, and the questions people ask before they click. */
+/* 05 Get Glint: the download and why to trust it, the other ways in, and the questions people ask. */
 import { GET, SITE } from "../content/site";
 import Icon from "./Icon.astro";
 import Label from "./Label.astro";
@@ -11,7 +11,7 @@ import Lines from "./Lines.astro";
     <!-- The field draws Glint's mark in the space above the download (scene 5), then lies down as a
          horizon under the ways in and the questions (scene 4). -->
     <div class="get-hero" data-scene="5">
-      <Label index={7} text={GET.label} />
+      <Label index={5} text={GET.label} />
       <Lines lines={GET.lines} class="display" />
       <p class="lead get-body" data-reveal>{GET.body}</p>
       <div class="get-cta" data-reveal>
@@ -21,68 +21,73 @@ import Lines from "./Lines.astro";
         </a>
         <p class="get-meta mono"><span data-release></span>{GET.requirements}</p>
       </div>
-      <p class="smartscreen" data-reveal>
-        <Icon name="shield" />
-        <span>{GET.smartscreen}</span>
-      </p>
+      <ul class="trust" data-reveal>
+        {
+          GET.trust.map((t) => (
+            <li>
+              <Icon name={t.icon as "engine"} />
+              {t.text}
+            </li>
+          ))
+        }
+      </ul>
+      <p class="smartscreen" data-reveal>{GET.smartscreen}</p>
     </div>
 
     <div class="get-more" data-scene="4">
-    <div class="ways">
-      {
-        GET.ways.map((w) => (
-          <div class="way glass" data-reveal>
-            <h3>{w.title}</h3>
-            <div class="cmds">
-              {w.commands.map((c) => (
-                <div class="cmd">
-                  <code>{c}</code>
-                  <button class="copy" type="button" data-copy={c} aria-label={`Copy: ${c}`}>
-                    <Icon name="copy" class="copy-idle" />
-                    <Icon name="check" class="copy-done" />
-                  </button>
-                </div>
-              ))}
+      <div class="ways" data-reveal>
+        {
+          GET.ways.map((w) => (
+            <div class="way">
+              <h3>{w.title}</h3>
+              <div class="cmds">
+                {w.commands.map((c) => (
+                  <div class="cmd">
+                    <code>{c}</code>
+                    <button class="copy" type="button" data-copy={c} aria-label={`Copy: ${c}`}>
+                      <Icon name="copy" class="copy-idle" />
+                      <Icon name="check" class="copy-done" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p>{w.note}</p>
             </div>
-            <p>{w.note}</p>
-          </div>
-        ))
-      }
-      <div class="way glass" data-reveal data-offline hidden>
-        <h3>Offline installer</h3>
-        <p>With WebView2 inside, for a PC without internet or without WebView2.</p>
-        <a class="btn btn-ghost" href={SITE.latest} data-offline-link>
-          <Icon name="download" />
-          <span>Offline installer</span>
-        </a>
+          ))
+        }
+        <div class="way">
+          <h3>Other ways</h3>
+          <a class="way-link" href={SITE.latest} data-offline-link data-offline hidden>
+            <Icon name="download" />
+            <span>The offline installer, with WebView2 inside</span>
+          </a>
+          <a class="way-link" href={SITE.source}>
+            <Icon name="code" />
+            <span>Build it from the source</span>
+          </a>
+          <a class="way-link" href={SITE.releases}>
+            <Icon name="external" />
+            <span>Every release on GitHub</span>
+          </a>
+        </div>
       </div>
-      <div class="way glass" data-reveal>
-        <h3>From the source</h3>
-        <p>With Rust, Node.js and Tauri's prerequisites, it builds with one command.</p>
-        <a class="btn btn-ghost" href={SITE.source}>
-          <span>Build it yourself</span>
-          <Icon name="external" />
-        </a>
-      </div>
-    </div>
 
-    <div class="faq">
-      <h3 class="faq-title" data-reveal>Before you click</h3>
-      {
-        GET.faq.map((f) => (
-          <details class="qa" data-reveal>
-            <summary>
-              {f.q}
-              <span class="qa-mark" aria-hidden="true" />
-            </summary>
-            <p>{f.a}</p>
-          </details>
-        ))
-      }
-      <p class="faq-more" data-reveal>
-        More in the <a href={SITE.repo}>README</a>, the <a href={SITE.privacy}>privacy policy</a> and <a href={SITE.instantSearch}>how instant search works</a>.
-      </p>
-    </div>
+      <div class="faq">
+        {
+          GET.faq.map((f) => (
+            <details class="qa" data-reveal>
+              <summary>
+                {f.q}
+                <span class="qa-mark" aria-hidden="true" />
+              </summary>
+              <p>{f.a}</p>
+            </details>
+          ))
+        }
+        <p class="faq-more" data-reveal>
+          More in the <a href={SITE.repo}>README</a>, the <a href={SITE.privacy}>privacy policy</a> and <a href={SITE.instantSearch}>how instant search works</a>.
+        </p>
+      </div>
     </div>
   </div>
 </section>
@@ -93,10 +98,10 @@ import Lines from "./Lines.astro";
     justify-items: center;
     align-content: start;
     max-width: 920px;
-    min-height: 100vh;
-    min-height: 100svh;
+    min-height: 92vh;
+    min-height: 92svh;
     margin-inline: auto;
-    padding-top: max(34vh, 220px);
+    padding-top: max(32vh, 210px);
     text-align: center;
   }
 
@@ -111,54 +116,34 @@ import Lines from "./Lines.astro";
   }
 
   .get-hero :global(.display) {
-    font-size: clamp(2.8rem, 1.4rem + 6vw, 7rem);
+    font-size: clamp(2.6rem, 1.4rem + 5vw, 6rem);
   }
 
   .get-body {
     max-width: 30ch;
-    margin-top: 28px;
+    margin-top: 24px;
   }
 
   .get-cta {
     display: grid;
     justify-items: center;
-    gap: 16px;
-    margin-top: 40px;
+    gap: 14px;
+    margin-top: 34px;
   }
 
   .btn-xl {
-    min-height: 72px;
-    padding: 0 44px;
-    font-size: 19px;
+    min-height: 68px;
+    padding: 0 40px;
+    font-size: 18px;
     box-shadow:
-      0 24px 80px -16px rgba(255, 181, 38, 0.7),
-      0 0 0 10px rgba(255, 217, 102, 0.07),
+      0 24px 80px -16px rgba(255, 181, 38, 0.6),
+      0 0 0 10px rgba(255, 217, 102, 0.06),
       inset 0 1px 0 rgba(255, 255, 255, 0.6);
   }
 
   .btn-xl :global(.icon) {
-    width: 22px;
-    height: 22px;
-  }
-
-  /* A glint passes over the big button every few seconds, while motion is live. */
-  :global(.motion-live) .btn-xl::after {
-    animation: pass 4.5s var(--ease-in-out) 2s infinite;
-  }
-
-  @keyframes pass {
-    0%,
-    70% {
-      opacity: 0;
-      transform: skewX(-18deg) translateX(0);
-    }
-    72% {
-      opacity: 1;
-    }
-    100% {
-      opacity: 1;
-      transform: skewX(-18deg) translateX(420%);
-    }
+    width: 21px;
+    height: 21px;
   }
 
   .get-meta {
@@ -167,47 +152,86 @@ import Lines from "./Lines.astro";
     letter-spacing: 0.04em;
   }
 
-  .smartscreen {
+  .trust {
     display: flex;
-    gap: 10px;
-    max-width: 60ch;
-    margin-top: 26px;
-    color: var(--fog);
-    font-size: 14px;
-    text-align: left;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px 26px;
+    margin-top: 30px;
+    color: var(--mist);
+    font-size: 14.5px;
   }
 
-  .smartscreen :global(.icon) {
-    flex: none;
-    width: 18px;
-    height: 18px;
-    margin-top: 3px;
-    color: var(--pink);
+  .trust li {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .trust :global(.icon) {
+    width: 17px;
+    height: 17px;
+    color: var(--gold);
+  }
+
+  .smartscreen {
+    max-width: 62ch;
+    margin-top: 18px;
+    color: var(--fog);
+    font-size: 13.5px;
   }
 
   .ways {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 18px;
-    margin-top: clamp(80px, 10vw, 128px);
+    margin-top: clamp(56px, 7vw, 88px);
   }
 
   .way {
     display: grid;
     align-content: start;
     justify-items: start;
-    gap: 14px;
+    gap: 12px;
     min-width: 0;
-    padding: 26px;
+    padding: 22px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--glass);
+    backdrop-filter: blur(14px);
   }
 
   .way h3 {
-    font: 600 1.15rem var(--font-display);
+    font: 600 1.1rem var(--font-display);
   }
 
   .way p {
     color: var(--mist);
-    font-size: 15px;
+    font-size: 14px;
+  }
+
+  .way-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--snow);
+    font-size: 14.5px;
+  }
+
+  .way-link[hidden] {
+    display: none;
+  }
+
+  .way-link :global(.icon) {
+    width: 16px;
+    height: 16px;
+    color: var(--pink);
+  }
+
+  .way-link:hover span {
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 143, 208, 0.45);
+    text-underline-offset: 3px;
   }
 
   .cmds {
@@ -221,7 +245,7 @@ import Lines from "./Lines.astro";
     align-items: center;
     gap: 8px;
     min-width: 0;
-    padding: 10px 10px 10px 14px;
+    padding: 9px 9px 9px 13px;
     border-radius: 10px;
     background: rgba(6, 3, 11, 0.6);
   }
@@ -231,15 +255,15 @@ import Lines from "./Lines.astro";
     min-width: 0;
     overflow-wrap: anywhere;
     color: var(--gold-hi);
-    font: 400 13px/1.5 var(--font-mono);
+    font: 400 12.5px/1.5 var(--font-mono);
   }
 
   .copy {
     flex: none;
     display: grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
     border-radius: 8px;
     color: var(--fog);
     transition:
@@ -253,8 +277,8 @@ import Lines from "./Lines.astro";
   }
 
   .copy :global(.icon) {
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
   }
 
   .copy :global(.copy-done),
@@ -269,13 +293,7 @@ import Lines from "./Lines.astro";
 
   .faq {
     max-width: 860px;
-    margin: clamp(80px, 10vw, 128px) auto 0;
-  }
-
-  .faq-title {
-    margin-bottom: 16px;
-    font: 700 clamp(1.6rem, 1.2rem + 1.2vw, 2.2rem) var(--font-display);
-    letter-spacing: -0.02em;
+    margin: clamp(56px, 7vw, 88px) auto 0;
   }
 
   .qa {
@@ -287,10 +305,10 @@ import Lines from "./Lines.astro";
     align-items: center;
     justify-content: space-between;
     gap: 20px;
-    padding: 20px 4px;
+    padding: 18px 4px;
     cursor: pointer;
     list-style: none;
-    font-size: 1.08rem;
+    font-size: 1.05rem;
     font-weight: 400;
   }
 
@@ -326,12 +344,12 @@ import Lines from "./Lines.astro";
 
   .qa p {
     max-width: 70ch;
-    padding: 0 4px 22px;
+    padding: 0 4px 20px;
     color: var(--mist);
   }
 
   .faq-more {
-    margin-top: 26px;
+    margin-top: 22px;
     color: var(--fog);
     font-size: 14px;
   }
@@ -343,11 +361,22 @@ import Lines from "./Lines.astro";
     text-underline-offset: 3px;
   }
 
+  @media (max-width: 900px) {
+    .ways {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
   @media (max-width: 520px) {
     .btn-xl {
       width: 100%;
       padding: 0 24px;
       font-size: 17px;
+    }
+
+    .trust {
+      justify-content: flex-start;
+      text-align: left;
     }
   }
 </style>

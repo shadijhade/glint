@@ -1,68 +1,23 @@
 ---
-/*
-  01 Open. The measured times of four folders on a 0 to 400 ms scale, against the span of a blink;
-  beside it, System32 as Glint lists it, its names read at build time from the search demo's corpus.
-*/
-import names from "../../public/data/names.txt?raw";
+/* 01 Open: the measured times of four folders on a 0 to 400 ms scale, against the span of a blink. */
 import { OPEN } from "../content/site";
 import Label from "./Label.astro";
 import Lines from "./Lines.astro";
 
 const SCALE = 400;
 const pct = (ms: number) => `${((ms / SCALE) * 100).toFixed(2)}%`;
-
-// A stretch of System32 around kernel32.dll, as the list would show it sorted by name.
-const corpus = names.split(/\r?\n/);
-const start = corpus.indexOf(">C:\\Windows\\System32") + 1;
-const end = corpus.findIndex((line, i) => i > start && line.startsWith(">"));
-const system32 = corpus.slice(start, end).filter((n) => n.includes("."));
-const at = Math.max(0, system32.findIndex((n) => n.toLowerCase() === "kernel32.dll") - 6);
-const rows = system32.slice(at, at + 15);
-const TYPES: Record<string, string> = {
-  dll: "Application extension",
-  exe: "Application",
-  sys: "System file",
-  mui: "MUI file",
-  cpl: "Control panel item",
-  msc: "Console document",
-  xml: "XML document",
-  ini: "Configuration settings",
-  tlb: "Type library",
-  nls: "NLS file",
-};
-const typeOf = (name: string) => TYPES[name.split(".").pop()?.toLowerCase() ?? ""] ?? "File";
 ---
 
 <section class="chapter open" id="open" data-chapter="open" data-scene="1">
-  <div class="wrap open-grid">
-    <div class="open-copy">
-      <Label index={1} text={OPEN.label} />
-      <Lines lines={OPEN.lines} />
-      <p class="body open-body" data-reveal>{OPEN.body}</p>
+  <div class="wrap">
+    <div class="open-head">
+      <div>
+        <Label index={1} text={OPEN.label} />
+        <Lines lines={OPEN.lines} />
+      </div>
+      <p class="body" data-reveal>{OPEN.body}</p>
     </div>
 
-    <figure class="window glass" data-reveal data-listing aria-label="System32 open in Glint: 5,092 items on screen in 12 ms">
-      <div class="window-bar">
-        <span class="crumbs mono">Local Disk (C:) <i>›</i> Windows <i>›</i> System32</span>
-        <span class="stopwatch mono" aria-hidden="true"><span data-stopwatch>12</span> ms</span>
-      </div>
-      <div class="window-head mono" aria-hidden="true"><span>Name</span><span>Type</span></div>
-      <ol class="window-rows" aria-hidden="true">
-        {rows.map((name, i) => (
-          <li class:list={{ hit: name.toLowerCase() === "kernel32.dll" }} style={`--i:${i}`}>
-            <span class="file-name">{name}</span>
-            <span class="file-type">{typeOf(name)}</span>
-          </li>
-        ))}
-      </ol>
-      <figcaption class="window-status mono">
-        <span>5,092 items</span>
-        <span class="status-time">on screen in 12 ms</span>
-      </figcaption>
-    </figure>
-  </div>
-
-  <div class="wrap">
     <figure class="blink" data-blink>
       <figcaption class="sr-only">
         Time to open a folder in Glint against the length of a blink: {OPEN.marks.map((m) => `${m.where}, ${m.what}, ${m.ms} ms`).join("; ")}. A blink takes {OPEN.blink.from} to {OPEN.blink.to} ms.
@@ -104,137 +59,16 @@ const typeOf = (name: string) => TYPES[name.split(".").pop()?.toLowerCase() ?? "
 </section>
 
 <style>
-  .open-grid {
+  .open-head {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
-    align-items: center;
-    gap: clamp(40px, 6vw, 96px);
-  }
-
-  .open-body {
-    margin-top: 28px;
-  }
-
-  .window {
-    overflow: hidden;
-    border-radius: 16px;
-    font-size: 13px;
-  }
-
-  .window-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--line);
-    background: rgba(255, 255, 255, 0.02);
-  }
-
-  .crumbs {
-    color: var(--mist);
-    font-size: 12px;
-  }
-
-  .crumbs i {
-    margin-inline: 6px;
-    color: var(--fog);
-    font-style: normal;
-  }
-
-  .stopwatch {
-    padding: 4px 10px;
-    border-radius: 999px;
-    background: rgba(255, 217, 102, 0.1);
-    color: var(--gold);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .window-head,
-  .window-rows li {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-    gap: 16px;
-    padding: 0 16px;
-  }
-
-  .window-head {
-    padding-block: 9px;
-    color: var(--fog);
-    font-size: 11px;
-    letter-spacing: 0.06em;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .window-rows li {
-    align-items: center;
-    height: 30px;
-    color: var(--snow);
-    font-weight: 300;
-    text-shadow: none;
-  }
-
-  .window-rows li:nth-child(odd) {
-    background: rgba(255, 255, 255, 0.015);
-  }
-
-  .window-rows li.hit {
-    background: linear-gradient(90deg, rgba(236, 72, 153, 0.22), rgba(236, 72, 153, 0.06));
-    box-shadow: inset 2px 0 0 var(--rose);
-  }
-
-  .file-name {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  .file-name::before {
-    content: "";
-    display: inline-block;
-    width: 11px;
-    height: 13px;
-    margin-inline-end: 10px;
-    vertical-align: -2px;
-    border-radius: 2px;
-    background: linear-gradient(180deg, #e8e6f0, #b9b6c8);
-    clip-path: polygon(0 0, 70% 0, 100% 28%, 100% 100%, 0 100%);
-  }
-
-  .file-type {
-    overflow: hidden;
-    color: var(--fog);
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  .window-status {
-    display: flex;
-    justify-content: space-between;
-    padding: 10px 16px;
-    border-top: 1px solid var(--line);
-    color: var(--fog);
-    font-size: 11.5px;
-  }
-
-  .status-time {
-    color: var(--pink);
-  }
-
-  /* The rows arrive faster than the eye can follow, then the stopwatch settles on 12. */
-  :global(.motion-ok) .window-rows li {
-    opacity: 0;
-  }
-
-  :global(.motion-ok) [data-listing]:global(.is-open) .window-rows li {
-    opacity: 1;
-    transition: opacity 0.18s linear calc(var(--i) * 12ms);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr);
+    align-items: end;
+    gap: clamp(28px, 5vw, 80px);
   }
 
   /* ---------- The blink scale ---------- */
   .blink {
-    margin-top: clamp(80px, 10vw, 140px);
+    margin-top: clamp(56px, 7vw, 96px);
   }
 
   .blink-track {
@@ -395,6 +229,10 @@ const typeOf = (name: string) => TYPES[name.split(".").pop()?.toLowerCase() ?? "
     font-size: 11px;
   }
 
+  .blink-source a:hover {
+    color: var(--mist);
+  }
+
   .replay {
     color: var(--gold);
     font-size: 11px;
@@ -407,10 +245,6 @@ const typeOf = (name: string) => TYPES[name.split(".").pop()?.toLowerCase() ?? "
   /* Without motion there is nothing to replay. */
   :global(html:not(.motion-ok)) .replay {
     display: none;
-  }
-
-  .blink-source a:hover {
-    color: var(--mist);
   }
 
   :global(.motion-ok) [data-blink-mark] {
@@ -426,8 +260,8 @@ const typeOf = (name: string) => TYPES[name.split(".").pop()?.toLowerCase() ?? "
       transform 0.8s var(--ease-spring);
   }
 
-  @media (max-width: 1000px) {
-    .open-grid {
+  @media (max-width: 900px) {
+    .open-head {
       grid-template-columns: minmax(0, 1fr);
     }
   }
@@ -463,16 +297,6 @@ const typeOf = (name: string) => TYPES[name.split(".").pop()?.toLowerCase() ?? "
     .blink-legend .mono {
       color: var(--fog);
       font-size: 11px;
-    }
-
-    .window-head,
-    .window-rows li {
-      grid-template-columns: minmax(0, 1fr);
-    }
-
-    .file-type,
-    .window-head span:last-child {
-      display: none;
     }
   }
 </style>

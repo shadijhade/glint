@@ -98,10 +98,11 @@ export function layout(n: number, vw: number, vh: number, logo: LogoSample | nul
       const u = r();
       let x: number;
       let y: number;
-      if (u < 0.12) {
-        x = cx + g() * R * 0.07;
-        y = cy + g() * R * 0.045;
-      } else if (u < 0.26) {
+      // A soft core: few points, spread out, so it glows without flaring to white behind the copy.
+      if (u < 0.04) {
+        x = cx + g() * R * 0.12;
+        y = cy + g() * R * 0.07;
+      } else if (u < 0.18) {
         x = r() * vw;
         y = r() * vh;
       } else {
