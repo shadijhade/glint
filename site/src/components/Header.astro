@@ -1,0 +1,288 @@
+---
+import { CHAPTERS, SITE } from "../content/site";
+import Icon from "./Icon.astro";
+import Logo from "./Logo.astro";
+
+const nav = CHAPTERS.filter((c) => ["open", "size", "find", "more", "get"].includes(c.id));
+---
+
+<header class="header" data-header>
+  <div class="header-inner">
+    <a class="brand" href="#top" aria-label="Glint, back to the top" data-nav-link>
+      <Logo id="logo-header" class="brand-mark" />
+      <span class="brand-text">
+        <span class="brand-name">Glint</span>
+        <span class="brand-tag">File explorer for Windows</span>
+      </span>
+    </a>
+
+    <nav class="nav" aria-label="Chapters">
+      {nav.map((c) => <a href={`#${c.id}`} data-nav-link data-chapter-link={c.id}>{c.label}</a>)}
+    </nav>
+
+    <div class="actions">
+      <a class="icon-btn" href={SITE.repo} aria-label="Glint on GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
+      </a>
+      <a class="btn btn-primary btn-sm" href={SITE.download} data-download>
+        <Icon name="download" />
+        <span>Download</span>
+      </a>
+      <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="menu" data-menu-toggle>
+        <span class="sr-only">Menu</span>
+        <Icon name="menu" class="menu-open" />
+        <Icon name="close" class="menu-close" />
+      </button>
+    </div>
+  </div>
+
+  <div class="menu" id="menu" data-menu hidden>
+    <nav aria-label="Chapters">
+      {
+        CHAPTERS.slice(1).map((c, i) => (
+          <a href={`#${c.id}`} data-nav-link data-menu-link>
+            <span class="menu-index">{String(i + 1).padStart(2, "0")}</span>
+            {c.label}
+          </a>
+        ))
+      }
+    </nav>
+    <div class="menu-foot">
+      <a class="btn btn-primary" href={SITE.download} data-download><Icon name="download" /><span>Download for Windows</span></a>
+      <a class="btn btn-ghost" href={SITE.repo}>Source on GitHub</a>
+      <button class="motion-btn" type="button" data-motion-toggle aria-pressed="false">
+        <Icon name="pause" class="when-on" />
+        <Icon name="play" class="when-off" />
+        <span class="when-on">Pause motion</span>
+        <span class="when-off">Play motion</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<style>
+  .header {
+    position: fixed;
+    inset: 0 0 auto;
+    z-index: 40;
+    transition:
+      background-color 0.5s var(--ease-out),
+      border-color 0.5s var(--ease-out),
+      transform 0.6s var(--ease-out);
+    border-bottom: 1px solid transparent;
+  }
+
+  :global(.header.is-scrolled) {
+    border-bottom-color: var(--line);
+    background: rgba(9, 5, 16, 0.72);
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  }
+
+  .header-inner {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    width: min(1440px, 100% - 2 * var(--gutter));
+    height: var(--header-h);
+    margin-inline: auto;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-inline-end: auto;
+  }
+
+  :global(.brand-mark) {
+    width: 34px;
+    height: 34px;
+    filter: drop-shadow(0 4px 14px rgba(255, 181, 38, 0.35));
+  }
+
+  .brand-text {
+    display: grid;
+    gap: 3px;
+    padding-inline-start: 12px;
+    border-inline-start: 1px solid var(--line-2);
+  }
+
+  .brand-name {
+    font: 700 17px/1 var(--font-display);
+    letter-spacing: 0.02em;
+  }
+
+  .brand-tag {
+    color: var(--fog);
+    font: 500 9.5px/1 var(--font-mono);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+
+  .nav {
+    display: flex;
+    gap: 4px;
+  }
+
+  .nav a {
+    position: relative;
+    padding: 10px 14px;
+    border-radius: 999px;
+    color: var(--mist);
+    font-size: 14.5px;
+    font-weight: 400;
+    transition: color 0.3s;
+  }
+
+  .nav a:hover,
+  .nav a:global(.is-active) {
+    color: var(--snow);
+  }
+
+  .nav a::after {
+    content: "";
+    position: absolute;
+    inset: auto 14px 4px;
+    height: 1px;
+    background: var(--gradient-glint);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.5s var(--ease-out);
+  }
+
+  .nav a:global(.is-active)::after {
+    transform: scaleX(1);
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-inline-start: auto;
+  }
+
+  .icon-btn {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    color: var(--mist);
+    transition:
+      color 0.3s,
+      border-color 0.3s,
+      background-color 0.3s;
+  }
+
+  .icon-btn:hover {
+    border-color: rgba(255, 143, 208, 0.5);
+    color: var(--snow);
+  }
+
+  .icon-btn :global(svg) {
+    width: 18px;
+    height: 18px;
+  }
+
+  .btn-sm {
+    min-height: 42px;
+    padding: 0 18px;
+    font-size: 14px;
+  }
+
+  .menu-btn,
+  .menu-btn :global(.menu-close) {
+    display: none;
+  }
+
+  .menu[hidden] {
+    display: none;
+  }
+
+  .menu {
+    position: fixed;
+    inset: var(--header-h) 0 0;
+    z-index: 39;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 32px;
+    padding: 28px var(--gutter) max(28px, env(safe-area-inset-bottom));
+    background: rgba(9, 5, 16, 0.96);
+    backdrop-filter: blur(20px);
+    overflow-y: auto;
+  }
+
+  .menu nav {
+    display: grid;
+  }
+
+  .menu nav a {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+    font: 700 clamp(1.6rem, 6vw, 2.2rem) / 1.1 var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  .menu-index {
+    color: var(--gold);
+    font: 500 12px var(--font-mono);
+    letter-spacing: 0.1em;
+  }
+
+  .menu-foot {
+    display: grid;
+    gap: 12px;
+  }
+
+  .motion-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 44px;
+    color: var(--mist);
+    font-size: 14px;
+  }
+
+  .motion-btn :global(svg) {
+    width: 16px;
+    height: 16px;
+  }
+
+  :global(.motion-paused) .motion-btn :global(.when-on),
+  :global(html:not(.motion-paused)) .motion-btn :global(.when-off) {
+    display: none;
+  }
+
+  @media (max-width: 1080px) {
+    .nav {
+      display: none;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .menu-btn {
+      display: grid;
+    }
+
+    .actions .btn-sm,
+    .actions > a.icon-btn,
+    .brand-tag {
+      display: none;
+    }
+
+    :global(.menu-open) .menu-btn :global(.menu-open) {
+      display: none;
+    }
+
+    :global(.menu-open) .menu-btn :global(.menu-close) {
+      display: block;
+    }
+  }
+</style>

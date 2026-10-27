@@ -62,6 +62,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/tools.rs`, `proc.rs`, `src/lib/tools.ts`, `src/components/ToolNeeded.tsx` | Every program Glint drives: the bundled ones, and optional ones installed on demand with winget or from their GitHub release (pinned by SHA-256) ([docs/tools.md](docs/tools.md)); finding and running them, a lane per tab; Settings → Tools, and the Install card a feature shows when its tool is missing |
 | `src/lib/updater.ts` | Finding and installing updates (tauri-plugin-updater) |
 | `scripts/` | `npm run release` and its helpers (update signatures, winget and Scoop manifests), `npm run notes` (a release's notes, by git-cliff from `cliff.toml`) and `npm run licenses` (`THIRD_PARTY_CRATES.md`, by cargo-about) ([docs/releasing.md](docs/releasing.md)) |
+| `site/` | The website, [glint.rafd.tech](https://glint.rafd.tech/): an Astro project of its own (GSAP, a WebGL field), published as a Cloudflare Worker ([docs/releasing.md](docs/releasing.md#the-website)) |
 
 ## Principles
 

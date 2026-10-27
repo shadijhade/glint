@@ -1,0 +1,353 @@
+---
+/* 07 Get Glint: the download, the other ways in, and the questions people ask before they click. */
+import { GET, SITE } from "../content/site";
+import Icon from "./Icon.astro";
+import Label from "./Label.astro";
+import Lines from "./Lines.astro";
+---
+
+<section class="chapter get" id="get" data-chapter="get">
+  <div class="wrap">
+    <!-- The field draws Glint's mark in the space above the download (scene 5), then lies down as a
+         horizon under the ways in and the questions (scene 4). -->
+    <div class="get-hero" data-scene="5">
+      <Label index={7} text={GET.label} />
+      <Lines lines={GET.lines} class="display" />
+      <p class="lead get-body" data-reveal>{GET.body}</p>
+      <div class="get-cta" data-reveal>
+        <a class="btn btn-primary btn-xl" href={SITE.download} data-download>
+          <Icon name="download" />
+          <span>Download for Windows</span>
+        </a>
+        <p class="get-meta mono"><span data-release></span>{GET.requirements}</p>
+      </div>
+      <p class="smartscreen" data-reveal>
+        <Icon name="shield" />
+        <span>{GET.smartscreen}</span>
+      </p>
+    </div>
+
+    <div class="get-more" data-scene="4">
+    <div class="ways">
+      {
+        GET.ways.map((w) => (
+          <div class="way glass" data-reveal>
+            <h3>{w.title}</h3>
+            <div class="cmds">
+              {w.commands.map((c) => (
+                <div class="cmd">
+                  <code>{c}</code>
+                  <button class="copy" type="button" data-copy={c} aria-label={`Copy: ${c}`}>
+                    <Icon name="copy" class="copy-idle" />
+                    <Icon name="check" class="copy-done" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <p>{w.note}</p>
+          </div>
+        ))
+      }
+      <div class="way glass" data-reveal data-offline hidden>
+        <h3>Offline installer</h3>
+        <p>With WebView2 inside, for a PC without internet or without WebView2.</p>
+        <a class="btn btn-ghost" href={SITE.latest} data-offline-link>
+          <Icon name="download" />
+          <span>Offline installer</span>
+        </a>
+      </div>
+      <div class="way glass" data-reveal>
+        <h3>From the source</h3>
+        <p>With Rust, Node.js and Tauri's prerequisites, it builds with one command.</p>
+        <a class="btn btn-ghost" href={SITE.source}>
+          <span>Build it yourself</span>
+          <Icon name="external" />
+        </a>
+      </div>
+    </div>
+
+    <div class="faq">
+      <h3 class="faq-title" data-reveal>Before you click</h3>
+      {
+        GET.faq.map((f) => (
+          <details class="qa" data-reveal>
+            <summary>
+              {f.q}
+              <span class="qa-mark" aria-hidden="true" />
+            </summary>
+            <p>{f.a}</p>
+          </details>
+        ))
+      }
+      <p class="faq-more" data-reveal>
+        More in the <a href={SITE.repo}>README</a>, the <a href={SITE.privacy}>privacy policy</a> and <a href={SITE.instantSearch}>how instant search works</a>.
+      </p>
+    </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .get-hero {
+    display: grid;
+    justify-items: center;
+    align-content: start;
+    max-width: 920px;
+    min-height: 100vh;
+    min-height: 100svh;
+    margin-inline: auto;
+    padding-top: max(34vh, 220px);
+    text-align: center;
+  }
+
+  /* No field, no mark to make room for. */
+  :global(html:not(.motion-ok)) .get-hero {
+    min-height: 0;
+    padding-top: 0;
+  }
+
+  .get-hero :global(.label) {
+    justify-content: center;
+  }
+
+  .get-hero :global(.display) {
+    font-size: clamp(2.8rem, 1.4rem + 6vw, 7rem);
+  }
+
+  .get-body {
+    max-width: 30ch;
+    margin-top: 28px;
+  }
+
+  .get-cta {
+    display: grid;
+    justify-items: center;
+    gap: 16px;
+    margin-top: 40px;
+  }
+
+  .btn-xl {
+    min-height: 72px;
+    padding: 0 44px;
+    font-size: 19px;
+    box-shadow:
+      0 24px 80px -16px rgba(255, 181, 38, 0.7),
+      0 0 0 10px rgba(255, 217, 102, 0.07),
+      inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  }
+
+  .btn-xl :global(.icon) {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* A glint passes over the big button every few seconds, while motion is live. */
+  :global(.motion-live) .btn-xl::after {
+    animation: pass 4.5s var(--ease-in-out) 2s infinite;
+  }
+
+  @keyframes pass {
+    0%,
+    70% {
+      opacity: 0;
+      transform: skewX(-18deg) translateX(0);
+    }
+    72% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 1;
+      transform: skewX(-18deg) translateX(420%);
+    }
+  }
+
+  .get-meta {
+    color: var(--fog);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+
+  .smartscreen {
+    display: flex;
+    gap: 10px;
+    max-width: 60ch;
+    margin-top: 26px;
+    color: var(--fog);
+    font-size: 14px;
+    text-align: left;
+  }
+
+  .smartscreen :global(.icon) {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    margin-top: 3px;
+    color: var(--pink);
+  }
+
+  .ways {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+    gap: 18px;
+    margin-top: clamp(80px, 10vw, 128px);
+  }
+
+  .way {
+    display: grid;
+    align-content: start;
+    justify-items: start;
+    gap: 14px;
+    min-width: 0;
+    padding: 26px;
+  }
+
+  .way h3 {
+    font: 600 1.15rem var(--font-display);
+  }
+
+  .way p {
+    color: var(--mist);
+    font-size: 15px;
+  }
+
+  .cmds {
+    display: grid;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .cmd {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 10px 10px 10px 14px;
+    border-radius: 10px;
+    background: rgba(6, 3, 11, 0.6);
+  }
+
+  .cmd code {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--gold-hi);
+    font: 400 13px/1.5 var(--font-mono);
+  }
+
+  .copy {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    color: var(--fog);
+    transition:
+      color 0.3s,
+      background-color 0.3s;
+  }
+
+  .copy:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--snow);
+  }
+
+  .copy :global(.icon) {
+    width: 16px;
+    height: 16px;
+  }
+
+  .copy :global(.copy-done),
+  .copy:global(.is-copied) :global(.copy-idle) {
+    display: none;
+  }
+
+  .copy:global(.is-copied) :global(.copy-done) {
+    display: block;
+    color: var(--gold);
+  }
+
+  .faq {
+    max-width: 860px;
+    margin: clamp(80px, 10vw, 128px) auto 0;
+  }
+
+  .faq-title {
+    margin-bottom: 16px;
+    font: 700 clamp(1.6rem, 1.2rem + 1.2vw, 2.2rem) var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  .qa {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .qa summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 20px 4px;
+    cursor: pointer;
+    list-style: none;
+    font-size: 1.08rem;
+    font-weight: 400;
+  }
+
+  .qa summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .qa-mark {
+    position: relative;
+    flex: none;
+    width: 14px;
+    height: 14px;
+  }
+
+  .qa-mark::before,
+  .qa-mark::after {
+    content: "";
+    position: absolute;
+    inset: 6.5px 0 auto;
+    height: 1.5px;
+    border-radius: 2px;
+    background: var(--pink);
+    transition: transform 0.4s var(--ease-out);
+  }
+
+  .qa-mark::after {
+    transform: rotate(90deg);
+  }
+
+  .qa[open] .qa-mark::after {
+    transform: rotate(0);
+  }
+
+  .qa p {
+    max-width: 70ch;
+    padding: 0 4px 22px;
+    color: var(--mist);
+  }
+
+  .faq-more {
+    margin-top: 26px;
+    color: var(--fog);
+    font-size: 14px;
+  }
+
+  .faq-more a {
+    color: var(--pink);
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 143, 208, 0.4);
+    text-underline-offset: 3px;
+  }
+
+  @media (max-width: 520px) {
+    .btn-xl {
+      width: 100%;
+      padding: 0 24px;
+      font-size: 17px;
+    }
+  }
+</style>

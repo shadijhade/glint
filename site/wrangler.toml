@@ -1,0 +1,18 @@
+# Cloudflare Worker "glint-site": glint.rafd.tech, static assets only (no script).
+# Published from this machine: `npm run deploy` in site/. Local Workers runtime: `npm run preview`.
+name = "glint-site"
+compatibility_date = "2026-10-01"
+
+# The domain is part of the deploy: `wrangler deploy` attaches it as a Custom Domain
+# (DNS record + certificate) on the rafd.tech zone. Keep this above the first [table].
+routes = [
+  { pattern = "glint.rafd.tech", custom_domain = true },
+]
+
+[assets]
+directory = "./dist"
+# Serve dist/404.html, with a 404 status, for anything that does not exist.
+not_found_handling = "404-page"
+
+[observability]
+enabled = true

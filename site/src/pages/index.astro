@@ -1,0 +1,44 @@
+---
+import FieldStill from "../components/FieldStill.astro";
+import Find from "../components/Find.astro";
+import Footer from "../components/Footer.astro";
+import Get from "../components/Get.astro";
+import Header from "../components/Header.astro";
+import Hero from "../components/Hero.astro";
+import Intro from "../components/Intro.astro";
+import More from "../components/More.astro";
+import Open from "../components/Open.astro";
+import Proof from "../components/Proof.astro";
+import Rail from "../components/Rail.astro";
+import Size from "../components/Size.astro";
+import Windows from "../components/Windows.astro";
+import Base from "../layouts/Base.astro";
+---
+
+<Base intro>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <FieldStill />
+  <canvas class="field-canvas" data-field aria-hidden="true"></canvas>
+  <div class="grain" aria-hidden="true"></div>
+  <Intro />
+  <Header />
+  <Rail />
+  <main class="page" id="main">
+    <Hero />
+    <Open />
+    <Size />
+    <Find />
+    <More />
+    <Windows />
+    <Proof />
+    <Get />
+  </main>
+  <div class="page">
+    <Footer />
+  </div>
+</Base>
+
+<script>
+  import "../scripts/main";
+</script>

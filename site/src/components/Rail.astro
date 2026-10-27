@@ -1,0 +1,143 @@
+---
+/* The chapter rail: one mark per chapter on the right edge, lit for the one on screen. */
+import { CHAPTERS } from "../content/site";
+---
+
+<nav class="rail" aria-label="Chapters">
+  <ol>
+    {
+      CHAPTERS.map((c) => (
+        <li>
+          <a href={`#${c.id}`} data-nav-link data-rail-link={c.id}>
+            <span class="rail-label">{c.label}</span>
+            <span class="rail-dot" aria-hidden="true" />
+          </a>
+        </li>
+      ))
+    }
+  </ol>
+</nav>
+
+<button class="motion-toggle" type="button" data-motion-toggle aria-pressed="false">
+  <span class="sr-only when-on">Pause motion</span>
+  <span class="sr-only when-off">Play motion</span>
+  <svg class="when-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M9 6v12"></path><path d="M15 6v12"></path></svg>
+  <svg class="when-off" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"></path></svg>
+</button>
+
+<style>
+  .rail {
+    position: fixed;
+    top: 50%;
+    right: clamp(14px, 2vw, 28px);
+    z-index: 30;
+    translate: 0 -50%;
+  }
+
+  .rail ol {
+    display: grid;
+    gap: 6px;
+  }
+
+  .rail::before {
+    content: "";
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    right: 6px;
+    width: 1px;
+    background: var(--line);
+  }
+
+  .rail a {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    height: 22px;
+  }
+
+  .rail-label {
+    padding: 4px 9px;
+    border-radius: 6px;
+    background: var(--glass-strong);
+    color: var(--mist);
+    font: 500 10.5px/1 var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    opacity: 0;
+    translate: 6px 0;
+    transition:
+      opacity 0.3s,
+      translate 0.4s var(--ease-out);
+  }
+
+  .rail a:hover .rail-label,
+  .rail a:focus-visible .rail-label {
+    opacity: 1;
+    translate: 0 0;
+  }
+
+  .rail-dot {
+    position: relative;
+    width: 13px;
+    height: 13px;
+    border: 1px solid var(--line-2);
+    border-radius: 50%;
+    background: var(--void);
+    transition:
+      border-color 0.4s,
+      background-color 0.4s,
+      box-shadow 0.4s;
+  }
+
+  .rail a:global(.is-active) .rail-dot {
+    border-color: var(--gold);
+    background: var(--gold);
+    box-shadow:
+      0 0 0 4px rgba(255, 217, 102, 0.14),
+      0 0 18px rgba(255, 217, 102, 0.7);
+  }
+
+  .motion-toggle {
+    position: fixed;
+    right: clamp(14px, 2vw, 28px);
+    bottom: clamp(14px, 2vw, 28px);
+    z-index: 30;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--line-2);
+    border-radius: 50%;
+    background: var(--glass-strong);
+    color: var(--mist);
+    backdrop-filter: blur(12px);
+    transition:
+      color 0.3s,
+      border-color 0.3s;
+  }
+
+  .motion-toggle:hover {
+    border-color: rgba(255, 143, 208, 0.5);
+    color: var(--snow);
+  }
+
+  .motion-toggle svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  :global(.motion-paused) .motion-toggle .when-on,
+  :global(html:not(.motion-paused)) .motion-toggle .when-off {
+    display: none;
+  }
+
+  @media (max-width: 900px) {
+    .rail,
+    .motion-toggle {
+      display: none;
+    }
+  }
+</style>

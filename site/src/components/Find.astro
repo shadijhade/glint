@@ -1,0 +1,273 @@
+---
+/*
+  03 Find. A search over 9,474 of Windows' own file names that runs in the visitor's browser as they type
+  (scripts/search.ts), timed as it goes. The first query's results are worked out here, at build time,
+  so the demo shows something real before any script runs.
+*/
+import names from "../../public/data/names.txt?raw";
+import { FIND } from "../content/site";
+import Icon from "./Icon.astro";
+import Label from "./Label.astro";
+import Lines from "./Lines.astro";
+
+const lines = names.split(/\r?\n/);
+let folder = "";
+const all: { name: string; folder: string }[] = [];
+for (const line of lines) {
+  if (!line) continue;
+  if (line.startsWith(">")) folder = line.slice(1);
+  else all.push({ name: line, folder });
+}
+const q = FIND.start.toLowerCase();
+const hits = all.filter((f) => f.name.toLowerCase().includes(q));
+const shown = hits.slice(0, 8).map((f) => {
+  const at = f.name.toLowerCase().indexOf(q);
+  return { ...f, before: f.name.slice(0, at), match: f.name.slice(at, at + q.length), after: f.name.slice(at + q.length) };
+});
+const total = all.length.toLocaleString("en-US");
+---
+
+<section class="chapter find" id="find" data-chapter="find" data-scene="3">
+  <div class="wrap find-grid">
+    <div class="find-copy">
+      <Label index={3} text={FIND.label} />
+      <Lines lines={FIND.lines} />
+      <p class="body find-body" data-reveal>{FIND.body}</p>
+      <dl class="find-facts" data-reveal>
+        {
+          FIND.facts.map((f) => (
+            <div>
+              <dt class="num">
+                <span data-count={f.value} data-decimals={f.decimals}>{f.value.toFixed(f.decimals)}</span>
+                <span class="unit">{f.unit}</span>
+              </dt>
+              <dd>{f.label}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+
+    <div class="demo glass" data-reveal data-search data-total={all.length}>
+      <label class="demo-field">
+        <span class="sr-only">Search file names</span>
+        <Icon name="search" />
+        <input type="search" value={FIND.start} placeholder={FIND.placeholder} autocomplete="off" spellcheck="false" data-search-input />
+      </label>
+      <div class="demo-tries">
+        <span class="mono">Try</span>
+        {FIND.tries.map((t) => <button type="button" class="chip mono" data-search-try={t}>{t}</button>)}
+      </div>
+      <p class="demo-status mono" aria-live="polite" data-search-status>
+        <span class="status-count">{hits.length.toLocaleString("en-US")}</span> of {total} names<span class="status-time" data-search-time></span>
+      </p>
+      <ol class="demo-results" data-search-results>
+        {
+          shown.map((f) => (
+            <li>
+              <span class="result-name">
+                {f.before}
+                <mark>{f.match}</mark>
+                {f.after}
+              </span>
+              <span class="result-folder mono">{f.folder}</span>
+            </li>
+          ))
+        }
+      </ol>
+      <p class="demo-note">{FIND.note}</p>
+    </div>
+  </div>
+</section>
+
+<style>
+  .find-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+    align-items: center;
+    gap: clamp(40px, 6vw, 96px);
+  }
+
+  .find-body {
+    margin-top: 28px;
+  }
+
+  .find-facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px;
+    margin-top: 40px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+  }
+
+  .find-facts dt {
+    font-size: clamp(1.7rem, 1.2rem + 1.5vw, 2.6rem);
+    line-height: 1;
+  }
+
+  .find-facts dd {
+    margin-top: 10px;
+    color: var(--mist);
+    font-size: 13.5px;
+    line-height: 1.45;
+  }
+
+  .demo {
+    padding: 18px;
+    border-radius: 20px;
+  }
+
+  .demo-field {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    height: 58px;
+    border: 1px solid rgba(255, 143, 208, 0.35);
+    border-radius: 14px;
+    background: rgba(6, 3, 11, 0.6);
+    box-shadow: 0 0 0 4px rgba(255, 143, 208, 0.06);
+    transition:
+      border-color 0.3s,
+      box-shadow 0.3s;
+  }
+
+  .demo-field:focus-within {
+    border-color: var(--pink);
+    box-shadow: 0 0 0 5px rgba(255, 143, 208, 0.14);
+  }
+
+  .demo-field :global(.icon) {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    color: var(--pink);
+  }
+
+  .demo-field input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    font: 400 17px var(--font-mono);
+  }
+
+  .demo-field input::-webkit-search-cancel-button {
+    filter: invert(0.7);
+  }
+
+  .demo-tries {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    color: var(--fog);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .chip {
+    padding: 5px 11px;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    color: var(--mist);
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+    transition:
+      border-color 0.3s,
+      color 0.3s,
+      background-color 0.3s;
+  }
+
+  .chip:hover,
+  .chip:focus-visible {
+    border-color: rgba(255, 217, 102, 0.55);
+    background: rgba(255, 217, 102, 0.08);
+    color: var(--gold);
+  }
+
+  .demo-status {
+    margin: 18px 4px 10px;
+    color: var(--fog);
+    font-size: 12px;
+  }
+
+  .status-count {
+    color: var(--gold);
+  }
+
+  .demo-status :global(.status-time) {
+    color: var(--pink);
+  }
+
+  .demo-results {
+    display: grid;
+    min-height: 344px;
+    align-content: start;
+  }
+
+  .demo-results :global(li) {
+    display: grid;
+    gap: 2px;
+    padding: 9px 12px;
+    border-radius: 10px;
+  }
+
+  .demo-results :global(li:nth-child(odd)) {
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .demo-results :global(.result-name) {
+    overflow: hidden;
+    color: var(--snow);
+    font-size: 15px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-shadow: none;
+  }
+
+  .demo-results :global(mark) {
+    border-radius: 3px;
+    background: rgba(255, 143, 208, 0.25);
+    color: var(--pink-hi);
+    box-shadow: 0 0 0 2px rgba(255, 143, 208, 0.12);
+  }
+
+  .demo-results :global(.result-folder) {
+    overflow: hidden;
+    color: var(--fog);
+    font-size: 11px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .demo-results :global(.result-empty) {
+    padding: 24px 12px;
+    color: var(--fog);
+  }
+
+  .demo-note {
+    margin: 12px 4px 0;
+    color: var(--fog);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 1000px) {
+    .find-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 560px) {
+    .find-facts {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

@@ -1,0 +1,231 @@
+---
+/*
+  02 Size. C:\Windows sorted by size, as bars in a list; scrolling turns each bar into its tile of a
+  map, the way Glint's disk-usage map draws a folder. Both layouts are worked out here, at build time;
+  motion.ts only moves each rectangle from one to the other. Without motion the list stays a list.
+*/
+import { SIZE } from "../content/site";
+import { squarify } from "../scripts/treemap";
+import Label from "./Label.astro";
+import Lines from "./Lines.astro";
+
+const W = 640;
+const H = 470;
+const LABEL = 196;
+const ROW = H / SIZE.folders.length;
+const max = Math.max(...SIZE.folders.map((f) => f.gb));
+const tiles = squarify(SIZE.folders, (f) => f.gb, { x: 0, y: 0, w: W, h: H });
+const tileOf = new Map(tiles.map((t) => [t.item.name, t]));
+const GAP = 3;
+
+const fmt = (gb: number) => (gb >= 1 ? `${gb} GB` : `${Math.round(gb * 1000)} MB`);
+const folders = SIZE.folders.map((f, i) => {
+  const t = tileOf.get(f.name)!;
+  return {
+    ...f,
+    size: fmt(f.gb),
+    bar: { x: LABEL, y: i * ROW + 6, w: Math.max(4, ((W - LABEL - 70) * f.gb) / max), h: ROW - 12 },
+    tile: { x: t.x + GAP / 2, y: t.y + GAP / 2, w: Math.max(1, t.w - GAP), h: Math.max(1, t.h - GAP) },
+    labelled: t.w > 92 && t.h > 40,
+    hue: i / (SIZE.folders.length - 1),
+  };
+});
+const r = (n: number) => Math.round(n * 10) / 10;
+---
+
+<section class="chapter size" id="size" data-chapter="size" data-scene="2">
+  <div class="wrap size-grid">
+    <div class="size-copy">
+      <Label index={2} text={SIZE.label} />
+      <Lines lines={SIZE.lines} />
+      <p class="body size-body" data-reveal>{SIZE.body}</p>
+      <dl class="facts" data-reveal>
+        {
+          SIZE.facts.map((f) => (
+            <div>
+              <dt class="num">
+                <span data-count={f.value} data-decimals={f.decimals}>{f.value.toFixed(f.decimals)}</span>
+                <span class="unit">{f.unit}</span>
+              </dt>
+              <dd>{f.label}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+
+    <figure class="sizes glass" data-reveal data-sizes>
+      <div class="sizes-bar mono">
+        <span>{SIZE.caption}</span>
+        <span class="sizes-mode"><span class="mode-list">List</span><span class="mode-map">Map</span></span>
+      </div>
+      <svg class="sizes-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${SIZE.caption}: ${folders.map((f) => `${f.name} ${f.size}`).join(", ")}`}>
+        <defs>
+          <linearGradient id="size-fill" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#ffd966"></stop>
+            <stop offset="1" stop-color="#ffb526"></stop>
+          </linearGradient>
+          <linearGradient id="size-fill-2" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#ff8fd0"></stop>
+            <stop offset="1" stop-color="#c026d3"></stop>
+          </linearGradient>
+        </defs>
+        {
+          folders.map((f, i) => (
+            <g class="folder" data-folder style={`--hue:${f.hue}`}>
+              <rect
+                class="block"
+                x={r(f.bar.x)}
+                y={r(f.bar.y)}
+                width={r(f.bar.w)}
+                height={r(f.bar.h)}
+                rx="4"
+                fill={i < 4 ? "url(#size-fill)" : "url(#size-fill-2)"}
+                data-bar={`${r(f.bar.x)} ${r(f.bar.y)} ${r(f.bar.w)} ${r(f.bar.h)}`}
+                data-tile={`${r(f.tile.x)} ${r(f.tile.y)} ${r(f.tile.w)} ${r(f.tile.h)}`}
+              />
+              <text class="row-name" x="0" y={r(f.bar.y + f.bar.h / 2 + 4.5)}>{f.name}</text>
+              <text class="row-size" x={r(f.bar.x + f.bar.w + 10)} y={r(f.bar.y + f.bar.h / 2 + 4.5)}>{f.size}</text>
+              {f.labelled && (
+                <text class="tile-label" x={r(f.tile.x + 12)} y={r(f.tile.y + 24)}>
+                  <tspan class="tile-name">{f.name}</tspan>
+                  <tspan class="tile-size" x={r(f.tile.x + 12)} dy="17">{f.size}</tspan>
+                </text>
+              )}
+            </g>
+          ))
+        }
+      </svg>
+    </figure>
+  </div>
+</section>
+
+<style>
+  .size-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    align-items: center;
+    gap: clamp(40px, 6vw, 96px);
+  }
+
+  .size-body {
+    margin-top: 28px;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+    margin-top: 40px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+  }
+
+  .facts dt {
+    font-size: clamp(2rem, 1.4rem + 2vw, 3.2rem);
+    line-height: 1;
+  }
+
+  .facts dd {
+    max-width: 24ch;
+    margin-top: 10px;
+    color: var(--mist);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .sizes {
+    padding: 0 0 18px;
+    overflow: hidden;
+  }
+
+  .sizes-bar {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 18px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+    color: var(--fog);
+    font-size: 11.5px;
+  }
+
+  .sizes-mode {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .sizes-mode span {
+    padding: 2px 9px;
+    border-radius: 999px;
+    transition:
+      background-color 0.4s,
+      color 0.4s;
+  }
+
+  .mode-list,
+  :global(.is-map) .mode-map {
+    background: rgba(255, 217, 102, 0.14);
+    color: var(--gold);
+  }
+
+  :global(.is-map) .mode-list {
+    background: transparent;
+    color: var(--fog);
+  }
+
+  .sizes-svg {
+    width: calc(100% - 36px);
+    height: auto;
+    margin-inline: 18px;
+    overflow: visible;
+  }
+
+  .block {
+    opacity: calc(1 - var(--hue) * 0.35);
+  }
+
+  .row-name,
+  .row-size {
+    fill: var(--mist);
+    font: 300 13.5px var(--font-body);
+  }
+
+  .row-size {
+    fill: var(--fog);
+    font: 400 11.5px var(--font-mono);
+  }
+
+  .tile-label {
+    pointer-events: none;
+  }
+
+  .tile-name {
+    fill: #241306;
+    font: 600 13px var(--font-body);
+  }
+
+  .tile-size {
+    fill: rgba(36, 19, 6, 0.75);
+    font: 500 11px var(--font-mono);
+  }
+
+  .folder:nth-child(n + 6) .tile-name,
+  .folder:nth-child(n + 6) .tile-size {
+    fill: #fff;
+  }
+
+  /* The list's words make way for the map's, as motion.ts turns one into the other. */
+  .tile-label {
+    opacity: 0;
+  }
+
+  @media (max-width: 1000px) {
+    .size-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>
