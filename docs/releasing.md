@@ -163,13 +163,19 @@ Once Glint is in the Store, `winget install` finds it there too (winget's `mssto
 
 ## The website
 
-[`site/`](../site) is Glint's home page. [`scripts/site.mjs`](../scripts/site.mjs) (`npm run site`) puts it together in `_site/` with `screenshots/` and the app's icons, so the page and the README show the same pictures, and the Pages workflow ([`.github/workflows/pages.yml`](../.github/workflows/pages.yml)) publishes that whenever one of them changes on `master` (or from **Actions → Pages → Run workflow**). To look at it first, run `npm run site` and open `_site/index.html`.
+[glint.rafd.tech](https://glint.rafd.tech/) is Glint's home page, one of Rafd's free innovations, built the way [rafd.tech](https://rafd.tech/) is: [`site/`](../site) is an Astro project of its own (GSAP and Lenis for the motion, a hand-written WebGL2 field in `site/src/scripts/field.ts`), published from this PC as the Cloudflare Worker `glint-site`, static assets only. `site/wrangler.toml` declares the domain, so every deploy keeps glint.rafd.tech attached (DNS record and certificate) on the rafd.tech zone.
 
-**Its address** is the project's GitHub Pages address, https://shadijhade.github.io/glint/. While the account's own site (`shadijhade/shadijhade.github.io`) has the custom domain kilanii.me, project sites move under it too, so that address redirects to http://kilanii.me/glint/, the one the README and the repository's Website use. HTTPS there needs GitHub's certificate for kilanii.me: in that repository's **Settings → Pages**, remove the custom domain, save, add it again, and once the certificate is issued (up to a day), tick **Enforce HTTPS**. The page names no address of its own (its preview picture comes from GitHub), so moving it to another domain changes nothing in it.
+```powershell
+cd site
+npm install
+npm run dev      # http://localhost:4321
+npm run preview  # build + the real Workers runtime (headers and CSP included) on :8787
+npm run deploy   # build + wrangler deploy (signs in to Cloudflare in a browser the first time)
+```
 
-Its Download buttons link to `releases/latest/download/Glint-setup.exe`, like the README's, and the page asks GitHub's API for the latest release to show its version and size, and a link to the offline installer when the release has one. Nothing on it changes for a release.
+`npm run site` at the root runs its dev server. All the words and numbers are in `site/src/content/site.ts`, every time and count there is the README's, and the screenshots come from `screenshots/`, made into AVIF and WebP when it builds. The search demo searches `site/public/data/names.txt`: 9,474 of Windows' own file names (programs whose version information names Microsoft; no fonts, drivers or other files a third party installed), worth regenerating only if Windows changes a lot.
 
-Once: **Settings → Pages → Build and deployment → Source: GitHub Actions** (or `gh api -X POST repos/shadijhade/glint/pages -f build_type=workflow`), then run the workflow, and put the address in the repository's **About → Website**.
+Its Download buttons link to `releases/latest/download/Glint-setup.exe`, like the README's, and the page asks GitHub's API for the latest release to show its version and size, and a link to the offline installer when the release has one. Nothing on it changes for a release; deploy it again when its words, numbers or screenshots change.
 
 ## Trying the updater locally
 

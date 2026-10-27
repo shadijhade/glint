@@ -1,0 +1,190 @@
+---
+/*
+  The flash. A point of light opens into the sparkle, its rays reach out, the folder forms under it,
+  and the whole mark flies into the header as the night lifts. Pure CSS under html.intro, so a slow
+  script can't strand it; scripts/intro.ts only aims the flight, ends it, and lets any key, click,
+  wheel or touch skip it. Once per visit, never on a deep link, never without motion.
+*/
+import Logo from "./Logo.astro";
+---
+
+<div class="intro" aria-hidden="true" data-intro>
+  <div class="intro-burst"></div>
+  <div class="intro-rays"><i></i><i></i><i></i><i></i></div>
+  <div class="intro-mark" data-intro-mark>
+    <Logo id="logo-intro" class="intro-logo" />
+  </div>
+</div>
+
+<style>
+  .intro {
+    display: none;
+  }
+
+  :global(html.intro) .intro {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(60% 60% at 50% 50%, #140a20 0%, #06030b 70%);
+    animation: curtain 0.7s var(--ease-in-out) 1.45s forwards;
+    pointer-events: none;
+  }
+
+  :global(html.intro.intro-skip) .intro {
+    animation: curtain 0.35s var(--ease-out) forwards;
+  }
+
+  :global(html.intro.intro-skip) .intro * {
+    animation-duration: 0.01s !important;
+    animation-delay: 0s !important;
+  }
+
+  .intro-mark {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: min(34vmin, 260px);
+    aspect-ratio: 1;
+    translate: -50% -50%;
+    animation: fly 0.75s var(--ease-in-out) 1.25s forwards;
+  }
+
+  :global(.intro-logo) {
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+
+  :global(.intro-logo .logo-spark) {
+    transform-box: view-box;
+    transform-origin: 764px 290px;
+    animation: spark 1.15s var(--ease-out) both;
+  }
+
+  :global(.intro-logo .logo-folder) {
+    transform-box: view-box;
+    transform-origin: 512px 560px;
+    animation: folder 0.6s var(--ease-out) 0.7s both;
+  }
+
+  .intro-burst {
+    position: absolute;
+    left: calc(50% + min(34vmin, 260px) * 0.246);
+    top: calc(50% - min(34vmin, 260px) * 0.217);
+    width: 70vmin;
+    aspect-ratio: 1;
+    translate: -50% -50%;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 241, 184, 0.9) 0%, rgba(255, 143, 208, 0.45) 18%, rgba(192, 38, 211, 0.12) 40%, transparent 66%);
+    opacity: 0;
+    animation: burst 1.1s var(--ease-out) 0.3s both;
+  }
+
+  .intro-rays {
+    position: absolute;
+    left: calc(50% + min(34vmin, 260px) * 0.246);
+    top: calc(50% - min(34vmin, 260px) * 0.217);
+    width: 0;
+    height: 0;
+  }
+
+  .intro-rays i {
+    position: absolute;
+    left: 0;
+    top: -1px;
+    width: 60vmax;
+    height: 2px;
+    transform-origin: 0 50%;
+    background: linear-gradient(90deg, rgba(255, 241, 184, 0.95), rgba(255, 143, 208, 0.4) 30%, transparent 70%);
+    animation: ray 1s var(--ease-out) 0.38s both;
+  }
+
+  .intro-rays i:nth-child(1) {
+    rotate: 0deg;
+  }
+
+  .intro-rays i:nth-child(2) {
+    rotate: 90deg;
+  }
+
+  .intro-rays i:nth-child(3) {
+    rotate: 180deg;
+  }
+
+  .intro-rays i:nth-child(4) {
+    rotate: 270deg;
+  }
+
+  @keyframes spark {
+    0% {
+      transform: scale(0) rotate(-90deg);
+      opacity: 0;
+    }
+    30% {
+      transform: scale(0.18) rotate(-45deg);
+      opacity: 1;
+    }
+    62% {
+      transform: scale(1.35) rotate(8deg);
+    }
+    100% {
+      transform: scale(1) rotate(0deg);
+    }
+  }
+
+  @keyframes folder {
+    from {
+      transform: translateY(10%) scale(0.86);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+
+  @keyframes burst {
+    0% {
+      opacity: 0;
+      transform: scale(0.1);
+    }
+    25% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: scale(1.1);
+    }
+  }
+
+  @keyframes ray {
+    0% {
+      transform: scaleX(0);
+      opacity: 0;
+    }
+    30% {
+      opacity: 1;
+    }
+    100% {
+      transform: scaleX(1);
+      opacity: 0;
+    }
+  }
+
+  /* The mark lands where the header's sits: intro.ts measures it into --fly-x, --fly-y, --fly-s. */
+  @keyframes fly {
+    to {
+      translate: calc(-50% + var(--fly-x, 0px)) calc(-50% + var(--fly-y, 0px));
+      scale: var(--fly-s, 0.2);
+    }
+  }
+
+  @keyframes curtain {
+    to {
+      opacity: 0;
+      visibility: hidden;
+    }
+  }
+</style>

@@ -1,0 +1,25 @@
+---
+/*
+  A display heading set line by line, each line rising from behind a mask as it comes into view.
+  The last line can take the glint gradient. Screen readers get the heading as one sentence.
+*/
+interface Props {
+  lines: readonly string[];
+  as?: "h1" | "h2";
+  class?: string;
+  /** Which lines (by index) take the gradient. */
+  accent?: number[];
+}
+
+const { lines, as: Tag = "h2", class: className = "display-2", accent = [lines.length - 1] } = Astro.props;
+---
+
+<Tag class={className} data-lines aria-label={lines.join(" ")}>
+  {
+    lines.map((line, i) => (
+      <span class="line" aria-hidden="true">
+        <span class:list={["line-inner", { gradient: accent.includes(i) }]}>{line}</span>
+      </span>
+    ))
+  }
+</Tag>

@@ -1,0 +1,14 @@
+---
+/* A chapter's label: its number in gold, then its name. */
+interface Props {
+  index?: number;
+  text: string;
+}
+
+const { index, text } = Astro.props;
+---
+
+<p class="label" data-reveal>
+  {index !== undefined && <span class="label-index">{String(index).padStart(2, "0")}</span>}
+  <span>{text}</span>
+</p>

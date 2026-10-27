@@ -1,0 +1,167 @@
+---
+/*
+  The footer: who makes Glint, and the name itself across the page. A band of light crosses the word
+  as the page ends (motion.ts moves --sweep); without motion it simply shines.
+*/
+import { FOOTER, SITE } from "../content/site";
+import Icon from "./Icon.astro";
+import Logo from "./Logo.astro";
+---
+
+<footer class="footer" data-footer data-scene="4">
+  <div class="wrap">
+    <div class="credit">
+      <a class="rafd" href={SITE.rafd} aria-label="Rafd Technology & Solutions">
+        <img src="/media/rafd-wordmark-white.svg" alt="" width="90" height="69" loading="lazy" decoding="async" />
+      </a>
+      <div>
+        <p class="credit-line">{FOOTER.line}</p>
+        <p class="credit-sub">{FOOTER.sub} <a href={SITE.rafd}>rafd.tech <Icon name="arrow" /></a></p>
+      </div>
+    </div>
+
+    <nav class="links" aria-label="Glint">
+      <a href={SITE.download} data-download>Download</a>
+      <a href={SITE.repo}>GitHub</a>
+      <a href={SITE.releases}>Releases</a>
+      <a href={SITE.issues}>Report a problem</a>
+      <a href={SITE.privacy}>Privacy</a>
+      <a href={SITE.license}>MIT license</a>
+    </nav>
+  </div>
+
+  <div class="word" aria-hidden="true" data-footer-word>
+    <Logo id="logo-footer" class="word-mark" />
+    <span class="word-text">Glint</span>
+  </div>
+
+  <div class="wrap base mono">
+    <span>Glint is open source under the MIT license.</span>
+    <a href="#top" data-nav-link>Back to the top ↑</a>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    position: relative;
+    padding-top: clamp(80px, 10vw, 140px);
+    border-top: 1px solid var(--line);
+    background: linear-gradient(180deg, transparent, rgba(6, 3, 11, 0.75) 40%);
+    overflow: hidden;
+  }
+
+  .footer .wrap:first-child {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    justify-content: space-between;
+    gap: 40px;
+  }
+
+  .credit {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .rafd img {
+    width: 76px;
+    height: auto;
+    opacity: 0.92;
+    transition: opacity 0.3s;
+  }
+
+  .rafd:hover img {
+    opacity: 1;
+  }
+
+  .credit-line {
+    font: 700 clamp(1.3rem, 1rem + 1vw, 1.8rem) / 1.2 var(--font-display);
+    letter-spacing: -0.015em;
+  }
+
+  .credit-sub {
+    margin-top: 6px;
+    color: var(--mist);
+    font-size: 15px;
+  }
+
+  .credit-sub a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--pink);
+  }
+
+  .credit-sub :global(.icon) {
+    width: 15px;
+    height: 15px;
+    transition: transform 0.4s var(--ease-out);
+  }
+
+  .credit-sub a:hover :global(.icon) {
+    transform: translateX(4px);
+  }
+
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    color: var(--mist);
+    font-size: 15px;
+  }
+
+  .links a:hover {
+    color: var(--snow);
+  }
+
+  .word {
+    --sweep: 120%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.04em;
+    margin-top: clamp(48px, 7vw, 100px);
+    font: 800 clamp(6rem, 25vw, 26rem) / 0.8 var(--font-display);
+    letter-spacing: -0.06em;
+    user-select: none;
+  }
+
+  :global(.word-mark) {
+    width: 0.62em;
+    height: 0.62em;
+    flex: none;
+    translate: 0 -0.04em;
+    filter: drop-shadow(0 0 40px rgba(255, 181, 38, 0.25));
+  }
+
+  .word-text {
+    padding-bottom: 0.08em;
+    background:
+      linear-gradient(105deg, transparent calc(var(--sweep) - 18%), rgba(255, 255, 255, 0.95) var(--sweep), transparent calc(var(--sweep) + 18%)),
+      linear-gradient(180deg, #2a1838 0%, #140b20 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  :global(html:not(.motion-ok)) .word-text {
+    background: var(--gradient-glint);
+    -webkit-background-clip: text;
+    background-clip: text;
+  }
+
+  .base {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px;
+    padding-block: 28px max(36px, env(safe-area-inset-bottom));
+    color: var(--fog);
+    font-size: 12px;
+  }
+
+  .base a:hover {
+    color: var(--snow);
+  }
+</style>

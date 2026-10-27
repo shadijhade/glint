@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://glint.rafd.tech/sitemap.xml
