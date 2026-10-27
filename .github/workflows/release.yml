@@ -199,6 +199,8 @@ jobs:
           Copy-Item $nsisInstaller "$outDir\$($env:INSTALLER_NAME)" -Force
           # The last bundle must have kept SignPath's signature on what gets uploaded.
           if ($env:HAS_SIGNPATH -eq "true" -and (Get-AuthenticodeSignature "$outDir\$($env:INSTALLER_NAME)").Status -ne "Valid") { throw "The installer to upload isn't validly signed" }
+          # The same installer without the version in its name: the Download links ask for the latest release's Glint-setup.exe.
+          Copy-Item "$outDir\$($env:INSTALLER_NAME)" "$outDir\Glint-setup.exe" -Force
           node scripts/package-manifests.mjs $env:VERSION "$outDir\$($env:INSTALLER_NAME)" --out "$outDir\package-manifests"
 
       - name: Upload release bundle artifact

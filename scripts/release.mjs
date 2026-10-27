@@ -1,9 +1,11 @@
 // Builds a release on this machine (docs/releasing.md): the crates checked first (cargo-deny, and
 // THIRD_PARTY_CRATES.md current), then the NSIS installer, code-signed when signing is set up, its update
 // signature and latest.json for the app's updater, checked the way the app checks them, and the winget
-// and Scoop manifests. Everything lands in release/v<version>/, ready to upload.
+// and Scoop manifests. Everything lands in release/v<version>/, ready to upload, with the installer also
+// as Glint-setup.exe, the name the Download links ask the latest release for. With --store, also the
+// offline installer (WebView2 inside), the one the Microsoft Store runs.
 //
-// Usage: npm run release [-- --sign-config <tauri config overlay>] [--allow-dirty]
+// Usage: npm run release [-- --sign-config <tauri config overlay>] [--store] [--allow-dirty]
 //
 // Update signing: TAURI_SIGNING_PRIVATE_KEY (the key, or the path to it) and, if the key has one,
 // TAURI_SIGNING_PRIVATE_KEY_PASSWORD (otherwise Tauri asks for it).
@@ -22,6 +24,7 @@ const root = resolve(import.meta.dirname, "..");
 const args = process.argv.slice(2);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const signConfig = option("--sign-config");
+const store = args.includes("--store");
 const allowDirty = args.includes("--allow-dirty");
 
 const fail = (message) => {
@@ -63,11 +66,11 @@ else if (licenses.status) fail(licenses.stderr.trim());
 
 const work = mkdtempSync(join(tmpdir(), "glint-release-"));
 process.on("exit", () => rmSync(work, { recursive: true, force: true }));
-const overlays = [];
+/** A Tauri config overlay in the work folder, as the arguments that hand it to `tauri build`. */
 const overlay = (name, value) => {
     const path = join(work, name);
     writeFileSync(path, JSON.stringify(value, null, 2));
-    overlays.push("--config", path);
+    return ["--config", path];
 };
 
 // 2. Update signing: the public key in tauri.conf.json and the private key work only together.
@@ -75,20 +78,22 @@ const pubkey = config.plugins.updater.pubkey;
 const hasKey = !!process.env.TAURI_SIGNING_PRIVATE_KEY;
 if (hasKey && !pubkey) fail("TAURI_SIGNING_PRIVATE_KEY is set, but plugins.updater.pubkey in src-tauri/tauri.conf.json is empty: paste the matching public key there.");
 if (pubkey && !hasKey) fail("Set TAURI_SIGNING_PRIVATE_KEY (the private key or its path): without it the app couldn't install this release.");
-if (pubkey) overlay("updater.json", { bundle: { createUpdaterArtifacts: true } });
-else console.warn("! No updater key is set up yet, so the app can't install this release by itself.");
+const updater = pubkey ? overlay("updater.json", { bundle: { createUpdaterArtifacts: true } }) : [];
+if (!pubkey) console.warn("! No updater key is set up yet, so the app can't install this release by itself.");
 
 // 3. Code signing: Azure Artifact Signing, your own overlay, or none.
 const azure = ["AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT", "AZURE_SIGNING_PROFILE"].map((name) => process.env[name]);
+let signing = [];
 if (signConfig) {
-    overlays.push("--config", resolve(signConfig));
+    signing = ["--config", resolve(signConfig)];
 } else if (azure.some(Boolean)) {
     if (!azure.every(Boolean)) fail("Set all of AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT and AZURE_SIGNING_PROFILE.");
-    overlay("codesign.json", { bundle: { windows: { signCommand: await artifactSigning(...azure) } } });
+    signing = overlay("codesign.json", { bundle: { windows: { signCommand: await artifactSigning(...azure) } } });
 } else {
     console.warn("! Not code-signed, so SmartScreen warns about this installer.");
 }
 const codeSigned = !!signConfig || azure.every(Boolean);
+if (store && !codeSigned) console.warn("! The Microsoft Store only takes a code-signed installer, so the offline installer is only for trying out.");
 
 /** signtool with Microsoft's Artifact Signing plugin (fetched once into release/.tools, checked by its SHA-256). */
 async function artifactSigning(endpoint, account, profile) {
@@ -127,17 +132,18 @@ async function artifactSigning(endpoint, account, profile) {
 // signed copies only go into the installer.
 const cli = join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
 const tools = join(root, "src-tauri", "binaries");
-if (codeSigned) cpSync(tools, join(work, "binaries"), { recursive: true });
-const build = spawnSync(process.execPath, [cli, "build", "--bundles", "nsis", ...overlays], { cwd: root, stdio: "inherit" });
-if (codeSigned) cpSync(join(work, "binaries"), tools, { recursive: true });
-if (build.error || build.status) fail("The build failed");
-
 const nsis = join(root, "src-tauri", "target", "release", "bundle", "nsis");
 const name = `${config.productName}_${version}_x64-setup.exe`;
 const installer = join(nsis, name);
-if (!existsSync(installer)) fail(`${installer} wasn't built`);
 
-if (codeSigned) {
+/** Builds the NSIS installer with these config overlays and, when it's code-signed, checks the signatures. */
+function bundle(configs) {
+    if (codeSigned) cpSync(tools, join(work, "binaries"), { recursive: true });
+    const build = spawnSync(process.execPath, [cli, "build", "--bundles", "nsis", ...configs], { cwd: root, stdio: "inherit" });
+    if (codeSigned) cpSync(join(work, "binaries"), tools, { recursive: true });
+    if (build.error || build.status) fail("The build failed");
+    if (!existsSync(installer)) fail(`${installer} wasn't built`);
+    if (!codeSigned) return;
     const files = [installer, join(root, "src-tauri", "target", "release", `${config.mainBinaryName}.exe`), join(root, "src-tauri", "target", "release", "shadui-index.exe")];
     const check = join(work, "check-signatures.ps1");
     writeFileSync(check, "$bad = 0\nforeach ($f in $args) {\n  $s = Get-AuthenticodeSignature $f\n  \"$($s.Status)  $(Split-Path $f -Leaf)  $($s.SignerCertificate.Subject)\"\n  if ($s.Status -ne 'Valid') { $bad++ }\n}\nexit $bad\n");
@@ -145,11 +151,16 @@ if (codeSigned) {
     console.log(result.stdout.trim());
     if (result.status) fail("Not everything is validly code-signed");
 }
+bundle([...updater, ...signing]);
 
 // 5. The update the app downloads, checked the way the app checks it, and the package manifests.
 const out = join(root, "release", `v${version}`);
 mkdirSync(out, { recursive: true });
 copyFileSync(installer, join(out, name));
+// The same installer without the version in its name. The Download links ask GitHub for the latest
+// release's Glint-setup.exe (…/releases/latest/download/Glint-setup.exe), so every release needs one.
+const latest = `${config.productName}-setup.exe`;
+copyFileSync(installer, join(out, latest));
 if (pubkey) {
     copyFileSync(`${installer}.sig`, join(out, `${name}.sig`));
     const manifest = {
@@ -166,13 +177,28 @@ if (pubkey) {
 const manifests = [join(root, "scripts", "package-manifests.mjs"), version, join(out, name), "--out", join(out, "package-manifests")];
 if (run(process.execPath, manifests, { stdio: "inherit" }).status) fail("Couldn't write the winget and Scoop manifests");
 
-const assets = [name, ...(pubkey ? [`${name}.sig`, "latest.json"] : [])].map((f) => `release/v${version}/${f}`).join(" ");
+// 6. With --store, the offline installer: the same app with WebView2 inside, so setup downloads nothing,
+// as the Microsoft Store requires of an installer it runs (docs/releasing.md#the-microsoft-store). It's
+// built last because it takes the other installer's place in target/, and has no update signature: the
+// Store's copies update with the normal installer, like every other copy.
+const offline = `${config.productName}_${version}_x64_offline-setup.exe`;
+if (store) {
+    bundle([...signing, "--config", join(root, "src-tauri", "tauri.microsoftstore.conf.json")]);
+    copyFileSync(installer, join(out, offline));
+}
+
+// The offline installer goes up only when it's signed: it's for the Store.
+const files = [latest, name, ...(pubkey ? [`${name}.sig`, "latest.json"] : []), ...(store && codeSigned ? [offline] : [])];
+const assets = files.map((f) => `release/v${version}/${f}`).join(" ");
 // The notes `npm run notes` drafted, or GitHub's list of the changes.
 const drafted = existsSync(join(out, "notes.md"));
 const notes = drafted ? `--notes-file release/v${version}/notes.md` : "--generate-notes";
+const storeStep = !store ? "" : codeSigned
+    ? `\n  4. Point the Microsoft Store at the offline installer in Partner Center and submit it (docs/releasing.md#the-microsoft-store):\n       ${REPO}/releases/download/v${version}/${offline}`
+    : `\n  The offline installer (release/v${version}/${offline}) isn't code-signed, so it's left out: the Store wouldn't take it.`;
 console.log(`
 ✓ release/v${version} is ready. Next (docs/releasing.md):
   1. Create the draft release:
        gh release create v${version} ${assets} --draft --target ${commit} --title "${config.productName} v${version}" ${notes}
   2. Read it on GitHub, ${drafted ? "check the notes" : "write the notes (npm run notes drafts them)"}, try the installer, and publish it.
-  3. Submit release/v${version}/package-manifests to winget and Scoop.`);
+  3. Submit release/v${version}/package-manifests to winget and Scoop.${storeStep}`);
