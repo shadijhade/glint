@@ -13,7 +13,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [pdu](https://github.com/K
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 
-**[Download for Windows](https://github.com/shadijhade/glint/releases/latest)** · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
+**[Download for Windows](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
 
 <img src="screenshots/demo.gif" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes, the command palette and two panes side by side" width="100%">
 
@@ -261,22 +261,28 @@ The service only runs once you opt in, with every privilege removed except the t
 
 ## Install
 
-1.  Download `Glint_<version>_x64-setup.exe` from the [latest release](https://github.com/shadijhade/glint/releases/latest) and run it (installs for your account without administrator rights; ripgrep, fd and pdu come with it), or install with a package manager:
+**[Download Glint](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** and open it. It installs for your account in a few seconds, without administrator rights, with ripgrep, fd and pdu inside. Windows 10 or 11, 64-bit.
 
-    ```powershell
-    # Scoop
-    scoop bucket add shadijhade https://github.com/shadijhade/scoop-bucket
-    scoop install shadijhade/glint
+The installer isn't code-signed yet, so Windows may say *Windows protected your PC*: choose **More info**, then **Run anyway** ([why](SECURITY.md#code-signing-and-privacy-policy)). If your browser holds the download back because the file isn't commonly downloaded, choose **Keep**.
 
-    # winget (once microsoft/winget-pkgs#455306 merges)
-    winget install shadijhade.Glint
-    ```
+From then on Glint updates itself: when a new version is out, it says so, and **Install** (in that notice or in **Settings → About**) downloads it, checks its signature and restarts into it in a few seconds.
 
 Glint was called ShadUI Ripgrep before 0.3.1. Installing Glint replaces ShadUI Ripgrep and keeps your settings, tabs and instant search.
 
-Copies installed with the setup program update themselves: when a new version is out, the app says so, and **Install** (in that notice or in **Settings → About**) downloads it, checks its signature and restarts into it in a few seconds.
+### With a package manager
 
-Windows 10 or 11, 64-bit. The installer isn't code-signed yet, so SmartScreen may show *Windows protected your PC* for a new version: choose **More info → Run anyway**, or install with Scoop, which doesn't trigger it ([more](SECURITY.md#code-signing-and-privacy-policy)).
+[Scoop](https://scoop.sh/) checks the download against its hash and doesn't trigger SmartScreen. It keeps Glint up to date itself (`scoop update glint`), and the app only tells you a new version is out:
+
+```powershell
+scoop bucket add shadijhade https://github.com/shadijhade/scoop-bucket
+scoop install shadijhade/glint
+```
+
+winget, once [microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306) is merged (new packages wait about six weeks for a moderator there):
+
+```powershell
+winget install shadijhade.Glint
+```
 
 ## Keyboard shortcuts
 
@@ -410,6 +416,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] A Scoop package
 -   [ ] Code-signed installers (the SignPath Foundation invited a new application once Glint is better known)
 -   [ ] The winget package (in review: [microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306))
+-   [ ] The Microsoft Store (it takes code-signed installers only)
 -   [x] Zip, 7z, RAR, cabinet and tar archives (compressed too) opened like folders, Extract here, and Compress to zip
 -   [x] Undo (`Ctrl+Z`) for copies, moves, renames, deletes and new items
 -   [x] Quick search from anywhere (`Ctrl+Alt+F`), the tray, and starting with Windows
