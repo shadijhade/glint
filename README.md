@@ -13,7 +13,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [pdu](https://github.com/K
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 
-**[Download for Windows](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
+**[Download for Windows](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** · [Website](http://kilanii.me/glint/) · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
 
 <img src="screenshots/demo.gif" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes, the command palette and two panes side by side" width="100%">
 

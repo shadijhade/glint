@@ -9,7 +9,7 @@ Releases are built one of two ways: by the release workflow on GitHub when a `vX
 
 Copies that the setup program didn't install (Scoop, a portable copy, a dev build) don't install updates themselves: the app tells them about the new version and links to it. A release without `latest.json` gets the same treatment from every copy, through GitHub's latest-release API.
 
-**Every release has a `Glint-setup.exe`**, the same installer under a name without the version, so `https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe` always downloads the newest one. It's what the README's Download link points at: a release without it breaks that link until the next release, so upload it with the rest (`npm run release` and the release workflow both make it).
+**Every release has a `Glint-setup.exe`**, the same installer under a name without the version, so `https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe` always downloads the newest one. It's what the README's and the [website's](#the-website) Download links point at: a release without it breaks them until the next release, so upload it with the rest (`npm run release` and the release workflow both make it).
 
 **The instant search service updates separately.** It runs from `C:\Program Files\ShadUI Ripgrep\`, which an app update doesn't touch (the in-app updater runs the installer in update mode, so its uninstall hook leaves the service alone). The app and the service share one version, `[workspace.package] version` in `src-tauri/Cargo.toml`, so after an app update the service reports an older version: the app says *Instant search has an update* once, and **Settings → Instant search** shows **Update** until it's done (one administrator approval; it runs the same `shadui-index.exe install` as turning it on).
 
@@ -67,7 +67,7 @@ Tauri signs rg, fd and pdu where they are, in `src-tauri/binaries`; `npm run rel
 
 **SignPath Foundation** (the release workflow). Once the project is approved, set the repository secrets `SIGNPATH_API_TOKEN` and `SIGNPATH_ORGANIZATION_ID`. The workflow submits the app and the service (artifact configuration `zip`), then the installer (`exe`), to project `glint` with signing policy `release-signing`, and waits up to an hour for each request to be approved on SignPath. It checks the signatures before anything is uploaded. Without the secrets it builds unsigned.
 
-Once releases are signed, take the SmartScreen note out of the README's Install section, and Glint can go into [the Microsoft Store](#the-microsoft-store).
+Once releases are signed, take the SmartScreen note out of the README's Install section (and the website's question about it), and Glint can go into [the Microsoft Store](#the-microsoft-store).
 
 ### 3. The GitHub CLI
 
@@ -159,7 +159,17 @@ MSIX packages, which Microsoft signs and hosts itself, aren't an option for now:
 1.  Build it code-signed and with `--store`: `npm run release -- --store --sign-config <overlay>` (or with the Azure variables) also builds the offline installer, checks its signatures and adds it to the `gh release create` command. Without code signing it still builds it, to try, but leaves it out of the release.
 2.  Once the release is published, give Partner Center the offline installer's link, which `npm run release` prints (`https://github.com/shadijhade/glint/releases/download/vX.Y.Z/Glint_X.Y.Z_x64_offline-setup.exe`), for x64, with `/S` where it asks how to install silently, and **Submit for certification**. Certification takes a few days.
 
-Once Glint is in the Store, `winget install` finds it there too (winget's `msstore` source), and the README can show the Store's badge.
+Once Glint is in the Store, `winget install` finds it there too (winget's `msstore` source), and the README and the website can show the Store's badge.
+
+## The website
+
+[`site/`](../site) is Glint's home page. [`scripts/site.mjs`](../scripts/site.mjs) (`npm run site`) puts it together in `_site/` with `screenshots/` and the app's icons, so the page and the README show the same pictures, and the Pages workflow ([`.github/workflows/pages.yml`](../.github/workflows/pages.yml)) publishes that whenever one of them changes on `master` (or from **Actions → Pages → Run workflow**). To look at it first, run `npm run site` and open `_site/index.html`.
+
+**Its address** is the project's GitHub Pages address, https://shadijhade.github.io/glint/. While the account's own site (`shadijhade/shadijhade.github.io`) has the custom domain kilanii.me, project sites move under it too, so that address redirects to http://kilanii.me/glint/, the one the README and the repository's Website use. HTTPS there needs GitHub's certificate for kilanii.me: in that repository's **Settings → Pages**, remove the custom domain, save, add it again, and once the certificate is issued (up to a day), tick **Enforce HTTPS**. The page names no address of its own (its preview picture comes from GitHub), so moving it to another domain changes nothing in it.
+
+Its Download buttons link to `releases/latest/download/Glint-setup.exe`, like the README's, and the page asks GitHub's API for the latest release to show its version and size, and a link to the offline installer when the release has one. Nothing on it changes for a release.
+
+Once: **Settings → Pages → Build and deployment → Source: GitHub Actions** (or `gh api -X POST repos/shadijhade/glint/pages -f build_type=workflow`), then run the workflow, and put the address in the repository's **About → Website**.
 
 ## Trying the updater locally
 
