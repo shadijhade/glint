@@ -1,7 +1,7 @@
 /*
   The choreography. Everything here only adds motion to a page that is complete without it: reveals,
-  count-ups, the blink replayed slowly, the list that becomes a map, the gallery that runs sideways,
-  and the band of light across the footer. Chapter highlighting runs with or without motion.
+  count-ups, the blink replayed slowly, the list that becomes a map, and the band of light across the
+  footer. Chapter highlighting runs with or without motion.
 */
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -9,7 +9,6 @@ import type { App } from "./main";
 
 export function initMotion(app: App) {
   ScrollTrigger.config({ ignoreMobileResize: true });
-  cardGlow();
   if (app.motionOk) {
     reveals(app);
     counts(app);
@@ -17,7 +16,7 @@ export function initMotion(app: App) {
   }
   // Every ScrollTrigger measures the page as it's made, so they wait until the first frame is on screen,
   // and each gets its own task: none of them holds back the first paint or makes one long task.
-  const later = app.motionOk ? [activeChapters, listing, blink, sizes, gallery, footerSweep] : [activeChapters];
+  const later = app.motionOk ? [activeChapters, blink, sizes, footerSweep] : [activeChapters];
   const next = () => {
     const make = later.shift();
     if (!make) return;
@@ -66,29 +65,12 @@ function counts(app: App) {
         gsap.to(n, { v: to, duration: 1.8, delay: 0.15, ease: "power3.out", onUpdate: () => (el.textContent = n.v.toFixed(decimals)) });
       }
     },
-    { rootMargin: "0px 0px -12% 0px" },
+    // Any part on screen: the hero's figures can sit at the very bottom of a short window.
+    { rootMargin: "0px" },
   );
   const all = document.querySelectorAll<HTMLElement>("[data-count]");
   all.forEach((el) => (el.textContent = (0).toFixed(Number(el.dataset.decimals ?? 0))));
   void app.introDone.then(() => all.forEach((el) => io.observe(el)));
-}
-
-/* ---------- 01 Open: System32's rows arrive, and the stopwatch settles on 12 ---------- */
-function listing() {
-  const el = document.querySelector<HTMLElement>("[data-listing]");
-  const watch = el?.querySelector<HTMLElement>("[data-stopwatch]");
-  if (!el || !watch) return;
-  watch.textContent = "0.0";
-  ScrollTrigger.create({
-    trigger: el,
-    start: "top 72%",
-    once: true,
-    onEnter: () => {
-      el.classList.add("is-open");
-      const n = { v: 0 };
-      gsap.to(n, { v: 12, duration: 0.9, ease: "power2.out", onUpdate: () => (watch.textContent = n.v < 11.95 ? n.v.toFixed(1) : "12") });
-    },
-  });
 }
 
 /* ---------- 01 Open: 400 ms replayed eight times slower; the eyelids close at 100 ---------- */
@@ -144,35 +126,6 @@ function sizes() {
   ScrollTrigger.create({ trigger: fig, start: "center 72%", end: "center 30%", scrub: 0.6, onUpdate: (self) => draw(self.progress) });
 }
 
-/* ---------- 04 Everything else: pinned, the track runs sideways ---------- */
-function gallery() {
-  const mm = gsap.matchMedia();
-  mm.add("(min-width: 901px)", () => {
-    const section = document.querySelector<HTMLElement>("[data-gallery]");
-    const track = section?.querySelector<HTMLElement>("[data-track]");
-    const bar = section?.querySelector<HTMLElement>("[data-track-progress]");
-    if (!section || !track) return;
-    const distance = () => Math.max(0, track.scrollWidth - window.innerWidth);
-    const tween = gsap.to(track, { x: () => -distance(), ease: "none" });
-    const st = ScrollTrigger.create({
-      trigger: section,
-      start: "top top",
-      end: () => `+=${distance()}`,
-      pin: true,
-      scrub: 0.8,
-      animation: tween,
-      invalidateOnRefresh: true,
-      anticipatePin: 1,
-      onUpdate: (self) => bar && (bar.style.transform = `scaleX(${self.progress})`),
-    });
-    return () => {
-      st.kill();
-      tween.kill();
-      gsap.set(track, { clearProps: "transform" });
-    };
-  });
-}
-
 /* ---------- The footer: a band of light crosses the name as the page ends ---------- */
 function footerSweep() {
   const word = document.querySelector<HTMLElement>("[data-footer-word]");
@@ -190,22 +143,6 @@ function activeChapters() {
     ScrollTrigger.create({ trigger: ch, start: "top center", end: "bottom center", onToggle: (self) => self.isActive && set(ch.dataset.chapter ?? "") });
   });
   set("top");
-}
-
-/* ---------- Cards: a soft light follows the pointer ---------- */
-function cardGlow() {
-  if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
-  document.querySelectorAll<HTMLElement>("[data-tilt]").forEach((card) => {
-    card.addEventListener(
-      "pointermove",
-      (e) => {
-        const r = card.getBoundingClientRect();
-        card.style.setProperty("--mx", `${(((e.clientX - r.left) / r.width) * 100).toFixed(1)}%`);
-        card.style.setProperty("--my", `${(((e.clientY - r.top) / r.height) * 100).toFixed(1)}%`);
-      },
-      { passive: true },
-    );
-  });
 }
 
 /* ---------- Ambient loops rest while their chapter is off screen ---------- */

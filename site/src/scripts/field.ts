@@ -67,27 +67,27 @@ void main() {
   float sel = step(hash(a_seed.x * 917.0 + u_query * 131.0), u_qfrac) * u_qon * u_w[3];
   p = mix(p, u_ring + (a_p3 - u_ring) * 0.22, sel);
 
-  // The pointer parts the field, and lights what it passes.
+  // The pointer parts the field a little, and lights what it passes.
   vec2 dp = p - u_pointer;
   float dist = length(dp);
-  float near = u_pointerOn * exp(-(dist * dist) / (2.0 * 110.0 * 110.0));
-  p += (dist > 0.001 ? dp / dist : vec2(0.0)) * near * 22.0;
+  float near = u_pointerOn * exp(-(dist * dist) / (2.0 * 90.0 * 90.0));
+  p += (dist > 0.001 ? dp / dist : vec2(0.0)) * near * 12.0;
 
   // At first everything waits in the flash at the centre, then pours out.
   float t = smoothstep(a_seed.x * 0.55, a_seed.x * 0.55 + 0.45, u_gather);
   p = mix(u_res * vec2(0.5, 0.5), p, t);
 
-  // Now and then a point catches the light.
-  float tw = pow(max(0.0, sin(u_time * (0.5 + a_seed.y * 1.6) * u_speed + ph * 3.0)), 90.0);
-  v_spark = tw * (0.5 + a_seed.w) + near * 1.4 + sel * 0.9;
+  // Now and then, briefly, a bright point catches the light.
+  float tw = pow(max(0.0, sin(u_time * (0.5 + a_seed.y * 1.6) * u_speed + ph * 3.0)), 220.0);
+  v_spark = tw * 0.8 * a_seed.w + near * 0.5 + sel * 0.7;
 
   v_color = mix(a_color, a_logo, u_w[5]);
   v_color = mix(v_color, vec3(1.0, 0.56, 0.82), sel);
   // Scenes that sit behind a lot of reading are dimmer (GLOW in field.ts).
   float glow = u_w[0] * u_glow[0] + u_w[1] * u_glow[1] + u_w[2] * u_glow[2] + u_w[3] * u_glow[3] + u_w[4] * u_glow[4] + u_w[5] * u_glow[5];
-  v_alpha = (0.18 + 0.82 * a_seed.w) * t * glow * (1.0 + sel * 0.8);
+  v_alpha = (0.13 + 0.6 * a_seed.w) * t * glow * (1.0 + sel * 0.8);
 
-  gl_PointSize = (1.1 + a_seed.y * 2.6) * (1.0 + v_spark * 3.0) * u_dpr;
+  gl_PointSize = (0.9 + a_seed.y * 1.9) * (1.0 + v_spark * 1.8) * u_dpr;
   vec2 clip = (p / u_res) * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
 }`;
@@ -103,9 +103,9 @@ void main() {
   float r = length(uv);
   float core = smoothstep(1.0, 0.0, r);
   core *= core;
-  // A four-pointed glint on the points that flash.
-  float rays = max(0.0, 1.0 - abs(uv.x) * 9.0) * max(0.0, 1.0 - abs(uv.y)) + max(0.0, 1.0 - abs(uv.y) * 9.0) * max(0.0, 1.0 - abs(uv.x));
-  float a = (core + rays * clamp(v_spark, 0.0, 1.0)) * v_alpha;
+  // A faint four-pointed glint on the points that flash.
+  float rays = max(0.0, 1.0 - abs(uv.x) * 14.0) * max(0.0, 1.0 - abs(uv.y)) + max(0.0, 1.0 - abs(uv.y) * 14.0) * max(0.0, 1.0 - abs(uv.x));
+  float a = (core + rays * clamp(v_spark, 0.0, 1.0) * 0.55) * v_alpha;
   o = vec4(v_color * a, a);
 }`;
 
@@ -122,15 +122,16 @@ function compile(gl: WebGL2RenderingContext, type: number, src: string) {
 }
 
 /** Each scene's brightness: the list, the map and the horizon sit behind cards and text. */
-const GLOW = new Float32Array([1, 0.5, 0.55, 0.95, 0.42, 1]);
+const GLOW = new Float32Array([0.95, 0.42, 0.48, 0.85, 0.36, 1]);
 /** On a phone, copy covers more of every scene. */
-const GLOW_NARROW = new Float32Array([0.72, 0.42, 0.45, 0.8, 0.38, 0.9]);
+const GLOW_NARROW = new Float32Array([0.7, 0.36, 0.4, 0.7, 0.32, 0.9]);
 
-/** As many points as the screen deserves: fewer on small or modest devices. */
+/** Enough points to read as a drive of names, few enough to stay a background: fewer on small or
+    modest devices. */
 function pointCount(w: number, h: number) {
   const cores = navigator.hardwareConcurrency || 4;
-  const n = Math.round((w * h) / 15) * (cores <= 4 ? 0.6 : 1);
-  return Math.max(16000, Math.min(90000, n));
+  const n = Math.round((w * h) / 26) * (cores <= 4 ? 0.6 : 1);
+  return Math.max(12000, Math.min(48000, n));
 }
 
 export function createField(canvas: HTMLCanvasElement): Field | null {
