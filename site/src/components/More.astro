@@ -1,0 +1,248 @@
+---
+/*
+  04 Everything else. The README's screenshots as stations along a track: on a wide screen with motion
+  the chapter pins and the track runs sideways as you scroll (motion.ts); otherwise it's a list.
+  Pictures come from the app's screenshots/ folder, made into AVIF and WebP at build time.
+*/
+import type { ImageMetadata } from "astro";
+import { Picture } from "astro:assets";
+import { MORE, SITE } from "../content/site";
+import Icon from "./Icon.astro";
+import Label from "./Label.astro";
+import Lines from "./Lines.astro";
+
+const shots = import.meta.glob<{ default: ImageMetadata }>("../../../screenshots/*.png", { eager: true });
+const shot = (name: string) => {
+  const found = Object.entries(shots).find(([path]) => path.endsWith(`/${name}.png`));
+  if (!found) throw new Error(`screenshots/${name}.png is missing`);
+  return found[1].default;
+};
+const count = MORE.stations.length + 1;
+---
+
+<section class="chapter more" id="more" data-chapter="more" data-scene="4" data-gallery>
+  <div class="wrap more-head">
+    <Label index={4} text={MORE.label} />
+    <Lines lines={MORE.lines} />
+  </div>
+
+  <div class="track-view">
+    <ol class="track" data-track>
+      {
+        MORE.stations.map((s, i) => (
+          <li class="station" data-station>
+            <figure class="frame station-frame">
+              <Picture
+                src={shot(s.shot)}
+                formats={["avif", "webp"]}
+                fallbackFormat="webp"
+                widths={[640, 960, 1400]}
+                sizes="(max-width: 900px) 92vw, min(64vw, 900px)"
+                alt={s.alt}
+                loading="lazy"
+                decoding="async"
+              />
+            </figure>
+            <div class="station-copy">
+              <span class="station-index mono">
+                {String(i + 1).padStart(2, "0")} / {String(count).padStart(2, "0")}
+              </span>
+              <h3 class="station-title">{s.title}</h3>
+              <p class="station-text">{s.text}</p>
+            </div>
+          </li>
+        ))
+      }
+      <li class="station station-more" data-station>
+        <div class="more-card glass">
+          <span class="station-index mono">
+            {String(count).padStart(2, "0")} / {String(count).padStart(2, "0")}
+          </span>
+          <h3 class="station-title">And the rest</h3>
+          <ul class="more-list">
+            {MORE.more.map((m) => (
+              <li>
+                <Icon name="spark" />
+                {m}
+              </li>
+            ))}
+          </ul>
+          <a class="btn btn-ghost" href={SITE.features}>
+            <span>Everything Glint does</span>
+            <Icon name="external" />
+          </a>
+        </div>
+      </li>
+    </ol>
+  </div>
+
+  <div class="wrap track-progress" aria-hidden="true">
+    <span class="progress-bar"><span data-track-progress></span></span>
+  </div>
+</section>
+
+<style>
+  .more {
+    overflow: hidden;
+  }
+
+  .more-head {
+    margin-bottom: clamp(40px, 6vw, 72px);
+  }
+
+  .track {
+    display: grid;
+    gap: clamp(64px, 10vw, 120px);
+    width: min(var(--container), 100% - 2 * var(--gutter));
+    margin-inline: auto;
+  }
+
+  .station {
+    display: grid;
+    gap: 26px;
+  }
+
+  .station-frame {
+    aspect-ratio: 16 / 10;
+  }
+
+  .station-frame :global(img) {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .station-copy {
+    display: grid;
+    gap: 10px;
+    max-width: 52ch;
+  }
+
+  .station-index {
+    color: var(--gold);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+  }
+
+  .station-title {
+    font: 700 clamp(1.6rem, 1.2rem + 1.3vw, 2.4rem) / 1.1 var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  .station-text {
+    color: var(--mist);
+  }
+
+  .more-card {
+    display: grid;
+    gap: 18px;
+    align-content: center;
+    justify-items: start;
+    height: 100%;
+    padding: clamp(28px, 4vw, 52px);
+  }
+
+  .more-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 28px;
+    margin-block: 8px 10px;
+    color: var(--snow);
+  }
+
+  .more-list li {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+  }
+
+  .more-list :global(.icon) {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    color: var(--pink);
+    translate: 0 2px;
+  }
+
+  .track-progress {
+    display: none;
+  }
+
+  /* With motion on a wide screen, the chapter pins and the track runs sideways. */
+  @media (min-width: 901px) {
+    :global(.motion-ok) .more {
+      height: 100vh;
+      height: 100svh;
+      padding-block: calc(var(--header-h) + 32px) 40px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    :global(.motion-ok) .more-head {
+      margin-bottom: clamp(24px, 3.5vh, 44px);
+    }
+
+    :global(.motion-ok) .more-head :global(.display-2) {
+      font-size: clamp(2rem, 1.2rem + 2.6vw, 3.6rem);
+    }
+
+    :global(.motion-ok) .track-view {
+      flex: 1;
+      min-height: 0;
+    }
+
+    :global(.motion-ok) .track {
+      display: flex;
+      gap: clamp(36px, 4vw, 64px);
+      width: max-content;
+      height: 100%;
+      margin: 0;
+      padding-inline: max(var(--gutter), (100vw - var(--container)) / 2);
+      will-change: transform;
+    }
+
+    :global(.motion-ok) .station {
+      grid-template-columns: auto minmax(220px, 300px);
+      align-items: end;
+      gap: 28px;
+      height: 100%;
+    }
+
+    :global(.motion-ok) .station-frame {
+      height: 100%;
+      max-height: 62vh;
+      width: auto;
+    }
+
+    :global(.motion-ok) .station-more {
+      grid-template-columns: minmax(0, 640px);
+    }
+
+    :global(.motion-ok) .track-progress {
+      display: block;
+      margin-top: 22px;
+    }
+
+    .progress-bar {
+      display: block;
+      height: 2px;
+      overflow: hidden;
+      border-radius: 2px;
+      background: var(--line);
+    }
+
+    .progress-bar span {
+      display: block;
+      height: 100%;
+      background: var(--gradient-glint);
+      transform: scaleX(0);
+      transform-origin: left;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .more-list {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

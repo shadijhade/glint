@@ -1,0 +1,41 @@
+---
+/*
+  Glint's mark, inline: the folder (Windows 11's shape) and its sparkle. Each use gets its own gradient
+  ids, since several can be on the page at once.
+*/
+interface Props {
+  id: string;
+  class?: string;
+  label?: string;
+}
+
+const { id, class: className, label } = Astro.props;
+---
+
+<svg class={className} viewBox="0 0 1024 1024" role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : "true"} focusable="false">
+  <defs>
+    <linearGradient id={`${id}-back`} x1="0" y1="168" x2="0" y2="832" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f4a62a"></stop>
+      <stop offset="1" stop-color="#e07f06"></stop>
+    </linearGradient>
+    <linearGradient id={`${id}-front`} x1="0" y1="344" x2="0" y2="856" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd966"></stop>
+      <stop offset="1" stop-color="#ffb526"></stop>
+    </linearGradient>
+    <linearGradient id={`${id}-spark`} x1="584" y1="76" x2="944" y2="476" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff8fd0"></stop>
+      <stop offset="0.55" stop-color="#ec4899"></stop>
+      <stop offset="1" stop-color="#c026d3"></stop>
+    </linearGradient>
+  </defs>
+  <g class="logo-folder">
+    <path d="M176 168 H366 C398 168 420 180 440 202 L486 252 H848 Q928 252 928 332 V776 Q928 856 848 856 H176 Q96 856 96 776 V248 Q96 168 176 168 Z" fill={`url(#${id}-back)`}></path>
+    <rect x="96" y="344" width="832" height="512" rx="80" fill={`url(#${id}-front)`}></rect>
+    <rect x="96" y="344" width="832" height="10" rx="5" fill="#fff1b8" opacity="0.9"></rect>
+  </g>
+  <g class="logo-spark">
+    <path d="M764 76 C790 215 839 264 976 290 C839 316 790 365 764 504 C738 365 689 316 552 290 C689 264 738 215 764 76 Z" fill={`url(#${id}-spark)`}></path>
+    <path d="M764 214 C773 263 791 281 840 290 C791 299 773 317 764 366 C755 317 737 299 688 290 C737 281 755 263 764 214 Z" fill="#ffffff" opacity="0.35"></path>
+    <path d="M586 92 C592 124.5 603.5 136 636 142 C603.5 148 592 159.5 586 192 C580 159.5 568.5 148 536 142 C568.5 136 580 124.5 586 92 Z" fill="#ff8fd0"></path>
+  </g>
+</svg>

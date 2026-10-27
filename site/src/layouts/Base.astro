@@ -1,0 +1,86 @@
+---
+import "../styles/fonts.css";
+import "../styles/global.css";
+
+import alexandriaLatin from "../assets/fonts/alexandria-latin-wght-normal.woff2?url";
+import { SITE } from "../content/site";
+
+interface Props {
+  title?: string;
+  description?: string;
+  path?: string;
+  noindex?: boolean;
+  /** The page has the opening flash (the home page). */
+  intro?: boolean;
+}
+
+const { title = SITE.title, description = SITE.description, path = "/", noindex = false, intro = false } = Astro.props;
+const canonical = new URL(path, SITE.url).href;
+const ogImage = new URL("/og.jpg", SITE.url).href;
+
+/*
+  Runs before first paint. Every hidden reveal state in the stylesheet is scoped to .motion-ok, so if
+  this never runs (no JS, a blocked script, a crawler) the page is simply complete.
+    motion-ok      reveal choreography, smooth scroll, the pinned gallery, the live field
+    motion-live    ambient loops; dropped by the pause control
+    motion-paused  autonomous motion is off
+    intro          first view of the home page: the opening flash plays
+  A choice made with the pause control overrides the OS preference. The flash plays once per visit,
+  never on a deep link, and never without motion.
+*/
+const INTRO = intro
+  ? `if(d.classList.contains("motion-ok")&&!location.hash){try{if(!sessionStorage.getItem("glint-intro")){sessionStorage.setItem("glint-intro","1");d.classList.add("intro")}}catch(e){}}`
+  : "";
+const BOOT = `(function(){var d=document.documentElement;d.classList.remove("no-js");d.classList.add("js");var p=null;try{p=localStorage.getItem("glint-motion")}catch(e){}var r=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;if(p==="on"||(!r&&p!=="off")){d.classList.add("motion-ok","motion-live")}else{d.classList.add("motion-paused")}${INTRO}})();`;
+
+const structured = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Glint",
+  description: SITE.description,
+  url: SITE.url + "/",
+  applicationCategory: "UtilitiesApplication",
+  operatingSystem: "Windows 10, Windows 11",
+  downloadUrl: SITE.download,
+  image: ogImage,
+  license: "https://opensource.org/licenses/MIT",
+  isAccessibleForFree: true,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  publisher: { "@type": "Organization", name: "Rafd Technology & Solutions", url: "https://rafd.tech/" },
+};
+---
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    {noindex ? <meta name="robots" content="noindex, follow" /> : <meta name="robots" content="index, follow, max-image-preview:large" />}
+    <link rel="canonical" href={canonical} />
+    <meta name="theme-color" content="#0b0614" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="format-detection" content="telephone=no, email=no, address=no" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Glint" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Glint: Faster than a blink. The file explorer for Windows that doesn't make you wait." />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <link rel="preload" as="font" type="font/woff2" href={alexandriaLatin} crossorigin />
+    <script is:inline set:html={BOOT} />
+    <script type="application/ld+json" set:html={JSON.stringify(structured)} />
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>

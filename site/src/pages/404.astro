@@ -1,0 +1,49 @@
+---
+import Icon from "../components/Icon.astro";
+import Logo from "../components/Logo.astro";
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="Not found · Glint" description="This page doesn't exist." path="/404/" noindex>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <main class="page lost">
+    <Logo id="logo-404" class="lost-mark" label="Glint" />
+    <p class="label">404</p>
+    <h1 class="display-2">Not even Glint<br /><span class="gradient">can find this page.</span></h1>
+    <p class="body">The address may be mistyped, or the page has moved.</p>
+    <a class="btn btn-primary btn-lg" href="/">
+      <span>Back to Glint</span>
+      <Icon name="arrow" />
+    </a>
+  </main>
+</Base>
+
+<style>
+  .lost {
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 22px;
+    min-height: 100vh;
+    min-height: 100svh;
+    padding: 40px var(--gutter);
+    text-align: center;
+  }
+
+  :global(.lost-mark) {
+    width: 96px;
+    height: 96px;
+    margin-bottom: 8px;
+  }
+
+  /* The sparkle has drifted off the folder. */
+  :global(.lost-mark .logo-spark) {
+    transform: translate(250px, -190px) rotate(24deg);
+    transform-box: view-box;
+    transform-origin: 764px 290px;
+  }
+
+  .lost .label {
+    margin: 0;
+  }
+</style>

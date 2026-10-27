@@ -1,0 +1,210 @@
+---
+import { HERO, SITE } from "../content/site";
+import Icon from "./Icon.astro";
+import Lines from "./Lines.astro";
+---
+
+<section class="hero" id="top" data-chapter="top" data-scene="0">
+  <div class="wrap hero-inner">
+    <p class="label" data-reveal data-hero-step>
+      <span>A free innovation from <a class="rafd-link" href={SITE.rafd}>Rafd</a></span>
+      <span class="label-index hero-os">· Windows 10 &amp; 11</span>
+    </p>
+
+    <div data-hero-step>
+      <Lines as="h1" class="display hero-title" lines={HERO.lines} />
+    </div>
+
+    <p class="lead hero-sub" data-reveal data-hero-step>{HERO.sub}</p>
+    <p class="body hero-body" data-reveal data-hero-step>{HERO.body}</p>
+
+    <div class="hero-cta" data-reveal data-hero-step>
+      <a class="btn btn-primary btn-lg" href={SITE.download} data-download>
+        <Icon name="download" />
+        <span>Download for Windows</span>
+      </a>
+      <a class="btn btn-ghost btn-lg" href="#open" data-nav-link>
+        <span>See it work</span>
+        <Icon name="down" />
+      </a>
+    </div>
+    <p class="hero-meta mono" data-reveal data-hero-step>
+      <span data-release></span>Free · no administrator rights · <a href={SITE.latest} data-notes>What's new</a>
+    </p>
+  </div>
+
+  <div class="wrap">
+    <dl class="hero-stats" data-reveal data-hero-step>
+      {
+        HERO.stats.map((s) => (
+          <div class="hero-stat">
+            <dt class="num">
+              {"text" in s ? (
+                s.text
+              ) : (
+                <>
+                  <span data-count={s.value} data-decimals={s.decimals}>{s.value.toFixed(s.decimals)}</span>
+                  <span class="unit">{s.unit}</span>
+                </>
+              )}
+            </dt>
+            <dd>{s.label}</dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+
+  <a class="scroll-cue" href="#open" data-nav-link aria-label="Scroll to see it work">
+    <span class="mono">Scroll to see it work</span>
+    <span class="scroll-line" aria-hidden="true"></span>
+  </a>
+</section>
+
+<style>
+  .hero {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 100vh;
+    min-height: 100svh;
+    padding-block: calc(var(--header-h) + 48px) 36px;
+  }
+
+  .hero-inner {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .rafd-link {
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 143, 208, 0.35);
+    text-underline-offset: 4px;
+    transition: text-decoration-color 0.3s;
+  }
+
+  .rafd-link:hover {
+    text-decoration-color: var(--pink);
+  }
+
+  .hero-title {
+    max-width: 9.5ch;
+    margin-bottom: clamp(22px, 3vw, 34px);
+    font-size: clamp(3.2rem, 1.2rem + 8.6vw, 9.2rem);
+    line-height: 0.95;
+  }
+
+  .hero-sub {
+    margin-bottom: 18px;
+  }
+
+  .hero-body {
+    max-width: 50ch;
+    margin-bottom: 34px;
+  }
+
+  .hero-cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .hero-meta {
+    margin-top: 16px;
+    color: var(--fog);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+
+  .hero-meta a {
+    color: var(--pink);
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 143, 208, 0.4);
+    text-underline-offset: 3px;
+  }
+
+  .hero-stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 24px;
+    max-width: 980px;
+    margin-top: clamp(48px, 7vh, 88px);
+    padding-top: 26px;
+    border-top: 1px solid var(--line);
+  }
+
+  .hero-stat dt {
+    font-size: clamp(1.7rem, 1.2rem + 1.6vw, 2.6rem);
+    line-height: 1;
+  }
+
+  .hero-stat dd {
+    max-width: 22ch;
+    margin-top: 10px;
+    color: var(--mist);
+    font-size: 13.5px;
+    line-height: 1.45;
+  }
+
+  .scroll-cue {
+    position: absolute;
+    right: clamp(60px, 7vw, 110px);
+    bottom: 36px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    color: var(--fog);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .scroll-line {
+    position: relative;
+    width: 1px;
+    height: 46px;
+    overflow: hidden;
+    background: var(--line-2);
+  }
+
+  .scroll-line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, transparent, var(--pink));
+    transform: translateY(-100%);
+  }
+
+  :global(.motion-live) .scroll-line::after {
+    animation: drip 2.4s var(--ease-in-out) infinite;
+  }
+
+  @keyframes drip {
+    to {
+      transform: translateY(100%);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .hero-stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .scroll-cue {
+      display: none;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .hero-cta .btn {
+      flex: 1 1 100%;
+    }
+
+    .hero-os {
+      display: none;
+    }
+  }
+</style>
