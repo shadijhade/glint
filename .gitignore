@@ -13,6 +13,8 @@ dist-ssr
 *.local
 # npm run release output
 release
+# npm run site output
+_site
 
 # Editor directories and files
 .vscode/*
