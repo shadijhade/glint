@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glint, the fast file explorer for Windows</title>
+<meta name="description" content="Glint is a free, open-source file explorer for Windows 10 and 11. Folders open in milliseconds, every folder shows its size, and any file on any drive turns up as you type.">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="icon" href="icon.png" type="image/png" sizes="128x128">
+<link rel="apple-touch-icon" href="icon.png">
+<meta name="theme-color" content="#170b1f">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Glint">
+<meta property="og:title" content="Glint, the fast file explorer for Windows">
+<meta property="og:description" content="Folders in milliseconds, every folder's size in the list, and any file on any drive found as you type. Free and open source.">
+<meta property="og:image" content="https://raw.githubusercontent.com/shadijhade/glint/master/site/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Glint, the fast file explorer for Windows: System32 on screen in 12 ms, every folder's size in the list, files on every drive found in milliseconds">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Glint",
+  "description": "A free, open-source file explorer for Windows that opens folders in milliseconds, shows the size of every folder, and finds any file on any drive as you type.",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "Windows 10, Windows 11",
+  "downloadUrl": "https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe",
+  "image": "https://raw.githubusercontent.com/shadijhade/glint/master/site/social-preview.png",
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<style>
+  :root {
+    --page: #fbfafc;
+    --surface: #ffffff;
+    --surface-2: #f4f1f6;
+    --line: #e6e0ec;
+    --text: #1d1724;
+    --muted: #5d566a;
+    --accent: #b8236f;
+    --number: #b0186b;
+    --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #120f16;
+      --surface: #1b1720;
+      --surface-2: #241e2b;
+      --line: #322a3a;
+      --text: #f3eff6;
+      --muted: #b4aabf;
+      --accent: #f58ac4;
+      --number: #f9a8d4;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text);
+    font: 17px/1.55 var(--font);
+    -webkit-font-smoothing: antialiased;
+  }
+  img { max-width: 100%; height: auto; }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  h1, h2, h3 { font-family: var(--display); line-height: 1.15; }
+  h2 { font-size: clamp(1.8rem, 3.6vw, 2.5rem); letter-spacing: -0.015em; margin: 0 0 10px; }
+  h3 { font-size: 1.15rem; margin: 0 0 6px; }
+  kbd {
+    font: 0.85em var(--font);
+    padding: 1px 6px;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  .wrap { width: min(1120px, calc(100% - 32px)); margin-inline: auto; }
+  .skip { position: absolute; left: -9999px; top: 12px; z-index: 10; padding: 8px 14px; border-radius: 8px; background: #fff; color: #170b1f; }
+  .skip:focus { left: 16px; }
+
+  /* The top of the page is dark in both themes, like the app and its screenshots. */
+  .hero {
+    color: #fff;
+    background:
+      radial-gradient(1100px 620px at 12% -12%, rgba(176, 38, 140, 0.55), transparent 62%),
+      radial-gradient(900px 560px at 92% 4%, rgba(84, 38, 160, 0.45), transparent 60%),
+      #170b1f;
+    padding-bottom: 72px;
+  }
+  .top { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; color: #fff; text-decoration: none; font: 700 21px var(--display); }
+  .links { display: flex; gap: 6px; }
+  .links a { color: rgba(255, 255, 255, 0.78); text-decoration: none; padding: 8px 12px; border-radius: 8px; font-size: 15px; }
+  .links a:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+  .intro { text-align: center; padding-top: 56px; }
+  .eyebrow {
+    display: inline-block;
+    margin: 0 0 22px;
+    padding: 6px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #f6cfe6;
+    font-size: 14px;
+  }
+  .eyebrow::before { content: "✦"; color: #ff8fd0; margin-right: 8px; }
+  h1 { font-size: clamp(2.5rem, 6.4vw, 4.4rem); letter-spacing: -0.025em; margin: 0 auto 18px; max-width: 20ch; text-wrap: balance; }
+  .lead { font-size: clamp(1.1rem, 2.3vw, 1.35rem); color: #e9dcf0; max-width: 40ch; margin: 0 auto 32px; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 14px 24px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #db2777, #a21caf);
+    box-shadow: 0 10px 28px rgba(219, 39, 119, 0.35);
+    color: #fff;
+    font: 600 17px var(--font);
+    text-decoration: none;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .button:hover { transform: translateY(-1px); box-shadow: 0 14px 34px rgba(219, 39, 119, 0.45); }
+  .button:focus-visible, .links a:focus-visible, .brand:focus-visible { outline: 3px solid #f9a8d4; outline-offset: 3px; }
+  .button.ghost { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.22); box-shadow: none; }
+  .button.ghost:hover { background: rgba(255, 255, 255, 0.14); }
+  .meta { margin: 16px 0 0; color: #cdbbd8; font-size: 14px; }
+  .meta a { color: #f6cfe6; }
+  .shot {
+    margin: 56px auto 0;
+    max-width: 1100px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 12px;
+    overflow: hidden;
+    background: #1c1c1c;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  }
+  .shot img { display: block; width: 100%; }
+
+  main section { padding-top: 96px; }
+  .section-lead { color: var(--muted); margin: 0 0 28px; max-width: 60ch; }
+
+  .stats { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; }
+  .stats li { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px 20px 18px; }
+  .stats b { display: block; color: var(--number); font: 700 2.3rem/1.1 var(--display); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+  .stats span { color: var(--muted); font-size: 15px; line-height: 1.4; display: block; }
+  .fine { color: var(--muted); font-size: 14px; margin: 18px 0 0; max-width: 80ch; }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 22px; }
+  .feature { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .feature img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; border-bottom: 1px solid var(--line); background: #1c1c1c; }
+  .feature h3 { margin: 18px 20px 6px; }
+  .feature p { margin: 0 20px 22px; color: var(--muted); font-size: 16px; }
+
+  .trio { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 18px; margin-top: 24px; }
+  .trio > div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .trio h3::before { content: "✦ "; color: var(--accent); }
+  .trio p { margin: 0; color: var(--muted); font-size: 16px; }
+  .more { color: var(--muted); margin: 22px 0 0; max-width: 85ch; }
+
+  .faq { max-width: 820px; margin-top: 20px; }
+  .faq details { border-bottom: 1px solid var(--line); padding: 16px 0; }
+  .faq summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 16px; font-weight: 600; font-size: 1.08rem; }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: "+"; color: var(--accent); font-size: 1.3rem; line-height: 1; transition: transform 0.15s ease; }
+  .faq details[open] summary::after { transform: rotate(45deg); }
+  .faq summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+  .faq p { margin: 10px 0 0; color: var(--muted); max-width: 72ch; }
+
+  .ways { list-style: none; padding: 0; margin: 24px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 18px; }
+  .ways li { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+  .ways p { margin: 10px 0 0; color: var(--muted); font-size: 16px; }
+  pre { margin: 10px 0 0; padding: 12px 14px; border-radius: 8px; background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; font: 13.5px/1.5 var(--mono); }
+
+  .cta {
+    margin-top: 104px;
+    padding: 56px 24px;
+    border-radius: 20px;
+    text-align: center;
+    color: #fff;
+    background:
+      radial-gradient(700px 300px at 20% 0%, rgba(176, 38, 140, 0.55), transparent 65%),
+      radial-gradient(600px 300px at 90% 100%, rgba(84, 38, 160, 0.5), transparent 65%),
+      #170b1f;
+  }
+  .cta h2 { margin-bottom: 24px; }
+
+  footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding: 40px 0 56px; color: var(--muted); font-size: 14px; }
+  footer p { margin: 0; display: flex; align-items: center; gap: 10px; }
+  footer nav { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+  @media (max-width: 640px) {
+    body { font-size: 16px; }
+    .links a:not(.github) { display: none; }
+    .intro { padding-top: 32px; }
+    .actions .button { width: 100%; }
+    main section { padding-top: 72px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .button, .faq summary::after { transition: none; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="hero">
+  <nav class="top wrap" aria-label="Main">
+    <a class="brand" href="./"><img src="logo.svg" alt="" width="32" height="32">Glint</a>
+    <div class="links">
+      <a href="#speed">Speed</a>
+      <a href="#features">Features</a>
+      <a href="#questions">Questions</a>
+      <a class="github" href="https://github.com/shadijhade/glint">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="intro wrap">
+    <p class="eyebrow">Free and open source · Windows 10 and 11</p>
+    <h1>The fast file explorer for Windows</h1>
+    <p class="lead">Folders open in milliseconds, every folder shows its size, and any file on any drive turns up as you type.</p>
+    <div class="actions">
+      <a class="button" data-download href="https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+        Download for Windows
+      </a>
+      <a class="button ghost" href="https://github.com/shadijhade/glint">
+        <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>
+        Source on GitHub
+      </a>
+    </div>
+    <p class="meta"><span data-release></span>Windows 10 and 11, 64-bit · no administrator rights needed · <a data-notes href="https://github.com/shadijhade/glint/releases/latest">What's new</a></p>
+  </div>
+
+  <div class="wrap">
+    <figure class="shot">
+      <img src="screenshots/demo.gif" width="1100" height="688" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes, the command palette and two panes side by side">
+    </figure>
+  </div>
+</header>
+
+<main id="main">
+  <section id="speed" class="wrap">
+    <h2>Measured, not promised</h2>
+    <p class="section-lead">From pressing Enter until everything is on screen.</p>
+    <ul class="stats">
+      <li><b>12 ms</b><span>System32 open, all 5,092 items</span></li>
+      <li><b>114 ms</b><span>A folder of 100,000 files</span></li>
+      <li><b>7.7 ms</b><span>Every kernel32.dll on three drives, among 3 million names</span></li>
+      <li><b>0.4 ms</b><span>The size of every folder in C:\Windows</span></li>
+      <li><b>53 ms</b><span>A map of everything on C:, all 464 GB</span></li>
+    </ul>
+    <p class="fine">The median of 5 runs, with the files in Windows' cache, on an Intel Core Ultra 7 265K with an NVMe SSD; name search, folder sizes and the map with instant search on. Glint's status bar shows the time for every folder and search, so you can check them on your own PC. <a href="https://github.com/shadijhade/glint#benchmarks">All the numbers</a></p>
+  </section>
+
+  <section id="features" class="wrap">
+    <h2>What File Explorer leaves out</h2>
+    <p class="section-lead">Everything here is in the app you download, at no cost.</p>
+    <div class="features">
+      <article class="feature">
+        <img src="screenshots/folder-sizes.png" width="1600" height="1000" loading="lazy" alt="C:\Windows sorted by size, with the size of every folder">
+        <h3>Every folder's size, in the list</h3>
+        <p>File Explorer keeps folder sizes in Properties. Glint shows them in the Size column as the folder opens, so you can sort by them.</p>
+      </article>
+      <article class="feature">
+        <img src="screenshots/disk-usage.png" width="1600" height="1000" loading="lazy" alt="The disk usage map of C:\Windows: every folder and file as a block sized by how much space it takes">
+        <h3>See what's filling your drive</h3>
+        <p>A map of any folder, like WizTree's, with colors for what grew in the last day, week or month.</p>
+      </article>
+      <article class="feature">
+        <img src="screenshots/instant-search.png" width="1600" height="1000" loading="lazy" alt="5,015 DLLs found under System32 in 37 ms">
+        <h3>Any file on any drive, as you type</h3>
+        <p>Turn on instant search and Glint indexes your NTFS drives the way Everything does, then keeps up with every change.</p>
+      </article>
+      <article class="feature">
+        <img src="screenshots/dual-pane.png" width="1600" height="1000" loading="lazy" alt="Two panes side by side, each with its own tabs">
+        <h3>Tabs, and two panes side by side</h3>
+        <p>Copy and move between two folders, or compare them down through every subfolder and sync them.</p>
+      </article>
+      <article class="feature">
+        <img src="screenshots/grid-view.png" width="1600" height="1000" loading="lazy" alt="Wallpapers found by name and shown as a grid of thumbnails">
+        <h3>Thumbnails that never hold up the folder</h3>
+        <p>1,200 photos are on screen in 9.3 ms, and their thumbnails fill in right after from Windows' own cache.</p>
+      </article>
+      <article class="feature">
+        <img src="screenshots/quick-look.png" width="1600" height="1000" loading="lazy" alt="Quick Look showing a Rust file with syntax highlighting">
+        <h3>Quick Look on <kbd>Space</kbd></h3>
+        <p>See any file full size without opening it: code, pictures, video, PDFs, Office documents, and tables you can query with SQL.</p>
+      </article>
+      <article class="feature">
+        <img src="screenshots/text-search.png" width="1600" height="1000" loading="lazy" alt="ripgrep results with a syntax-highlighted preview">
+        <h3>Search inside files</h3>
+        <p>ripgrep in any folder, with regular expressions and replace, and the text in PDFs and Office documents, by words or by meaning.</p>
+      </article>
+      <article class="feature">
+        <img src="screenshots/command-palette.png" width="1600" height="1000" loading="lazy" alt="The command palette with recent folders and commands">
+        <h3><kbd>Ctrl</kbd>+<kbd>K</kbd> for everything</h3>
+        <p>Jump to the folders you use most by typing a few of their letters, or run any command.</p>
+      </article>
+      <article class="feature">
+        <img src="screenshots/batch-rename.png" width="1600" height="1000" loading="lazy" alt="Batch rename of twelve photos, with each new name previewed">
+        <h3>The tools Explorer doesn't have</h3>
+        <p>Find duplicates by their content, see what's locking a file, check a download's checksum, clear out old build output, and rename many files at once with Undo.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <h2>Still Windows</h2>
+    <div class="trio">
+      <div>
+        <h3>Windows' own file engine</h3>
+        <p>Copy, move, delete and rename run on the engine File Explorer uses: its progress, Replace or Skip, the Recycle Bin and administrator prompts.</p>
+      </div>
+      <div>
+        <h3>Works with File Explorer</h3>
+        <p>Drag and drop and the clipboard work both ways, and if you turn it on, File Explorer's right-click menu opens folders in Glint.</p>
+      </div>
+      <div>
+        <h3>Archives open like folders</h3>
+        <p>Zip, 7z, RAR, cabinet and tar archives open in the list or the grid, and nothing is extracted until something needs a file.</p>
+      </div>
+    </div>
+    <p class="more">And more: Git status in every folder, a terminal under the files, comparing files and folders, the Recycle Bin with Undo, sending files to another PC, S3, WebDAV and SFTP as folders, folder rules, and a search box over every drive from any app (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>). <a href="https://github.com/shadijhade/glint#features">Everything Glint does</a></p>
+  </section>
+
+  <section id="questions" class="wrap">
+    <h2>Questions</h2>
+    <div class="faq">
+      <details>
+        <summary>Is Glint free?</summary>
+        <p>Yes. It's open source under the MIT license, with no ads and no account.</p>
+      </details>
+      <details>
+        <summary>Why does Windows say it protected my PC?</summary>
+        <p>Glint's installer isn't code-signed yet, and Windows warns about programs it hasn't seen many people run. Choose <b>More info</b>, then <b>Run anyway</b>. All of Glint's code is on GitHub, every update is signed and checked before it installs, and each download's SHA-256 is on its release page. On a PC with Smart App Control on, Windows doesn't run unsigned programs at all, so Glint can't run there until its installer is signed.</p>
+      </details>
+      <details>
+        <summary>Does it collect any data?</summary>
+        <p>No. There's no telemetry and no analytics: on its own, Glint only asks GitHub whether there's a new version. <a href="https://github.com/shadijhade/glint/blob/master/SECURITY.md#code-signing-and-privacy-policy">Privacy policy</a></p>
+      </details>
+      <details>
+        <summary>How does it update?</summary>
+        <p>When a new version is out, Glint says so. <b>Install</b> downloads it, checks its signature and restarts into it in a few seconds.</p>
+      </details>
+      <details>
+        <summary>What does instant search need?</summary>
+        <p>Nothing until you turn it on. Then a small service reads each NTFS drive's file table once, the way Everything does, and follows its change journal, so Windows asks for administrator approval one time. It knows names, sizes and dates, never what's inside files, and answers only the accounts that turned it on (and administrators). <a href="https://github.com/shadijhade/glint/blob/master/docs/instant-search.md">How it works</a></p>
+      </details>
+      <details>
+        <summary>Does it replace File Explorer?</summary>
+        <p>No, it runs next to it. Copy, paste and drag and drop work between the two, and File Explorer can open folders in Glint if you turn that on. To remove Glint, uninstall it from Settings → Apps, which takes instant search out too.</p>
+      </details>
+      <details>
+        <summary>How is it different from Everything or WizTree?</summary>
+        <p>Everything and WizTree showed that reading the NTFS file table directly is the fast way, and Glint's index does the same. The difference is that it's inside a whole file explorer: folder sizes in every list, a disk map, tabs and two panes, previews, and Windows' own file operations.</p>
+      </details>
+      <details>
+        <summary>Which Windows does it run on?</summary>
+        <p>Windows 10 and 11, 64-bit. Glint draws its window with WebView2, which Windows 11 has built in; the installer adds it to a PC that doesn't have it.</p>
+      </details>
+    </div>
+  </section>
+
+  <section id="install" class="wrap">
+    <h2>Other ways to install</h2>
+    <ul class="ways">
+      <li>
+        <h3>Scoop</h3>
+        <pre><code>scoop bucket add shadijhade https://github.com/shadijhade/scoop-bucket
+scoop install shadijhade/glint</code></pre>
+        <p>Scoop checks the download against its hash, and keeps Glint up to date itself.</p>
+      </li>
+      <li>
+        <h3>winget</h3>
+        <pre><code>winget install shadijhade.Glint</code></pre>
+        <p>Once winget's moderators have reviewed Glint, which takes a few weeks for a new package.</p>
+      </li>
+      <li hidden data-offline>
+        <h3>Offline installer</h3>
+        <p>With WebView2 inside, for a PC without internet or WebView2: <a data-offline-link href="https://github.com/shadijhade/glint/releases/latest">download the offline installer</a>.</p>
+      </li>
+      <li>
+        <h3>From the source</h3>
+        <p>With Rust, Node.js and the Tauri prerequisites: <a href="https://github.com/shadijhade/glint#build-from-source">build it yourself</a>.</p>
+      </li>
+    </ul>
+  </section>
+
+  <section class="wrap cta">
+    <h2>Try it on your slowest folder</h2>
+    <a class="button" data-download href="https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+      Download for Windows
+    </a>
+    <p class="meta"><span data-release></span>Windows 10 and 11, 64-bit</p>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p><img src="logo.svg" alt="" width="20" height="20">Glint is open source under the MIT license.</p>
+  <nav aria-label="More">
+    <a href="https://github.com/shadijhade/glint/releases">Releases</a>
+    <a href="https://github.com/shadijhade/glint/issues/new/choose">Report a problem</a>
+    <a href="https://github.com/shadijhade/glint/blob/master/SECURITY.md#code-signing-and-privacy-policy">Privacy</a>
+    <a href="https://github.com/shadijhade/glint">GitHub</a>
+  </nav>
+</footer>
+
+<script>
+  // The links work as they are; the latest release adds its version, size and offline installer.
+  fetch("https://api.github.com/repos/shadijhade/glint/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((release) => {
+      const assets = release?.assets ?? [];
+      const setup = assets.find((a) => a.name === "Glint-setup.exe") ?? assets.find((a) => a.name.endsWith("_x64-setup.exe"));
+      if (!setup) return;
+      const version = release.tag_name.replace(/^v/, "");
+      for (const a of document.querySelectorAll("[data-download]")) a.href = setup.browser_download_url;
+      for (const span of document.querySelectorAll("[data-release]")) span.textContent = `Version ${version} · ${Math.round(setup.size / 1048576)} MB · `;
+      for (const a of document.querySelectorAll("[data-notes]")) a.href = release.html_url;
+      const offline = assets.find((a) => a.name.endsWith("_offline-setup.exe"));
+      if (offline) {
+        document.querySelector("[data-offline-link]").href = offline.browser_download_url;
+        document.querySelector("[data-offline]").hidden = false;
+      }
+    })
+    .catch(() => {});
+</script>
+</body>
+</html>
