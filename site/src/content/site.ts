@@ -34,9 +34,7 @@ export const CHAPTERS = [
   { id: "open", label: "Open", scene: 1 },
   { id: "size", label: "Size", scene: 2 },
   { id: "find", label: "Find", scene: 3 },
-  { id: "more", label: "Everything else", scene: 4 },
-  { id: "windows", label: "Still Windows", scene: 4 },
-  { id: "proof", label: "Proof", scene: 1 },
+  { id: "more", label: "More", scene: 4 },
   { id: "get", label: "Get Glint", scene: 5 },
 ] as const;
 
@@ -109,53 +107,17 @@ export const FIND = {
 };
 
 export const MORE = {
-  label: "Everything else",
+  label: "More",
   lines: ["What File Explorer", "leaves out."],
-  stations: [
-    { shot: "disk-usage", title: "A map of your drive", text: "Every folder and file as a block the size of the space it takes, like WizTree, with colors for what grew in the last day, week or month.", alt: "The disk usage map of C:\\Windows: every folder and file as a block sized by how much space it takes" },
-    { shot: "dual-pane", title: "Tabs, and two panes", text: "Each pane has its own tabs. Copy and move between two folders, or compare them down through every subfolder and sync them.", alt: "Two panes side by side, each with its own tabs" },
-    { shot: "grid-view", title: "Thumbnails that never wait", text: "1,200 photos are on screen in 9.3 ms, and their thumbnails fill in right after from Windows' own cache.", alt: "Wallpapers found by name and shown as a grid of thumbnails" },
-    { shot: "quick-look", title: "Quick Look on Space", text: "See any file full size without opening it: code, pictures, video, PDFs, Office documents, and tables you can query with SQL.", alt: "Quick Look showing a Rust file with syntax highlighting" },
-    { shot: "text-search", title: "Search inside files", text: "ripgrep in any folder, with regular expressions and replace, and the text in PDFs and Office documents, by words or by meaning.", alt: "ripgrep results with a syntax-highlighted preview" },
-    { shot: "command-palette", title: "Ctrl+K for everything", text: "Jump to the folders you use most by typing a few of their letters, or run any command.", alt: "The command palette with recent folders and commands" },
-    { shot: "file-xray", title: "File X-Ray", text: "A file's SHA-256, BLAKE3 and CRC32 against a checksum you paste, its hidden streams, and Windows' downloaded-from-the-internet mark with Unblock.", alt: "The File X-Ray of a downloaded installer, its SHA-256 matching the published one" },
-    { shot: "batch-rename", title: "Rename a thousand files", text: "Patterns, numbering, dates, and find and replace, with every new name previewed first and Undo after.", alt: "Batch rename of twelve photos, with each new name previewed" },
-  ],
-  more: ["Archives that open like folders", "Git status in every folder", "A terminal under the files", "The Recycle Bin, with Undo", "Send files to another PC", "S3, WebDAV and SFTP as folders", "Folder rules", "Clean up and duplicates"],
-};
-
-export const WINDOWS = {
-  label: "Still Windows",
-  lines: ["Fast, and still", "Windows."],
-  body: "Glint doesn't replace how Windows works. It runs next to File Explorer, on Windows' own engines, and keeps to itself.",
   cards: [
-    { icon: "engine", title: "Windows' own file engine", text: "Copy, move, delete and rename run on the engine File Explorer uses: its progress, Replace or Skip, the Recycle Bin and administrator prompts." },
-    { icon: "swap", title: "Both ways with File Explorer", text: "Drag and drop and the clipboard work between the two, and File Explorer can open folders in Glint if you turn that on." },
-    { icon: "lock", title: "Nothing leaves your PC", text: "No telemetry, no analytics, no account, no ads. On its own, Glint only asks GitHub whether there's a new version." },
-    { icon: "shield", title: "Updates you can trust", text: "Every update is signed and checked before it installs, then Glint restarts into it in a few seconds." },
-    { icon: "key", title: "An index that asks first", text: "Instant search is off until you turn it on. Its service drops every privilege it doesn't need and answers only the accounts that turned it on." },
-    { icon: "code", title: "Open source", text: "MIT licensed. Read every line, build it yourself, or send a fix." },
+    { shot: "disk-usage", title: "A map of your drive", text: "Every folder and file as a block the size of the space it takes, like WizTree.", alt: "The disk usage map of C:\\Windows: every folder and file as a block sized by how much space it takes" },
+    { shot: "dual-pane", title: "Tabs, and two panes", text: "Copy and move between two folders, or compare them and sync.", alt: "Two panes side by side, each with its own tabs" },
+    { shot: "grid-view", title: "Thumbnails that never wait", text: "1,200 photos on screen in 9.3 ms, thumbnails from Windows' own cache.", alt: "Wallpapers found by name and shown as a grid of thumbnails" },
+    { shot: "quick-look", title: "Quick Look on Space", text: "Any file full size without opening it: code, pictures, PDFs, Office files.", alt: "Quick Look showing a Rust file with syntax highlighting" },
+    { shot: "text-search", title: "Search inside files", text: "ripgrep in any folder, with regular expressions and replace.", alt: "ripgrep results with a syntax-highlighted preview" },
+    { shot: "command-palette", title: "Ctrl+K for everything", text: "Jump to the folders you use most, or run any command, by typing.", alt: "The command palette with recent folders and commands" },
   ],
-};
-
-export const PROOF = {
-  label: "Proof",
-  lines: ["Measured,", "not promised."],
-  rows: [
-    { task: "Open a folder", where: "C:\\Windows", found: "108 items", ms: 6.3 },
-    { task: "Open a folder", where: "C:\\Windows\\System32", found: "5,092 items", ms: 12 },
-    { task: "Open a folder", where: "C:\\Windows\\WinSxS", found: "21,650 items", ms: 73 },
-    { task: "Open a folder", where: "a test folder", found: "100,000 files", ms: 114 },
-    { task: "Size every folder", where: "C:\\Windows", found: "56 GB", ms: 0.4 },
-    { task: "Map disk usage", where: "all of C:\\, six levels down", found: "the 20,000 biggest of 464 GB", ms: 53 },
-    { task: "Find files by name", where: "kernel32.dll on three drives", found: "18 files", ms: 7.7 },
-    { task: "Find files by name", where: "*.dll in System32 and below", found: "5,015 files", ms: 36 },
-    { task: "Search inside files", where: "DriverVer in C:\\Windows\\INF", found: "1,313 matches", ms: 39 },
-    { task: "Open a folder in the grid", where: "1,200 photos", found: "1,200 items", ms: 9.3 },
-    { task: "Open an archive", where: "a zip of 50,000 files", found: "54,001 items", ms: 57 },
-  ],
-  method:
-    "From pressing Enter until everything is on screen, as Glint's status bar reports it: the median of 5 runs, with the files in Windows' cache. Intel Core Ultra 7 265K, NVMe SSD, Windows 11. Name search, folder sizes and the map with instant search on. The status bar shows the time for every folder and search, so you can check these on your own PC.",
+  also: ["Archives that open like folders", "Git status in every folder", "A terminal under the files", "Checksums and File X-Ray", "Batch rename with Undo", "Duplicates and Clean up", "Send files to another PC", "S3, WebDAV and SFTP folders"],
 };
 
 export const GET = {
@@ -163,19 +125,23 @@ export const GET = {
   lines: ["Try it on your", "slowest folder."],
   body: "It installs for your account in a few seconds, without administrator rights, and keeps itself up to date.",
   requirements: "Windows 10 or 11, 64-bit",
+  trust: [
+    { icon: "engine", text: "Windows' own file engine" },
+    { icon: "lock", text: "No telemetry, no account" },
+    { icon: "shield", text: "Signed, checked updates" },
+    { icon: "code", text: "Open source, MIT" },
+  ],
   smartscreen:
     "The installer isn't code-signed yet, so Windows may say it protected your PC: choose More info, then Run anyway.",
   ways: [
-    { title: "Scoop", commands: SITE.scoop, note: "Scoop checks the download against its hash and keeps Glint up to date itself." },
-    { title: "winget", commands: [SITE.winget], note: "Once winget's moderators have reviewed Glint, which takes a few weeks for a new package." },
+    { title: "Scoop", commands: SITE.scoop, note: "Checks the download against its hash and keeps Glint up to date." },
+    { title: "winget", commands: [SITE.winget], note: "Once winget's moderators have reviewed Glint, a few weeks for a new package." },
   ],
   faq: [
     { q: "Is Glint free?", a: "Yes. It's open source under the MIT license, with no ads and no account." },
     { q: "Why does Windows say it protected my PC?", a: "Glint's installer isn't code-signed yet, and Windows warns about programs it hasn't seen many people run. Choose More info, then Run anyway. All of Glint's code is on GitHub, every update is signed and checked before it installs, and each download's SHA-256 is on its release page. On a PC with Smart App Control on, Windows doesn't run unsigned programs at all, so Glint can't run there until its installer is signed." },
     { q: "Does it collect any data?", a: "No. There's no telemetry and no analytics: on its own, Glint only asks GitHub whether there's a new version." },
-    { q: "What does instant search need?", a: "Nothing until you turn it on. Then a small service reads each NTFS drive's file table once and follows its change journal, so Windows asks for administrator approval one time. It knows names, sizes and dates, never what's inside files." },
-    { q: "Does it replace File Explorer?", a: "No, it runs next to it. To remove Glint, uninstall it from Settings → Apps, which takes instant search out too." },
-    { q: "How is it different from Everything or WizTree?", a: "They showed that reading the NTFS file table directly is the fast way, and Glint's index does the same. The difference is that it's inside a whole file explorer: folder sizes in every list, a disk map, tabs and two panes, previews, and Windows' own file operations." },
+    { q: "Does it replace File Explorer?", a: "No, it runs next to it, and copying and drag and drop work between the two. Instant search, the index behind the fastest searches, is off until you turn it on. To remove Glint, uninstall it from Settings → Apps." },
   ],
 };
 

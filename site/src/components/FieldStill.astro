@@ -22,10 +22,10 @@ const dots = Array.from({ length: 380 }, () => {
   const u = rand();
   let x: number;
   let y: number;
-  if (u < 0.12) {
-    x = cx + gauss() * R * 0.07;
-    y = cy + gauss() * R * 0.05;
-  } else if (u < 0.3) {
+  if (u < 0.04) {
+    x = cx + gauss() * R * 0.12;
+    y = cy + gauss() * R * 0.07;
+  } else if (u < 0.2) {
     x = rand() * W;
     y = rand() * H;
   } else {
