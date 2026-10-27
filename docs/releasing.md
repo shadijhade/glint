@@ -4,10 +4,12 @@ Releases are built one of two ways: by the release workflow on GitHub when a `vX
 
 ## How it works
 
-1.  **`npm run release`** ([`scripts/release.mjs`](../scripts/release.mjs)) checks that `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` agree on the version, that everything is committed and that the crates pass their checks ([below](#5-release-notes-and-the-crates-checks)), then builds the NSIS installer (code-signed when signing is set up) and signs it for the in-app updater. It writes `latest.json` and checks the update the way the app will: the signature must verify with the public key the app is built with and be bound to the version `latest.json` announces. It also writes the winget and Scoop manifests. Everything lands in `release/vX.Y.Z/`, and it prints the `gh release create` command that makes the draft release.
+1.  **`npm run release`** ([`scripts/release.mjs`](../scripts/release.mjs)) checks that `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` agree on the version, that everything is committed and that the crates pass their checks ([below](#5-release-notes-and-the-crates-checks)), then builds the NSIS installer (code-signed when signing is set up) and signs it for the in-app updater. It writes `latest.json` and checks the update the way the app will: the signature must verify with the public key the app is built with and be bound to the version `latest.json` announces. It also writes the winget and Scoop manifests. Everything lands in `release/vX.Y.Z/`, with the installer a second time as `Glint-setup.exe` (below), and it prints the `gh release create` command that makes the draft release.
 2.  **Publishing the draft** makes it the latest release. Copies of the app installed with the setup program read `https://github.com/shadijhade/glint/releases/latest/download/latest.json` at start and every 12 hours, say *Update available* once, and keep an **Update** button in the header. **Install** (in the notice or in **Settings → About**) downloads the installer, verifies its signature, waits for any copy or move to finish, closes the app, installs over it with a progress bar and opens the new version.
 
 Copies that the setup program didn't install (Scoop, a portable copy, a dev build) don't install updates themselves: the app tells them about the new version and links to it. A release without `latest.json` gets the same treatment from every copy, through GitHub's latest-release API.
+
+**Every release has a `Glint-setup.exe`**, the same installer under a name without the version, so `https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe` always downloads the newest one. It's what the README's Download link points at: a release without it breaks that link until the next release, so upload it with the rest (`npm run release` and the release workflow both make it).
 
 **The instant search service updates separately.** It runs from `C:\Program Files\ShadUI Ripgrep\`, which an app update doesn't touch (the in-app updater runs the installer in update mode, so its uninstall hook leaves the service alone). The app and the service share one version, `[workspace.package] version` in `src-tauri/Cargo.toml`, so after an app update the service reports an older version: the app says *Instant search has an update* once, and **Settings → Instant search** shows **Update** until it's done (one administrator approval; it runs the same `shadui-index.exe install` as turning it on).
 
@@ -65,7 +67,7 @@ Tauri signs rg, fd and pdu where they are, in `src-tauri/binaries`; `npm run rel
 
 **SignPath Foundation** (the release workflow). Once the project is approved, set the repository secrets `SIGNPATH_API_TOKEN` and `SIGNPATH_ORGANIZATION_ID`. The workflow submits the app and the service (artifact configuration `zip`), then the installer (`exe`), to project `glint` with signing policy `release-signing`, and waits up to an hour for each request to be approved on SignPath. It checks the signatures before anything is uploaded. Without the secrets it builds unsigned.
 
-Once releases are signed, take the SmartScreen note out of the README's Install section.
+Once releases are signed, take the SmartScreen note out of the README's Install section, and Glint can go into [the Microsoft Store](#the-microsoft-store).
 
 ### 3. The GitHub CLI
 
@@ -117,7 +119,7 @@ Install the last two with `cargo install --locked cargo-deny cargo-about`, or pu
     ```
 
     with the code-signing variables or `--sign-config` from above if you sign. It checks the crates first and stops on a known vulnerability, a license `deny.toml` doesn't allow, or an out-of-date `THIRD_PARTY_CRATES.md` ([what to do](#5-release-notes-and-the-crates-checks)).
-5.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads the `-setup.exe`, its `.sig` and `latest.json`, with your notes, and the tag is made at your commit when you publish.
+5.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json` (and with `--store`, the offline installer), with your notes, and the tag is made at your commit when you publish.
 6.  **On GitHub**, read the release notes (the app's *What's new* opens this page), try the installer, and **publish**. Running copies find the update within 12 hours or at their next start.
 7.  **Submit** `release/vX.Y.Z/package-manifests` to winget and Scoop.
 
@@ -126,7 +128,7 @@ Install the last two with `cargo install --locked cargo-deny cargo-about`, or pu
 Steps 1 and 2 as above, then:
 
 3.  **Try it** (optional): **Actions → Release → Run workflow** on `master` runs every check and builds (and signs) the installer without making a release; its files are in the run's `release-vX.Y.Z` artifact.
-4.  **Tag and push**: `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The workflow checks that the three versions and the tag agree, runs the checks, signs with SignPath when it's set up (approve the requests there), signs the update, and creates a draft release with the `-setup.exe`, its `.sig` and `latest.json`. It doesn't run cargo-deny or cargo-about, so run those here first (`cargo deny --manifest-path src-tauri/Cargo.toml check` and `npm run licenses`).
+4.  **Tag and push**: `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The workflow checks that the three versions and the tag agree, runs the checks, signs with SignPath when it's set up (approve the requests there), signs the update, and creates a draft release with `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json`. It doesn't run cargo-deny or cargo-about, so run those here first (`cargo deny --manifest-path src-tauri/Cargo.toml check` and `npm run licenses`).
 5.  **Notes**: `npm run notes`, edit `release/vX.Y.Z/notes.md`, and put it on the draft with `gh release edit vX.Y.Z --notes-file release/vX.Y.Z/notes.md`.
 6.  **On GitHub**, as in step 6 above.
 7.  **Submit** the manifests from the run's `release-vX.Y.Z` artifact (`package-manifests/`) to winget and Scoop.
@@ -134,6 +136,30 @@ Steps 1 and 2 as above, then:
 Use one way per release: publishing a draft made by `npm run release` creates its tag, and the workflow then leaves that release as it is.
 
 If a release turns out broken, publish a fixed one with a higher version: the updater never installs an older version.
+
+## The Microsoft Store
+
+The Store can list Glint as an **EXE app**: it downloads the installer from a link you give it and runs it silently, and a copy installed that way updates itself like any other. Microsoft's [requirements](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msi/app-package-requirements) for that installer:
+
+-   It and every program in it are code-signed with a certificate from a CA in Microsoft's Trusted Root Program ([code signing](#2-code-signing-optional-recommended)), so the Store needs signed releases.
+-   It downloads nothing while it runs. The normal installer fetches WebView2 on a PC that doesn't have it, so the Store gets the **offline installer**, `Glint_X.Y.Z_x64_offline-setup.exe`, which carries WebView2 (about 220 MB, where the normal installer is 13 MB; [`src-tauri/tauri.microsoftstore.conf.json`](../src-tauri/tauri.microsoftstore.conf.json)). It's built after the normal one, with only the code signing (no update signature: copies from the Store update with the normal installer), and takes a minute more.
+-   It installs without showing anything when run with `/S`. The NSIS installer does, and the installer hooks only ask their question when the install isn't silent.
+-   Its address names the version, and the file there never changes: a release's download link, as long as nobody replaces the file.
+
+MSIX packages, which Microsoft signs and hosts itself, aren't an option for now: Tauri doesn't make them, and MSIX's rules would need changes to the instant search service, the Explorer integration and the updater.
+
+**Once:**
+
+1.  Sign up as an individual developer at [storedeveloper.microsoft.com](https://storedeveloper.microsoft.com/) (free; a government ID and a selfie), which opens Partner Center.
+2.  **Apps and games → New product → EXE or MSI app**, and reserve the name (*Glint*, or *Glint File Explorer* if that's taken).
+3.  Fill in the Store listing: the description from the README, screenshots from `screenshots/`, the privacy policy ([SECURITY.md](../SECURITY.md#code-signing-and-privacy-policy)), the category and the age rating questions.
+
+**For a release the Store should offer** (not every release needs it: copies from the Store update themselves from GitHub, so one installed from an older Store version is offered the newest at its first start):
+
+1.  Build it code-signed and with `--store`: `npm run release -- --store --sign-config <overlay>` (or with the Azure variables) also builds the offline installer, checks its signatures and adds it to the `gh release create` command. Without code signing it still builds it, to try, but leaves it out of the release.
+2.  Once the release is published, give Partner Center the offline installer's link, which `npm run release` prints (`https://github.com/shadijhade/glint/releases/download/vX.Y.Z/Glint_X.Y.Z_x64_offline-setup.exe`), for x64, with `/S` where it asks how to install silently, and **Submit for certification**. Certification takes a few days.
+
+Once Glint is in the Store, `winget install` finds it there too (winget's `msstore` source), and the README can show the Store's badge.
 
 ## Trying the updater locally
 
