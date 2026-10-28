@@ -7,8 +7,8 @@ This file is made by [cargo-about](https://github.com/EmbarkStudios/cargo-about)
 | License | Crates |
 | :--- | ---: |
 | MIT License | 419 |
+| ISC License | 23 |
 | Unicode License v3 | 20 |
-| ISC License | 18 |
 | Apache License 2.0 | 13 |
 | BSD 3-Clause "New" or "Revised" License | 12 |
 | Mozilla Public License 2.0 | 5 |
@@ -2574,6 +2574,41 @@ impl N0 {
 [ring 0.17.14](https://github.com/briansmith/ring)
 
 ````text
+// Copyright 2015-2024 Brian Smith.
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+#[cfg(target_pointer_width = "64")]
+type CompilerWord = u64;
+
+#[cfg(target_pointer_width = "32")]
+type CompilerWord = u32;
+
+/// A native word that isn't secret.
+///
+/// `LeakyWord` supports `as` conversions to/from native types.
+///
+/// XXX: This isn't the native word size on targets where a pointer isn't the
+/// same size as a native word. TODO: Fix this.
+pub(crate) type LeakyWord = CompilerWord;
+
+````
+
+## ISC License
+
+[ring 0.17.14](https://github.com/briansmith/ring)
+
+````text
 // Copyright 2015-2025 Brian Smith.
 //
 // Permission to use, copy, modify, and/or distribute this software for any
@@ -2689,6 +2724,46 @@ impl From<KeyRejected> for Unspecified {
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
+#[cfg(target_arch = "x86")]
+pub fn shift_full_blocks<const BLOCK_LEN: usize>(
+    in_out: super::overlapping::Overlapping<'_, u8>,
+    mut transform: impl FnMut(&[u8; BLOCK_LEN]) -> [u8; BLOCK_LEN],
+) {
+    let (in_out, src) = in_out.into_slice_src_mut();
+    let in_out_len = in_out[src.clone()].len();
+
+    for i in (0..in_out_len).step_by(BLOCK_LEN) {
+        let block = {
+            let input =
+                <&[u8; BLOCK_LEN]>::try_from(&in_out[(src.start + i)..][..BLOCK_LEN]).unwrap();
+            transform(input)
+        };
+        let output = <&mut [u8; BLOCK_LEN]>::try_from(&mut in_out[i..][..BLOCK_LEN]).unwrap();
+        *output = block;
+    }
+}
+
+````
+
+## ISC License
+
+[ring 0.17.14](https://github.com/briansmith/ring)
+
+````text
+// Copyright 2018 Brian Smith.
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 //! Serialization and deserialization.
 
 #[doc(hidden)]
@@ -2748,6 +2823,43 @@ mod ffi;
 pub(super) mod fallback;
 mod sha2_32;
 mod sha2_64;
+
+````
+
+## ISC License
+
+[ring 0.17.14](https://github.com/briansmith/ring)
+
+````text
+// Copyright 2022 Brian Smith.
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+/// Polyfill for `Option::unwrap()` as a const fn; feature `const_option`.
+/// https://github.com/rust-lang/rust/issues/67441.
+/// TODO(MSRV): Replace this with `x.unwrap()`.
+///
+/// `T: Copy` avoids "constant functions cannot evaluate destructors."
+pub const fn unwrap_const<T>(x: Option<T>) -> T
+where
+    T: Copy,
+{
+    if let Some(x) = x {
+        x
+    } else {
+        panic!("unwrap_const on `None`");
+    }
+}
 
 ````
 
@@ -2830,6 +2942,37 @@ mod bits_tests;
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
+//! Utilities to make dealing with slices less tediuous.
+
+/// Replaces the first N elements of `a` with the first N elements of `b`, where
+/// N is `core::cmp::min(a.len(), b.len())`, leaving the rest unchanged.
+pub fn overwrite_at_start<T: Copy>(a: &mut [T], b: &[T]) {
+    a.iter_mut().zip(b).for_each(|(a, b)| {
+        *a = *b;
+    });
+}
+
+````
+
+## ISC License
+
+[ring 0.17.14](https://github.com/briansmith/ring)
+
+````text
+// Copyright 2024 Brian Smith.
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 pub use self::{
     array::Array,
     base::{IndexError, Overlapping},
@@ -2839,6 +2982,44 @@ pub use self::{
 mod array;
 mod base;
 mod partial_block;
+
+````
+
+## ISC License
+
+[ring 0.17.14](https://github.com/briansmith/ring)
+
+````text
+// Copyright 2024 Brian Smith.
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+use crate::testutil;
+use core::{marker::PhantomData, mem::size_of};
+
+/// A ZST that can be added to any type to make the type `!Send`.
+#[derive(Clone, Copy)]
+pub struct NotSend(PhantomData<*mut ()>);
+
+impl NotSend {
+    pub const VALUE: Self = Self(PhantomData);
+}
+
+#[allow(deprecated)]
+const _: () = testutil::compile_time_assert_clone::<NotSend>();
+#[allow(deprecated)]
+const _: () = testutil::compile_time_assert_copy::<NotSend>();
+const _: () = assert!(size_of::<NotSend>() == 0);
 
 ````
 
