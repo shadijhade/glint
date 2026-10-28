@@ -14,7 +14,7 @@ import { replaceText, toRegExp } from "./lib/text";
 import { checkForUpdates, greetUpdate, useUpdater } from "./lib/updater";
 import { openItem, quickConfigure, setStartWithWindows } from "./lib/fs";
 import { cn, firstNotice } from "./lib/utils";
-import { useTheme } from "./hooks/useTheme";
+import { useBackdrop, useTheme } from "./hooks/useTheme";
 import { AstGrepCard, MeaningCard, RipgrepCard, SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
 import { openShortcuts, ShortcutsDialog } from "./components/ShortcutsDialog";
@@ -86,6 +86,7 @@ function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
 
 function App() {
   useTheme();
+  useBackdrop();
   const settings = useStore((s) => s.settings);
   const mode = useStore((s) => s.mode);
   const setMode = useStore((s) => s.setMode);
@@ -409,7 +410,7 @@ function App() {
   return (
     <div className="flex h-full flex-col">
       {/* The window's title bar (it has no system one): drag it by any empty spot, double-click to maximize. */}
-      <header data-tauri-drag-region="deep" className="flex h-11 shrink-0 items-center gap-2 border-b bg-chrome pl-3">
+      <header data-tauri-drag-region="deep" className="on-backdrop flex h-11 shrink-0 items-center gap-2 border-b bg-chrome pl-3">
         <img src={logo} alt="" draggable={false} className="size-[18px] shrink-0 max-sm:hidden" />
         {/* Text keeps the folder it searched last; the search bar fills an empty one when it opens. */}
         <ModeSwitch mode={mode} onChange={setMode} />
@@ -435,7 +436,7 @@ function App() {
 
       <Explorer active={mode === "files"} onSearchText={searchText} onOpenSettings={() => openSettings()} />
 
-      <div className={mode === "text" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+      <div className={mode === "text" ? "flex min-h-0 flex-1 flex-col bg-background" : "hidden"}>
         {/* Only while Text is on screen: its shortcuts (Ctrl+F, Ctrl+K, Ctrl+H) are Files' otherwise. */}
         {mode === "text" && (
           <div className="flex shrink-0 border-b bg-chrome px-3 py-2.5">

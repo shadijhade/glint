@@ -40,6 +40,10 @@ export interface Session {
 
 export interface Settings {
     theme: 'dark' | 'light' | 'system';
+    /** Windows 11's Mica behind the title bar and the sidebar, or a solid window. */
+    backdrop: 'mica' | 'solid';
+    /** Glint's pink, or the accent color chosen in Windows. */
+    accent: 'glint' | 'windows';
     fontSize: 'small' | 'medium' | 'large';
     showLineNumbers: boolean;
     defaultSearchPath: string;
@@ -99,6 +103,8 @@ export type Column = 'date' | 'type' | 'size'
 
 export const DEFAULT_SETTINGS: Settings = {
     theme: 'system',
+    backdrop: 'mica',
+    accent: 'glint',
     fontSize: 'medium',
     showLineNumbers: true,
     defaultSearchPath: '',

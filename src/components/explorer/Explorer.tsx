@@ -810,7 +810,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
     return (
         <div className={active ? "flex min-h-0 flex-1" : "hidden"}>
             <Sidebar onContextMenu={onPlaceContextMenu} />
-            <div className="flex min-w-0 flex-1 flex-col">
+            {/* The files on a layer of their own: the backdrop shows only around them. */}
+            <div className="flex min-w-0 flex-1 flex-col bg-background">
                 <CommandBar
                     selected={selected}
                     onRename={() => activePaneActions()?.startRename()}
@@ -838,7 +839,7 @@ function PreviewPane() {
     return (
         // A narrow window narrows it first: the list keeps 16rem beside the sidebar (3rem as a rail, 14rem from md).
         <aside
-            className="relative flex w-[min(28%,28rem)] min-w-[min(16rem,100%_-_19rem)] max-w-[min(60%,100%_-_19rem)] shrink-0 border-l md:min-w-[min(16rem,100%_-_30rem)] md:max-w-[min(60%,100%_-_30rem)]"
+            className="relative flex bg-background w-[min(28%,28rem)] min-w-[min(16rem,100%_-_19rem)] max-w-[min(60%,100%_-_19rem)] shrink-0 border-l md:min-w-[min(16rem,100%_-_30rem)] md:max-w-[min(60%,100%_-_30rem)]"
             style={width ? { width } : undefined}
         >
             <ResizeHandle

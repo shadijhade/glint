@@ -118,6 +118,27 @@
   }
 }
 
+/* Windows' accent color in place of Glint's pink (Settings → Appearance → Accent color; useTheme sets
+   its shades). Outside the layers, so it wins over the theme's own. */
+:root[data-accent="windows"] {
+  --primary: var(--windows-accent-light);
+  --ring: var(--windows-accent-light);
+  --primary-foreground: var(--windows-accent-light-text);
+}
+
+:root[data-accent="windows"].dark {
+  --primary: var(--windows-accent-dark);
+  --ring: var(--windows-accent-dark);
+  --primary-foreground: var(--windows-accent-dark-text);
+}
+
+/* Windows 11's Mica Alt behind the window (Settings → Appearance → Backdrop): it shows through the title
+   bar and the sidebar; the files, previews, dialogs and menus keep their own fill. */
+:root[data-backdrop] body,
+:root[data-backdrop] .on-backdrop {
+  background-color: transparent;
+}
+
 @layer components {
   /* File list columns: name, date, type, size (search results: name, folder, date, size).
      Narrow lists drop the optional column. */

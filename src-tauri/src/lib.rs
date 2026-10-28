@@ -1,4 +1,5 @@
 mod access;
+mod appearance;
 mod archive;
 mod batch_rename;
 mod calc;
@@ -612,6 +613,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            appearance::appearance,
+            appearance::accent_colors,
             read_file_content,
             read_file_chunk,
             write_file_content,

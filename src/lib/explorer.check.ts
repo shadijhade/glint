@@ -6,6 +6,7 @@ import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping, runLine } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
+import { hslOf, textOn } from "./color.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { editsAllowed, frecency, fuzzyScore, typoDistance } from "./rank.ts";
 import { markdownTitle, safeHref } from "./markdown.ts";
@@ -653,5 +654,13 @@ assert.match(formatDate(noon - 3_600_000, noon), /^Today /);
 assert.match(formatDate(noon - 86_400_000, noon), /^Yesterday /);
 assert.match(formatDate(new Date(2026, 0, 2, 9, 5).getTime(), noon), /2026/);
 assert.equal(formatDate(0), "");
+
+// Windows' accent as the color tokens are written, and the text that reads on it.
+assert.equal(hslOf("#db2777"), "333 71% 51%");
+assert.equal(hslOf("#0078d4"), "206 100% 42%");
+assert.equal(hslOf("#808080"), "0 0% 50%");
+assert.equal(textOn("#005a9e"), "0 0% 100%", "white on Windows' default blue, darker shade");
+assert.equal(textOn("#99ebff"), "0 0% 7%", "near-black on its lighter shade");
+assert.equal(textOn("#ffb900"), "0 0% 7%", "near-black on yellow");
 
 console.log("explorer.check: all assertions passed");
