@@ -725,6 +725,10 @@ export interface ArchivePeek {
 export const archivePeek = (path: string) => invoke<ArchivePeek>("archive_peek", { path });
 
 export const showProperties = (path: string) => invoke("show_properties", { path });
+
+/** Windows' own context menu for `paths` (in one folder) at a point in the window, File Explorer's "Show more
+ *  options": what's chosen the shell runs, except "rename" and "delete", which come back for Glint's own. */
+export const shellMenu = (paths: string[], x: number, y: number) => invoke<string>("shell_menu", { paths, x, y });
 export const openWith = (path: string) => invoke("open_with", { path });
 export const openTerminal = (path: string) => invoke("open_terminal", { path });
 

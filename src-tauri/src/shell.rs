@@ -69,7 +69,7 @@ pub(crate) fn owner(_: &Window) -> isize {
 pub(crate) use imp::in_sta;
 
 /// Runs `f` on the UI thread, which owns the window and has COM set up.
-async fn on_main<T, F>(window: &Window, f: F) -> Result<T, String>
+pub(crate) async fn on_main<T, F>(window: &Window, f: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
