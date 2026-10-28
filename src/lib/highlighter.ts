@@ -1,3 +1,4 @@
+// Prism with the grammars Glint bundles, loaded the first time a preview highlights code (highlight.tsx).
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
 import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
 import c from "react-syntax-highlighter/dist/esm/languages/prism/c";
@@ -19,27 +20,10 @@ import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
 import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
 import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
+import type { LANGUAGE_NAMES } from "./highlight";
 
-// Only these grammars are bundled; anything else previews as plain text.
-const LANGUAGES = { bash, c, cpp, csharp, css, go, java, javascript, json, jsx, markdown, markup, powershell, python, rust, sql, toml, tsx, typescript, yaml };
+// The same names as highlight.tsx's list: anything else previews as plain text.
+const LANGUAGES: Record<(typeof LANGUAGE_NAMES)[number], unknown> = { bash, c, cpp, csharp, css, go, java, javascript, json, jsx, markdown, markup, powershell, python, rust, sql, toml, tsx, typescript, yaml };
 Object.entries(LANGUAGES).forEach(([name, grammar]) => SyntaxHighlighter.registerLanguage(name, grammar));
 
-const LANGUAGE_BY_EXT: Record<string, keyof typeof LANGUAGES> = {
-    sh: "bash", bash: "bash", c: "c", h: "c", cc: "cpp", cpp: "cpp", hpp: "cpp", cs: "csharp", css: "css", scss: "css",
-    go: "go", java: "java", js: "javascript", mjs: "javascript", cjs: "javascript", json: "json", jsx: "jsx",
-    md: "markdown", html: "markup", htm: "markup", xml: "markup", svg: "markup", xaml: "markup", csproj: "markup",
-    vue: "markup", ps1: "powershell", py: "python", rs: "rust", sql: "sql", toml: "toml", tsx: "tsx", ts: "typescript",
-    mts: "typescript", yml: "yaml", yaml: "yaml",
-};
-
-export const languageFor = (ext: string) => LANGUAGE_BY_EXT[ext] ?? "text";
-
-const ALIASES: Record<string, keyof typeof LANGUAGES> = { "c++": "cpp", "c#": "csharp", shell: "bash", zsh: "bash", console: "bash", pwsh: "powershell", ps: "powershell" };
-
-/** A code block's language as Markdown names it (```rust, ```ts, ```c++…). */
-export function languageNamed(name: string) {
-    const lower = name.toLowerCase();
-    return Object.prototype.hasOwnProperty.call(LANGUAGES, lower) ? lower : (ALIASES[lower] ?? languageFor(lower));
-}
-
-export { SyntaxHighlighter };
+export default SyntaxHighlighter;
