@@ -7,6 +7,7 @@ import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { cancelFind, findFiles, listDrives, openItem, quickHide, quickReveal } from "@/lib/fs";
 import { baseName, parentPath } from "@/lib/paths";
+import { plainQuery } from "@/lib/plain";
 import { typoDistance } from "@/lib/rank";
 import { refreshZoxide, usedFolders, useZoxide } from "@/lib/zoxide";
 import { useStore } from "@/lib/store";
@@ -182,8 +183,12 @@ export function QuickSearch() {
     );
     const shown = query.trim() ? found : recent;
 
+    // Plain words read as filters ("photos from 2024"), offered under the box: Tab takes them.
+    const plain = useMemo(() => plainQuery(query), [query]);
+
     const onKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === "Escape") void quickHide();
+        if (e.key === "Tab" && !e.shiftKey && plain) setQuery(plain.query);
+        else if (e.key === "Escape") void quickHide();
         else if (e.key === "ArrowDown") setActive((i) => Math.min(i + 1, shown.length - 1));
         else if (e.key === "ArrowUp") setActive((i) => Math.max(i - 1, 0));
         else if (e.key === "Enter") open(shown[active], e.altKey);
@@ -219,6 +224,18 @@ export function QuickSearch() {
                     className="h-14 min-w-0 flex-1 bg-transparent text-lg outline-hidden placeholder:text-muted-foreground"
                 />
             </div>
+            {plain && (
+                <button type="button" tabIndex={-1} onClick={() => setQuery(plain.query)} className="flex shrink-0 items-center gap-2 border-b px-4 py-2 text-left text-xs hover:bg-accent">
+                    <Kbd>Tab</Kbd>
+                    <span className="flex min-w-0 flex-wrap gap-1">
+                        {plain.chips.map((chip) => (
+                            <span key={chip} className="rounded-[4px] bg-primary/12 px-1.5 py-0.5 font-medium text-primary">
+                                {chip}
+                            </span>
+                        ))}
+                    </span>
+                </button>
+            )}
             <div ref={list} id="quick-results" role="listbox" aria-label="Results" className="min-h-0 flex-1 overflow-y-auto p-1.5">
                 {!query.trim() && recent.length > 0 && <p className="px-3 pb-1 pt-1.5 text-xs font-semibold text-muted-foreground">Folders you use most</p>}
                 {shown.map((entry, i) => {
