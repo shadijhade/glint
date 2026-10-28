@@ -1571,6 +1571,12 @@ export function selectAll(rows: FileEntry[]) {
     updateTab({ selection: new Set(rows.map((r) => r.path)) });
 }
 
+/** What isn't selected, and only that, of `rows` (File Explorer's Invert selection). */
+export function invertSelection(rows: FileEntry[]) {
+    const selection = tabState(activeTabId())?.selection ?? new Set<string>();
+    updateTab({ selection: new Set(rows.filter((r) => !selection.has(r.path)).map((r) => r.path)) });
+}
+
 // Actions on files
 
 /** Opens a file with its app, as a double-click in File Explorer does; a shortcut to a folder opens the folder in `tab`. */

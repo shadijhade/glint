@@ -180,6 +180,7 @@ export function FileGrid(props: FileGridProps) {
                     tabIndex={0}
                     data-cols={cols}
                     data-row-height={tile.height}
+                    data-pad={tile.pad}
                     count={Math.ceil(rows.length / cols)}
                     rowHeight={tile.height}
                     overscan={2}

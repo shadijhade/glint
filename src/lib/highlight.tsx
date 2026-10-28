@@ -1,4 +1,4 @@
-import { type ComponentProps, lazy, Suspense } from "react";
+import { type ComponentProps, lazy, memo, Suspense } from "react";
 import type Prism from "react-syntax-highlighter/dist/esm/prism-light";
 
 // Only these grammars are bundled (highlighter.ts); anything else previews as plain text.
@@ -26,12 +26,23 @@ export function languageNamed(name: string) {
 // Prism and its grammars (96 kB) load the first time code is highlighted, not with the app.
 const Highlighter = lazy(() => import("./highlighter"));
 
-/** react-syntax-highlighter's Prism, as before. Until it has loaded (a moment, once) the code shows in
- *  the same place as plain text. */
-export function SyntaxHighlighter({ children, ...props }: ComponentProps<typeof Prism>) {
+type Props = ComponentProps<typeof Prism>;
+
+/** The same code shown the same way: an object of line props by what it holds, as a preview makes a new one each render. */
+const same = (a: Props, b: Props) =>
+    (Object.keys({ ...a, ...b }) as (keyof Props)[]).every((key) =>
+        key === "lineProps" && typeof a.lineProps === "object" && typeof b.lineProps === "object" ? JSON.stringify(a.lineProps) === JSON.stringify(b.lineProps) : a[key] === b[key]
+    );
+
+/**
+ * react-syntax-highlighter's Prism, as before. Until it has loaded (a moment, once) the code shows in the
+ * same place as plain text. Drawn again only when the code or how it's shown changes: Prism goes through
+ * every line of it (up to 2,000) each time, and a preview is drawn again with each key the list moves by.
+ */
+export const SyntaxHighlighter = memo(function SyntaxHighlighter({ children, ...props }: Props) {
     return (
         <Suspense fallback={<pre className={props.className}>{children}</pre>}>
             <Highlighter {...props}>{children}</Highlighter>
         </Suspense>
     );
-}
+}, same);
