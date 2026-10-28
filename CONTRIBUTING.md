@@ -30,7 +30,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src/lib/fs.ts` | Typed wrappers for every Rust command |
 | `src/lib/store.ts`, `paths.ts`, `entries.ts` | Settings, the session and saved things (in localStorage); paths and places (`shell:RecycleBinFolder`, `remote:<id>\…`); listings decoded from Rust's binary buffers |
 | `src/lib/<feature>.ts` beside `src-tauri/src/<feature>.rs` | That feature's state in the UI and its calls into Rust (`share.ts`, `remotes.ts`, `meaning.ts`, `projects.ts`, `scripts.ts`…) |
-| `src/lib/preview.ts`, `markdown.ts`, `jsonTree.ts`, `hex.ts`, `cast.ts`, `highlight.ts`, `fileTypes.ts` | The preview's views (Markdown's links, the tree, hex rows, asciinema playback, syntax highlighting) and what kind of file is what |
+| `src/lib/preview.ts`, `markdown.ts`, `jsonTree.ts`, `hex.ts`, `cast.ts`, `highlight.tsx`, `fileTypes.ts` | The preview's views (Markdown's links, the tree, hex rows, asciinema playback, syntax highlighting) and what kind of file is what |
 | `src/lib/ripgrep.ts`, `text.ts`, `rank.ts`, `format.ts` | Text search's state and Replace all, ranking folders by how often and recently they're opened, and how sizes, counts and times read |
 | `src/lib/usage.ts`, `diskUsage.ts` | Disk-usage maps: decoding and the squarified treemap layout; each tab's map |
 | `src/lib/thumbs.ts`, `grid.ts` | Thumbnails for the tiles and rows on screen (asking, dropping, keeping them); the grid's tile sizes, columns and keys, and keeping its place as they change |
@@ -56,6 +56,12 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/thumbs.rs` | Thumbnails from Windows' thumbnail cache (`IShellItemImageFactory`, `IThumbnailCache`) on worker threads, in a queue per tab |
 | `src-tauri/src/watch.rs` | Live folders: notify watches the folders on screen |
 | `src-tauri/src/launch.rs`, `verbs.rs`, `access.rs` | Folders from the command line and later launches (one copy runs at a time), File Explorer's *Open in Glint* entries ([docs/explorer-integration.md](docs/explorer-integration.md)), and Get access for folders Windows keeps you out of |
+| `src-tauri/src/mcp.rs` | The Model Context Protocol server AI agents start (`Glint.exe mcp`): its tools over the index, fd, pdu and ripgrep, and Settings → AI agents' setups |
+| `src-tauri/src/shellmenu.rs` | Windows' own context menu (Show more options): the shell's `IContextMenu`, with the messages its submenus need while it's open |
+| `src-tauri/src/appearance.rs`, `placement.rs`, `src/lib/color.ts` | Windows 11's Mica and the accent color; the window's place, kept and put back; colors as the theme's tokens |
+| `src/lib/plain.ts` | Plain words in the search box read as its filters |
+| `src/lib/highlight.tsx`, `highlighter.ts` | Code highlighting: the languages, and Prism with its grammars, loaded the first time code is shown |
+| `quick.html`, `src/quick.tsx` | The quick search window's own page |
 | `src-tauri/src/openers.rs`, `calc.rs`, `zoxide.rs`, `snap.rs` | Open in… (the editors and terminals found), the calculator in `Ctrl+K` (fend), folder history shared with zoxide, and Windows 11's snap layouts on the maximize button |
 | `src-tauri/index/`, `src-tauri/src/index.rs` | The opt-in instant-search service (NTFS MFT + USN journal): names, folder sizes, maps, what grew and what moved ([docs/instant-search.md](docs/instant-search.md)); turning it on and off |
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `pdu` executables |

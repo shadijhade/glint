@@ -34,6 +34,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [pdu](https://github.com/K
 -   **At home in a repository.** Files and folders show their Git status and the address bar the branch, a terminal under the files (`` Ctrl+` ``) follows the folder you're in, a project's scripts and your own are a click away, and Text mode finds code by its structure as well as its text.
 -   **Files where they need to be.** Send a file or a folder straight to another PC with a ticket (encrypted end to end, no account), share a folder with a phone on your network through a QR code, open S3 buckets, WebDAV and SFTP servers like folders, and let folder rules sort out what lands in Downloads.
 -   **Still Windows.** Copy, move, delete and rename run on Windows' own file engine (progress, *Replace or Skip*, Recycle Bin, UAC). The clipboard and drag and drop work with File Explorer and every other app, and Properties, Open with and Open in Terminal are a right-click away.
+-   **AI agents use it too.** Claude, Copilot and other agents can ask Glint to find files on every drive in milliseconds, measure folders, list the biggest files, say where a file went and search inside files, through its Model Context Protocol server: see [AI agents](#ai-agents) below.
 
 ## Benchmarks
 
@@ -72,6 +73,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 -   **Instant folders.** Each folder is read in one Win32 enumeration pass and sorted in Rust in natural order (`img9` before `img10`), then drawn as a virtual list. The status bar says how long it took: *read in 0.3 ms · shown in 6.3 ms*.
 -   **Find files by name.** Typing in the search box filters the folder as you type; **Enter** searches every subfolder too (from This PC, every drive). All words must match, `*` and `?` work like in Explorer, and `"quotes"` keep spaces. Filters narrow it, as in Everything: `ext:pdf` (or `ext:jpg;png`), `size:>10mb` (`>`, `>=`, `<`, `<=`; kb, mb, gb), `dm:7d` (changed in the last 7 days; h, d, w, y) or `dm:>1y` (longer ago), `file:` and `folder:`. With instant search on, `ext:iso size:>1gb` on This PC lists every big ISO in milliseconds; the search box shows the filters when it's empty. **Save** keeps a search in the sidebar, to run it again with one click. The status bar says who answered: *index · 18 found in 7.7 ms* or *fd · 304 found in 8.09 s*. When nothing turns up, it says what was skipped, with a button each to look in hidden files, skipped folders or every drive.
+-   **Plain words work too.** Type `pdfs from last week over 5 mb`, `photos taken in 2024`, `big zip files` or `songs by the beatles` and the box reads them as filters, showing under it what it understood (*PDF files · changed in the last 7 days · over 5 MB*) and the filters that say it: `Tab` puts those in the box, so you learn the syntax by using it, and `Enter` still searches what you typed. It knows kinds of files, when they changed, sizes, and when photos were taken, with what, and who songs are by, all in the page, in microseconds, with nothing sent anywhere. Quick search reads them too.
 -   **Photos, videos and music by what they say.** `width:>1920` and `height:<1080` (pixels, as the picture shows, turned by its EXIF), `taken:2024` (`taken:2024-06`, `taken:>2023-06-15`, `taken:7d`, `taken:>1y`), `camera:pixel`, `duration:>5m` (`90s`, `1:30`), `artist:` and `album:` filter by what the files themselves say: their EXIF, video tracks and tags, the same details the preview shows and Date taken sorts by. Typing one filters the folder as each file is read; **Enter** has the index or fd find the photos, videos or songs below it and reads them four at a time, each file once a session, so `taken:2024 camera:canon` over a photo library is a filter and then a read. Each one keeps to the files it can be true of (`artist:` to songs, `width:` to pictures and videos), and the search box lists them when it's empty.
 -   **Typos forgiven.** When the index finds nothing named as typed, it looks again for close matches: each word of four letters or more may be a letter off (two letters swapped count as one; two edits from eight letters) at the start of a word in the name, so `reprot` finds *Q3 Report.pdf* and `dowloads` finds *Downloads*. They come closest first, under **Close matches for…**, with *fuzzy* in the status bar. Numbers and shorter words must be there as typed, and so must a word's first letter (unless it's swapped with the second). Looking again costs the service about 30 ms over 3 million names. fd, which answers without the index, finds names only as typed.
 -   **Folder sizes.** With instant search on, every folder shows its size as it opens, and search results show folder totals too. Otherwise one click measures them with pdu. A bar behind each size shows how it compares with the biggest in the folder.
@@ -87,6 +89,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Folder history shared with zoxide.** With [zoxide](https://github.com/ajeetdsouza/zoxide) installed (one click in **Settings → Tools**) and **Settings → History → Share folder history with zoxide** on, the folders you `cd` to in a terminal rank in `Ctrl+K` and quick search with the ones you open here, and `z` in a terminal finds the folders you open in Glint. zoxide's scores are read when the palette opens, and added to as you go (a burst of folders passed through adds the last); turning it off leaves Glint's own history as it was.
 -   **An address bar that gets you there.** The arrow after each part of the path lists that folder's subfolders and archives, with a filter box and arrow keys; the first one lists drives and places. Typing a path (`Ctrl+L`) suggests what's in the folder you're typing in, folders first, and names a letter off after those (`C:\Windows\Sytem32` suggests System32): `Tab` completes, `Enter` opens.
 -   **The usual explorer moves.** Back, forward and up, a breadcrumb address bar you can type into, Quick access, pinned folders, drives with free space, sorting, multi-select, type-ahead, rename, new folders and text documents, and hidden items on demand.
+-   **Select by dragging.** Drag across the empty part of the list or the grid for a marquee that selects what it covers (`Ctrl` adds to the selection); held near the top or bottom, the list scrolls along. **Invert selection** is in `Ctrl+K`.
 -   **Windows-native file operations.** Copy, cut, paste, delete and rename go through Windows' own file engine, so progress, *Replace or Skip*, the Recycle Bin and permission prompts behave exactly like Explorer. The clipboard is shared with Explorer: copy here, paste there, and the other way round. A delete or a move says so with **Undo** right there, and `Ctrl+Z` takes back the last copy, move, rename, Recycle Bin delete, new folder or batch rename, with the names Windows actually gave (*Keep both*, *- Copy*), and steps further back on each press.
 -   **The Recycle Bin, as a place.** Under the drives in the sidebar (or typed as `Recycle Bin`): what you deleted, every drive's, with the folder each was deleted from, when, and how big it is (a folder's, everything in it). **Restore** puts the selection back where it was deleted from, making that folder again if it's gone, and says so with **Undo**; Quick Look and the preview show an item before you decide. There, `Delete` deletes for good once Glint has asked, naming what goes; **Restore all items** and **Empty the Recycle Bin** are on the right-click menu (Windows asks before emptying), and files dropped on the sidebar's Recycle Bin are deleted, as in File Explorer. What's in it isn't opened, renamed or copied where it is: restore it first. Nothing watches the Recycle Bin, so it's read again after each delete or restore here, when Glint comes back to the front, and with `F5` ([how it works](docs/recycle-bin.md)).
 -   **Remote connections.** An S3-compatible bucket (Amazon S3, Cloudflare R2, Backblaze B2, MinIO…), a WebDAV server (Nextcloud, a NAS, dufs) or an SFTP server (through Windows' own OpenSSH, with your SSH keys or a password), added under **Remote** in the sidebar, opens as a folder, read-only. Previews read text only as far as they show and download the rest (up to 100 MB); Open, Copy, Copy to the other pane and dragging out download first, with how far and Stop. A connection's secret access key or password stays in Windows Credential Manager, names Windows wouldn't take are shown as it would, and thumbnails (a download each) are a choice per connection ([how it works](docs/remote.md)).
@@ -95,6 +98,8 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Drag and drop.** Drag files out to File Explorer, the desktop, a mail or a chat, or drop them in from anywhere onto a folder, a sidebar place or the open folder. As in Explorer, dropping on the same drive moves and on another drive copies.
 -   **Live.** The open folder refreshes when files change elsewhere.
 -   **Explorer integration.** Properties, Open with…, Show in File Explorer and Open in Terminal. The other way round too, if you turn them on in **Settings → Files**: *Open in Glint* on File Explorer's right-click menu for folders and drives, and Glint opening folders when you double-click them in File Explorer or on the desktop. Drives, This PC, the Recycle Bin and other special places still open in File Explorer, and file dialogs aren't affected ([how it works](docs/explorer-integration.md)).
+-   **Windows' own menu.** **Show more options** at the bottom of a file's menu, or `Shift`+right-click as in File Explorer, opens Windows' own context menu: every app's entries (7-Zip, Git, your editor, PowerToys, your antivirus), Send to, Open with, Give access to, Restore previous versions, and with `Shift` the extended ones such as Copy as path. Windows runs what you choose; Rename and Delete are Glint's own, with Undo.
+-   **At home on Windows 11.** The window sits on Mica Alt, as File Explorer does, behind the title bar and the sidebar, tinted in Glint's own theme; **Settings → Appearance** can turn it off, and can use your Windows accent color instead of Glint's pink. Glint opens where you left it, maximized or not, on the screen you left it on.
 -   **Open in your editor or terminal.** **Open in** on a folder's or a file's menu (and `Ctrl+K`) lists the code editors and terminals on this PC: VS Code, Cursor, Zed, Antigravity, Windows Terminal, WezTerm, and yazi (in Windows Terminal). A terminal opens a file's folder. The program text search opens files with (**Settings → Search text**) can be picked from the editors found, too.
 
 ### Tabs and dual pane
@@ -208,6 +213,20 @@ It's off until you turn it on: on This PC, with the status bar's **Turn on insta
 
 The service only runs once you opt in, with every privilege removed except the three it needs. It answers only you and administrators, over a named pipe no other program can pose as. It knows the names of all files on the indexed drives, including ones your account can't open, so on a shared PC turn it on only for accounts that may see every file name. Measurements, how it works and the full security model are in **[docs/instant-search.md](docs/instant-search.md)**.
 
+### AI agents
+
+AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.io/) (Claude Code and Claude Desktop, VS Code's Copilot, Cursor and others) can use Glint's engines. `Glint.exe mcp` is the server: the agent starts it, and it answers on its standard input and output with five tools, which only read.
+
+| Tool | What it answers | How |
+| :--- | :--- | :--- |
+| `search_files` | Files and folders by name on every drive, by the search box's query (`budget ext:xlsx dm:30d`), the best matches first | The instant search index in milliseconds, fd where it doesn't reach |
+| `folder_sizes` | A folder's total and each folder in it | The index, otherwise pdu |
+| `largest_files` | The biggest files anywhere below a folder | The index's disk-usage map |
+| `recent_changes` | What was renamed, moved, deleted or recycled lately, and where each item went | The index's 30 days of changes |
+| `search_text` | Lines of text files that contain a pattern | ripgrep |
+
+**Settings → AI agents** has each agent's setup to copy: `claude mcp add glint -- "C:\…\Glint.exe" mcp` for Claude Code, `code --add-mcp` for VS Code, and the `mcpServers` entry for Claude Desktop, Cursor and the like. Once told, the agent starts Glint for itself and sees the names and text it asks for; Glint tells it that what files are named and contain is data, not instructions. Measured here, through the server as an agent asks: `kernel32.dll` on every drive in 8 ms, `C:\Windows`'s folder sizes in 1 ms, the biggest files on `C:\` in 41 ms.
+
 ### Text: search inside files (ripgrep)
 
 <img src="screenshots/text-search.png" alt="ripgrep results with a syntax-highlighted preview" width="100%">
@@ -292,6 +311,8 @@ winget install shadijhade.Glint
 | `Enter` | Open the selection (an archive opens like a folder) |
 | `Space` | Quick Look: the focused item full size. Arrows move through the folder; `Space` or `Esc` closes |
 | `Ctrl+K` / `Ctrl+P` | Command palette: folders you use, paths and every command (`=` and a sum works it out) |
+| `Shift`+right-click | Windows' own context menu (also **Show more options** in Glint's) |
+| `Tab` in the search box | Put in the filters the plain words stand for (`pdfs over 5 mb` → `ext:pdf size:>5mb`) |
 | `Ctrl+T` / `Ctrl+W` | New tab on this folder / close the tab |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` · `Ctrl+1`…`Ctrl+9` | Next / previous tab · go to a tab (`Ctrl+9`: the last one) |
 | `Ctrl+Shift+T` | Reopen the last closed tab |
@@ -430,6 +451,9 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] Clean up, and duplicates cloned on ReFS and Dev Drives
 -   [x] Sending files to another PC, sharing a folder with a phone, and S3, WebDAV and SFTP folders
 -   [x] Folder rules
+-   [x] Windows 11's Mica and your accent color, Windows' own context menu, marquee selection
+-   [x] Plain words read as filters, and name searches ranked across every drive
+-   [x] An MCP server, so AI agents can use Glint's instant search
 
 Missing something? [Open an issue](https://github.com/shadijhade/glint/issues/new/choose). If the app saves you time, a star helps other people find it.
 
