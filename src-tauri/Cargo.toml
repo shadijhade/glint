@@ -152,6 +152,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
+# Which Windows 11 materials the window can have (appearance.rs); in the build already through Tauri.
+windows-version = "0.1"
 # What windows' #[implement] expands to (the file engine's progress sink, for Undo); already in the build.
 windows-core = "0.62"
 windows = { version = "0.62", features = [
@@ -162,6 +164,9 @@ windows = { version = "0.62", features = [
     # Text in pictures, by Windows' own OCR (ocr.rs).
     "Media_Ocr",
     "Storage_Streams",
+    # Windows' accent color and its shades (appearance.rs).
+    "UI",
+    "UI_ViewManagement",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Graphics_Gdi",
