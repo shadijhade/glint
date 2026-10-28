@@ -26,6 +26,7 @@ import {
     Copy,
     CopyPlus,
     Download,
+    Ellipsis,
     ExternalLink,
     Eye,
     EyeOff,
@@ -181,7 +182,7 @@ import {
     zoomGrid,
 } from "@/lib/explorer";
 import { formatCount, plural } from "@/lib/format";
-import { driveName, openIn, openItem, openTerminal, openWith, showProperties, startDrag } from "@/lib/fs";
+import { driveName, openIn, openItem, openTerminal, openWith, shellMenu, showProperties, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
@@ -1376,7 +1377,23 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         ];
     };
 
-    const itemMenu = (targets: FileEntry[]): MenuItem[] => {
+    /** Whether Windows' own menu has these: on disk (not in an archive, a remote or the Recycle Bin), and in one folder. */
+    const shellMenuFits = (targets: FileEntry[]) =>
+        targets.length > 0 && !targets.some((t) => isArchived(t) || isClosed(t) || isRemote(t) || isRecycled(t)) && targets.every((t) => samePath(parentPath(t.path), parentPath(targets[0].path)));
+
+    /** Windows' own menu for `targets` (File Explorer's "Show more options") at a point in the window. */
+    const windowsMenu = (targets: FileEntry[], at: { x: number; y: number }) =>
+        shellMenu(
+            targets.map((t) => t.path),
+            at.x,
+            at.y
+        ).then((verb) => {
+            // Rename and Delete are Glint's own, with Undo.
+            if (verb === "rename") void (targets.length > 1 ? openBatchRename(targets, rowsRef.current) : startRename(targets[0].path));
+            else if (verb === "delete") deleteSelected(false);
+        }, report("Couldn't show Windows' menu"));
+
+    const itemMenu = (targets: FileEntry[], at?: { x: number; y: number }): MenuItem[] => {
         if (targets.some(isRecycled)) return recycledMenu(targets);
         const one = targets.length === 1 ? targets[0] : null;
         const paths = targets.map((t) => t.path);
@@ -1474,6 +1491,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one && !fixed && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(one.path) },
             "separator",
             one && !archived && !remote && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
+            !!at && shellMenuFits(targets) && { label: "Show more options", icon: Ellipsis, shortcut: "Shift+right-click", onSelect: () => void windowsMenu(targets, at) },
             !!archived && READ_ONLY_NOTE,
             remote && REMOTE_NOTE,
             closed && CLOSED_NOTE,
@@ -1484,7 +1502,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         e.preventDefault();
         const entry = rows[index];
         const chosen = selectedNow();
-        menu.open(e, itemMenu(chosen.some((c) => c.path === entry.path) ? chosen : [entry]));
+        const targets = chosen.some((c) => c.path === entry.path) ? chosen : [entry];
+        const at = { x: e.clientX, y: e.clientY };
+        // Shift+right-click: Windows' own menu at once, as in File Explorer.
+        if (e.shiftKey && shellMenuFits(targets)) return void windowsMenu(targets, at);
+        menu.open(e, itemMenu(targets, at));
     };
 
     const onPlaceContextMenu = (e: React.MouseEvent, place: string) => {
@@ -1508,7 +1530,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const box = focused ?? list?.getBoundingClientRect();
         const at = box ? { clientX: box.left + 24, clientY: focused ? box.bottom : box.top + 8 } : { clientX: innerWidth / 2, clientY: innerHeight / 3 };
         const chosen = selectedNow();
-        menu.open(at, chosen.length ? itemMenu(chosen) : backgroundMenu());
+        menu.open(at, chosen.length ? itemMenu(chosen, { x: at.clientX, y: at.clientY }) : backgroundMenu());
     };
 
     /** Right-click where the open folder shows but none of its items does (or the keyboard's, on the list). */
