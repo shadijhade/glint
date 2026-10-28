@@ -562,6 +562,15 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                     <Row label="Theme">
                         <Segmented value={settings.theme} onChange={(theme) => set({ theme })} options={[["light", "Light"], ["dark", "Dark"], ["system", "System"]]} />
                     </Row>
+                    <Row
+                        label="Backdrop"
+                        hint={settings.backdrop === "mica" && !document.documentElement.hasAttribute("data-backdrop") ? "Mica needs Windows 11: the window stays solid here" : "Windows 11's Mica behind the title bar and the sidebar, as in File Explorer"}
+                    >
+                        <Segmented value={settings.backdrop} onChange={(backdrop) => set({ backdrop })} options={[["mica", "Mica"], ["solid", "Solid"]]} />
+                    </Row>
+                    <Row label="Accent color" hint="Glint's pink, or the color chosen in Windows' Settings → Personalization → Colors">
+                        <Segmented value={settings.accent} onChange={(accent) => set({ accent })} options={[["glint", "Glint"], ["windows", "Windows"]]} />
+                    </Row>
                     <Row label="Text size">
                         <Segmented value={settings.fontSize} onChange={(fontSize) => set({ fontSize })} options={[["small", "Small"], ["medium", "Medium"], ["large", "Large"]]} />
                     </Row>
