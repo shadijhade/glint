@@ -32,6 +32,10 @@ pub struct FindOptions {
     /// from the start of a name's word); fd doesn't.
     #[serde(default)]
     pub fuzzy: bool,
+    /// The index sends the best `max_results` of every drive's matches, best first, instead of the first
+    /// ones it comes to (quick search's and Files' order; fd's stays its own).
+    #[serde(default)]
+    pub rank: bool,
 }
 
 /// What a search says besides its results, as JSON; the results themselves go as bytes (`encode_items`).
@@ -218,6 +222,7 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
         exclude: options.exclude.clone(),
         max_results: options.max_results,
         fuzzy: options.fuzzy,
+        rank: options.rank,
     };
     let mut answered = None;
     // A failure halfway keeps what arrived; one before the plan leaves everything to fd.
@@ -455,7 +460,7 @@ mod tests {
     use super::*;
 
     fn options() -> FindOptions {
-        FindOptions { hidden: false, respect_ignore: false, exclude: vec!["node_modules".into(), " ".into()], max_results: Some(100), fuzzy: false }
+        FindOptions { hidden: false, respect_ignore: false, exclude: vec!["node_modules".into(), " ".into()], max_results: Some(100), fuzzy: false, rank: false }
     }
 
     #[test]

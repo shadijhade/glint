@@ -127,7 +127,7 @@ export function QuickSearch() {
             setActive(0);
             try {
                 if (!roots.current.length) roots.current = await searchable();
-                const options = { hidden: settings.showHidden, respectIgnore: false, exclude: settings.findExclusions, maxResults: ASKED, fuzzy: true };
+                const options = { hidden: settings.showHidden, respectIgnore: false, exclude: settings.findExclusions, maxResults: ASKED, fuzzy: true, rank: true };
                 await findFiles(roots.current, text, options, LANE, (event) => {
                     if (!current) return;
                     if (event.type === "started") engine = event.engine;

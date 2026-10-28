@@ -147,6 +147,28 @@ pub struct Tree {
 }
 
 /// A name search over one volume.
+/// A match's place in a ranked search (`Tree::rank`): lower is better.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Rank {
+    /// How the name matches what was typed, and where it is.
+    pub score: u32,
+    /// The path's length: shorter first, among names as good.
+    pub len: u32,
+    pub id: u32,
+}
+
+/// Windows' own folders and caches, by the folders a match is in (from the drive down, case ignored):
+/// what a search for your files rarely means.
+fn in_system_folder(folders: &[&[u8]]) -> bool {
+    const WINDOWS: [&[u8]; 9] = [b"winsxs", b"servicing", b"assembly", b"installer", b"system32", b"syswow64", b"softwaredistribution", b"systemapps", b"immersivecontrolpanel"];
+    let is = |folder: Option<&&[u8]>, names: &[&[u8]]| folder.is_some_and(|f| names.iter().any(|n| f.eq_ignore_ascii_case(n)));
+    (0..folders.len()).any(|i| {
+        is(folders.get(i), &[b"programdata", b"$recycle.bin", b"node_modules", b".git"])
+            || (is(folders.get(i), &[b"windows"]) && is(folders.get(i + 1), &WINDOWS))
+            || (is(folders.get(i), &[b"appdata"]) && is(folders.get(i + 1), &[b"local"]) && is(folders.get(i + 2), &[b"temp", b"packages", b"microsoft"]))
+    })
+}
+
 pub struct Search<'a> {
     pub matcher: &'a NameMatcher,
     /// ext:, size:, dm:, file: and folder:, with `now` (a FILETIME) the time ages count from.
@@ -793,6 +815,56 @@ impl Tree {
         found.into_iter().map(|(_, id)| id).collect()
     }
 
+    /// The best `max` of `found` (what `search` matched), best first, as quick search ranks them: a name
+    /// that is the first word typed (`word`, folded) or whose stem is, then one that starts with it, then
+    /// one with a word that does, then any other, then close matches by their typos; each a little
+    /// behind when it's in Windows' own folders or a cache, and when it's hidden; then the shorter path.
+    pub fn rank(&self, found: &[u32], search: &Search, word: &[u8], max: usize) -> Vec<Rank> {
+        let mut ranked: Vec<Rank> = found.par_iter().map(|&id| self.rank_of(id, search, word)).collect();
+        if ranked.len() > max {
+            ranked.select_nth_unstable(max);
+            ranked.truncate(max);
+        }
+        ranked.sort_unstable();
+        ranked
+    }
+
+    fn rank_of(&self, id: u32, search: &Search, word: &[u8]) -> Rank {
+        let link = &self.links[id as usize];
+        let name = &self.names[link.name as usize..link.name as usize + link.len as usize];
+        // Only names that fold differently have a folded copy: an ASCII name is compared ignoring case.
+        let folded = Tree::folded_in(&self.names, link);
+        let lower = folded.unwrap_or(name);
+        let is = |part: &[u8]| part.eq_ignore_ascii_case(word);
+        let class = if word.is_empty() || is(lower) || lower.iter().rposition(|&b| b == b'.').is_some_and(|dot| is(&lower[..dot])) {
+            0
+        } else if lower.get(..word.len()).is_some_and(is) {
+            1
+        } else if lower.windows(word.len() + 1).any(|w| matches!(w[0], b' ' | b'.' | b'_' | b'-') && is(&w[1..])) {
+            2
+        } else if lower.windows(word.len()).any(is) {
+            3
+        } else {
+            // A close match, not containing what was typed: behind every name that does.
+            4 + search.matcher.distance(name, folded).unwrap_or(3)
+        };
+        // Its folders from the drive down, for where it is and how long its path is ("C:\" first).
+        let mut folders = Vec::with_capacity(12);
+        let mut len = link.len as u32 + 3;
+        let mut dir = link.parent;
+        for _ in 0..MAX_DEPTH {
+            let Some(rec) = self.recs.get(dir as usize).filter(|r| dir != ROOT && r.first_link != NONE) else { break };
+            let up = &self.links[rec.first_link as usize];
+            let up_name = &self.names[up.name as usize..up.name as usize + up.len as usize];
+            folders.push(Tree::folded_in(&self.names, up).unwrap_or(up_name));
+            len += up.len as u32 + 1;
+            dir = up.parent;
+        }
+        folders.reverse();
+        let hidden = is_hidden(self.recs[link.rec as usize].attrs, name);
+        Rank { score: class * 4 + if in_system_folder(&folders) { 2 } else { 0 } + u32::from(hidden), len, id }
+    }
+
     /// Whether folder `dir` is the scope or below it, with nothing hidden (unless wanted) or excluded
     /// on the way; the scope itself is never filtered out, as fd searches any folder it's given.
     fn reachable(&self, mut dir: u32, search: &Search) -> bool {
@@ -1198,6 +1270,32 @@ mod tests {
         assert_eq!(find(&tree, "*", 21, true, &[r"docs\.hidden", "*.txt"]), [r"Users\me\docs", r"Users\me\docs\b.pdf"]);
         // The root folder itself and NTFS metadata never show up.
         assert!(find(&tree, ".", ROOT, true, &[]).iter().all(|p| p.contains('.')));
+    }
+
+    #[test]
+    fn ranks_the_best_matches_first() {
+        let mut tree = sample();
+        tree.set_record(50, &dir(1, &[(ROOT, "Windows")]));
+        tree.set_record(51, &dir(1, &[(50, "System32")]));
+        tree.set_record(52, &file(KB, &[(51, "report.dll")]));
+        tree.set_record(53, &file(KB, &[(21, "Q3 report.pdf")]));
+        tree.set_record(54, &file(KB, &[(23, "reports 2026.xlsx")]));
+        tree.set_record(55, &file(KB, &[(23, "Report.pdf")]));
+        tree.set_record(56, &file(KB, &[(30, "misreported.txt")]));
+        tree.set_record(57, &file(KB, &[(21, "Report.docx")]));
+        let matcher = NameMatcher::from_terms(vec!["report".into()]);
+        let search = Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: false, excludes: &Excludes::default() };
+        let found = tree.search(&search);
+        let mut cache = HashMap::new();
+        let mut paths = |ranked: Vec<Rank>| ranked.into_iter().map(|r| tree.path(r.id, &mut cache).unwrap()).collect::<Vec<_>>();
+        // As typed (the shorter path first), starting with it, a word starting with it, then inside a
+        // word; Windows' own copy, though named as typed, behind every other one named as typed.
+        assert_eq!(
+            paths(tree.rank(&found, &search, b"report", 10)),
+            [r"Users\me\Report.docx", r"Users\me\docs\Report.pdf", r"Windows\System32\report.dll", r"Users\me\docs\reports 2026.xlsx", r"Users\me\Q3 report.pdf", r"Data\misreported.txt"]
+        );
+        // The best two of them all, whatever the index order.
+        assert_eq!(paths(tree.rank(&found, &search, b"report", 2)), [r"Users\me\Report.docx", r"Users\me\docs\Report.pdf"]);
     }
 
     #[test]

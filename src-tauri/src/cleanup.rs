@@ -347,7 +347,7 @@ fn index_search(root: &str, queries: &[String], hidden: bool, skip: &[&str], sto
         if stop.load(Ordering::Relaxed) {
             return None;
         }
-        let request = shadui_index::proto::SearchRequest { query: query.clone(), roots: vec![root.to_string()], hidden, exclude: exclude.clone(), max_results: None, fuzzy: false };
+        let request = shadui_index::proto::SearchRequest { query: query.clone(), roots: vec![root.to_string()], hidden, exclude: exclude.clone(), max_results: None, fuzzy: false, rank: false };
         let mut answered = false;
         let ran = client::search(&request, |event| {
             match event {
