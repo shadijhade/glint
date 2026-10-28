@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -17,7 +17,6 @@ import { cn, firstNotice } from "./lib/utils";
 import { useTheme } from "./hooks/useTheme";
 import { AstGrepCard, MeaningCard, RipgrepCard, SearchBar } from "./components/Search";
 import { Results } from "./components/Results";
-import { SettingsView } from "./components/SettingsView";
 import { openShortcuts, ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Home, HistoryPopover, HISTORY_POPOVER_ID } from "./components/History";
 import { WindowControls } from "./components/WindowControls";
@@ -52,6 +51,10 @@ export interface SearchRun {
 
 /** How often a long-running session looks for a new version again (it also looks at start). */
 const UPDATE_CHECK_MS = 12 * 60 * 60 * 1000;
+
+// Settings is loaded and mounted only while it's open: its sections ask Windows and every tool for
+// their state (a version check runs each installed tool), which a start has no use for.
+const SettingsView = lazy(() => import("./components/SettingsView").then((m) => ({ default: m.SettingsView })));
 
 const MODES: { mode: Mode; icon: typeof FolderOpen; label: string; title: string }[] = [
   { mode: "files", icon: FolderOpen, label: "Files", title: "Browse files (Ctrl+Shift+E)" },
@@ -101,23 +104,21 @@ function App() {
   const replacing = useRef(false);
   const unlisten = useRef<(() => void) | undefined>(undefined);
   const settingsRef = useRef<HTMLDialogElement>(null);
+  // Settings while it's open, and the section it opens at (About, where an update installs).
+  const [settingsOpen, setSettingsOpen] = useState<{ section?: string } | null>(null);
 
-  const openSettings = () => {
+  const openSettings = (section?: string) => {
     const dialog = settingsRef.current;
     if (dialog && !dialog.open) {
+      setSettingsOpen({ section });
       dialog.showModal();
-      // Its content, not the close button that would get a focus ring for nothing.
-      dialog.querySelector<HTMLElement>("[data-settings-body]")?.focus();
     }
     // The service may have stopped, restarted or finished a drive since the last look.
     refreshIndex();
   };
 
   /** Settings at About, where an available update installs. */
-  const openAbout = () => {
-    openSettings();
-    document.getElementById("settings-about")?.scrollIntoView({ block: "start" });
-  };
+  const openAbout = () => openSettings("settings-about");
 
   /** Text search in `folder` (the open folder by default). */
   const searchText = (folder?: string) => {
@@ -164,7 +165,15 @@ function App() {
   // Painted: the window can show (it's made hidden, so it never flashes white first).
   useEffect(() => {
     let frame = requestAnimationFrame(() => (frame = requestAnimationFrame(() => void invoke("app_ready"))));
-    return () => cancelAnimationFrame(frame);
+    // Once the first folder is on screen, what's loaded on demand loads ahead, so it opens at once.
+    const ahead = setTimeout(() => {
+      void import("./components/SettingsView");
+      void import("./lib/highlighter");
+    }, 3000);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(ahead);
+    };
   }, []);
 
   useEffect(() => {
@@ -417,14 +426,14 @@ function App() {
               <HistoryIcon />
             </Button>
           )}
-          <Button variant="ghost" size="icon" className="size-8" onClick={openSettings} title="Settings (Ctrl+,)" aria-label="Settings">
+          <Button variant="ghost" size="icon" className="size-8" onClick={() => openSettings()} title="Settings (Ctrl+,)" aria-label="Settings">
             <SettingsIcon />
           </Button>
         </div>
         <WindowControls />
       </header>
 
-      <Explorer active={mode === "files"} onSearchText={searchText} onOpenSettings={openSettings} />
+      <Explorer active={mode === "files"} onSearchText={searchText} onOpenSettings={() => openSettings()} />
 
       <div className={mode === "text" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
         {/* Only while Text is on screen: its shortcuts (Ctrl+F, Ctrl+K, Ctrl+H) are Files' otherwise. */}
@@ -485,11 +494,16 @@ function App() {
       <dialog
         ref={settingsRef}
         onClick={(e) => e.target === e.currentTarget && e.currentTarget.close()}
+        onClose={() => setSettingsOpen(null)}
         className="m-auto h-[min(85vh,46rem)] w-[min(92vw,54rem)] overflow-hidden rounded-xl border bg-chrome p-0 text-foreground shadow-2xl backdrop:bg-black/50"
       >
-        <SettingsView onClose={() => settingsRef.current?.close()} quickTaken={quickTaken} />
+        {settingsOpen && (
+          <Suspense fallback={null}>
+            <SettingsView onClose={() => settingsRef.current?.close()} quickTaken={quickTaken} section={settingsOpen.section} />
+          </Suspense>
+        )}
         {/* The dialog sits above everything else, toasts included: its own show them over it. */}
-        <Toaster theme={settings.theme} position="bottom-right" richColors />
+        {settingsOpen && <Toaster theme={settings.theme} position="bottom-right" richColors />}
       </dialog>
       <Toaster theme={settings.theme} position="bottom-right" richColors />
     </div>

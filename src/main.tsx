@@ -1,12 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
-import { QuickSearch } from "./components/QuickSearch";
 import "./index.css";
-
-// The quick search window (Settings → Quick search) loads the same page.
-const Root = getCurrentWindow().label === "quick" ? QuickSearch : App;
 
 // Release builds: hide the webview's own context menu (Reload, Inspect…) except where text can be copied.
 if (!import.meta.env.DEV) {
@@ -17,6 +12,6 @@ if (!import.meta.env.DEV) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Root />
+    <App />
   </React.StrictMode>,
 );

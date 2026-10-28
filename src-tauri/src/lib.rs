@@ -147,6 +147,10 @@ fn app_ready(window: tauri::WebviewWindow) {
     if window.label() == "main" && !IN_TRAY.load(std::sync::atomic::Ordering::Relaxed) && !window.is_visible().unwrap_or(true) {
         placement::show(&window);
     }
+    if window.label() == "main" {
+        use tauri::Manager;
+        quick::warm(window.app_handle());
+    }
 }
 
 /// What a bug report needs (Settings → About → Copy diagnostics): versions, where the tools come
@@ -778,6 +782,7 @@ pub fn run() {
                             placement::show(&window);
                         }
                     }
+                    quick::warm(&handle);
                 });
             }
             {

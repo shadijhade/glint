@@ -39,17 +39,21 @@ export default defineConfig(async () => ({
     // ghostty-web carries its WebAssembly inline (637 kB), loaded only when a terminal opens.
     chunkSizeWarningLimit: 700,
     rolldownOptions: {
+      // The quick search window is a page of its own (quick.html), loading only what it shows.
+      input: {
+        main: path.resolve(import.meta.dirname, "index.html"),
+        quick: path.resolve(import.meta.dirname, "quick.html"),
+      },
       output: {
-        manualChunks(id) {
-          if (id.includes("react-syntax-highlighter") || id.includes("refractor") || id.includes("prismjs")) {
-            return "syntax";
-          }
-          if (id.includes("lucide-react")) {
-            return "icons";
-          }
-          if (id.includes("node_modules") && (id.includes("react-dom") || id.includes("@tauri-apps") || id.includes("sonner") || id.includes("zustand"))) {
-            return "vendor";
-          }
+        codeSplitting: {
+          groups: [
+            // What every page needs, React itself included: a group takes the modules it imports along,
+            // so React left out of this one would land with whichever took it first (the highlighter,
+            // which would then load with the app).
+            { name: "vendor", test: /[\\/]node_modules[\\/](react|react-dom|scheduler|@tauri-apps|sonner|zustand)[\\/]/, priority: 2 },
+            // Prism and its grammars, loaded the first time code is highlighted (highlight.tsx).
+            { name: "syntax", test: /[\\/]node_modules[\\/](react-syntax-highlighter|refractor|prismjs)[\\/]/, priority: 1 },
+          ],
         },
       },
     },
