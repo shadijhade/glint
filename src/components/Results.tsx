@@ -22,6 +22,7 @@ import {
     SearchX,
     X,
 } from "lucide-react";
+import { keyboardElsewhere } from "@/lib/explorer";
 import { formatCount } from "@/lib/format";
 import { RgMatch } from "@/lib/ripgrep";
 import { useStore } from "@/lib/store";
@@ -145,6 +146,7 @@ export function Results({ active, run, matches, searching, error, duration, file
         const onKey = (e: KeyboardEvent) => {
             const target = e.target as Element;
             if (target.closest("input, textarea, dialog, [popover]")) return;
+            if (keyboardElsewhere(target, document.querySelector("[data-results]"))) return;
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
                 // Handed over from the search box (the page sent it): onto the match on show, if there's one.
@@ -323,7 +325,7 @@ export function Results({ active, run, matches, searching, error, duration, file
             </Centered>
         );
     } else {
-        body = <VirtualList count={rows.length} rowHeight={rowHeight(fontSize)} scrollToIndex={selectedRow}>{renderRow}</VirtualList>;
+        body = <VirtualList data-results count={rows.length} rowHeight={rowHeight(fontSize)} scrollToIndex={selectedRow}>{renderRow}</VirtualList>;
     }
 
     return (
