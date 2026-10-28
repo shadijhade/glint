@@ -47,9 +47,10 @@ pub fn shells() -> Vec<Shell> {
     found
 }
 
+/// The shells on this PC; looking along PATH for them is file system work, so not on the UI thread.
 #[tauri::command]
-pub fn term_shells() -> Vec<Shell> {
-    shells()
+pub async fn term_shells() -> Result<Vec<Shell>, String> {
+    crate::fsx::blocking(|| Ok(shells())).await
 }
 
 /// PowerShell's prompt, wrapped to say where it is first (OSC 9;9, as Windows Terminal reads it), in
@@ -203,9 +204,14 @@ fn session(id: u32) -> Result<Arc<Session>, String> {
 }
 
 /// Starts `shell` (an id from [`shells`]) in `cwd`, `cols` × `rows`; its output, folder reports and
-/// end come on `on_output`. Returns the session's id.
+/// end come on `on_output`. Returns the session's id. Opening a pseudo console and starting a shell
+/// takes a while, so it's done off the UI thread.
 #[tauri::command]
-pub fn term_spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<InvokeResponseBody>) -> Result<u32, String> {
+pub async fn term_spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<InvokeResponseBody>) -> Result<u32, String> {
+    crate::fsx::blocking(move || spawn(shell, cwd, cols, rows, on_output)).await
+}
+
+fn spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<InvokeResponseBody>) -> Result<u32, String> {
     let shell = shells().into_iter().find(|s| s.id == shell).ok_or_else(|| format!("{shell} isn't installed"))?;
     let pty = native_pty_system().openpty(PtySize { rows: rows.max(2), cols: cols.max(10), pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
     let mut child = pty.slave.spawn_command(command_for(&shell, &cwd)).map_err(|e| format!("Couldn't start {}: {e}", shell.name))?;

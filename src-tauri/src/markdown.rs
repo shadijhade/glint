@@ -4,10 +4,10 @@
 //! and attributes from it, as GitHub does, drops `<script>`, `<style>` and the like with what's in
 //! them, and never puts any of it in the page as HTML.
 
-/// The HTML for Markdown `text`.
+/// The HTML for Markdown `text`, made off the UI thread (a long README takes a while).
 #[tauri::command]
-pub fn markdown_html(text: String) -> String {
-    render(&text)
+pub async fn markdown_html(text: String) -> Result<String, String> {
+    crate::fsx::blocking(move || Ok(render(&text))).await
 }
 
 pub fn render(text: &str) -> String {
