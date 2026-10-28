@@ -7,9 +7,9 @@ use crate::proto::{
     self, unix_ms, GrowthSummary, HistoryAnswer, HistoryEvent, HistoryRequest, Hit, Message, SearchRequest, Sizes, Status, UsageNode, UsageRequest, UsageSummary, VolumeStatus,
     FRAME_GROWTH, FRAME_HITS, FRAME_USAGE, NEW, NO_PARENT, WRITTEN,
 };
-use crate::query::{self, Excludes, NameMatcher};
+use crate::query::{self, Excludes, Filters, NameMatcher};
 use crate::snapshot::{self, Meta};
-use crate::tree::{self, Search, Tree, NONE, ROOT};
+use crate::tree::{self, Rank, Search, Tree, NONE, ROOT};
 use crate::usn;
 use crate::volume::{self, Journal, JournalError, Volume};
 use rayon::prelude::*;
@@ -588,7 +588,12 @@ impl Engine {
         proto::write_message(out, &Message::Plan { indexed, skipped })?;
 
         let max = request.max_results.filter(|&m| m > 0).unwrap_or(MAX_HITS).min(MAX_HITS);
+        // What a ranked search compares names with: the first word typed, folded, without wildcards.
+        let word = names.first().map(|w| query::fold(w).replace(['*', '?', '"'], "")).unwrap_or_default();
         let mut send = |matcher: &NameMatcher| -> io::Result<(usize, bool)> {
+            if request.rank {
+                return send_ranked(&targets, matcher, &filters, now, request.hidden, &excludes, word.as_bytes(), max, out);
+            }
             let (mut count, mut limited) = (0, false);
             for (slot, scope) in &targets {
                 if count >= max {
@@ -752,6 +757,48 @@ fn now_at(tree: &Tree, file: u64, letter: char, dirs: &mut HashMap<u32, String>)
 }
 
 /// Searches one drive and encodes up to `max` results into frames; also returns how many matched.
+/// A ranked search's answer: every drive's matches ranked, and the best `max` of them all sent, best first.
+/// How many were sent, and whether there were more.
+#[allow(clippy::too_many_arguments)]
+fn send_ranked(targets: &[(Arc<Slot>, u32)], matcher: &NameMatcher, filters: &Filters, now: i64, hidden: bool, excludes: &Excludes, word: &[u8], max: usize, out: &mut dyn Write) -> io::Result<(usize, bool)> {
+    let mut total = 0;
+    let mut drives = Vec::with_capacity(targets.len());
+    for (slot, scope) in targets {
+        // Ranked and encoded under the lock: ids are only valid until the next change.
+        let tree = slot.tree.read().unwrap();
+        let search = Search { matcher, filters, now, scope: *scope, hidden, excludes };
+        let found = tree.search(&search);
+        total += found.len();
+        drives.push(encode_ranked(&tree, &tree.rank(&found, &search, word, max), &format!("{}:\\", slot.letter)));
+    }
+    let mut best: Vec<(Rank, usize, std::ops::Range<usize>)> = drives.iter().enumerate().flat_map(|(d, (_, hits))| hits.iter().map(move |(rank, at)| (*rank, d, at.clone()))).collect();
+    best.sort_unstable_by_key(|&(rank, ..)| (rank.score, rank.len));
+    best.truncate(max);
+    for chunk in best.chunks(BATCH) {
+        let mut frame = Vec::with_capacity(chunk.len() * 96);
+        for (_, d, at) in chunk {
+            frame.extend_from_slice(&drives[*d].0[at.clone()]);
+        }
+        proto::write_frame(out, FRAME_HITS, &frame)?;
+    }
+    Ok((best.len(), total > best.len()))
+}
+
+/// The hits of `ranked`, encoded one after another, with where each one is.
+fn encode_ranked(tree: &Tree, ranked: &[Rank], drive: &str) -> (Vec<u8>, Vec<(Rank, std::ops::Range<usize>)>) {
+    let mut dirs = HashMap::new();
+    let mut out = Vec::with_capacity(ranked.len() * 96);
+    let mut hits = Vec::with_capacity(ranked.len());
+    for &rank in ranked {
+        let Some(path) = tree.path(rank.id, &mut dirs) else { continue };
+        let Some(rec) = tree.rec(tree.link(rank.id).rec) else { continue };
+        let start = out.len();
+        proto::encode_hit(&mut out, &Hit { path: format!("{drive}{path}"), dir: rec.dir(), size: rec.size, modified: unix_ms(rec.modified), attrs: rec.attrs });
+        hits.push((rank, start..out.len()));
+    }
+    (out, hits)
+}
+
 pub(crate) fn collect_hits(tree: &Tree, letter: char, search: &Search, max: usize) -> (Vec<Vec<u8>>, usize) {
     let found = tree.search(search);
     let drive = format!("{letter}:\\");

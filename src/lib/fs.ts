@@ -151,6 +151,9 @@ export interface FindOptions {
     maxResults: number | null;
     /** When nothing matches as typed, the index looks again with typos allowed (fd doesn't). */
     fuzzy?: boolean;
+    /** The index sends the best `maxResults` of every drive's matches, best first (a service from
+     *  before 0.7 the first ones it comes to; fd its own order). */
+    rank?: boolean;
 }
 
 export type FindEvent =

@@ -977,9 +977,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     }, [sort.key, source, filterReads]);
     const sorted = useMemo(() => {
         const sizeOf = sizeRun ? (e: FileEntry) => (e.dir ? (sizeRun.sizes.get(e.name) ?? -1) : e.size) : undefined;
-        // Listings arrive sorted by name from Rust, so the default view needs no work here.
-        return sortEntries(source, sort, foldersFirst, source === listing?.entries, sizeOf, takenOf);
-    }, [source, listing, sort, foldersFirst, sizeRun, takenOf]);
+        // Listings arrive sorted by name from Rust, so the default view needs no work here; close matches
+        // arrive closest first from the index, and keep that order unless another one is chosen.
+        const presorted = source === listing?.entries || (!!find?.fuzzy && source === found);
+        return sortEntries(source, sort, foldersFirst, presorted, sizeOf, takenOf);
+    }, [source, listing, find?.fuzzy, found, sort, foldersFirst, sizeRun, takenOf]);
 
     // Compared deeper (the compare bar's Subfolders and Contents): Rust's answer for these two folders, once it's in.
     const deep = useDeepCompare();
@@ -1037,8 +1039,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         return { diffs, unique, newer, differ, older, same, diffPaths, syncPaths };
     }, [dual, comparePanes, find, path, listing, otherListing, sorted, showHidden, sizeRun, otherSizes, deepStatuses]);
 
+    const findQuery = find?.query;
     const { rows: listRows, hidden } = useMemo(() => {
-        const match = matcher(deferredFilter, gitMarks, factsOf);
+        // A search's results are what the box asked for: its text narrows them only once it's changed
+        // (close matches, a letter or two off what was typed, would all be filtered out by it).
+        const narrowing = findQuery !== undefined && deferredFilter.trim() === findQuery.trim() ? "" : deferredFilter;
+        const match = matcher(narrowing, gitMarks, factsOf);
         const filterDiffs = !!comparison && diffOnly;
         if (!match && showHidden && !filterDiffs) return { rows: sorted, hidden: 0 };
         let hidden = 0;
@@ -1051,7 +1057,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             return !match || match(e);
         });
         return { rows, hidden };
-    }, [sorted, deferredFilter, showHidden, comparison, diffOnly, gitMarks, factsOf]);
+    }, [sorted, deferredFilter, findQuery, showHidden, comparison, diffOnly, gitMarks, factsOf]);
     // A tab showing its disk-usage map has the map's items as rows.
     const mapRows = useMapRows(tabId);
     // The folder's README, folded above its list (not over search results, the map, or a closed folder).

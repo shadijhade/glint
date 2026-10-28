@@ -1366,6 +1366,8 @@ export async function runFind(query: string, wider: Wider = {}) {
         exclude: wider.skipNothing ? [] : settings.findExclusions,
         maxResults: wider.unlimited ? null : settings.findMaxResults,
         fuzzy: true,
+        // Past the limit, the best matches are what's kept.
+        rank: true,
     };
     const skipped = [...options.exclude, ...(options.respectIgnore ? ["what .gitignore files list"] : [])];
     const started = performance.now();
