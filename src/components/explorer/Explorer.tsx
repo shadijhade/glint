@@ -124,6 +124,7 @@ import {
     goTo,
     goUp,
     initExplorer,
+    keyboardElsewhere,
     markShown,
     moveTabToOtherPane,
     modalOpen,
@@ -1185,6 +1186,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else selectOnly(rows[index].path);
             };
             const { quickLook, dual } = useExplorer.getState();
+            const listKey =
+                (to !== null && !e.altKey) ||
+                ["Enter", " ", "Delete", "F2", "ContextMenu"].includes(key) ||
+                (key === "F10" && e.shiftKey) ||
+                (ctrl ? ["a", "c", "x", "v", "z", " ", "Enter"].includes(key) : key.length === 1 && !e.altKey);
+            if (listKey && !(quickLook && key === " ") && keyboardElsewhere(target, paneRef.current?.querySelector("[data-file-list], [data-file-grid]"))) return;
 
             if (quickLook && (key === "Escape" || key === " ")) useExplorer.setState({ quickLook: false });
             else if (key === "F6") {
