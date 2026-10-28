@@ -411,10 +411,25 @@ fn start(app: &AppHandle) {
     });
 }
 
-/// The rules the app has (sent at start and whenever they change): those turned on are watched.
+/// Which `rules_set` is the latest: watching a network folder can take seconds, and an older set that
+/// took longer mustn't win over a newer one.
+static SETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The rules the app has (sent at start and whenever they change): those turned on are watched. Their
+/// watchers are made off the UI thread.
 #[tauri::command]
-pub fn rules_set(app: AppHandle, rules: Vec<Rule>) {
-    start(&app);
+pub async fn rules_set(app: AppHandle, rules: Vec<Rule>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let set = SETS.fetch_add(1, Ordering::SeqCst) + 1;
+    crate::fsx::blocking(move || {
+        set_rules(&app, rules, || SETS.load(Ordering::SeqCst) == set);
+        Ok(())
+    })
+    .await
+}
+
+fn set_rules(app: &AppHandle, rules: Vec<Rule>, latest: impl Fn() -> bool) {
+    start(app);
     let mut watchers = Vec::new();
     let mut folders = HashSet::new();
     for rule in rules.iter().filter(|r| r.on && check(r).is_ok()) {
@@ -436,8 +451,10 @@ pub fn rules_set(app: AppHandle, rules: Vec<Rule>) {
         }
     }
     let mut engine = engine();
-    engine.watchers = watchers;
-    engine.rules = rules;
+    if latest() {
+        engine.watchers = watchers;
+        engine.rules = rules;
+    }
 }
 
 /// What `rule` would do now to what's in its folder (up to 500 files), or what's wrong with it.

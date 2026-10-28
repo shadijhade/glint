@@ -287,12 +287,15 @@ pub fn meaning_status() -> bool {
 
 /// Deletes the downloaded model.
 #[tauri::command]
-pub fn meaning_remove() -> Result<(), String> {
-    *LOADED.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    match folder().map(fs::remove_dir_all) {
-        Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
-        _ => Ok(()),
-    }
+pub async fn meaning_remove() -> Result<(), String> {
+    crate::fsx::blocking(|| {
+        *LOADED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        match folder().map(fs::remove_dir_all) {
+            Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        }
+    })
+    .await
 }
 
 #[cfg(test)]

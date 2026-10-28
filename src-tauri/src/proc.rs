@@ -29,6 +29,22 @@ impl Slot {
         }
     }
 
+    /// Tracks `child` instead of what runs, if `current()` (checked with the slot held) says its run is
+    /// still the one wanted; otherwise stops `child`. Its pid, or None when it was stopped.
+    pub fn replace_if(&self, child: Child, current: impl FnOnce() -> bool) -> Option<u32> {
+        let pid = child.id();
+        let mut slot = self.lock();
+        if !current() {
+            drop(slot);
+            stop(child);
+            return None;
+        }
+        if let Some(old) = slot.replace(child) {
+            stop(old);
+        }
+        Some(pid)
+    }
+
     /// Stops `pid` unless a newer run already replaced it.
     pub fn kill_if(&self, pid: u32) {
         let mut current = self.lock();
@@ -80,9 +96,31 @@ impl Lanes {
     }
 }
 
+/// Processes stopped and still being reaped, which an update waits for ([`wait_stopped`]).
+static ENDING: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Ends `child` without waiting for it: one in the middle of a read from a share that stopped answering
+/// ends only once Windows gives up on that read, which can take a minute, and nothing should wait for
+/// that (Stop is called on the UI thread). A thread of its own reaps it.
 fn stop(mut child: Child) {
     let _ = child.kill();
-    let _ = child.wait();
+    let reaping = std::thread::Builder::new().name("reap".into()).spawn(move || {
+        let _ = child.wait();
+    });
+    if let Ok(reaping) = reaping {
+        let mut ending = ENDING.lock().unwrap_or_else(|e| e.into_inner());
+        ending.retain(|r| !r.is_finished());
+        ending.push(reaping);
+    }
+}
+
+/// Waits until every process stopped so far has ended (an update replaces rg, fd and pdu: their
+/// files must be free).
+pub fn wait_stopped() {
+    let ending = std::mem::take(&mut *ENDING.lock().unwrap_or_else(|e| e.into_inner()));
+    for reaping in ending {
+        let _ = reaping.join();
+    }
 }
 
 /// A bundled CLI tool (`rg`, `fd`, `pdu`), run without a console window.

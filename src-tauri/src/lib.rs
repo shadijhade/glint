@@ -57,6 +57,7 @@ use proc::{Lanes, Slot};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, State, Window};
@@ -209,21 +210,47 @@ struct SearchEvent {
     lines: Vec<String>,
 }
 
+/// Text searches in the order they were asked for: one that took longer to start (its folder on a share
+/// slow to answer) mustn't replace a newer one, or start after Stop.
+static TEXT_SEARCH: AtomicU64 = AtomicU64::new(0);
+
+/// Whether text search `ticket` is still the one wanted: no newer search, and no Stop, since.
+fn text_current(ticket: u64) -> bool {
+    TEXT_SEARCH.load(Ordering::SeqCst) == ticket
+}
+
+/// The folder a text search runs in (absolute, with %VARS% and ~ expanded), once it's known to be
+/// there. Looking can take seconds on a sleeping share, so it's never done on the UI thread.
+fn text_folder(path: &str) -> Result<String, String> {
+    let folder = fsx::normalize(path)?;
+    if std::fs::metadata(&folder).is_err() {
+        return Err(format!("Can't find “{folder}”. Check the folder path and try again."));
+    }
+    Ok(folder)
+}
+
 #[tauri::command]
 fn cancel_search(state: State<AppState>) {
+    TEXT_SEARCH.fetch_add(1, Ordering::SeqCst);
     state.search.kill();
     doctext::cancel();
 }
 
 /// Stops every sidecar that runs (the text search, and each tab's file search, folder sizes and
-/// disk-usage map), so an update's installer can replace rg, fd and pdu.
+/// disk-usage map) and waits until they've ended, so an update's installer can replace rg, fd and pdu.
 #[tauri::command]
-fn stop_tools(state: State<AppState>) {
+async fn stop_tools(state: State<'_, AppState>) -> Result<(), String> {
+    TEXT_SEARCH.fetch_add(1, Ordering::SeqCst);
     state.search.kill();
     doctext::cancel();
     state.finds.stop_all();
     state.sizes.close_all();
     state.usage.close_all();
+    fsx::blocking(|| {
+        proc::wait_stopped();
+        Ok(())
+    })
+    .await
 }
 
 /// A text search as Text mode asks for it. ripgrep's arguments are built here from these, never
@@ -277,44 +304,51 @@ fn rg_args(search: &TextSearch, folder: &str) -> Vec<String> {
 /// Starts a text search; its results arrive as `search-event`s. Returns the folder as searched
 /// (absolute, with %VARS% and ~ expanded), which the results show their paths relative to.
 #[tauri::command]
-fn run_ripgrep_batched(
+async fn run_ripgrep_batched(
     window: Window,
     request: TextSearch,
     search_id: String,
     max_results: Option<usize>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let folder = fsx::normalize(&request.path)?;
-    if std::fs::metadata(&folder).is_err() {
-        return Err(format!("Can't find “{folder}”. Check the folder path and try again."));
-    }
-    let mut command = proc::tool("rg")?;
-    command
-        .args(rg_args(&request, &folder))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let ticket = TEXT_SEARCH.fetch_add(1, Ordering::SeqCst) + 1;
+    let search = state.search.clone();
+    fsx::blocking(move || {
+        let folder = text_folder(&request.path)?;
+        let mut command = proc::tool("rg")?;
+        command
+            .args(rg_args(&request, &folder))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-    let child = command
-        .spawn()
-        .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
-    doctext::cancel();
-    stream_search(window, search_id, child, max_results, state.search.clone(), |line: String| (!line.is_empty()).then_some(line))?;
-    Ok(folder)
+        let child = command
+            .spawn()
+            .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
+        stream_search(window, search_id, child, max_results, search, ticket, |line: String| (!line.is_empty()).then_some(line))?;
+        Ok(folder)
+    })
+    .await
 }
 
 /// A Documents search (Text's documents toggle): PDFs', Office's, OpenDocument's and EPUBs' text, read
 /// by worker processes (doctext.rs). Its matches arrive as `search-event`s, as ripgrep's JSON lines with
 /// a label each ("p. 3"), then a summary and "finished". Returns the folder as searched.
 #[tauri::command]
-fn run_doc_search(window: Window, request: doctext::DocSearch, search_id: String, max_results: Option<usize>, state: State<AppState>) -> Result<String, String> {
-    let folder = fsx::normalize(&request.path)?;
-    if std::fs::metadata(&folder).is_err() {
-        return Err(format!("Can't find “{folder}”. Check the folder path and try again."));
-    }
+async fn run_doc_search(window: Window, request: doctext::DocSearch, search_id: String, max_results: Option<usize>, state: State<'_, AppState>) -> Result<String, String> {
+    let ticket = TEXT_SEARCH.fetch_add(1, Ordering::SeqCst) + 1;
+    let search = state.search.clone();
+    fsx::blocking(move || doc_search(window, request, search_id, max_results, search, ticket)).await
+}
+
+fn doc_search(window: Window, request: doctext::DocSearch, search_id: String, max_results: Option<usize>, search: Slot, ticket: u64) -> Result<String, String> {
+    let folder = text_folder(&request.path)?;
     // By meaning, what's typed isn't a pattern: a regex that matches nothing stands in.
     let pattern = if request.meaning { regex::Regex::new("a^").map_err(|e| e.to_string())? } else { doctext::pattern(&request)? };
-    state.search.kill();
+    if !text_current(ticket) {
+        return Err("cancelled".into());
+    }
+    search.kill();
     let run = doctext::begin();
     let max = match max_results {
         Some(0) | None => usize::MAX,
@@ -351,19 +385,21 @@ async fn doc_lines(path: String, from: usize, to: usize) -> Result<Vec<(String, 
 /// ripgrep's JSON lines (codesearch.rs), then a summary with how long it took. Returns the folder as
 /// searched.
 #[tauri::command]
-fn run_ast_grep(window: Window, request: codesearch::CodeSearch, search_id: String, max_results: Option<usize>, state: State<AppState>) -> Result<String, String> {
-    let folder = fsx::normalize(&request.path)?;
-    if std::fs::metadata(&folder).is_err() {
-        return Err(format!("Can't find “{folder}”. Check the folder path and try again."));
-    }
+async fn run_ast_grep(window: Window, request: codesearch::CodeSearch, search_id: String, max_results: Option<usize>, state: State<'_, AppState>) -> Result<String, String> {
+    let ticket = TEXT_SEARCH.fetch_add(1, Ordering::SeqCst) + 1;
+    let search = state.search.clone();
+    fsx::blocking(move || ast_grep_search(window, request, search_id, max_results, search, ticket)).await
+}
+
+fn ast_grep_search(window: Window, request: codesearch::CodeSearch, search_id: String, max_results: Option<usize>, search: Slot, ticket: u64) -> Result<String, String> {
+    let folder = text_folder(&request.path)?;
     let mut command = tools::command("ast-grep")?;
     command.args(codesearch::args(&request, &folder, false)).current_dir(&folder).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = command.spawn().map_err(|e| format!("Couldn't start ast-grep: {e}"))?;
-    doctext::cancel();
     let started = Instant::now();
     let base = folder.clone();
     let mut summary = Some(());
-    stream_search(window, search_id, child, max_results, state.search.clone(), move |line: String| {
+    stream_search(window, search_id, child, max_results, search, ticket, move |line: String| {
         // ast-grep says nothing at the end: the summary ripgrep would send is made here.
         if line.is_empty() {
             return summary.take().map(|_| {
@@ -397,12 +433,14 @@ async fn ast_grep_apply(request: codesearch::CodeSearch) -> Result<u64, String> 
 
 /// Sends a search's output to the UI as `search-event`s: its lines (each `convert`ed, None to skip
 /// one) in batches, until it ends or `max_results` matches came, then an empty line through `convert`
-/// (for a summary of its own), any error it gave, and "finished". The search replaces the one before.
-fn stream_search(window: Window, search_id: String, mut child: std::process::Child, max_results: Option<usize>, search: proc::Slot, mut convert: impl FnMut(String) -> Option<String> + Send + 'static) -> Result<(), String> {
+/// (for a summary of its own), any error it gave, and "finished". The search replaces the one before,
+/// and Documents' run, unless a newer one (or Stop) came while it started: then it's stopped instead.
+fn stream_search(window: Window, search_id: String, mut child: std::process::Child, max_results: Option<usize>, search: proc::Slot, ticket: u64, mut convert: impl FnMut(String) -> Option<String> + Send + 'static) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
     let mut stderr = child.stderr.take().ok_or("Failed to open stderr")?;
     // Replaces (and stops) any search still running.
-    let pid = search.replace(child);
+    let pid = search.replace_if(child, || text_current(ticket)).ok_or("cancelled")?;
+    doctext::cancel();
 
     // Drain stderr on its own thread so a chatty search can never block stdout.
     let stderr_reader = thread::spawn(move || {

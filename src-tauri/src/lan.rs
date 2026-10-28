@@ -34,8 +34,8 @@ pub struct Address {
 /// This PC's IPv4 addresses on its networks, the one its traffic goes out by first: those other devices
 /// on the same network reach it at. Networks without a way out (a virtual machine's) come last.
 #[tauri::command]
-pub fn lan_addresses() -> Vec<Address> {
-    imp::addresses()
+pub async fn lan_addresses() -> Result<Vec<Address>, String> {
+    crate::fsx::blocking(|| Ok(imp::addresses())).await
 }
 
 /// `n` random bytes from Windows' own generator, as base32 letters and digits.
@@ -598,7 +598,7 @@ mod tests {
     fn reads_what_windows_has_of_this_pcs_networks() {
         // The network traffic goes out by is one Windows has as public, private or domain, and its
         // firewall can be read there (a program it has no rules for: off, or kept out).
-        if let Some(first) = lan_addresses().first() {
+        if let Some(first) = imp::addresses().first() {
             let reach = imp::reach(first.address.parse().unwrap(), Some(r"C:\No\Such\dufs.exe"));
             assert!(reach.network.is_some() && matches!(reach.firewall, Firewall::Off | Firewall::Unset), "{reach:?}");
         }
@@ -615,6 +615,6 @@ mod tests {
         let port = free_port().unwrap();
         assert!((20_000..45_000).contains(&port) && !imp::listening().contains(&port));
         // This PC's own: none of them loopback.
-        assert!(lan_addresses().iter().all(|a| !a.address.starts_with("127.")));
+        assert!(imp::addresses().iter().all(|a| !a.address.starts_with("127.")));
     }
 }
