@@ -682,7 +682,7 @@ pub async fn list_drives() -> Result<Vec<Drive>, String> {
 }
 
 #[cfg(windows)]
-fn drives() -> Vec<Drive> {
+pub(crate) fn drives() -> Vec<Drive> {
     use std::sync::mpsc;
     use std::time::Duration;
     use windows::Win32::Storage::FileSystem::GetLogicalDrives;

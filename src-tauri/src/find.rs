@@ -117,7 +117,7 @@ impl Finds {
 
 /// fd arguments for a query: every term must match the file name (like Everything), case-insensitively.
 /// Terms with * or ? are globs over the whole name; the rest match anywhere in it.
-fn fd_args(query: &str, roots: &[String], options: &FindOptions) -> Result<Vec<String>, String> {
+pub(crate) fn fd_args(query: &str, roots: &[String], options: &FindOptions) -> Result<Vec<String>, String> {
     let (terms, filters) = parse(query)?;
     if terms.is_empty() && filters.is_empty() {
         return Err("Type part of a file name to search for".into());
