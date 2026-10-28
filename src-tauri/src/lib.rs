@@ -41,6 +41,7 @@ mod lan;
 mod share;
 mod sheet;
 mod shell;
+mod shellmenu;
 mod sign;
 mod sql;
 mod snap;
@@ -618,6 +619,7 @@ pub fn run() {
             appearance::appearance,
             appearance::accent_colors,
             mcp::mcp_setup,
+            shellmenu::shell_menu,
             read_file_content,
             read_file_chunk,
             write_file_content,
