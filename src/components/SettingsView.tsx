@@ -488,9 +488,11 @@ interface SettingsViewProps {
     onClose: () => void;
     /** The quick search shortcut, when another app holds it. */
     quickTaken: string | null;
+    /** The section to open at ("settings-about"); the top otherwise. */
+    section?: string;
 }
 
-export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
+export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps) {
     const { settings, setSettings: set, history } = useStore();
     const visited = useStore((s) => Object.keys(s.visits).length);
     const zoxide = useTool("zoxide");
@@ -509,6 +511,10 @@ export function SettingsView({ onClose, quickTaken }: SettingsViewProps) {
 
     useEffect(() => {
         getVersion().then(setVersion).catch(() => {});
+        // Mounted as it opens: its content takes the keyboard (not the close button, which would get
+        // a focus ring for nothing), at the section asked for.
+        content.current?.focus();
+        if (section) document.getElementById(section)?.scrollIntoView({ block: "start" });
     }, []);
 
     const browseDefault = async () => {

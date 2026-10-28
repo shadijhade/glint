@@ -26,7 +26,7 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
     static MAKING: Mutex<()> = Mutex::new(());
     let _one = MAKING.lock().unwrap_or_else(|e| e.into_inner());
     app.get_webview_window(WINDOW).or_else(|| {
-        WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("index.html".into()))
+        WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("quick.html".into()))
             .title("Glint quick search")
             .inner_size(640.0, 440.0)
             .decorations(false)
@@ -176,9 +176,32 @@ pub async fn quick_configure(app: AppHandle, quick: State<'_, Quick>, shortcut: 
     let (modifiers, key) = parse(&shortcut).ok_or_else(|| format!("“{shortcut}” isn't a shortcut Glint knows"))?;
     *listener = Some(listen(app.clone(), modifiers, key).ok_or_else(|| format!("{shortcut} is already used by another app: choose another one in Settings → Quick search"))?);
     drop(listener);
-    // Ready before the first press: a new window takes a moment to start.
-    window(&app);
+    // Ready before the first press, as a new window takes a moment to start; but not while the main
+    // window is starting (that waits for warm), unless Glint starts in the tray, where none shows.
+    if READY.load(Ordering::SeqCst) || crate::IN_TRAY.load(Ordering::Relaxed) {
+        window(&app);
+    }
     Ok(())
+}
+
+/// The main window has shown its first folder.
+static READY: AtomicBool = AtomicBool::new(false);
+
+/// Makes the search window a second after the main window has shown (app_ready), so the two never start
+/// at once, when the shortcut or the tray can call it: then it's ready for the first press.
+pub fn warm(app: &AppHandle) {
+    if READY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let quick = app.state::<Quick>();
+        let wanted = quick.keep_running.load(Ordering::SeqCst) || quick.listener.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        if wanted {
+            window(&app);
+        }
+    });
 }
 
 /// Shows `path` in Glint in a new tab (a folder opened, a file selected in its folder) and puts the

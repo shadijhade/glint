@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Glint quick search</title>
+    <script>
+      // The saved theme before first paint, as in index.html.
+      try {
+        var theme = JSON.parse(localStorage.getItem("shadui-ripgrep-storage")).state.settings.theme;
+        if (theme !== "light" && (theme !== "system" || matchMedia("(prefers-color-scheme: dark)").matches)) document.documentElement.classList.add("dark");
+      } catch (e) {
+        if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark");
+      }
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/quick.tsx"></script>
+  </body>
+</html>
