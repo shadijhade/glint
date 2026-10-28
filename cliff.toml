@@ -23,6 +23,8 @@ filter_unconventional = true
 # Each area's name in the notes (an underscore is a space), and one for commits that name none.
 commit_preprocessors = [
     { pattern = '^(\w+)(!?): ', replace = '${1}(Across_Glint)${2}: ' },
+    { pattern = '^(\w+)\(agents\)', replace = '${1}(AI_agents)' },
+    { pattern = '^(\w+)\(app\)', replace = '${1}(Across_Glint)' },
     { pattern = '^(\w+)\(archives\)', replace = '${1}(Archives)' },
     { pattern = '^(\w+)\(check\)', replace = '${1}(Safety)' },
     { pattern = '^(\w+)\(cleanup\)', replace = '${1}(Clean_up)' },
