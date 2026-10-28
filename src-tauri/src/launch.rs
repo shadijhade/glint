@@ -174,7 +174,7 @@ pub fn second_launch(app: &AppHandle, args: Vec<String>, cwd: String) {
 pub(crate) fn bring_to_front(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else { return };
     let _ = window.unminimize();
-    let _ = window.show();
+    crate::placement::show(&window);
     bring_forward(&window);
 }
 

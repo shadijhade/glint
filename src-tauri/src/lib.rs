@@ -26,6 +26,7 @@ mod native_preview;
 mod ocr;
 mod openers;
 mod pe;
+mod placement;
 mod proc;
 mod projects;
 mod quick;
@@ -144,7 +145,7 @@ static IN_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 #[tauri::command]
 fn app_ready(window: tauri::WebviewWindow) {
     if window.label() == "main" && !IN_TRAY.load(std::sync::atomic::Ordering::Relaxed) && !window.is_visible().unwrap_or(true) {
-        let _ = window.show();
+        placement::show(&window);
     }
 }
 
@@ -596,6 +597,11 @@ pub fn run() {
         .manage(tools::Installs::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    if let Ok(hwnd) = window.hwnd() {
+                        placement::save(hwnd.0 as _);
+                    }
+                }
                 quick::on_close(window, api);
             }
         })
@@ -769,7 +775,7 @@ pub fn run() {
                     thread::sleep(Duration::from_secs(3));
                     if let Some(window) = handle.get_webview_window("main") {
                         if !window.is_visible().unwrap_or(true) {
-                            let _ = window.show();
+                            placement::show(&window);
                         }
                     }
                 });
@@ -779,6 +785,9 @@ pub fn run() {
                 app.state::<thumbs::Thumbs>().warm_up();
                 if let Ok(data) = app.path().app_local_data_dir() {
                     tools::set_dir(data.join("tools"));
+                    if let Some(window) = app.get_webview_window("main") {
+                        placement::restore(&window, &data);
+                    }
                 }
                 if let Some(name) = &app.config().product_name {
                     remote::init(name);
@@ -797,12 +806,20 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|_, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app, event| match event {
+            // Quit from the tray with the window open: its place is kept as when it closes.
+            tauri::RunEvent::ExitRequested { .. } => {
+                use tauri::Manager;
+                if let Some(Ok(hwnd)) = app.get_webview_window("main").map(|w| w.hwnd()) {
+                    placement::save(hwnd.0 as _);
+                }
+            }
+            tauri::RunEvent::Exit => {
                 archive::finish();
                 term::close_all();
                 share::stop_all();
             }
+            _ => {}
         });
 }
 
