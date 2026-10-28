@@ -125,6 +125,7 @@ import {
     goTo,
     goUp,
     initExplorer,
+    invertSelection,
     keyboardElsewhere,
     markShown,
     moveTabToOtherPane,
@@ -185,7 +186,7 @@ import { formatCount, plural } from "@/lib/format";
 import { driveName, openIn, openItem, openTerminal, openWith, shellMenu, showProperties, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
-import { gridMove, TILE_SIZES, zoomTiles } from "@/lib/grid";
+import { gridMove, marqueeHits, TILE_SIZES, zoomTiles } from "@/lib/grid";
 import { baseName, inArchivePath, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { remoteOfPath, remotePath } from "@/lib/remotes";
 import { useStore } from "@/lib/store";
@@ -376,6 +377,7 @@ interface PaneActions {
     deleteSelected: (permanent: boolean) => void;
     /** The keyboard's right-click (the menu key, Shift+F10). */
     keyboardMenu: () => void;
+    invertSelection: () => void;
 }
 const paneActions: (PaneActions | undefined)[] = [];
 const activePaneActions = () => paneActions[useExplorer.getState().activePane];
@@ -752,6 +754,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!archive && action("explorer", "Show the archive in File Explorer", FileArchive, () => revealArchive(archive)),
             writable && action("explorer", "Open in File Explorer", FolderSearch, () => openPath(t.path).catch(report("Couldn't open File Explorer"))),
             inFolder && action("pin", isPinned ? "Unpin this folder" : "Pin this folder to the sidebar", isPinned ? PinOff : Pin, () => togglePin(t.path)),
+            (inFolder || !!t.find) && action("invert-selection", "Invert selection", ListChecks, () => activePaneActions()?.invertSelection()),
             writable && !t.find && !shut && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
             !archive && !remote && !closedItems && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
             !archive && !remote &&
@@ -1152,7 +1155,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     };
 
     useEffect(() => {
-        paneActions[index] = { startRename: () => startRename(), startBatchRename, deleteSelected, keyboardMenu };
+        paneActions[index] = { startRename: () => startRename(), startBatchRename, deleteSelected, keyboardMenu, invertSelection: () => invertSelection(rowsRef.current) };
         return () => {
             paneActions[index] = undefined;
         };
@@ -1286,6 +1289,67 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [active, current, height]);
+
+    /**
+     * A press on the list's empty part: without Ctrl or Shift it clears the selection, and dragging draws a
+     * marquee that selects what it covers (added to what was selected with Ctrl), the list scrolling while
+     * the pointer is held near its top or bottom. The marquee is one element of its own: only the rows whose
+     * selection changes are drawn again.
+     */
+    const startMarquee = (e: React.MouseEvent) => {
+        const list = e.currentTarget as HTMLElement;
+        const content = list.firstElementChild as HTMLElement | null;
+        const tab = tabRef.current;
+        if (!e.ctrlKey && !e.shiftKey) selectOnly(null);
+        if (!content) return;
+        const base = e.ctrlKey ? new Set(tabState(tab)?.selection ?? []) : new Set<string>();
+        const grid = list.hasAttribute("data-file-grid");
+        const rowHeight = grid ? Number(list.dataset.rowHeight) : height;
+        const cols = grid ? Number(list.dataset.cols) || 1 : 1;
+        const pad = grid ? Number(list.dataset.pad) || 0 : 0;
+        const at = (x: number, y: number) => {
+            const box = list.getBoundingClientRect();
+            return { x: x - box.left, y: y - box.top + list.scrollTop };
+        };
+        const start = at(e.clientX, e.clientY);
+        let pointer = { x: e.clientX, y: e.clientY };
+        let mark: HTMLDivElement | null = null;
+        const update = () => {
+            const end = at(pointer.x, pointer.y);
+            if (!mark && Math.abs(end.x - start.x) < 4 && Math.abs(end.y - start.y) < 4) return;
+            if (!mark) {
+                mark = document.createElement("div");
+                mark.className = "pointer-events-none absolute z-10 rounded-[3px] border border-primary/70 bg-primary/15";
+                content.appendChild(mark);
+            }
+            Object.assign(mark.style, { left: `${Math.min(start.x, end.x)}px`, top: `${Math.min(start.y, end.y)}px`, width: `${Math.abs(end.x - start.x)}px`, height: `${Math.abs(end.y - start.y)}px` });
+            const rows = rowsRef.current;
+            const hits = marqueeHits(start, end, rows.length, rowHeight, cols, list.clientWidth, pad);
+            const selection = new Set(base);
+            for (const i of hits) selection.add(rows[i].path);
+            updateTab({ selection, focus: hits.length ? rows[hits[hits.length - 1]].path : null, anchor: hits.length ? rows[hits[0]].path : null }, tab);
+        };
+        const move = (m: MouseEvent) => {
+            pointer = { x: m.clientX, y: m.clientY };
+            update();
+        };
+        // Held near the top or bottom, the list scrolls, and what comes into view is covered too.
+        const scroller = window.setInterval(() => {
+            const box = list.getBoundingClientRect();
+            const step = pointer.y < box.top + 24 ? -1 : pointer.y > box.bottom - 24 ? 1 : 0;
+            if (!mark || !step) return;
+            list.scrollTop += (step * rowHeight) / 2;
+            update();
+        }, 30);
+        const up = () => {
+            window.clearInterval(scroller);
+            mark?.remove();
+            window.removeEventListener("mousemove", move);
+            window.removeEventListener("mouseup", up);
+        };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
+    };
 
     // A press on a row can turn into dragging the selection out of the window (or into the other
     // pane). Like Explorer, pressing an item of a multi-selection keeps the selection until release,
@@ -1688,7 +1752,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         onRowMouseDown,
         onRowContextMenu,
         onOpen: openEntry,
-        onBackgroundMouseDown: (e: React.MouseEvent) => e.button === 0 && !e.ctrlKey && !e.shiftKey && selectOnly(null),
+        onBackgroundMouseDown: (e: React.MouseEvent) => e.button === 0 && startMarquee(e),
         onBackgroundContextMenu: onFolderContextMenu,
         onRename: (entry: FileEntry, name: string) => renameEntry(entry, name, tabRef.current),
         onCancelRename: () => updateTab({ renaming: null }, tabRef.current),

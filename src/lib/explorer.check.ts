@@ -8,7 +8,7 @@ import { cdCommand, isTyping, runLine } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { hslOf, textOn } from "./color.ts";
 import { plainQuery } from "./plain.ts";
-import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
+import { decodeThumb, gridColumns, gridMove, keepPlace, marqueeHits, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { editsAllowed, frecency, fuzzyScore, typoDistance } from "./rank.ts";
 import { markdownTitle, safeHref } from "./markdown.ts";
 import { initiallyOpen, isContainer, JsonNumber, jqPath, PAGE, parseJson, preview, treeRows } from "./jsonTree.ts";
@@ -694,5 +694,16 @@ assert.equal(plainQuery("quarterly report 2024"), null);
 assert.equal(plainQuery("ext:pdf report"), null);
 assert.equal(plainQuery('"big brother"'), null);
 assert.equal(plainQuery("*.log"), null);
+
+// A marquee selects what it covers: in a list, the rows it touches (dragged either way); in a grid, tiles.
+assert.deepEqual(marqueeHits({ x: 10, y: 5 }, { x: 300, y: 70 }, 10, 28), [0, 1, 2]);
+assert.deepEqual(marqueeHits({ x: 300, y: 70 }, { x: 10, y: 5 }, 10, 28), [0, 1, 2], "dragged up and left");
+assert.deepEqual(marqueeHits({ x: 0, y: 250 }, { x: 0, y: 9000 }, 10, 28), [8, 9], "past the end, the last rows");
+assert.deepEqual(marqueeHits({ x: 0, y: 300 }, { x: 50, y: 400 }, 10, 28), [], "only in the empty part below them, none");
+assert.deepEqual(marqueeHits({ x: 0, y: 0 }, { x: 0, y: 0 }, 0, 28), []);
+// A grid of 4 columns, 100 px each inside 8 px of padding, 120 px rows, 10 tiles: the second and third
+// columns of the first two rows, and none past the last tile.
+assert.deepEqual(marqueeHits({ x: 120, y: 10 }, { x: 290, y: 130 }, 10, 120, 4, 416, 8), [1, 2, 5, 6]);
+assert.deepEqual(marqueeHits({ x: 0, y: 250 }, { x: 416, y: 260 }, 10, 120, 4, 416, 8), [8, 9]);
 
 console.log("explorer.check: all assertions passed");

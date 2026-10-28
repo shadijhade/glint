@@ -34,6 +34,25 @@ export function tileLayout(rem: number, size: string) {
 
 export type GridTile = ReturnType<typeof tileLayout>;
 
+/**
+ * The items a marquee covers, its corners `a` and `b` in the list's content pixels (x from its left, y
+ * from its top, scrolled part included), in order: in a list, every row it touches; in a grid, the tiles
+ * of its `cols` equal columns, `pad` in from each side of `width`.
+ */
+export function marqueeHits(a: { x: number; y: number }, b: { x: number; y: number }, count: number, rowHeight: number, cols = 1, width = 0, pad = 0) {
+    if (!count || rowHeight <= 0) return [];
+    const rows = Math.ceil(count / cols);
+    // Below the last row is the list's empty part: a marquee only there covers nothing.
+    const r0 = Math.max(0, Math.floor(Math.min(a.y, b.y) / rowHeight));
+    const r1 = Math.min(rows - 1, Math.floor(Math.max(a.y, b.y) / rowHeight));
+    const colWidth = cols > 1 ? (width - 2 * pad) / cols : 0;
+    const clampCol = (x: number) => (cols > 1 ? Math.min(cols - 1, Math.max(0, Math.floor((x - pad) / colWidth))) : 0);
+    const [c0, c1] = [clampCol(Math.min(a.x, b.x)), clampCol(Math.max(a.x, b.x))];
+    const hits: number[] = [];
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) if (r * cols + c < count) hits.push(r * cols + c);
+    return hits;
+}
+
 /** How a grid is laid out: tiles to a row, and each row's height. */
 export interface GridLayout {
     cols: number;
