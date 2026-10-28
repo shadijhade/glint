@@ -339,12 +339,12 @@ pub async fn find_files(
         let filters = parse(&narrowed)?.1;
         (narrowed, filters)
     };
-    // An older service would read ext: and the like as part of a name, and find nothing: until it's
-    // updated, fd answers queries with filters.
-    let index_reads_filters = filters.is_empty() || same_service();
     let run = state.finds.start(&lane);
     let finds = state.finds.clone();
     thread::spawn(move || {
+        // An older service would read ext: and the like as part of a name, and find nothing: until it's
+        // updated, fd answers queries with filters. Asking it can wait on its pipe, so it's asked here.
+        let index_reads_filters = filters.is_empty() || same_service();
         let (stop, slot) = (&run.stop, &run.fd);
         let started = Instant::now();
         // With properties to check, the index and fd find every candidate, which four threads read

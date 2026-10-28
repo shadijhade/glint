@@ -206,7 +206,11 @@ pub fn quick_hide(app: AppHandle) {
 /// app's name and running the exe File Explorer's entries run (src/verbs.rs), as the uninstallers
 /// expect, which take it out.
 #[tauri::command]
-pub fn set_start_with_windows(app: AppHandle, enabled: bool) -> Result<(), String> {
+pub async fn set_start_with_windows(app: AppHandle, enabled: bool) -> Result<(), String> {
+    crate::fsx::blocking(move || start_with_windows(&app, enabled)).await
+}
+
+fn start_with_windows(app: &AppHandle, enabled: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
