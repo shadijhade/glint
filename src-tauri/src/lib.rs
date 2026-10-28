@@ -21,6 +21,7 @@ mod jq;
 mod launch;
 mod locks;
 mod markdown;
+mod mcp;
 mod meaning;
 mod media;
 mod native_preview;
@@ -568,10 +569,11 @@ pub(crate) fn installed_by_setup() -> bool {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// Glint started as a worker: the one that reads data files for their tree (jq.rs), or one that reads
-/// documents for Documents search (doctext.rs). Its exit code, once it has answered; None for the app.
+/// Glint started as a worker: the one that reads data files for their tree (jq.rs), one that reads
+/// documents for Documents search (doctext.rs), SFTP's password prompt (remote/), or the MCP server an AI
+/// agent starts (mcp.rs). Its exit code, once it has answered; None for the app.
 pub fn worker() -> Option<i32> {
-    jq::worker().or_else(doctext::worker).or_else(remote::askpass)
+    jq::worker().or_else(doctext::worker).or_else(remote::askpass).or_else(mcp::server)
 }
 
 pub fn run() {
@@ -615,6 +617,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             appearance::appearance,
             appearance::accent_colors,
+            mcp::mcp_setup,
             read_file_content,
             read_file_chunk,
             write_file_content,

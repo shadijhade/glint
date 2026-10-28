@@ -7,7 +7,7 @@ import { Archive, Binary, ClipboardCopy, Download, ExternalLink, Folder, Heart, 
 import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
-import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
+import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, type McpSetup, mcpSetup, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { clearWithUndo, DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { knownShells, useTerminals } from "@/lib/terminal";
@@ -43,6 +43,7 @@ const SECTIONS: [string, string][] = [
     ["Instant search", "Instant search"],
     ["Find files by name", "Find files"],
     ["Quick search", "Quick search"],
+    ["AI agents", "AI agents"],
     ["Search text (ripgrep)", "Search text"],
     ["Text search skips", "Text search skips"],
     ["Terminal", "Terminal"],
@@ -51,6 +52,47 @@ const SECTIONS: [string, string][] = [
     ["History", "History"],
     ["About", "About"],
 ];
+
+/** How AI agents that speak the Model Context Protocol start Glint's server (mcp.rs), for each to be told. */
+const AGENTS: [string, string, keyof McpSetup][] = [
+    ["Claude Code", "Run this in a terminal", "claudeCode"],
+    ["VS Code", "Run this in PowerShell: Copilot's agent mode can then use Glint", "vscode"],
+    ["Claude Desktop, Cursor and others", "Add this to the mcpServers in their settings", "json"],
+];
+
+function AgentsSection() {
+    const [setup, setSetup] = useState<McpSetup | null>(null);
+    useEffect(() => {
+        mcpSetup().then(setSetup, () => setSetup(null));
+    }, []);
+    const copy = (text: string, what: string) =>
+        navigator.clipboard.writeText(text).then(
+            () => toast.success(`Copied ${what}`, { duration: 1500 }),
+            () => toast.error(`Couldn't copy ${what}`)
+        );
+    return (
+        <Section title="AI agents">
+            <p className="px-4 py-3 text-xs text-muted-foreground">
+                AI agents that speak the Model Context Protocol can ask Glint to find files by name on every drive in milliseconds (with instant search on), measure folders, list the biggest files, say what was moved or deleted lately and search text inside files.
+                Glint's tools only read. Once told how, the agent starts Glint for itself, and sees the names and text it asks for.
+            </p>
+            {AGENTS.map(([label, hint, key]) => (
+                <div key={key} className="px-4 py-3">
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                            <div className="text-sm">{label}</div>
+                            <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>
+                        </div>
+                        <Button variant="outline" size="sm" disabled={!setup} onClick={() => setup && copy(setup[key], `${label}'s setup`)}>
+                            <ClipboardCopy /> Copy
+                        </Button>
+                    </div>
+                    {setup && <pre className="mt-2 select-text overflow-x-auto rounded-sm bg-muted px-2 py-1.5 font-mono text-[0.6875rem] text-muted-foreground">{setup[key]}</pre>}
+                </div>
+            ))}
+        </Section>
+    );
+}
 
 function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
     return (
@@ -661,6 +703,8 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                         onChange={(startWithWindows) => set({ startWithWindows })}
                     />
                 </Section>
+
+                <AgentsSection />
 
                 <Section title="Search text (ripgrep)">
                     <Row label="Default folder" hint="Used when no folder is filled in">

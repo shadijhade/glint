@@ -106,6 +106,17 @@ export const toolRemove = (id: string) => invoke<ToolStatus>("tool_remove", { id
 /** Versions, tools and instant search's state, as text for a bug report. */
 export const diagnostics = () => invoke<string>("diagnostics");
 
+/** How an AI agent starts Glint's MCP server (mcp.rs): Glint.exe's path, and each agent's way of being told. */
+export interface McpSetup {
+    exe: string;
+    claudeCode: string;
+    /** For PowerShell. */
+    vscode: string;
+    /** For the mcpServers settings of Claude Desktop, Cursor and others. */
+    json: string;
+}
+export const mcpSetup = () => invoke<McpSetup>("mcp_setup");
+
 export const readTextPreview = (path: string, maxBytes: number) =>
     invoke<{ text: string; truncated: boolean; binary: boolean }>("read_text_preview", { path, maxBytes });
 

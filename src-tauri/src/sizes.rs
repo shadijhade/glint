@@ -62,6 +62,33 @@ fn index_sizes(_: &str) -> Option<(u64, Vec<(String, u64)>)> {
     None
 }
 
+/// pdu measuring what's in `path`, one level deep (files come too: the list takes folders' sizes only),
+/// apparent sizes (what Explorer's Properties calls "Size") in bytes, nothing left out.
+fn pdu_sizes(path: &str) -> Result<std::process::Command, String> {
+    let mut command = crate::proc::tool("pdu")?;
+    command
+        .args(["--json-output", "--quantity", "apparent-size", "--max-depth", "2", "--min-ratio", "0", "--silent-errors", "--"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    Ok(command)
+}
+
+/// A folder's total, each folder in it with its own, and which engine measured them.
+pub(crate) type Measured = (u64, Vec<(String, u64)>, &'static str);
+
+/// The total of `path` and of each folder in it, for a caller that can wait (an agent asking, mcp.rs):
+/// the index's answer, or pdu's.
+pub(crate) fn measure(path: &str) -> Result<Measured, String> {
+    if let Some((total, sizes)) = index_sizes(path) {
+        return Ok((total, sizes, "index"));
+    }
+    let output = pdu_sizes(path)?.output().map_err(|e| format!("Failed to start pdu: {e}"))?;
+    let (total, sizes) = parse(&String::from_utf8_lossy(&output.stdout))?;
+    Ok((total, sizes, "pdu"))
+}
+
 /// Sizes of every subfolder of `path`. With `index_only`, fails instead of running pdu when the
 /// index can't answer (for sizing every folder as it opens, which only makes sense when it's instant).
 /// Each tab asks in its own `lane`, so sizing a folder in one pane doesn't stop the other's.
@@ -85,16 +112,7 @@ pub async fn folder_sizes(state: State<'_, AppState>, path: String, index_only: 
     if index_only == Some(true) {
         return Err("not indexed".into());
     }
-    let mut command = crate::proc::tool("pdu")?;
-    // One level deep (files come too: the list takes folders' sizes only), apparent sizes (what Explorer's
-    // Properties calls "Size") in bytes, nothing left out.
-    command
-        .args(["--json-output", "--quantity", "apparent-size", "--max-depth", "2", "--min-ratio", "0", "--silent-errors", "--"])
-        .arg(&path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|e| format!("Failed to start pdu: {e}"))?;
+    let mut child = pdu_sizes(&path)?.spawn().map_err(|e| format!("Failed to start pdu: {e}"))?;
     let mut stdout = child.stdout.take().ok_or("Failed to open pdu's output")?;
     let pid = slot.replace(child);
     blocking(move || {
