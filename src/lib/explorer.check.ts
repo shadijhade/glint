@@ -7,6 +7,7 @@ import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping, runLine } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { hslOf, textOn } from "./color.ts";
+import { plainQuery } from "./plain.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { editsAllowed, frecency, fuzzyScore, typoDistance } from "./rank.ts";
 import { markdownTitle, safeHref } from "./markdown.ts";
@@ -662,5 +663,36 @@ assert.equal(hslOf("#808080"), "0 0% 50%");
 assert.equal(textOn("#005a9e"), "0 0% 100%", "white on Windows' default blue, darker shade");
 assert.equal(textOn("#99ebff"), "0 0% 7%", "near-black on its lighter shade");
 assert.equal(textOn("#ffb900"), "0 0% 7%", "near-black on yellow");
+
+// Plain words read as the search box's filters, offered under it.
+const plain = (text: string) => plainQuery(text)?.query ?? null;
+assert.equal(plain("pdfs from last week over 5 mb"), "ext:pdf dm:7d size:>5mb");
+assert.deepEqual(plainQuery("pdfs from last week over 5 mb")?.chips, ["PDF files", "changed in the last 7 days", "over 5 MB"]);
+assert.equal(plain("invoice pdfs"), "invoice ext:pdf", "what isn't a filter is the name");
+assert.equal(plain("documents named budget")?.replace(/ ext:\S+/, " ext:…"), "budget ext:…");
+assert.deepEqual(plainQuery("documents named budget")?.chips, ["documents", "named “budget”"]);
+assert.match(plain("photos taken in 2024")!, /^ext:jpg;jpeg;png;\S+ taken:2024$/);
+assert.match(plain("photos and videos from 2024")!, /^ext:jpg;\S*;mp4;\S* taken:2024$/, "kinds add up, and from a year is when they were taken");
+assert.deepEqual(plainQuery("photos and videos from 2024")?.chips, ["photos or videos", "taken in 2024"]);
+assert.equal(plain("pdfs from 2024"), "2024 ext:pdf", "a year, for files without a date taken, is part of the name");
+assert.match(plain("videos longer than 10 minutes")!, / duration:>10m$/);
+assert.match(plain("songs by the beatles")!, / artist:beatles$/);
+assert.match(plain("photos with pixel")!, / camera:pixel$/);
+assert.match(plain("pictures wider than 1920")!, / width:>1920$/);
+assert.equal(plain("big zip files"), "size:>100mb ext:zip");
+assert.equal(plain("folders changed today"), "folder: dm:1d");
+assert.equal(plain("files bigger than 1.5 gb"), "size:>1536mb", "the filter takes whole numbers");
+assert.equal(plain("at least 2gb"), "size:>=2gb");
+assert.equal(plain("files smaller than 10kb"), "size:<10kb");
+assert.equal(plain("logs older than 2 years"), "ext:log dm:>2y");
+assert.equal(plain("old isos"), "dm:>1y ext:iso");
+assert.equal(plain("word documents from the last 3 days"), "ext:doc;docx dm:3d");
+assert.equal(plain("mp3s"), "ext:mp3");
+// Names, and what holds filters already, stay as typed.
+assert.equal(plainQuery("report"), null);
+assert.equal(plainQuery("quarterly report 2024"), null);
+assert.equal(plainQuery("ext:pdf report"), null);
+assert.equal(plainQuery('"big brother"'), null);
+assert.equal(plainQuery("*.log"), null);
 
 console.log("explorer.check: all assertions passed");

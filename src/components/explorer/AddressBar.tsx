@@ -25,10 +25,12 @@ import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, r
 import { driveName, listDir } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { crumbs, isRecycleBin, isRemotePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { plainQuery } from "@/lib/plain";
 import { remoteName, remotePath } from "@/lib/remotes";
 import { editsAllowed, typoDistance } from "@/lib/rank";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { Kbd } from "../ui/kbd";
 import { GitChip } from "./GitChip";
 import { DRIVE_ICONS, KNOWN_ICONS } from "./Sidebar";
 
@@ -454,8 +456,14 @@ export function AddressBar() {
         buttons[next]?.focus();
     };
 
+    // Plain words read as filters ("pdfs from last week over 5 mb"), offered under the box: Tab takes them.
+    const plain = useMemo(() => (findFocused && !find ? plainQuery(filter) : null), [findFocused, find, filter]);
+
     const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.key === "Enter") {
+        if (e.key === "Tab" && !e.shiftKey && plain) {
+            e.preventDefault();
+            updateTab({ filter: plain.query });
+        } else if (e.key === "Enter") {
             e.preventDefault();
             // Git's marks are the folder shown's: a search of its subfolders couldn't ask them.
             if (hasGitFilter(filter)) toast.message("git: filters this folder, as you type", { id: "git-filter", description: "Enter searches subfolders by name, where Git's marks don't reach." });
@@ -637,6 +645,24 @@ export function AddressBar() {
                     <button onClick={clearFind} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground" title="Clear (Esc)" aria-label="Clear search">
                         <X className="size-4" />
                     </button>
+                )}
+                {plain && (
+                    // Mouse down keeps the focus in the box; a click takes the filters, as Tab does.
+                    <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-1.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
+                        <button type="button" tabIndex={-1} onClick={() => updateTab({ filter: plain.query })} className="flex w-full flex-col items-start gap-1.5 rounded-sm px-1.5 py-1.5 text-left hover:bg-accent">
+                            <span className="flex flex-wrap gap-1">
+                                {plain.chips.map((chip) => (
+                                    <span key={chip} className="rounded-[4px] bg-primary/12 px-1.5 py-0.5 font-medium text-primary">
+                                        {chip}
+                                    </span>
+                                ))}
+                            </span>
+                            <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                                <Kbd>Tab</Kbd>
+                                <code className="truncate font-mono text-[0.6875rem]">{plain.query}</code>
+                            </span>
+                        </button>
+                    </div>
                 )}
                 {findFocused && !filter && !find && (
                     // Mouse down keeps the focus in the box, which each filter starts.
