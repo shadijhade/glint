@@ -1730,6 +1730,25 @@ export function revealInApp(path: string) {
  */
 export const modalOpen = () => !!document.querySelector('[aria-modal="true"]:not([data-quicklook])');
 
+/**
+ * The control the keyboard moved to (Tab, a shortcut), or null when the last focus came from a click.
+ * Read when focus moves: once a key is pressed, the browser counts any focused control as reached by
+ * the keyboard.
+ */
+let keyboardFocus: Element | null = null;
+if (typeof window !== "undefined")
+    window.addEventListener("focusin", (e) => (keyboardFocus = e.target instanceof Element && e.target.matches(":focus-visible") ? e.target : null), true);
+
+/**
+ * The keyboard is on a control outside the list (Tab to a place in the sidebar, a tab's close button,
+ * the command bar…), so the list's own keys (arrows, Enter, Delete, letters, Ctrl+A/C/X/V/Z) are that
+ * control's, as in File Explorer: Delete on a focused sidebar place mustn't recycle the selection. A
+ * control that was only clicked doesn't count, so after a click on the command bar they still reach
+ * the list.
+ */
+export const keyboardElsewhere = (target: EventTarget | null, list: Element | null | undefined) =>
+    target instanceof Element && target === keyboardFocus && !list?.contains(target);
+
 /** Opens what someone typed: "This PC", "Recycle Bin", a folder, or a file (its folder, with it selected). */
 export async function goTo(text: string) {
     const value = text.trim();
