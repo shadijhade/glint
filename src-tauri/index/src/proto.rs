@@ -95,6 +95,10 @@ pub struct SearchRequest {
     /// says `fuzzy`. A service from before this ignores it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fuzzy: bool,
+    /// The best `max_results` of every drive's matches, best first (`Tree::rank`), instead of the first
+    /// ones in index order, drive by drive. A service from before this ignores it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rank: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -404,6 +408,7 @@ mod tests {
             exclude: vec!["node_modules".into()],
             max_results: Some(50_000),
             fuzzy: false,
+            rank: false,
         });
         let mut wire = Vec::new();
         write_request(&mut wire, &request).unwrap();
@@ -414,6 +419,8 @@ mod tests {
         assert!(serde_json::to_string(&request).unwrap().ends_with(r#""maxResults":50000}"#));
         let Request::Search(search) = &request else { unreachable!() };
         let fuzzy = Request::Search(SearchRequest { fuzzy: true, ..search.clone() });
+        let ranked = Request::Search(SearchRequest { rank: true, ..search.clone() });
+        assert!(serde_json::to_string(&ranked).unwrap().contains(r#""rank":true"#));
         assert!(serde_json::to_string(&fuzzy).unwrap().ends_with(r#""maxResults":50000,"fuzzy":true}"#));
         let newer = r#"{"op":"search","query":"a","roots":[],"hidden":false,"exclude":[],"maxResults":null,"fuzzy":true,"fromLater":1}"#;
         assert!(matches!(serde_json::from_str::<Request>(newer), Ok(Request::Search(SearchRequest { fuzzy: true, .. }))), "what a service doesn't know is left");
