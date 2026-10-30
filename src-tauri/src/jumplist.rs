@@ -103,10 +103,12 @@ mod imp {
     }
 
     pub fn sync_jump_list(pinned: Vec<String>, frequent: Vec<String>) -> Result<(), String> {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // What its entries start (a Microsoft Store copy's alias), and the exe whose icon they show.
+        let exe = crate::verbs::launch_exe().ok_or("Couldn't tell where Glint is")?;
+        let icon = std::env::current_exe().map_err(|e| e.to_string())?;
         let frequent = if shows_recent() { frequent } else { Vec::new() };
         crate::shell::in_sta(move || unsafe {
-            let exe_str = exe.to_string_lossy().into_owned();
+            let exe_str = icon.to_string_lossy().into_owned();
             let list: ICustomDestinationList = CoCreateInstance(&DestinationList, None, CLSCTX_INPROC_SERVER).map_err(|e| e.message())?;
             let mut slots = 0u32;
             let removed = removed(&list.BeginList::<IObjectArray>(&mut slots).map_err(|e| e.message())?);

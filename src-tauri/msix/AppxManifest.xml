@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Glint as an MSIX package, for the Microsoft Store: scripts/msix.mjs fills in the {{…}} (the
+     identity from Partner Center, in store.json) and lays out the files beside it. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 desktop rescap">
+  <Identity Name="{{name}}" Publisher="{{publisher}}" Version="{{version}}" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>{{displayName}}</DisplayName>
+    <PublisherDisplayName>{{publisherDisplayName}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>The fast file explorer for Windows</Description>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Applications>
+    <Application Id="Glint" Executable="Glint.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Glint" Description="The fast file explorer for Windows" BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile ShortName="Glint" Square71x71Logo="Assets\Square71x71Logo.png" Wide310x150Logo="Assets\Wide310x150Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- glint.exe, which AI agents and the Jump List start Glint with: it stays put as updates
+             come, where the app's own folder is named after its version (verbs.rs, launch_exe). -->
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="Glint.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="glint.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+        <!-- Start with Windows, in the tray (quick.rs, startup_task): off until it's turned on. -->
+        <desktop:Extension Category="windows.startupTask" Executable="Glint.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--tray">
+          <desktop:StartupTask TaskId="GlintTray" Enabled="false" DisplayName="Glint" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

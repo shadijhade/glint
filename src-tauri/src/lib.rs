@@ -180,7 +180,15 @@ async fn diagnostics(app: tauri::AppHandle) -> Result<String, String> {
     use std::fmt::Write;
     let version = app.package_info().version.to_string();
     blocking(move || {
-        let kind = if cfg!(debug_assertions) { "dev build" } else if installed_by_setup() { "installed by the setup" } else { "Scoop or portable" };
+        let kind = if cfg!(debug_assertions) {
+            "dev build"
+        } else if packaged() {
+            "Microsoft Store package"
+        } else if installed_by_setup() {
+            "installed by the setup"
+        } else {
+            "Scoop or portable"
+        };
         let mut out = format!("Glint {version} ({kind})\n");
         #[cfg(windows)]
         let _ = writeln!(out, "{} · WebView2 {}", shadui_index::windows_version(), tauri::webview_version().unwrap_or_default());
@@ -586,6 +594,41 @@ pub(crate) fn installed_by_setup() -> bool {
     std::env::current_exe().is_ok_and(|exe| exe.with_file_name("uninstall.exe").exists())
 }
 
+/// The package this copy runs from, by its family name (`Name_PublisherId`), when it's an MSIX
+/// package: the Microsoft Store's, which Windows keeps up to date. Windows keeps such a copy's writes
+/// to the current user's registry to itself, so File Explorer's entries and the Run key can't be set
+/// from it.
+#[cfg(windows)]
+pub(crate) fn package_family() -> Option<&'static str> {
+    use windows::Win32::{Foundation::ERROR_SUCCESS, Storage::Packaging::Appx::GetCurrentPackageFamilyName};
+    static FAMILY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    FAMILY
+        .get_or_init(|| {
+            let mut name = [0u16; 256];
+            let mut len = name.len() as u32;
+            // APPMODEL_ERROR_NO_PACKAGE when it isn't one.
+            (unsafe { GetCurrentPackageFamilyName(&mut len, Some(windows::core::PWSTR(name.as_mut_ptr()))) } == ERROR_SUCCESS)
+                .then(|| String::from_utf16_lossy(&name[..(len as usize).saturating_sub(1)]))
+        })
+        .as_deref()
+}
+
+#[cfg(not(windows))]
+pub(crate) fn package_family() -> Option<&'static str> {
+    None
+}
+
+pub(crate) fn packaged() -> bool {
+    package_family().is_some()
+}
+
+/// Whether the Microsoft Store keeps this copy up to date (see `package_family`): then the app doesn't
+/// look for updates itself.
+#[tauri::command]
+fn store_copy() -> bool {
+    packaged()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Glint started as a worker: the one that reads data files for their tree (jq.rs), one that reads
 /// documents for Documents search (doctext.rs), SFTP's password prompt (remote/), the MCP server an AI
@@ -668,6 +711,7 @@ pub fn run() {
             quick::quick_hide,
             quick::set_start_with_windows,
             diagnostics,
+            store_copy,
             app_ready,
             cancel_search,
             stop_tools,
