@@ -9,7 +9,8 @@ import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { hslOf, textOn } from "./color.ts";
 import { plainQuery } from "./plain.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, marqueeHits, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
-import { editsAllowed, frecency, fuzzyScore, typoDistance } from "./rank.ts";
+import { editsAllowed, frecency, fuzzyIndices, fuzzyScore, typoDistance } from "./rank.ts";
+import { groupFilter, typeGroup } from "./fileTypes.ts";
 import { markdownTitle, safeHref } from "./markdown.ts";
 import { initiallyOpen, isContainer, JsonNumber, jqPath, PAGE, parseJson, preview, treeRows } from "./jsonTree.ts";
 import { byteChar, byteClass, hex, parseOffset } from "./hex.ts";
@@ -705,5 +706,12 @@ assert.deepEqual(marqueeHits({ x: 0, y: 0 }, { x: 0, y: 0 }, 0, 28), []);
 // columns of the first two rows, and none past the last tile.
 assert.deepEqual(marqueeHits({ x: 120, y: 10 }, { x: 290, y: 130 }, 10, 120, 4, 416, 8), [1, 2, 5, 6]);
 assert.deepEqual(marqueeHits({ x: 0, y: 250 }, { x: 416, y: 260 }, 10, 120, 4, 416, 8), [8, 9]);
+
+// Fuzzy matched character indices and category spectrum filter queries
+assert.deepEqual(fuzzyIndices("dk", "Disk usage"), [0, 3]);
+assert.deepEqual(fuzzyIndices("fch", "Find duplicate files"), null);
+assert.equal(fuzzyIndices("abc", "a____________________b____________________c", true), null);
+assert.match(groupFilter(typeGroup(entry("a.png"))), /^ext:png;jpg;/);
+assert.equal(groupFilter(typeGroup(entry("unknown.xyz"))), "");
 
 console.log("explorer.check: all assertions passed");

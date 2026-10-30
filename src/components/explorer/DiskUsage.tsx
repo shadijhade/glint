@@ -273,7 +273,7 @@ function paint(canvas: HTMLCanvasElement, map: UsageMap, layout: UsageLayout, fi
 }
 
 /** Outlines the selected items and the one under the pointer. */
-function paintOverlay(canvas: HTMLCanvasElement, layout: UsageLayout, selected: number[], hover: Hover | null, theme: Theme, dpr: number) {
+function paintOverlay(canvas: HTMLCanvasElement, layout: UsageLayout, selected: number[], hover: Hover | null, spotlight: ReadonlySet<number> | null, dark: boolean, theme: Theme, dpr: number) {
     const [width, height] = [Math.round(layout.width * dpr), Math.round(layout.height * dpr)];
     const ctx = canvas.getContext("2d")!;
     if (canvas.width !== width || canvas.height !== height) [canvas.width, canvas.height] = [width, height];
@@ -284,6 +284,17 @@ function paintOverlay(canvas: HTMLCanvasElement, layout: UsageLayout, selected: 
         ctx.strokeRect(Math.round(x * dpr) + inset, Math.round(y * dpr) + inset, Math.max(0, Math.round(w * dpr) - 2 * inset - 1), Math.max(0, Math.round(h * dpr) - 2 * inset - 1));
     };
     ctx.strokeStyle = theme.selected;
+    if (spotlight) {
+        ctx.fillStyle = dark ? "rgba(9, 9, 11, 0.64)" : "rgba(255, 255, 255, 0.66)";
+        ctx.fillRect(0, 0, width, height);
+        ctx.strokeStyle = theme.hover;
+        for (const i of spotlight) {
+            if (layout.w[i] <= 0) continue;
+            ctx.clearRect(Math.round(layout.x[i] * dpr), Math.round(layout.y[i] * dpr), Math.round(layout.w[i] * dpr), Math.round(layout.h[i] * dpr));
+            outline(layout.x[i], layout.y[i], layout.w[i], layout.h[i], Math.max(1, Math.round(dpr)));
+        }
+        ctx.strokeStyle = theme.selected;
+    }
     for (const i of selected) if (layout.w[i] > 0) outline(layout.x[i], layout.y[i], layout.w[i], layout.h[i], Math.round(2 * dpr));
     if (!hover || (hover.node === 0 && !hover.rest)) return;
     const i = hover.node;
@@ -377,6 +388,13 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
     /** Where the pointer is over the map, in CSS pixels. */
     const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
     const [colorMode, setColorMode] = useState<ColorMode>("type");
+    const [pinnedSpot, setPinnedSpot] = useState<string | null>(null);
+    const [hoverSpot, setHoverSpot] = useState<string | null>(null);
+    useEffect(() => {
+        setPinnedSpot(null);
+        setHoverSpot(null);
+    }, [colorMode, run.path]);
+    const activeSpot = hoverSpot ?? pinnedSpot;
     const picked = useRef<string | null>(null);
     const dark = useDark();
     const theme = THEMES[dark ? "dark" : "light"];
@@ -476,9 +494,23 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
     }, [map, layout, fills, theme, size.dpr, entries.length, current, run.running, run.id, tab]);
 
     const selected = useMemo(() => [...selection].flatMap((p) => byPath.get(p) ?? []), [selection, byPath]);
+    const spotlight = useMemo(() => {
+        if (!activeSpot || !layout || entries.length === 0) return null;
+        const set = new Set<number>();
+        for (let i = 1; i < entries.length; i++) {
+            if (layout.kind[i] !== BLOCK) continue;
+            const g = groups[i];
+            if (activeSpot === "Folders") {
+                if (!g && entries[i].dir) set.add(i);
+            } else if (g?.name === activeSpot) {
+                set.add(i);
+            }
+        }
+        return set;
+    }, [activeSpot, layout, entries, groups]);
     useLayoutEffect(() => {
-        if (layout && overlayRef.current) paintOverlay(overlayRef.current, layout, selected, hover, theme, size.dpr);
-    }, [layout, selected, hover, theme, size.dpr]);
+        if (layout && overlayRef.current) paintOverlay(overlayRef.current, layout, selected, hover, spotlight, dark, theme, size.dpr);
+    }, [layout, selected, hover, spotlight, dark, theme, size.dpr]);
 
     // The tooltip stays inside the map, flipping to the other side of the pointer near an edge.
     useLayoutEffect(() => {
@@ -655,18 +687,45 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                     </button>
                 )}
                 {/* What doesn't fit wraps onto a second line, out of sight, rather than being cut. */}
-                <div className="ml-auto flex h-full min-w-0 flex-wrap items-center justify-end gap-x-3 overflow-hidden text-muted-foreground">
-                    {legend.map(([group, bytes]) => (
-                        <span key={group.name} className="flex h-full shrink-0 items-center gap-1.5" title={`${group.name}: ${formatSize(bytes)} among the ${growing ? "tiles" : "files"} shown`}>
-                            <span className="size-2.5 rounded-xs" style={{ background: `hsl(${group.hue} ${group.sat}% ${theme.lightness}%)` }} />
-                            {group.name}
-                        </span>
-                    ))}
+                <div className="ml-auto flex h-full min-w-0 flex-wrap items-center justify-end gap-x-1 overflow-hidden text-muted-foreground">
+                    {legend.map(([group, bytes]) => {
+                        const pinned = pinnedSpot === group.name;
+                        const active = activeSpot === group.name;
+                        return (
+                            <button
+                                key={group.name}
+                                type="button"
+                                onMouseEnter={() => setHoverSpot(group.name)}
+                                onMouseLeave={() => setHoverSpot((cur) => (cur === group.name ? null : cur))}
+                                onClick={() => setPinnedSpot((cur) => (cur === group.name ? null : group.name))}
+                                className={cn(
+                                    "flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-accent/60 hover:text-foreground",
+                                    pinned && "bg-primary/15 font-medium text-primary ring-1 ring-primary/35",
+                                    !pinned && active && "bg-accent/50 text-foreground",
+                                )}
+                                title={`${group.name}: ${formatSize(bytes)} among the ${growing ? "tiles" : "files"} shown — hover or click to spotlight on map`}
+                            >
+                                <span className="size-2.5 rounded-xs" style={{ background: `hsl(${group.hue} ${group.sat}% ${theme.lightness}%)` }} />
+                                {group.name}
+                            </button>
+                        );
+                    })}
                     {wholeFolders && (
-                        <span className="flex h-full shrink-0 items-center gap-1.5" title="Folders too deep or too small to show what's in them">
+                        <button
+                            type="button"
+                            onMouseEnter={() => setHoverSpot("Folders")}
+                            onMouseLeave={() => setHoverSpot((cur) => (cur === "Folders" ? null : cur))}
+                            onClick={() => setPinnedSpot((cur) => (cur === "Folders" ? null : "Folders"))}
+                            className={cn(
+                                "flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-accent/60 hover:text-foreground",
+                                pinnedSpot === "Folders" && "bg-primary/15 font-medium text-primary ring-1 ring-primary/35",
+                                pinnedSpot !== "Folders" && activeSpot === "Folders" && "bg-accent/50 text-foreground",
+                            )}
+                            title="Folders too deep or too small to show what's in them — hover or click to spotlight on map"
+                        >
                             <span className="size-2.5 rounded-xs" style={{ background: theme.folder }} />
                             Folders
-                        </span>
+                        </button>
                     )}
                 </div>
             </div>

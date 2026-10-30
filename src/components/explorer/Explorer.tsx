@@ -21,10 +21,13 @@ import {
     ClipboardCopy,
     ClipboardPaste,
     Cloud,
+    CloudDownload,
+    CloudOff,
     Code,
     Columns2,
     Copy,
     CopyPlus,
+    Disc3,
     Download,
     Ellipsis,
     ExternalLink,
@@ -68,7 +71,9 @@ import {
     PlugZap,
     Plus,
     RotateCcw,
+    RotateCcwSquare,
     RotateCw,
+    RotateCwSquare,
     ScanSearch,
     Scissors,
     ScrollText,
@@ -77,6 +82,7 @@ import {
     Send,
     Server,
     Settings as SettingsIcon,
+    Share2,
     ShieldCheck,
     SlidersHorizontal,
     Square,
@@ -86,6 +92,7 @@ import {
     TextSearch,
     Trash2,
     Undo2,
+    Wallpaper,
     Wand2,
     Wifi,
     X,
@@ -96,8 +103,9 @@ import { useShallow } from "zustand/react/shallow";
 import { SINGLE_FILE } from "@/lib/archives";
 import { scanWithDefender } from "@/lib/defender";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isHidden, isRecycled, isRemote, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isCloudFile, isHidden, isRecycled, isRemote, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
+    activateTab,
     archiveOf,
     calcSizes,
     canReopenTab,
@@ -126,8 +134,10 @@ import {
     goUp,
     initExplorer,
     invertSelection,
+    isDiskImage,
     keyboardElsewhere,
     markShown,
+    mountImage,
     moveTabToOtherPane,
     modalOpen,
     navigate,
@@ -183,7 +193,7 @@ import {
     zoomGrid,
 } from "@/lib/explorer";
 import { formatCount, plural } from "@/lib/format";
-import { driveName, openIn, openItem, openTerminal, openWith, shellMenu, showProperties, startDrag } from "@/lib/fs";
+import { driveName, openIn, openItem, openTerminal, openWith, rotateImage, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, marqueeHits, TILE_SIZES, zoomTiles } from "@/lib/grid";
@@ -254,6 +264,27 @@ const undoLabel = () => {
     return step ? `Undo the ${step.label}` : "Undo";
 };
 const terminal = (path: string) => openTerminal(path).catch(report("Couldn't open a terminal"));
+/** Pictures Windows can set as the desktop background, and those it turns in place (losslessly: JPEGs by their EXIF orientation). */
+const WALLPAPER_EXTS = ["jpg", "jpeg", "png", "bmp", "gif", "tif", "tiff", "jfif", "webp", "jxr"];
+const ROTATE_EXTS = ["jpg", "jpeg", "png", "bmp", "tif", "tiff", "jfif"];
+/** On disk, where Windows' own tools can reach it (not in an archive, a remote, the Recycle Bin or a closed folder). */
+const onDisk = (e: FileEntry) => !isArchived(e) && !isRemote(e) && !isRecycled(e) && !isClosed(e);
+const canWallpaper = (e: FileEntry) => !e.dir && onDisk(e) && WALLPAPER_EXTS.includes(e.ext);
+const canRotate = (e: FileEntry) => !e.dir && onDisk(e) && ROTATE_EXTS.includes(e.ext);
+const setWallpaper = (path: string) =>
+    setDesktopWallpaper(path).then(() => toast.success(`“${baseName(path)}” is now your desktop background`), report("Couldn't set the desktop background"));
+const rotatePictures = async (paths: string[], clockwise: boolean, tab?: string) => {
+    const failed: string[] = [];
+    for (const p of paths) await rotateImage(p, clockwise).catch((e) => failed.push(`${baseName(p)}: ${String(e)}`));
+    if (failed.length) toast.error(`Couldn't rotate ${plural(failed.length, "picture")}`, { description: failed.slice(0, 3).join("\n") });
+    void reload(tab);
+};
+const shareWithWindows = (paths: string[]) => windowsShare(paths).catch(report("Couldn't open Windows' Share"));
+const cloudPin = (paths: string[], pin: boolean) =>
+    setCloudPin(paths, pin).then(
+        () => toast.success(pin ? `Keeping ${plural(paths.length, "item")} on this device` : `Freeing up space from ${plural(paths.length, "item")}`),
+        report(pin ? "Couldn't keep these on this device" : "Couldn't free up space")
+    );
 const focusFind = () => {
     const box = document.getElementById(FIND_BOX_ID) as HTMLInputElement | null;
     box?.focus();
@@ -442,33 +473,52 @@ function folderMenu(
     // A pinned folder can be inside an archive too.
     const inArchive = !!archive || inArchivePath(folder);
     return [
+        {
+            actions: [
+                { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: (current && find) || inArchive || shut, onSelect: () => paste(folder) },
+                current && { label: undoLabel(), icon: Undo2, shortcut: "Ctrl+Z", disabled: !nextUndo(), onSelect: () => void undo() },
+                { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
+                { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, active: isPinned, onSelect: () => ctx.togglePin(folder) },
+                current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
+            ],
+        },
         canGet && { label: "Get access", icon: ShieldCheck, onSelect: () => void getAccess(view?.tab) },
         canGet && "separator",
         !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
         !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
         current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find || !!archive || shut, onSelect: () => newItem(true) },
         current && { label: "New text document", icon: FilePlus, disabled: find || !!archive || shut, onSelect: () => newItem(false) },
-        "separator",
-        { label: current ? "Paste" : "Paste into folder", icon: ClipboardPaste, shortcut: current ? "Ctrl+V" : undefined, disabled: (current && find) || inArchive || shut, onSelect: () => paste(folder) },
-        current && { label: undoLabel(), icon: Undo2, shortcut: "Ctrl+Z", disabled: !nextUndo(), onSelect: () => void undo() },
         current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", disabled: unlisted, onSelect: view.selectAll },
-        current && { label: "Refresh", icon: RotateCw, shortcut: "F5", onSelect: refresh },
         "separator",
         current && { label: "Folder sizes", icon: HardDrive, disabled: find || unlisted, onSelect: calcSizes },
         !inArchive && !shut && { label: "Search text", icon: TextSearch, onSelect: () => ctx.onSearchText(folder) },
-        !inArchive && !shut && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
-        !inArchive && !shut && { label: "Moved and deleted here", icon: History, onSelect: () => openHistory(folder) },
-        !inArchive && !shut && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender([folder]) },
-        !inArchive && !shut && { label: "Look for passwords and keys", icon: KeyRound, onSelect: () => checkForSecrets(folder) },
-        !inArchive && !shut && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(folder) },
-        !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
-        !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
-        !inArchive && !shut && isFolderPath(folder) && { label: "A rule for this folder…", icon: Wand2, onSelect: () => openRules(folder) },
-        !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
-        !inArchive && !shut && isFolderPath(folder) && { label: current ? "Send this folder to another PC…" : "Send to another PC…", icon: Send, onSelect: () => offerToPC(folder) },
-        !inArchive && !shut && isFolderPath(folder) && { label: current ? "Share this folder on this network…" : "Share on this network…", icon: Wifi, onSelect: () => offerOnNetwork(folder) },
-        current && !inArchive && !shut && !find && isFolderPath(folder) && { label: "Receive from another PC here…", icon: Download, onSelect: () => openReceive(folder) },
-        { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
+        {
+            label: "Inspect & check",
+            icon: ScanSearch,
+            items: [
+                !inArchive && !shut && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
+                !inArchive && !shut && { label: "Moved and deleted here", icon: History, onSelect: () => openHistory(folder) },
+                !inArchive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
+                "separator",
+                !inArchive && !shut && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender([folder]) },
+                !inArchive && !shut && { label: "Look for passwords and keys", icon: KeyRound, onSelect: () => checkForSecrets(folder) },
+                !inArchive && !shut && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(folder) },
+            ],
+        },
+        {
+            label: "Clean up & share",
+            icon: BrushCleaning,
+            items: [
+                !inArchive && !shut && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(folder) },
+                !inArchive && !shut && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(folder) },
+                !inArchive && !shut && isFolderPath(folder) && { label: "A rule for this folder…", icon: Wand2, onSelect: () => openRules(folder) },
+                !inArchive && !shut && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(folder) },
+                "separator",
+                !inArchive && !shut && isFolderPath(folder) && { label: current ? "Send this folder to another PC…" : "Send to another PC…", icon: Send, onSelect: () => offerToPC(folder) },
+                !inArchive && !shut && isFolderPath(folder) && { label: current ? "Share this folder on this network…" : "Share on this network…", icon: Wifi, onSelect: () => offerOnNetwork(folder) },
+                current && !inArchive && !shut && !find && isFolderPath(folder) && { label: "Receive from another PC here…", icon: Download, onSelect: () => openReceive(folder) },
+            ],
+        },
         "separator",
         archive
             ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archive) }
@@ -476,8 +526,7 @@ function folderMenu(
         !inArchive && !shut && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(folder) },
         !inArchive && !shut && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(folder) },
         !inArchive && !shut && isFolderPath(folder) && { label: "Scripts", icon: ScrollText, items: scriptItems(folder, [folder]) },
-        { label: isPinned ? "Unpin from sidebar" : "Pin to sidebar", icon: isPinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
-        !inArchive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
+        "separator",
         archive
             ? { label: "Archive properties", icon: Info, onSelect: () => properties(archive.outer) }
             : { label: "Properties", icon: Info, shortcut: current ? "Alt+Enter" : undefined, onSelect: () => properties(folder) },
@@ -569,27 +618,50 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         return () => window.removeEventListener("keydown", onKey, true);
     }, []);
 
-    // Files dragged in from File Explorer, the desktop or the other pane land on the folder row or
-    // sidebar place under the pointer, or else in the folder open in the pane under it.
+    // Files dragged in from File Explorer, the desktop or the other pane land on the folder row,
+    // breadcrumb segment, or sidebar place under the pointer, or else in the folder open in the pane
+    // under it. Hovering an inactive tab for a moment spring-loads it open.
     useEffect(() => {
+        let springTimer: ReturnType<typeof setTimeout> | undefined;
+        let hoveredTab: string | null = null;
+        const setSpring = (tabId: string | null) => {
+            if (hoveredTab === tabId) return;
+            clearTimeout(springTimer);
+            hoveredTab = tabId;
+            if (useExplorer.getState().springTab !== tabId) useExplorer.setState({ springTab: tabId });
+            if (tabId) {
+                springTimer = setTimeout(() => {
+                    hoveredTab = null;
+                    useExplorer.setState({ springTab: null });
+                    activateTab(tabId);
+                }, 450);
+            }
+        };
         const targetAt = ({ x, y }: { x: number; y: number }) => {
             const under = document.elementFromPoint(x / devicePixelRatio, y / devicePixelRatio);
+            const tabEl = under?.closest<HTMLElement>("[data-tab]");
+            const overTab = tabEl?.dataset.tab ?? null;
+            const s = useExplorer.getState();
+            const isInactiveTab = !!overTab && !s.panes.some((p) => p.active === overTab);
+            setSpring(isInactiveTab ? overTab : null);
             const place = under?.closest<HTMLElement>("[data-drop]")?.dataset.drop;
             if (place) return place;
             const pane = under?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
             if (pane === undefined || !under?.closest(".files")) return null;
-            const s = useExplorer.getState();
             const tab = s.panes[Number(pane)] && s.tabs[s.panes[Number(pane)].active];
             // Nothing can be dropped into an archive (it's read-only), nor into a folder Windows keeps closed.
             return tab && tab.path !== THIS_PC && !tab.find && !tab.listing?.archive && !tab.noAccess ? tab.path : null;
         };
         const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
-            const target = activeRef.current && payload.type !== "leave" ? targetAt(payload.position) : null;
+            const activeDrag = activeRef.current && payload.type !== "leave";
+            if (!activeDrag || payload.type === "drop") setSpring(null);
+            const target = activeDrag ? targetAt(payload.position) : null;
             if (payload.type === "drop" && target) dropFiles(payload.paths, target);
             const dropTarget = payload.type === "drop" ? null : target;
             if (useExplorer.getState().dropTarget !== dropTarget) useExplorer.setState({ dropTarget });
         });
         return () => {
+            clearTimeout(springTimer);
             unlisten.then((stop) => stop());
         };
     }, []);
@@ -900,6 +972,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         renaming,
         view,
         cut,
+        dragging,
+        flashed,
         sizes,
         dropTarget,
         quickLook,
@@ -930,6 +1004,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 renaming: t.renaming,
                 view: t.view,
                 cut: s.cut,
+                dragging: s.dragging,
+                flashed: s.flashed,
                 sizes: s.sizes[t.path],
                 dropTarget: s.dropTarget,
                 quickLook: s.quickLook,
@@ -1314,20 +1390,36 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const start = at(e.clientX, e.clientY);
         let pointer = { x: e.clientX, y: e.clientY };
         let mark: HTMLDivElement | null = null;
+        let raf = 0;
+        let lastFirst = -1;
+        let lastLast = -1;
+        let lastLen = -1;
+        const commitHits = () => {
+            raf = 0;
+            if (!mark) return;
+            const end = at(pointer.x, pointer.y);
+            const rows = rowsRef.current;
+            const hits = marqueeHits(start, end, rows.length, rowHeight, cols, list.clientWidth, pad);
+            const first = hits.length ? hits[0] : -1;
+            const last = hits.length ? hits[hits.length - 1] : -1;
+            if (hits.length === lastLen && first === lastFirst && last === lastLast) return;
+            lastLen = hits.length;
+            lastFirst = first;
+            lastLast = last;
+            const selection = new Set(base);
+            for (const i of hits) selection.add(rows[i].path);
+            updateTab({ selection, focus: last >= 0 ? rows[last].path : null, anchor: first >= 0 ? rows[first].path : null }, tab);
+        };
         const update = () => {
             const end = at(pointer.x, pointer.y);
             if (!mark && Math.abs(end.x - start.x) < 4 && Math.abs(end.y - start.y) < 4) return;
             if (!mark) {
                 mark = document.createElement("div");
-                mark.className = "pointer-events-none absolute z-10 rounded-[3px] border border-primary/70 bg-primary/15";
+                mark.className = "pointer-events-none absolute z-10 rounded-[4px] border border-primary/80 bg-primary/15 shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-primary)_20%,transparent)]";
                 content.appendChild(mark);
             }
             Object.assign(mark.style, { left: `${Math.min(start.x, end.x)}px`, top: `${Math.min(start.y, end.y)}px`, width: `${Math.abs(end.x - start.x)}px`, height: `${Math.abs(end.y - start.y)}px` });
-            const rows = rowsRef.current;
-            const hits = marqueeHits(start, end, rows.length, rowHeight, cols, list.clientWidth, pad);
-            const selection = new Set(base);
-            for (const i of hits) selection.add(rows[i].path);
-            updateTab({ selection, focus: hits.length ? rows[hits[hits.length - 1]].path : null, anchor: hits.length ? rows[hits[0]].path : null }, tab);
+            if (!raf) raf = requestAnimationFrame(commitHits);
         };
         const move = (m: MouseEvent) => {
             pointer = { x: m.clientX, y: m.clientY };
@@ -1342,6 +1434,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             update();
         }, 30);
         const up = () => {
+            if (raf) {
+                cancelAnimationFrame(raf);
+                commitHits();
+            }
             window.clearInterval(scroller);
             mark?.remove();
             window.removeEventListener("mousemove", move);
@@ -1396,11 +1492,13 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 }
                 // Moved away (e.g. into another drive's folder in Explorer): show what's left.
                 const from = tabRef.current;
+                useExplorer.setState({ dragging: new Set(paths) });
                 startDrag(paths)
                     .then((effect) => {
                         if (effect === "move") reload(from);
                     })
-                    .catch(report("Couldn't drag these items"));
+                    .catch(report("Couldn't drag these items"))
+                    .finally(() => useExplorer.setState({ dragging: new Set() }));
             }
         };
         const onUp = () => {
@@ -1473,16 +1571,47 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const fixed = !!archived || closed || remote;
         const browses = !!one && (one.dir || isArchiveFile(one));
         const pictures = targets.filter(canConvert);
+        const rotatable = fixed ? [] : targets.filter(canRotate);
+        // OneDrive and other cloud-synced items: kept on this device, or only online.
+        const cloud = !fixed && targets.every((t) => onDisk(t) && isCloudFile(t));
         // Two files side by side: the two chosen, or (comparing panes) one and its namesake in the other pane.
         const pair = targets.length === 2 && !fixed && targets.every((t) => !t.dir) ? targets : null;
         const status = one && !one.dir && !fixed && otherPath ? comparison?.diffs.get(one.lower) : undefined;
         const namesake = status && status !== "unique" && otherPath && one ? joinPath(otherPath, one.name) : null;
-        // Open, then the clipboard and the other pane, archives, renaming and deleting, tools, properties.
+        // Quick-action icon bar at the top, then Open, dual-pane/archive actions, grouped tools, properties.
         return [
+            {
+                actions: [
+                    { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", disabled: fixed, onSelect: () => copyToClipboard(paths, true) },
+                    { label: "Copy", icon: Copy, shortcut: "Ctrl+C", onSelect: () => copyToClipboard(paths, false) },
+                    one?.dir && { label: "Paste into folder", icon: ClipboardPaste, disabled: fixed, onSelect: () => paste(one.path) },
+                    {
+                        label: one ? "Rename" : `Rename ${targets.length} items…`,
+                        icon: PenLine,
+                        shortcut: "F2",
+                        disabled: fixed,
+                        onSelect: () => (one ? startRename(one.path) : openBatchRename(targets, rowsRef.current)),
+                    },
+                    {
+                        label: paths.length === 1 ? "Copy path" : "Copy paths",
+                        icon: ClipboardCopy,
+                        shortcut: "Ctrl+Shift+C",
+                        onSelect: () => copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths"),
+                    },
+                    one?.dir && {
+                        label: pinned.includes(one.path) ? "Unpin from sidebar" : "Pin to sidebar",
+                        icon: pinned.includes(one.path) ? PinOff : Pin,
+                        active: pinned.includes(one.path),
+                        onSelect: () => togglePin(one.path),
+                    },
+                    { label: "Delete", icon: Trash2, shortcut: "Del", danger: !fixed, disabled: fixed, onSelect: () => deleteSelected(false) },
+                ],
+            },
             { label: browses ? "Open" : targets.length > 1 ? `Open ${targets.length} items` : "Open", icon: browses ? (one!.dir ? FolderOpen : FileArchive) : ExternalLink, shortcut: "Enter", onSelect: openSelected },
             // A .docx or .jar is a zip too: Enter opens it in its app, this looks inside.
             one && isBrowsable(one) && !closed && { label: "Open as archive", icon: FileArchive, onSelect: () => navigate(one.path) },
             one && (isArchiveFile(one) || isBrowsable(one)) && !fixed && { label: "Extract here", icon: ArchiveRestore, onSelect: () => extractHere(one.path) },
+            one && isDiskImage(one) && !fixed && { label: "Mount", icon: Disc3, onSelect: () => void mountImage(one.path, tabRef.current) },
             folders.length > 0 && {
                 label: folders.length > 1 ? `Open ${folders.length} folders in new tabs` : "Open in new tab",
                 icon: SquarePlus,
@@ -1522,37 +1651,46 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }
                     : { label: "Show in File Explorer", icon: FolderSearch, onSelect: () => revealItemInDir(paths).catch(report("Couldn't open File Explorer")) }),
             "separator",
-            { label: "Cut", icon: Scissors, shortcut: "Ctrl+X", disabled: fixed, onSelect: () => copyToClipboard(paths, true) },
-            { label: "Copy", icon: Copy, shortcut: "Ctrl+C", onSelect: () => copyToClipboard(paths, false) },
-            one?.dir && { label: "Paste into folder", icon: ClipboardPaste, disabled: fixed, onSelect: () => paste(one.path) },
-            { label: paths.length === 1 ? "Copy path" : "Copy paths", icon: ClipboardCopy, shortcut: "Ctrl+Shift+C", onSelect: () => copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths") },
             dual && { label: "Copy to the other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
             dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || fixed, onSelect: () => copyToOtherPane(true, paths) },
-            "separator",
-            !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
-            one && !fixed && { label: "Send to another PC…", icon: Send, onSelect: () => offerToPC(one.path) },
-            one && !fixed && { label: "Share on this network…", icon: Wifi, onSelect: () => offerOnNetwork(one.path) },
-            pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
-            "separator",
-            one
-                ? { label: "Rename", icon: PenLine, shortcut: "F2", disabled: fixed, onSelect: () => startRename(one.path) }
-                : { label: `Rename ${targets.length} items…`, icon: PenLine, shortcut: "F2", disabled: fixed, onSelect: () => openBatchRename(targets, rowsRef.current) },
-            one && !find && !fixed && { label: "Rename items in this folder…", icon: PenLine, shortcut: "Ctrl+Shift+R", onSelect: () => openBatchRename(rowsRef.current, rowsRef.current) },
-            { label: "Delete", icon: Trash2, shortcut: "Del", danger: !fixed, disabled: fixed, onSelect: () => deleteSelected(false) },
-            "separator",
-            one?.dir && { label: pinned.includes(one.path) ? "Unpin from sidebar" : "Pin to sidebar", icon: pinned.includes(one.path) ? PinOff : Pin, onSelect: () => togglePin(one.path) },
-            one?.dir && !fixed && { label: "Search text", icon: TextSearch, onSelect: () => onSearchText(one.path) },
-            one?.dir && !fixed && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(one.path) },
-            one?.dir && !fixed && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(one.path) },
-            one?.dir && !fixed && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(one.path) },
-            one?.dir && !fixed && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(one.path) },
             pair && { label: "Compare the two files", icon: GitCompareArrows, onSelect: () => compareFiles(pair[0].path, pair[1].path) },
             !!namesake && one && { label: "Compare with the other pane's", icon: GitCompareArrows, onSelect: () => (index === 0 ? compareFiles(one.path, namesake) : compareFiles(namesake, one.path)) },
-            one && !one.dir && !fixed && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
-            !archived && !remote && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
-            !fixed && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender(paths) },
-            one && !fixed && { label: "Look for passwords and keys", icon: KeyRound, onSelect: () => checkForSecrets(one.path) },
-            one && !fixed && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(one.path) },
+            !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
+            pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
+            one && canWallpaper(one) && { label: "Set as desktop background", icon: Wallpaper, onSelect: () => void setWallpaper(one.path) },
+            rotatable.length > 0 && { label: "Rotate right", icon: RotateCwSquare, onSelect: () => void rotatePictures(rotatable.map((t) => t.path), true, tabRef.current) },
+            rotatable.length > 0 && { label: "Rotate left", icon: RotateCcwSquare, onSelect: () => void rotatePictures(rotatable.map((t) => t.path), false, tabRef.current) },
+            cloud && { label: "Always keep on this device", icon: CloudDownload, onSelect: () => void cloudPin(paths, true) },
+            cloud && { label: "Free up space", icon: CloudOff, onSelect: () => void cloudPin(paths, false) },
+            one && !find && !fixed && { label: "Rename items in this folder…", icon: PenLine, shortcut: "Ctrl+Shift+R", onSelect: () => openBatchRename(rowsRef.current, rowsRef.current) },
+            "separator",
+            one?.dir && !fixed && { label: "Search text", icon: TextSearch, onSelect: () => onSearchText(one.path) },
+            {
+                label: "Inspect & check",
+                icon: ScanSearch,
+                items: [
+                    one && !one.dir && !fixed && { label: "File X-Ray", icon: Fingerprint, onSelect: () => inspectXRay(one.path) },
+                    one?.dir && !fixed && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(one.path) },
+                    !archived && !remote && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks(paths) },
+                    "separator",
+                    !fixed && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender(paths) },
+                    one && !fixed && { label: "Look for passwords and keys", icon: KeyRound, onSelect: () => checkForSecrets(one.path) },
+                    one && !fixed && { label: "Check with YARA rules", icon: ScanSearch, onSelect: () => checkWithYara(one.path) },
+                ],
+            },
+            {
+                label: "Clean up & share",
+                icon: BrushCleaning,
+                items: [
+                    one?.dir && !fixed && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(one.path) },
+                    one?.dir && !fixed && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(one.path) },
+                    one?.dir && !fixed && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(one.path) },
+                    "separator",
+                    one && !fixed && { label: "Send to another PC…", icon: Send, onSelect: () => offerToPC(one.path) },
+                    one && !fixed && { label: "Share on this network…", icon: Wifi, onSelect: () => offerOnNetwork(one.path) },
+                    !fixed && { label: "Share with Windows…", icon: Share2, onSelect: () => void shareWithWindows(paths) },
+                ],
+            },
             "separator",
             one && !archived && !remote && { label: "Properties", icon: Info, shortcut: "Alt+Enter", onSelect: () => properties(one.path) },
             !!at && shellMenuFits(targets) && { label: "Show more options", icon: Ellipsis, shortcut: "Shift+right-click", onSelect: () => void windowsMenu(targets, at) },
@@ -1727,6 +1865,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const listKey = viewKey({ path, find });
     // Each view keeps its own place in the folder: a list's scroll position means nothing to the grid.
     const placeKey = `${listKey}:${view}`;
+    // Into a folder the list steps in, up out of one it steps out: decided once per list (it's made
+    // anew for each folder), so later renders, and React rendering twice, keep its class.
+    const navRef = useRef<{ key: string; tabId: string; path: string; anim?: string }>({ key: listKey, tabId, path });
+    if (navRef.current.key !== listKey) {
+        const { tabId: fromTab, path: from } = navRef.current;
+        const out = path === THIS_PC || (from !== THIS_PC && samePath(parentPath(from), path));
+        navRef.current = { key: listKey, tabId, path, anim: fromTab === tabId && !find && !samePath(from, path) ? (out ? "glint-nav-out" : "glint-nav-in") : undefined };
+    }
+    const navAnim = navRef.current.anim;
     const viewProps = {
         rows,
         search: !!find,
@@ -1743,6 +1890,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         focusIndex,
         renaming,
         cut,
+        dragging,
+        flashed,
         dropTarget,
         inactive: dual && !current,
         lane: tabId,
@@ -1931,7 +2080,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </div>
             )}
             {readme && <ReadmeCard key={readme.path} entry={readme} />}
-            <div className="min-h-0 flex-1">
+            <div key={listKey} className={cn("min-h-0 flex-1", navAnim)}>
                 {path === THIS_PC && !find ? (
                     <ThisPC onContextMenu={onPlaceContextMenu} />
                 ) : mapRows ? (

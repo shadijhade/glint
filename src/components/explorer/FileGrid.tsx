@@ -30,7 +30,7 @@ const WHEEL_STEP = 100;
  * driven by the same handlers, so selection, keys, menus, rename and drag and drop work alike.
  */
 export function FileGrid(props: FileGridProps) {
-    const { rows, search, recycled, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
+    const { rows, search, recycled, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dragging, flashed, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
     // Items from many folders (search results, the Recycle Bin's) say where each is, under its name.
     const located = search || !!recycled;
     const [width, setWidth] = useState(() => lastWidth.get(pane) ?? 0);
@@ -102,11 +102,13 @@ export function FileGrid(props: FileGridProps) {
                     .filter(Boolean)
                     .join("\n")}
                 className={cn(
-                    "relative m-0.5 flex min-w-0 cursor-default flex-col items-center rounded-md px-1.5 pt-2 text-center",
+                    "relative m-0.5 flex min-w-0 cursor-default flex-col items-center rounded-md px-1.5 pt-2 text-center transition-[background-color,transform] duration-100 active:scale-[0.985]",
                     selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
                     entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary",
-                    entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
+                    entry.path === dropTarget && "scale-[1.015] bg-primary/20 outline-2 -outline-offset-2 outline-primary",
                     (isHidden(entry) || cut.has(entry.path) || tracked.ignored) && "opacity-55",
+                    dragging.has(entry.path) && "scale-[0.98] opacity-45",
+                    flashed.has(entry.path) && "glint-flash",
                     diff === "same" && !selected && "opacity-60"
                 )}
             >

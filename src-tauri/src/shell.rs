@@ -310,6 +310,51 @@ pub async fn open_terminal(path: String) -> Result<(), String> {
     blocking(move || imp::open_terminal(&path)).await
 }
 
+/// Opens the native Windows 11 Share flyout (Nearby Sharing, Phone Link, Outlook, Teams…) for `paths`.
+#[tauri::command]
+pub async fn windows_share(window: Window, paths: Vec<String>) -> Result<(), String> {
+    let owner = owner(&window);
+    on_main(&window, move || imp::windows_share(owner, &paths)).await
+}
+
+/// Ejects a drive: a USB drive made safe to remove, a mounted disc image, a disc.
+#[tauri::command]
+pub async fn eject_drive(window: Window, path: String) -> Result<(), String> {
+    let owner = owner(&window);
+    blocking(move || imp::eject_drive(owner, &path)).await
+}
+
+/// Mounts a `.iso`, `.img`, `.vhd` or `.vhdx` image as a drive: the drive (`"F:\\"`), if one shows up.
+#[tauri::command]
+pub async fn mount_disk_image(window: Window, path: String) -> Result<Option<String>, String> {
+    let owner = owner(&window);
+    blocking(move || imp::mount_disk_image(owner, &path)).await
+}
+
+/// Whether opening a disc or disk image mounts it (Windows' own Mount is its default app).
+#[tauri::command]
+pub async fn mounts_by_default(path: String) -> Result<bool, String> {
+    blocking(move || Ok(imp::mounts_by_default(&path))).await
+}
+
+/// Sets Windows Cloud Files API (`OneDrive`, `iCloud`, `Dropbox`) pin state: `pin = true` ("Always keep on this device") or `pin = false` ("Free up space").
+#[tauri::command]
+pub async fn set_cloud_pin(paths: Vec<String>, pin: bool) -> Result<(), String> {
+    blocking(move || imp::set_cloud_pin(&paths, pin)).await
+}
+
+/// Sets `path` as the Windows desktop wallpaper (`SPI_SETDESKWALLPAPER`).
+#[tauri::command]
+pub async fn set_desktop_wallpaper(path: String) -> Result<(), String> {
+    blocking(move || imp::set_desktop_wallpaper(&path)).await
+}
+
+/// Turns a picture a quarter clockwise, or back, in place (a JPEG by its EXIF orientation, losslessly).
+#[tauri::command]
+pub async fn rotate_image(path: String, clockwise: bool) -> Result<(), String> {
+    blocking(move || imp::rotate_image(&path, clockwise)).await
+}
+
 #[cfg(windows)]
 mod imp {
     use super::{Clip, ClipboardFiles, Done, FileOp, Performed};
@@ -323,10 +368,14 @@ mod imp {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
-    use windows::core::{implement, w, ComObject, Interface, Ref, BOOL, HRESULT, HSTRING, PCWSTR};
+    use windows::core::{implement, w, ComObject, Interface, Ref, BOOL, GUID, HRESULT, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{
-        GlobalFree, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_NO_ASSOCIATION, ERROR_PATH_NOT_FOUND, HANDLE, HGLOBAL,
-        HWND, LPARAM, POINT,
+        GlobalFree, COLORREF, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_NO_ASSOCIATION, ERROR_PATH_NOT_FOUND, HANDLE, HGLOBAL,
+        HWND, LPARAM, POINT, SIZE,
+    };
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, HBITMAP, HGDIOBJ,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IDataObject, IPersistFile, CLSCTX_ALL, CLSCTX_INPROC_SERVER,
@@ -340,13 +389,13 @@ mod imp {
     use windows::Win32::System::Ole::{IDropSource, CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
-        DragQueryFileW, FileOperation, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, ILCreateFromPathW, ILFree, IShellItem,
-        IShellLinkW, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
-        SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHObjectProperties,
-        SHOpenWithDialog, ShellExecuteExW, ShellLink, BHID_DataObject, DROPFILES, FILEOPERATION_FLAGS,
+        DragQueryFileW, FileOperation, IDragSourceHelper2, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl,
+        ILCreateFromPathW, ILFree, IShellItem, IShellItemImageFactory, IShellLinkW, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
+        SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDRAGIMAGE, SHDoDragDrop, SHObjectProperties,
+        SHOpenWithDialog, ShellExecuteExW, ShellLink, BHID_DataObject, DROPFILES, DSH_ALLOWDROPDESCRIPTIONTEXT, FILEOPERATION_FLAGS,
         FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
         FOF_WANTNUKEWARNING, HDROP, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST,
-        SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, SHOP_FILEPATH,
+        SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, SHOP_FILEPATH, SIIGBF_ICONONLY, SIIGBF_INCACHEONLY,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -881,6 +930,7 @@ mod imp {
                 let data: IDataObject = SHCreateShellItemArrayFromIDLists(&list)
                     .and_then(|items| items.BindToHandler(None::<&IBindCtx>, &BHID_DataObject))
                     .map_err(message)?;
+                attach_drag_image(&data, paths);
                 let allowed = if copy_only { DROPEFFECT_COPY } else { DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK };
                 let effect = SHDoDragDrop(Some(hwnd(owner)), &data, None::<&IDropSource>, allowed).map_err(message)?;
                 Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
@@ -901,8 +951,255 @@ mod imp {
         }
     }
 
+    /// Attaches a Windows 11-style translucent drag preview card (the first item's cached thumbnail
+    /// or icon, a stacked card behind it when dragging several items, and a count badge) plus
+    /// `DSH_ALLOWDROPDESCRIPTIONTEXT` so targets show "Move to Desktop", "Copy to Documents", etc.
+    unsafe fn attach_drag_image(data: &IDataObject, paths: &[String]) {
+        const CLSID_DRAG_DROP_HELPER: GUID = GUID::from_u128(0x4657278a_411b_11d2_839a_00c04fd918d0);
+        let Some(first) = paths.first() else { return };
+        let Ok(helper) = CoCreateInstance::<_, IDragSourceHelper2>(&CLSID_DRAG_DROP_HELPER, None, CLSCTX_INPROC_SERVER) else {
+            return;
+        };
+        let _ = helper.SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT.0 as u32);
+        if let Some(drag_img) = make_drag_bitmap(first, paths.len()) {
+            if helper.InitializeFromBitmap(&drag_img, data).is_err() {
+                let _ = DeleteObject(HGDIOBJ(drag_img.hbmpDragImage.0));
+            }
+        }
+    }
+
+    /// Reads an HBITMAP's top-down 32-bit BGRA pixels (up to 64×64) for the drag card.
+    unsafe fn bitmap_bgra(bitmap: HBITMAP) -> Option<(usize, usize, Vec<u8>)> {
+        let mut bm = BITMAP::default();
+        if GetObjectW(HGDIOBJ(bitmap.0), size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as *mut _)) == 0 {
+            return None;
+        }
+        let (w, h) = (bm.bmWidth.unsigned_abs() as usize, bm.bmHeight.unsigned_abs() as usize);
+        if w == 0 || h == 0 || w > 256 || h > 256 {
+            return None;
+        }
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w as i32,
+                biHeight: -(h as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bgra = vec![0u8; w * h * 4];
+        let dc = CreateCompatibleDC(None);
+        let got = GetDIBits(dc, bitmap, 0, h as u32, Some(bgra.as_mut_ptr() as *mut _), &mut info, DIB_RGB_COLORS);
+        let _ = DeleteDC(dc);
+        if got == 0 {
+            return None;
+        }
+        // Opaque thumbnails (like JPEGs) come with alpha 0 everywhere: premultiply / make opaque.
+        if bgra.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
+            for p in bgra.as_chunks_mut::<4>().0 {
+                p[3] = 255;
+            }
+        } else if bgra.as_chunks::<4>().0.iter().any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]) {
+            for p in bgra.as_chunks_mut::<4>().0 {
+                let a = p[3] as u32;
+                p[0] = ((p[0] as u32 * a + 127) / 255) as u8;
+                p[1] = ((p[1] as u32 * a + 127) / 255) as u8;
+                p[2] = ((p[2] as u32 * a + 127) / 255) as u8;
+            }
+        }
+        Some((w, h, bgra))
+    }
+
+    /// Builds a 96×96 premultiplied ARGB DIB section for `SHDRAGIMAGE`. Uses `SIIGBF_INCACHEONLY`
+    /// first and falls back to `SIIGBF_ICONONLY` so it never blocks the UI thread.
+    unsafe fn make_drag_bitmap(first: &str, count: usize) -> Option<SHDRAGIMAGE> {
+        let factory: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(first), None::<&IBindCtx>).ok()?;
+        let ask = SIZE { cx: 56, cy: 56 };
+        let hbmp = factory
+            .GetImage(ask, SIIGBF_INCACHEONLY)
+            .or_else(|_| factory.GetImage(ask, SIIGBF_ICONONLY))
+            .ok()?;
+        let extracted = bitmap_bgra(hbmp);
+        let _ = DeleteObject(HGDIOBJ(hbmp.0));
+        let (iw, ih, icon) = extracted?;
+
+        const SIDE: usize = 96;
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: SIDE as i32,
+                biHeight: -(SIDE as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let dc = CreateCompatibleDC(None);
+        let dib = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).ok();
+        let _ = DeleteDC(dc);
+        let dib = dib?;
+        if bits.is_null() {
+            let _ = DeleteObject(HGDIOBJ(dib.0));
+            return None;
+        }
+        let canvas = std::slice::from_raw_parts_mut(bits as *mut u8, SIDE * SIDE * 4);
+        draw_drag_card(canvas, SIDE, &icon, iw, ih, count);
+
+        Some(SHDRAGIMAGE {
+            sizeDragImage: SIZE { cx: SIDE as i32, cy: SIDE as i32 },
+            ptOffset: POINT { x: 44, y: 52 },
+            hbmpDragImage: dib,
+            crColorKey: COLORREF(0xFF00_FF00),
+        })
+    }
+
+    /// Draws the translucent rounded drag card, optional stacked back-card, centered icon/thumbnail,
+    /// and multi-item count pill into a `side × side` premultiplied BGRA buffer.
+    pub(super) fn draw_drag_card(canvas: &mut [u8], side: usize, icon: &[u8], iw: usize, ih: usize, count: usize) {
+        let blend = |canvas: &mut [u8], x: usize, y: usize, b: u8, g: u8, r: u8, a: u8| {
+            if x >= side || y >= side || a == 0 {
+                return;
+            }
+            let idx = (y * side + x) * 4;
+            let inv = 255 - a as u32;
+            // Source is straight (r, g, b, a); convert to premultiplied and over-blend.
+            let sb = (b as u32 * a as u32 + 127) / 255;
+            let sg = (g as u32 * a as u32 + 127) / 255;
+            let sr = (r as u32 * a as u32 + 127) / 255;
+            canvas[idx] = (sb + (canvas[idx] as u32 * inv + 127) / 255).min(255) as u8;
+            canvas[idx + 1] = (sg + (canvas[idx + 1] as u32 * inv + 127) / 255).min(255) as u8;
+            canvas[idx + 2] = (sr + (canvas[idx + 2] as u32 * inv + 127) / 255).min(255) as u8;
+            canvas[idx + 3] = (a as u32 + (canvas[idx + 3] as u32 * inv + 127) / 255).min(255) as u8;
+        };
+
+        let rounded_rect = |canvas: &mut [u8], x0: usize, y0: usize, w: usize, h: usize, rad: f32, fill: (u8, u8, u8, u8), border: (u8, u8, u8, u8)| {
+            for y in y0..y0 + h {
+                for x in x0..x0 + w {
+                    let lx = (x - x0) as f32 + 0.5;
+                    let ly = (y - y0) as f32 + 0.5;
+                    let dx = (lx - rad).max(0.0).max(lx - (w as f32 - rad));
+                    let dy = (ly - rad).max(0.0).max(ly - (h as f32 - rad));
+                    let dist = (dx * dx + dy * dy).sqrt() - rad;
+                    if dist <= 0.5 {
+                        let edge_cov = (0.5 - dist).clamp(0.0, 1.0);
+                        let inner = (dist + 1.0).clamp(0.0, 1.0);
+                        let b = (fill.0 as f32 * (1.0 - inner) + border.0 as f32 * inner) as u8;
+                        let g = (fill.1 as f32 * (1.0 - inner) + border.1 as f32 * inner) as u8;
+                        let r = (fill.2 as f32 * (1.0 - inner) + border.2 as f32 * inner) as u8;
+                        let a = ((fill.3 as f32 * (1.0 - inner) + border.3 as f32 * inner) * edge_cov) as u8;
+                        blend(canvas, x, y, b, g, r, a);
+                    }
+                }
+            }
+        };
+
+        // Back stacked card when dragging multiple items.
+        if count > 1 {
+            rounded_rect(canvas, 18, 8, 68, 68, 10.0, (42, 42, 46, 175), (120, 120, 130, 195));
+        }
+        // Main translucent card.
+        rounded_rect(canvas, 10, 14, 68, 68, 10.0, (32, 32, 36, 215), (110, 110, 120, 225));
+
+        // Center the item's thumbnail/icon inside the main card (10..78, 14..82).
+        let ox = 10 + (68usize.saturating_sub(iw)) / 2;
+        let oy = 14 + (68usize.saturating_sub(ih)) / 2;
+        for y in 0..ih.min(68) {
+            for x in 0..iw.min(68) {
+                let s = (y * iw + x) * 4;
+                let sa = icon[s + 3] as u32;
+                if sa == 0 {
+                    continue;
+                }
+                let dx = ox + x;
+                let dy = oy + y;
+                if dx >= side || dy >= side {
+                    continue;
+                }
+                let d = (dy * side + dx) * 4;
+                // Slightly translucent (92% opacity) so the drag ghost feels weightless.
+                let sa = (sa * 235 + 127) / 255;
+                let sb = (icon[s] as u32 * 235 + 127) / 255;
+                let sg = (icon[s + 1] as u32 * 235 + 127) / 255;
+                let sr = (icon[s + 2] as u32 * 235 + 127) / 255;
+                let inv = 255 - sa;
+                canvas[d] = (sb + (canvas[d] as u32 * inv + 127) / 255).min(255) as u8;
+                canvas[d + 1] = (sg + (canvas[d + 1] as u32 * inv + 127) / 255).min(255) as u8;
+                canvas[d + 2] = (sr + (canvas[d + 2] as u32 * inv + 127) / 255).min(255) as u8;
+                canvas[d + 3] = (sa + (canvas[d + 3] as u32 * inv + 127) / 255).min(255) as u8;
+            }
+        }
+
+        // Count pill badge in the bottom-right corner when dragging multiple items.
+        if count > 1 {
+            let label = if count > 99 { "99+".to_string() } else { count.to_string() };
+            let chars: Vec<char> = label.chars().collect();
+            let text_w = chars.len() * 6 - 1;
+            let pill_w = (text_w + 10).max(20);
+            let pill_h = 17;
+            let px = (78 + 8usize).saturating_sub(pill_w);
+            let py = 82 - pill_h + 6;
+            // Glint pink accent (#db2777 -> BGR: 119, 39, 219).
+            rounded_rect(canvas, px, py, pill_w, pill_h, 8.5, (119, 39, 219, 248), (255, 255, 255, 220));
+            let tx = px + (pill_w - text_w) / 2;
+            let ty = py + (pill_h - 7) / 2;
+            for (i, ch) in chars.into_iter().enumerate() {
+                let glyph = digit_glyph(ch);
+                for (row, &bits) in glyph.iter().enumerate() {
+                    for col in 0..5 {
+                        if (bits >> (4 - col)) & 1 != 0 {
+                            blend(canvas, tx + i * 6 + col, ty + row, 255, 255, 255, 255);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn digit_glyph(ch: char) -> [u8; 7] {
+        match ch {
+            '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+            '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+            '2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
+            '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
+            '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+            '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+            '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+            '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+            '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+            '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+            '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
+            _ => [0; 7],
+        }
+    }
+
     pub fn open_terminal(path: &str) -> Result<(), String> {
         const CREATE_NEW_CONSOLE: u32 = 0x10;
+        // WSL2 path (`\\wsl.localhost\Ubuntu\...`): launch the Linux distribution directly at that folder.
+        let lower = path.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix(r"\\wsl.localhost\").or_else(|| lower.strip_prefix(r"\\wsl$\")) {
+            let distro_len = rest.find('\\').unwrap_or(rest.len());
+            let prefix_len = path.len() - rest.len();
+            let distro = &path[prefix_len..prefix_len + distro_len];
+            if !distro.is_empty() {
+                if Command::new("wt.exe").args(["-d", path, "wsl.exe", "-d", distro]).spawn().is_ok() {
+                    return Ok(());
+                }
+                if Command::new("wsl.exe")
+                    .args(["-d", distro, "--cd", path])
+                    .creation_flags(CREATE_NEW_CONSOLE)
+                    .spawn()
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+            }
+        }
         if Command::new("wt.exe").arg("-d").arg(path).spawn().is_ok() {
             return Ok(());
         }
@@ -913,6 +1210,242 @@ mod imp {
             .map(|_| ())
             .map_err(|e| format!("Couldn't open a terminal: {e}"))
     }
+
+    /// Runs one of the shell's own verbs on `paths` (in one folder) as their right-click menu does:
+    /// Share and Eject aren't in the registry, so ShellExecute can't find them. With `wait`, it returns
+    /// once the verb has done its work.
+    unsafe fn context_verb(owner: isize, paths: &[String], verb: &std::ffi::CStr, wait: bool) -> Result<(), String> {
+        use windows::core::PCSTR;
+        use windows::Win32::UI::Shell::{IContextMenu, BHID_SFUIObject, CMF_NORMAL, CMINVOKECOMMANDINFO};
+        use windows::Win32::UI::WindowsAndMessaging::{CreatePopupMenu, DestroyMenu, SW_SHOWNORMAL};
+
+        let pidls: Vec<*mut ITEMIDLIST> = paths.iter().map(|p| ILCreateFromPathW(&HSTRING::from(p.as_str()))).collect();
+        let result = (|| -> Result<(), String> {
+            if pidls.is_empty() || pidls.iter().any(|p| p.is_null()) {
+                return Err("Some of these items no longer exist".into());
+            }
+            let list: Vec<*const ITEMIDLIST> = pidls.iter().map(|&p| p as *const _).collect();
+            let menu: IContextMenu = SHCreateShellItemArrayFromIDLists(&list)
+                .and_then(|items| items.BindToHandler(None::<&IBindCtx>, &BHID_SFUIObject))
+                .map_err(message)?;
+            let popup = CreatePopupMenu().map_err(message)?;
+            let _ = menu.QueryContextMenu(popup, 0, 1, 0x7FFF, CMF_NORMAL);
+            let info = CMINVOKECOMMANDINFO {
+                cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
+                // CMIC_MASK_NOASYNC, the same bit as SEE_MASK_NOASYNC.
+                fMask: if wait { SEE_MASK_NOASYNC } else { 0 },
+                hwnd: HWND(owner as _),
+                lpVerb: PCSTR(verb.as_ptr().cast()),
+                nShow: SW_SHOWNORMAL.0,
+                ..Default::default()
+            };
+            let invoked = menu.InvokeCommand(&info).map_err(message);
+            let _ = DestroyMenu(popup);
+            invoked
+        })();
+        for pidl in pidls {
+            if !pidl.is_null() {
+                ILFree(Some(pidl as *const _));
+            }
+        }
+        result
+    }
+
+    pub fn windows_share(owner: isize, paths: &[String]) -> Result<(), String> {
+        unsafe { context_verb(owner, paths, c"Windows.ModernShare", false) }
+    }
+
+    /// Ejects a drive as its right-click menu's Eject does: a USB drive is made safe to remove, a
+    /// disc image unmounted, a disc drive opened. Windows tells why it can't (a file on it is still
+    /// open) in a message of its own; this waits for the drive, or its disc, to go.
+    pub fn eject_drive(owner: isize, path: &str) -> Result<(), String> {
+        use windows::Win32::Storage::FileSystem::{GetLogicalDrives, GetVolumeInformationW};
+
+        let letter = path.as_bytes().first().copied().filter(|l| l.is_ascii_alphabetic() && path.as_bytes().get(1) == Some(&b':'));
+        let letter = letter.ok_or("Only a drive with a letter can be ejected")?.to_ascii_uppercase();
+        let root = format!("{}:\\", letter as char);
+        let item = root.clone();
+        in_sta(move || unsafe { context_verb(owner, &[item], c"eject", true) })?;
+        let bit = 1u32 << (letter - b'A');
+        let wide = HSTRING::from(root.as_str());
+        for _ in 0..50 {
+            let there = unsafe { GetLogicalDrives() } & bit != 0 && unsafe { GetVolumeInformationW(&wide, None, None, None, None, None) }.is_ok();
+            if !there {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err("Windows didn't eject it: something on it may still be open".into())
+    }
+
+    /// Whether Windows' own Mount is what opening `path` (a disc or disk image) does, rather than
+    /// another app the user chose for it (7-Zip, a disc burner…).
+    pub fn mounts_by_default(path: &str) -> bool {
+        use windows::core::PWSTR;
+        use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_NONE, ASSOCSTR_PROGID};
+
+        let Some(ext) = Path::new(path).extension() else { return false };
+        let ext = HSTRING::from(format!(".{}", ext.to_string_lossy()));
+        let mut buf = [0u16; 128];
+        let mut len = buf.len() as u32;
+        if unsafe { AssocQueryStringW(ASSOCF_NONE, ASSOCSTR_PROGID, &ext, PCWSTR::null(), Some(PWSTR(buf.as_mut_ptr())), &mut len) }.is_err() {
+            return false;
+        }
+        let progid = String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1).min(buf.len())]);
+        ["Windows.IsoFile", "Windows.VhdFile"].iter().any(|own| progid.eq_ignore_ascii_case(own))
+    }
+
+    /// Mounts a disc or disk image and returns its drive (`"F:\"`), if one shows up. A disc image is
+    /// attached read-only the way File Explorer's Mount does it (no administrator needed), without the
+    /// File Explorer window Mount opens; a VHD goes through Windows' own Mount, which asks for one.
+    pub fn mount_disk_image(owner: isize, path: &str) -> Result<Option<String>, String> {
+        use windows::Win32::Storage::FileSystem::GetLogicalDrives;
+
+        let before = unsafe { GetLogicalDrives() };
+        let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        if ext == "iso" || ext == "img" {
+            attach_disc_image(path)?;
+        } else {
+            let item = path.to_string();
+            in_sta(move || unsafe { context_verb(owner, &[item], c"mount", true) })?;
+        }
+        for _ in 0..40 {
+            let added = unsafe { GetLogicalDrives() } & !before;
+            if added != 0 && added.trailing_zeros() < 26 {
+                return Ok(Some(format!("{}:\\", (b'A' + added.trailing_zeros() as u8) as char)));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(None)
+    }
+
+    /// Attaches an ISO (or a CD .img) read-only, for good: it stays mounted until it's ejected.
+    fn attach_disc_image(path: &str) -> Result<(), String> {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::Storage::Vhd::{
+            AttachVirtualDisk, OpenVirtualDisk, ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME, ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY, ATTACH_VIRTUAL_DISK_PARAMETERS,
+            ATTACH_VIRTUAL_DISK_VERSION_1, OPEN_VIRTUAL_DISK_FLAG_NONE, VIRTUAL_DISK_ACCESS_READ, VIRTUAL_STORAGE_TYPE, VIRTUAL_STORAGE_TYPE_DEVICE_ISO,
+            VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
+        };
+
+        let storage = VIRTUAL_STORAGE_TYPE { DeviceId: VIRTUAL_STORAGE_TYPE_DEVICE_ISO, VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT };
+        let mut disk = HANDLE::default();
+        unsafe { OpenVirtualDisk(&storage, &HSTRING::from(path), VIRTUAL_DISK_ACCESS_READ, OPEN_VIRTUAL_DISK_FLAG_NONE, None, &mut disk) }
+            .ok()
+            .map_err(message)?;
+        let parameters = ATTACH_VIRTUAL_DISK_PARAMETERS { Version: ATTACH_VIRTUAL_DISK_VERSION_1, ..Default::default() };
+        let flags = ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY | ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME;
+        let attached = unsafe { AttachVirtualDisk(disk, None, flags, 0, Some(&parameters), None) }.ok().map_err(message);
+        let _ = unsafe { CloseHandle(disk) };
+        attached
+    }
+
+    pub fn set_cloud_pin(paths: &[String], pin: bool) -> Result<(), String> {
+        use windows::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES};
+
+        const FILE_ATTRIBUTE_PINNED: u32 = 0x0008_0000;
+        const FILE_ATTRIBUTE_UNPINNED: u32 = 0x0010_0000;
+
+        for path in paths {
+            let wide = crate::fsx::wide(Path::new(path));
+            unsafe {
+                let cur = GetFileAttributesW(PCWSTR(wide.as_ptr()));
+                if cur == INVALID_FILE_ATTRIBUTES {
+                    return Err(format!("Can't find “{path}”"));
+                }
+                let next = if pin {
+                    (cur | FILE_ATTRIBUTE_PINNED) & !FILE_ATTRIBUTE_UNPINNED
+                } else {
+                    (cur | FILE_ATTRIBUTE_UNPINNED) & !FILE_ATTRIBUTE_PINNED
+                };
+                SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(next)).map_err(|e| e.message())?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_desktop_wallpaper(path: &str) -> Result<(), String> {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETDESKWALLPAPER,
+        };
+        let wide: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
+        unsafe {
+            SystemParametersInfoW(
+                SPI_SETDESKWALLPAPER,
+                0,
+                Some(wide.as_ptr() as *mut _),
+                SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+            )
+            .map_err(|e| e.message())
+        }
+    }
+
+    /// Turns a picture a quarter in place. A JPEG turns by its EXIF orientation, which Windows,
+    /// browsers and photo apps follow, so its pixels aren't encoded again (each time loses quality);
+    /// the others (PNG, BMP, TIFF) are lossless, and their pixels turn.
+    pub fn rotate_image(path: &str, clockwise: bool) -> Result<(), String> {
+        use windows::Foundation::{PropertyType, PropertyValue};
+        use windows::Graphics::Imaging::{BitmapDecoder, BitmapEncoder, BitmapPropertySet, BitmapRotation, BitmapTypedValue};
+        use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+        use windows::Storage::{FileAccessMode, StorageFile};
+        use windows::Win32::System::Com::COINIT_MULTITHREADED;
+
+        let path_str = path.to_string();
+        let bytes = std::thread::scope(|scope| {
+            scope
+                .spawn(|| -> windows::core::Result<Vec<u8>> {
+                    unsafe {
+                        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                    }
+                    let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_str.as_str()))?.join()?;
+                    let in_stream = file.OpenAsync(FileAccessMode::Read)?.join()?;
+                    let decoder = BitmapDecoder::CreateAsync(&in_stream)?.join()?;
+                    let out_stream = InMemoryRandomAccessStream::new()?;
+                    let encoder = BitmapEncoder::CreateForTranscodingAsync(&out_stream, &decoder)?.join()?;
+                    if decoder.DecoderInformation()?.CodecId()? == BitmapDecoder::JpegDecoderId()? {
+                        let next = turn(orientation(&path_str), clockwise);
+                        let turned = BitmapPropertySet::new()?;
+                        turned.Insert(&HSTRING::from("System.Photo.Orientation"), &BitmapTypedValue::Create(&PropertyValue::CreateUInt16(next)?, PropertyType::UInt16)?)?;
+                        encoder.BitmapProperties()?.SetPropertiesAsync(&turned)?.join()?;
+                    } else {
+                        encoder.BitmapTransform()?.SetRotation(if clockwise { BitmapRotation::Clockwise90Degrees } else { BitmapRotation::Clockwise270Degrees })?;
+                    }
+                    encoder.FlushAsync()?.join()?;
+                    drop(in_stream);
+                    drop(file);
+                    let size = out_stream.Size()? as u32;
+                    let reader = DataReader::CreateDataReader(&out_stream.GetInputStreamAt(0)?)?;
+                    reader.LoadAsync(size)?.join()?;
+                    let mut buf = vec![0u8; size as usize];
+                    reader.ReadBytes(&mut buf)?;
+                    Ok(buf)
+                })
+                .join()
+                .map_err(|_| "Image rotation failed".to_string())?
+                .map_err(|e| e.message())
+        })?;
+        crate::replace_contents(Path::new(path), &bytes).map_err(|e| e.to_string())
+    }
+
+    /// A photo's EXIF orientation, as Windows' property system reads it: 1 (as taken) when it has none.
+    fn orientation(path: &str) -> u16 {
+        use windows::Win32::Foundation::PROPERTYKEY;
+        use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreFromParsingName, GPS_DEFAULT};
+        const PKEY_PHOTO_ORIENTATION: PROPERTYKEY = PROPERTYKEY { fmtid: GUID::from_u128(0x14b81da1_0135_4d31_96d9_6cbfc9671a99), pid: 274 };
+        unsafe { SHGetPropertyStoreFromParsingName::<_, _, IPropertyStore>(&HSTRING::from(path), None::<&IBindCtx>, GPS_DEFAULT) }
+            .and_then(|store| unsafe { store.GetValue(&PKEY_PHOTO_ORIENTATION) })
+            .and_then(|value| u16::try_from(&value))
+            .unwrap_or(1)
+    }
+
+    /// An EXIF orientation (1–4 turned, 5–8 mirrored and turned) after another quarter turn.
+    pub(super) fn turn(orientation: u16, clockwise: bool) -> u16 {
+        const CLOCKWISE: [u16; 8] = [6, 7, 8, 5, 2, 3, 4, 1];
+        const BACK: [u16; 8] = [8, 5, 6, 7, 4, 1, 2, 3];
+        let from = if (1..=8).contains(&orientation) { orientation } else { 1 };
+        (if clockwise { CLOCKWISE } else { BACK })[from as usize - 1]
+    }
+
 }
 
 #[cfg(not(windows))]
@@ -976,6 +1509,34 @@ mod imp {
     }
 
     pub fn open_terminal(_: &str) -> Result<(), String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn windows_share(_: isize, _: &[String]) -> Result<(), String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn eject_drive(_: isize, _: &str) -> Result<(), String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn mount_disk_image(_: isize, _: &str) -> Result<Option<String>, String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn mounts_by_default(_: &str) -> bool {
+        false
+    }
+
+    pub fn set_cloud_pin(_: &[String], _: bool) -> Result<(), String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn set_desktop_wallpaper(_: &str) -> Result<(), String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn rotate_image(_: &str, _: bool) -> Result<(), String> {
         Err(WINDOWS_ONLY.into())
     }
 }
@@ -1055,5 +1616,35 @@ mod tests {
         assert_eq!(u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize, 14 + full.len());
         assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 14 + 40);
         assert_eq!(dib_pixels_at(&paletted), Some(40 + 4 * 256));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quarter_turns_go_round() {
+        for start in 1..=8 {
+            let mut at = start;
+            for _ in 0..4 {
+                at = imp::turn(at, true);
+            }
+            assert_eq!(at, start, "four turns of {start}");
+            assert_eq!(imp::turn(imp::turn(start, true), false), start, "a turn and back from {start}");
+        }
+        // As taken, then turned right: the viewer turns it a quarter clockwise (EXIF 6).
+        assert_eq!(imp::turn(1, true), 6);
+        assert_eq!(imp::turn(0, false), 8);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn draws_drag_preview_card_with_badge() {
+        let side = 96;
+        let icon = vec![255u8; 16 * 16 * 4];
+        let mut single = vec![0u8; side * side * 4];
+        let mut multi = vec![0u8; side * side * 4];
+        imp::draw_drag_card(&mut single, side, &icon, 16, 16, 1);
+        imp::draw_drag_card(&mut multi, side, &icon, 16, 16, 12);
+        // Center of the card is opaque/translucent; multi-item card also draws the stacked card and badge.
+        assert!(single[(44 * side + 44) * 4 + 3] > 200);
+        assert_ne!(single, multi);
     }
 }

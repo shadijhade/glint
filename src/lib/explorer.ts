@@ -41,18 +41,23 @@ import {
     listDir,
     listDrives,
     type Listing,
+    mountDiskImage,
+    mountsByDefault,
     openItem,
     recycleEmpty,
     resolvePath,
     type SizeEngine,
     type Staged,
     startDrag,
+    syncJumpList,
     takeLaunchTargets,
+    taskbarProgress,
     watchDirs,
 } from "./fs";
 import { formatCount, plural } from "./format";
 import { zoomTiles } from "./grid";
 import { baseName, crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC } from "./paths";
+import { frecency } from "./rank";
 import { initRemotes, remoteName } from "./remotes";
 import { initRules } from "./rules";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
@@ -165,8 +170,14 @@ interface ExplorerState {
     sizes: Record<string, SizeRun>;
     /** Paths cut to the clipboard here, shown dimmed until pasted. */
     cut: ReadonlySet<string>;
+    /** Paths being dragged out in an OS drag-and-drop session, shown lifted/dimmed until dropped. */
+    dragging: ReadonlySet<string>;
+    /** Paths newly created, pasted, dropped, or revealed, briefly highlighted so the eye finds them. */
+    flashed: ReadonlySet<string>;
     /** Folder that files dragged in from outside would land in. */
     dropTarget: string | null;
+    /** Tab hovered while dragging files over the tab strip (spring-loads after a short pause). */
+    springTab: string | null;
     /** Instant search's service, once asked. */
     index: IndexInfo | null;
     /** Space-bar preview of the active pane's focused item, over everything. */
@@ -211,7 +222,10 @@ export const useExplorer = create<ExplorerState>(() => ({
     editingAddress: false,
     sizes: {},
     cut: new Set(),
+    dragging: new Set(),
+    flashed: new Set(),
     dropTarget: null,
+    springTab: null,
     index: null,
     quickLook: false,
     palette: false,
@@ -341,6 +355,15 @@ export const savedScroll = (tab: string, key: string) => {
 };
 export const saveScroll = (tab: string, key: string, top: number) => scrolls.set(tab, { key, top });
 
+let flashTimer: ReturnType<typeof setTimeout> | undefined;
+/** Briefly highlights items that just arrived (created, pasted, dropped, renamed, or revealed). */
+export function flashPaths(paths: Iterable<string>) {
+    clearTimeout(flashTimer);
+    const next = new Set(paths);
+    set({ flashed: next });
+    if (next.size) flashTimer = setTimeout(() => set({ flashed: new Set() }), 1200);
+}
+
 /** How many busy() operations run, and who waits for none. */
 let working = 0;
 const idle: (() => void)[] = [];
@@ -348,14 +371,20 @@ const idle: (() => void)[] = [];
 /** Shows `label` while slow work runs (quick operations finish before it appears). */
 async function busy<T>(label: string, work: Promise<T>): Promise<T> {
     let id: string | number | undefined;
-    const timer = setTimeout(() => (id = toast.loading(label)), 500);
+    const timer = setTimeout(() => {
+        id = toast.loading(label);
+        void taskbarProgress("indeterminate");
+    }, 500);
     working++;
     try {
         return await work;
     } finally {
         clearTimeout(timer);
         if (id !== undefined) toast.dismiss(id);
-        if (--working === 0) idle.splice(0).forEach((resolve) => resolve());
+        if (--working === 0) {
+            void taskbarProgress("none");
+            idle.splice(0).forEach((resolve) => resolve());
+        }
     }
 }
 
@@ -396,13 +425,18 @@ function showArchiveReading(target: string) {
             const label = `Reading ${baseName(progress.path)}… ${percent}%`;
             const options = { description: "It keeps no list of what's in it, so it's read from start to end once.", action: { label: "Stop", onClick: stop }, duration: Infinity };
             id = toast.loading(label, { ...options, id });
+            if (progress.total) void taskbarProgress("normal", progress.done, progress.total);
+            else void taskbarProgress("indeterminate");
         }
         timer = setTimeout(poll, 250);
     }, 400);
     return () => {
         clearTimeout(timer);
         timer = undefined;
-        if (id !== undefined) toast.dismiss(id);
+        if (id !== undefined) {
+            toast.dismiss(id);
+            if (working === 0) void taskbarProgress("none");
+        }
     };
 }
 
@@ -475,6 +509,7 @@ export async function navigate(target: string, { select, history = true, quiet =
         },
         tab
     );
+    if (select !== undefined && selection.length) flashPaths(selection);
     if (!same) {
         if (tab === activeTabId()) {
             set({ editingAddress: false });
@@ -679,7 +714,28 @@ async function init() {
     }
     restored = true;
     saveSession();
+    updateJumpList();
 }
+
+let lastJumpKey: string | null = null;
+
+/** Keeps the Windows 11 Taskbar Jump List in sync with quick tasks, pinned folders, and most-visited folders. */
+export function updateJumpList() {
+    const { pinned, visits } = useStore.getState();
+    const now = Date.now();
+    const frequent = Object.keys(visits)
+        .filter((p) => !pinned.includes(p))
+        .sort((a, b) => frecency(visits[b], now) - frecency(visits[a], now))
+        .slice(0, 8);
+    const key = `${pinned.join("|")}\n${frequent.join("|")}`;
+    if (key === lastJumpKey) return;
+    lastJumpKey = key;
+    void syncJumpList(pinned, frequent).catch(() => {});
+}
+
+useStore.subscribe((state, prev) => {
+    if (state.pinned !== prev.pinned) updateJumpList();
+});
 
 /** Puts back last time's tabs and panes; each folder opens when its tab is first shown. False if there's nothing to restore. */
 function restoreSession(session: Session) {
@@ -1195,6 +1251,7 @@ async function staging<T>(
             const next = total ? `${say.doing}… ${Math.floor((100 * done) / total)}%` : say.unit ? `${say.doing}… ${formatCount(done)} ${say.unit}` : `${say.doing}… 0%`;
             if (next === label) return;
             label = next;
+            void (total ? taskbarProgress("normal", done, total) : taskbarProgress("indeterminate"));
             if (shown !== undefined) toast.loading(label, { id: shown, action: { label: "Stop", onClick: () => cancelArchiveStage(lane) }, duration: Infinity });
         });
         clearTimeout(timer);
@@ -1211,7 +1268,10 @@ async function staging<T>(
         if (String(e) !== "cancelled") toast.error(say.failed, { description: String(e) });
         return undefined;
     } finally {
-        if (--working === 0) idle.splice(0).forEach((resolve) => resolve());
+        if (--working === 0) {
+            void taskbarProgress("none");
+            idle.splice(0).forEach((resolve) => resolve());
+        }
     }
 }
 
@@ -1299,10 +1359,15 @@ export async function dragFromArchive(paths: string[]) {
     const ready = readyToDrag?.key === key ? readyToDrag.staged : null;
     readyToDrag = null;
     const drag = async (staged: Staged) => {
-        const effect = await startDrag(staged.paths, true);
-        if (effect === "released") {
-            readyToDrag = { key, staged };
-            toast.message("Ready to drag", { id: "drag-ready", description: "They took a moment to extract: drag them again." });
+        set({ dragging: new Set(paths) });
+        try {
+            const effect = await startDrag(staged.paths, true);
+            if (effect === "released") {
+                readyToDrag = { key, staged };
+                toast.message("Ready to drag", { id: "drag-ready", description: "They took a moment to extract: drag them again." });
+            }
+        } finally {
+            set({ dragging: new Set() });
         }
     };
     try {
@@ -1589,6 +1654,33 @@ export async function openFile(path: string, tab = activeTabId()) {
     }
 }
 
+/** Whether `entry` is a disc or virtual-disk image Windows can mount as a drive (.iso, .img, .vhd, .vhdx). */
+export const isDiskImage = (entry: FileEntry) =>
+    !entry.dir && !isArchived(entry) && !isRemote(entry) && !isRecycled(entry) && ["iso", "img", "vhd", "vhdx"].includes(entry.ext);
+
+/** A disc or disk image opens as it does from File Explorer: mounted (and its drive shown here, with no
+ * File Explorer window) when Windows' Mount is its default app, else in the app chosen for it. */
+async function openDiskImage(path: string) {
+    if (await mountsByDefault(path).catch(() => false)) return mountImage(path);
+    return openFile(path);
+}
+
+/** Mounts a disc image (.iso, .img, .vhd, .vhdx) as a drive and opens the new drive if found. */
+export async function mountImage(path: string, tab = activeTabId()) {
+    try {
+        const drive = await busy(`Mounting “${baseName(path)}”…`, mountDiskImage(path));
+        await refreshDrives();
+        if (drive) {
+            toast.success(`Mounted “${baseName(path)}” as ${drive}`);
+            await navigate(drive, { tab });
+        } else {
+            toast.success(`Mounted “${baseName(path)}”`);
+        }
+    } catch (e) {
+        toast.error(`Couldn't mount “${baseName(path)}”`, { description: String(e) });
+    }
+}
+
 export function openEntry(entry: FileEntry) {
     // Listed from the index: its folders open the same way, its files not at all.
     if (isClosed(entry) && !entry.dir) return closedNotice();
@@ -1600,6 +1692,7 @@ export function openEntry(entry: FileEntry) {
     }
     // An archive opens like a folder.
     if (entry.dir || isArchiveFile(entry)) return navigate(entry.path);
+    if (isDiskImage(entry)) return openDiskImage(entry.path);
     if (isArchived(entry)) return openFromArchive(entry);
     return openFile(entry.path);
 }
@@ -1636,10 +1729,9 @@ export async function fileOp(op: FileOp): Promise<boolean> {
     const done = items.flatMap((i) => (i.to ? [{ from: i.from, to: i.to }] : []));
     const what = plural(done.length, "item");
     if (done.length) {
-        // Taking back a copy recycles it rather than deleting it for good.
-        // Moves and deletions say so with Undo; a copy or a rename shows where it happened.
+        // Each says what it did, with Undo; taking back a copy recycles it rather than deleting it for good.
         const recycle = () => performFileOp({ kind: "delete", paths: done.map((i) => i.to), permanent: false, confirm: false });
-        if (op.kind === "copy") rememberUndo(`copy of ${what}`, recycle);
+        if (op.kind === "copy") offerUndo(`Copied ${what} to “${baseName(op.dest)}”`, rememberUndo(`copy of ${what}`, recycle));
         // Sync's copies land in subfolders, out of sight: it says so.
         else if (op.kind === "copyInto") offerUndo(`Synced ${what}`, rememberUndo(`sync of ${what}`, recycle));
         else if (op.kind === "move")
@@ -1647,7 +1739,11 @@ export async function fileOp(op: FileOp): Promise<boolean> {
                 `Moved ${what} to “${baseName(op.dest)}”`,
                 rememberUndo(`move of ${what}`, () => performFileOp({ kind: "moveBack", items: done.map((i) => ({ path: i.to, folder: parentPath(i.from), name: baseName(i.from) })) }))
             );
-        else if (op.kind === "rename") rememberUndo(`rename to “${baseName(done[0].to)}”`, () => performFileOp({ kind: "rename", path: done[0].to, name: baseName(done[0].from) }));
+        else if (op.kind === "rename")
+            offerUndo(
+                `Renamed to “${baseName(done[0].to)}”`,
+                rememberUndo(`rename to “${baseName(done[0].to)}”`, () => performFileOp({ kind: "rename", path: done[0].to, name: baseName(done[0].from) }))
+            );
         else if (op.kind === "delete")
             offerUndo(
                 `Moved ${what} to the Recycle Bin`,

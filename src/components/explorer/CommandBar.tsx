@@ -99,7 +99,7 @@ function Tool({ icon: Icon, label, pressed, className, ...props }: { icon: Lucid
             aria-label={label}
             aria-pressed={pressed}
             className={cn(
-                "grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4",
+                "grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-all duration-100 hover:bg-accent hover:text-foreground active:scale-93 disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4",
                 pressed && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
                 className
             )}
@@ -124,7 +124,17 @@ const VIEWS: { view: ViewMode; icon: LucideIcon; label: string }[] = [
 function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { view: ViewMode; mapped: boolean; disabled: boolean; tileSize: TileSize; onChange: (view: ViewMode) => void; onSizes: (e: React.MouseEvent<HTMLButtonElement>) => void }) {
     const sizes = `Tile size: ${TILE_SIZES.find((t) => t.size === tileSize)?.label ?? "Medium"} (Ctrl+wheel, Ctrl+= and Ctrl+- in the grid)`;
     return (
-        <div role="group" aria-label="View" className="flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
+        <div role="group" aria-label="View" className="relative flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
+            {!mapped && (
+                <span
+                    aria-hidden
+                    className={cn(
+                        "pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 w-8 rounded-[5px] bg-background shadow-xs transition-transform duration-150 ease-out dark:bg-foreground/[0.12]",
+                        view === "grid" && "translate-x-full",
+                        disabled && "opacity-40"
+                    )}
+                />
+            )}
             {VIEWS.map(({ view: v, icon: Icon, label }) => (
                 <button
                     key={v}
@@ -135,8 +145,8 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
                     disabled={disabled}
                     onClick={() => onChange(v)}
                     className={cn(
-                        "grid h-7 w-8 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4",
-                        !mapped && view === v && "bg-background text-primary shadow-xs hover:text-primary dark:bg-foreground/[0.12]"
+                        "relative z-10 grid h-7 w-8 place-items-center rounded-[5px] text-muted-foreground transition-all duration-100 hover:text-foreground active:scale-93 disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4",
+                        !mapped && view === v && "text-primary hover:text-primary"
                     )}
                 >
                     <Icon />
@@ -149,7 +159,7 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
                 aria-haspopup="menu"
                 disabled={disabled}
                 onClick={onSizes}
-                className="grid h-7 w-5 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-3.5"
+                className="relative z-10 grid h-7 w-5 place-items-center rounded-[5px] text-muted-foreground transition-all duration-100 hover:text-foreground active:scale-93 disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-3.5"
             >
                 <ChevronDown />
             </button>

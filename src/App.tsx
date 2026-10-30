@@ -63,7 +63,14 @@ const MODES: { mode: Mode; icon: typeof FolderOpen; label: string; title: string
 
 function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }) {
   return (
-    <div role="tablist" aria-label="Mode" className="flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
+    <div role="tablist" aria-label="Mode" className="relative grid shrink-0 grid-cols-2 rounded-md bg-foreground/[0.05] p-0.5">
+      <span
+        aria-hidden
+        className={cn(
+          "pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 w-[calc(50%-2px)] rounded-[5px] bg-background shadow-xs transition-transform duration-150 ease-out dark:bg-foreground/[0.12]",
+          mode === "text" && "translate-x-full"
+        )}
+      />
       {MODES.map(({ mode: m, icon: Icon, label, title }) => (
         <button
           key={m}
@@ -72,11 +79,11 @@ function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
           title={title}
           onClick={() => onChange(m)}
           className={cn(
-            "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground max-sm:px-2 [&_svg]:size-4",
-            mode === m && "bg-background font-medium text-foreground shadow-xs dark:bg-foreground/[0.12]"
+            "relative z-10 flex h-7 items-center justify-center gap-1.5 rounded-[5px] px-2.5 text-sm text-muted-foreground transition-all duration-100 hover:text-foreground active:scale-95 max-sm:px-2 [&_svg]:size-4",
+            mode === m && "font-medium text-foreground"
           )}
         >
-          <Icon className={mode === m ? "text-primary" : undefined} />
+          <Icon className={cn("transition-colors duration-150", mode === m && "text-primary")} />
           <span className="hidden lg:inline">{label}</span>
         </button>
       ))}

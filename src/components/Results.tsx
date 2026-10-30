@@ -230,8 +230,8 @@ export function Results({ active, run, matches, searching, error, duration, file
                         {pct > 0 && (
                             <span
                                 aria-hidden
-                                className="pointer-events-none absolute inset-y-0 right-0 bg-primary/15 dark:bg-primary/20"
-                                style={{ width: `${pct}%` }}
+                                className="pointer-events-none absolute inset-0 origin-right bg-primary/15 transition-transform duration-150 dark:bg-primary/20"
+                                style={{ transform: `scaleX(${pct / 100})` }}
                             />
                         )}
                         <span className="relative">{fmt(row.count)}</span>

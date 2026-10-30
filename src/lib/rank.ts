@@ -59,6 +59,38 @@ export function fuzzyScore(query: string, text: string, tight = false): number |
     return best - 0.01 * text.length;
 }
 
+/** Character indices in `text` that match `query`'s letters in order (preferring word boundaries and consecutive runs), or null. */
+export function fuzzyIndices(query: string, text: string, tight = false): number[] | null {
+    const q = query.toLowerCase().replace(/\s+/g, "");
+    if (!q) return null;
+    const lower = text.toLowerCase();
+    const from = (start: number) => {
+        let score = 0;
+        let at = start;
+        let streak = 0;
+        const indices: number[] = [];
+        for (const c of q) {
+            const found = lower.indexOf(c, at);
+            if (found < 0) return null;
+            indices.push(found);
+            streak = found === at ? streak + 1 : 0;
+            score += 1 + (isBoundary(text, found) ? 3 : 0) + 2 * streak - 0.05 * (found - at);
+            at = found + 1;
+        }
+        return { score, end: at, indices };
+    };
+    const head = [...q][0];
+    let best: { score: number; indices: number[] } | null = null;
+    for (let start = lower.indexOf(head); start >= 0; start = lower.indexOf(head, start + 1)) {
+        const match = from(start);
+        if (!match) break;
+        if ((!tight || match.end - start <= 3 * q.length + 2) && (best === null || match.score > best.score)) {
+            best = { score: match.score, indices: match.indices };
+        }
+    }
+    return best?.indices ?? null;
+}
+
 /** How many edits a word may be off by in a close match: one from 4 letters, two from 8. A shorter word, or a number, must be there as typed. */
 export const editsAllowed = (word: string) => {
     const letters = [...word].length;

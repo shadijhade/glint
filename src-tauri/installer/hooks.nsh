@@ -110,8 +110,8 @@ Var OldDesktopShortcut
   !insertmacro GLINT_INSTALL_TOOLS
 !macroend
 
-; File Explorer's "Open in Glint" entries and opening folders in Glint by default, which the app's
-; settings add under HKCU\Software\Classes (src-tauri/src/verbs.rs). Uninstalling removes them where
+; File Explorer's "Open in Glint" entries, opening folders in Glint by default and Win+E, which the
+; app's settings add under HKCU\Software\Classes (src-tauri/src/verbs.rs). Uninstalling removes them where
 ; they run this copy and puts back what folders opened with, and the keys above them go once empty.
 ; The Scoop manifest's uninstaller does the same for Scoop's copies (scripts/package-manifests.mjs).
 !macro GLINT_REMOVE_VERB PLACE
@@ -149,6 +149,12 @@ Var OldDesktopShortcut
   DeleteRegKey /ifempty HKCU "Software\Classes\Directory"
   DeleteRegKey /ifempty HKCU "Software\Classes\Drive\shell"
   DeleteRegKey /ifempty HKCU "Software\Classes\Drive"
+  ; Win+E opening Glint: Windows' own key for it goes, so Win+E opens File Explorer again.
+  ReadRegStr $R0 HKCU "Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command" ""
+  StrCpy $R0 $R0 $R2
+  ${If} $R0 == $R1
+    DeleteRegKey HKCU "Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"
+  ${EndIf}
   ; SHCNE_ASSOCCHANGED: File Explorer reads them again.
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend

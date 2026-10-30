@@ -18,6 +18,7 @@ mod fsx;
 mod git;
 mod index;
 mod jq;
+mod jumplist;
 mod launch;
 mod locks;
 mod markdown;
@@ -144,6 +145,9 @@ fn replace_contents(path: &std::path::Path, content: &[u8]) -> std::io::Result<(
 /// Started with Windows (Settings → Quick search): in the tray, the window not shown.
 static IN_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Started from the taskbar's Quick search task: quick search comes up once the window has painted.
+static QUICK_AT_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The page has painted: the window shows now, so it never flashes white first (but not when Glint
 /// started in the tray). Setup shows it anyway if this never comes.
 #[tauri::command]
@@ -154,6 +158,9 @@ fn app_ready(window: tauri::WebviewWindow) {
     if window.label() == "main" {
         use tauri::Manager;
         quick::warm(window.app_handle());
+        if QUICK_AT_START.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            quick::summon(window.app_handle());
+        }
     }
 }
 
@@ -596,6 +603,7 @@ pub fn run() {
 
     let in_tray = std::env::args().any(|arg| arg == "--tray");
     IN_TRAY.store(in_tray, std::sync::atomic::Ordering::Relaxed);
+    QUICK_AT_START.store(launch::asks_for_quick_search(std::env::args().skip(1)), std::sync::atomic::Ordering::Relaxed);
     let builder = tauri::Builder::default();
     // One copy runs at a time: a later launch hands its folders to it and quits. Not in debug builds,
     // which would hand theirs to an installed Glint (they share its identifier).
@@ -778,6 +786,15 @@ pub fn run() {
             launch::take_launch_targets,
             verbs::explorer_integration,
             verbs::set_explorer_integration,
+            jumplist::sync_jump_list,
+            jumplist::taskbar_progress,
+            shell::windows_share,
+            shell::eject_drive,
+            shell::mount_disk_image,
+            shell::set_cloud_pin,
+            shell::set_desktop_wallpaper,
+            shell::rotate_image,
+            shell::mounts_by_default,
         ])
         .setup(move |app| {
             #[cfg(all(windows, not(debug_assertions)))]

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Loader2, Search } from "lucide-react";
+import { Check, Loader2, Search } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { type FileEntry, isHidden } from "@/lib/entries";
 import { kindOf } from "@/lib/fileTypes";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
-import { cancelFind, findFiles, listDrives, openItem, quickHide, quickReveal } from "@/lib/fs";
+import { cancelFind, findFiles, listDrives, openItem, quickHide, quickReveal, startDrag } from "@/lib/fs";
 import { baseName, parentPath } from "@/lib/paths";
 import { plainQuery } from "@/lib/plain";
 import { typoDistance } from "@/lib/rank";
@@ -79,9 +79,11 @@ export function QuickSearch() {
     const [status, setStatus] = useState("");
     const [busy, setBusy] = useState(false);
     const [active, setActive] = useState(0);
+    const [copied, setCopied] = useState(false);
     const input = useRef<HTMLInputElement>(null);
     const list = useRef<HTMLDivElement>(null);
     const roots = useRef<string[]>([]);
+    const dragRef = useRef<{ x: number; y: number; path: string; started: boolean } | null>(null);
 
     // Each time it's called up: settings and folders as the main window left them, the drives as they
     // are now, and the last query selected, to type over.
@@ -192,7 +194,12 @@ export function QuickSearch() {
         else if (e.key === "ArrowDown") setActive((i) => Math.min(i + 1, shown.length - 1));
         else if (e.key === "ArrowUp") setActive((i) => Math.max(i - 1, 0));
         else if (e.key === "Enter") open(shown[active], e.altKey);
-        else return;
+        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && shown[active] && input.current?.selectionStart === input.current?.selectionEnd) {
+            void navigator.clipboard.writeText(shown[active].path).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+            });
+        } else return;
         e.preventDefault();
     };
 
@@ -248,7 +255,20 @@ export function QuickSearch() {
                             role="option"
                             aria-selected={i === active}
                             tabIndex={-1}
-                            onMouseMove={() => setActive(i)}
+                            onMouseDown={(e) => {
+                                if (e.button === 0) dragRef.current = { x: e.clientX, y: e.clientY, path: entry.path, started: false };
+                            }}
+                            onMouseMove={(e) => {
+                                setActive(i);
+                                const d = dragRef.current;
+                                if (d && !d.started && (e.buttons & 1) === 1 && Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 6) {
+                                    d.started = true;
+                                    void startDrag([d.path]);
+                                }
+                            }}
+                            onMouseUp={() => {
+                                dragRef.current = null;
+                            }}
                             onClick={(e) => open(entry, e.altKey)}
                             className={cn("flex w-full items-center gap-3 rounded-md px-3 py-1.5 text-left", i === active && "bg-accent")}
                         >
@@ -270,9 +290,20 @@ export function QuickSearch() {
                 )}
             </div>
             <div className="flex h-8 shrink-0 items-center gap-4 border-t px-4 text-xs text-muted-foreground">
-                <span className="min-w-0 flex-1 truncate">{found.length ? status : ""}</span>
+                <span className="min-w-0 flex-1 truncate">
+                    {copied ? (
+                        <span className="inline-flex items-center gap-1 font-medium text-emerald-500">
+                            <Check className="size-3.5" /> Copied path
+                        </span>
+                    ) : found.length ? (
+                        status
+                    ) : (
+                        ""
+                    )}
+                </span>
                 {hint("Enter", "open")}
                 {hint("Alt+Enter", "show in Glint")}
+                {hint("Ctrl+C", "copy path")}
                 {hint("Esc", "close")}
             </div>
         </div>

@@ -1,10 +1,51 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Calculator, CornerDownLeft, type LucideIcon, Search } from "lucide-react";
+import { Binary, Calculator, CornerDownLeft, Hash, HardDrive, type LucideIcon, Search } from "lucide-react";
 import { toast } from "sonner";
+import { formatSize } from "@/lib/format";
 import { calculate } from "@/lib/fs";
-import { fuzzyScore } from "@/lib/rank";
+import { fuzzyIndices, fuzzyScore } from "@/lib/rank";
 import { cn } from "@/lib/utils";
 import { Kbd } from "../ui/kbd";
+
+function FuzzyText({ text, query, tight = false }: { text: string; query: string; tight?: boolean }) {
+    const q = query.trim();
+    if (!q) return <>{text}</>;
+    const indices = fuzzyIndices(q, text, tight);
+    if (!indices || !indices.length) return <>{text}</>;
+    const hit = new Set(indices);
+    const out: React.ReactNode[] = [];
+    let run = "";
+    let inHit = false;
+    for (let i = 0; i < text.length; i++) {
+        const h = hit.has(i);
+        if (i > 0 && h !== inHit) {
+            out.push(
+                inHit ? (
+                    <span key={i} className="font-semibold text-primary">
+                        {run}
+                    </span>
+                ) : (
+                    run
+                ),
+            );
+            run = "";
+        }
+        inHit = h;
+        run += text[i];
+    }
+    if (run) {
+        out.push(
+            inHit ? (
+                <span key="end" className="font-semibold text-primary">
+                    {run}
+                </span>
+            ) : (
+                run
+            ),
+        );
+    }
+    return <>{out}</>;
+}
 
 export interface Command {
     id: string;
@@ -61,16 +102,32 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
         if (expression !== null) {
             if (!expression) return [{ id: "calc", label: "Type a sum: 3 ft to cm, 1 GiB / (3 MB/s) to s, 0x1F + 1", icon: Calculator, kind: "action", run: () => {} } satisfies Command];
             const shown = answer?.expression === expression ? answer : null;
-            const copy = () =>
-                void navigator.clipboard.writeText(shown!.text).then(
-                    () => toast.success(`Copied ${shown!.text}`),
+            const copyText = (val: string) => () =>
+                void navigator.clipboard.writeText(val).then(
+                    () => toast.success(`Copied ${val}`),
                     () => toast.error("Couldn't copy it")
                 );
-            return [
-                shown?.ok
-                    ? { id: "calc", label: `= ${shown.text}`, detail: expression, shortcut: "Enter copies", icon: Calculator, kind: "action", run: copy }
-                    : { id: "calc", label: shown ? shown.text : "…", detail: shown ? expression : undefined, icon: Calculator, kind: "action", run: () => {} },
-            ] satisfies Command[];
+            if (!shown?.ok) {
+                return [{ id: "calc", label: shown ? shown.text : "…", detail: shown ? expression : undefined, icon: Calculator, kind: "action", run: () => {} }] satisfies Command[];
+            }
+            const items: Command[] = [
+                { id: "calc", label: `= ${shown.text}`, detail: expression, shortcut: "Enter copies", icon: Calculator, kind: "action", run: copyText(shown.text) },
+            ];
+            const cleanNum = shown.text.replace(/[,_\s]/g, "");
+            const parsed = /^[+-]?\d+$/.test(cleanNum) ? Number(cleanNum) : NaN;
+            if (Number.isSafeInteger(parsed) && parsed >= 0) {
+                const hex = `0x${parsed.toString(16).toUpperCase()}`;
+                const bin = `0b${parsed.toString(2)}`;
+                items.push({ id: "calc-hex", label: hex, detail: "Hexadecimal", shortcut: "Enter copies", icon: Hash, kind: "action", run: copyText(hex) });
+                if (parsed <= 0xffff_ffff) {
+                    items.push({ id: "calc-bin", label: bin, detail: "Binary", shortcut: "Enter copies", icon: Binary, kind: "action", run: copyText(bin) });
+                }
+                if (parsed >= 1024) {
+                    const bytes = formatSize(parsed);
+                    items.push({ id: "calc-bytes", label: bytes, detail: `${parsed.toLocaleString()} bytes`, shortcut: "Enter copies", icon: HardDrive, kind: "action", run: copyText(bytes) });
+                }
+            }
+            return items;
         }
         if (!q) {
             // Nothing typed yet: the folders you use most, then every action.
@@ -120,8 +177,9 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
         }
     };
 
+    const highlightQuery = expression === null ? query : "";
     return (
-        <div className="glint-fade fixed inset-0 z-40 flex justify-center bg-black/30 px-4 pt-[12vh]" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+        <div className="glint-fade fixed inset-0 z-40 flex justify-center bg-black/30 px-4 pt-[12vh] backdrop-blur-xs" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
             <div role="dialog" aria-modal="true" aria-label="Command palette" className="glint-rise h-fit w-full max-w-[40rem] overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl">
                 <div className="flex items-center gap-2.5 border-b px-3.5">
                     <Search className="size-4 shrink-0 text-muted-foreground" />
@@ -161,8 +219,14 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                             className={cn("flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm", i === active && "bg-accent")}
                         >
                             <c.icon className={cn("size-4 shrink-0 text-muted-foreground", c.iconClass)} />
-                            <span className="shrink-0 truncate">{c.label}</span>
-                            {c.detail && <span className="min-w-0 truncate text-xs text-muted-foreground">{c.detail}</span>}
+                            <span className="shrink-0 truncate">
+                                {c.id === "go" ? c.label : <FuzzyText text={c.label} query={highlightQuery} />}
+                            </span>
+                            {c.detail && (
+                                <span className="min-w-0 truncate text-xs text-muted-foreground">
+                                    <FuzzyText text={c.detail} query={highlightQuery} tight />
+                                </span>
+                            )}
                             {c.shortcut && <span className="ml-auto shrink-0 pl-4 text-xs text-muted-foreground">{c.shortcut}</span>}
                         </button>
                         </Fragment>

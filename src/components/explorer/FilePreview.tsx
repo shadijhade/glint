@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Cloud, ExternalLink, FileArchive, Files, Fingerprint, FolderLock, FolderOpen, FolderSearch, HardDrive, Loader2, RotateCcw, ScanText, Trash2, X } from "lucide-react";
+import { Cloud, ExternalLink, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, X } from "lucide-react";
 import { toast } from "sonner";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly, isRecycled, isRemote } from "@/lib/entries";
-import { archiveOf, calcSizes, currentPath, navigate, openEntry, openFile, restoreRecycled, useExplorer } from "@/lib/explorer";
+import { archiveOf, calcSizes, compressEntries, currentPath, navigate, openEntry, openFile, reload, restoreRecycled, useExplorer } from "@/lib/explorer";
 import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
-import { formatCount, formatFullDate, formatSize, plural } from "@/lib/format";
-import { archiveExtract, type ArchivePeek, archivePeek, listDir, ocrText, readTextPreview } from "@/lib/fs";
+import { formatCount, formatDate, formatFullDate, formatSize, plural } from "@/lib/format";
+import { archiveExtract, type ArchivePeek, archivePeek, listDir, ocrText, readTextPreview, rotateImage, setDesktopWallpaper } from "@/lib/fs";
 import { useGitMark } from "@/lib/git";
 import { mapLink, useMediaDetails } from "@/lib/media";
 import { usePreviewView, type View } from "@/lib/preview";
@@ -16,9 +16,11 @@ import { baseName, isRecycleBin, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+import { openBatchRename } from "./BatchRenameDialog";
 import { BinaryPreview, isPeCandidate } from "./BinaryPreview";
 import { CastPreview } from "./CastPreview";
 import { ChangesView } from "./ChangesView";
+import { compareFiles } from "./CompareFilesDialog";
 import { DataTree } from "./DataTree";
 import { HexView } from "./HexView";
 import { QueryView } from "./QueryView";
@@ -28,6 +30,7 @@ import { MarkdownView } from "./MarkdownView";
 import { RepoCard } from "./RepoCard";
 import { ShellPreview } from "./ShellPreview";
 import { BigIcon, Centered, Waiting } from "./PreviewState";
+import { Thumbnail } from "./Thumbnail";
 import { inspectXRay } from "./XRayDialog";
 
 const TEXT_BYTES = 256 * 1024;
@@ -35,10 +38,146 @@ const TEXT_LINES = 2000;
 /** The start of an ncdu export: `[1,` its minor version, then its metadata naming the program (archive/ncdu.rs `looks_like`). */
 const NCDU_EXPORT = /^﻿?\s*\[\s*1\s*,\s*\d+\s*,\s*\{\s*"progname"/;
 
+type ImageBackdrop = "checker" | "dark" | "light";
+/** Pictures Windows' imaging component rotates in place, and those it can set as the desktop background. */
+const ROTATE_EXTS = ["jpg", "jpeg", "png", "bmp", "tif", "tiff", "jfif"];
+const WALLPAPER_EXTS = ["jpg", "jpeg", "png", "bmp", "gif", "tif", "tiff", "jfif", "webp", "jxr"];
+
 function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
     const [dimensions, setDimensions] = useState("");
     const [failed, setFailed] = useState(false);
     const [reading, setReading] = useState(false);
+    const [zoom, setZoom] = useState(1);
+    const [pan, setPan] = useState({ x: 0, y: 0 });
+    const [backdrop, setBackdrop] = useState<ImageBackdrop>("checker");
+    const [loupeOn, setLoupeOn] = useState(false);
+    const [loupe, setLoupe] = useState<{ x: number; y: number; hex: string } | null>(null);
+    const imgRef = useRef<HTMLImageElement | null>(null);
+    const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    /** The picture's pixels for the color picker (scaled down past 16 megapixels), once loaded. */
+    const sampleCanvasRef = useRef<{ canvas: HTMLCanvasElement; scale: number } | null>(null);
+    const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+    const frameRef = useRef<HTMLDivElement | null>(null);
+    // Windows' own picture tools, for a picture on disk (not in an archive, a remote or the Recycle Bin).
+    const [rotating, setRotating] = useState(false);
+    const [version, setVersion] = useState(0);
+    const local = !isArchived(entry) && !isRemote(entry) && !isRecycled(entry) && !isClosed(entry);
+    const rotatable = local && ROTATE_EXTS.includes(entry.ext);
+    const wallpaper = local && WALLPAPER_EXTS.includes(entry.ext);
+
+    const rotate = async () => {
+        setRotating(true);
+        try {
+            await rotateImage(entry.path, true);
+            sampleCanvasRef.current = null;
+            setVersion((v) => v + 1);
+            void reload();
+        } catch (e) {
+            toast.error(`Couldn't rotate “${entry.name}”`, { description: String(e) });
+        } finally {
+            setRotating(false);
+        }
+    };
+
+    const setAsWallpaper = () =>
+        setDesktopWallpaper(entry.path).then(
+            () => toast.success(`“${entry.name}” is now your desktop background`),
+            (e) => toast.error("Couldn't set the desktop background", { description: String(e) })
+        );
+
+    useEffect(() => {
+        setZoom(1);
+        setPan({ x: 0, y: 0 });
+        setLoupe(null);
+    }, [src]);
+
+    const shown = version ? `${src}${src.includes("?") ? "&" : "?"}v=${version}` : src;
+    // The picture on screen comes from another origin, so its pixels can't be read: the color picker
+    // loads a copy of its own that may be (a URL of its own too, so a cached plain load isn't reused).
+    // The wheel zooms: with a listener of its own, as React's are passive and can't keep the pane from
+    // scrolling as well.
+    useEffect(() => {
+        const frame = frameRef.current;
+        if (!frame) return;
+        const onWheel = (e: WheelEvent) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+            setZoom((z) => {
+                const next = Math.min(8, Math.max(1, +(z * factor).toFixed(2)));
+                if (next === 1) setPan({ x: 0, y: 0 });
+                return next;
+            });
+        };
+        frame.addEventListener("wheel", onWheel, { passive: false });
+        return () => frame.removeEventListener("wheel", onWheel);
+    }, [failed]);
+
+    useEffect(() => {
+        sampleCanvasRef.current = null;
+        if (!loupeOn) return;
+        let live = true;
+        const copy = new Image();
+        copy.crossOrigin = "anonymous";
+        copy.onload = () => {
+            if (!live || !copy.naturalWidth) return;
+            const scale = Math.min(1, Math.sqrt(16e6 / (copy.naturalWidth * copy.naturalHeight)));
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.round(copy.naturalWidth * scale));
+            canvas.height = Math.max(1, Math.round(copy.naturalHeight * scale));
+            const ctx = canvas.getContext("2d", { willReadFrequently: true });
+            if (!ctx) return;
+            ctx.drawImage(copy, 0, 0, canvas.width, canvas.height);
+            sampleCanvasRef.current = { canvas, scale };
+        };
+        copy.src = `${shown}${shown.includes("?") ? "&" : "?"}pixels`;
+        return () => {
+            live = false;
+        };
+    }, [loupeOn, shown]);
+
+    const updateLoupe = (clientX: number, clientY: number) => {
+        const img = imgRef.current;
+        if (!img || !img.naturalWidth) return;
+        const rect = img.getBoundingClientRect();
+        if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+            setLoupe(null);
+            return;
+        }
+        const relX = (clientX - rect.left) / rect.width;
+        const relY = (clientY - rect.top) / rect.height;
+        const pixels = sampleCanvasRef.current;
+        // Not loaded yet: the magnifier waits, rather than saying black.
+        if (!pixels) return setLoupe(null);
+        const sample = pixels.canvas;
+        const px = Math.min(sample.width - 1, Math.max(0, Math.floor(relX * sample.width)));
+        const py = Math.min(sample.height - 1, Math.max(0, Math.floor(relY * sample.height)));
+        let hex = "#000000";
+        try {
+            const ctx = sample.getContext("2d", { willReadFrequently: true });
+            if (ctx) {
+                const data = ctx.getImageData(px, py, 1, 1).data;
+                hex = `#${[data[0], data[1], data[2]].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+            }
+            const lc = loupeCanvasRef.current;
+            const lctx = lc?.getContext("2d");
+            if (lc && lctx && sample) {
+                lctx.clearRect(0, 0, lc.width, lc.height);
+                lctx.imageSmoothingEnabled = false;
+                const radius = 11;
+                lctx.drawImage(sample, px - radius, py - radius, radius * 2 + 1, radius * 2 + 1, 0, 0, lc.width, lc.height);
+                // Center pixel reticle
+                const cell = lc.width / (radius * 2 + 1);
+                lctx.strokeStyle = "rgba(255,255,255,0.9)";
+                lctx.lineWidth = 1.5;
+                lctx.strokeRect(radius * cell, radius * cell, cell, cell);
+            }
+        } catch {
+            // A picture whose pixels can't be read after all (an SVG's, say): no color to show.
+            return setLoupe(null);
+        }
+        setLoupe({ x: clientX, y: clientY, hex });
+    };
+
     // The text in it, read by Windows' OCR, to the clipboard (a picture on disk: not one in an archive).
     const copyText = async () => {
         setReading(true);
@@ -56,21 +195,144 @@ function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
         }
     };
     if (failed) return <BigIcon entry={entry} note="This image can't be shown here" />;
+    const bgClass =
+        backdrop === "checker"
+            ? "[background:repeating-conic-gradient(hsl(var(--muted))_0%_25%,transparent_0%_50%)_50%/16px_16px]"
+            : backdrop === "dark"
+              ? "bg-zinc-950"
+              : "bg-white";
     return (
         <Centered className="gap-2 p-4">
-            <img
-                src={src}
-                alt={entry.name}
-                draggable={false}
-                onLoad={(e) => setDimensions(`${e.currentTarget.naturalWidth} × ${e.currentTarget.naturalHeight}`)}
-                onError={() => setFailed(true)}
-                className="max-h-[calc(100%-2.75rem)] max-w-full rounded-sm object-contain shadow-sm [background:repeating-conic-gradient(hsl(var(--muted))_0%_25%,transparent_0%_50%)_50%/16px_16px]"
-            />
-            <div className="flex items-center gap-3">
-                {dimensions && <span className="text-xs tabular-nums">{dimensions} pixels</span>}
+            <div
+                ref={frameRef}
+                className="relative flex max-h-[calc(100%-2.75rem)] max-w-full items-center justify-center overflow-hidden rounded-sm"
+                onDoubleClick={() => {
+                    setZoom((z) => (z > 1 ? 1 : 2));
+                    setPan({ x: 0, y: 0 });
+                }}
+                onPointerDown={(e) => {
+                    if (loupeOn && loupe) {
+                        void navigator.clipboard.writeText(loupe.hex).then(() => toast.success(`Copied ${loupe.hex}`, { duration: 1300 }));
+                        return;
+                    }
+                    if (zoom <= 1 || e.button !== 0) return;
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
+                }}
+                onPointerMove={(e) => {
+                    if (dragRef.current) {
+                        setPan({
+                            x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
+                            y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+                        });
+                    } else if (loupeOn) {
+                        updateLoupe(e.clientX, e.clientY);
+                    }
+                }}
+                onPointerUp={() => {
+                    dragRef.current = null;
+                }}
+                onPointerLeave={() => {
+                    dragRef.current = null;
+                    setLoupe(null);
+                }}
+            >
+                <img
+                    ref={imgRef}
+                    src={shown}
+                    alt={entry.name}
+                    draggable={false}
+                    onLoad={(e) => setDimensions(`${e.currentTarget.naturalWidth} × ${e.currentTarget.naturalHeight}`)}
+                    onError={() => setFailed(true)}
+                    style={{
+                        transform: zoom > 1 || pan.x || pan.y ? `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` : undefined,
+                    }}
+                    className={cn(
+                        "max-h-full max-w-full rounded-sm object-contain shadow-sm transition-transform duration-75",
+                        bgClass,
+                        loupeOn ? "cursor-crosshair" : zoom > 1 ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in",
+                    )}
+                />
+                {loupeOn && loupe && (
+                    // Fixed, so the frame doesn't cut it off; below the pointer near the top of the window.
+                    <div
+                        className="pointer-events-none fixed z-50 flex flex-col items-center gap-1"
+                        style={{
+                            left: loupe.x,
+                            top: loupe.y,
+                            transform: loupe.y < 140 ? "translate(-50%, 18px)" : "translate(-50%, calc(-100% - 14px))",
+                        }}
+                    >
+                        <canvas
+                            ref={loupeCanvasRef}
+                            width={88}
+                            height={88}
+                            className="size-22 rounded-full border-2 border-background bg-zinc-900 shadow-lg ring-1 ring-border"
+                        />
+                        <span className="flex items-center gap-1.5 rounded-full border border-border bg-popover/95 px-2 py-0.5 font-mono text-[11px] font-medium text-popover-foreground shadow-md">
+                            <span className="size-2.5 rounded-full border border-white/30" style={{ background: loupe.hex }} />
+                            {loupe.hex}
+                        </span>
+                    </div>
+                )}
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-1.5">
+                {dimensions && <span className="mr-1 text-xs tabular-nums">{dimensions} px</span>}
+                {zoom > 1 && (
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setZoom(1);
+                            setPan({ x: 0, y: 0 });
+                        }}
+                        className="rounded-md bg-primary/15 px-1.5 py-0.5 font-mono text-[11px] font-medium text-primary hover:bg-primary/25"
+                        title="Click to reset zoom to 1×"
+                    >
+                        {zoom.toFixed(1)}×
+                    </button>
+                )}
+                <button
+                    type="button"
+                    onClick={() => setLoupeOn((v) => !v)}
+                    className={cn(
+                        "inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs transition-colors",
+                        loupeOn ? "bg-primary/15 font-medium text-primary ring-1 ring-primary/30" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    )}
+                    title="A magnifier that shows each pixel's color: click the picture to copy it (#RRGGBB)"
+                >
+                    <Pipette className="size-3.5" /> Colors
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setBackdrop((b) => (b === "checker" ? "dark" : b === "dark" ? "light" : "checker"))}
+                    className="inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    title="What shows through a transparent picture: checks, dark or light"
+                >
+                    <span
+                        className={cn(
+                            "size-3 rounded-full border border-border",
+                            backdrop === "checker"
+                                ? "[background:repeating-conic-gradient(hsl(var(--muted-foreground))_0%_25%,transparent_0%_50%)_50%/6px_6px]"
+                                : backdrop === "dark"
+                                  ? "bg-zinc-950"
+                                  : "bg-white",
+                        )}
+                    />
+                    {backdrop === "checker" ? "Checks" : backdrop === "dark" ? "Dark" : "Light"}
+                </button>
                 {!isArchived(entry) && (
-                    <Button variant="ghost" size="sm" className="h-7" disabled={reading} onClick={() => void copyText()} title="Copy the text in this picture, read by Windows' OCR">
-                        {reading ? <Loader2 className="animate-spin" /> : <ScanText />} Copy text
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={reading} onClick={() => void copyText()} title="Copy the text in this picture, read by Windows' OCR">
+                        {reading ? <Loader2 className="size-3.5 animate-spin" /> : <ScanText className="size-3.5" />} Copy text
+                    </Button>
+                )}
+                {rotatable && (
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={rotating} onClick={() => void rotate()} title="Turn it a quarter clockwise, in place (a photo keeps its quality: only its orientation changes)">
+                        {rotating ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCwSquare className="size-3.5" />} Rotate
+                    </Button>
+                )}
+                {wallpaper && (
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => void setAsWallpaper()} title="Set as desktop background">
+                        <Wallpaper className="size-3.5" /> Wallpaper
                     </Button>
                 )}
             </div>
@@ -569,14 +831,62 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
     const entry = useSettled(selected.length === 1 ? selected[0] : null);
     if (selected.length > 1) {
         const files = selected.filter((e) => !e.dir);
+        const deck = selected.slice(0, 3);
+        const mtimes = selected.map((e) => e.modified).filter((m) => m > 0);
+        const oldest = mtimes.length ? Math.min(...mtimes) : 0;
+        const newest = mtimes.length ? Math.max(...mtimes) : 0;
+        const dateSpan =
+            oldest > 0 && newest > 0
+                ? formatDate(oldest) === formatDate(newest)
+                    ? formatDate(newest)
+                    : `${formatDate(oldest)} – ${formatDate(newest)}`
+                : null;
+        const writable = !selected.some((e) => isArchived(e) || isRecycled(e) || isRemote(e) || isClosed(e));
+        const canCompare = selected.length === 2 && files.length === 2 && writable;
+        const fanTransforms =
+            deck.length === 2
+                ? ["-translate-x-3.5 translate-y-0.5 -rotate-6 z-0", "translate-x-3.5 translate-y-0.5 rotate-6 z-10"]
+                : ["-translate-x-5 translate-y-1.5 -rotate-8 z-0", "z-20 -translate-y-0.5", "translate-x-5 translate-y-1.5 rotate-8 z-10"];
         return (
-            <Centered>
-                <Files className="size-14 stroke-[1.25] text-primary" />
-                <p className="text-foreground">{formatCount(selected.length)} items selected</p>
-                <p>
-                    {[selected.length > files.length && plural(selected.length - files.length, "folder"), files.length > 0 && plural(files.length, "file")].filter(Boolean).join(", ")}
-                    {files.length > 0 && <span className="block">{formatSize(files.reduce((sum, e) => sum + e.size, 0))} in files</span>}
-                </p>
+            <Centered className="gap-3 p-4">
+                <div className="relative flex h-24 w-36 items-center justify-center">
+                    {deck.map((item, idx) => (
+                        <div
+                            key={item.path}
+                            className={cn(
+                                "absolute flex size-18 items-center justify-center overflow-hidden rounded-lg border border-border/80 bg-card p-1.5 shadow-md transition-transform duration-200",
+                                fanTransforms[idx],
+                            )}
+                        >
+                            <div className="relative size-14">
+                                <Thumbnail entry={item} box={56} lane="preview-deck" enabled iconSize={36} />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+                <div className="space-y-0.5 text-center">
+                    <p className="font-medium text-foreground">{formatCount(selected.length)} items selected</p>
+                    <p className="text-xs text-muted-foreground">
+                        {[selected.length > files.length && plural(selected.length - files.length, "folder"), files.length > 0 && plural(files.length, "file")].filter(Boolean).join(", ")}
+                        {files.length > 0 && ` · ${formatSize(files.reduce((sum, e) => sum + e.size, 0))}`}
+                    </p>
+                    {dateSpan && <p className="text-[11px] text-muted-foreground/80 tabular-nums">{dateSpan}</p>}
+                </div>
+                {writable && (
+                    <div className="mt-1 flex flex-wrap items-center justify-center gap-1.5">
+                        {canCompare && (
+                            <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2.5 text-xs" onClick={() => compareFiles(selected[0].path, selected[1].path)}>
+                                <GitCompareArrows className="size-3.5" /> Compare
+                            </Button>
+                        )}
+                        <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2.5 text-xs" onClick={() => openBatchRename(selected)}>
+                            <PenLine className="size-3.5" /> Rename
+                        </Button>
+                        <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2.5 text-xs" onClick={() => void compressEntries(selected)}>
+                            <FileArchive className="size-3.5" /> Zip
+                        </Button>
+                    </div>
+                )}
             </Centered>
         );
     }

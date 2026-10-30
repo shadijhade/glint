@@ -5,6 +5,7 @@ import {
     ArrowUp,
     Check,
     ChevronRight,
+    Copy,
     Ellipsis,
     File,
     FileArchive,
@@ -22,9 +23,9 @@ import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { type FileEntry, isArchiveFile, isHidden } from "@/lib/entries";
 import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
-import { driveName, listDir } from "@/lib/fs";
+import { driveName, listDir, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
-import { crumbs, isRecycleBin, isRemotePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { crumbs, inArchivePath, isRecycleBin, isRemotePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { plainQuery } from "@/lib/plain";
 import { remoteName, remotePath } from "@/lib/remotes";
 import { editsAllowed, typoDistance } from "@/lib/rank";
@@ -304,7 +305,7 @@ export function AddressBar() {
     );
     // The archives on the way are marked, so it's clear where the folders on disk end.
     const isArchive = (crumb: string) => !!archive && (samePath(crumb, archive.path) || samePath(crumb, archive.outer));
-    const { drives, known, editing } = useExplorer(useShallow((s) => ({ drives: s.drives, known: s.known, editing: s.editingAddress })));
+    const { drives, known, editing, dropTarget } = useExplorer(useShallow((s) => ({ drives: s.drives, known: s.known, editing: s.editingAddress, dropTarget: s.dropTarget })));
     const showHidden = useStore((s) => s.settings.showHidden);
     const trailRef = useRef<HTMLDivElement>(null);
     const crumbsRef = useRef<HTMLDivElement>(null);
@@ -318,6 +319,8 @@ export function AddressBar() {
     const [flyoutFilter, setFlyoutFilter] = useState("");
     // The search box, focused and empty, shows what it can do.
     const [findFocused, setFindFocused] = useState(false);
+    const [copiedPath, setCopiedPath] = useState(false);
+    const crumbDragRef = useRef<{ x: number; y: number; path: string; started: boolean } | null>(null);
     const inRepository = useGit((s) => !!s[tab]?.view);
     const trail = crumbs(path);
 
@@ -496,7 +499,7 @@ export function AddressBar() {
                     <AddressInput path={path} />
                 ) : (
                     // A narrow bar leaves This PC out, for the folder you're in.
-                    <div ref={trailRef} className="@container flex h-full min-w-0 flex-1 items-center overflow-hidden px-1">
+                    <div ref={trailRef} className="group/bar @container flex h-full min-w-0 flex-1 items-center overflow-hidden px-1">
                         <button
                             type="button"
                             onClick={() => navigate(THIS_PC)}
@@ -535,27 +538,71 @@ export function AddressBar() {
                             </div>
                         )}
                         <div ref={crumbsRef} className="flex h-6 min-w-12 flex-row-reverse flex-wrap justify-end overflow-hidden">
-                            {trail.map((crumb, i) => (
-                                // Laid out from the end; in the page (and to Tab), from the root.
-                                <div key={crumb.path} style={{ order: trail.length - i }} className={cn("flex items-center", i === trail.length - 1 ? "min-w-0 max-w-full" : "shrink-0", i < hidden && "invisible")}>
-                                    <button
-                                        type="button"
-                                        onClick={() => navigate(crumb.path)}
-                                        onMouseDown={middleClickOpens(crumb.path)}
-                                        title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : isRecycleBin(crumb.path) ? "What you deleted, to restore or delete for good" : i === 0 && isRemotePath(crumb.path) ? "A remote connection, opened read-only" : crumb.path}
-                                        className={cn("flex h-6 min-w-0 items-center gap-1 rounded-[4px] px-1.5 text-sm hover:bg-accent", i === trail.length - 1 && "font-medium")}
-                                    >
-                                        {isArchive(crumb.path) && <FileArchive className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
-                                        {i === 0 && isRemotePath(crumb.path) && <Cloud className="size-3.5 shrink-0 text-sky-500" />}
-                                        <span className="truncate">{crumbName(i)}</span>
-                                    </button>
-                                    {/* What's in the Recycle Bin isn't a folder to go into. */}
-                                    {!isRecycleBin(crumb.path) && chevron(i)}
-                                </div>
-                            ))}
+                            {trail.map((crumb, i) => {
+                                const writableCrumb = !isArchive(crumb.path) && !inArchivePath(crumb.path) && !isRemotePath(crumb.path) && !isRecycleBin(crumb.path) && crumb.path !== THIS_PC;
+                                const isDrop = writableCrumb && dropTarget === crumb.path;
+                                return (
+                                    // Laid out from the end; in the page (and to Tab), from the root.
+                                    <div key={crumb.path} style={{ order: trail.length - i }} className={cn("flex items-center", i === trail.length - 1 ? "min-w-0 max-w-full" : "shrink-0", i < hidden && "invisible")}>
+                                        <button
+                                            type="button"
+                                            data-drop={writableCrumb ? crumb.path : undefined}
+                                            onClick={() => navigate(crumb.path)}
+                                            onMouseDown={(e) => {
+                                                middleClickOpens(crumb.path)(e);
+                                                if (e.button === 0 && writableCrumb) {
+                                                    crumbDragRef.current = { x: e.clientX, y: e.clientY, path: crumb.path, started: false };
+                                                }
+                                            }}
+                                            onMouseMove={(e) => {
+                                                const d = crumbDragRef.current;
+                                                if (d && !d.started && (e.buttons & 1) === 1 && Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 6) {
+                                                    d.started = true;
+                                                    void startDrag([d.path]);
+                                                }
+                                            }}
+                                            onMouseUp={() => {
+                                                crumbDragRef.current = null;
+                                            }}
+                                            title={isArchive(crumb.path) ? "An archive, opened like a folder (read-only)" : isRecycleBin(crumb.path) ? "What you deleted, to restore or delete for good" : i === 0 && isRemotePath(crumb.path) ? "A remote connection, opened read-only" : crumb.path}
+                                            className={cn(
+                                                "flex h-6 min-w-0 items-center gap-1 rounded-[4px] px-1.5 text-sm transition-all duration-100 hover:bg-accent active:scale-96",
+                                                i === trail.length - 1 && "font-medium",
+                                                isDrop && "bg-primary/20 text-primary ring-1 ring-primary"
+                                            )}
+                                        >
+                                            {isArchive(crumb.path) && <FileArchive className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
+                                            {i === 0 && isRemotePath(crumb.path) && <Cloud className="size-3.5 shrink-0 text-sky-500" />}
+                                            <span className="truncate">{crumbName(i)}</span>
+                                        </button>
+                                        {/* What's in the Recycle Bin isn't a folder to go into. */}
+                                        {!isRecycleBin(crumb.path) && chevron(i)}
+                                    </div>
+                                );
+                            })}
                         </div>
                         <GitChip tab={tab} path={path} />
                         <div onClick={startEditing} className="h-full min-w-4 flex-1 cursor-text" title="Type a path (Ctrl+L)" />
+                        {path !== THIS_PC && !isRecycleBin(path) && (
+                            <button
+                                type="button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    void navigator.clipboard.writeText(path).then(() => {
+                                        setCopiedPath(true);
+                                        setTimeout(() => setCopiedPath(false), 1200);
+                                    });
+                                }}
+                                title="Copy folder path (Ctrl+Shift+C)"
+                                aria-label="Copy folder path"
+                                className={cn(
+                                    "grid size-6 shrink-0 place-items-center rounded-[4px] text-muted-foreground transition-all duration-150 hover:bg-accent hover:text-foreground",
+                                    copiedPath ? "opacity-100 text-emerald-500" : "opacity-0 group-hover/bar:opacity-100",
+                                )}
+                            >
+                                {copiedPath ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+                            </button>
+                        )}
                     </div>
                 )}
             </div>

@@ -139,3 +139,11 @@ export const typeGroup = (entry: FileEntry) => kindOf(entry).group;
 
 /** Pictures and videos: what a thumbnail in the list's icon column tells apart better than an icon. */
 export const isPictureOrVideo = (entry: FileEntry) => !entry.dir && (kindOf(entry).group === G.images || kindOf(entry).group === G.video);
+
+/** Filter string (`ext:png;jpg;...`) for all extensions belonging to `group`. */
+export function groupFilter(group: TypeGroup): string {
+    if (group === G.other) return "";
+    const exts: string[] = [];
+    for (const [list, kind] of KINDS) if (kind.group === group) exts.push(...list.split(" "));
+    return exts.length ? `ext:${exts.join(";")}` : "";
+}

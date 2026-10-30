@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { hslOf, textOn } from '@/lib/color';
 import { tileLayout } from '@/lib/grid';
-import { useStore, Settings } from '@/lib/store';
+import { useStore, type Settings } from '@/lib/store';
 
 const FONT_PX: Record<Settings['fontSize'], number> = { small: 14, medium: 16, large: 18 };
 
@@ -45,23 +46,26 @@ export function useTheme() {
         const root = document.documentElement;
         if (accent !== 'windows') return root.removeAttribute('data-accent');
         let live = true;
+        const setAccentVars = (a: Accent) => {
+            if (!live) return;
+            for (const [mode, hex] of [['light', a.dark[0]], ['dark', a.light[1]]]) {
+                root.style.setProperty(`--windows-accent-${mode}`, hslOf(hex));
+                root.style.setProperty(`--windows-accent-${mode}-text`, textOn(hex));
+            }
+            root.setAttribute('data-accent', 'windows');
+        };
         const apply = () =>
             invoke<Accent>('accent_colors').then(
-                (a) => {
-                    if (!live) return;
-                    for (const [mode, hex] of [['light', a.dark[0]], ['dark', a.light[1]]]) {
-                        root.style.setProperty(`--windows-accent-${mode}`, hslOf(hex));
-                        root.style.setProperty(`--windows-accent-${mode}-text`, textOn(hex));
-                    }
-                    root.setAttribute('data-accent', 'windows');
-                },
+                setAccentVars,
                 () => root.removeAttribute('data-accent')
             );
         apply();
         window.addEventListener('focus', apply);
+        const unlisten = listen<Accent>('windows-accent-changed', (ev) => setAccentVars(ev.payload));
         return () => {
             live = false;
             window.removeEventListener('focus', apply);
+            void unlisten.then((stop) => stop());
         };
     }, [accent]);
 }

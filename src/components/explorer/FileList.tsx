@@ -59,6 +59,8 @@ export interface FileViewProps {
     focusIndex: number;
     renaming: string | null;
     cut: ReadonlySet<string>;
+    dragging: ReadonlySet<string>;
+    flashed: ReadonlySet<string>;
     /** Folder that files dragged in from outside would land in. */
     dropTarget: string | null;
     /** In the pane the keyboard isn't acting on: the selection shows muted, as in an unfocused window. */
@@ -206,7 +208,7 @@ export function whereOf(relative: (path: string) => string) {
 }
 
 export function FileList(props: FileListProps) {
-    const { rows, rowHeight, search, recycled, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, takenOf, selection, focusIndex, renaming, cut, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    const { rows, rowHeight, search, recycled, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, takenOf, selection, focusIndex, renaming, cut, dragging, flashed, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
     // Items from many folders (search results, the Recycle Bin's) say where each is, in a column of its own.
     const located = search || !!recycled;
     // Sorted by date taken, the date column shows it (a file that says none, its date modified).
@@ -258,6 +260,8 @@ export function FileList(props: FileListProps) {
                     entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
                     (isHidden(entry) || cut.has(entry.path) || tracked.ignored) && "opacity-55",
+                    dragging.has(entry.path) && "opacity-45",
+                    flashed.has(entry.path) && "glint-flash",
                     diff === "same" && !selected && "opacity-60"
                 )}
             >
@@ -306,8 +310,8 @@ export function FileList(props: FileListProps) {
                     {sizePct > 0 && (
                         <span
                             aria-hidden
-                            className="pointer-events-none absolute inset-y-0.5 right-0 rounded-[3px] bg-primary/12 dark:bg-primary/18"
-                            style={{ width: `${sizePct}%` }}
+                            className="pointer-events-none absolute inset-x-0 inset-y-0.5 origin-right rounded-[3px] bg-primary/12 transition-transform duration-200 ease-out dark:bg-primary/18"
+                            style={{ transform: `scaleX(${sizePct / 100})` }}
                         />
                     )}
                     <span className="relative truncate">{size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : ""}</span>
