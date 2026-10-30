@@ -5,6 +5,8 @@ import {
     ArrowUp,
     Check,
     ChevronRight,
+    Clock,
+    Cloud,
     Copy,
     Ellipsis,
     File,
@@ -16,7 +18,6 @@ import {
     RotateCw,
     Search as SearchIcon,
     Trash2,
-    Cloud,
     X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -25,7 +26,7 @@ import { type FileEntry, isArchiveFile, isHidden } from "@/lib/entries";
 import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName, listDir, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
-import { crumbs, inArchivePath, isRecycleBin, isRemotePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { crumbs, inArchivePath, isRecent, isRecycleBin, isRemotePath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { plainQuery } from "@/lib/plain";
 import { remoteName, remotePath } from "@/lib/remotes";
 import { editsAllowed, typoDistance } from "@/lib/rank";
@@ -89,7 +90,7 @@ interface Suggestion {
 }
 
 function AddressInput({ path }: { path: string }) {
-    const [text, setText] = useState(path === THIS_PC ? "This PC" : isRecycleBin(path) ? "Recycle Bin" : path);
+    const [text, setText] = useState(path === THIS_PC ? "This PC" : isRecycleBin(path) ? "Recycle Bin" : isRecent(path) ? "Recent" : path);
     const [dirEntries, setDirEntries] = useState<{ dir: string; entries: FileEntry[] } | null>(null);
     const [activeIndex, setActiveIndex] = useState(-1);
     const ref = useRef<HTMLInputElement>(null);
@@ -350,7 +351,7 @@ export function AddressBar() {
         return drive ? driveName(drive) : root;
     };
     // A drive by its name; the Recycle Bin, a place, by its own.
-    const crumbName = (i: number) => (i === 0 && !isRecycleBin(trail[0].path) ? rootName(trail[0].path) : trail[i].name);
+    const crumbName = (i: number) => (i === 0 && !isRecycleBin(trail[0].path) && !isRecent(trail[0].path) ? rootName(trail[0].path) : trail[i].name);
     /** A crumb in the "…" menu: the drive's own icon for the first. */
     const crumbItem = (crumb: { path: string }, i: number): Suggestion => {
         const drive = i === 0 ? drives.find((d) => samePath(d.path, crumb.path)) : undefined;
@@ -385,6 +386,7 @@ export function AddressBar() {
             const roots: Suggestion[] = [
                 ...drives.map((d) => ({ name: driveName(d), detail: d.fs, path: d.path, dir: true, icon: DRIVE_ICONS[d.kind] })),
                 ...known.map((k) => ({ name: k.name, path: k.path, dir: true, icon: KNOWN_ICONS[k.id] })),
+                { name: "Recent", path: RECENT, dir: true, icon: Clock },
                 { name: "Recycle Bin", path: RECYCLE_BIN, dir: true, icon: Trash2 },
                 ...useStore.getState().remotes.map((r) => ({ name: r.name, path: remotePath(r), dir: true, icon: Cloud })),
             ];
@@ -576,14 +578,14 @@ export function AddressBar() {
                                             <span className="truncate">{crumbName(i)}</span>
                                         </button>
                                         {/* What's in the Recycle Bin isn't a folder to go into. */}
-                                        {!isRecycleBin(crumb.path) && chevron(i)}
+                                        {!isRecycleBin(crumb.path) && !isRecent(crumb.path) && chevron(i)}
                                     </div>
                                 );
                             })}
                         </div>
                         <GitChip tab={tab} path={path} />
                         <div onClick={startEditing} className="h-full min-w-4 flex-1 cursor-text" title="Type a path (Ctrl+L)" />
-                        {path !== THIS_PC && !isRecycleBin(path) && (
+                        {path !== THIS_PC && !isRecycleBin(path) && !isRecent(path) && (
                             <button
                                 type="button"
                                 onClick={(e) => {
