@@ -11,6 +11,7 @@ import { plainQuery } from "./plain.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, marqueeHits, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { editsAllowed, frecency, fuzzyIndices, fuzzyScore, typoDistance } from "./rank.ts";
 import { groupFilter, typeGroup } from "./fileTypes.ts";
+import { clockTime, dropClass, folderKind, gridTemplates, inOrder } from "./columns.ts";
 import { markdownTitle, safeHref } from "./markdown.ts";
 import { initiallyOpen, isContainer, JsonNumber, jqPath, PAGE, parseJson, preview, treeRows } from "./jsonTree.ts";
 import { byteChar, byteClass, hex, parseOffset } from "./hex.ts";
@@ -713,5 +714,34 @@ assert.deepEqual(fuzzyIndices("fch", "Find duplicate files"), null);
 assert.equal(fuzzyIndices("abc", "a____________________b____________________c", true), null);
 assert.match(groupFilter(typeGroup(entry("a.png"))), /^ext:png;jpg;/);
 assert.equal(groupFilter(typeGroup(entry("unknown.xyz"))), "");
+
+// Per-folder views: a folder's kind from what's in it, and the row's grid from its columns.
+{
+    const named = (...names: string[]) => names.map((name) => withDetails({ name, dir: false, size: 1, modified: 0, attrs: 0 }, "D:/music"));
+    assert.equal(folderKind(named("a.jpg", "b.jpg", "c.png", "d.heic", "e.txt"), null), "pictures");
+    assert.equal(folderKind(named("a.mp4", "b.mov", "c.mkv", "d.jpg", "e.txt"), null), "videos");
+    assert.equal(folderKind(named("a.mp3", "b.flac", "c.m4a", "d.mp3", "cover.jpg"), null), "music");
+    assert.equal(folderKind(named("a.jpg", "b.jpg", "c.txt", "d.txt", "e.txt"), null), "general");
+    assert.equal(folderKind(named("a.jpg", "b.jpg"), null), "general", "too few to tell");
+    assert.equal(folderKind(named("a.jpg"), "recent"), "recent");
+    assert.deepEqual(inOrder(["size", "type", "bogus", "modified"]), ["modified", "type", "size"]);
+    const plain = gridTemplates(["modified", "type", "size"], false);
+    assert.equal(plain.full, "minmax(0, 1fr) var(--col-date) var(--col-type) var(--col-size)");
+    assert.equal(plain.md, "minmax(0, 1fr) var(--col-date) var(--col-size)");
+    assert.equal(plain.sm, "minmax(0, 1fr) var(--col-size)");
+    const found = gridTemplates(["modified", "size"], true);
+    assert.equal(found.md, "minmax(0, 1fr) minmax(0, 0.9fr) var(--col-size)", "the date goes sooner among items from many folders");
+    assert.equal(dropClass("modified", true), "col-optional");
+    assert.equal(dropClass("modified", false), "col-narrow");
+    assert.equal(dropClass("size", false), undefined);
+    assert.equal(clockTime(185), "3:05");
+    assert.equal(clockTime(3723), "1:02:03");
+    const facts = (width: number, height: number, duration: number, artist: string): MediaFacts => ({ taken: null, width, height, duration, camera: null, artist, album: null });
+    const songs = named("a.mp3", "b.mp3", "c.mp3");
+    const said = new Map([[songs[0].path, facts(0, 0, 200, "Zed")], [songs[1].path, facts(0, 0, 90, "abba")], [songs[2].path, facts(0, 0, 300, "Muse")]]);
+    const by = (key: "duration" | "artist", desc = false) => sortEntries(songs, { key, desc }, true, false, undefined, undefined, (e) => said.get(e.path)).map((e) => e.name);
+    assert.deepEqual(by("duration"), ["b.mp3", "a.mp3", "c.mp3"]);
+    assert.deepEqual(by("artist"), ["b.mp3", "c.mp3", "a.mp3"], "artists in any case");
+}
 
 console.log("explorer.check: all assertions passed");

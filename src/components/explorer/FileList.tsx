@@ -7,6 +7,8 @@ import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
 import type { GitMark } from "@/lib/fs";
 import { parentPath } from "@/lib/paths";
+import { clockTime, type ColumnId, COLUMNS, dropClass, gridTemplates } from "@/lib/columns";
+import { canBeTaken, type MediaFacts } from "@/lib/media";
 import { type Column, useStore } from "@/lib/store";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
@@ -53,8 +55,10 @@ export interface FileViewProps {
     onSort: (key: SortKey) => void;
     /** The header's menu: what to sort by. */
     onHeaderMenu?: (e: React.MouseEvent) => void;
-    /** When a photo or video was taken, as far as it's known (sorting by date taken). */
-    takenOf?: (entry: FileEntry) => number | null | undefined;
+    /** The columns after the name (and, in a list of items from many folders, where each is), in order. */
+    columns: ColumnId[];
+    /** What a photo, a video or a song says about itself, as far as it's been read (its columns, and sorting by them). */
+    factsOf?: (entry: FileEntry) => MediaFacts | null | undefined;
     selection: ReadonlySet<string>;
     focusIndex: number;
     renaming: string | null;
@@ -228,13 +232,12 @@ export function whereOf(relative: (path: string) => string) {
 }
 
 export function FileList(props: FileListProps) {
-    const { rows, rowHeight, search, recycled, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, takenOf, selection, focusIndex, renaming, cut, dragging, flashed, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    const { rows, rowHeight, search, recycled, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, columns, factsOf, selection, focusIndex, renaming, cut, dragging, flashed, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
     // Items from many folders (search results, the Recycle Bin's) say where each is, in a column of its own.
     const located = search || !!recycled;
-    // Sorted by date taken, the date column shows it (a file that says none, its date modified).
-    const byTaken = sort.key === "taken";
+    const grid = useMemo(() => gridTemplates(columns, located), [columns, located]);
     const focusPath = rows[focusIndex]?.path;
-    const columns = useStore((s) => s.settings.columns);
+    const widths = useStore((s) => s.settings.columns);
     const where = useMemo(() => whereOf(relativeTo(scope)), [scope]);
     const maxSize = useMemo(() => {
         let max = 0;
@@ -312,30 +315,75 @@ export function FileList(props: FileListProps) {
                         {where(entry)}
                     </span>
                 )}
-                {byTaken && typeof takenOf?.(entry) === "number" ? (
-                    <span className={cn("truncate text-xs tabular-nums text-foreground/80", located ? "col-optional" : "col-narrow")} title={`Taken ${formatFullDate(takenOf(entry)!)}`}>
-                        {formatDate(takenOf(entry)!)}
-                    </span>
-                ) : (
-                    <span
-                        className={cn("flex items-center gap-1.5 truncate text-xs tabular-nums text-muted-foreground", located ? "col-optional" : "col-narrow")}
-                        title={`${recycled ? "Deleted " : ""}${formatFullDate(entry.modified)}`}
-                    >
-                        {isHot && <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title="Modified within the last hour" />}
-                        <span className="truncate">{formatDate(entry.modified)}</span>
-                    </span>
-                )}
-                {!located && <span className="col-optional truncate text-xs text-muted-foreground">{typeLabel(entry)}</span>}
-                <span className="relative flex h-5 items-center justify-end overflow-hidden rounded-[3px] px-1 text-right text-xs tabular-nums text-muted-foreground">
-                    {sizePct > 0 && (
-                        <span
-                            aria-hidden
-                            className="pointer-events-none absolute inset-x-0 inset-y-0.5 origin-right rounded-[3px] bg-primary/12 transition-transform duration-200 ease-out dark:bg-primary/18"
-                            style={{ transform: `scaleX(${sizePct / 100})` }}
-                        />
-                    )}
-                    <span className="relative truncate">{size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : ""}</span>
-                </span>
+                {columns.map((id) => {
+                    const drop = dropClass(id, located);
+                    const facts = COLUMNS[id].facts && !entry.dir ? factsOf?.(entry) : undefined;
+                    switch (id) {
+                        case "modified":
+                            return (
+                                <span
+                                    key={id}
+                                    className={cn("flex items-center gap-1.5 truncate text-xs tabular-nums text-muted-foreground", drop)}
+                                    title={`${recycled ? "Deleted " : ""}${formatFullDate(entry.modified)}`}
+                                >
+                                    {isHot && <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" title="Modified within the last hour" />}
+                                    <span className="truncate">{formatDate(entry.modified)}</span>
+                                </span>
+                            );
+                        case "taken": {
+                            // A picture that doesn't say when it was taken shows (muted) when it was modified, as
+                            // File Explorer's Date does; nothing until it's been read, and nothing for other files.
+                            const taken = facts?.taken ?? (facts !== undefined && !entry.dir && canBeTaken(entry) ? entry.modified : null);
+                            return (
+                                <span
+                                    key={id}
+                                    className={cn("truncate text-xs tabular-nums", facts?.taken ? "text-foreground/80" : "text-muted-foreground/70", drop)}
+                                    title={facts?.taken ? `Taken ${formatFullDate(facts.taken)}` : taken ? `It doesn't say when it was taken: modified ${formatFullDate(taken)}` : undefined}
+                                >
+                                    {taken ? formatDate(taken) : ""}
+                                </span>
+                            );
+                        }
+                        case "type":
+                            return (
+                                <span key={id} className={cn("truncate text-xs text-muted-foreground", drop)}>
+                                    {typeLabel(entry)}
+                                </span>
+                            );
+                        case "dimensions":
+                            return (
+                                <span key={id} className={cn("truncate text-xs tabular-nums text-muted-foreground", drop)}>
+                                    {facts?.width && facts.height ? `${facts.width} × ${facts.height}` : ""}
+                                </span>
+                            );
+                        case "duration":
+                            return (
+                                <span key={id} className={cn("truncate text-right text-xs tabular-nums text-muted-foreground", drop)}>
+                                    {facts?.duration ? clockTime(facts.duration) : ""}
+                                </span>
+                            );
+                        case "artist":
+                        case "album":
+                            return (
+                                <span key={id} className={cn("truncate text-xs text-muted-foreground", drop)} title={facts?.[id] ?? undefined}>
+                                    {facts?.[id] ?? ""}
+                                </span>
+                            );
+                        case "size":
+                            return (
+                                <span key={id} className="relative flex h-5 items-center justify-end overflow-hidden rounded-[3px] px-1 text-right text-xs tabular-nums text-muted-foreground">
+                                    {sizePct > 0 && (
+                                        <span
+                                            aria-hidden
+                                            className="pointer-events-none absolute inset-x-0 inset-y-0.5 origin-right rounded-[3px] bg-primary/12 transition-transform duration-200 ease-out dark:bg-primary/18"
+                                            style={{ transform: `scaleX(${sizePct / 100})` }}
+                                        />
+                                    )}
+                                    <span className="relative truncate">{size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : ""}</span>
+                                </span>
+                            );
+                    }
+                })}
             </div>
         );
     };
@@ -343,26 +391,21 @@ export function FileList(props: FileListProps) {
     return (
         <div
             className={cn("files flex h-full min-h-0 flex-col", dropTarget && dropTarget === scope && !search && "bg-primary/5 outline-2 -outline-offset-2 outline-dashed outline-primary/60")}
-            style={Object.fromEntries(Object.entries(columns).map(([column, width]) => [`--col-${column}`, `${width}px`]))}
+            style={{ ...Object.fromEntries(Object.entries(widths).map(([column, width]) => [`--col-${column}`, `${width}px`])), "--file-cols": grid.full, "--file-cols-md": grid.md, "--file-cols-sm": grid.sm } as React.CSSProperties}
         >
             <div
                 data-search={located || undefined}
                 onContextMenu={onHeaderMenu}
+                title="Right-click for the columns to show and what to sort by"
                 className="file-row h-8 shrink-0 overflow-y-hidden border-b px-3 text-xs font-medium text-muted-foreground [scrollbar-gutter:stable]"
             >
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
                 {located && <span className="truncate">{recycled ? "Deleted from" : "Folder"}</span>}
-                <Header sortKey={byTaken ? "taken" : "modified"} sort={sort} onSort={onSort} column="date" className={located ? "col-optional" : "col-narrow"}>
-                    {byTaken ? "Date taken" : recycled ? "Date deleted" : "Date modified"}
-                </Header>
-                {!located && (
-                    <Header sortKey="type" sort={sort} onSort={onSort} column="type" className="col-optional">
-                        Type
+                {columns.map((id) => (
+                    <Header key={id} sortKey={COLUMNS[id].sort} sort={sort} onSort={onSort} column={COLUMNS[id].width} className={cn(dropClass(id, located), COLUMNS[id].end && "justify-end")}>
+                        {id === "modified" && recycled ? "Date deleted" : COLUMNS[id].label}
                     </Header>
-                )}
-                <Header sortKey="size" sort={sort} onSort={onSort} column="size" className="justify-end">
-                    Size
-                </Header>
+                ))}
             </div>
             <div className="relative min-h-0 flex-1">
                 <VirtualList

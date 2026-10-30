@@ -145,6 +145,7 @@ import {
     newItem,
     newOfKind,
     forgetRecent,
+    setView,
     newTab,
     nextUndo,
     type NoAccess,
@@ -220,6 +221,7 @@ import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
 import { newMenuItems } from "./newMenu";
 import { FrequentFolders } from "./FrequentFolders";
+import { type ColumnId, COLUMN_ORDER, COLUMNS, DESCENDING, FACT_SORTS, folderKind, inOrder, KINDS } from "@/lib/columns";
 import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
@@ -1039,8 +1041,30 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         })
     );
     const settings = useStore((s) => s.settings);
-    const { sort, foldersFirst, showHidden, editorPath } = settings;
-    const { setSettings } = useStore.getState();
+    const { foldersFirst, showHidden, editorPath } = settings;
+    const { setSettings, setFolderView } = useStore.getState();
+    const bin = isRecycleBin(path) && !find;
+    // Recent: the files opened lately, from many folders (each says where it is).
+    const recentHere = isRecent(path) && !find;
+    // The folder's own columns and sort (and list or grid), or, until it has its own, its kind's: a folder
+    // of pictures shows when each was taken and its dimensions, Downloads its newest first. Searches and
+    // the Recycle Bin have theirs; with Settings' Each folder keeps its own view off, every folder has the same.
+    const perFolder = settings.perFolderViews;
+    const ownView = useStore((s) => (perFolder && !find && path !== THIS_PC ? s.folderViews[path.toLowerCase()] : undefined));
+    const knownFolders = useExplorer((s) => s.known);
+    const downloadsHere = !find && knownFolders.some((k) => k.id === "downloads" && samePath(k.path, path));
+    const kind = useMemo(() => folderKind(listing?.entries ?? NO_ENTRIES, recentHere ? "recent" : downloadsHere ? "downloads" : null), [listing, recentHere, downloadsHere]);
+    const columns = useMemo(
+        () => (find || bin ? (["modified", "size"] as ColumnId[]) : inOrder(ownView?.columns ?? (perFolder ? KINDS[kind].columns : settings.listColumns))),
+        [find, bin, ownView, perFolder, kind, settings.listColumns]
+    );
+    const sort = (!find && perFolder ? (ownView?.sort ?? KINDS[kind].sort) : undefined) ?? settings.sort;
+    // A folder whose own view is a grid or a list opens as it.
+    useEffect(() => {
+        if (ownView?.view && ownView.view !== view) setView(ownView.view, tabId);
+        // Only as the folder opens: choosing the other one there changes what it keeps.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [path, tabId]);
     // What Git says of what's in the folder, when it's in a repository.
     const gitMarks = useGit((s) => (find ? undefined : s[tabId]?.view?.marks));
     const menu = useMenu();
@@ -1060,7 +1084,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     // what its photos, videos and songs say is read the same way, and they show as it comes.
     const deferredFilter = useDeferredValue(filter);
     const filterReads = !find && hasPropFilter(deferredFilter);
-    const factsMap = useFacts((s) => (sort.key === "taken" || filterReads ? s.facts : null));
+    // Columns of what photos, videos and songs say (dimensions, duration, artist…), and sorting by them:
+    // read the same way, and shown as they come.
+    const factsWanted = FACT_SORTS.includes(sort.key) || columns.some((id) => COLUMNS[id].facts);
+    const factsMap = useFacts((s) => (factsWanted || filterReads ? s.facts : null));
     const takenOf = useMemo(() => {
         if (!factsMap || sort.key !== "taken") return undefined;
         return (e: FileEntry) => {
@@ -1069,17 +1096,18 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         };
     }, [factsMap, sort.key]);
     const factsOf = useMemo(() => (factsMap && filterReads ? (e: FileEntry) => factsMap.get(takenKey(e)) : undefined), [factsMap, filterReads]);
+    const factsShown = useMemo(() => (factsMap && factsWanted ? (e: FileEntry) => factsMap.get(takenKey(e)) : undefined), [factsMap, factsWanted]);
     useEffect(() => {
-        if (sort.key === "taken") void readTaken(source);
-        if (filterReads) void readFacts(source);
-    }, [sort.key, source, filterReads]);
+        if (sort.key === "taken" && !factsWanted) void readTaken(source);
+        if (filterReads || factsWanted) void readFacts(source);
+    }, [sort.key, source, filterReads, factsWanted]);
     const sorted = useMemo(() => {
         const sizeOf = sizeRun ? (e: FileEntry) => (e.dir ? (sizeRun.sizes.get(e.name) ?? -1) : e.size) : undefined;
         // Listings arrive sorted by name from Rust, so the default view needs no work here; close matches
         // arrive closest first from the index, and keep that order unless another one is chosen.
         const presorted = source === listing?.entries || (!!find?.fuzzy && source === found);
-        return sortEntries(source, sort, foldersFirst, presorted, sizeOf, takenOf);
-    }, [source, listing, find?.fuzzy, found, sort, foldersFirst, sizeRun, takenOf]);
+        return sortEntries(source, sort, foldersFirst, presorted, sizeOf, takenOf, factsShown);
+    }, [source, listing, find?.fuzzy, found, sort, foldersFirst, sizeRun, takenOf, factsShown]);
 
     // Compared deeper (the compare bar's Subfolders and Contents): Rust's answer for these two folders, once it's in.
     const deep = useDeepCompare();
@@ -1176,9 +1204,6 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     useLayoutEffect(() => markShown(tabId), [tabId, listing]);
 
     // The Recycle Bin: each item says where it was deleted from; each folder comes with its size.
-    const bin = isRecycleBin(path) && !find;
-    // Recent: the files opened lately, from many folders (each says where it is).
-    const recentHere = isRecent(path) && !find;
     const [recentOff, setRecentOff] = useState(false);
     useEffect(() => {
         if (recentHere) recentKept().then((kept) => setRecentOff(!kept), () => {});
@@ -1770,21 +1795,42 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         menu.open(e, backgroundMenu());
     };
 
-    const onSort = (key: SortKey) => setSettings({ sort: { key, desc: sort.key === key ? !sort.desc : key === "modified" || key === "taken" || key === "size" } });
+    // A folder's sort and columns are its own (until Settings says every folder has the same).
+    const ownsView = perFolder && !find && path !== THIS_PC;
+    const onSort = (key: SortKey) => {
+        const next = { key, desc: sort.key === key ? !sort.desc : DESCENDING.includes(key) };
+        if (ownsView) setFolderView(path, { sort: next });
+        else setSettings({ sort: next });
+    };
+    const setColumns = (next: ColumnId[]) => (ownsView ? setFolderView(path, { columns: next }) : setSettings({ listColumns: next }));
     // The header's own menu: what to sort by, Date taken among them (read from photos and videos).
     const onHeaderMenu = (e: React.MouseEvent) => {
         e.preventDefault();
-        const labels: [SortKey, string][] = [
-            ["name", "Name"],
-            ["modified", "Date modified"],
-            ["taken", "Date taken (photos and videos)"],
-            ["type", "Type"],
-            ["size", "Size"],
-        ];
-        menu.open(
-            e,
-            labels.map(([key, label]) => ({ label, toggle: true, checked: sort.key === key, onSelect: () => sort.key !== key && onSort(key) }))
-        );
+        const shown = new Set(columns);
+        const fixed = !!find || bin;
+        menu.open(e, [
+            !fixed && { heading: "Columns" },
+            ...(fixed
+                ? []
+                : COLUMN_ORDER.map((id) => ({
+                      label: COLUMNS[id].label,
+                      toggle: true,
+                      checked: shown.has(id),
+                      onSelect: () => setColumns(shown.has(id) ? columns.filter((c) => c !== id) : inOrder([...columns, id])),
+                  }))),
+            ownsView && !!ownView && { label: `Like other ${kind === "general" ? "folders" : `${KINDS[kind].label} folders`} again`, icon: RotateCcw, onSelect: () => setFolderView(path, null) },
+            { heading: "Sort by" },
+            ...([["name", "Name"], ...COLUMN_ORDER.filter((id) => fixed ? shown.has(id) : true).map((id) => [COLUMNS[id].sort, COLUMNS[id].label])] as [SortKey, string][]).map(([key, label]) => ({
+                label,
+                checked: sort.key === key,
+                onSelect: () => {
+                    if (sort.key !== key) onSort(key);
+                    // Sorted by a column not shown: it shows.
+                    const id = COLUMN_ORDER.find((c) => COLUMNS[c].sort === key);
+                    if (!fixed && id && !shown.has(id)) setColumns(inOrder([...columns, id]));
+                },
+            })),
+        ]);
     };
 
     let empty: React.ReactNode = null;
@@ -1922,7 +1968,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         sort,
         onSort,
         onHeaderMenu,
-        takenOf,
+        columns,
+        factsOf: factsShown,
         selection,
         focusIndex,
         renaming,

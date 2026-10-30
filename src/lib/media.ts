@@ -52,7 +52,7 @@ export interface MediaFacts {
     height: number | null;
     /** Seconds. */
     duration: number | null;
-    /** Lowercase. */
+    /** As the file has them (filters compare them in lower case). */
     camera: string | null;
     artist: string | null;
     album: string | null;
@@ -62,9 +62,8 @@ export interface MediaFacts {
 export const useFacts = create<{ facts: ReadonlyMap<string, MediaFacts | null> }>(() => ({ facts: new Map() }));
 
 const asked = new Set<string>();
-const lower = (text: string | null | undefined) => text?.toLowerCase() ?? null;
 const factsOf = (d: MediaDetails | null): MediaFacts | null =>
-    d && { taken: d.taken ?? null, width: d.width ?? null, height: d.height ?? null, duration: d.duration ?? null, camera: lower(d.camera), artist: lower(d.artist), album: lower(d.album) };
+    d && { taken: d.taken ?? null, width: d.width ?? null, height: d.height ?? null, duration: d.duration ?? null, camera: d.camera ?? null, artist: d.artist ?? null, album: d.album ?? null };
 
 /** Reads what these files say (photos, videos and songs; `which` of them), the ones not asked yet, 300 at a time. */
 export async function readFacts(entries: readonly FileEntry[], which: (entry: FileEntry) => boolean = hasDetails) {
