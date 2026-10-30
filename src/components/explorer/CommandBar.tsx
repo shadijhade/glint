@@ -79,6 +79,7 @@ import { cn } from "@/lib/utils";
 import { useMenu } from "../Menu";
 import { Button } from "../ui/button";
 import { checkForSecrets, checkWithYara } from "./CheckDialog";
+import { newMenuItems } from "./newMenu";
 import { canConvert, convertPictures } from "./ConvertDialog";
 import { openCleanup } from "./CleanupDialog";
 import { offerOnNetwork, offerToPC } from "./ShareDialog";
@@ -166,6 +167,8 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
         </div>
     );
 }
+
+const NEW_TITLE = "New: a folder, a text document, or a kind of file your apps make (a Word document, a zip…)";
 
 /** The most the bar folds: see `useFold`. */
 const MOST = 6;
@@ -264,6 +267,12 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
     const tasks = useProjectTasks(inFolder && !readOnly && !find ? path : null);
     const [ref, fold] = useFold(`${dual} ${readOnly} ${bin} ${tasks.length > 0}`);
     const menu = useMenu();
+
+    /** New, under the arrow by New folder: a folder, a text document, and what Windows' New menu makes. */
+    const showNew = (e: React.MouseEvent<HTMLButtonElement>) => {
+        const below = e.currentTarget.getBoundingClientRect();
+        menu.open({ clientX: below.left, clientY: below.bottom + 4 }, newMenuItems(true));
+    };
 
     const showTasks = (e: React.MouseEvent<HTMLButtonElement>) => {
         const below = e.currentTarget.getBoundingClientRect();
@@ -397,6 +406,17 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                     <Button variant="ghost" size="sm" onClick={() => newItem(true)} disabled={!inFolder || find || readOnly} title="New folder (Ctrl+Shift+N)">
                         <FolderPlus /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>New folder</span>
                     </Button>
+                    <button
+                        type="button"
+                        title={NEW_TITLE}
+                        aria-label={NEW_TITLE}
+                        aria-haspopup="menu"
+                        disabled={!inFolder || find || readOnly}
+                        onClick={showNew}
+                        className="-ml-1 grid h-7 w-5 shrink-0 place-items-center rounded-[5px] text-muted-foreground transition-all duration-100 hover:bg-accent hover:text-foreground active:scale-93 disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-3.5"
+                    >
+                        <ChevronDown />
+                    </button>
                     {fold < MOST ? (
                         <>
                             <Divider />

@@ -16,8 +16,8 @@ export interface MenuAction {
 export type MenuItem =
     /** A compact top icon strip for frequent actions (Cut, Copy, Paste, Rename, Copy path, Pin, Delete). */
     | { actions: (MenuAction | false | null | undefined)[] }
-    /** `checked` makes it one of a set to choose from (a check mark in place of an icon), or with `toggle` something on or off. */
-    | { label: string; icon?: LucideIcon; shortcut?: string; disabled?: boolean; danger?: boolean; checked?: boolean; toggle?: boolean; onSelect: () => void }
+    /** `checked` makes it one of a set to choose from (a check mark in place of an icon), or with `toggle` something on or off; `image` is a picture (an app's icon) in its icon's place. */
+    | { label: string; icon?: LucideIcon; image?: string; shortcut?: string; disabled?: boolean; danger?: boolean; checked?: boolean; toggle?: boolean; onSelect: () => void }
     /** A menu of its own: choosing it (or Right) shows `items` in the menu's place, with Back. */
     | { label: string; icon?: LucideIcon; disabled?: boolean; items: MenuItem[] }
     /** Starts a section, with a line above it unless it's first; it goes when nothing is under it. */
@@ -217,7 +217,13 @@ export function useMenu() {
                                 item.onSelect();
                             }}
                         >
-                            {item.checked !== undefined ? <Check className={item.checked ? "text-primary!" : "invisible"} /> : item.icon && <item.icon />}
+                            {item.checked !== undefined ? (
+                                <Check className={item.checked ? "text-primary!" : "invisible"} />
+                            ) : item.image ? (
+                                <img src={item.image} alt="" draggable={false} className="size-4 shrink-0" />
+                            ) : (
+                                item.icon && <item.icon />
+                            )}
                             <span className="flex-1 truncate">{item.label}</span>
                             {item.shortcut && <span className="ml-6 text-xs text-muted-foreground">{item.shortcut}</span>}
                         </button>

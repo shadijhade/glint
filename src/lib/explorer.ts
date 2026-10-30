@@ -60,6 +60,7 @@ import { baseName, crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joi
 import { frecency } from "./rank";
 import { initRemotes, remoteName } from "./remotes";
 import { initRules } from "./rules";
+import { loadNewKinds, newFile, type NewKind } from "./newKinds";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
 import { shareVisit } from "./zoxide";
 import { dropThumbnails } from "./thumbs";
@@ -715,6 +716,8 @@ async function init() {
     restored = true;
     saveSession();
     updateJumpList();
+    // Windows' New menu, read before it's first opened.
+    setTimeout(() => void loadNewKinds(), 2000);
 }
 
 let lastJumpKey: string | null = null;
@@ -2036,6 +2039,27 @@ export async function renameEntry(entry: FileEntry, name: string, tab = activeTa
         } else await navigate(t.path, { history: false, quiet: true, select: renamed, tab });
     } catch (e) {
         toast.error(`Couldn't rename “${entry.name}”`, { description: String(e) });
+    }
+}
+
+/** Makes a file of a kind Windows' New menu has (a Word document, a zip…) in the open folder, named as
+ * File Explorer names it, and starts renaming it; one its app makes is selected once it's there. */
+export async function newOfKind(kind: NewKind) {
+    const tab = activeTabId();
+    const path = tabState(tab)?.path;
+    if (!path || !isFolderPath(path)) return;
+    if (archiveOf(tab)) return readOnlyNotice();
+    if (closedOf(tab)) return closedNotice(tab);
+    try {
+        const created = await newFile(path, kind.ext);
+        if (created) rememberUndo(`new file “${baseName(created)}”`, () => performFileOp({ kind: "delete", paths: [created], permanent: false, confirm: false }));
+        else toast(`Your ${kind.name} app is making it`, { description: "It shows here once it's made." });
+        if (tabState(tab)?.find?.running) cancelFind(tab);
+        updateTab({ find: null, filter: "" }, tab);
+        await navigate(path, { history: false, quiet: true, select: created ?? undefined, tab });
+        if (created && !kind.byApp) updateTab({ renaming: tabState(tab)?.focus ?? null }, tab);
+    } catch (e) {
+        toast.error(`Couldn't make a new ${kind.name}`, { description: String(e) });
     }
 }
 

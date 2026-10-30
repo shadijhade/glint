@@ -35,7 +35,8 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src/lib/usage.ts`, `diskUsage.ts` | Disk-usage maps: decoding and the squarified treemap layout; each tab's map |
 | `src/lib/thumbs.ts`, `grid.ts` | Thumbnails for the tiles and rows on screen (asking, dropping, keeping them); the grid's tile sizes, columns and keys, and keeping its place as they change |
 | `src/components/Results.tsx`, `Search.tsx` | Text search (ripgrep) |
-| `src-tauri/src/fsx.rs` | Folder listing (Win32 `FindFirstFileExW`, binary transfer to the UI) |
+| `src-tauri/src/fsx.rs` | Folder listing (Win32 `FindFirstFileExW`, binary transfer to the UI), with cloud files' (OneDrive's) states |
+| `src-tauri/src/newmenu.rs` | Windows' New menu: the kinds of file the PC's apps registered (`ShellNew`), made from their templates, bytes or commands |
 | `src-tauri/src/archive/` | Archives opened like folders (zip, 7z, RAR, cabinets, installer packages, tar, compressed files): reading their list of entries, the folder tree, extracting on demand and into staging folders, safety limits ([docs/archives.md](docs/archives.md)) |
 | `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, pdu folder sizes and disk-usage maps (or the index when it's on) |
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop (with its drag picture), Properties, and Windows' own Share, Eject and Mount, turning pictures and the desktop background, OneDrive's keep and free up |
