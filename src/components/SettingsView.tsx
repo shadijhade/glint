@@ -3,9 +3,9 @@ import { getVersion } from "@tauri-apps/api/app";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Archive, Binary, ClipboardCopy, Download, ExternalLink, Folder, Heart, Image, Keyboard, Loader2, Lock, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, X, Zap } from "lucide-react";
+import { Archive, Binary, ClipboardCopy, Cloud, Download, ExternalLink, Folder, Heart, Image, Keyboard, Loader2, Lock, LockOpen, LogOut, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Wand2, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
-import { disableIndex, enableIndex, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
+import { disableIndex, enableIndex, leaveRemote, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, type McpSetup, mcpSetup, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
@@ -17,8 +17,12 @@ import { cn } from "@/lib/utils";
 import { cancelMeaning, installMeaning, refreshMeaning, removeMeaning, useMeaning } from "@/lib/meaning";
 import { refreshZoxide } from "@/lib/zoxide";
 import { refreshOpeners, useOpeners } from "@/lib/openers";
+import { type RcloneRemote, rcloneDelete, rcloneRemotes, type RcloneStatus, rcloneStatus, rcloneUnlock, serviceName } from "@/lib/rclone";
+import { connectionFor } from "./explorer/CloudSetup";
+import { addRemote } from "./explorer/RemoteDialog";
+import { openRules } from "./explorer/RulesDialog";
 import { openShortcuts } from "./ShortcutsDialog";
-import { installHint } from "./ToolNeeded";
+import { installHint, ToolNeeded } from "./ToolNeeded";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -48,6 +52,7 @@ const SECTIONS: [string, string][] = [
     ["Text search skips", "Text search skips"],
     ["Terminal", "Terminal"],
     ["Check", "Check"],
+    ["Clouds", "Clouds"],
     ["Tools", "Tools"],
     ["History", "History"],
     ["About", "About"],
@@ -400,6 +405,127 @@ function ToolsSection() {
                 ripgrep, fd and pdu come with Glint. Other tools install when a feature needs them, for your account only: with winget, or from the
                 tool's own GitHub release, which Glint checks against the checksum it knows for it before unpacking anything.
             </p>
+        </Section>
+    );
+}
+
+/** rclone's clouds: rclone itself (installed, its version and configuration, unlocked), its remotes (in the sidebar or not, or signed out of), and where to connect another or keep a folder in sync. */
+function CloudsSection({ onClose }: { onClose: () => void }) {
+    const tool = useTool("rclone");
+    const connections = useStore((s) => s.remotes);
+    const [status, setStatus] = useState<RcloneStatus | null>(null);
+    const [remotes, setRemotes] = useState<RcloneRemote[] | null>(null);
+    const [password, setPassword] = useState("");
+    const [error, setError] = useState("");
+    const installed = !!tool?.origin;
+    const read = async () => {
+        try {
+            const found = await rcloneStatus();
+            setStatus(found);
+            setRemotes(found.installed && !found.locked ? await rcloneRemotes() : []);
+            setError("");
+        } catch (e) {
+            setError(String(e));
+        }
+    };
+    useEffect(() => {
+        if (installed) void read();
+    }, [installed]);
+    const unlock = async () => {
+        try {
+            await rcloneUnlock(password);
+            setPassword("");
+            await read();
+        } catch (e) {
+            setError(String(e));
+        }
+    };
+    const signOut = async (remote: RcloneRemote) => {
+        const using = connections.filter((c) => c.kind === "rclone" && c.rclone === remote.name);
+        const sure = await confirm(
+            `Sign out of “${remote.name}”? It goes from rclone's configuration with its sign-in, so rclone in a terminal loses it too${using.length ? `, and ${using.length === 1 ? "its place in the sidebar goes" : "its places in the sidebar go"}` : ""}. Nothing on ${serviceName(remote.kind)} changes.`,
+            { title: "Sign out", kind: "warning", okLabel: "Sign out", cancelLabel: "Cancel" }
+        );
+        if (!sure) return;
+        try {
+            await rcloneDelete(remote.name);
+            for (const c of using) {
+                useStore.getState().removeRemote(c.id);
+                leaveRemote(c.id);
+            }
+            await read();
+        } catch (e) {
+            toast.error(`Couldn't sign out of “${remote.name}”`, { description: String(e) });
+        }
+    };
+    return (
+        <Section title="Clouds">
+            {!installed ? (
+                <ToolNeeded id="rclone" icon={Cloud} why="Google Drive, OneDrive, Dropbox and 60 more clouds open like folders with rclone, and Folder rules can keep folders in sync with them." className="m-3" />
+            ) : (
+                <>
+                    <Row label={`rclone${status?.version ? ` ${status.version}` : ""}`} hint={status?.config ? `Its configuration, shared with rclone in your terminals: ${status.config}` : "Reading rclone…"}>
+                        <Button
+                            size="sm"
+                            onClick={() => {
+                                onClose();
+                                addRemote();
+                            }}
+                        >
+                            <Plus /> Connect a cloud
+                        </Button>
+                    </Row>
+                    {status?.locked && (
+                        <Row label="Its configuration is encrypted" hint="Its password unlocks it until Glint closes">
+                            <form
+                                className="flex gap-1.5"
+                                onSubmit={(e) => {
+                                    e.preventDefault();
+                                    void unlock();
+                                }}
+                            >
+                                <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="rclone's configuration password" className="h-8 w-40" />
+                                <Button size="sm" variant="outline" type="submit" disabled={!password}>
+                                    <LockOpen /> Unlock
+                                </Button>
+                            </form>
+                        </Row>
+                    )}
+                    {remotes?.map((remote) => {
+                        const shown = connections.some((c) => c.kind === "rclone" && c.rclone === remote.name);
+                        return (
+                            <Row key={remote.name} label={remote.name} hint={serviceName(remote.kind)}>
+                                <div className="flex gap-1.5">
+                                    {shown ? (
+                                        <span className="self-center text-xs text-muted-foreground">In the sidebar</span>
+                                    ) : (
+                                        <Button size="sm" variant="outline" onClick={() => useStore.getState().saveRemote(connectionFor(remote.name, remote))}>
+                                            Show in the sidebar
+                                        </Button>
+                                    )}
+                                    <Button size="sm" variant="ghost" onClick={() => void signOut(remote)} title="Take it out of rclone's configuration, with its sign-in">
+                                        <LogOut /> Sign out
+                                    </Button>
+                                </div>
+                            </Row>
+                        );
+                    })}
+                    {remotes?.length === 0 && !status?.locked && <p className="px-4 py-3 text-sm text-muted-foreground">No clouds yet: Connect a cloud signs in to one.</p>}
+                    <Row label="Keep a folder in sync" hint="A folder rule copies it to a cloud, mirrors it there, or syncs it both ways">
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                                onClose();
+                                openRules();
+                            }}
+                        >
+                            <Wand2 /> Folder rules
+                        </Button>
+                    </Row>
+                    {error && <p className="px-4 py-2 text-xs text-destructive">{error}</p>}
+                </>
+            )}
         </Section>
     );
 }
@@ -772,6 +898,7 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
 
                 <CheckSection />
 
+                <CloudsSection onClose={onClose} />
                 <ToolsSection />
 
                 <Section title="History">

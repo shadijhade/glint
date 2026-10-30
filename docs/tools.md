@@ -34,6 +34,7 @@ They're the official Windows x64 releases, unmodified, installed next to `Glint.
 | [Nushell](https://www.nushell.sh/) | A shell for the terminal, and Nushell scripts in **Scripts** | winget `Nushell.Nushell`, else its release, 0.116.1 |
 | [sendme](https://github.com/n0-computer/sendme) | **Send to another PC** and **Receive from another PC** | winget `n0-computer.sendme`, else its release, 0.37.1 |
 | [dufs](https://github.com/sigoden/dufs) | **Share on this network** | winget `sigoden.Dufs`, else its release, 0.47.0 |
+| [rclone](https://rclone.org) | Google Drive, OneDrive, Dropbox and 60 more clouds under **Remote**, signed in to from Glint, and folder rules that keep a folder in sync with one ([how](remote.md#clouds-through-rclone)) | winget `Rclone.Rclone`, else its release, 1.75.2 |
 
 Meaning search's model isn't a program, but it's listed with them: Model2Vec's [potion-base-8M](https://huggingface.co/minishlab/potion-base-8M) (30 MB), downloaded from Hugging Face the first time it's asked for (or from [a copy on Glint's GitHub releases](https://github.com/shadijhade/glint/releases/tag/potion-base-8M-bf8b056) where Hugging Face can't be reached), at a pinned revision and checked against its SHA-256 checksums.
 

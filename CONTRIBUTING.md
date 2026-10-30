@@ -52,8 +52,9 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/cleanup.rs`, `dedup.rs`, `convert.rs`, `batch_rename.rs` | Clean up (Czkawka's modes too), Find duplicates (hard links, block clones), Convert pictures (rimage) and batch rename |
 | `src-tauri/src/xray.rs`, `sign.rs`, `check.rs`, `defender.rs`, `locks.rs`, `timeline.rs` | The File X-Ray (checksums, streams, signatures), YARA-X and Kingfisher checks, Defender scans, what's locking a file (Restart Manager) and recent changes |
 | `src-tauri/src/share.rs`, `lan.rs` | Send to another PC (sendme) and Share on this network (dufs) |
-| `src-tauri/src/remote/` | Remote connections as read-only folders: S3 (signed requests) and WebDAV over HTTPS, SFTP through Windows' own `sftp.exe`, secrets in Credential Manager ([docs/remote.md](docs/remote.md)) |
-| `src-tauri/src/rules.rs`, `src/lib/rules.ts` | Folder rules: watching, telling when a file is complete, the actions, and the log with Undo |
+| `src-tauri/src/remote/` | Remote connections as read-only folders: S3 (signed requests) and WebDAV over HTTPS, SFTP through Windows' own `sftp.exe`, rclone's remotes, secrets in Credential Manager ([docs/remote.md](docs/remote.md)) |
+| `src-tauri/src/rclone.rs`, `src/lib/rclone.ts`, `src/components/explorer/CloudSetup.tsx` | Clouds through rclone: its remote control (started when first needed), signing in step by step and in the browser, its remotes, how full they are, and sync runs |
+| `src-tauri/src/rules.rs`, `src/lib/rules.ts` | Folder rules: watching, telling when a file is complete, the actions, the log with Undo, and sync rules' runs |
 | `src-tauri/src/quick.rs`, `src/components/QuickSearch.tsx` | Quick search from anywhere: the shortcut, its window, the tray and starting with Windows |
 | `src-tauri/src/thumbs.rs` | Thumbnails from Windows' thumbnail cache (`IShellItemImageFactory`, `IThumbnailCache`) on worker threads, in a queue per tab |
 | `src-tauri/src/watch.rs` | Live folders: notify watches the folders on screen |

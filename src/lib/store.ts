@@ -166,7 +166,7 @@ export const DEFAULT_SETTINGS: Settings = {
 export interface RemoteConnection {
     id: string;
     name: string;
-    kind: "s3" | "webdav" | "sftp";
+    kind: "s3" | "webdav" | "sftp" | "rclone";
     /** S3: the service's address (Amazon's, from the region, when empty); WebDAV: the server's URL. */
     endpoint: string;
     region: string;
@@ -181,6 +181,9 @@ export interface RemoteConnection {
     root: string;
     /** Pictures in the grid get thumbnails, which downloads each one shown (up to 16 MB): off unless asked for. */
     thumbnails?: boolean;
+    /** rclone: the remote's name in rclone's configuration, and its type there ("drive", "onedrive"…). */
+    rclone?: string;
+    service?: string;
 }
 
 /**
@@ -200,11 +203,15 @@ export interface FolderRule {
     maxSize: number;
     /** Last changed at least this many days ago (0: any). */
     olderThanDays: number;
-    action: "move" | "rename" | "recycle" | "unblock" | "extract";
-    /** Move: where to ({year}, {month}, {day} of the file's date may be in it). */
+    action: "move" | "rename" | "recycle" | "unblock" | "extract" | "sync";
+    /** Move: where to ({year}, {month}, {day} of the file's date may be in it). Sync: the place on a remote of rclone's ("gdrive:Backups"). */
     target: string;
     /** Rename: the new name, of {name}, {ext}, {date}, {time}, {year}, {month}, {day}. */
     pattern: string;
+    /** Sync: "copy" (what's new or changed here goes there), "mirror" (there becomes what's here) or "both" (both ways). */
+    sync?: "copy" | "mirror" | "both";
+    /** Sync: also every this many minutes (0: when files change, and at start). */
+    every?: number;
 }
 
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */

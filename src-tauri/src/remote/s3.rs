@@ -197,7 +197,7 @@ impl Bucket {
     }
 }
 
-pub(super) const NOT_FOUND: &str = "It isn't there (any more)";
+pub(crate) const NOT_FOUND: &str = "It isn't there (any more)";
 
 /// What an S3 error says, in words: its XML's code and message.
 fn s3_failure(status: reqwest::StatusCode, body: &str, region: Option<&str>, bucket: &str) -> String {
