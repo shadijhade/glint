@@ -1,10 +1,10 @@
 # Remote connections
 
-Glint opens an S3-compatible bucket, a WebDAV server or an SFTP server as a folder of its own: under **Remote** in the sidebar, in a tab like any other, at a path of the form `remote:<id>\folder\file`. It's read-only there: Glint looks, previews, opens and copies out, and never changes anything on the remote.
+Glint opens Google Drive, OneDrive, Dropbox and 60 more clouds ([through rclone](#clouds-through-rclone)), an S3-compatible bucket, a WebDAV server or an SFTP server as a folder of its own: under **Remote** in the sidebar, in a tab like any other, at a path of the form `remote:<id>\folder\file`. It's read-only there: Glint looks, previews, opens and copies out, and never changes anything on the remote. A folder of yours can be kept in sync with a cloud by a [folder rule](#keeping-a-folder-in-sync).
 
 ## Adding one
 
-**Add a connection** (under **Remote** in the sidebar, or in `Ctrl+K`) asks for what Glint needs to reach it. **Test** tries it as it's typed and says what's at its top, or why it didn't connect; **Add and open** keeps it and opens it.
+**Add a connection** (under **Remote** in the sidebar, or in `Ctrl+K`) starts at **A cloud** ([below](#clouds-through-rclone)); for the other kinds it asks for what Glint needs to reach it. **Test** tries it as it's typed and says what's at its top, or why it didn't connect; **Add and open** keeps it and opens it.
 
 | Kind | Address | Its secret |
 | :--- | :--- | :--- |
@@ -52,3 +52,29 @@ SFTP goes through Windows' own OpenSSH client (`sftp.exe`, which Windows 10 and 
 Host keys are checked against `~/.ssh/known_hosts` and Glint's own list (`known_hosts` in its data folder); ssh isn't allowed to change either. A server neither knows isn't connected to: **Test** in its connection shows its key's fingerprint, and **Trust it and test again** adds it to Glint's list. Whoever runs the server can tell you whether the fingerprint is its (`ssh-keygen -lf` on the server's key). A key that changes after that is refused.
 
 Windows' OpenSSH can't share one connection between runs, so each listing, preview or download signs in again (well under a second on a network nearby); copying a folder out downloads all its files in one run. A text preview stops downloading once there's enough of the file to show.
+
+## Clouds through rclone
+
+[rclone](https://rclone.org) reaches more than 60 storage services: Google Drive, OneDrive, Dropbox, Box, pCloud, MEGA, Proton Drive, iCloud Drive, Google Photos, Backblaze B2, Azure, Google Cloud Storage, any S3-compatible storage, SFTP, FTP, SMB, WebDAV and more. It's optional: **Settings → Clouds** (or Tools) installs it, and so does the installer's **Extra tools** page; an rclone already on the PATH is used. Then **Add a connection** starts at **A cloud**:
+
+-   **Already in rclone** lists the remotes in rclone's configuration that aren't in the sidebar yet: one click tries one and adds it.
+-   **Or connect another**: pick a service, give it a name, fill in what it asks for first (a server's address, an account's user name and password…), then **Sign in** or **Connect**. Glint asks rclone's own setup questions one at a time, as `rclone config` would in a terminal. A service you sign in to in a browser (Google Drive, OneDrive, Dropbox, Box…) opens its own sign-in page in your browser: you sign in there and allow rclone, and Glint carries on by itself. Glint never sees that password.
+-   Google is retiring the app rclone signs in to Google Drive with: **My own app (client ID)** takes yours ([how to make one](https://rclone.org/drive/#making-your-own-client-id)).
+
+A remote is kept in rclone's own configuration file (Settings → Clouds says where, as `rclone config file` does), with its sign-in or password the way rclone keeps them (a password obscured): rclone in your terminals has the same remotes, and Glint's settings only have the remote's name. Stopping half-way takes the half-made remote out again. An encrypted configuration is unlocked with its password, asked for once each time Glint runs. **Remove the connection** asks whether to sign out as well (the remote and its sign-in leave rclone's configuration); Settings → Clouds lists every remote, puts one in the sidebar, or signs out of it.
+
+A cloud opens read-only, like the other remotes: Glint lists folders, previews (a text file only as far as it shows), opens and copies out, and changes nothing there. Where the service says how full it is, the sidebar shows it, as it does a drive's.
+
+**How Glint talks to rclone.** One `rclone rcd`, rclone's remote control, runs while Glint needs it: listening only on 127.0.0.1, on a port of its own, with a password made for that run, in a Windows job that ends it with Glint. Listings are its `operations/list`, a file's bytes come from its `--rc-serve` (ranges and all), and setting a remote up is `config/create` and `config/update` in non-interactive mode. A browser sign-in is `rclone authorize` with `--auth-no-open-browser`: Glint opens the page it gives and answers rclone's question with what it returns.
+
+### Keeping a folder in sync
+
+A folder rule whose **Then** is **Keep it in sync with a cloud** keeps its folder in sync with a folder on one of your clouds:
+
+| How | What runs | What it does |
+| :--- | :--- | :--- |
+| Copy there | `rclone copy` | What's new or changed here goes to the cloud. Nothing there is deleted. |
+| Mirror there | `rclone sync` | The cloud's folder becomes what's here: what's deleted here is deleted there. |
+| Both ways | `rclone bisync` | Changes on either side go to the other. Where a file changed on both, the newer wins and the other is kept as `name.conflict1`. Its first run (or one after its filters change) makes the record later runs compare with (`--resync`, the newer of each file winning). |
+
+The rule's names, sizes, age and subfolders become rclone's filters (`--include`, `--min-size`, `--min-age`, `--max-depth 1`). It runs a minute after Glint starts, half a minute after files in the folder stop changing (what its own run changes doesn't count), and as often as asked, from every 15 minutes to once a day: changes made on the cloud come in then. **What would it do?** is rclone's dry run: each file it would copy up or down, or delete. Each run that changes something, or fails, goes in **What they did** ("3 up, 1 down"), without Undo.

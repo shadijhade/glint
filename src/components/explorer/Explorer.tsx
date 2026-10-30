@@ -889,7 +889,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!step && action("undo", `Undo the ${step.label}`, Undo2, () => undo(), "Ctrl+Z"),
             action("settings", "Settings", SettingsIcon, onOpenSettings, "Ctrl+,"),
             action("shortcuts", "Keyboard shortcuts", Keyboard, openShortcuts, "F1"),
-            action("add-remote", "Add a remote connection: an S3 bucket, a WebDAV or an SFTP server", PlugZap, addRemote),
+            action("add-remote", "Add a remote connection: a cloud (Google Drive, OneDrive, Dropbox and 60 more), an S3 bucket, a WebDAV or an SFTP server", PlugZap, () => addRemote()),
             action("rules", "Folder rules: sort out what comes into a folder, and what they did", Wand2, () => openRules()),
             writable && !shut && !t.find && action("rule-here", "A rule for this folder: move, rename or clear out what comes in", Wand2, () => openRules(t.path)),
         ];

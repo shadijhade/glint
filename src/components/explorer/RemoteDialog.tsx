@@ -2,13 +2,15 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, CheckCircle2, Cloud, KeyRound, Loader2, PlugZap, Server, SquareTerminal, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cloud, Database, KeyRound, Loader2, PlugZap, Server, SquareTerminal, Trash2 } from "lucide-react";
 import { leaveRemote, navigate } from "@/lib/explorer";
+import { rcloneDelete, serviceName } from "@/lib/rclone";
 import { remoteHostKeys, remoteId, remotePath, remoteSecretDelete, remoteSecretSaved, remoteSecretSet, remoteTest, remoteTrustHost, UNKNOWN_HOST } from "@/lib/remotes";
 import { type RemoteConnection, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { Modal, ModalHeader } from "../Modal";
+import { CloudSetup, serviceIcon } from "./CloudSetup";
 
 const useRemoteDialog = create<{ open: boolean; editing: RemoteConnection | null }>(() => ({ open: false, editing: null }));
 
@@ -25,6 +27,16 @@ export async function removeRemote(remote: RemoteConnection) {
         okLabel: "Remove",
     });
     if (!sure) return false;
+    // One of rclone's remotes: signed out of as well, if asked (a terminal's rclone then loses it too).
+    if (remote.kind === "rclone" && remote.rclone) {
+        const signOut = await confirm(`Sign out of it as well? “${remote.rclone}” goes from rclone's configuration, with its sign-in, so rclone in a terminal loses it too.`, {
+            title: "Sign out",
+            kind: "warning",
+            okLabel: "Sign out",
+            cancelLabel: "Keep it in rclone",
+        });
+        if (signOut) await rcloneDelete(remote.rclone).catch((e) => toast.error("Couldn't take it out of rclone", { description: String(e) }));
+    }
     await remoteSecretDelete(remote.id).catch(() => {});
     useStore.getState().removeRemote(remote.id);
     leaveRemote(remote.id);
@@ -37,10 +49,11 @@ export function RemoteDialog() {
     return <RemoteForm key={editing?.id ?? "new"} editing={editing} />;
 }
 
-const BLANK: RemoteConnection = { id: "", name: "", kind: "s3", endpoint: "", region: "", bucket: "", user: "", root: "" };
+const BLANK: RemoteConnection = { id: "", name: "", kind: "rclone", endpoint: "", region: "", bucket: "", user: "", root: "" };
 
 const KINDS = [
-    { kind: "s3" as const, label: "S3-compatible storage", hint: "Amazon S3, Cloudflare R2, Backblaze B2, MinIO…", icon: Cloud },
+    { kind: "rclone" as const, label: "A cloud", hint: "Google Drive, OneDrive, Dropbox and 60 more", icon: Cloud },
+    { kind: "s3" as const, label: "S3-compatible storage", hint: "Amazon S3, Cloudflare R2, Backblaze B2, MinIO…", icon: Database },
     { kind: "webdav" as const, label: "WebDAV", hint: "Nextcloud, a NAS, dufs…", icon: Server },
     { kind: "sftp" as const, label: "SFTP", hint: "A server you reach with SSH", icon: SquareTerminal },
 ];
@@ -76,7 +89,8 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
     };
     const s3 = form.kind === "s3";
     const sftp = form.kind === "sftp";
-    const ready = !!form.name.trim() && (s3 ? !!form.bucket.trim() : sftp ? !!form.host?.trim() : !!form.endpoint.trim());
+    const rclone = form.kind === "rclone";
+    const ready = !!form.name.trim() && (rclone ? !!form.rclone : s3 ? !!form.bucket.trim() : sftp ? !!form.host?.trim() : !!form.endpoint.trim());
     const connection = (): RemoteConnection => ({
         ...form,
         id: editing?.id ?? remoteId(form.name),
@@ -128,34 +142,65 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
     };
 
     const title = editing ? `Edit “${editing.name}”` : "Add a remote connection";
+    const kinds = (
+        <div role="radiogroup" aria-label="Kind" className="grid grid-cols-2 gap-1.5">
+            {KINDS.map(({ kind, label, hint, icon: Icon }) => (
+                <button
+                    key={kind}
+                    type="button"
+                    role="radio"
+                    aria-checked={form.kind === kind}
+                    onClick={() => change({ kind })}
+                    className={cn("flex items-start gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-accent", form.kind === kind && "border-primary bg-primary/10 hover:bg-primary/15")}
+                >
+                    <Icon className="mt-0.5 size-4 shrink-0 text-primary" />
+                    <span className="min-w-0">
+                        <span className="block font-medium">{label}</span>
+                        <span className="block truncate text-[0.6875rem] text-muted-foreground">{hint}</span>
+                    </span>
+                </button>
+            ))}
+        </div>
+    );
+    // A new cloud: rclone's own steps, in a part of their own.
+    if (!editing && rclone)
+        return (
+            <Modal label={title} onClose={close} className="max-h-[88vh] max-w-xl">
+                <ModalHeader icon={Cloud} title="Connect a cloud" subtitle="Through rclone: sign in once, then open it like a folder" onClose={close} />
+                <div className="shrink-0 px-4 pt-4">{kinds}</div>
+                <CloudSetup
+                    onCancel={close}
+                    onDone={(made) => {
+                        useStore.getState().saveRemote(made);
+                        close();
+                        void navigate(remotePath(made));
+                    }}
+                />
+            </Modal>
+        );
+    const Service = serviceIcon(form.service ?? "");
     return (
         <Modal label={title} onClose={close} onSubmit={() => void save()} className="max-h-[88vh] max-w-xl">
             <ModalHeader icon={PlugZap} title={title} subtitle="Its folders open read-only; what you open or copy is downloaded" onClose={close} />
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm">
-                {!editing && (
-                    <div role="radiogroup" aria-label="Kind" className="grid grid-cols-3 gap-1.5">
-                        {KINDS.map(({ kind, label, hint, icon: Icon }) => (
-                            <button
-                                key={kind}
-                                type="button"
-                                role="radio"
-                                aria-checked={form.kind === kind}
-                                onClick={() => change({ kind })}
-                                className={cn("flex items-start gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-accent", form.kind === kind && "border-primary bg-primary/10 hover:bg-primary/15")}
-                            >
-                                <Icon className="mt-0.5 size-4 shrink-0 text-primary" />
-                                <span className="min-w-0">
-                                    <span className="block font-medium">{label}</span>
-                                    <span className="block truncate text-[0.6875rem] text-muted-foreground">{hint}</span>
-                                </span>
-                            </button>
-                        ))}
-                    </div>
-                )}
+                {!editing && kinds}
                 <Field label="Name">
                     <input autoFocus value={form.name} onChange={(e) => change({ name: e.target.value })} placeholder={s3 ? "Photos backup" : "My NAS"} aria-label="Name" className={INPUT} />
                 </Field>
-                {s3 ? (
+                {rclone ? (
+                    <>
+                        <Field label="In rclone" hint="The remote it opens, in rclone's configuration: rclone keeps its sign-in.">
+                            <span className="flex h-8 items-center gap-2">
+                                <Service className="size-4 shrink-0 text-primary" />
+                                <span className="font-medium">{form.rclone}</span>
+                                <span className="text-muted-foreground">{serviceName(form.service ?? "")}</span>
+                            </span>
+                        </Field>
+                        <Field label="Folder on it" hint="Where it opens; empty for its top.">
+                            <input value={form.root} onChange={(e) => change({ root: e.target.value })} placeholder="Photos" spellCheck={false} aria-label="Folder on it" className={INPUT} />
+                        </Field>
+                    </>
+                ) : s3 ? (
                     <>
                         <Field label="Address" hint="Empty for Amazon S3. R2: https://<account>.r2.cloudflarestorage.com · B2: https://s3.<region>.backblazeb2.com">
                             <input value={form.endpoint} onChange={(e) => change({ endpoint: e.target.value })} placeholder="Amazon S3" spellCheck={false} aria-label="Address" className={INPUT} />
@@ -304,8 +349,14 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
                     </p>
                 )}
                 <p className="text-xs text-muted-foreground">
-                    Glint only reads it: nothing there is changed. {s3 ? "The secret access key" : "The password"} stays in Windows Credential Manager, never in Glint's settings
-                    {sftp ? ", and reaches ssh (Windows' own) only when it asks." : "."}
+                    {rclone ? (
+                        "Glint only reads it: nothing there is changed. Its sign-in stays with rclone, never in Glint's settings."
+                    ) : (
+                        <>
+                            Glint only reads it: nothing there is changed. {s3 ? "The secret access key" : "The password"} stays in Windows Credential Manager, never in Glint's settings
+                            {sftp ? ", and reaches ssh (Windows' own) only when it asks." : "."}
+                        </>
+                    )}
                 </p>
             </div>
             <div className="flex shrink-0 items-center gap-2 border-t px-4 py-3">

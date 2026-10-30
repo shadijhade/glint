@@ -1,6 +1,7 @@
 //! Remote connections: an S3-compatible bucket (Amazon S3, Cloudflare R2, Backblaze B2, MinIO…), a
-//! WebDAV server (Nextcloud, a NAS, dufs) or an SFTP server (through Windows' own OpenSSH client:
-//! sftp.rs), browsed as a read-only folder at `remote:<id>\…` (the id is
+//! WebDAV server (Nextcloud, a NAS, dufs), an SFTP server (through Windows' own OpenSSH client:
+//! sftp.rs) or any of rclone's remotes (Google Drive, OneDrive, Dropbox…: rclone.rs), browsed as a
+//! read-only folder at `remote:<id>\…` (the id is
 //! made once from the connection's name, and kept through renames). Connections come from the app's
 //! settings without their secrets, which Windows Credential Manager keeps ("<app>/remote/<id>").
 //!
@@ -11,6 +12,7 @@
 //! rustls already built for updates (OpenDAL would have added 5.7 MB).
 
 mod dav;
+mod rclone;
 mod s3;
 mod sftp;
 mod time;
@@ -38,6 +40,9 @@ const PREVIEW_MOST: u64 = 100 << 20;
 /// What a server says to a range it won't give (past a small file's end, at some; of an empty one, at S3).
 pub(crate) const UNSATISFIABLE: &str = "The part asked for isn't there";
 
+/// What a remote says of an item that isn't there.
+pub(crate) const NOT_THERE: &str = s3::NOT_FOUND;
+
 /// The pictures a thumbnail is made of (downloaded, where the connection allows), up to 16 MB.
 const PICTURES: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "heic", "avif"];
 const THUMBNAIL_MOST: u64 = 16 << 20;
@@ -52,7 +57,7 @@ pub fn is_remote(path: &str) -> bool {
 pub struct Connection {
     pub id: String,
     pub name: String,
-    /// "s3", "webdav" or "sftp".
+    /// "s3", "webdav", "sftp" or "rclone".
     pub kind: String,
     /// S3: the service's address (Amazon's, from the region, when it's empty); WebDAV: the server's URL.
     pub endpoint: String,
@@ -69,6 +74,8 @@ pub struct Connection {
     pub root: String,
     /// Pictures shown in the grid get thumbnails, which downloads each one (up to 16 MB).
     pub thumbnails: bool,
+    /// rclone: the remote's name in rclone's configuration.
+    pub rclone: String,
 }
 
 /// A file or folder on a remote, by its own name.
@@ -85,6 +92,7 @@ enum Backend {
     S3(s3::Bucket),
     Dav(dav::Server),
     Sftp(sftp::Server),
+    Rclone(rclone::Remote),
 }
 
 impl Backend {
@@ -93,6 +101,7 @@ impl Backend {
             Backend::S3(b) => b.list(path).await,
             Backend::Dav(d) => d.list(path).await,
             Backend::Sftp(s) => s.list(path).await,
+            Backend::Rclone(r) => r.list(path).await,
         }
     }
 
@@ -101,6 +110,7 @@ impl Backend {
             Backend::S3(b) => b.stat(path).await,
             Backend::Dav(d) => d.stat(path).await,
             Backend::Sftp(s) => s.stat(path).await,
+            Backend::Rclone(r) => r.stat(path).await,
         }
     }
 
@@ -109,6 +119,7 @@ impl Backend {
             Backend::S3(b) => b.get(path, first).await,
             Backend::Dav(d) => d.get(path, first).await,
             Backend::Sftp(_) => Err("SFTP isn't read over HTTP".into()),
+            Backend::Rclone(r) => r.get(path, first).await,
         }
     }
 }
@@ -192,6 +203,13 @@ fn make(connection: &Connection, secret: &str) -> Result<Backend, String> {
                 key: connection.key.trim().into(),
                 askpass: (!secret.is_empty()).then(|| secrets::target(&connection.id)),
             }))
+        }
+        "rclone" => {
+            let name = connection.rclone.trim();
+            if name.is_empty() {
+                return Err("Which of rclone's remotes? Its name goes in the connection".into());
+            }
+            Ok(Backend::Rclone(rclone::Remote { name: name.into(), root }))
         }
         other => Err(format!("Glint doesn't know connections of the kind “{other}”")),
     }

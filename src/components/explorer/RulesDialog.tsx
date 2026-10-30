@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { open as pickPath } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
-import { AlertTriangle, ArrowRight, FolderOpen, Loader2, Plus, Trash2, Undo2, Wand2 } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowRight, ArrowUp, Cloud, FolderOpen, Loader2, Plus, Trash2, Undo2, Wand2, X } from "lucide-react";
 import { formatDate, plural } from "@/lib/format";
 import { baseName } from "@/lib/paths";
 import { didWhat, ruleId, type RuleDone, rulesApply, rulesClearLog, rulesLog, rulesPreview, undoRule } from "@/lib/rules";
-import { type FolderRule, useStore } from "@/lib/store";
+import { type FolderRule, type RemoteConnection, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { Modal, ModalHeader } from "../Modal";
@@ -35,6 +35,7 @@ export function openRules(folder?: string) {
 const close = () => useRulesDialog.setState({ open: false, editing: null });
 
 const ACTIONS: { action: FolderRule["action"]; label: string }[] = [
+    { action: "sync", label: "Keep it in sync with a cloud (rclone)" },
     { action: "move", label: "Move it into a folder" },
     { action: "rename", label: "Rename it" },
     { action: "unblock", label: "Unblock it (take off Windows' downloaded-from-the-internet mark)" },
@@ -42,8 +43,40 @@ const ACTIONS: { action: FolderRule["action"]; label: string }[] = [
     { action: "recycle", label: "Put it in the Recycle Bin" },
 ];
 
+/** How a sync rule syncs, in words. */
+const SYNC_MODES: { mode: NonNullable<FolderRule["sync"]>; label: string; hint: string }[] = [
+    { mode: "copy", label: "Copy there", hint: "What's new or changed here goes to the cloud. Nothing there is deleted." },
+    { mode: "mirror", label: "Mirror there", hint: "The cloud's folder becomes what's here: what you delete here is deleted there too." },
+    { mode: "both", label: "Both ways", hint: "Changes on either side go to the other (rclone bisync). Where a file changed on both, the newer wins and the other is kept as name.conflict1." },
+];
+
+const EVERY: [number, string][] = [
+    [0, "Only when files here change"],
+    [15, "Also every 15 minutes"],
+    [60, "Also every hour"],
+    [360, "Also every 6 hours"],
+    [1440, "Also once a day"],
+];
+
+/** The rclone connections a rule can sync with, and the one (with the folder on it) its target names. */
+function cloudOf(rule: FolderRule, remotes: RemoteConnection[]) {
+    const clouds = remotes.filter((r) => r.kind === "rclone" && r.rclone);
+    const [name, ...rest] = rule.target.split(":");
+    const path = rest.join(":");
+    const cloud = clouds.find((c) => c.rclone === name && (!c.root || path === c.root || path.startsWith(`${c.root}/`))) ?? clouds.find((c) => c.rclone === name);
+    const below = cloud?.root && path.startsWith(cloud.root) ? path.slice(cloud.root.length).replace(/^\/+/, "") : path;
+    return { clouds, cloud, below };
+}
+
+/** A sync rule's target: the connection's remote, its folder, and the folder below it. */
+const targetOf = (cloud: RemoteConnection, below: string) => `${cloud.rclone}:${[cloud.root, below].map((p) => p.trim().replace(/^\/+|\/+$/g, "")).filter(Boolean).join("/")}`;
+
 /** A rule in a few words: "In Downloads, *.pdf: move into D:\Docs\{year}". */
 function summary(rule: FolderRule) {
+    if (rule.action === "sync") {
+        const how = SYNC_MODES.find((m) => m.mode === (rule.sync ?? "copy"))?.label.toLowerCase() ?? "sync";
+        return `${baseName(rule.folder) || rule.folder}${rule.subfolders ? " and below" : ""}, ${rule.names.trim() || "every file"}: ${how} (${rule.target})`;
+    }
     const what = ACTIONS.find((a) => a.action === rule.action)?.label.split(" (")[0] ?? rule.action;
     const where = rule.action === "move" ? ` ${rule.target}` : rule.action === "rename" ? ` to ${rule.pattern}` : "";
     const age = rule.olderThanDays ? `, unchanged ${plural(rule.olderThanDays, "day")}` : "";
@@ -162,6 +195,7 @@ function Editor({ start }: { start: FolderRule }) {
         save(true);
         try {
             const did = await rulesApply({ ...named, on: true });
+            if (named.action === "sync") return void toast.success(`Rule “${named.name}” is on`, { description: "It's syncing now; What they did shows what it does." });
             toast.success(`Rule “${named.name}” is on`, { description: `It did it to ${plural(did, "file")} there now; what comes later goes the same way.` });
         } catch (e) {
             toast.error("Couldn't do it to what's there", { description: String(e) });
@@ -171,6 +205,12 @@ function Editor({ start }: { start: FolderRule }) {
         const picked = await pickPath({ directory: true, defaultPath: rule[key] || undefined });
         if (typeof picked === "string") change({ [key]: picked });
     };
+    const remotes = useStore((s) => s.remotes);
+    const { clouds, cloud, below } = cloudOf(rule, remotes);
+    const syncing = rule.action === "sync";
+    // A sync rule takes subfolders, copies, and (both ways) looks every 15 minutes, unless told otherwise.
+    const chooseAction = (action: FolderRule["action"]) =>
+        change(action === "sync" ? { action, subfolders: true, sync: rule.sync ?? "copy", every: rule.every ?? 60, target: clouds[0] && !rule.target.includes(":") ? targetOf(clouds[0], "") : rule.target } : { action });
     const found = preview?.found ?? [];
     return (
         <div className="space-y-3">
@@ -210,7 +250,7 @@ function Editor({ start }: { start: FolderRule }) {
                 />
             </Field>
             <Field label="Then">
-                <select value={rule.action} onChange={(e) => change({ action: e.target.value as FolderRule["action"] })} aria-label="Then" className={INPUT}>
+                <select value={rule.action} onChange={(e) => chooseAction(e.target.value as FolderRule["action"])} aria-label="Then" className={INPUT}>
                     {ACTIONS.map((a) => (
                         <option key={a.action} value={a.action}>
                             {a.label}
@@ -227,6 +267,72 @@ function Editor({ start }: { start: FolderRule }) {
                         </Button>
                     </span>
                 </Field>
+            )}
+            {syncing && (
+                <>
+                    {clouds.length === 0 ? (
+                        <p className="flex items-start gap-2 rounded-md border bg-primary/5 px-3 py-2 text-xs">
+                            <Cloud className="mt-0.5 size-3.5 shrink-0 text-primary" /> Connect a cloud first: Add a connection, under Remote in the sidebar, signs in to Google Drive, OneDrive, Dropbox
+                            and 60 more.
+                        </p>
+                    ) : (
+                        <>
+                            <Field label="With">
+                                <span className="flex gap-1.5">
+                                    <select
+                                        value={cloud?.id ?? ""}
+                                        onChange={(e) => {
+                                            const picked = clouds.find((c) => c.id === e.target.value);
+                                            if (picked) change({ target: targetOf(picked, below) });
+                                        }}
+                                        aria-label="Cloud"
+                                        className={INPUT}
+                                    >
+                                        {!cloud && <option value="">Choose a cloud…</option>}
+                                        {clouds.map((c) => (
+                                            <option key={c.id} value={c.id}>
+                                                {c.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <input
+                                        value={below}
+                                        onChange={(e) => cloud && change({ target: targetOf(cloud, e.target.value) })}
+                                        placeholder="Folder on it"
+                                        spellCheck={false}
+                                        aria-label="Folder on the cloud"
+                                        className={INPUT}
+                                    />
+                                </span>
+                            </Field>
+                            <Field label="How" hint={SYNC_MODES.find((m) => m.mode === (rule.sync ?? "copy"))?.hint}>
+                                <div role="radiogroup" aria-label="How" className="flex gap-1.5">
+                                    {SYNC_MODES.map((m) => (
+                                        <button
+                                            key={m.mode}
+                                            type="button"
+                                            role="radio"
+                                            aria-checked={(rule.sync ?? "copy") === m.mode}
+                                            onClick={() => change({ sync: m.mode, every: m.mode === "both" && !rule.every ? 15 : rule.every })}
+                                            className={cn("rounded-md border px-2.5 py-1 text-sm transition-colors hover:bg-accent", (rule.sync ?? "copy") === m.mode && "border-primary bg-primary/10")}
+                                        >
+                                            {m.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </Field>
+                            <Field label="When" hint="Half a minute after files here stop changing, a minute after Glint starts, and as often as asked here (changes on the cloud come in then).">
+                                <select value={rule.every ?? 60} onChange={(e) => change({ every: Number(e.target.value) })} aria-label="When" className={INPUT}>
+                                    {EVERY.map(([minutes, label]) => (
+                                        <option key={minutes} value={minutes}>
+                                            {label}
+                                        </option>
+                                    ))}
+                                </select>
+                            </Field>
+                        </>
+                    )}
+                </>
             )}
             {rule.action === "rename" && (
                 <Field label="New name" hint="Of {name}, {ext}, {date}, {time}, {year}, {month} and {day} (the file's date). A name that's taken gets “(2)”.">
@@ -265,8 +371,32 @@ function Editor({ start }: { start: FolderRule }) {
             )}
             {preview?.found && (
                 <div className="space-y-2 rounded-lg border p-3">
-                    <p className="font-medium">{found.length ? `${plural(found.length, "file")} there now it would take${found.length >= 500 ? " (the first 500)" : ""}:` : "Nothing there now that it takes: it would wait for what comes."}</p>
-                    {found.length > 0 && (
+                    <p className="font-medium">
+                        {syncing
+                            ? found.length
+                                ? `Its first run would do this${found.length >= 500 ? " (the first 500)" : ""}:`
+                                : "The two are in sync already: it would wait for changes."
+                            : found.length
+                              ? `${plural(found.length, "file")} there now it would take${found.length >= 500 ? " (the first 500)" : ""}:`
+                              : "Nothing there now that it takes: it would wait for what comes."}
+                    </p>
+                    {syncing && found.length > 0 && (
+                        <ul className="max-h-56 space-y-0.5 overflow-y-auto text-xs">
+                            {found.map((f, i) => {
+                                const Icon = f.action.startsWith("Delete") ? X : f.action.endsWith("down") ? ArrowDown : ArrowUp;
+                                return (
+                                    <li key={`${f.action} ${f.from} ${i}`} className="flex min-w-0 items-center gap-1.5">
+                                        <Icon className={cn("size-3 shrink-0", f.action.startsWith("Delete") ? "text-destructive" : "text-primary")} />
+                                        <span className="w-24 shrink-0 text-muted-foreground">{f.action}</span>
+                                        <span className="truncate" title={f.from}>
+                                            {f.from}
+                                        </span>
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
+                    {!syncing && found.length > 0 && (
                         <ul className="max-h-56 space-y-0.5 overflow-y-auto text-xs">
                             {found.map((f) => (
                                 <li key={f.from} className="flex min-w-0 items-center gap-1.5">
@@ -282,16 +412,24 @@ function Editor({ start }: { start: FolderRule }) {
                         </ul>
                     )}
                     <div className="flex flex-wrap gap-2 pt-1">
-                        <Button size="sm" onClick={() => save(true)}>
-                            Turn it on: for what comes from now
-                        </Button>
-                        {found.length > 0 && (
+                        {syncing ? (
+                            <Button size="sm" onClick={() => void turnOnWithThese()}>
+                                Turn it on and sync now
+                            </Button>
+                        ) : (
+                            <Button size="sm" onClick={() => save(true)}>
+                                Turn it on: for what comes from now
+                            </Button>
+                        )}
+                        {!syncing && found.length > 0 && (
                             <Button size="sm" variant="outline" onClick={() => void turnOnWithThese()}>
                                 Turn it on, and do it to {found.length === 1 ? "this one" : `these ${found.length}`} now
                             </Button>
                         )}
                     </div>
-                    <p className="text-[0.6875rem] text-muted-foreground">It runs while Glint runs. All it does is in What they did, each with Undo.</p>
+                    <p className="text-[0.6875rem] text-muted-foreground">
+                        {syncing ? "It runs while Glint runs, through rclone. Each run that changes something is in What they did." : "It runs while Glint runs. All it does is in What they did, each with Undo."}
+                    </p>
                 </div>
             )}
         </div>
@@ -326,7 +464,7 @@ function Log() {
                                 )
                             )}
                         </div>
-                        {!done.error && !done.undone && !!done.to && (
+                        {!done.error && !done.undone && !!done.to && done.action !== "sync" && (
                             <Button size="sm" variant="outline" className="h-7" onClick={() => void undoRule(done).then(read)}>
                                 <Undo2 /> Undo
                             </Button>

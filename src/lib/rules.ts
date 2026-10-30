@@ -14,6 +14,8 @@ export interface RuleDone {
     to: string | null;
     error: string | null;
     undone: boolean;
+    /** A sync's: what it did, in a few words ("3 up, 1 down"). */
+    summary?: string | null;
 }
 
 export const rulesPreview = (rule: FolderRule) => invoke<RuleDone[]>("rules_preview", { rule });
@@ -25,8 +27,9 @@ export const rulesUndo = (id: number) => invoke("rules_undo", { id });
 
 const DID: Record<string, string> = { move: "moved", rename: "renamed", recycle: "put in the Recycle Bin", unblock: "unblocked", extract: "extracted" };
 
-/** What a rule did, in a few words: "moved “a.pdf”". */
-export const didWhat = (done: RuleDone) => `${DID[done.action] ?? done.action} “${baseName(done.from)}”`;
+/** What a rule did, in a few words: "moved “a.pdf”", or a sync's "synced “Photos” with gdrive:Photos: 3 up". */
+export const didWhat = (done: RuleDone) =>
+    done.action === "sync" ? `synced “${baseName(done.from)}” with ${done.to ?? "the cloud"}${done.summary ? `: ${done.summary.toLowerCase()}` : ""}` : `${DID[done.action] ?? done.action} “${baseName(done.from)}”`;
 
 export async function undoRule(done: RuleDone) {
     try {
@@ -45,6 +48,8 @@ export function initRules() {
     });
     void listen<RuleDone>("rule-did", ({ payload: done }) => {
         if (done.error) toast.error(`Rule “${done.rule}” couldn't do it: ${baseName(done.from)}`, { description: done.error });
+        // A sync says what it did, and has no Undo.
+        else if (done.action === "sync") toast.success(`Rule “${done.rule}”: ${didWhat(done)}`);
         else toast.success(`Rule “${done.rule}”: ${didWhat(done)}`, { description: done.to ?? undefined, action: { label: "Undo", onClick: () => void undoRule(done) } });
     });
     return push(useStore.getState().rules);

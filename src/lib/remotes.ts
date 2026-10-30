@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { REMOTE, remoteIdOf } from "./paths";
+import { serviceName } from "./rclone";
 import { type RemoteConnection, useStore } from "./store";
 
 /** Tells Rust the connections (at start, and whenever they change); resolves once it has them. */
@@ -34,6 +35,7 @@ export function remoteId(name: string) {
 /** Where a connection goes, in a few words (the sidebar's tooltip). */
 export function remoteWhere(r: RemoteConnection) {
     const folder = r.root.trim() ? `, in ${r.root.trim()}` : "";
+    if (r.kind === "rclone") return `${serviceName(r.service ?? "")} through rclone (its remote “${r.rclone ?? ""}”)${folder}`;
     if (r.kind === "sftp") return `SFTP at ${r.user ? `${r.user}@` : ""}${r.host ?? ""}${r.port && r.port !== 22 ? `:${r.port}` : ""}${folder}`;
     return r.kind === "s3" ? `S3 bucket “${r.bucket}” at ${r.endpoint.trim() || `Amazon S3 (${r.region.trim() || "us-east-1"})`}${folder}` : `WebDAV at ${r.endpoint}${folder}`;
 }

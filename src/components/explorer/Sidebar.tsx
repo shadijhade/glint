@@ -1,13 +1,16 @@
-import { Cloud, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Unplug, Usb, X } from "lucide-react";
+import { Database, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Unplug, Usb, X } from "lucide-react";
 import { toast } from "sonner";
+import { useEffect, useState } from "react";
+import { type CloudSpace, rcloneAbout } from "@/lib/rclone";
 import { remotePath, remoteWhere } from "@/lib/remotes";
+import { serviceIcon } from "./CloudSetup";
 import { addRemote } from "./RemoteDialog";
 import { useShallow } from "zustand/react/shallow";
 import { type KnownFolder, middleClickOpens, navigate, refreshDrives, runSavedSearch, useExplorer, useTab } from "@/lib/explorer";
 import { type Drive, driveName, ejectDrive } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
 import { baseName, inArchivePath, isRemotePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
-import { type SavedSearch, useStore } from "@/lib/store";
+import { type RemoteConnection, type SavedSearch, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const KNOWN_ICONS: Record<KnownFolder["id"], LucideIcon> = {
@@ -31,7 +34,7 @@ export const DRIVE_ICONS: Record<Drive["kind"], LucideIcon> = {
 };
 
 /** Used-space bar, red when nearly full like Explorer's. */
-export function CapacityBar({ drive, className }: { drive: Drive; className?: string }) {
+export function CapacityBar({ drive, className }: { drive: Pick<Drive, "total" | "free">; className?: string }) {
     if (!drive.total) return null;
     const used = (drive.total - drive.free) / drive.total;
     return (
@@ -41,7 +44,45 @@ export function CapacityBar({ drive, className }: { drive: Drive; className?: st
     );
 }
 
-export const freeOf = (drive: Drive) => (drive.total ? `${formatSize(drive.free)} free of ${formatSize(drive.total)}` : "");
+export const freeOf = (drive: Pick<Drive, "total" | "free">) => (drive.total ? `${formatSize(drive.free)} free of ${formatSize(drive.total)}` : "");
+
+/** How full each cloud is, as its service last said (rclone's about), by connection: asked again after ten minutes. */
+const spaces = new Map<string, { at: number; space: CloudSpace | null }>();
+
+/** How full a cloud of rclone's is, where its service says: its total and what's free. */
+function useCloudSpace(r: RemoteConnection) {
+    const [space, setSpace] = useState(() => spaces.get(r.id)?.space ?? null);
+    useEffect(() => {
+        if (r.kind !== "rclone" || !r.rclone) return;
+        const known = spaces.get(r.id);
+        if (known && Date.now() - known.at < 10 * 60_000) return setSpace(known.space);
+        let live = true;
+        rcloneAbout(r.rclone, r.root).then(
+            (found) => {
+                spaces.set(r.id, { at: Date.now(), space: found });
+                if (live) setSpace(found);
+            },
+            () => {}
+        );
+        return () => {
+            live = false;
+        };
+    }, [r.id, r.kind, r.rclone, r.root]);
+    if (!space?.total) return null;
+    return { total: space.total, free: space.free ?? Math.max(0, space.total - (space.used ?? 0)) };
+}
+
+/** A remote connection in the sidebar: a cloud with how full it is, where its service says. */
+function RemotePlace({ remote, active, onContextMenu }: { remote: RemoteConnection; active: boolean; onContextMenu: (e: React.MouseEvent, path: string) => void }) {
+    const space = useCloudSpace(remote);
+    const icon = remote.kind === "rclone" ? serviceIcon(remote.service ?? "") : remote.kind === "s3" ? Database : remote.kind === "sftp" ? SquareTerminal : Server;
+    const where = remoteWhere(remote);
+    return (
+        <Place icon={icon} label={remote.name} path={remotePath(remote)} active={active} title={space ? `${where}\n${freeOf(space)}` : where} onContextMenu={onContextMenu}>
+            {space && <CapacityBar drive={space} className="mt-1" />}
+        </Place>
+    );
+}
 
 function Section({ title, onTitleClick, active, children }: { title: string; onTitleClick?: () => void; active?: boolean; children: React.ReactNode }) {
     return (
@@ -216,9 +257,14 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
             </Section>
             <Section title="Remote">
                 {remotes.map((r) => (
-                    <Place key={r.id} icon={r.kind === "s3" ? Cloud : r.kind === "sftp" ? SquareTerminal : Server} label={r.name} path={remotePath(r)} active={here(remotePath(r))} title={remoteWhere(r)} onContextMenu={onContextMenu} />
+                    <RemotePlace key={r.id} remote={r} active={here(remotePath(r))} onContextMenu={onContextMenu} />
                 ))}
-                <button onClick={addRemote} title="Add a remote connection: an S3 bucket, a WebDAV server or an SFTP server" aria-label="Add a remote connection" className={cn(PLACE, "text-muted-foreground")}>
+                <button
+                    onClick={() => addRemote()}
+                    title="Add a remote connection: a cloud (Google Drive, OneDrive, Dropbox and 60 more), an S3 bucket, a WebDAV server or an SFTP server"
+                    aria-label="Add a remote connection"
+                    className={cn(PLACE, "text-muted-foreground")}
+                >
                     <Plus className="size-4 shrink-0" />
                     <span className="hidden truncate md:inline">Add a connection</span>
                 </button>
