@@ -1,9 +1,10 @@
 import { Database, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Unplug, Usb, X } from "lucide-react";
 import { toast } from "sonner";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type CloudSpace, rcloneAbout } from "@/lib/rclone";
 import { remotePath, remoteWhere } from "@/lib/remotes";
 import { serviceIcon } from "./CloudSetup";
+import { onTreeKey, revealInTree, TreeArrow, TreeKids, treeHiddenChanged, treeSaw } from "./FolderTree";
 import { addRemote } from "./RemoteDialog";
 import { useShallow } from "zustand/react/shallow";
 import { type KnownFolder, middleClickOpens, navigate, refreshDrives, runSavedSearch, useExplorer, useTab } from "@/lib/explorer";
@@ -110,7 +111,12 @@ interface PlaceProps {
     title?: string;
     onContextMenu: (e: React.MouseEvent, path: string) => void;
     children?: React.ReactNode;
+    /** With the folder tree: the folder shown (opens to show its folders, the one shown marked). */
+    tree?: string;
 }
+
+/** A place the folder tree can open: a folder on a drive or a share, not in an archive or on a remote. */
+const opens = (path: string) => (/^[a-z]:\\/i.test(path) || path.startsWith("\\\\")) && !inArchivePath(path) && !isRemotePath(path);
 
 // Below md, icons only: the sidebar is a rail, each place's name in its tooltip.
 const PLACE = "relative flex w-full items-center justify-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-all duration-100 hover:bg-accent active:scale-[0.985] md:justify-start";
@@ -118,10 +124,14 @@ const PLACE = "relative flex w-full items-center justify-center gap-2.5 rounded-
 // Windows 11's navigation selection: a gray fill and a short accent pill at the left edge.
 const ACTIVE = "bg-accent text-foreground before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary";
 
-function Place({ icon: Icon, iconClass, label, path, active, title, onContextMenu, children }: PlaceProps) {
+function Place({ icon: Icon, iconClass, label, path, active, title, onContextMenu, children, tree }: PlaceProps) {
     const dropping = useExplorer((s) => s.dropTarget === path);
-    return (
+    const gutter = useStore((s) => s.settings.folderTree);
+    const opensHere = tree !== undefined && opens(path);
+    const button = (
         <button
+            data-nav-row
+            data-nav-tree={opensHere ? path : undefined}
             // A pinned folder in an archive takes no drops, nor does a remote's: they're read-only.
             data-drop={inArchivePath(path) || isRemotePath(path) ? undefined : path}
             onClick={() => navigate(path)}
@@ -132,6 +142,7 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
             aria-current={active ? "page" : undefined}
             className={cn(
                 PLACE,
+                gutter && "md:pl-6",
                 active && ACTIVE,
                 dropping && "scale-[1.01] bg-primary/20 outline-2 -outline-offset-2 outline-primary"
             )}
@@ -142,6 +153,16 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
                 {children}
             </div>
         </button>
+    );
+    if (!opensHere) return button;
+    return (
+        <>
+            <div className="group/tree relative">
+                <TreeArrow path={path} left={4} className="top-[1.0625rem]" />
+                {button}
+            </div>
+            <TreeKids path={path} depth={0} current={tree} onContextMenu={onContextMenu} />
+        </>
     );
 }
 
@@ -176,18 +197,35 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
     const saved = useStore((s) => s.savedSearches);
     const remotes = useStore((s) => s.remotes);
     const here = (p: string) => path !== THIS_PC && samePath(p, path);
+    const { folderTree, treeFollows, showHidden } = useStore(useShallow((s) => ({ folderTree: s.settings.folderTree, treeFollows: s.settings.treeFollows, showHidden: s.settings.showHidden })));
+    const tree = folderTree ? path : undefined;
+    const listing = useTab((t) => t.listing);
+    // The tree opens down to the folder shown, when asked; what's listed keeps it up to date.
+    useEffect(() => {
+        if (folderTree && treeFollows) void revealInTree(path, [...known.map((k) => k.path), ...pinned, ...drives.map((d) => d.path)]);
+        // Only when the folder shown changes: places coming and going don't open the tree again.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [folderTree, treeFollows, path]);
+    useEffect(() => {
+        if (folderTree && listing && !listing.archive && !listing.remote) treeSaw(listing.path, listing.entries);
+    }, [folderTree, listing]);
+    const shownHidden = useRef(showHidden);
+    useEffect(() => {
+        if (shownHidden.current !== showHidden) treeHiddenChanged();
+        shownHidden.current = showHidden;
+    }, [showHidden]);
 
     return (
-        <nav aria-label="Places" className="flex w-12 shrink-0 flex-col gap-4 overflow-y-auto border-r p-1.5 pt-3 md:w-56 md:p-2 md:pt-3">
+        <nav aria-label="Places" onKeyDown={onTreeKey} className="flex w-12 shrink-0 flex-col gap-4 overflow-y-auto border-r p-1.5 pt-3 md:w-56 md:p-2 md:pt-3">
             <Section title="Quick access">
                 {known.map((k) => (
-                    <Place key={k.id} icon={KNOWN_ICONS[k.id]} label={k.name} path={k.path} active={here(k.path)} onContextMenu={onContextMenu} />
+                    <Place key={k.id} icon={KNOWN_ICONS[k.id]} label={k.name} path={k.path} active={here(k.path)} onContextMenu={onContextMenu} tree={tree} />
                 ))}
             </Section>
             {pinned.length > 0 && (
                 <Section title="Pinned">
                     {pinned.map((p) => (
-                        <Place key={p} icon={Folder} iconClass="fill-amber-400/80 text-amber-500" label={baseName(p)} path={p} active={here(p)} onContextMenu={onContextMenu} />
+                        <Place key={p} icon={Folder} iconClass="fill-amber-400/80 text-amber-500" label={baseName(p)} path={p} active={here(p)} onContextMenu={onContextMenu} tree={tree} />
                     ))}
                 </Section>
             )}
@@ -221,6 +259,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                                 active={here(d.path)}
                                 title={freeOf(d) || d.path}
                                 onContextMenu={onContextMenu}
+                                tree={d.kind === "wsl" ? undefined : tree}
                             >
                                 <CapacityBar drive={d} className="mt-1" />
                             </Place>

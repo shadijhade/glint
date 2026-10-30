@@ -25,7 +25,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 
 | Path | What it is |
 | :--- | :--- |
-| `src/components/explorer/` | The Files mode UI: panes and tabs, list and grid, disk-usage map, sidebar, address bar, preview, command bar, terminal, and the dialogs (Clean up, Find duplicates, X-Ray, Compare two files, Send, Remote, Rules…) |
+| `src/components/explorer/` | The Files mode UI: panes and tabs, list and grid, disk-usage map, sidebar (and its folder tree, `FolderTree.tsx`), address bar, preview, command bar, terminal, and the dialogs (Clean up, Find duplicates, X-Ray, Compare two files, Send, Remote, Rules…) |
 | `src/lib/explorer.ts` | Explorer state and actions: tabs and panes, navigation, selection, search, file operations |
 | `src/lib/fs.ts` | Typed wrappers for every Rust command |
 | `src/lib/store.ts`, `paths.ts`, `entries.ts` | Settings, the session and saved things (in localStorage); paths and places (`shell:RecycleBinFolder`, `remote:<id>\…`); listings decoded from Rust's binary buffers |

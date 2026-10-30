@@ -674,6 +674,7 @@ pub fn run() {
             fsx::list_drives,
             fsx::read_text_preview,
             fsx::create_entry,
+            fsx::list_subfolders,
             newmenu::new_kinds,
             rclone::rclone_providers,
             rclone::rclone_config_start,

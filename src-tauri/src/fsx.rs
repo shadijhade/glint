@@ -103,6 +103,36 @@ pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
     .map_err(|e| ListError::other(&asked, e.to_string()))?
 }
 
+/// A folder in the sidebar's tree: its name, and whether it has folders of its own (None: not looked at,
+/// or too much in it to tell quickly).
+#[derive(Serialize)]
+pub struct Subfolder {
+    pub name: String,
+    pub children: Option<bool>,
+}
+
+/// The folders in `path` for the sidebar's tree, in the list's order (hidden and system ones only when
+/// asked), each with whether it has folders of its own: told within a fifth of a second for the first
+/// ones, as File Explorer's tree does.
+#[tauri::command]
+pub async fn list_subfolders(path: String, hidden: bool) -> Result<Vec<Subfolder>, String> {
+    blocking(move || {
+        let path = normalize(&path)?;
+        let mut entries = read_dir(&path).map_err(|e| describe(&e))?;
+        entries.retain(|e| e.dir && (hidden || e.attrs & 0x6 == 0));
+        sort_entries(&mut entries);
+        let until = Instant::now() + std::time::Duration::from_millis(200);
+        Ok(entries
+            .into_iter()
+            .map(|e| {
+                let children = (Instant::now() < until).then(|| has_subfolder(&Path::new(&path).join(&e.name).to_string_lossy(), hidden)).flatten();
+                Subfolder { name: e.name, children }
+            })
+            .collect())
+    })
+    .await
+}
+
 /// Where a junction or symbolic link to a folder points, made absolute; None for anything else.
 fn link_target(path: &str) -> Option<String> {
     if stat(path)?.attrs & 0x400 == 0 {
@@ -491,7 +521,7 @@ pub fn entry_for_path(path: &str, dir_hint: bool) -> Entry {
 }
 
 #[cfg(windows)]
-pub use win::{probe, read_dir, stat, stat_sized};
+pub use win::{has_subfolder, probe, read_dir, stat, stat_sized};
 #[cfg(windows)]
 pub(crate) use win::{io_error, wide};
 
@@ -672,6 +702,38 @@ mod win {
         result.map(|_| entries)
     }
 
+    /// Whether `dir` has a folder in it (a hidden or system one only when `hidden`), from its first 512
+    /// entries: None when those are all files, or it can't be listed.
+    pub fn has_subfolder(dir: &str, hidden: bool) -> Option<bool> {
+        use windows::Win32::Storage::FileSystem::FindExSearchLimitToDirectories;
+        let pattern = wide(&Path::new(dir).join("*"));
+        let mut data = WIN32_FIND_DATAW::default();
+        let handle = unsafe { FindFirstFileExW(PCWSTR(pattern.as_ptr()), FindExInfoBasic, &mut data as *mut _ as *mut _, FindExSearchLimitToDirectories, None, FIND_FIRST_EX_LARGE_FETCH) };
+        let handle = match handle {
+            Ok(handle) => handle,
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() => return Some(false),
+            Err(_) => return None,
+        };
+        let mut found = None;
+        for _ in 0..512 {
+            let len = data.cFileName.iter().position(|&c| c == 0).unwrap_or(data.cFileName.len());
+            let name = &data.cFileName[..len];
+            let dot = name == [b'.' as u16] || name == [b'.' as u16, b'.' as u16];
+            if !dot && data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 && (hidden || data.dwFileAttributes & 0x6 == 0) {
+                found = Some(true);
+                break;
+            }
+            if unsafe { FindNextFileW(handle, &mut data) }.is_err() {
+                found = Some(false);
+                break;
+            }
+        }
+        unsafe {
+            let _ = FindClose(handle);
+        }
+        found
+    }
+
     /// Whether `read_dir` can list `dir`, from its first entry only, and why not.
     pub fn probe(dir: &str) -> io::Result<()> {
         let pattern = wide(&Path::new(dir).join("*"));
@@ -703,6 +765,12 @@ mod win {
         let size = ((data.nFileSizeHigh as u64) << 32) | data.nFileSizeLow as u64;
         Some((entry(String::new(), data.dwFileAttributes, data.nFileSizeHigh, data.nFileSizeLow, data.ftLastWriteTime), size))
     }
+}
+
+#[cfg(not(windows))]
+pub fn has_subfolder(dir: &str, hidden: bool) -> Option<bool> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    Some(entries.flatten().any(|e| e.file_type().is_ok_and(|t| t.is_dir()) && (hidden || !e.file_name().to_string_lossy().starts_with('.'))))
 }
 
 #[cfg(not(windows))]
@@ -1125,6 +1193,23 @@ mod tests {
         assert_eq!(decode_text(b"\xEF\xBB\xBFhi", false).text, "hi");
         assert_eq!(decode_text(b"\xFF\xFEh\0i\0", false).text, "hi");
         assert!(decode_text(b"MZ\0\0\x03", false).binary);
+    }
+
+    #[test]
+    fn lists_subfolders_for_the_tree() {
+        let dir = std::env::temp_dir().join(format!("glint-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("b").join("inner")).unwrap();
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("10")).unwrap();
+        std::fs::create_dir_all(dir.join("9")).unwrap();
+        std::fs::write(dir.join("file.txt"), "x").unwrap();
+        std::fs::write(dir.join("a").join("only a file.txt"), "x").unwrap();
+        let listed = tauri::async_runtime::block_on(list_subfolders(dir.to_string_lossy().into_owned(), false)).unwrap();
+        let names: Vec<(&str, Option<bool>)> = listed.iter().map(|s| (s.name.as_str(), s.children)).collect();
+        assert_eq!(names, [("9", Some(false)), ("10", Some(false)), ("a", Some(false)), ("b", Some(true))]);
+        assert_eq!(has_subfolder(&dir.join("missing").to_string_lossy(), false), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
