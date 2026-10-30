@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { ArchiveFormat } from "./archives";
 import { decodeItems, decodeListing, type DiffStatus, type FileEntry, type Listing } from "./entries";
 import { type JsonValue, parseJson } from "./jsonTree";
@@ -1139,6 +1140,12 @@ export const setExplorerIntegration = (menu: boolean, byDefault: boolean, winE?:
 
 /** The taskbar button's Jump List: its tasks, then the pinned folders and the most used (those only when Windows shows recently opened items). */
 export const syncJumpList = (pinned: string[], frequent: string[]) => invoke<void>("sync_jump_list", { pinned, frequent });
+
+/** Back, Forward and Up under the taskbar button's preview, each greyed out where it can't go. */
+export const thumbButtons = (back: boolean, forward: boolean, up: boolean) => invoke<void>("thumb_buttons", { back, forward, up });
+
+/** One of them clicked. */
+export const onThumbButton = (handler: (button: "back" | "forward" | "up") => void) => listen<"back" | "forward" | "up">("thumb-button", (e) => handler(e.payload));
 
 /** Updates the live Windows 11 Taskbar button progress bar (best effort: it never fails the work it shows). */
 export const taskbarProgress = (state: "none" | "indeterminate" | "normal" | "paused" | "error", completed?: number, total?: number) =>
