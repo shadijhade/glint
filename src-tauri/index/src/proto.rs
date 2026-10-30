@@ -34,6 +34,10 @@ pub enum Request {
     List { path: String },
     /// What was renamed, moved and deleted on the indexed drives, newest first.
     History(HistoryRequest),
+    /// A copy of Glint that isn't the Microsoft Store's says it uses the service, so it stays when the
+    /// Store's copy that installed it goes (store.rs). Answered with the status. A service from before
+    /// closes the pipe on it.
+    Claim,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -414,6 +418,7 @@ mod tests {
         write_request(&mut wire, &request).unwrap();
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
         assert!(serde_json::to_string(&Request::Status).unwrap().contains(r#""op":"status""#));
+        assert_eq!(serde_json::to_string(&Request::Claim).unwrap(), r#"{"op":"claim"}"#);
         // Without close matches asked for, a request is as a service from before them reads it; with
         // them, an older service reads it too (it ignores what it doesn't know).
         assert!(serde_json::to_string(&request).unwrap().ends_with(r#""maxResults":50000}"#));

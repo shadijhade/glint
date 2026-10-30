@@ -16,8 +16,8 @@ use windows::Win32::Security::{
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_MULTI_SZ,
-    REG_OPTION_NON_VOLATILE, REG_VALUE_TYPE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE,
+    REG_MULTI_SZ, REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KF_FLAG_DEFAULT};
@@ -199,6 +199,20 @@ impl Key {
     pub fn strings(&self, name: &str) -> io::Result<Vec<String>> {
         let buf = self.get(name, RRF_RT_REG_MULTI_SZ)?;
         Ok(buf.split(|&u| u == 0).filter(|s| !s.is_empty()).map(String::from_utf16_lossy).collect())
+    }
+
+    pub fn set_string(&self, name: &str, value: &str) -> io::Result<()> {
+        let bytes: Vec<u8> = wide(value).iter().flat_map(|u| u.to_le_bytes()).collect();
+        reg(unsafe { RegSetValueExW(self.0, PCWSTR(wide(name).as_ptr()), None, REG_SZ, Some(&bytes)) })
+    }
+
+    /// Deletes a value; one that isn't there is fine. True if there was one.
+    pub fn delete(&self, name: &str) -> io::Result<bool> {
+        match reg(unsafe { RegDeleteValueW(self.0, PCWSTR(wide(name).as_ptr())) }) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn set_strings(&self, name: &str, values: &[String]) -> io::Result<()> {

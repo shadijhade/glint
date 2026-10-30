@@ -132,6 +132,20 @@ pub(crate) fn status_on(pipe: Handle) -> Result<Status, Error> {
     }
 }
 
+/// Says this copy of Glint, not the Microsoft Store's, uses the service, so it stays when the Store's
+/// copy that installed it goes; answers the status, as `status` does. None from a service from before
+/// it, which closes the pipe without a word (where `reply` would say it isn't running).
+pub fn claim() -> Result<Option<Status>, Error> {
+    let pipe = ask(connect()?, &Request::Claim)?;
+    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
+        None => Ok(None),
+        Some((kind, payload)) => match message(kind, &payload)? {
+            Message::Status(status) => Ok(Some(status)),
+            _ => Err(unexpected()),
+        },
+    }
+}
+
 pub fn sizes(path: &str) -> Result<Sizes, Error> {
     sizes_on(connect()?, path)
 }
@@ -301,14 +315,20 @@ fn explain(code: u32) -> String {
     }
 }
 
-/// Installs and starts the service for the current user, from the executable bundled with the app.
+/// Installs and starts the service for the current user, from the executable bundled with the app:
+/// `package` is the Microsoft Store copy's package family, when it's that one (store.rs).
 /// Err("cancelled") when the UAC prompt was declined.
-pub fn enable(bundled: &Path, owner: Option<isize>) -> Result<(), String> {
+pub fn enable(bundled: &Path, owner: Option<isize>, package: Option<&str>) -> Result<(), String> {
     let sid = win::current_user_sid().map_err(|e| e.to_string())?;
-    match run_elevated(bundled, &format!("install --allow-sid {sid}"), owner)? {
+    match run_elevated(bundled, &install_args(&sid, package), owner)? {
         0 => Ok(()),
         code => Err(explain(code)),
     }
+}
+
+fn install_args(sid: &str, package: Option<&str>) -> String {
+    let package = package.map_or(String::new(), |family| format!(" --package {family}"));
+    format!("install --allow-sid {sid}{package}")
 }
 
 /// Stops and removes the service and its snapshots.
@@ -322,6 +342,12 @@ pub fn disable(bundled: &Path, owner: Option<isize>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_the_store_package_only_for_the_stores_copy() {
+        assert_eq!(install_args("S-1-5-21-1-2-3-1001", None), "install --allow-sid S-1-5-21-1-2-3-1001");
+        assert_eq!(install_args("S-1-5-21-1-2-3-1001", Some("Glint.Test_4cqh9yg7jc6m4")), "install --allow-sid S-1-5-21-1-2-3-1001 --package Glint.Test_4cqh9yg7jc6m4");
+    }
 
     #[test]
     fn explains_installer_exit_codes() {
