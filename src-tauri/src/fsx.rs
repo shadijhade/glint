@@ -58,8 +58,8 @@ impl ListError {
 /// into a zip or 7z archive lists the folder in the archive. A link Windows won't list, such as
 /// "Documents and Settings" (kept for old apps, it lets no one look inside), lists where it points;
 /// a folder Windows keeps this user out of lists what instant search's index has in it, if it can.
-/// The Recycle Bin (`recycle::PLACE`) lists its items, each with a path of its own (`encode_items`),
-/// and a remote connection's folder (`remote:<id>\…`) what's in it there.
+/// The Recycle Bin (`recycle::PLACE`) and Recent (`recent::PLACE`) list their items, each with a path
+/// of its own (`encode_items`), and a remote connection's folder (`remote:<id>\…`) what's in it there.
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
     let asked = path.clone();
@@ -70,6 +70,9 @@ pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
         let started = Instant::now();
         if crate::recycle::is_place(path.trim()) {
             return crate::recycle::listing(started).map(tauri::ipc::Response::new).map_err(|e| ListError::other(crate::recycle::PLACE, e));
+        }
+        if crate::recent::is_place(path.trim()) {
+            return crate::recent::listing(started).map(tauri::ipc::Response::new).map_err(|e| ListError::other(crate::recent::PLACE, e));
         }
         let path = normalize(&path).map_err(|e| ListError::other(&path, e))?;
         if let Some(listing) = crate::archive::list(&path, started) {

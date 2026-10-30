@@ -7,6 +7,10 @@ export const THIS_PC = "";
 export const RECYCLE_BIN = "shell:RecycleBinFolder";
 export const isRecycleBin = (path: string) => path.toLowerCase() === "shell:recyclebinfolder";
 
+/** Recent, by File Explorer's name for Windows' Recent Items: the files opened lately, each at its own path (recent.rs). */
+export const RECENT = "shell:Recent";
+export const isRecent = (path: string) => path.toLowerCase() === "shell:recent";
+
 /** A remote connection's folders (remote/): `remote:<id>` and below, read-only, their files downloaded to be read. */
 export const REMOTE = "remote:";
 export const isRemotePath = (path: string) => path.slice(0, REMOTE.length).toLowerCase() === REMOTE;
@@ -14,16 +18,16 @@ export const isRemotePath = (path: string) => path.slice(0, REMOTE.length).toLow
 export const remoteIdOf = (path: string) => (isRemotePath(path) ? (path.slice(REMOTE.length).split(/[\\/]/)[0] ?? "") : "");
 
 /** A folder on this PC (on disk, or in an archive) rather than This PC, the Recycle Bin or a remote: what's in it has its path, for other tools too. */
-export const isFolderPath = (path: string) => path !== THIS_PC && !isRecycleBin(path) && !isRemotePath(path);
+export const isFolderPath = (path: string) => path !== THIS_PC && !isRecycleBin(path) && !isRecent(path) && !isRemotePath(path);
 
 const SEPARATORS = /[\\/]+$/;
 
 /** In an archive (or the archive itself), by its names: read-only, and not on disk for other tools. */
 export const inArchivePath = (path: string) => ARCHIVE_IN_PATH.test(path);
 
-/** "C:\", "C:", "\\server\share" and "/" are roots, and so are the Recycle Bin and a remote's top (This PC is above them). */
+/** "C:\", "C:", "\\server\share" and "/" are roots, and so are the Recycle Bin, Recent and a remote's top (This PC is above them). */
 export function isRoot(path: string) {
-    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/" || isRecycleBin(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
+    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/" || isRecycleBin(path) || isRecent(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
 }
 
 export function joinPath(dir: string, name: string) {
@@ -85,6 +89,7 @@ export function linkedPath(url: string, folder: string, root: string): string | 
 export function crumbs(path: string): { name: string; path: string }[] {
     if (path === THIS_PC) return [];
     if (isRecycleBin(path)) return [{ name: "Recycle Bin", path: RECYCLE_BIN }];
+    if (isRecent(path)) return [{ name: "Recent", path: RECENT }];
     // A remote's top is named for its connection's id (the address bar shows the connection's name).
     if (isRemotePath(path)) {
         const [id, ...rest] = path.slice(REMOTE.length).split(/[\\/]/).filter(Boolean);

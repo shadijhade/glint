@@ -8,7 +8,7 @@ import { compressEntries, enableIndex, updateTab, useExplorer, useTab, viewKey }
 import { groupFilter, TYPE_GROUPS, type TypeGroup, typeGroup } from "@/lib/fileTypes";
 import { formatCount, formatDuration, formatSize } from "@/lib/format";
 import { type GitRun, useGit } from "@/lib/git";
-import { baseName, isRecycleBin, THIS_PC } from "@/lib/paths";
+import { baseName, isRecent, isRecycleBin, THIS_PC } from "@/lib/paths";
 import { type ThumbRun, useThumbRuns } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { openBatchRename } from "./BatchRenameDialog";
@@ -142,7 +142,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
     }
     const selectedFiles = selected.filter((e) => !e.dir);
     const selectedBytes = selectedFiles.reduce((sum, e) => sum + e.size, 0);
-    const writable = !listing?.archive && !listing?.remote && !noAccess && !isRecycleBin(path);
+    const writable = !listing?.archive && !listing?.remote && !noAccess && !isRecycleBin(path) && !isRecent(path);
 
     const placePopover = (e: React.MouseEvent<HTMLButtonElement>) => {
         const pop = popRef.current;

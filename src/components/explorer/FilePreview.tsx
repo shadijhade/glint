@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Cloud, ExternalLink, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, X } from "lucide-react";
+import { Clock, Cloud, ExternalLink, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, X } from "lucide-react";
 import { toast } from "sonner";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly, isRecycled, isRemote } from "@/lib/entries";
 import { archiveOf, calcSizes, compressEntries, currentPath, navigate, openEntry, openFile, reload, restoreRecycled, useExplorer } from "@/lib/explorer";
@@ -12,7 +12,7 @@ import { useGitMark } from "@/lib/git";
 import { mapLink, useMediaDetails } from "@/lib/media";
 import { usePreviewView, type View } from "@/lib/preview";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
-import { baseName, isRecycleBin, parentPath } from "@/lib/paths";
+import { baseName, isRecent, isRecycleBin, parentPath } from "@/lib/paths";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
@@ -912,6 +912,18 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
                         {!!folder.total && ` · ${formatSize(folder.total)} in total`}
                     </p>
                     <p className="text-xs">Select an item to look at it before you restore it</p>
+                </Centered>
+            );
+        }
+        if (isRecent(folder.path)) {
+            return (
+                <Centered>
+                    <Clock className="size-14 stroke-[1.25] text-muted-foreground/70" />
+                    <p className="font-medium text-foreground">Recent</p>
+                    <p>
+                        {formatCount(folder.items)} {folder.items === 1 ? "item" : "items"} opened lately
+                    </p>
+                    <p className="text-xs">Select a file to preview it</p>
                 </Centered>
             );
         }

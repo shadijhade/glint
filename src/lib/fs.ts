@@ -1141,6 +1141,10 @@ export const setExplorerIntegration = (menu: boolean, byDefault: boolean, winE?:
 /** The taskbar button's Jump List: its tasks, then the pinned folders and the most used (those only when Windows shows recently opened items). */
 export const syncJumpList = (pinned: string[], frequent: string[]) => invoke<void>("sync_jump_list", { pinned, frequent });
 
+/** Takes items out of Recent (their shortcuts in Windows' Recent Items), and whether Windows keeps recent items at all. */
+export const recentForget = (paths: string[]) => invoke<void>("recent_forget", { paths });
+export const recentKept = () => invoke<boolean>("recent_kept");
+
 /** Back, Forward and Up under the taskbar button's preview, each greyed out where it can't go. */
 export const thumbButtons = (back: boolean, forward: boolean, up: boolean) => invoke<void>("thumb_buttons", { back, forward, up });
 

@@ -855,7 +855,7 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                         onChange={(restoreTabs) => set({ restoreTabs })}
                     />
                     <Row label={settings.restoreTabs ? "Otherwise open" : "Open on start"}>
-                        <Segmented value={settings.startFolder} onChange={(startFolder) => set({ startFolder })} options={[["home", "Home"], ["thispc", "This PC"], ["last", "Last folder"]]} />
+                        <Segmented value={settings.startFolder} onChange={(startFolder) => set({ startFolder })} options={[["home", "Home"], ["recent", "Recent"], ["thispc", "This PC"], ["last", "Last folder"]]} />
                     </Row>
                     <SwitchRow label="Show hidden items" hint="Files and folders Windows marks as hidden · Ctrl+H" checked={settings.showHidden} onChange={(showHidden) => set({ showHidden })} />
                     <SwitchRow label="Folders first" checked={settings.foldersFirst} onChange={(foldersFirst) => set({ foldersFirst })} />

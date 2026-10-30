@@ -20,6 +20,7 @@ import {
     ChevronRight,
     ClipboardCopy,
     ClipboardPaste,
+    Clock,
     Cloud,
     CloudDownload,
     CloudOff,
@@ -63,8 +64,8 @@ import {
     Monitor,
     Moon,
     PanelRight,
-    PenLine,
     PencilOff,
+    PenLine,
     Pin,
     PinOff,
     Play,
@@ -143,6 +144,7 @@ import {
     navigate,
     newItem,
     newOfKind,
+    forgetRecent,
     newTab,
     nextUndo,
     type NoAccess,
@@ -195,11 +197,12 @@ import {
 } from "@/lib/explorer";
 import { formatCount, plural } from "@/lib/format";
 import { newKinds } from "@/lib/newKinds";
+import { recentKept } from "@/lib/fs";
 import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rotateImage, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, marqueeHits, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, inArchivePath, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, inArchivePath, isFolderPath, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { remoteOfPath, remotePath } from "@/lib/remotes";
 import { useStore } from "@/lib/store";
 import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
@@ -216,6 +219,7 @@ import { ResizeHandle } from "../ResizeHandle";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
 import { newMenuItems } from "./newMenu";
+import { FrequentFolders } from "./FrequentFolders";
 import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
@@ -779,6 +783,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             t.forward.length > 0 && action("forward", "Forward", ArrowRight, goForward, "Alt+Right"),
             inFolder && action("up", "Up one folder", ArrowUp, goUp, "Alt+Up"),
             action("this-pc", "This PC", Monitor, () => navigate(THIS_PC)),
+            !isRecent(t.path) && action("recent", "Recent: the files opened lately", Clock, () => navigate(RECENT)),
             !bin && action("recycle-bin", "Recycle Bin", Trash2, () => navigate(RECYCLE_BIN)),
             action("empty-bin", "Empty the Recycle Bin", Trash2, () => void emptyRecycleBin()),
             action("new-tab", "New tab", Plus, () => newTab(), "Ctrl+T"),
@@ -1172,6 +1177,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
 
     // The Recycle Bin: each item says where it was deleted from; each folder comes with its size.
     const bin = isRecycleBin(path) && !find;
+    // Recent: the files opened lately, from many folders (each says where it is).
+    const recentHere = isRecent(path) && !find;
+    const [recentOff, setRecentOff] = useState(false);
+    useEffect(() => {
+        if (recentHere) recentKept().then((kept) => setRecentOff(!kept), () => {});
+    }, [recentHere]);
     const binTotal = useMemo(() => (bin && listing ? listing.entries.reduce((sum, e) => sum + e.size, 0) : undefined), [bin, listing]);
     // The toolbar and the preview pane show what the active pane shows.
     const folder = find?.scope ?? path;
@@ -1660,7 +1671,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one?.dir && !fixed && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
             one && !fixed && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(one.path) },
             !fixed && { label: "Scripts", icon: ScrollText, items: scriptItems(isFolderPath(path) ? path : parentPath(paths[0]), paths) },
-            find && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
+            (find || isRecent(path)) && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
+            isRecent(path) && !find && { label: "Remove from Recent", icon: History, onSelect: () => void forgetRecent(paths, tabRef.current) },
             !remote &&
                 (archived
                     ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }
@@ -1849,6 +1861,16 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 <p className="font-medium text-foreground">The Recycle Bin is empty</p>
                 <p className="text-xs">What you delete waits here, to be restored or deleted for good.</p>
             </Centered>
+        ) : recentHere && !listing.entries.length ? (
+            <Centered>
+                <Clock className="size-8 stroke-[1.25] text-muted-foreground/60" />
+                <p className="font-medium text-foreground">{recentOff ? "Windows doesn't keep recently opened items" : "Nothing opened lately"}</p>
+                <p className="max-w-sm text-xs">
+                    {recentOff
+                        ? "It's set not to, in Settings → Personalization → Start: Show recently opened items in Start, Jump Lists and File Explorer. Turned on, the files you open in any app come here."
+                        : "The files and folders you open, here or in any app, come here, newest first."}
+                </p>
+            </Centered>
         ) : comparison && diffOnly && comparison.same > 0 ? (
             <Centered>
                 <GitCompareArrows className="size-6 text-emerald-500" />
@@ -1891,7 +1913,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const navAnim = navRef.current.anim;
     const viewProps = {
         rows,
-        search: !!find,
+        search: !!find || recentHere,
         recycled: bin,
         scope: find?.scope ?? path,
         sizes: sizeRun,
@@ -2095,6 +2117,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </div>
             )}
             {readme && <ReadmeCard key={readme.path} entry={readme} />}
+            {recentHere && <FrequentFolders onContextMenu={onPlaceContextMenu} />}
             <div key={listKey} className={cn("min-h-0 flex-1", navAnim)}>
                 {path === THIS_PC && !find ? (
                     <ThisPC onContextMenu={onPlaceContextMenu} />
