@@ -337,10 +337,12 @@ pub async fn mounts_by_default(path: String) -> Result<bool, String> {
     blocking(move || Ok(imp::mounts_by_default(&path))).await
 }
 
-/// Sets Windows Cloud Files API (`OneDrive`, `iCloud`, `Dropbox`) pin state: `pin = true` ("Always keep on this device") or `pin = false` ("Free up space").
+/// Cloud files (OneDrive's, iCloud's, Dropbox's): `state` "keep" keeps them on this device (Always keep
+/// on this device), "free" frees up their space (online only), and "auto" leaves them on this device
+/// until Windows frees up space. Their app does it, told by their attributes.
 #[tauri::command]
-pub async fn set_cloud_pin(paths: Vec<String>, pin: bool) -> Result<(), String> {
-    blocking(move || imp::set_cloud_pin(&paths, pin)).await
+pub async fn set_cloud_pin(paths: Vec<String>, state: String) -> Result<(), String> {
+    blocking(move || imp::set_cloud_pin(&paths, &state)).await
 }
 
 /// Sets `path` as the Windows desktop wallpaper (`SPI_SETDESKWALLPAPER`).
@@ -1340,12 +1342,16 @@ mod imp {
         attached
     }
 
-    pub fn set_cloud_pin(paths: &[String], pin: bool) -> Result<(), String> {
+    pub fn set_cloud_pin(paths: &[String], state: &str) -> Result<(), String> {
         use windows::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES};
 
         const FILE_ATTRIBUTE_PINNED: u32 = 0x0008_0000;
         const FILE_ATTRIBUTE_UNPINNED: u32 = 0x0010_0000;
-
+        let (set, clear) = match state {
+            "keep" => (FILE_ATTRIBUTE_PINNED, FILE_ATTRIBUTE_UNPINNED),
+            "free" => (FILE_ATTRIBUTE_UNPINNED, FILE_ATTRIBUTE_PINNED),
+            _ => (0, FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED),
+        };
         for path in paths {
             let wide = crate::fsx::wide(Path::new(path));
             unsafe {
@@ -1353,12 +1359,7 @@ mod imp {
                 if cur == INVALID_FILE_ATTRIBUTES {
                     return Err(format!("Can't find “{path}”"));
                 }
-                let next = if pin {
-                    (cur | FILE_ATTRIBUTE_PINNED) & !FILE_ATTRIBUTE_UNPINNED
-                } else {
-                    (cur | FILE_ATTRIBUTE_UNPINNED) & !FILE_ATTRIBUTE_PINNED
-                };
-                SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(next)).map_err(|e| e.message())?;
+                SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES((cur | set) & !clear)).map_err(|e| format!("“{path}”: {}", e.message()))?;
             }
         }
         Ok(())

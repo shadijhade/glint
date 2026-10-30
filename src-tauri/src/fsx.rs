@@ -554,10 +554,89 @@ mod win {
         Entry { name, path: None, dir, size, modified: unix_ms(modified), attrs }
     }
 
+    /// Glint's attributes for cloud files (OneDrive's, Dropbox's…), in bits Windows doesn't use: one that's
+    /// synced (a placeholder, or a file in a synced folder that's on its way), and one that isn't in sync
+    /// yet (changed here, or never uploaded). entries.ts's ATTR has them too.
+    pub const CLOUD: u32 = 0x0080_0000;
+    pub const CLOUD_PENDING: u32 = 0x0100_0000;
+
+    /// What tells cloud files' states (Windows 10 1709 and later), found once: a thread's placeholder
+    /// mode, and a placeholder's state from its attributes and reparse tag.
+    struct Placeholders {
+        set_mode: unsafe extern "system" fn(i8) -> i8,
+        state: unsafe extern "system" fn(u32, u32) -> u32,
+    }
+
+    type Found = unsafe extern "system" fn() -> isize;
+
+    static PLACEHOLDERS: std::sync::LazyLock<Option<Placeholders>> = std::sync::LazyLock::new(|| unsafe {
+        use windows::core::{s, w};
+        use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
+        let set_mode = GetProcAddress(GetModuleHandleW(w!("ntdll.dll")).ok()?, s!("RtlSetThreadPlaceholderCompatibilityMode"))?;
+        let state = GetProcAddress(LoadLibraryExW(w!("cldapi.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?, s!("CfGetPlaceholderStateFromAttributeTag"))?;
+        Some(Placeholders {
+            set_mode: std::mem::transmute::<Found, unsafe extern "system" fn(i8) -> i8>(set_mode),
+            state: std::mem::transmute::<Found, unsafe extern "system" fn(u32, u32) -> u32>(state),
+        })
+    });
+
+    /// Windows hides cloud files' placeholders from a program unless its thread asks to see them (so that
+    /// they look like plain files): this thread sees them until this is dropped.
+    struct Exposed(Option<i8>);
+
+    impl Exposed {
+        fn new() -> Self {
+            const PHCM_EXPOSE_PLACEHOLDERS: i8 = 2;
+            Exposed(PLACEHOLDERS.as_ref().map(|p| unsafe { (p.set_mode)(PHCM_EXPOSE_PLACEHOLDERS) }).filter(|&before| before >= 0))
+        }
+    }
+
+    impl Drop for Exposed {
+        fn drop(&mut self) {
+            if let (Some(p), Some(before)) = (PLACEHOLDERS.as_ref(), self.0) {
+                unsafe { (p.set_mode)(before) };
+            }
+        }
+    }
+
+    /// A listed item's attributes as Windows shows them to everyone else: a cloud file's placeholder
+    /// without its reparse point (nor offline and sparse, which only the placeholder is), with CLOUD, and
+    /// CLOUD_PENDING when it isn't in sync.
+    fn shown(attrs: u32, tag: u32) -> u32 {
+        const REPARSE_POINT: u32 = 0x400;
+        const PLACEHOLDER_ONLY: u32 = 0x1000 | REPARSE_POINT | 0x200;
+        // IO_REPARSE_TAG_CLOUD, and _1 to _F in its 0xF000 bits.
+        const CLOUD_TAG: u32 = 0x9000_001A;
+        const IN_SYNC: u32 = 0x8;
+        let Some(p) = PLACEHOLDERS.as_ref().filter(|_| attrs & REPARSE_POINT != 0 && tag & 0xFFFF_0FFF == CLOUD_TAG) else {
+            return attrs;
+        };
+        let state = unsafe { (p.state)(attrs, tag) };
+        let attrs = (attrs & !PLACEHOLDER_ONLY) | CLOUD;
+        if state & IN_SYNC == 0 {
+            attrs | CLOUD_PENDING
+        } else {
+            attrs
+        }
+    }
+
+    /// In a synced folder (where anything is a placeholder), a file or folder that isn't one yet is on its
+    /// way: pending, as File Explorer shows it. Hidden system files (desktop.ini) never sync.
+    fn mark_pending(entries: &mut [Entry]) {
+        const HIDDEN_SYSTEM: u32 = 0x2 | 0x4;
+        if entries.iter().any(|e| e.attrs & CLOUD != 0) {
+            for e in entries.iter_mut().filter(|e| e.attrs & (CLOUD | HIDDEN_SYSTEM) == 0) {
+                e.attrs |= CLOUD | CLOUD_PENDING;
+            }
+        }
+    }
+
     /// FindFirstFileExW with FindExInfoBasic (no 8.3 names) and LARGE_FETCH: 20–35% faster than std::fs::read_dir.
+    /// Cloud files come with their states (`shown`).
     pub fn read_dir(dir: &str) -> io::Result<Vec<Entry>> {
         let pattern = wide(&Path::new(dir).join("*"));
         let mut data = WIN32_FIND_DATAW::default();
+        let exposed = Exposed::new();
         let found = unsafe {
             FindFirstFileExW(
                 PCWSTR(pattern.as_ptr()),
@@ -579,7 +658,7 @@ mod win {
             let len = data.cFileName.iter().position(|&c| c == 0).unwrap_or(data.cFileName.len());
             let name = String::from_utf16_lossy(&data.cFileName[..len]);
             if name != "." && name != ".." {
-                entries.push(entry(name, data.dwFileAttributes, data.nFileSizeHigh, data.nFileSizeLow, data.ftLastWriteTime));
+                entries.push(entry(name, shown(data.dwFileAttributes, data.dwReserved0), data.nFileSizeHigh, data.nFileSizeLow, data.ftLastWriteTime));
             }
             if let Err(e) = unsafe { FindNextFileW(handle, &mut data) } {
                 break if e.code() == ERROR_NO_MORE_FILES.to_hresult() { Ok(()) } else { Err(io_error(e)) };
@@ -588,6 +667,8 @@ mod win {
         unsafe {
             let _ = FindClose(handle);
         }
+        drop(exposed);
+        mark_pending(&mut entries);
         result.map(|_| entries)
     }
 

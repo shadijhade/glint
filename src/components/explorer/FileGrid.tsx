@@ -1,13 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Cloud } from "lucide-react";
-import { isHidden, isListOnly, isLocked, isOnlineOnly } from "@/lib/entries";
+import { isHidden, isListOnly, isLocked } from "@/lib/entries";
 import { typeLabel } from "@/lib/fileTypes";
 import { formatFullDate, formatSize } from "@/lib/format";
 import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { VirtualList } from "../VirtualList";
-import { DIFF_BADGE, dropPath, type FileViewProps, gitOf, Header, LockMark, relativeTo, RenameInput, sizeOf, whereOf } from "./FileList";
+import { CloudMark, DIFF_BADGE, dropPath, type FileViewProps, gitOf, Header, LockMark, relativeTo, RenameInput, sizeOf, whereOf } from "./FileList";
 import { Thumbnail } from "./Thumbnail";
 
 interface FileGridProps extends FileViewProps {
@@ -130,7 +129,7 @@ export function FileGrid(props: FileGridProps) {
                             {tracked.badge.label}
                         </span>
                     )}
-                    {isOnlineOnly(entry) && <Cloud className="absolute bottom-0.5 right-0.5 size-4 fill-background text-sky-500" aria-label="Online-only" />}
+                    <CloudMark entry={entry} className="absolute bottom-0.5 right-0.5 size-4 fill-background" />
                     {isLocked(entry) && <LockMark entry={entry} className="absolute bottom-0.5 right-0.5 size-4 fill-background text-amber-600 dark:text-amber-500" />}
                 </div>
                 {renaming === entry.path ? (

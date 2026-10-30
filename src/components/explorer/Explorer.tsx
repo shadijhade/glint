@@ -103,7 +103,7 @@ import { useShallow } from "zustand/react/shallow";
 import { SINGLE_FILE } from "@/lib/archives";
 import { scanWithDefender } from "@/lib/defender";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isCloudFile, isHidden, isRecycled, isRemote, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { ATTR, cloudState, compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isCloudFile, isHidden, isRecycled, isRemote, matcher, sortEntries, type SortKey } from "@/lib/entries";
 import {
     activateTab,
     archiveOf,
@@ -193,7 +193,7 @@ import {
     zoomGrid,
 } from "@/lib/explorer";
 import { formatCount, plural } from "@/lib/format";
-import { driveName, openIn, openItem, openTerminal, openWith, rotateImage, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
+import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rotateImage, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, marqueeHits, TILE_SIZES, zoomTiles } from "@/lib/grid";
@@ -280,10 +280,19 @@ const rotatePictures = async (paths: string[], clockwise: boolean, tab?: string)
     void reload(tab);
 };
 const shareWithWindows = (paths: string[]) => windowsShare(paths).catch(report("Couldn't open Windows' Share"));
-const cloudPin = (paths: string[], pin: boolean) =>
-    setCloudPin(paths, pin).then(
-        () => toast.success(pin ? `Keeping ${plural(paths.length, "item")} on this device` : `Freeing up space from ${plural(paths.length, "item")}`),
-        report(pin ? "Couldn't keep these on this device" : "Couldn't free up space")
+const CLOUD_PINNED: Record<CloudPin, (items: string) => string> = {
+    keep: (items) => `Keeping ${items} on this device`,
+    free: (items) => `Freeing up space from ${items}`,
+    auto: (items) => `${items} no longer always kept on this device`,
+};
+const cloudPin = (paths: string[], state: CloudPin, tab?: string) =>
+    setCloudPin(paths, state).then(
+        () => {
+            const items = paths.length === 1 ? `“${baseName(paths[0])}”` : plural(paths.length, "item");
+            toast.success(CLOUD_PINNED[state](items).replace(/^./, (c) => c.toUpperCase()));
+            void reload(tab);
+        },
+        report(state === "free" ? "Couldn't free up space" : "Couldn't change what's kept on this device")
     );
 const focusFind = () => {
     const box = document.getElementById(FIND_BOX_ID) as HTMLInputElement | null;
@@ -1572,8 +1581,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const browses = !!one && (one.dir || isArchiveFile(one));
         const pictures = targets.filter(canConvert);
         const rotatable = fixed ? [] : targets.filter(canRotate);
-        // OneDrive and other cloud-synced items: kept on this device, or only online.
+        // OneDrive and other cloud-synced items: always kept on this device (or not), or freed up.
         const cloud = !fixed && targets.every((t) => onDisk(t) && isCloudFile(t));
+        const kept = cloud && targets.every((t) => (t.attrs & ATTR.pinned) !== 0);
+        const freed = cloud && targets.every((t) => !t.dir && cloudState(t) === "online");
         // Two files side by side: the two chosen, or (comparing panes) one and its namesake in the other pane.
         const pair = targets.length === 2 && !fixed && targets.every((t) => !t.dir) ? targets : null;
         const status = one && !one.dir && !fixed && otherPath ? comparison?.diffs.get(one.lower) : undefined;
@@ -1660,8 +1671,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one && canWallpaper(one) && { label: "Set as desktop background", icon: Wallpaper, onSelect: () => void setWallpaper(one.path) },
             rotatable.length > 0 && { label: "Rotate right", icon: RotateCwSquare, onSelect: () => void rotatePictures(rotatable.map((t) => t.path), true, tabRef.current) },
             rotatable.length > 0 && { label: "Rotate left", icon: RotateCcwSquare, onSelect: () => void rotatePictures(rotatable.map((t) => t.path), false, tabRef.current) },
-            cloud && { label: "Always keep on this device", icon: CloudDownload, onSelect: () => void cloudPin(paths, true) },
-            cloud && { label: "Free up space", icon: CloudOff, onSelect: () => void cloudPin(paths, false) },
+            cloud && { label: "Always keep on this device", icon: CloudDownload, checked: kept, toggle: true, onSelect: () => void cloudPin(paths, kept ? "auto" : "keep", tabRef.current) },
+            cloud && { label: "Free up space", icon: CloudOff, disabled: freed, onSelect: () => void cloudPin(paths, "free", tabRef.current) },
             one && !find && !fixed && { label: "Rename items in this folder…", icon: PenLine, shortcut: "Ctrl+Shift+R", onSelect: () => openBatchRename(rowsRef.current, rowsRef.current) },
             "separator",
             one?.dir && !fixed && { label: "Search text", icon: TextSearch, onSelect: () => onSearchText(one.path) },
