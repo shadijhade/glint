@@ -69,6 +69,7 @@
       "../THIRD_PARTY_CRATES.md": "THIRD_PARTY_CRATES.md"
     },
     "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper", "silent": true },
       "nsis": {
         "template": "installer/installer.nsi",
         "installerHooks": "installer/hooks.nsh",

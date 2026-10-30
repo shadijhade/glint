@@ -1,13 +1,14 @@
 ﻿; The Extra tools page: the tools Settings → Tools installs (src-tauri/src/tools.rs), the meaning model
 ; and instant search, each with what Glint uses it for and, under the list, what it is. The ones picked
 ; install once Glint is in place, by Glint itself (`Glint.exe tools install <id>`, as Settings → Tools
-; installs them: with winget, or from the tool's own release, checked against its pinned SHA-256), so
+; installs them: with winget where the PC has it, else from the tool's own release, checked against
+; its pinned SHA-256), so every one installs on any PC,
 ; the installer keeps no downloads of its own. tools.rs's tests check this list against TOOLS.
 ; installer.nsi inserts the page after the folder page, and NSIS_HOOK_POSTINSTALL (hooks.nsh) installs
 ; what was picked: on the page, or with /TOOLS=jaq,uv on the command line (silent installs too).
 
-; Every row, in order: its index, its id (tools.rs's), name, group, kind (service, model, winget or
-; release), program and winget package folder (to tell whether it's on this PC already), what Glint uses
+; Every row, in order: its index, its id (tools.rs's), name, group, kind (service, model or tool),
+; program and winget package folder (to tell whether it's on this PC already), what Glint uses
 ; it for (the list's second column) and what it is.
 !macro GLINT_TOOLS ROW
   !insertmacro ${ROW} 0 instant-search "Instant search" 1 service "" "" \
@@ -16,58 +17,58 @@
   !insertmacro ${ROW} 1 meaning "Meaning model" 1 model "" "" \
     "Searching text by what it means" \
     "potion-base-8M, a small model (30 MB, MIT) that runs on this PC: Text's Meaning search then ranks passages by what they're about, not only by the words in them."
-  !insertmacro ${ROW} 2 czkawka "Czkawka" 2 winget windows_czkawka_cli qarmin.czkawka.cli \
+  !insertmacro ${ROW} 2 czkawka "Czkawka" 2 tool windows_czkawka_cli qarmin.czkawka.cli \
     "Look-alike pictures, videos and music" \
     "Czkawka finds similar and broken files. Clean up uses it for look-alike pictures, videos and music, broken files and files with the wrong extension."
-  !insertmacro ${ROW} 3 ffmpeg "FFmpeg" 2 winget ffmpeg gyan.ffmpeg \
+  !insertmacro ${ROW} 3 ffmpeg "FFmpeg" 2 tool ffmpeg gyan.ffmpeg \
     "Reading videos, for look-alike videos" \
     "FFmpeg reads almost any video and sound. Clean up uses it to compare videos. It's a large download, and an FFmpeg already on this PC is used instead."
-  !insertmacro ${ROW} 4 magika "Magika" 2 winget magika google.magika \
+  !insertmacro ${ROW} 4 magika "Magika" 2 tool magika google.magika \
     "A file's real type, in the File X-Ray" \
     "Google's Magika tells a file's type from its content. The File X-Ray uses it to catch a file that isn't what its name says: a program named photo.jpg, say."
-  !insertmacro ${ROW} 5 yara-x "YARA-X" 2 winget yr virustotal.yara-x \
+  !insertmacro ${ROW} 5 yara-x "YARA-X" 2 tool yr virustotal.yara-x \
     "Checking files with YARA rules" \
     "VirusTotal's YARA-X matches files against YARA rules. Check uses it with the rules in a folder you choose in Settings."
-  !insertmacro ${ROW} 6 kingfisher "Kingfisher" 2 release kingfisher kingfisher \
+  !insertmacro ${ROW} 6 kingfisher "Kingfisher" 2 tool kingfisher kingfisher \
     "Finding passwords and keys left in files" \
     "MongoDB's Kingfisher finds passwords, keys and tokens left in files, so you can take them out before sharing. Nothing is sent anywhere."
-  !insertmacro ${ROW} 7 rimage "rimage" 2 release rimage rimage \
+  !insertmacro ${ROW} 7 rimage "rimage" 2 tool rimage rimage \
     "Converting pictures to JPEG, PNG, WebP or AVIF" \
     "rimage converts and shrinks pictures. Convert pictures… uses it to make JPEG, PNG, WebP or AVIF files, smaller if you ask."
-  !insertmacro ${ROW} 8 difftastic "Difftastic" 3 winget difft wilfred.difftastic \
+  !insertmacro ${ROW} 8 difftastic "Difftastic" 3 tool difft wilfred.difftastic \
     "Comparing code by its structure" \
     "Difftastic compares code by its syntax. Compare two files then shows what changed in the code, not which lines moved."
-  !insertmacro ${ROW} 9 ast-grep "ast-grep" 3 winget ast-grep ast-grep.ast-grep \
+  !insertmacro ${ROW} 9 ast-grep "ast-grep" 3 tool ast-grep ast-grep.ast-grep \
     "Code patterns in Text search" \
     "ast-grep searches code by its syntax. Text then finds (and rewrites) code by its structure, such as console.log($$MSG) or $$X.unwrap()."
-  !insertmacro ${ROW} 10 jaq "jaq" 3 release jaq 01mf02.jaq \
+  !insertmacro ${ROW} 10 jaq "jaq" 3 tool jaq 01mf02.jaq \
     "jq filters in JSON, YAML and TOML previews" \
     "jaq is jq, rewritten in Rust. The preview of a JSON, YAML or TOML file can then filter it with jq."
-  !insertmacro ${ROW} 11 onefetch "onefetch" 3 release onefetch o2sh.onefetch \
+  !insertmacro ${ROW} 11 onefetch "onefetch" 3 tool onefetch o2sh.onefetch \
     "A Git repository's card in its preview" \
     "onefetch sums up a Git repository. Its preview gets a card with its languages, who works on it, its last change and its license."
-  !insertmacro ${ROW} 12 tokei "tokei" 3 winget tokei xampprocky.tokei \
+  !insertmacro ${ROW} 12 tokei "tokei" 3 tool tokei xampprocky.tokei \
     "Lines of code on a repository's card" \
     "tokei counts lines of code. A Git repository's card then shows its lines of code by language."
-  !insertmacro ${ROW} 13 just "just" 3 winget just casey.just \
+  !insertmacro ${ROW} 13 just "just" 3 tool just casey.just \
     "A justfile's recipes in the Run menu" \
     "just runs a project's commands. The Run menu then lists the recipes in a project's justfile."
-  !insertmacro ${ROW} 14 uv "uv" 4 winget uv astral-sh.uv \
+  !insertmacro ${ROW} 14 uv "uv" 4 tool uv astral-sh.uv \
     "Running Python scripts and projects" \
     "uv is Astral's fast Python manager. The Run menu runs Python projects' scripts with it, and Scripts runs Python scripts."
-  !insertmacro ${ROW} 15 bun "Bun" 4 winget bun oven-sh.bun \
+  !insertmacro ${ROW} 15 bun "Bun" 4 tool bun oven-sh.bun \
     "Running TypeScript and JavaScript scripts" \
     "Bun is a fast JavaScript runtime. Scripts runs TypeScript and JavaScript scripts with it."
-  !insertmacro ${ROW} 16 nushell "Nushell" 4 winget nu nushell.nushell \
+  !insertmacro ${ROW} 16 nushell "Nushell" 4 tool nu nushell.nushell \
     "A shell for the terminal, and Nu scripts" \
     "Nushell is a shell for structured data. The terminal under the files can start it, and Scripts runs Nushell scripts."
-  !insertmacro ${ROW} 17 zoxide "zoxide" 4 winget zoxide ajeetdsouza.zoxide \
+  !insertmacro ${ROW} 17 zoxide "zoxide" 4 tool zoxide ajeetdsouza.zoxide \
     "Folder history shared with your terminals" \
     "zoxide remembers the folders you go to. The folders you cd to in your terminals rank in Ctrl+K, and z finds the ones you open in Glint."
-  !insertmacro ${ROW} 18 sendme "sendme" 5 winget sendme n0-computer.sendme \
+  !insertmacro ${ROW} 18 sendme "sendme" 5 tool sendme n0-computer.sendme \
     "Sending files to another PC" \
     "sendme sends files and folders from PC to PC, encrypted end to end, with a ticket instead of an account."
-  !insertmacro ${ROW} 19 dufs "dufs" 5 winget dufs sigoden.dufs \
+  !insertmacro ${ROW} 19 dufs "dufs" 5 tool dufs sigoden.dufs \
     "Sharing a folder with a phone" \
     "dufs serves a folder on this network. Share with a phone then gives a link that the phone's browser opens."
 !macroend
@@ -104,12 +105,10 @@ Var GlintAbout
 Var GlintCount
 ; An LVITEM for setting check boxes, allocated once, so handlers need no registers.
 Var GlintItem
-; The ids picked, each between spaces (" jaq uv "), and the rows that have no check box: on this PC
-; already, or needing winget where it's missing (" 3 7 ").
+; The ids picked, each between spaces (" jaq uv "), and the rows that have no check box, as they're on
+; this PC already (" 3 7 ").
 Var GlintPicks
 Var GlintInstalled
-Var GlintNoWinget
-Var GlintWinget
 ; The list's notifications and loops use these rather than registers: a check box set from NSIS sends
 ; one while the code that set it is still running.
 Var GlintQuiet
@@ -159,17 +158,11 @@ Var GlintFailed
     StrCpy $1 "Installed"
     StrCpy $GlintInstalled "$GlintInstalled${INDEX} "
     StrCpy $3 1
-  !if "${KIND}" == "winget"
-  ${ElseIf} $GlintWinget == ""
-    StrCpy $1 "Needs winget"
-    StrCpy $GlintNoWinget "$GlintNoWinget${INDEX} "
-    StrCpy $3 1
-  !endif
   ${EndIf}
   System::Call '*(i 0, i 0, i 1, i 0, i 0, w r1, i 0, i 0, p 0, i 0, i 0, i 0, p 0, p 0, i 0) p .r2'
   SendMessage $GlintList ${LVM_SETITEMTEXTW} ${INDEX} $2
   System::Free $2
-  ; No check box on one that's installed or can't be; ticked again if it was picked (Back, then Next).
+  ; No check box on one that's installed; ticked again if it was picked (Back, then Next).
   ${If} $3 = 1
     !insertmacro GLINT_SET_CHECK ${INDEX} 0
   ${Else}
@@ -223,9 +216,10 @@ Var GlintFailed
 !macro GLINT_PAGE_TOOLS
   Page custom GlintToolsPage GlintToolsLeave
 
-  ; Whether a row's tool is on this PC already ($9 = 1): kind, id, program and package in $5 to $8. As
-  ; Glint looks (proc.rs): its own downloads, then PATH, winget's, Scoop's and Cargo's folders, and
-  ; winget's package folders.
+  ; Whether a row's tool is on this PC already ($9 = 1): kind, id, program and package in $5 to $8 ($4 is
+  ; free to use). As
+  ; Glint looks (proc.rs): its own downloads, then PATH, winget's, Scoop's, Cargo's and Chocolatey's
+  ; folders, and winget's package folders.
   Function GlintOnThisPC
     StrCpy $9 0
     ${If} $5 == service
@@ -234,6 +228,7 @@ Var GlintFailed
     ${ElseIf} $5 == model
       ${IfThen} ${FileExists} "$LOCALAPPDATA\${BUNDLEID}\models\potion-base-8M\model.safetensors" ${|} StrCpy $9 1 ${|}
     ${Else}
+      ReadEnvStr $4 ProgramData
       ClearErrors
       SearchPath $0 "$7.exe"
       ${IfNot} ${Errors}
@@ -241,6 +236,7 @@ Var GlintFailed
       ${OrIf} ${FileExists} "$LOCALAPPDATA\Microsoft\WinGet\Links\$7.exe"
       ${OrIf} ${FileExists} "$PROFILE\scoop\shims\$7.exe"
       ${OrIf} ${FileExists} "$PROFILE\.cargo\bin\$7.exe"
+      ${OrIf} ${FileExists} "$4\chocolatey\bin\$7.exe"
         StrCpy $9 1
       ${Else}
         FindFirst $0 $1 "$LOCALAPPDATA\Microsoft\WinGet\Packages\*$8*"
@@ -284,16 +280,13 @@ Var GlintFailed
 
     !insertmacro GLINT_TOOL_GROUPS GLINT_ADD_GROUP
     SendMessage $GlintList ${LVM_ENABLEGROUPVIEW} 1 0
-    ClearErrors
-    SearchPath $GlintWinget winget.exe
     StrCpy $GlintInstalled " "
-    StrCpy $GlintNoWinget " "
     ${IfThen} $GlintPicks == "" ${|} StrCpy $GlintPicks " " ${|}
     !insertmacro GLINT_TOOLS GLINT_ADD_ROW
     SendMessage $GlintList ${LVM_GETITEMCOUNT} 0 0 $GlintRows
     SendMessage $GlintList ${LVM_SETCOLUMNWIDTH} 1 ${LVSCW_AUTOSIZE_USEHEADER}
 
-    ${NSD_CreateLabel} 0 99u 100% 28u "Tools install for your account, with winget or from their own releases (checked against their published checksums). Select one to see what it is and what Glint uses it for."
+    ${NSD_CreateLabel} 0 99u 100% 28u "Tools install for your account: with winget where this PC has it, else from their own releases, checked against their published checksums. Select one to see what it is."
     Pop $GlintAbout
     ${NSD_CreateLink} 0 129u 44u 10u "Select all"
     Pop $0
@@ -377,12 +370,7 @@ Var GlintFailed
     StrCpy $GlintText ""
     !insertmacro GLINT_TOOLS GLINT_ABOUT_ROW
     ${StrLoc} $GlintFound $GlintInstalled " $GlintRow " ">"
-    ${If} $GlintFound != ""
-      StrCpy $GlintText "Already on this PC. $GlintText"
-    ${Else}
-      ${StrLoc} $GlintFound $GlintNoWinget " $GlintRow " ">"
-      ${IfThen} $GlintFound != "" ${|} StrCpy $GlintText "Needs winget, which App Installer from the Microsoft Store brings. $GlintText" ${|}
-    ${EndIf}
+    ${IfThen} $GlintFound != "" ${|} StrCpy $GlintText "Already on this PC. $GlintText" ${|}
     ${NSD_SetText} $GlintAbout $GlintText
   FunctionEnd
 
@@ -429,9 +417,25 @@ Var GlintFailed
   FunctionEnd
 !macroend
 
-; Installs what was picked, after Glint itself (NSIS_HOOK_POSTINSTALL): on the page, or on the command
-; line with /TOOLS=jaq,uv and, as before, /INSTANTSEARCH. The finish page then says what didn't install.
+; A tool that comes with Glint, once Glint is in place: a security program can take one out as it lands,
+; and Glint then puts it back (with winget, or from its own release), as Settings → Tools would.
+!macro GLINT_CHECK_BUNDLED EXE ID
+  ${IfNot} ${FileExists} "$INSTDIR\${EXE}.exe"
+    DetailPrint "${EXE}.exe isn't there (a security program may have removed it): putting ${ID} back…"
+    nsExec::ExecToLog '"$INSTDIR\${MAINBINARYNAME}.exe" tools install ${ID} --installer $HWNDPARENT --data "$LOCALAPPDATA\${BUNDLEID}"'
+    Pop $0
+    ${IfThen} $0 != 0 ${|} StrCpy $GlintFailed "$GlintFailed, ${ID}" ${|}
+  ${EndIf}
+!macroend
+
+; Checks the tools that come with Glint, then installs what was picked, after Glint itself
+; (NSIS_HOOK_POSTINSTALL): on the page, or on the command line with /TOOLS=jaq,uv and, as before,
+; /INSTANTSEARCH. The finish page then says what didn't install.
 !macro GLINT_INSTALL_TOOLS
+  StrCpy $GlintFailed ""
+  !insertmacro GLINT_CHECK_BUNDLED rg ripgrep
+  !insertmacro GLINT_CHECK_BUNDLED fd fd
+  !insertmacro GLINT_CHECK_BUNDLED pdu pdu
   ClearErrors
   ${GetOptions} $CMDLINE "/TOOLS=" $0
   ${IfNot} ${Errors}
@@ -447,15 +451,14 @@ Var GlintFailed
   !insertmacro GLINT_TOOLS GLINT_COUNT_PICK
   ${If} $GlintTotal > 0
     StrCpy $GlintStep 0
-    StrCpy $GlintFailed ""
     !insertmacro GLINT_TOOLS GLINT_INSTALL_PICK
-    ${If} $GlintFailed == ""
-      DetailPrint "Glint and the tools you picked are installed."
-      StrCpy $GlintFinishText "${PRODUCTNAME} ${VERSION} is installed, with the tools you picked.$\r$\n$\r$\nClick Finish to close Setup."
-    ${Else}
-      StrCpy $GlintFailed $GlintFailed "" 2
-      DetailPrint "Not installed: $GlintFailed. Settings → Tools in Glint can try again."
-      StrCpy $GlintFinishText "${PRODUCTNAME} ${VERSION} is installed, but these aren't: $GlintFailed. Settings → Tools in Glint can try them again.$\r$\n$\r$\nClick Finish to close Setup."
-    ${EndIf}
+  ${EndIf}
+  ${If} $GlintFailed != ""
+    StrCpy $GlintFailed $GlintFailed "" 2
+    DetailPrint "Not installed: $GlintFailed. Settings → Tools in Glint can try again."
+    StrCpy $GlintFinishText "${PRODUCTNAME} ${VERSION} is installed, but these aren't: $GlintFailed. Settings → Tools in Glint can try them again.$\r$\n$\r$\nClick Finish to close Setup."
+  ${ElseIf} $GlintTotal > 0
+    DetailPrint "Glint and the tools you picked are installed."
+    StrCpy $GlintFinishText "${PRODUCTNAME} ${VERSION} is installed, with the tools you picked.$\r$\n$\r$\nClick Finish to close Setup."
   ${EndIf}
 !macroend

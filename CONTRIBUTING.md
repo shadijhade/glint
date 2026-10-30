@@ -66,6 +66,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/index/`, `src-tauri/src/index.rs` | The opt-in instant-search service (NTFS MFT + USN journal): names, folder sizes, maps, what grew and what moved ([docs/instant-search.md](docs/instant-search.md)); turning it on and off |
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `pdu` executables |
 | `src-tauri/installer/` | The NSIS installer: Tauri's template with Glint's pages, its hooks, its look and artwork, and the **Extra tools** page ([docs/releasing.md](docs/releasing.md#the-installer)) |
+| `src-tauri/src/webview.rs` | Before the window opens: on a PC without WebView2, offering to install it (Microsoft's installer, checked for Microsoft's signature) |
 | `src-tauri/src/tools.rs`, `proc.rs`, `src/lib/tools.ts`, `src/components/ToolNeeded.tsx` | Every program Glint drives: the bundled ones, and optional ones installed on demand with winget or from their GitHub release (pinned by SHA-256) ([docs/tools.md](docs/tools.md)); finding and running them, a lane per tab; Settings → Tools, and the Install card a feature shows when its tool is missing |
 | `src/lib/updater.ts` | Finding and installing updates (tauri-plugin-updater) |
 | `scripts/` | `npm run release` and its helpers (update signatures, winget and Scoop manifests), `npm run notes` (a release's notes, by git-cliff from `cliff.toml`) and `npm run licenses` (`THIRD_PARTY_CRATES.md`, by cargo-about) ([docs/releasing.md](docs/releasing.md)) |

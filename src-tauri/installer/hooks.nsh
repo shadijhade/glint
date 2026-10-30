@@ -7,6 +7,18 @@
 !include "${__FILEDIR__}\look.nsh"
 !include "${__FILEDIR__}\tools.nsh"
 
+; WebView2 couldn't be installed (installer.nsi): rather than stopping there, Retry, or Ignore and install
+; Glint anyway, which offers WebView2 again when it starts (src/webview.rs). A silent or passive install
+; stops, as Tauri's does, so whatever ran it knows.
+!macro GLINT_WEBVIEW2_FAILED RETRY IGNORE
+  ${If} ${Silent}
+  ${OrIf} $PassiveMode = 1
+    Abort "$(webview2AbortError)"
+  ${EndIf}
+  MessageBox MB_ABORTRETRYIGNORE|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "${PRODUCTNAME} needs Microsoft Edge WebView2 to show its window, and it couldn't be installed. Is this PC online?$\r$\n$\r$\nRetry to try again, or Ignore to install ${PRODUCTNAME} anyway: it offers to install WebView2 when it starts." IDRETRY ${RETRY} IDIGNORE ${IGNORE}
+  Abort "$(webview2AbortError)"
+!macroend
+
 ; Until 0.3.1 the app was called shadui-ripgrep, and Windows keeps an installed app under its name:
 ; its folder, shortcuts and Installed apps entry. Installing Glint removes those (settings, tabs and
 ; the instant search service carry over, as they don't go by the name) and makes the same shortcuts

@@ -1,7 +1,8 @@
 //! Optional tools: programs Glint drives for a feature or two but doesn't ship, so the download stays
-//! small for everyone who never uses those features. Each installs when asked: with winget when it has
-//! the package, else from the tool's own release on GitHub, pinned by its SHA-256 and checked before
-//! anything is unpacked. Their arguments are built in Rust from typed options, like rg's, fd's and pdu's.
+//! small for everyone who never uses those features. Each installs when asked, on any PC: with winget
+//! where the PC has it and winget has the tool, else (or when winget can't) from the tool's own release
+//! on GitHub, pinned by its SHA-256 and checked before anything is unpacked. Their arguments are built in
+//! Rust from typed options, like rg's, fd's and pdu's.
 
 use crate::fsx::blocking;
 use crate::proc::{self, Lanes, Origin};
@@ -18,7 +19,9 @@ use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
 use tauri::State;
 
-/// A program Glint can use, and where it comes from.
+/// A program Glint can use, and where it comes from: winget, where the PC has it and winget has the tool
+/// (so it's on PATH, where terminals find it too), else the tool's own release, so every tool installs on
+/// every PC, with or without winget.
 pub struct Tool {
     pub id: &'static str,
     pub name: &'static str,
@@ -27,32 +30,90 @@ pub struct Tool {
     /// Part of its winget package folder's name (`Packages\<id>_<source>`, lowercase), to find a copy
     /// winget installed before this session's PATH knew about it.
     pub package: &'static str,
-    pub source: Source,
+    /// It comes with Glint, next to the app: installing it puts back a copy a security tool removed, from its
+    /// release first (the very build Glint ships).
+    pub bundled: bool,
+    /// Its winget package; "" when winget hasn't got it (or not at the version Glint is tested with).
+    pub winget: &'static str,
+    /// Its own release, installed where winget isn't on the PC or can't install it.
+    pub release: Release,
     /// What it does in Glint, as Settings says it.
     pub used_for: &'static str,
 }
 
-// Until a tool that's only on GitHub is listed, nothing downloads a release.
-#[allow(dead_code)]
-pub enum Source {
-    /// Comes with Glint, next to the app; winget puts a copy back when a security tool removed it.
-    Bundled { winget: &'static str },
-    Winget { id: &'static str },
-    /// A release on GitHub: the version it holds, its address, its SHA-256 and the program's path in the
-    /// zip ("" when the download is the program itself).
-    Release { version: &'static str, url: &'static str, sha256: &'static str, member: &'static str },
+/// A release on GitHub: the version it holds, its address and SHA-256, the program's path in the zip or
+/// tarball ("" when the download is the program itself), and any other file it needs beside it.
+pub struct Release {
+    pub version: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub member: &'static str,
+    pub with: &'static [&'static str],
+}
+
+const fn release(version: &'static str, url: &'static str, sha256: &'static str, member: &'static str) -> Release {
+    Release { version, url, sha256, member, with: &[] }
 }
 
 pub static TOOLS: &[Tool] = &[
-    Tool { id: "ripgrep", name: "ripgrep", exe: "rg", package: "ripgrep", source: Source::Bundled { winget: "BurntSushi.ripgrep.MSVC" }, used_for: "Searching inside files" },
-    Tool { id: "fd", name: "fd", exe: "fd", package: "sharkdp.fd", source: Source::Bundled { winget: "sharkdp.fd" }, used_for: "Finding files by name where instant search doesn't" },
-    Tool { id: "pdu", name: "pdu", exe: "pdu", package: "parallel-disk-usage", source: Source::Bundled { winget: "" }, used_for: "Folder sizes and disk-usage maps where instant search doesn't" },
+    Tool {
+        id: "ripgrep",
+        name: "ripgrep",
+        exe: "rg",
+        package: "ripgrep",
+        bundled: true,
+        winget: "BurntSushi.ripgrep.MSVC",
+        release: release(
+            "15.2.0",
+            "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip",
+            "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5",
+            "ripgrep-15.2.0-x86_64-pc-windows-msvc/rg.exe",
+        ),
+        used_for: "Searching inside files",
+    },
+    Tool {
+        id: "fd",
+        name: "fd",
+        exe: "fd",
+        package: "sharkdp.fd",
+        bundled: true,
+        winget: "sharkdp.fd",
+        release: release(
+            "10.5.0",
+            "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-pc-windows-msvc.zip",
+            "a227701b8551c35a9931d9f6da75503cf86d88e182d71fb849a70864c5d57cd7",
+            "fd-v10.5.0-x86_64-pc-windows-msvc/fd.exe",
+        ),
+        used_for: "Finding files by name where instant search doesn't",
+    },
+    Tool {
+        id: "pdu",
+        name: "pdu",
+        exe: "pdu",
+        package: "parallel-disk-usage",
+        bundled: true,
+        winget: "",
+        release: release(
+            "0.24.0",
+            "https://github.com/KSXGitHub/parallel-disk-usage/releases/download/0.24.0/pdu-x86_64-pc-windows-msvc.exe",
+            "1133cde2e4cf3448b5fa6facd2883391d88957057da625a5ab910e7d7c15c36e",
+            "",
+        ),
+        used_for: "Folder sizes and disk-usage maps where instant search doesn't",
+    },
     Tool {
         id: "czkawka",
         name: "Czkawka",
         exe: "windows_czkawka_cli",
         package: "qarmin.czkawka.cli",
-        source: Source::Winget { id: "qarmin.czkawka.cli" },
+        bundled: false,
+        winget: "qarmin.czkawka.cli",
+        release: release(
+            "12.0.2",
+            "https://github.com/qarmin/czkawka/releases/download/12.0.2/windows_czkawka_cli.exe",
+            "eb7c2009d2dd49cf5202acbd65370caece0a3f819b9515e727cedb1ec088ed1a",
+            "",
+        ),
         used_for: "Look-alike pictures, videos and music, broken files and wrong extensions in Clean up",
     },
     Tool {
@@ -60,17 +121,47 @@ pub static TOOLS: &[Tool] = &[
         name: "Difftastic",
         exe: "difft",
         package: "wilfred.difftastic",
-        source: Source::Winget { id: "Wilfred.difftastic" },
+        bundled: false,
+        winget: "Wilfred.difftastic",
+        release: release(
+            "0.72.0",
+            "https://github.com/Wilfred/difftastic/releases/download/0.72.0/difft-0.72.0-x86_64-pc-windows-msvc.zip",
+            "7b6295a9a433ba79978b02ad4b4b27f955423b8eb379927409b9ff4e5156379e",
+            "difft.exe",
+        ),
         used_for: "Comparing code by its structure (Compare two files): what changed in it, not its layout",
     },
-    // Any FFmpeg found is used; a new install is the smaller build, which reads every common video.
-    Tool { id: "ffmpeg", name: "FFmpeg", exe: "ffmpeg", package: "gyan.ffmpeg", source: Source::Winget { id: "Gyan.FFmpeg.Essentials" }, used_for: "Reading videos for Clean up's look-alike videos" },
+    // Any FFmpeg found is used; a new install is the smaller build, which reads every common video. Czkawka
+    // runs ffprobe beside it too.
+    Tool {
+        id: "ffmpeg",
+        name: "FFmpeg",
+        exe: "ffmpeg",
+        package: "gyan.ffmpeg",
+        bundled: false,
+        winget: "Gyan.FFmpeg.Essentials",
+        release: Release {
+            version: "9.0.2",
+            url: "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
+            sha256: "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+            member: "ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe",
+            with: &["ffmpeg-9.0.2-essentials_build/bin/ffprobe.exe"],
+        },
+        used_for: "Reading videos for Clean up's look-alike videos",
+    },
     Tool {
         id: "magika",
         name: "Magika",
         exe: "magika",
         package: "google.magika",
-        source: Source::Winget { id: "Google.Magika" },
+        bundled: false,
+        winget: "Google.Magika",
+        release: release(
+            "1.1.0",
+            "https://github.com/google/magika/releases/download/cli%2Fv1.1.0/magika-cli-x86_64-pc-windows-msvc.zip",
+            "d4de347c53e2d25f9663780c93fdf26d156284c64d6a5ec4bcdb829f9994f6f3",
+            "magika.exe",
+        ),
         used_for: "A file's real type in the File X-Ray, told by its content (a program named photo.jpg, say)",
     },
     Tool {
@@ -78,7 +169,14 @@ pub static TOOLS: &[Tool] = &[
         name: "YARA-X",
         exe: "yr",
         package: "virustotal.yara-x",
-        source: Source::Winget { id: "VirusTotal.YARA-X" },
+        bundled: false,
+        winget: "VirusTotal.YARA-X",
+        release: release(
+            "1.22.1",
+            "https://github.com/VirusTotal/yara-x/releases/download/v1.22.1/yara-x-v1.22.1-x86_64-pc-windows-msvc.zip",
+            "dbe8c1ec5d59d8a81c777d949c518fb5e75f1026d3419bca7817727c5d47b327",
+            "yr.exe",
+        ),
         used_for: "Scanning files with YARA rules, from a rules folder chosen in Settings",
     },
     Tool {
@@ -86,12 +184,14 @@ pub static TOOLS: &[Tool] = &[
         name: "Kingfisher",
         exe: "kingfisher",
         package: "kingfisher",
-        source: Source::Release {
-            version: "2.14.0",
-            url: "https://github.com/mongodb/kingfisher/releases/download/v2.14.0/kingfisher-windows-x64.zip",
-            sha256: "9f188b6fa16cec210203cb71439d3d661ab371a03305b3ada865f8defe601ffb",
-            member: "kingfisher.exe",
-        },
+        bundled: false,
+        winget: "",
+        release: release(
+            "2.14.0",
+            "https://github.com/mongodb/kingfisher/releases/download/v2.14.0/kingfisher-windows-x64.zip",
+            "9f188b6fa16cec210203cb71439d3d661ab371a03305b3ada865f8defe601ffb",
+            "kingfisher.exe",
+        ),
         used_for: "Finding passwords, keys and tokens left in files before they're shared (MongoDB's secret scanner; nothing is sent anywhere)",
     },
     Tool {
@@ -99,7 +199,14 @@ pub static TOOLS: &[Tool] = &[
         name: "ast-grep",
         exe: "ast-grep",
         package: "ast-grep.ast-grep",
-        source: Source::Winget { id: "ast-grep.ast-grep" },
+        bundled: false,
+        winget: "ast-grep.ast-grep",
+        release: release(
+            "0.51.0",
+            "https://github.com/ast-grep/ast-grep/releases/download/0.51.0/app-x86_64-pc-windows-msvc.zip",
+            "1a5b7824c5925ac34257f806488e54860817cefd855fd308d13df7550d068908",
+            "ast-grep.exe",
+        ),
         used_for: "Code patterns in Text: code found (and rewritten) by its structure, console.log($MSG) or $X.unwrap()",
     },
     Tool {
@@ -107,12 +214,14 @@ pub static TOOLS: &[Tool] = &[
         name: "jaq",
         exe: "jaq",
         package: "01mf02.jaq",
-        source: Source::Release {
-            version: "3.1.1",
-            url: "https://github.com/01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-pc-windows-msvc.exe",
-            sha256: "7b2f5153d11118c3ccff01859743e09842cabc42ba08f8876489c1be30d1d08d",
-            member: "",
-        },
+        bundled: false,
+        winget: "",
+        release: release(
+            "3.1.1",
+            "https://github.com/01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-pc-windows-msvc.exe",
+            "7b2f5153d11118c3ccff01859743e09842cabc42ba08f8876489c1be30d1d08d",
+            "",
+        ),
         used_for: "jq filters over JSON, YAML and TOML files, in their preview (jq, rewritten in Rust)",
     },
     Tool {
@@ -120,7 +229,14 @@ pub static TOOLS: &[Tool] = &[
         name: "zoxide",
         exe: "zoxide",
         package: "ajeetdsouza.zoxide",
-        source: Source::Winget { id: "ajeetdsouza.zoxide" },
+        bundled: false,
+        winget: "ajeetdsouza.zoxide",
+        release: release(
+            "0.10.0",
+            "https://github.com/ajeetdsouza/zoxide/releases/download/v0.10.0/zoxide-0.10.0-x86_64-pc-windows-msvc.zip",
+            "f465ae548f8754c8e7edbc60b45fbf58c92bfe123db83d790252d6810fa5daf1",
+            "zoxide.exe",
+        ),
         used_for: "Folder history shared with your terminals (Settings → History): the folders you cd to rank in Ctrl+K, and z finds the ones you open here",
     },
     Tool {
@@ -128,12 +244,14 @@ pub static TOOLS: &[Tool] = &[
         name: "rimage",
         exe: "rimage",
         package: "rimage",
-        source: Source::Release {
-            version: "0.14.0",
-            url: "https://github.com/vlad-salone/rimage/releases/download/v0.14.0/rimage-0.14.0-x86_64-pc-windows-msvc.zip",
-            sha256: "93667bd6140b9845f72abc3849d22dd25b9c33ae0d8b08ffb86835c81afbcf25",
-            member: "rimage-0.14.0-x86_64-pc-windows-msvc/rimage.exe",
-        },
+        bundled: false,
+        winget: "",
+        release: release(
+            "0.14.0",
+            "https://github.com/vlad-salone/rimage/releases/download/v0.14.0/rimage-0.14.0-x86_64-pc-windows-msvc.zip",
+            "93667bd6140b9845f72abc3849d22dd25b9c33ae0d8b08ffb86835c81afbcf25",
+            "rimage-0.14.0-x86_64-pc-windows-msvc/rimage.exe",
+        ),
         used_for: "Converting pictures to JPEG, PNG, WebP or AVIF, smaller if asked (Convert pictures…)",
     },
     Tool {
@@ -141,35 +259,123 @@ pub static TOOLS: &[Tool] = &[
         name: "onefetch",
         exe: "onefetch",
         package: "o2sh.onefetch",
-        source: Source::Release {
-            version: "3.1.0",
-            url: "https://github.com/o2sh/onefetch/releases/download/3.1.0/onefetch-win.tar.gz",
-            sha256: "da8bbfb4566c2d4ef5303b9f126b08d5176060f508f94b75bba5d5320bc9bc76",
-            member: "onefetch.exe",
-        },
+        bundled: false,
+        winget: "",
+        release: release(
+            "3.1.0",
+            "https://github.com/o2sh/onefetch/releases/download/3.1.0/onefetch-win.tar.gz",
+            "da8bbfb4566c2d4ef5303b9f126b08d5176060f508f94b75bba5d5320bc9bc76",
+            "onefetch.exe",
+        ),
         used_for: "A Git repository's card in its preview: its languages, who works on it, its last change and license",
     },
+    // winget's tokei is this one too: its later releases carry no programs.
     Tool {
         id: "tokei",
         name: "tokei",
         exe: "tokei",
         package: "xampprocky.tokei",
-        source: Source::Winget { id: "XAMPPRocky.Tokei" },
+        bundled: false,
+        winget: "XAMPPRocky.Tokei",
+        release: release(
+            "12.1.2",
+            "https://github.com/XAMPPRocky/tokei/releases/download/v12.1.2/tokei-x86_64-pc-windows-msvc.exe",
+            "b1d6c4b18f5fa238bd2c6e47caa65a7a3e4a1bd0de6df0b7c19c8083c941f57b",
+            "",
+        ),
         used_for: "Lines of code by language, on a Git repository's card",
     },
-    Tool { id: "just", name: "just", exe: "just", package: "casey.just", source: Source::Winget { id: "Casey.Just" }, used_for: "A justfile's recipes in the Run menu" },
+    Tool {
+        id: "just",
+        name: "just",
+        exe: "just",
+        package: "casey.just",
+        bundled: false,
+        winget: "Casey.Just",
+        release: release(
+            "1.59.0",
+            "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-pc-windows-msvc.zip",
+            "9c5463e2d0974e31bee71346aa5cbf19167de1585a4abc1bae7b3b04604ea9c0",
+            "just.exe",
+        ),
+        used_for: "A justfile's recipes in the Run menu",
+    },
     Tool {
         id: "uv",
         name: "uv",
         exe: "uv",
         package: "astral-sh.uv",
-        source: Source::Winget { id: "astral-sh.uv" },
+        bundled: false,
+        winget: "astral-sh.uv",
+        release: release(
+            "0.13.6",
+            "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip",
+            "a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f",
+            "uv.exe",
+        ),
         used_for: "Python projects' scripts in the Run menu, and Python scripts in Scripts",
     },
-    Tool { id: "bun", name: "Bun", exe: "bun", package: "oven-sh.bun", source: Source::Winget { id: "Oven-sh.Bun" }, used_for: "TypeScript and JavaScript scripts in Scripts" },
-    Tool { id: "sendme", name: "sendme", exe: "sendme", package: "n0-computer.sendme", source: Source::Winget { id: "n0-computer.sendme" }, used_for: "Sending files and folders to another PC" },
-    Tool { id: "dufs", name: "dufs", exe: "dufs", package: "sigoden.dufs", source: Source::Winget { id: "sigoden.Dufs" }, used_for: "Sharing a folder with a phone on this network" },
-    Tool { id: "nushell", name: "Nushell", exe: "nu", package: "nushell.nushell", source: Source::Winget { id: "Nushell.Nushell" }, used_for: "A shell for the terminal, and Nushell scripts in Scripts" },
+    // The baseline build, which runs on processors without AVX2 too.
+    Tool {
+        id: "bun",
+        name: "Bun",
+        exe: "bun",
+        package: "oven-sh.bun",
+        bundled: false,
+        winget: "Oven-sh.Bun",
+        release: release(
+            "1.4.4",
+            "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64-baseline.zip",
+            "0f20ce6674d4f2dbcc8c5d59fdf99f7ba45f8c3b367e0f5781cbfa30a1c78d99",
+            "bun-windows-x64-baseline/bun.exe",
+        ),
+        used_for: "TypeScript and JavaScript scripts in Scripts",
+    },
+    Tool {
+        id: "sendme",
+        name: "sendme",
+        exe: "sendme",
+        package: "n0-computer.sendme",
+        bundled: false,
+        winget: "n0-computer.sendme",
+        release: release(
+            "0.37.1",
+            "https://github.com/n0-computer/sendme/releases/download/v0.37.1/sendme-v0.37.1-windows-x86_64.zip",
+            "fcf37ac1ebfff164f0a8e0cd0bd592531a028dac364ef6b05bff277b3d11faf5",
+            "sendme.exe",
+        ),
+        used_for: "Sending files and folders to another PC",
+    },
+    Tool {
+        id: "dufs",
+        name: "dufs",
+        exe: "dufs",
+        package: "sigoden.dufs",
+        bundled: false,
+        winget: "sigoden.Dufs",
+        release: release(
+            "0.47.0",
+            "https://github.com/sigoden/dufs/releases/download/v0.47.0/dufs-v0.47.0-x86_64-pc-windows-msvc.zip",
+            "39a000b70de423b7200f17099fa734cb6e154d8c6ef6a7d4ec9b2961cb66d0f1",
+            "dufs.exe",
+        ),
+        used_for: "Sharing a folder with a phone on this network",
+    },
+    Tool {
+        id: "nushell",
+        name: "Nushell",
+        exe: "nu",
+        package: "nushell.nushell",
+        bundled: false,
+        winget: "Nushell.Nushell",
+        release: release(
+            "0.116.1",
+            "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-pc-windows-msvc.zip",
+            "6658c9e61fe42c88326c1caa99e8dc9ad99bec6c0bc353e6ecb7c5d3f79feed7",
+            "nu.exe",
+        ),
+        used_for: "A shell for the terminal, and Nushell scripts in Scripts",
+    },
 ];
 
 pub fn get(id: &str) -> Option<&'static Tool> {
@@ -207,13 +413,14 @@ pub struct ToolStatus {
     id: &'static str,
     name: &'static str,
     used_for: &'static str,
-    /// What Install uses: "bundled" (comes with Glint; winget can put it back), "winget" or "release".
+    /// What Install tries first on this PC: "winget" (where it's on the PC and has the tool, for one that
+    /// doesn't come with Glint), else "release".
     source: &'static str,
     /// Where the copy that runs came from: "bundled", "downloaded" or "installed"; None when it's missing.
     origin: Option<&'static str>,
     path: Option<String>,
     version: Option<String>,
-    /// The version a release download gets.
+    /// The version its release download gets.
     pinned: Option<&'static str>,
     /// Glint downloaded this copy, so it can remove it.
     removable: bool,
@@ -221,11 +428,8 @@ pub struct ToolStatus {
 
 fn status(tool: &'static Tool) -> ToolStatus {
     let found = proc::locate(tool.exe);
-    let (source, pinned) = match tool.source {
-        Source::Bundled { .. } => ("bundled", None),
-        Source::Winget { .. } => ("winget", None),
-        Source::Release { version, .. } => ("release", Some(version)),
-    };
+    let source = if !tool.bundled && !tool.winget.is_empty() && winget().is_some() { "winget" } else { "release" };
+    let pinned = Some(tool.release.version);
     let origin = found.as_ref().map(|(_, origin)| match origin {
         Origin::Bundled => "bundled",
         Origin::Downloaded => "downloaded",
@@ -270,13 +474,15 @@ pub fn version_of(path: &Path) -> Option<String> {
     version_in(&String::from_utf8_lossy(if output.stdout.is_empty() { &output.stderr } else { &output.stdout }))
 }
 
-/// The first version number in a program's `--version` text: "ripgrep 15.2.0 (rev 1a2b)" → "15.2.0".
+/// The first version number in a program's `--version` text: "ripgrep 15.2.0 (rev 1a2b)" → "15.2.0",
+/// "ffmpeg version 9.0.2-essentials_build-www.gyan.dev" → "9.0.2".
 fn version_in(text: &str) -> Option<String> {
     text.lines().find_map(|line| {
         line.split(|c: char| c.is_whitespace() || "(),:".contains(c)).find_map(|word| {
             let word = word.trim_start_matches(['v', 'V']);
-            let parts: Vec<&str> = word.split('.').collect();
-            (parts.len() >= 2 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))).then(|| word.to_string())
+            let number = word[..word.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(word.len())].trim_end_matches('.');
+            let parts: Vec<&str> = number.split('.').collect();
+            (parts.len() >= 2 && parts.iter().all(|p| !p.is_empty())).then(|| number.to_string())
         })
     })
 }
@@ -317,7 +523,8 @@ impl Installs {
     }
 }
 
-/// Installs a tool (or puts a bundled one back): with winget, or by downloading its release.
+/// Installs a tool (or puts a bundled one back): with winget where the PC has it and winget has the tool,
+/// else, or when winget can't, from the tool's own release.
 #[tauri::command]
 pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: State<'_, Installs>) -> Result<ToolStatus, String> {
     install(&id, on_progress, &installs).await
@@ -325,25 +532,61 @@ pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: 
 
 async fn install(id: &str, on_progress: Channel<Progress>, installs: &Installs) -> Result<ToolStatus, String> {
     let tool = get(id).ok_or_else(|| format!("No tool is called {id}"))?;
-    match tool.source {
-        // pdu isn't on winget: it comes back with Glint itself.
-        Source::Bundled { winget: "" } => return Err(format!("{} comes with Glint: install Glint again to put it back", tool.name)),
-        Source::Bundled { winget } | Source::Winget { id: winget } => {
-            let lane = installs.winget.clone();
-            blocking(move || winget_install(winget, &lane, tool.id, &on_progress)).await?;
+    // The ways to get it, in order (None is its release): winget first, as what it installs goes on PATH,
+    // where terminals find it too; but a tool that comes with Glint is put back from its release first, the
+    // very build Glint ships. When one way can't, the next is tried.
+    let mut ways: Vec<Option<PathBuf>> = winget().filter(|_| !tool.winget.is_empty()).into_iter().map(Some).collect();
+    ways.insert(if tool.bundled { 0 } else { ways.len() }, None);
+    let mut failed = Vec::new();
+    for (i, way) in ways.into_iter().enumerate() {
+        if i > 0 {
+            let _ = on_progress.send(Progress { stage: "That didn't work, so Glint tries another way".into(), done: 0, total: 0 });
         }
-        Source::Release { url, sha256, member, .. } => {
-            let stop = installs.begin(id);
-            let done = download(tool, url, sha256, member, &stop, &on_progress).await;
-            installs.end(id);
-            done?;
+        let tried = match way {
+            Some(winget) => with_winget(tool, winget, on_progress.clone(), installs).await,
+            None => from_release(tool, &on_progress, installs).await,
+        };
+        match tried {
+            Ok(found) => return Ok(found),
+            Err(e) if e == "cancelled" => return Err(e),
+            Err(e) => failed.push(e),
         }
     }
+    Err(failed.join("; then "))
+}
+
+/// Installs a tool with winget; its status, once Glint finds it.
+async fn with_winget(tool: &'static Tool, winget: PathBuf, progress: Channel<Progress>, installs: &Installs) -> Result<ToolStatus, String> {
+    let lane = installs.winget.clone();
+    blocking(move || winget_install(&winget, tool.winget, &lane, tool.id, &progress)).await.map_err(|e| if e == "cancelled" { e } else { format!("winget: {e}") })?;
+    found(tool).await
+}
+
+/// Downloads a tool's release; its status, once Glint finds it.
+async fn from_release(tool: &'static Tool, progress: &Channel<Progress>, installs: &Installs) -> Result<ToolStatus, String> {
+    let stop = installs.begin(tool.id);
+    let done = download(tool, &stop, progress).await;
+    installs.end(tool.id);
+    done?;
+    found(tool).await
+}
+
+/// A tool's status once it's installed, or an error when Glint can't find it yet.
+async fn found(tool: &'static Tool) -> Result<ToolStatus, String> {
     let found = blocking(move || Ok(status(tool))).await?;
     if found.origin.is_none() {
-        return Err(format!("{} was installed, but Glint can't find it yet. Restarting Glint may help.", tool.name));
+        return Err(format!("{} was installed, but Glint can't find it yet (restarting Glint may help)", tool.name));
     }
     Ok(found)
+}
+
+/// winget, where this PC has it: App Installer's alias, on PATH or in the account's WindowsApps folder.
+/// Windows Server, LTSC and some managed PCs have none.
+fn winget() -> Option<PathBuf> {
+    let path: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    let apps = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Microsoft\WindowsApps"));
+    // The alias is a link that can't be opened as a file, so it's looked at rather than followed.
+    path.into_iter().chain(apps).map(|dir| dir.join("winget.exe")).find(|exe| exe.is_absolute() && fs::symlink_metadata(exe).is_ok())
 }
 
 #[tauri::command]
@@ -354,10 +597,10 @@ pub fn tool_cancel_install(id: String, installs: State<Installs>) {
 /// winget's "no installer for that scope": the package only installs for every user.
 const NO_APPLICABLE_INSTALLER: i32 = 0x8A15_0010_u32 as i32;
 
-fn winget_install(package: &str, lanes: &Lanes, lane: &str, progress: &Channel<Progress>) -> Result<(), String> {
+fn winget_install(winget: &Path, package: &str, lanes: &Lanes, lane: &str, progress: &Channel<Progress>) -> Result<(), String> {
     // For this account where the package allows it (portable ones always do); else as the package installs.
-    match run_winget(&["install", "--id", package, "--scope", "user"], lanes, lane, progress) {
-        Err(Ended { code: Some(NO_APPLICABLE_INSTALLER), .. }) => run_winget(&["install", "--id", package], lanes, lane, progress),
+    match run_winget(winget, &["install", "--id", package, "--scope", "user"], lanes, lane, progress) {
+        Err(Ended { code: Some(NO_APPLICABLE_INSTALLER), .. }) => run_winget(winget, &["install", "--id", package], lanes, lane, progress),
         other => other,
     }
     .map_err(|ended| ended.said)
@@ -371,8 +614,8 @@ struct Ended {
 }
 
 /// Runs winget, reporting what it says as progress.
-fn run_winget(args: &[&str], lanes: &Lanes, lane: &str, progress: &Channel<Progress>) -> Result<(), Ended> {
-    let mut winget = Command::new("winget");
+fn run_winget(winget: &Path, args: &[&str], lanes: &Lanes, lane: &str, progress: &Channel<Progress>) -> Result<(), Ended> {
+    let mut winget = Command::new(winget);
     winget
         .args(args)
         .args(["--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"])
@@ -434,18 +677,23 @@ fn bytes_of(line: &str) -> Option<(u64, u64)> {
 /// The most a tool's download may be: anything bigger isn't what was pinned.
 const MAX_DOWNLOAD: u64 = 512 << 20;
 
-async fn download(tool: &'static Tool, url: &str, sha256: &str, member: &str, stop: &AtomicBool, progress: &Channel<Progress>) -> Result<(), String> {
-    let temp = fetch(url, sha256, tool.id, tool.name, stop, progress).await?;
+/// Downloads a tool's release into its own folder in Glint's tools folder: the program, under the tool's
+/// name, and anything it needs beside it.
+async fn download(tool: &'static Tool, stop: &AtomicBool, progress: &Channel<Progress>) -> Result<(), String> {
+    let release = &tool.release;
+    let temp = fetch(release.url, release.sha256, tool.id, tool.name, stop, progress).await?;
     let _ = progress.send(Progress { stage: "Unpacking".into(), done: 0, total: 0 });
     let into = DIR.get().ok_or("Glint's data folder isn't available")?.join(tool.id);
-    let (file, member, exe, tarball) = (temp.clone(), member.to_string(), tool.exe, url.ends_with(".tar.gz"));
+    let file = temp.clone();
     let unpacked = blocking(move || {
-        if member.is_empty() {
-            place(&file, &into, exe)
-        } else if tarball {
-            unpack_tarball(&file, &member, &into, exe)
+        let program = format!("{}.exe", tool.exe);
+        let files: Vec<(&str, &str)> = std::iter::once((release.member, program.as_str())).chain(release.with.iter().map(|m| (*m, m.rsplit('/').next().unwrap_or(m)))).collect();
+        if release.member.is_empty() {
+            place(&file, &into, tool.exe)
+        } else if release.url.ends_with(".tar.gz") {
+            unpack_tarball(&file, &files, &into)
         } else {
-            unpack(&file, &member, &into, exe)
+            unpack(&file, &files, &into)
         }
     })
     .await;
@@ -512,41 +760,51 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Takes only the program out of a checked release zip, into a fresh folder that then replaces the old one.
-fn unpack(zip: &Path, member: &str, into: &Path, exe: &str) -> Result<(), String> {
+/// Takes only the files named, `(member, name)`, out of a checked release zip, into a fresh folder that
+/// then replaces the old one.
+fn unpack(zip: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(File::open(zip).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let wanted = member.replace('\\', "/");
-    let index = (0..archive.len())
-        .find(|&i| archive.name_for_index(i).and_then(Result::ok).is_some_and(|n| n.eq_ignore_ascii_case(&wanted)))
-        .ok_or_else(|| format!("{member} isn't in the download"))?;
-    let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-    let fresh = into.with_extension("new");
-    let _ = fs::remove_dir_all(&fresh);
-    fs::create_dir_all(&fresh).map_err(|e| e.to_string())?;
-    let mut out = File::create(fresh.join(format!("{exe}.exe"))).map_err(|e| e.to_string())?;
-    std::io::copy(&mut (&mut entry).take(MAX_DOWNLOAD), &mut out).map_err(|e| e.to_string())?;
-    drop(out);
-    replace(into, &fresh)
+    fresh_folder(into, |fresh| {
+        for (member, name) in files {
+            let wanted = member.replace('\\', "/");
+            let index = (0..archive.len())
+                .find(|&i| archive.name_for_index(i).and_then(Result::ok).is_some_and(|n| n.eq_ignore_ascii_case(&wanted)))
+                .ok_or_else(|| format!("{member} isn't in the download"))?;
+            let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+            let mut out = File::create(fresh.join(name)).map_err(|e| e.to_string())?;
+            std::io::copy(&mut (&mut entry).take(MAX_DOWNLOAD), &mut out).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
 }
 
-/// Takes only the program out of a checked release tarball (.tar.gz), into a fresh folder that then
-/// replaces the old one.
-fn unpack_tarball(tarball: &Path, member: &str, into: &Path, exe: &str) -> Result<(), String> {
-    let program = crate::archive::tar_gz_member(tarball, member, MAX_DOWNLOAD)?;
+/// Takes only the files named, `(member, name)`, out of a checked release tarball (.tar.gz), into a fresh
+/// folder that then replaces the old one.
+fn unpack_tarball(tarball: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), String> {
+    fresh_folder(into, |fresh| {
+        for (member, name) in files {
+            let bytes = crate::archive::tar_gz_member(tarball, member, MAX_DOWNLOAD)?;
+            fs::write(fresh.join(name), bytes).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+}
+
+/// Fills a fresh folder beside `into`, which then replaces it; one that couldn't be filled is removed.
+fn fresh_folder(into: &Path, fill: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
     let fresh = into.with_extension("new");
     let _ = fs::remove_dir_all(&fresh);
     fs::create_dir_all(&fresh).map_err(|e| e.to_string())?;
-    fs::write(fresh.join(format!("{exe}.exe")), program).map_err(|e| e.to_string())?;
+    if let Err(e) = fill(&fresh) {
+        let _ = fs::remove_dir_all(&fresh);
+        return Err(e);
+    }
     replace(into, &fresh)
 }
 
 /// Puts a checked download that's the program itself in place, in a fresh folder that then replaces the old one.
 fn place(download: &Path, into: &Path, exe: &str) -> Result<(), String> {
-    let fresh = into.with_extension("new");
-    let _ = fs::remove_dir_all(&fresh);
-    fs::create_dir_all(&fresh).map_err(|e| e.to_string())?;
-    fs::copy(download, fresh.join(format!("{exe}.exe"))).map_err(|e| e.to_string())?;
-    replace(into, &fresh)
+    fresh_folder(into, |fresh| fs::copy(download, fresh.join(format!("{exe}.exe"))).map(|_| ()).map_err(|e| e.to_string()))
 }
 
 fn replace(into: &Path, fresh: &Path) -> Result<(), String> {
@@ -750,6 +1008,8 @@ mod tests {
         assert_eq!(version_in("Difftastic 0.71.0 (built with rustc 1.91.0)").as_deref(), Some("0.71.0"));
         assert_eq!(version_in("yr v1.22.0").as_deref(), Some("1.22.0"));
         assert_eq!(version_in("tokei 12.1.2 compiled with serialization support: json").as_deref(), Some("12.1.2"));
+        assert_eq!(version_in("ffmpeg version 9.0.2-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers").as_deref(), Some("9.0.2"));
+        assert_eq!(version_in("uv 0.13.6 (a1b2c3d4e 2026-10-27)").as_deref(), Some("0.13.6"));
         assert_eq!(version_in("usage: tool [options]"), None);
     }
 
@@ -758,6 +1018,23 @@ mod tests {
         assert_eq!(bytes_of("██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  2.00 MB / 4.00 MB"), Some((2 << 20, 4 << 20)));
         assert_eq!(bytes_of("████████  512 KB / 1.00 MB"), Some((512 << 10, 1 << 20)));
         assert_eq!(bytes_of("Successfully verified installer hash"), None);
+    }
+
+    /// Every tool installs on a PC without winget too: from a release on GitHub, pinned by its SHA-256,
+    /// whose program (and what it needs beside it) Glint knows how to take out.
+    #[test]
+    fn every_tool_installs_without_winget() {
+        for tool in TOOLS {
+            let release = &tool.release;
+            assert!(release.url.starts_with("https://github.com/") && release.url.contains("/releases/download/"), "{}'s release is on GitHub", tool.id);
+            assert!(release.url.contains(release.version), "{}'s address is its version's", tool.id);
+            assert!(release.sha256.len() == 64 && release.sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{}'s SHA-256", tool.id);
+            let program = release.url.ends_with(".exe");
+            assert!(program || release.url.ends_with(".zip") || release.url.ends_with(".tar.gz"), "{}'s download is a program, a zip or a tarball", tool.id);
+            assert_eq!(release.member.is_empty(), program, "{}: an archive names its program, a program needs no name", tool.id);
+            assert!(release.member.is_empty() || release.member.ends_with(".exe"), "{}'s member is a program", tool.id);
+            assert!(release.with.iter().all(|m| !program && m.ends_with(".exe")), "{}'s other files come from its archive", tool.id);
+        }
     }
 
     /// The installer's Extra tools page (installer/tools.nsh) lists every tool that doesn't come with
@@ -779,11 +1056,7 @@ mod tests {
         }
         let mut offered: Vec<(&str, &str, &str, &str)> = rows.iter().map(|row| (row[1], row[3], row[4], row[5])).collect();
         let mut expected = vec![("instant-search", "service", "\"\"", "\"\""), ("meaning", "model", "\"\"", "\"\"")];
-        expected.extend(TOOLS.iter().filter_map(|tool| match tool.source {
-            Source::Bundled { .. } => None,
-            Source::Winget { .. } => Some((tool.id, "winget", tool.exe, tool.package)),
-            Source::Release { .. } => Some((tool.id, "release", tool.exe, tool.package)),
-        }));
+        expected.extend(TOOLS.iter().filter(|tool| !tool.bundled).map(|tool| (tool.id, "tool", tool.exe, tool.package)));
         offered.sort();
         expected.sort();
         assert_eq!(offered, expected, "installer/tools.nsh's rows (id, kind, program, package) differ from TOOLS");
@@ -811,11 +1084,24 @@ mod tests {
         zip.start_file("difft-1.0/../../evil.exe", options).unwrap();
         zip.write_all(b"not wanted").unwrap();
         zip.finish().unwrap();
-        unpack(&zip_path, "difft-1.0\\difft.exe", &dir.join("difftastic"), "difft").unwrap();
+        unpack(&zip_path, &[("difft-1.0\\difft.exe", "difft.exe")], &dir.join("difftastic")).unwrap();
         assert_eq!(fs::read(dir.join("difftastic").join("difft.exe")).unwrap(), b"the program");
         assert!(!dir.join("difftastic").join("old.txt").exists(), "the old copy's folder was replaced");
         assert!(!dir.join("evil.exe").exists() && !std::env::temp_dir().join("evil.exe").exists());
-        assert!(unpack(&zip_path, "missing.exe", &dir.join("x"), "x").is_err());
+        assert!(unpack(&zip_path, &[("missing.exe", "x.exe")], &dir.join("x")).is_err());
+        assert!(!dir.join("x.new").exists(), "a folder that couldn't be filled is removed");
+        // A program and what it needs beside it (FFmpeg's ffprobe), and nothing else.
+        let ffmpeg = dir.join("ffmpeg.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&ffmpeg).unwrap());
+        for name in ["ffmpeg", "ffprobe", "ffplay"] {
+            zip.start_file(format!("ffmpeg-9.0/bin/{name}.exe"), options).unwrap();
+            zip.write_all(name.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        unpack(&ffmpeg, &[("ffmpeg-9.0/bin/ffmpeg.exe", "ffmpeg.exe"), ("ffmpeg-9.0/bin/ffprobe.exe", "ffprobe.exe")], &dir.join("ffmpeg")).unwrap();
+        assert_eq!(fs::read(dir.join("ffmpeg").join("ffmpeg.exe")).unwrap(), b"ffmpeg");
+        assert_eq!(fs::read(dir.join("ffmpeg").join("ffprobe.exe")).unwrap(), b"ffprobe");
+        assert!(!dir.join("ffmpeg").join("ffplay.exe").exists());
         // A release that's the program itself (jaq's) goes in the same way.
         fs::write(dir.join("jaq-x86_64-pc-windows-msvc.exe"), b"jaq").unwrap();
         place(&dir.join("jaq-x86_64-pc-windows-msvc.exe"), &dir.join("difftastic"), "jaq").unwrap();
@@ -831,9 +1117,33 @@ mod tests {
         let mut gz = flate2::write::GzEncoder::new(File::create(dir.join("onefetch-win.tar.gz")).unwrap(), flate2::Compression::default());
         gz.write_all(&tar.into_inner().unwrap()).unwrap();
         gz.finish().unwrap();
-        unpack_tarball(&dir.join("onefetch-win.tar.gz"), "onefetch.exe", &dir.join("onefetch"), "onefetch").unwrap();
+        unpack_tarball(&dir.join("onefetch-win.tar.gz"), &[("onefetch.exe", "onefetch.exe")], &dir.join("onefetch")).unwrap();
         assert_eq!(fs::read(dir.join("onefetch").join("onefetch.exe")).unwrap(), b"one fetched");
-        assert!(unpack_tarball(&dir.join("onefetch-win.tar.gz"), "other.exe", &dir.join("y"), "y").is_err());
+        assert!(unpack_tarball(&dir.join("onefetch-win.tar.gz"), &[("other.exe", "y.exe")], &dir.join("y")).is_err());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Every pinned release downloads, matches its SHA-256 and unpacks to its program. About 400 MB, so
+    /// only when asked, after changing a pin: cargo test --lib -- --ignored pinned_releases
+    #[test]
+    #[ignore]
+    fn pinned_releases_download_and_unpack() {
+        let dir = std::env::temp_dir().join(format!("glint-releases-{}", std::process::id()));
+        set_dir(dir.join("tools"));
+        let quiet = Channel::new(|_| Ok(()));
+        let failed: Vec<String> = TOOLS
+            .iter()
+            .filter_map(|tool| {
+                let stop = AtomicBool::new(false);
+                let program = folder_of(tool.id).map(|folder| folder.join(format!("{}.exe", tool.exe)));
+                match tauri::async_runtime::block_on(download(tool, &stop, &quiet)) {
+                    Ok(()) if program.is_some_and(|p| p.is_file()) => None,
+                    Ok(()) => Some(format!("{}: no {}.exe after unpacking", tool.id, tool.exe)),
+                    Err(e) => Some(format!("{}: {e}", tool.id)),
+                }
+            })
+            .collect();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(failed.is_empty(), "{failed:#?}");
     }
 }

@@ -280,7 +280,7 @@ AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.i
 
 ## Install
 
-**[Download Glint](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** and open it. It installs for your account in a few seconds, without administrator rights, with ripgrep, fd and pdu inside. Its **Extra tools** page offers the rest, each with what Glint uses it for: instant search, and the free tools some features need ([which ones](docs/tools.md)), which you can also add later in **Settings → Tools**. Windows 10 or 11, 64-bit.
+**[Download Glint](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** and open it. It installs for your account in a few seconds, without administrator rights, with ripgrep, fd and pdu inside. Its **Extra tools** page offers the rest, each with what Glint uses it for: instant search, and the free tools some features need ([which ones](docs/tools.md)), which you can also add later in **Settings → Tools**. Each installs with or without winget: from its own release, checked against its checksum, where winget isn't. Windows 10 or 11, 64-bit, with Microsoft Edge WebView2, which Windows 11 has: where it's missing, the installer adds it, and so does Glint when it starts (a Scoop or copied install too).
 
 The installer isn't code-signed yet, so Windows may say *Windows protected your PC*: choose **More info**, then **Run anyway** ([why](SECURITY.md#code-signing-and-privacy-policy)). If your browser holds the download back because the file isn't commonly downloaded, choose **Keep**.
 
