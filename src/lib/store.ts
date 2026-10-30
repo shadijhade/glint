@@ -60,6 +60,10 @@ export interface Settings {
     showHidden: boolean;
     foldersFirst: boolean;
     showPreviewPane: boolean;
+    // The sidebar's folder tree: drives, Quick access and pinned folders open to show their folders, and
+    // (if asked) it opens down to the folder shown, as File Explorer's "Expand to open folder"
+    folderTree: boolean;
+    treeFollows: boolean;
     listThumbnails: boolean; // small thumbnails of pictures and videos in the list's icon column
     tileSize: TileSize; // how big the grid's tiles are, in every tab (Ctrl+wheel, Ctrl+= and Ctrl+-)
     confirmDelete: boolean; // ask before moving to the Recycle Bin (permanent deletes always ask)
@@ -134,6 +138,8 @@ export const DEFAULT_SETTINGS: Settings = {
     showHidden: false,
     foldersFirst: true,
     showPreviewPane: true,
+    folderTree: true,
+    treeFollows: false,
     listThumbnails: true,
     tileSize: 'medium',
     confirmDelete: false,
