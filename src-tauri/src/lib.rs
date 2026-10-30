@@ -125,10 +125,14 @@ fn replace_contents(path: &std::path::Path, content: &[u8]) -> std::io::Result<(
     let written = file.write_all(content).and_then(|()| file.sync_all());
     drop(file);
     #[cfg(windows)]
-    let written = written.and_then(|()| unsafe {
+    let written = written.and_then(|()| {
         use windows::core::{HSTRING, PCWSTR};
         use windows::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_IGNORE_MERGE_ERRORS};
-        ReplaceFileW(&HSTRING::from(path), &HSTRING::from(temp.as_path()), PCWSTR::null(), REPLACEFILE_IGNORE_MERGE_ERRORS, None, None).map_err(std::io::Error::from)
+        // A new file: there's nothing to replace (ReplaceFileW would fail), so the copy takes its name.
+        if !path.exists() {
+            return fs::rename(&temp, path);
+        }
+        unsafe { ReplaceFileW(&HSTRING::from(path), &HSTRING::from(temp.as_path()), PCWSTR::null(), REPLACEFILE_IGNORE_MERGE_ERRORS, None, None) }.map_err(std::io::Error::from)
     });
     #[cfg(not(windows))]
     let written = written.and_then(|()| fs::rename(&temp, path));
@@ -908,6 +912,11 @@ mod tests {
         replace_contents(&file, b"new text").unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "new text");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "the temp file is gone");
+        // A file that isn't there yet is made, and says so.
+        let new = dir.join("export.json");
+        replace_contents(&new, b"{}").unwrap();
+        assert_eq!(fs::read_to_string(&new).unwrap(), "{}");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2, "no temp file left");
         fs::remove_dir_all(&dir).unwrap();
     }
 }
