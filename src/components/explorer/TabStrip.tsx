@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
-import { Clock, Cloud, Folder, HardDrive, Monitor, Plus, Search, Trash2, X } from "lucide-react";
+import { Clock, Cloud, Folder, HardDrive, Images, Monitor, Plus, Search, Trash2, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { activateTab, closeTab, newTab, placeTab, tabName, useExplorer } from "@/lib/explorer";
-import { isRecent, isRecycleBin, isRemotePath, isRoot, THIS_PC } from "@/lib/paths";
+import { isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, THIS_PC } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 
 /** A tab being dragged, and where it would go: its starting pane/slot, live pointer delta, and target slot. */
@@ -110,9 +110,9 @@ function Tab({ id, pane, index, selected, current, canClose, onContextMenu }: Ta
     }, [selected]);
 
     const name = query ?? tabName(path, drives);
-    const where = path === THIS_PC ? "This PC" : isRecycleBin(path) ? "Recycle Bin" : isRecent(path) ? "Recent: the files opened lately" : path;
+    const where = path === THIS_PC ? "This PC" : isRecycleBin(path) ? "Recycle Bin" : isRecent(path) ? "Recent: the files opened lately" : isGallery(path) ? "Gallery: your photos and videos" : path;
     const folder = query === null && path !== THIS_PC && !isRoot(path);
-    const Icon = query !== null ? Search : path === THIS_PC ? Monitor : isRecycleBin(path) ? Trash2 : isRecent(path) ? Clock : isRemotePath(path) && isRoot(path) ? Cloud : folder ? Folder : HardDrive;
+    const Icon = query !== null ? Search : path === THIS_PC ? Monitor : isRecycleBin(path) ? Trash2 : isRecent(path) ? Clock : isGallery(path) ? Images : isRemotePath(path) && isRoot(path) ? Cloud : folder ? Folder : HardDrive;
     return (
         <div
             ref={ref}

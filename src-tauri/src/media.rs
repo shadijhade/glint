@@ -56,6 +56,11 @@ pub struct MediaDetails {
 /// is the EXIF's.
 const RAW: &[&str] = &["dng", "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "iiq", "srw"];
 
+/// When a photo or a video was taken (or recorded), as ms since 1970: None when it doesn't say.
+pub(crate) fn taken_of(path: &str) -> Option<i64> {
+    details(path, false)?.taken.map(|ms| ms as i64)
+}
+
 fn kind_of(path: &str) -> Option<&'static str> {
     let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
     if PICTURES.contains(&ext.as_str()) {

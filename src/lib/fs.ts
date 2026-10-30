@@ -1141,6 +1141,10 @@ export const setExplorerIntegration = (menu: boolean, byDefault: boolean, winE?:
 /** The taskbar button's Jump List: its tasks, then the pinned folders and the most used (those only when Windows shows recently opened items). */
 export const syncJumpList = (pinned: string[], frequent: string[]) => invoke<void>("sync_jump_list", { pinned, frequent });
 
+/** The gallery's folders, and word that it has read the dates of what's new in them. */
+export const gallerySetFolders = (folders: string[]) => invoke<void>("gallery_set_folders", { folders });
+export const onGalleryDated = (handler: () => void) => listen("gallery-dated", () => handler());
+
 /** Takes items out of Recent (their shortcuts in Windows' Recent Items), and whether Windows keeps recent items at all. */
 export const recentForget = (paths: string[]) => invoke<void>("recent_forget", { paths });
 export const recentKept = () => invoke<boolean>("recent_kept");

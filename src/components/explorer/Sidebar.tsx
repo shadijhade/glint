@@ -1,4 +1,4 @@
-import { Clock, Database, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Unplug, Usb, X } from "lucide-react";
+import { Clock, Database, Disc, Download, Images, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Unplug, Usb, X } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
 import { type CloudSpace, rcloneAbout } from "@/lib/rclone";
@@ -10,7 +10,7 @@ import { useShallow } from "zustand/react/shallow";
 import { type KnownFolder, middleClickOpens, navigate, refreshDrives, runSavedSearch, useExplorer, useTab } from "@/lib/explorer";
 import { type Drive, driveName, ejectDrive } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
-import { baseName, inArchivePath, isRecent, isRemotePath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, GALLERY, inArchivePath, isGallery, isRecent, isRemotePath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { type RemoteConnection, type SavedSearch, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -219,6 +219,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
         <nav aria-label="Places" onKeyDown={onTreeKey} className="flex w-12 shrink-0 flex-col gap-4 overflow-y-auto border-r p-1.5 pt-3 md:w-56 md:p-2 md:pt-3">
             <Section title="Quick access">
                 <Place icon={Clock} label="Recent" path={RECENT} active={isRecent(path)} title="The files you opened lately, here or in any app, newest first" onContextMenu={onContextMenu} />
+                <Place icon={Images} label="Gallery" path={GALLERY} active={isGallery(path)} title="Your photos and videos, newest first by when each was taken" onContextMenu={onContextMenu} />
                 {known.map((k) => (
                     <Place key={k.id} icon={KNOWN_ICONS[k.id]} label={k.name} path={k.path} active={here(k.path)} onContextMenu={onContextMenu} tree={tree} />
                 ))}
