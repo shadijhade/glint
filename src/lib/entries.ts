@@ -20,6 +20,10 @@ export const ATTR = {
     /** Cloud files: only online, their space freed up. */
     unpinned: 0x100000,
     recallOnDataAccess: 0x400000,
+    /** Glint's: a cloud file (OneDrive…) that's synced, or on its way (fsx.rs). */
+    cloud: 0x00800000,
+    /** Glint's: a cloud file that isn't in sync yet: changed here, or never uploaded. */
+    cloudPending: 0x01000000,
     /** In the Recycle Bin: its path is its file there, its `origin` the folder it was deleted from (see recycle.rs). */
     recycled: 0x08000000,
     /** Compressed with a method Glint can't read. */
@@ -204,8 +208,19 @@ export const isHidden = (e: FileEntry) => (e.attrs & ATTR.hidden) !== 0;
 /** OneDrive-style placeholders: reading them would start a download. */
 export const isOnlineOnly = (e: FileEntry) => (e.attrs & (ATTR.offline | ATTR.recallOnOpen | ATTR.recallOnDataAccess)) !== 0;
 
-/** In a cloud-synced folder (OneDrive…): an online-only placeholder, or a file kept on this device or freed up. */
-export const isCloudFile = (e: FileEntry) => isOnlineOnly(e) || (e.attrs & (ATTR.pinned | ATTR.unpinned)) !== 0;
+/** A cloud file's state (OneDrive's, Dropbox's…), as File Explorer's Status column shows it. */
+export type CloudState = "pending" | "online" | "kept" | "local";
+
+export function cloudState(e: FileEntry): CloudState | null {
+    if (e.attrs & ATTR.cloudPending) return "pending";
+    // Online only, or on its way here when it's to be kept on this device.
+    if (isOnlineOnly(e)) return e.attrs & ATTR.pinned ? "pending" : "online";
+    if (e.attrs & ATTR.pinned) return "kept";
+    return e.attrs & (ATTR.cloud | ATTR.unpinned) ? "local" : null;
+}
+
+/** In a cloud-synced folder (OneDrive…): synced, on its way, or kept on this device or only online. */
+export const isCloudFile = (e: FileEntry) => cloudState(e) !== null;
 
 export type SortKey = "name" | "modified" | "taken" | "type" | "size";
 export interface Sort {
