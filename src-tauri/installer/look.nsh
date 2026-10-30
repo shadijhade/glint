@@ -1,7 +1,7 @@
 ; How Glint's installer looks and reads: Windows 11's font, Glint's own words on the welcome and finish
 ; pages, a question before Cancel quits, and artwork drawn for the screen's scaling (installer/art,
-; made by scripts/installer-art.mjs), so it's sharp at 125% and up rather than stretched. installer.nsi
-; inserts GLINT_INTERFACE before its pages.
+; made by scripts/installer-art.mjs), so it's sharp at every common scaling rather than stretched.
+; installer.nsi inserts GLINT_INTERFACE before its pages.
 
 !define GLINT_ART "${__FILEDIR__}\art"
 
@@ -15,9 +15,15 @@
   ${EndIf}
 !macroend
 
-; A picture drawn for that DPI's scaling (125% to 200%), in place of the 100% one MUI unpacked.
+; A picture drawn for that DPI's scaling (125% to 300%, the nearest), in place of the 100% one MUI unpacked.
 !macro GLINT_ART_FOR NAME FILE
-  ${If} $0 >= 180
+  ${If} $0 >= 264
+    File "/oname=$PLUGINSDIR\${FILE}" "${GLINT_ART}\${NAME}-300.bmp"
+  ${ElseIf} $0 >= 228
+    File "/oname=$PLUGINSDIR\${FILE}" "${GLINT_ART}\${NAME}-250.bmp"
+  ${ElseIf} $0 >= 204
+    File "/oname=$PLUGINSDIR\${FILE}" "${GLINT_ART}\${NAME}-225.bmp"
+  ${ElseIf} $0 >= 180
     File "/oname=$PLUGINSDIR\${FILE}" "${GLINT_ART}\${NAME}-200.bmp"
   ${ElseIf} $0 >= 156
     File "/oname=$PLUGINSDIR\${FILE}" "${GLINT_ART}\${NAME}-175.bmp"
