@@ -1,6 +1,6 @@
 // Draws the installer's artwork (src-tauri/installer/art): the picture beside the welcome and finish
-// pages and the one in every other page's header, at each scaling Windows offers from 100% to 200%, so
-// neither is stretched (installer/look.nsh picks the one for the screen). Edge draws each from the HTML
+// pages and the one in every other page's header, at each common scaling from 100% to 300%, so neither
+// is stretched (installer/look.nsh picks the one for the screen). Edge draws each from the HTML
 // below, with the logo from src/assets/logo.svg; Windows' System.Drawing then makes the 24-bit BMPs that
 // NSIS takes.
 //
@@ -17,15 +17,19 @@ const out = join(root, "src-tauri", "installer", "art");
 const edge = ["ProgramFiles(x86)", "ProgramFiles"].map((v) => join(process.env[v] ?? "", "Microsoft", "Edge", "Application", "msedge.exe")).find(existsSync);
 if (!edge) throw new Error("Microsoft Edge wasn't found");
 
-// The pictures' sizes in pixels at each scaling: MUI's controls in dialog units (the picture 109 × 193,
-// the header's 100 × 35) in Segoe UI 9, the installer's font, whose dialog units don't grow quite in
-// step with the scaling.
+// The pictures' sizes in pixels at each scaling, so neither is ever stretched: MUI's controls in dialog
+// units (the picture 109 × 193, the header's 100 × 35) in Segoe UI 9, the installer's font, as Windows
+// turns them into pixels (its font's average letter width and height there, which don't grow in step
+// with the scaling: 7 × 15 at 100%, 8 × 20 at 125%, 10 × 25 at 150%… 20 × 48 at 300%).
 const SIZES = {
-    100: { sidebar: [191, 386], header: [175, 70] },
+    100: { sidebar: [191, 362], header: [175, 66] },
     125: { sidebar: [218, 483], header: [200, 88] },
-    150: { sidebar: [273, 579], header: [250, 105] },
-    175: { sidebar: [300, 676], header: [275, 123] },
+    150: { sidebar: [273, 603], header: [250, 109] },
+    175: { sidebar: [327, 724], header: [300, 131] },
     200: { sidebar: [354, 772], header: [325, 140] },
+    225: { sidebar: [409, 893], header: [375, 162] },
+    250: { sidebar: [463, 989], header: [425, 179] },
+    300: { sidebar: [545, 1158], header: [500, 210] },
 };
 
 const logo = `data:image/svg+xml;base64,${readFileSync(join(root, "src", "assets", "logo.svg")).toString("base64")}`;
@@ -58,7 +62,9 @@ for (const [scale, size] of Object.entries(SIZES)) {
         const html = join(work, `${name}-${scale}.html`);
         const png = join(work, `${name}-${scale}.png`);
         writeFileSync(html, `<!doctype html><meta charset="utf-8">${draw(w, h)}`);
-        spawnSync(edge, ["--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=1", `--user-data-dir=${join(work, "profile")}`,
+        // Text smoothed in grey (--disable-lcd-text): ClearType's coloured edges belong to the screen it was
+        // drawn for, not in a picture.
+        spawnSync(edge, ["--headless=new", "--disable-gpu", "--disable-lcd-text", "--hide-scrollbars", "--force-device-scale-factor=1", `--user-data-dir=${join(work, "profile")}`,
             `--window-size=${w},${h}`, `--screenshot=${png}`, pathToFileURL(html).href], { stdio: "ignore", timeout: 60_000 });
         // msedge.exe can hand the page to a browser process of its own and end first.
         for (let waited = 0; !existsSync(png) && waited < 30_000; waited += 250) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
