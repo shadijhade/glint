@@ -35,6 +35,7 @@ commit_preprocessors = [
     { pattern = '^(\w+)\(git\)', replace = '${1}(Git)' },
     { pattern = '^(\w+)\(history\)', replace = '${1}(History)' },
     { pattern = '^(\w+)\(index\)', replace = '${1}(Instant_search)' },
+    { pattern = '^(\w+)\(installer\)', replace = '${1}(Installer)' },
     { pattern = '^(\w+)\(ocr\)', replace = '${1}(Text_in_pictures)' },
     { pattern = '^(\w+)\(palette\)', replace = '${1}(Command_palette)' },
     { pattern = '^(\w+)\(preview\)', replace = '${1}(Previews)' },

@@ -137,6 +137,16 @@ Use one way per release: publishing a draft made by `npm run release` creates it
 
 If a release turns out broken, publish a fixed one with a higher version: the updater never installs an older version.
 
+## The installer
+
+The NSIS installer is Tauri's own with Glint's pages, in [`src-tauri/installer/`](../src-tauri/installer/):
+
+-   **`installer.nsi`**: Tauri's template (`crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi` in the tauri repository), from the `@tauri-apps/cli` version its first lines name, with Glint's changes marked `Glint:`: the **Extra tools** page after the folder page, Glint's look, and its name and version where NSIS would name itself. When `@tauri-apps/cli` is updated, `npm run release` warns until the template is compared: take Tauri's file at the new CLI's tag (`tauri-cli-vX.Y.Z`), put the `Glint:` parts back in, and update the version line.
+-   **`hooks.nsh`**: what runs before and after installing and uninstalling (ShadUI Ripgrep's leftovers, File Explorer's entries, the instant search service), and it brings in the two below.
+-   **`look.nsh`**: Segoe UI, the welcome and finish pages' words, a question before **Cancel** quits, and the artwork for the screen's scaling.
+-   **`tools.nsh`**: the **Extra tools** page: instant search, the meaning model and every tool Settings → Tools installs, grouped, each with what it is and what Glint uses it for; one already on the PC is greyed out. What's ticked installs after Glint itself, by Glint (`Glint.exe tools install <id>`, Settings → Tools' own code), with its progress on the installer's status line; the finish page says what didn't install. A test in `src-tauri/src/tools.rs` fails when a tool joins `TOOLS` without a row here. Silent installs pick them with `/TOOLS=difftastic,jaq` ([docs/tools.md](tools.md)).
+-   **`art/`**: the pictures beside the welcome and finish pages and in the header, for 100% to 200% scaling, drawn by `node scripts/installer-art.mjs` from the logo (run it again when the logo or their words change).
+
 ## The Microsoft Store
 
 The Store can list Glint as an **EXE app**: it downloads the installer from a link you give it and runs it silently, and a copy installed that way updates itself like any other. Microsoft's [requirements](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msi/app-package-requirements) for that installer:
