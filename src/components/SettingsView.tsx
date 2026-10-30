@@ -1,12 +1,14 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Archive, Binary, ClipboardCopy, Cloud, Download, ExternalLink, Folder, Heart, Image, Keyboard, Loader2, Lock, LockOpen, LogOut, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Wand2, X, Zap } from "lucide-react";
+import { Archive, Binary, ClipboardCopy, Cloud, Download, ExternalLink, FileDown, FileUp, Folder, Heart, Image, Keyboard, Loader2, Lock, LockOpen, LogOut, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Wand2, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, leaveRemote, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
-import { formatCount, formatDuration, formatSize } from "@/lib/format";
+import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
+import { baseName } from "@/lib/paths";
+import { countOf, importSettings, type Part, PARTS, readSettingsFile, type SettingsFile, writeSettingsFile } from "@/lib/settingsFile";
 import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, type McpSetup, mcpSetup, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { clearWithUndo, DEFAULT_SETTINGS, useStore } from "@/lib/store";
@@ -530,6 +532,99 @@ function CloudsSection({ onClose }: { onClose: () => void }) {
     );
 }
 
+/** Export and Import: Glint's set-up in a file, to bring to another PC (never a secret). */
+function SettingsFileRows() {
+    const [incoming, setIncoming] = useState<{ path: string; file: SettingsFile } | null>(null);
+    const [parts, setParts] = useState<Set<Part>>(new Set());
+    const exportFile = async () => {
+        const path = await save({ defaultPath: `Glint settings ${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: "Glint settings", extensions: ["json"] }] });
+        if (!path) return;
+        try {
+            await writeSettingsFile(path);
+            toast.success("Exported Glint's settings", { description: path });
+        } catch (e) {
+            toast.error("Couldn't export the settings", { description: String(e) });
+        }
+    };
+    const importFile = async () => {
+        const path = await open({ multiple: false, filters: [{ name: "Glint settings", extensions: ["json"] }] });
+        if (typeof path !== "string") return;
+        try {
+            const file = await readSettingsFile(path);
+            setIncoming({ path, file });
+            setParts(new Set(PARTS.filter((p) => countOf(file, p.part) > 0 && p.part !== "history" && p.part !== "visits").map((p) => p.part)));
+        } catch (e) {
+            toast.error("Couldn't import it", { description: String(e instanceof Error ? e.message : e) });
+        }
+    };
+    const take = (replace: boolean) => {
+        if (!incoming) return;
+        const did = importSettings(incoming.file, parts, replace);
+        setIncoming(null);
+        toast.success(replace ? "Replaced with the file's" : "Added from the file", { description: did.join(", ") });
+    };
+    const offered = incoming ? PARTS.filter((p) => countOf(incoming.file, p.part) > 0) : [];
+    return (
+        <>
+            <Row label="Settings file" hint="Settings, pinned folders, saved searches, connections and folder rules, to bring to another PC. Never a password: those stay with Windows and rclone.">
+                <div className="flex gap-1.5">
+                    <Button variant="outline" size="sm" onClick={() => void exportFile()}>
+                        <FileDown /> Export…
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => void importFile()}>
+                        <FileUp /> Import…
+                    </Button>
+                </div>
+            </Row>
+            {incoming && (
+                <div className="space-y-2 border-t px-4 py-3 text-sm">
+                    <p>
+                        <span className="font-medium">{baseName(incoming.path)}</span>
+                        <span className="text-muted-foreground">
+                            {" "}
+                            · {incoming.file.app ? `Glint ${incoming.file.app}, ` : ""}
+                            {formatDate(Date.parse(incoming.file.exported) || 0)}
+                        </span>
+                    </p>
+                    {offered.length === 0 && <p className="text-muted-foreground">There's nothing in it to take.</p>}
+                    {offered.map((p) => (
+                        <label key={p.part} className="flex items-start gap-2">
+                            <input
+                                type="checkbox"
+                                checked={parts.has(p.part)}
+                                onChange={(e) =>
+                                    setParts((all) => {
+                                        const next = new Set(all);
+                                        if (e.target.checked) next.add(p.part);
+                                        else next.delete(p.part);
+                                        return next;
+                                    })
+                                }
+                                className="mt-0.5 accent-primary"
+                            />
+                            <span>
+                                {p.label} <span className="tabular-nums text-muted-foreground">({formatCount(countOf(incoming.file, p.part))})</span>
+                                {p.note && <span className="block text-xs text-muted-foreground">{p.note}</span>}
+                            </span>
+                        </label>
+                    ))}
+                    <div className="flex flex-wrap gap-2 pt-1">
+                        <Button size="sm" disabled={!parts.size} onClick={() => take(false)} title="What's here stays; what the file has besides is added">
+                            Add to what's here
+                        </Button>
+                        <Button size="sm" variant="outline" disabled={!parts.size} onClick={() => take(true)} title="Each part ticked becomes the file's">
+                            Replace what's here
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setIncoming(null)}>
+                            Cancel
+                        </Button>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+}
+
 /** The terminal under the files (Ctrl+`): the shell new ones start, and whether they follow the folder shown. */
 function TerminalSection() {
     const shells = useTerminals((s) => s.shells);
@@ -961,6 +1056,7 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                             <ClipboardCopy /> Copy
                         </Button>
                     </Row>
+                    <SettingsFileRows />
                     <Row label="Reset settings" hint="Restore every option above to its default">
                         <Button variant="outline" size="sm" onClick={reset}>
                             <RotateCcw /> Reset
