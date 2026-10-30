@@ -1,5 +1,5 @@
-import { useRef } from "react";
-import { ArrowDown, ArrowUp, FolderGit2, GitBranch, ListFilter, Loader2, RotateCw, ShieldAlert } from "lucide-react";
+import { useRef, useState } from "react";
+import { ArrowDown, ArrowUp, Check, Copy, FolderGit2, GitBranch, ListFilter, Loader2, RotateCw, ShieldAlert } from "lucide-react";
 import { navigate, refresh, updateTab } from "@/lib/explorer";
 import { formatCount, formatDuration } from "@/lib/format";
 import { trustRepository, useGit } from "@/lib/git";
@@ -14,6 +14,14 @@ import { Button } from "../ui/button";
 export function GitChip({ tab, path }: { tab: string; path: string }) {
     const run = useGit((s) => s[tab]);
     const popRef = useRef<HTMLDivElement>(null);
+    const [copiedWhat, setCopiedWhat] = useState<"branch" | "sha" | null>(null);
+
+    const copyText = (text: string, what: "branch" | "sha") => {
+        void navigator.clipboard.writeText(text).then(() => {
+            setCopiedWhat(what);
+            setTimeout(() => setCopiedWhat((cur) => (cur === what ? null : cur)), 1300);
+        });
+    };
 
     /** Below the chip, kept on screen: placed as it's clicked, before it opens. */
     const place = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -37,6 +45,13 @@ export function GitChip({ tab, path }: { tab: string; path: string }) {
     const name = view.branch ?? (view.head ? `at ${view.head}` : "no commits yet");
     const close = () => popRef.current?.hidePopover();
     const atRoot = samePath(view.root, path);
+    const statusParts = [
+        { key: "conflicted", label: "Conflicts", count: counts.conflicted, query: "git:conflicted", bar: "bg-red-500", pill: "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20" },
+        { key: "modified", label: "Modified", count: counts.modified, query: "git:modified", bar: "bg-amber-500", pill: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20" },
+        { key: "staged", label: "Staged", count: counts.staged, query: "git:staged", bar: "bg-emerald-500", pill: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20" },
+        { key: "untracked", label: "Untracked", count: counts.untracked, query: "git:untracked", bar: "bg-sky-500", pill: "border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400 hover:bg-sky-500/20" },
+    ].filter((s) => s.count > 0);
+    const totalChanged = statusParts.reduce((s, p) => s + p.count, 0);
 
     return (
         <>
@@ -66,9 +81,27 @@ export function GitChip({ tab, path }: { tab: string; path: string }) {
             </button>
             <div id={`git-${tab}`} ref={popRef} popover="auto" className="fixed inset-auto m-0 w-80 rounded-md border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
                 <div className="flex items-center gap-2">
-                    <GitBranch className="size-4 text-primary" />
-                    <span className="min-w-0 truncate text-sm font-semibold">{name}</span>
-                    {view.head && view.branch && <code className="ml-auto shrink-0 font-mono text-[0.6875rem] text-muted-foreground">{view.head}</code>}
+                    <GitBranch className="size-4 shrink-0 text-primary" />
+                    <button
+                        type="button"
+                        onClick={() => view.branch && copyText(view.branch, "branch")}
+                        className="group flex min-w-0 items-center gap-1 truncate text-sm font-semibold hover:text-primary"
+                        title={view.branch ? `Click to copy branch "${view.branch}"` : undefined}
+                    >
+                        <span className="truncate">{name}</span>
+                        {view.branch && (copiedWhat === "branch" ? <Check className="size-3 shrink-0 text-emerald-500" /> : <Copy className="size-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-70" />)}
+                    </button>
+                    {view.head && view.branch && (
+                        <button
+                            type="button"
+                            onClick={() => copyText(view.head!, "sha")}
+                            className="ml-auto flex shrink-0 items-center gap-1 rounded-sm bg-muted/70 px-1.5 py-0.5 font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                            title={`Click to copy commit SHA (${view.head})`}
+                        >
+                            {copiedWhat === "sha" ? <Check className="size-3 text-emerald-500" /> : null}
+                            {view.head}
+                        </button>
+                    )}
                 </div>
                 <p className="mt-1 truncate text-muted-foreground" title={view.root}>
                     In {baseName(view.root) || view.root}
@@ -116,14 +149,51 @@ export function GitChip({ tab, path }: { tab: string; path: string }) {
                         </Button>
                     </div>
                 ) : (
-                    <p className="mt-2">
-                        {changes.length ? `${changes.join(", ")} in this folder and below` : "Nothing changed in this folder"}
-                        <span className="text-muted-foreground">
-                            {" "}
-                            · {formatDuration(view.elapsed)}
-                            {view.partial ? ", stopped at 4 s: what's shown is what it found by then" : ""}
-                        </span>
-                    </p>
+                    <>
+                        <p className="mt-2">
+                            {changes.length ? `${changes.join(", ")} in this folder and below` : "Nothing changed in this folder"}
+                            <span className="text-muted-foreground">
+                                {" "}
+                                · {formatDuration(view.elapsed)}
+                                {view.partial ? ", stopped at 4 s: what's shown is what it found by then" : ""}
+                            </span>
+                        </p>
+                        {statusParts.length > 0 && totalChanged > 0 && (
+                            <div className="mt-2 space-y-2">
+                                <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted/60">
+                                    {statusParts.map((part) => (
+                                        <button
+                                            key={part.key}
+                                            type="button"
+                                            onClick={() => {
+                                                close();
+                                                updateTab({ filter: part.query });
+                                            }}
+                                            style={{ width: `${Math.max((part.count / totalChanged) * 100, 5)}%` }}
+                                            className={cn("h-full transition-opacity hover:opacity-80", part.bar)}
+                                            title={`${part.label}: ${formatCount(part.count)} — click to filter (${part.query})`}
+                                        />
+                                    ))}
+                                </div>
+                                <div className="flex flex-wrap gap-1">
+                                    {statusParts.map((part) => (
+                                        <button
+                                            key={part.key}
+                                            type="button"
+                                            onClick={() => {
+                                                close();
+                                                updateTab({ filter: part.query });
+                                            }}
+                                            className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium transition-colors", part.pill)}
+                                            title={`Filter this folder by ${part.query}`}
+                                        >
+                                            <span className="tabular-nums">{formatCount(part.count)}</span> {part.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </>
                 )}
                 <div className="mt-2.5 flex flex-wrap gap-1.5">
                     {!view.limited && !view.onRequest && changes.length > 0 && (

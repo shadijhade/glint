@@ -464,17 +464,17 @@ function FileExplorerRows() {
     useEffect(() => {
         explorerIntegration().then(setState).catch(() => {});
     }, []);
-    const change = async (menu: boolean, byDefault: boolean) => {
+    const change = async (menu: boolean, byDefault: boolean, winE?: boolean) => {
         setWorking(true);
         try {
-            setState(await setExplorerIntegration(menu, byDefault));
+            setState(await setExplorerIntegration(menu, byDefault, winE));
         } catch (e) {
             toast.error("Couldn't change File Explorer's settings", { description: String(e) });
         } finally {
             setWorking(false);
         }
     };
-    const { available = false, menu = false, byDefault = false } = state ?? {};
+    const { available = false, menu = false, byDefault = false, winE = false } = state ?? {};
     const disabled = !available || working;
     const installed = "Needs Glint installed with its setup program or Scoop";
     return (
@@ -484,14 +484,21 @@ function FileExplorerRows() {
                 hint={available ? "On the right-click menu of folders, drives and empty space in a folder (Show more options on Windows 11)" : installed}
                 checked={menu}
                 disabled={disabled}
-                onChange={(on) => change(on, on && byDefault)}
+                onChange={(on) => change(on, on && byDefault, on && winE)}
             />
             <SwitchRow
                 label="Open folders in Glint by default"
                 hint={available ? "Double-clicking a folder in File Explorer or on the desktop opens it here. Drives, This PC, the Recycle Bin and libraries stay in File Explorer." : installed}
                 checked={byDefault}
                 disabled={disabled}
-                onChange={(on) => change(menu || on, on)}
+                onChange={(on) => change(menu || on, on, winE)}
+            />
+            <SwitchRow
+                label="Win+E opens Glint"
+                hint={available ? "Win+E opens This PC here instead of File Explorer. Turning it off, or uninstalling Glint, gives Win+E back to File Explorer." : installed}
+                checked={winE}
+                disabled={disabled}
+                onChange={(on) => change(menu || on, byDefault, on)}
             />
         </>
     );

@@ -38,7 +38,8 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/fsx.rs` | Folder listing (Win32 `FindFirstFileExW`, binary transfer to the UI) |
 | `src-tauri/src/archive/` | Archives opened like folders (zip, 7z, RAR, cabinets, installer packages, tar, compressed files): reading their list of entries, the folder tree, extracting on demand and into staging folders, safety limits ([docs/archives.md](docs/archives.md)) |
 | `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, pdu folder sizes and disk-usage maps (or the index when it's on) |
-| `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop, Properties |
+| `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop (with its drag picture), Properties, and Windows' own Share, Eject and Mount, turning pictures and the desktop background, OneDrive's keep and free up |
+| `src-tauri/src/jumplist.rs` | The taskbar button: its Jump List (tasks, pinned and most-used folders) and its progress bar |
 | `src-tauri/src/recycle.rs` | The Recycle Bin as a place: its items from the shell and their `$I` records, and emptying it ([docs/recycle-bin.md](docs/recycle-bin.md)) |
 | `src-tauri/src/compare.rs` | Compare panes down through subfolders and by contents, and what Sync copies |
 | `src-tauri/src/filediff.rs` | Compare two files: text side by side (Difftastic's structural diff, or line by line), pictures, and bytes |
@@ -55,7 +56,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/quick.rs`, `src/components/QuickSearch.tsx` | Quick search from anywhere: the shortcut, its window, the tray and starting with Windows |
 | `src-tauri/src/thumbs.rs` | Thumbnails from Windows' thumbnail cache (`IShellItemImageFactory`, `IThumbnailCache`) on worker threads, in a queue per tab |
 | `src-tauri/src/watch.rs` | Live folders: notify watches the folders on screen |
-| `src-tauri/src/launch.rs`, `verbs.rs`, `access.rs` | Folders from the command line and later launches (one copy runs at a time), File Explorer's *Open in Glint* entries ([docs/explorer-integration.md](docs/explorer-integration.md)), and Get access for folders Windows keeps you out of |
+| `src-tauri/src/launch.rs`, `verbs.rs`, `access.rs` | Folders from the command line and later launches (one copy runs at a time), File Explorer's *Open in Glint* entries and Win+E ([docs/explorer-integration.md](docs/explorer-integration.md)), and Get access for folders Windows keeps you out of |
 | `src-tauri/src/mcp.rs` | The Model Context Protocol server AI agents start (`Glint.exe mcp`): its tools over the index, fd, pdu and ripgrep, and Settings → AI agents' setups |
 | `src-tauri/src/shellmenu.rs` | Windows' own context menu (Show more options): the shell's `IContextMenu`, with the messages its submenus need while it's open |
 | `src-tauri/src/appearance.rs`, `placement.rs`, `src/lib/color.ts` | Windows 11's Mica and the accent color; the window's place, kept and put back; colors as the theme's tokens |

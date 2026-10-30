@@ -36,9 +36,21 @@ impl Request {
     /// `cwd`; options (anything starting with "-") are left out, as the app has none.
     pub fn parse(args: impl IntoIterator<Item = String>, cwd: &Path) -> Request {
         let mut request = Request::default();
-        for arg in args {
-            let arg = arg.trim();
+        let mut iter = args.into_iter().peekable();
+        while let Some(raw) = iter.next() {
+            let arg = raw.trim();
             if arg.is_empty() || arg.starts_with('-') {
+                continue;
+            }
+            // Explorer-style flags: `/select,"C:\path"`, `/select, C:\path`, `/e,/select,C:\path`, `/root,C:\path`
+            if let Some((path_arg, force_select)) = parse_explorer_switch(arg, &mut iter) {
+                if path_arg.is_empty() {
+                    continue;
+                }
+                match target_with_mode(&path_arg, cwd, force_select) {
+                    Ok(t) => request.open.push(t),
+                    Err(other) => request.explorer.push(other),
+                }
                 continue;
             }
             match target(arg, cwd) {
@@ -50,31 +62,130 @@ impl Request {
     }
 }
 
+/// Parses Explorer command-line switches (`/select`, `/root`, `/e`, `/n`).
+fn parse_explorer_switch(arg: &str, iter: &mut std::iter::Peekable<impl Iterator<Item = String>>) -> Option<(String, bool)> {
+    if !arg.starts_with('/') {
+        return None;
+    }
+    let mut force_select = false;
+    let mut rest = arg;
+    loop {
+        let trimmed = rest.trim_start_matches([' ', ',']);
+        let l = trimmed.to_ascii_lowercase();
+        // A switch ends at a comma, a space or the end: `/e` isn't `/explore`.
+        let Some((switch, selects)) = [("/select", true), ("/root", false), ("/e", false), ("/n", false)]
+            .into_iter()
+            .find(|(switch, _)| l.starts_with(switch) && matches!(l.as_bytes().get(switch.len()), None | Some(b',' | b' ')))
+        else {
+            break;
+        };
+        force_select |= selects;
+        rest = &trimmed[switch.len()..];
+    }
+    if rest.len() == arg.len() {
+        return None;
+    }
+    let inline = rest.trim_matches([' ', ',', '"']);
+    if !inline.is_empty() {
+        return Some((inline.to_string(), force_select));
+    }
+    if let Some(next) = iter.peek() {
+        let next_trim = next.trim();
+        if !next_trim.is_empty() && !next_trim.starts_with('-') && !next_trim.starts_with('/') {
+            let next_owned = iter.next().unwrap();
+            return Some((next_owned.trim().trim_matches('"').to_string(), force_select));
+        }
+    }
+    Some((String::new(), force_select))
+}
+
 /// What the app opens for one argument, or else what File Explorer should get.
 fn target(arg: &str, cwd: &Path) -> Result<Target, String> {
+    target_with_mode(arg, cwd, false)
+}
+
+fn target_with_mode(arg: &str, cwd: &Path, force_select: bool) -> Result<Target, String> {
     // File Explorer passes a drive as "C:\" in quotes, which the command line reads as C:" since a
     // backslash before a quote escapes it.
-    let arg = arg.trim_end_matches('"');
+    let arg = arg.trim_matches('"');
+    if let Some(virtual_target) = resolve_virtual_location(arg) {
+        return Ok(virtual_target);
+    }
+    let resolved_file_url = if arg.len() > 7 && arg[..7].eq_ignore_ascii_case("file://") {
+        url::Url::parse(arg).ok().and_then(|u| u.to_file_path().ok()).map(|p| p.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    let arg = resolved_file_url.as_deref().unwrap_or(arg);
     if is_shell_location(arg) {
         return Err(arg.to_string());
     }
     let text = if Path::new(arg).is_absolute() || arg.starts_with(['~', '%']) { arg.to_string() } else { cwd.join(arg).to_string_lossy().into_owned() };
     let Ok(path) = fsx::normalize(&text) else { return Err(arg.to_string()) };
     let Some(info) = fsx::stat(&path) else { return Err(path) };
-    if info.dir {
+    if info.dir && !force_select {
         return if opens_here(&path) { Ok(Target { path, select: None }) } else { Err(path) };
     }
-    // A zip or 7z archive opens like a folder (when it's opened with Glint).
-    if crate::archive::is_archive_name(&path) {
+    // A zip or 7z archive opens like a folder (when it's opened with Glint), unless `/select` asked to highlight the archive file itself.
+    if !info.dir && !force_select && crate::archive::is_archive_name(&path) {
         return Ok(Target { path, select: None });
     }
-    // A file: its folder, with the file selected.
+    // A file (or `/select,folder`): its parent folder, with the item selected.
     let folder = Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     if !folder.is_empty() && opens_here(&folder) {
         Ok(Target { path: fsx::normalize(&folder).unwrap_or(folder), select: Some(path) })
     } else {
         Err(path)
     }
+}
+
+/// Resolves Windows virtual shell locations (`This PC`, `Recycle Bin`, and `shell:<KnownFolder>`) directly into Glint targets.
+fn resolve_virtual_location(arg: &str) -> Option<Target> {
+    let lower = arg.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "::{20d04fe0-3aea-1069-a2d8-08002b30309d}"
+        | "shell:::{20d04fe0-3aea-1069-a2d8-08002b30309d}"
+        | "shell:mycomputerfolder"
+        | "this-pc:" => return Some(Target { path: String::new(), select: None }),
+        "::{645ff040-5081-101b-9f08-00aa002f954e}"
+        | "shell:::{645ff040-5081-101b-9f08-00aa002f954e}"
+        | "shell:recyclebinfolder" => return Some(Target { path: "shell:RecycleBinFolder".into(), select: None }),
+        _ => {}
+    }
+    #[cfg(windows)]
+    if let Some(shell_name) = lower.strip_prefix("shell:") {
+        use windows::core::GUID;
+        use windows::Win32::UI::Shell::{
+            FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData, FOLDERID_Music, FOLDERID_Pictures,
+            FOLDERID_Profile, FOLDERID_ProgramFiles, FOLDERID_Recent, FOLDERID_RoamingAppData, FOLDERID_Startup, FOLDERID_Videos,
+            FOLDERID_Windows, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+        };
+        // Windows' own names have spaces ("My Pictures", "Local AppData").
+        let id: GUID = match shell_name.replace(' ', "").as_str() {
+            "downloads" => FOLDERID_Downloads,
+            "desktop" => FOLDERID_Desktop,
+            "personal" | "documents" => FOLDERID_Documents,
+            "mypictures" | "pictures" => FOLDERID_Pictures,
+            "mymusic" | "music" => FOLDERID_Music,
+            "myvideo" | "videos" => FOLDERID_Videos,
+            "profile" | "usersfilesfolder" => FOLDERID_Profile,
+            "recent" => FOLDERID_Recent,
+            "appdata" => FOLDERID_RoamingAppData,
+            "localappdata" => FOLDERID_LocalAppData,
+            "startup" => FOLDERID_Startup,
+            "programfiles" => FOLDERID_ProgramFiles,
+            "windows" => FOLDERID_Windows,
+            _ => return None,
+        };
+        if let Ok(pwstr) = unsafe { SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT, None) } {
+            let text = unsafe { pwstr.to_string() }.ok();
+            unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(pwstr.0 as _)) };
+            if let Some(folder) = text.and_then(|t| fsx::normalize(&t).ok()) {
+                return Some(Target { path: folder, select: None });
+            }
+        }
+    }
+    None
 }
 
 /// Whether the app opens a folder: one it can list, or one on this PC that Windows keeps this user
@@ -154,10 +265,19 @@ pub fn take_launch_targets(pending: State<Pending>) -> Vec<Target> {
     std::mem::take(&mut *pending.lock())
 }
 
+/// The taskbar's Quick search task (jumplist.rs) starts Glint with `--quick-search`.
+pub fn asks_for_quick_search<S: AsRef<str>>(mut args: impl Iterator<Item = S>) -> bool {
+    args.any(|arg| arg.as_ref().trim().eq_ignore_ascii_case("--quick-search"))
+}
+
 /// A later launch handed over its command line (the single-instance plugin calls this on the UI
 /// thread): the window comes to the front and opens its folders.
 #[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn second_launch(app: &AppHandle, args: Vec<String>, cwd: String) {
+    if asks_for_quick_search(args.iter().skip(1)) {
+        crate::quick::summon(app);
+        return;
+    }
     bring_to_front(app);
     let app = app.clone();
     // Off the UI thread: looking at a folder on a sleeping network drive can take seconds.
@@ -235,18 +355,27 @@ mod tests {
     #[test]
     fn what_the_app_cannot_open_goes_to_file_explorer() {
         let dir = scratch("explorer");
+        let sub = dir.join("sub folder");
+        let file = sub.join("notes.txt");
         let parse = |arg: &str| Request::parse([arg.to_string()], &dir);
         for place in [
-            "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
-            "::{645FF040-5081-101B-9F08-00AA002F954E}",
-            "shell:RecycleBinFolder",
             "shell:::{26EE0668-A00A-44D7-9371-BEB064C98683}",
             "SHELL:Libraries",
             "search-ms:query=report",
-            "file:///C:/Windows",
         ] {
             assert_eq!(parse(place), Request { open: vec![], explorer: vec![place.to_string()] }, "{place}");
         }
+        // Virtual shell places that Glint owns directly (This PC, Recycle Bin, Known Folders, file:// URLs, /select).
+        assert_eq!(parse("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}").open, [Target { path: String::new(), select: None }]);
+        assert_eq!(parse("this-pc:").open, [Target { path: String::new(), select: None }]);
+        assert_eq!(parse("::{645FF040-5081-101B-9F08-00AA002F954E}").open, [Target { path: "shell:RecycleBinFolder".into(), select: None }]);
+        assert_eq!(parse("shell:RecycleBinFolder").open, [Target { path: "shell:RecycleBinFolder".into(), select: None }]);
+        assert!(!parse("shell:Downloads").open.is_empty());
+        assert_eq!(parse(r"file:///C:/Windows").open, [Target { path: r"C:\Windows".into(), select: None }]);
+        assert_eq!(
+            parse(&format!(r#"/select,"{}""#, file.display())).open,
+            [Target { path: sub.to_string_lossy().into_owned(), select: Some(file.to_string_lossy().into_owned()) }]
+        );
         // Missing: File Explorer says so, as it would have.
         let missing = dir.join("missing");
         assert_eq!(parse("missing").explorer, [missing.to_string_lossy().into_owned()]);

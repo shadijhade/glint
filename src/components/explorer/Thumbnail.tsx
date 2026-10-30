@@ -25,6 +25,7 @@ interface ThumbnailProps {
 interface Picture {
     path: string;
     url: string;
+    fresh?: boolean;
     width: number;
     height: number;
     box: number;
@@ -94,12 +95,12 @@ export function Thumbnail({ entry, box, lane, enabled, bottom, iconClassName, ic
                             .catch(() => {})
                             .finally(() => {
                                 decoded(picture);
-                                setOwn(picture);
+                                setOwn({ ...picture, fresh: !standIn });
                             });
                     }}
                     onError={() => vector && setOwn(null)}
                     style={drawn ? fit(drawn, box, false) : undefined}
-                    className={cn(place, !drawn && "invisible")}
+                    className={cn(place, !drawn ? "invisible" : mine?.fresh && "glint-thumb-in")}
                 />
             )}
         </>

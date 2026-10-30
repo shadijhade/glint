@@ -1,17 +1,18 @@
 # Opening folders from File Explorer
 
-Glint can open folders for the rest of Windows. Both options are off until you turn them on in **Settings → Files**, and neither needs administrator rights.
+Glint can open folders for the rest of Windows. These options are off until you turn them on in **Settings → Files**, and none needs administrator rights.
 
 -   **Open in Glint from File Explorer** adds *Open in Glint* to the right-click menu of folders, drives, network shares and the empty space in a folder or on the desktop. On Windows 11 it's under **Show more options** (or Shift+right-click): Windows 11's shorter menu only lists apps that ship as packages.
 -   **Open folders in Glint by default** makes that entry what a double-click runs. Double-clicking a folder in File Explorer or on the desktop opens it in Glint, and so does anything else that opens a folder the default way, such as `start C:\Projects` in a terminal. Turning it on turns the menu entry on too (the bold entry at the top of a folder's menu is the default), and turning the menu entry off turns it off.
+-   **Win+E opens Glint** makes Win+E open This PC in Glint instead of File Explorer, through the key Windows reads for that shortcut. It turns the menu entry on too, and turning the menu entry off turns it off.
 
-**What stays with File Explorer.** Only plain file-system folders change. Drives keep opening in File Explorer when double-clicked (their menu has *Open in Glint*), and so do This PC, Home, the Recycle Bin, Control Panel, libraries, Network, phones and special folders such as Fonts. File Explorer's own *Open* stays on every folder's menu, `explorer.exe C:\Projects` still opens File Explorer, and the Open and Save dialogs of other apps still go into folders. Apps that show a file in its folder (*Show in folder*, *Open file location*) usually ask File Explorer for a window with the file selected, so those keep opening in File Explorer too.
+**What stays with File Explorer.** Only plain file-system folders change. Drives keep opening in File Explorer when double-clicked (their menu has *Open in Glint*), and so do This PC (Win+E aside, when it opens Glint), Home, the Recycle Bin, Control Panel, libraries, Network, phones and special folders such as Fonts. File Explorer's own *Open* stays on every folder's menu, `explorer.exe C:\Projects` still opens File Explorer, and the Open and Save dialogs of other apps still go into folders. Apps that show a file in its folder (*Show in folder*, *Open file location*) usually ask File Explorer for a window with the file selected, so those keep opening in File Explorer too.
 
-**Anything Glint can't open goes to File Explorer.** Before a window shows, Glint checks what it was given. `shell:` and `::{CLSID}` locations, other URLs, a missing path, a folder it may not list and a drive with no disc are handed to File Explorer's own *Open*, which shows them as it always did (a folder you may not open gets File Explorer's *You don't currently have permission* prompt). That *Open* never comes back to Glint, even when folders open in Glint by default.
+**Anything Glint can't open goes to File Explorer.** Before a window shows, Glint checks what it was given. This PC and the Recycle Bin (by their `::{CLSID}` or `shell:` names), the usual known folders (`shell:Downloads`, `shell:Desktop`, `shell:My Pictures`…) and `file:///` URLs open in Glint. Other `shell:` and `::{CLSID}` locations, other URLs, a missing path, a folder it may not list and a drive with no disc are handed to File Explorer's own *Open*, which shows them as it always did (a folder you may not open gets File Explorer's *You don't currently have permission* prompt). That *Open* never comes back to Glint, even when folders open in Glint by default.
 
 ## The command line
 
-`Glint.exe [folder or file]…` opens each folder in a new tab; a file opens its folder with the file selected. Relative paths are relative to the current folder, and anything starting with `-` is ignored.
+`Glint.exe [folder or file]…` opens each folder in a new tab; a file opens its folder with the file selected. Relative paths are relative to the current folder. `this-pc:` opens This PC, and File Explorer's own switches are understood: `/select,<path>` opens the folder the item is in with the item selected, and `/e`, `/n` and `/root` are passed over. `--quick-search` brings up quick search (the taskbar button's Jump List starts Glint with it); anything else starting with `-` is ignored.
 
 Glint runs once per user. Starting it again, from the Start menu or with folders, brings the open window to the front (restored if it was minimized) and opens those folders as new tabs at the end of the active pane, leaving Text mode and Settings. A second launch hands over its folders and quits in about 80 ms. At start, a folder that's already one of the restored tabs switches to that tab instead of opening another, since an update restarts the app with the folders it was first started with.
 
@@ -25,19 +26,20 @@ Everything is per user, under `HKEY_CURRENT_USER\Software\Classes`, where `<exe>
 | `Directory\shell\Glint\command` | `(Default)` = `"<exe>" "%V"` |
 | `Directory\Background\shell\Glint` and its `command` | the same |
 | `Drive\shell\Glint` and its `command` | the same |
+| `CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command` (Win+E) | `(Default)` = `"<exe>" "this-pc:"`, `DelegateExecute` = empty |
 
 `%V` is the folder, the folder whose empty space was clicked, or the drive. Opening folders by default sets `Directory\shell` `(Default)` = `Glint`, and keeps what was there before in `Directory\shell\Glint`, `PreviousDefault` (with its type), or nothing if there was no value. Windows' own default for folders lives in `HKEY_LOCAL_MACHINE` and isn't touched.
 
-Turning the options off puts the previous default back (unless something else has changed it since), deletes the three `Glint` keys, deletes `Directory\shell`, `Directory\Background\shell`, `Drive\shell` and the keys above them only if nothing else is in them, and tells File Explorer the associations changed. The registry is then as it was before.
+Turning the options off puts the previous default back (unless something else has changed it since), deletes the three `Glint` keys, deletes `Directory\shell`, `Directory\Background\shell`, `Drive\shell` and the keys above them only if nothing else is in them, and tells File Explorer the associations changed. Turning Win+E off deletes its `CLSID` key when it runs a Glint; another app's (Files has the same option) is left as it is. The registry is then as it was before.
 
 ## Never a missing program
 
 The entries run the exe where it is, so a copy that moved or was deleted would leave File Explorer unable to open folders. To prevent that:
 
 -   **Only an installed copy can turn them on**: one the setup program installed, or one Scoop installed for your account. A Scoop copy's entries run it through the app's `current` link, which `scoop update` points at each new version, even if Glint was started from the version's own folder. In a portable copy or a dev build the switches are greyed out, and so they are in an app Scoop installed for all users (`scoop install --global`, whose uninstall couldn't reach other accounts' entries), in an older version an update left in Scoop's folder, and with Scoop's `no_junction` setting, which has no `current` link.
--   **The uninstaller removes them** (`src-tauri/installer/hooks.nsh`, before uninstalling but not when updating), if they run the copy being uninstalled, and puts back what folders opened with.
--   **So does `scoop uninstall`.** The manifest's uninstaller script (`scripts/package-manifests.mjs`) runs for `scoop update` too, but only acts when Scoop's `$cmd` is `uninstall`. It removes the entries that run that app's `current\Glint.exe` and puts back what folders opened with. If it can't, the uninstall stops there, so Glint stays where the entries run it.
--   **Every start checks them.** If they run an exe that's gone, the installed copy points them at itself, and any other copy removes them.
+-   **The uninstaller removes them** (`src-tauri/installer/hooks.nsh`, before uninstalling but not when updating), if they run the copy being uninstalled, and puts back what folders opened with. Win+E's key goes too, so Win+E opens File Explorer again.
+-   **So does `scoop uninstall`.** The manifest's uninstaller script (`scripts/package-manifests.mjs`) runs for `scoop update` too, but only acts when Scoop's `$cmd` is `uninstall`. It removes the entries (and Win+E's key) that run that app's `current\Glint.exe` and puts back what folders opened with. If it can't, the uninstall stops there, so Glint stays where the entries run it.
+-   **Every start checks them.** If they run an exe that's gone, the installed copy points them at itself, and any other copy removes them. Win+E counts when its command runs a `Glint.exe`.
 
 Glint knows Scoop installed it when its folder is `<scoop>\apps\<app>\<version>` with Scoop's record of the install in it (`scoop-install.json`, or `install.json` before Scoop 0.6), the app's `current` link leads to that folder, and Scoop itself is in the same `<scoop>` folder (`apps\scoop\current`), which makes it a user's own Scoop rather than the one for all users.
 
@@ -46,7 +48,7 @@ Glint knows Scoop installed it when its folder is `<scoop>\apps\<app>\<version>`
 -   `src-tauri/src/launch.rs`: sorting the command line out, handing what Glint can't open to File Explorer, and later launches (through [tauri-plugin-single-instance](https://v2.tauri.app/plugin/single-instance/), which lets the window come to the front without pressing keys for it).
 -   `src-tauri/src/verbs.rs`: the registry entries, their tests (on a scratch key, compared before and after), telling a Scoop copy apart, and the check at start. A test also runs the Scoop manifest's uninstaller script on the scratch key, as Scoop runs it.
 -   `scripts/package-manifests.mjs`: the Scoop manifest, whose uninstaller script (`removeExplorerVerbs`) does what `GLINT_REMOVE_EXPLORER_VERBS` in `src-tauri/installer/hooks.nsh` does for the setup's copies.
--   `src/lib/explorer.ts`: `initExplorer` and `openRequested` put the folders in tabs. `src/components/SettingsView.tsx`: the two switches.
+-   `src/lib/explorer.ts`: `initExplorer` and `openRequested` put the folders in tabs. `src/components/SettingsView.tsx`: the three switches.
 
 ## Trying it without touching your Glint
 

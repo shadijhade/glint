@@ -21,6 +21,8 @@ pub struct Integration {
     pub menu: bool,
     /// Double-clicking a folder opens it here.
     pub by_default: bool,
+    /// Pressing Win+E opens Glint instead of File Explorer.
+    pub win_e: bool,
 }
 
 #[tauri::command]
@@ -33,12 +35,12 @@ pub async fn explorer_integration(app: AppHandle) -> Result<Integration, String>
     .await
 }
 
-/// Turns the menu entries and opening folders by default on or off; folders open here by default
-/// only with the menu entries on (the default action is the folder's entry).
+/// Turns the menu entries, opening folders by default, and Win+E takeover on or off; folders open
+/// here by default only with the menu entries on (the default action is the folder's entry).
 #[tauri::command]
-pub async fn set_explorer_integration(app: AppHandle, menu: bool, by_default: bool) -> Result<Integration, String> {
+pub async fn set_explorer_integration(app: AppHandle, menu: bool, by_default: bool, win_e: Option<bool>) -> Result<Integration, String> {
     blocking(move || {
-        imp::set(&app, menu, by_default)?;
+        imp::set(&app, menu, by_default, win_e)?;
         Ok(imp::status(&app))
     })
     .await
@@ -72,6 +74,8 @@ mod imp {
     /// Kept in the folder verb while folders open here: the default it replaced, to put back.
     const PREVIOUS: &str = "PreviousDefault";
     const CLASSES: &str = r"Software\Classes";
+    /// Windows 10/11's Win+E launcher CLSID (`OpenNewWindow` shell delegate).
+    const WIN_E_CLSID: &str = r"CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}";
 
     /// The app's verbs: where they go and what they run.
     pub(super) struct Verbs {
@@ -184,21 +188,66 @@ mod imp {
                 .iter()
                 .filter_map(|place| reg::get_string(&format!(r"{}\command", self.key(place)), ""))
                 .filter_map(|command| Some(command.strip_prefix('"')?.split('"').next()?.to_string()))
+                .chain(self.win_e_exe())
                 .collect()
+        }
+
+        fn win_e_command_key(&self) -> String {
+            format!(r"{}\{WIN_E_CLSID}\shell\opennewwindow\command", self.classes)
+        }
+
+        /// The exe Win+E runs when it's this app's (by its name, so a copy since moved counts too):
+        /// another app's (Files…) isn't Glint's to change or remove.
+        fn win_e_exe(&self) -> Option<String> {
+            let command = reg::get_string(&self.win_e_command_key(), "")?;
+            let exe = command.strip_prefix('"')?.split('"').next()?.to_string();
+            let name = self.exe.file_name()?.to_string_lossy().into_owned();
+            Path::new(&exe).file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&name)).then_some(exe)
+        }
+
+        pub fn is_win_e(&self) -> bool {
+            self.win_e_exe().is_some_and(|exe| exe.eq_ignore_ascii_case(&self.exe.to_string_lossy()))
+        }
+
+        pub fn set_win_e(&self, enabled: bool) -> io::Result<()> {
+            if enabled {
+                let cmd = self.win_e_command_key();
+                reg::set_string(&cmd, "", &format!(r#""{}" "this-pc:""#, self.exe.display()))?;
+                reg::set_string(&cmd, "DelegateExecute", "")?;
+            } else if self.win_e_exe().is_some() {
+                reg::delete_tree(&format!(r"{}\{WIN_E_CLSID}", self.classes))?;
+                reg::delete_if_empty(&format!(r"{}\CLSID", self.classes))?;
+            } else {
+                return Ok(());
+            }
+            if self.classes == CLASSES {
+                notify();
+            }
+            Ok(())
         }
     }
 
     pub fn status(app: &AppHandle) -> Integration {
-        let (menu, by_default) = Verbs::for_app(app).map(|v| v.status()).unwrap_or_default();
-        Integration { available: installed_exe().is_some(), menu, by_default }
+        let Some(verbs) = Verbs::for_app(app) else {
+            return Integration::default();
+        };
+        let (menu, by_default) = verbs.status();
+        let win_e = verbs.is_win_e();
+        Integration { available: installed_exe().is_some(), menu, by_default, win_e }
     }
 
-    pub fn set(app: &AppHandle, menu: bool, by_default: bool) -> Result<(), String> {
+    pub fn set(app: &AppHandle, menu: bool, by_default: bool, win_e: Option<bool>) -> Result<(), String> {
         if installed_exe().is_none() {
             return Err("Only a copy installed with the setup program or Scoop can do this.".into());
         }
         let verbs = Verbs::for_app(app).ok_or("Can't tell where the app is")?;
-        verbs.set(menu, by_default).map_err(|e| e.to_string())
+        verbs.set(menu, by_default).map_err(|e| e.to_string())?;
+        if let Some(we) = win_e {
+            verbs.set_win_e(we && menu).map_err(|e| e.to_string())?;
+        } else if !menu && verbs.is_win_e() {
+            verbs.set_win_e(false).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn repair(app: &AppHandle) {
@@ -207,8 +256,13 @@ mod imp {
             return;
         }
         let (menu, by_default) = verbs.status();
+        // Win+E running a Glint that's gone runs this one, or goes.
+        let win_e = verbs.win_e_exe().is_some();
         let installed = installed_exe().is_some();
         let _ = verbs.set(menu && installed, by_default && installed);
+        if win_e {
+            let _ = verbs.set_win_e(installed && menu);
+        }
     }
 
     /// The exe the entries can run for as long as this copy is installed: the one the setup program
@@ -528,6 +582,41 @@ mod imp {
             assert_eq!(reg::dump(&scratch.0), [r"[\Classes]", "[]"]);
         }
 
+        #[test]
+        fn win_e_override_comes_and_goes_cleanly() {
+            let scratch = Scratch::new("win_e");
+            let verbs = scratch.verbs();
+            let before = reg::dump(&scratch.0);
+            assert!(!verbs.is_win_e());
+            verbs.set_win_e(true).unwrap();
+            assert!(verbs.is_win_e());
+            assert_eq!(
+                reg::get_string(&verbs.win_e_command_key(), "").as_deref(),
+                Some(r#""C:\Apps\Glint Test\Glint.exe" "this-pc:""#)
+            );
+            assert_eq!(reg::get_string(&verbs.win_e_command_key(), "DelegateExecute").as_deref(), Some(""));
+            verbs.set_win_e(false).unwrap();
+            assert!(!verbs.is_win_e());
+            assert_eq!(reg::dump(&scratch.0), before);
+        }
+
+        #[test]
+        fn another_apps_win_e_stays() {
+            let scratch = Scratch::new("win_e_other");
+            let verbs = scratch.verbs();
+            let files = r#""C:\Program Files\Files\Files.exe" "%1""#;
+            reg::set_string(&verbs.win_e_command_key(), "", files).unwrap();
+            assert!(!verbs.is_win_e());
+            assert_eq!(verbs.exes(), Vec::<String>::new());
+            verbs.set_win_e(false).unwrap();
+            assert_eq!(reg::get_string(&verbs.win_e_command_key(), "").as_deref(), Some(files));
+            // A moved copy's is Glint's own: turning it off removes it.
+            reg::set_string(&verbs.win_e_command_key(), "", r#""D:\Old\Glint.exe" "this-pc:""#).unwrap();
+            assert_eq!(verbs.exes(), [r"D:\Old\Glint.exe"]);
+            verbs.set_win_e(false).unwrap();
+            assert_eq!(reg::get_string(&verbs.win_e_command_key(), ""), None);
+        }
+
         /// A folder in %TEMP%, removed afterwards (the links in it, not what they lead to).
         struct TempDir(PathBuf);
 
@@ -626,7 +715,7 @@ mod imp {
         Integration::default()
     }
 
-    pub fn set(_app: &AppHandle, _menu: bool, _by_default: bool) -> Result<(), String> {
+    pub fn set(_app: &AppHandle, _menu: bool, _by_default: bool, _win_e: Option<bool>) -> Result<(), String> {
         Err("File Explorer is Windows'".into())
     }
 

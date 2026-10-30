@@ -6,41 +6,62 @@ import { activateTab, closeTab, newTab, placeTab, tabName, useExplorer } from "@
 import { isRecycleBin, isRemotePath, isRoot, THIS_PC } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 
-/** A tab being dragged, and where it would go: a pane, its place among that pane's tabs, and where to mark it (x in the strip). */
+/** A tab being dragged, and where it would go: its starting pane/slot, live pointer delta, and target slot. */
 interface TabDrag {
     id: string | null;
+    fromPane: number;
+    fromIndex: number;
+    width: number;
+    dx: number;
     over: { pane: number; index: number; x: number } | null;
 }
-const useTabDrag = create<TabDrag>(() => ({ id: null, over: null }));
+const useTabDrag = create<TabDrag>(() => ({ id: null, fromPane: 0, fromIndex: 0, width: 0, dx: 0, over: null }));
 
 /** Where a tab dropped at (x, y) would go: the strip under it, and the gap nearest among its tabs. */
 function dropAt(x: number, y: number): TabDrag["over"] {
     const strip = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-tabstrip]");
     if (!strip) return null;
-    const tabs = [...strip.querySelectorAll<HTMLElement>("[data-tab]")].map((t) => t.getBoundingClientRect());
+    const tabEls = [...strip.querySelectorAll<HTMLElement>("[data-tab]")];
+    // Measure natural (un-translated) layout positions using offsetLeft inside the tablist scroll container.
+    const listLeft = strip.getBoundingClientRect().left;
+    const tabs = tabEls.map((el) => {
+        const rect = el.getBoundingClientRect();
+        // Subtract any CSS transform applied during live reflow so hit-testing never oscillates.
+        const parentRect = el.parentElement?.getBoundingClientRect();
+        const scrollLeft = el.parentElement?.scrollLeft ?? 0;
+        const naturalLeft = parentRect ? parentRect.left + el.offsetLeft - scrollLeft : rect.left;
+        return { id: el.dataset.tab, left: naturalLeft, right: naturalLeft + rect.width, width: rect.width };
+    });
     let index = tabs.findIndex((r) => x < r.left + r.width / 2);
     if (index < 0) index = tabs.length;
-    const left = strip.getBoundingClientRect().left;
-    const edge = index < tabs.length ? tabs[index].left : tabs.length ? tabs[tabs.length - 1].right : left;
-    return { pane: Number(strip.dataset.tabstrip), index, x: edge - left };
+    const edge = index < tabs.length ? tabs[index].left : tabs.length ? tabs[tabs.length - 1].right : listLeft;
+    return { pane: Number(strip.dataset.tabstrip), index, x: edge - listLeft };
 }
 
-/** Pressing a tab and moving it drags it, as in a browser; just a press shows it (on mouse down). */
-function dragTab(e: React.PointerEvent, id: string) {
+/** Pressing a tab and moving it drags it with live neighbor reflow, as in a browser; just a press shows it. */
+function dragTab(e: React.PointerEvent, id: string, fromPane: number, fromIndex: number) {
     if (e.button !== 0 || (e.target as Element).closest("button")) return;
     const [x0, y0] = [e.clientX, e.clientY];
+    const width = (e.currentTarget as HTMLElement).getBoundingClientRect().width + 2;
     let dragging = false;
     const move = (m: PointerEvent) => {
         if (!dragging && Math.hypot(m.clientX - x0, m.clientY - y0) < 6) return;
         dragging = true;
-        useTabDrag.setState({ id, over: dropAt(m.clientX, m.clientY) });
+        useTabDrag.setState({
+            id,
+            fromPane,
+            fromIndex,
+            width,
+            dx: m.clientX - x0,
+            over: dropAt(m.clientX, m.clientY),
+        });
     };
     const up = () => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
         const { over } = useTabDrag.getState();
-        useTabDrag.setState({ id: null, over: null });
+        useTabDrag.setState({ id: null, fromPane: 0, fromIndex: 0, width: 0, dx: 0, over: null });
         if (dragging && over) placeTab(id, over.pane, over.index);
     };
     window.addEventListener("pointermove", move);
@@ -50,6 +71,8 @@ function dragTab(e: React.PointerEvent, id: string) {
 
 interface TabProps {
     id: string;
+    pane: number;
+    index: number;
     selected: boolean;
     /** The tab on screen in the pane the keyboard acts on. */
     current: boolean;
@@ -57,15 +80,30 @@ interface TabProps {
     onContextMenu: (e: React.MouseEvent, id: string) => void;
 }
 
-function Tab({ id, selected, current, canClose, onContextMenu }: TabProps) {
-    const { path, query, busy } = useExplorer(
+function Tab({ id, pane, index, selected, current, canClose, onContextMenu }: TabProps) {
+    const { path, query, busy, spring } = useExplorer(
         useShallow((s) => {
             const t = s.tabs[id];
-            return { path: t?.path ?? THIS_PC, query: t?.find?.query ?? null, busy: !!t?.loading || !!t?.find?.running };
+            return {
+                path: t?.path ?? THIS_PC,
+                query: t?.find?.query ?? null,
+                busy: !!t?.loading || !!t?.find?.running,
+                spring: s.springTab === id,
+            };
         })
     );
     const drives = useExplorer((s) => s.drives);
-    const dragged = useTabDrag((s) => s.id === id);
+    const { dragged, shiftX } = useTabDrag(
+        useShallow((s) => {
+            if (!s.id) return { dragged: false, shiftX: 0 };
+            if (s.id === id) return { dragged: true, shiftX: s.dx };
+            if (s.fromPane !== pane || s.over?.pane !== pane) return { dragged: false, shiftX: 0 };
+            const targetSlot = s.over.index > s.fromIndex ? s.over.index - 1 : s.over.index;
+            if (index > s.fromIndex && index <= targetSlot) return { dragged: false, shiftX: -s.width };
+            if (index < s.fromIndex && index >= targetSlot) return { dragged: false, shiftX: s.width };
+            return { dragged: false, shiftX: 0 };
+        })
+    );
     const ref = useRef<HTMLDivElement>(null);
     useEffect(() => {
         if (selected) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -81,7 +119,7 @@ function Tab({ id, selected, current, canClose, onContextMenu }: TabProps) {
             data-tab={id}
             role="tab"
             aria-selected={selected}
-            onPointerDown={(e) => dragTab(e, id)}
+            onPointerDown={(e) => dragTab(e, id, pane, index)}
             title={query !== null ? `Search results for “${query}” in ${where}` : where}
             onMouseDown={(e) => {
                 if (e.button === 0) activateTab(id);
@@ -93,10 +131,13 @@ function Tab({ id, selected, current, canClose, onContextMenu }: TabProps) {
                 e.preventDefault();
                 onContextMenu(e, id);
             }}
+            style={shiftX ? { transform: `translate3d(${shiftX}px, 0, 0)` } : undefined}
             className={cn(
-                "group relative -mb-px flex h-8 min-w-24 max-w-52 flex-1 basis-0 cursor-default items-center gap-1.5 rounded-t-md border border-transparent pl-2.5 pr-1 text-[0.8125rem] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground",
+                "group relative -mb-px flex h-8 min-w-24 max-w-52 flex-1 basis-0 cursor-default items-center gap-1.5 rounded-t-md border border-transparent pl-2.5 pr-1 text-[0.8125rem] text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                !dragged && "transition-[background-color,color,transform] duration-150 ease-out",
                 selected && "border-border border-b-background bg-background text-foreground hover:bg-background",
-                dragged && "opacity-50"
+                dragged && "z-20 border-border bg-background text-foreground shadow-md",
+                spring && "bg-primary/15 text-primary ring-1 ring-inset ring-primary"
             )}
         >
             {current && <span className="absolute inset-x-2 top-0 h-0.5 rounded-full bg-primary" />}
@@ -131,8 +172,8 @@ export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu:
         })
     );
     const canClose = tabs.length > 1 || dual;
-    // Where a tab dragged over this strip would go.
-    const over = useTabDrag((s) => (s.over?.pane === pane ? s.over.x : null));
+    // Where a tab dragged from the OTHER pane over this strip would go.
+    const over = useTabDrag((s) => (s.over?.pane === pane && s.fromPane !== pane ? s.over.x : null));
     return (
         <div data-tabstrip={pane} className="relative flex h-9 shrink-0 items-end border-b bg-chrome pl-1.5 pr-1">
             {over !== null && <span aria-hidden className="pointer-events-none absolute bottom-1 top-1.5 z-10 w-0.5 -translate-x-1/2 rounded-full bg-primary" style={{ left: over }} />}
@@ -145,8 +186,8 @@ export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu:
                 }}
                 className="flex h-full min-w-0 flex-1 items-end gap-0.5 overflow-x-auto overflow-y-hidden [scrollbar-width:none]"
             >
-                {tabs.map((id) => (
-                    <Tab key={id} id={id} selected={id === active} current={id === active && paneActive} canClose={canClose} onContextMenu={onContextMenu} />
+                {tabs.map((id, index) => (
+                    <Tab key={id} id={id} pane={pane} index={index} selected={id === active} current={id === active && paneActive} canClose={canClose} onContextMenu={onContextMenu} />
                 ))}
             </div>
             <button
@@ -154,7 +195,7 @@ export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu:
                 onClick={() => newTab()}
                 title="New tab (Ctrl+T)"
                 aria-label="New tab"
-                className="mb-1 ml-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="mb-1 ml-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-92"
             >
                 <Plus className="size-4" />
             </button>

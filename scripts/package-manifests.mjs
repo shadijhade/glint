@@ -99,7 +99,7 @@ ${footer("defaultLocale")}`,
 // for the setup's copies (src-tauri/installer/hooks.nsh); verbs.rs tests it against what turning the
 // options on adds.
 const removeExplorerVerbs = String.raw`
-# File Explorer's 'Open in Glint' and opening folders in Glint by default (Settings > Files) run Glint through 'current'.
+# File Explorer's 'Open in Glint', opening folders in Glint by default and Win+E (Settings > Files) run Glint through 'current'.
 # Uninstalling (not updating) removes them where they run this copy, puts back what folders opened with before, and
 # removes the keys above them if that leaves them empty, as the setup's uninstaller does. If that fails, the uninstall
 # stops there, leaving Glint where they can still run it.
@@ -132,6 +132,14 @@ if ($cmd -eq 'uninstall') {
             $classes.DeleteSubKeyTree("$place\$verb")
             $changed = $true
         }
+    }
+    # Win+E opening Glint: Windows' own key for it goes, so Win+E opens File Explorer again.
+    $winE = 'CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}'
+    $command = $classes.OpenSubKey("$winE\shell\opennewwindow\command")
+    if ($command) {
+        $ours = "$($command.GetValue(''))".StartsWith($exe, 'OrdinalIgnoreCase')
+        $command.Close()
+        if ($ours) { $classes.DeleteSubKeyTree($winE); $changed = $true }
     }
     if ($changed) {
         foreach ($parent in 'Directory\Background\shell', 'Directory\Background', 'Directory\shell', 'Directory', 'Drive\shell', 'Drive') {

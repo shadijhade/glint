@@ -15,6 +15,10 @@ export const ATTR = {
     /** On a remote connection (with `inArchive`, as its files are read through copies too): see remote/. */
     remote: 0x04000000,
     recallOnOpen: 0x40000,
+    /** Cloud files (OneDrive…): always kept on this device. */
+    pinned: 0x80000,
+    /** Cloud files: only online, their space freed up. */
+    unpinned: 0x100000,
     recallOnDataAccess: 0x400000,
     /** In the Recycle Bin: its path is its file there, its `origin` the folder it was deleted from (see recycle.rs). */
     recycled: 0x08000000,
@@ -199,6 +203,9 @@ export const isHidden = (e: FileEntry) => (e.attrs & ATTR.hidden) !== 0;
 
 /** OneDrive-style placeholders: reading them would start a download. */
 export const isOnlineOnly = (e: FileEntry) => (e.attrs & (ATTR.offline | ATTR.recallOnOpen | ATTR.recallOnDataAccess)) !== 0;
+
+/** In a cloud-synced folder (OneDrive…): an online-only placeholder, or a file kept on this device or freed up. */
+export const isCloudFile = (e: FileEntry) => isOnlineOnly(e) || (e.attrs & (ATTR.pinned | ATTR.unpinned)) !== 0;
 
 export type SortKey = "name" | "modified" | "taken" | "type" | "size";
 export interface Sort {
