@@ -23,6 +23,8 @@ pub struct Integration {
     pub by_default: bool,
     /// Pressing Win+E opens Glint instead of File Explorer.
     pub win_e: bool,
+    /// This copy is the Microsoft Store's, which Windows keeps out of File Explorer's settings.
+    pub store: bool,
 }
 
 #[tauri::command]
@@ -55,7 +57,7 @@ pub fn repair(app: &AppHandle) {
 
 /// The current user's registry and the exe its entries run, for the Run key too (Start with Windows).
 #[cfg(windows)]
-pub(crate) use imp::{installed_exe, reg};
+pub(crate) use imp::{installed_exe, launch_exe, reg};
 
 #[cfg(windows)]
 mod imp {
@@ -233,7 +235,7 @@ mod imp {
         };
         let (menu, by_default) = verbs.status();
         let win_e = verbs.is_win_e();
-        Integration { available: installed_exe().is_some(), menu, by_default, win_e }
+        Integration { available: installed_exe().is_some(), menu, by_default, win_e, store: crate::packaged() }
     }
 
     pub fn set(app: &AppHandle, menu: bool, by_default: bool, win_e: Option<bool>) -> Result<(), String> {
@@ -275,6 +277,22 @@ mod imp {
         } else {
             scoop_current(&exe)
         }
+    }
+
+    /// The exe other programs (AI agents, the Jump List) start Glint with: the installed one, or the
+    /// Microsoft Store copy's alias, which stays put as updates come (its own exe's folder is named
+    /// after its version), or this one.
+    pub(crate) fn launch_exe() -> Option<PathBuf> {
+        installed_exe().or_else(store_alias).or_else(|| std::env::current_exe().ok())
+    }
+
+    /// The Microsoft Store copy's `glint.exe` alias (its manifest's windows.appExecutionAlias), in the
+    /// package's own folder of aliases, where no other app's can take its name.
+    fn store_alias() -> Option<PathBuf> {
+        let family = crate::package_family()?;
+        let alias = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join(r"Microsoft\WindowsApps").join(family).join("glint.exe");
+        // An alias is a link Windows resolves itself, so it's looked at, not through.
+        alias.symlink_metadata().is_ok().then_some(alias)
     }
 
     /// For an exe Scoop installed (`<root>\apps\<app>\<version>\Glint.exe`), the same exe through the

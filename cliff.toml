@@ -54,6 +54,7 @@ commit_preprocessors = [
     { pattern = '^(\w+)\(share\)', replace = '${1}(Sharing)' },
     { pattern = '^(\w+)\(sidebar\)', replace = '${1}(Sidebar)' },
     { pattern = '^(\w+)\(sizes\)', replace = '${1}(Folder_sizes)' },
+    { pattern = '^(\w+)\(store\)', replace = '${1}(Microsoft_Store)' },
     { pattern = '^(\w+)\(taskbar\)', replace = '${1}(Taskbar)' },
     { pattern = '^(\w+)\(terminal\)', replace = '${1}(Terminal)' },
     { pattern = '^(\w+)\(text\)', replace = '${1}(Text_search)' },

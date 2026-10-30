@@ -363,7 +363,7 @@ pub struct Setup {
 
 #[tauri::command]
 pub fn mcp_setup() -> Result<Setup, String> {
-    let exe = crate::verbs::installed_exe().or_else(|| std::env::current_exe().ok()).ok_or("Couldn't tell where Glint is")?;
+    let exe = crate::verbs::launch_exe().ok_or("Couldn't tell where Glint is")?;
     let exe = exe.to_string_lossy().into_owned();
     let entry = json!({ "command": exe, "args": [ARG] });
     let vscode = json!({ "name": "glint", "command": exe, "args": [ARG] }).to_string().replace('\'', "''");

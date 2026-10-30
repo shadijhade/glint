@@ -157,6 +157,8 @@ windows-version = "0.1"
 # What windows' #[implement] expands to (the file engine's progress sink, for Undo); already in the build.
 windows-core = "0.62"
 windows = { version = "0.62", features = [
+    # The Microsoft Store copy's startup task, for Start with Windows (quick.rs).
+    "ApplicationModel",
     # A PDF's first page as a thumbnail, by Windows' own PDF renderer (thumbs.rs).
     "Data_Pdf",
     "Foundation_Collections",
@@ -184,6 +186,8 @@ windows = { version = "0.62", features = [
     "Win32_Security_Cryptography_Sip",
     "Win32_Security_WinTrust",
     "Win32_Storage_FileSystem",
+    # Whether this copy runs from an MSIX package, the Microsoft Store's (lib.rs).
+    "Win32_Storage_Packaging_Appx",
     # Mounting a disc image without File Explorer's window (shell.rs).
     "Win32_Storage_Vhd",
     "Win32_System_Com",

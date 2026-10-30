@@ -226,6 +226,8 @@ function describeVolume(v: IndexVolume) {
 /** Turning the MFT index service on and off, and how it's doing. */
 function InstantSearch() {
     const index = useExplorer((s) => s.index);
+    // The Microsoft Store's copy (see updater.ts): uninstalling it runs nothing of Glint's.
+    const store = useUpdater((s) => s.status === "store");
     const [working, setWorking] = useState(false);
     useEffect(() => {
         refreshIndex();
@@ -281,6 +283,7 @@ function InstantSearch() {
                 Turning it on asks for administrator approval once: a small Windows service reads your NTFS drives' file tables, follows their change
                 journals, and answers only your account and administrators. Like Everything, it knows the name, size and date of every file on
                 those drives, including files your account can't open. Turning it off removes the service and its index files.
+                {store && " Uninstalling Glint from the Microsoft Store can't take the service away, so turn it off here first."}
             </p>
         </Section>
     );
@@ -725,9 +728,9 @@ function FileExplorerRows() {
             setWorking(false);
         }
     };
-    const { available = false, menu = false, byDefault = false, winE = false } = state ?? {};
+    const { available = false, menu = false, byDefault = false, winE = false, store = false } = state ?? {};
     const disabled = !available || working;
-    const installed = "Needs Glint installed with its setup program or Scoop";
+    const installed = store ? "Windows doesn't let apps from the Microsoft Store change File Explorer's settings. Glint's setup program, from glint.rafd.tech, can" : "Needs Glint installed with its setup program or Scoop";
     return (
         <>
             <SwitchRow
@@ -769,6 +772,13 @@ function UpdateRow() {
                     {installing ? <Loader2 className="animate-spin" /> : <Sparkles />}
                     {installing ? `Downloading ${progress}%` : available.update ? "Install" : "Download"}
                 </Button>
+            </Row>
+        );
+    }
+    if (status === "store") {
+        return (
+            <Row label="Updates" hint="The Microsoft Store keeps Glint up to date">
+                {null}
             </Row>
         );
     }

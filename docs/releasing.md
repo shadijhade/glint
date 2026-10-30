@@ -122,6 +122,7 @@ Install the last two with `cargo install --locked cargo-deny cargo-about`, or pu
 5.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json` (and with `--store`, the offline installer), with your notes, and the tag is made at your commit when you publish.
 6.  **On GitHub**, read the release notes (the app's *What's new* opens this page), try the installer, and **publish**. Running copies find the update within 12 hours or at their next start.
 7.  **Submit** `release/vX.Y.Z/package-manifests` to winget and Scoop.
+8.  **The Microsoft Store**, when it should have this version: `npm run msix`, and upload the package in Partner Center ([below](#as-an-msix-package)).
 
 ### With the release workflow
 
@@ -150,22 +151,42 @@ The NSIS installer is Tauri's own with Glint's pages, in [`src-tauri/installer/`
 
 ## The Microsoft Store
 
-The Store can list Glint as an **EXE app**: it downloads the installer from a link you give it and runs it silently, and a copy installed that way updates itself like any other. Microsoft's [requirements](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msi/app-package-requirements) for that installer:
+The Store takes Glint two ways. **As an MSIX package**, which `npm run msix` builds: Partner Center takes the file itself and the Store signs it, free, so no code-signing certificate is needed. **As an EXE app**, it downloads the setup program and runs it, and then that has to be code-signed ([below](#as-an-exe-app)).
+
+### As an MSIX package
+
+`npm run msix` ([`scripts/msix.mjs`](../scripts/msix.mjs)) builds Glint for the package with [`src-tauri/tauri.msix.conf.json`](../src-tauri/tauri.msix.conf.json), lays it out with the instant search service, rg, fd and pdu, the notices, [`AppxManifest.xml`](../src-tauri/msix/AppxManifest.xml) and the Store's logos at every scale (drawn from `src-tauri/icons/icon.png` by [`scripts/msix-assets.ps1`](../scripts/msix-assets.ps1), with `resources.pri` to tell them apart), and packs it with the Windows SDK's makeappx into `release/vX.Y.Z/Glint_X.Y.Z_x64.msix`. It takes about as long as `npm run release`, nearly all of it the build, and needs the Windows SDK, which Visual Studio's C++ tools bring.
+
+How the Store's copy differs from the setup program's:
+
+-   **A data folder of its own.** Windows lets a packaged app change files that already exist in AppData (only what it creates there is its own), so the Store's copy has its own identifier, `com.shado.glint.store`, and never touches the settings of a Glint the setup program installed on the same PC. Settings travel between them with **Settings → About → Settings file**.
+-   **The Store updates it.** It doesn't look for updates itself, and **Settings → About** says the Store keeps it up to date.
+-   **No File Explorer integration.** Windows keeps a packaged app's registry writes to itself, so *Open in Glint*, *Open folders in Glint by default* and *Win+E opens Glint* say they need the setup program's Glint.
+-   **Start with Windows** is the package's startup task (`GlintTray`, which starts it with `--tray`), which Windows' **Startup apps** can turn off; then only they can turn it on again.
+-   **AI agents and the Jump List** start it by its `glint.exe` alias, `%LOCALAPPDATA%\Microsoft\WindowsApps\<package family>\glint.exe`, which stays put as updates come (the package's own folder has its version in its name).
+-   **Instant search** turns on as it does elsewhere, with one administrator approval. Uninstalling a Store app runs nothing of Glint's, though, so the service stays until it's turned off in **Settings → Instant search**, which says so in the Store's copy.
+
+**Once:**
+
+1.  Sign up as an individual developer at [storedeveloper.microsoft.com](https://storedeveloper.microsoft.com/) (free; a government ID and a selfie), which opens Partner Center.
+2.  **Apps and games → New product → MSIX or PWA app**, and reserve the name (*Glint*, or *Glint File Explorer* if that's taken).
+3.  The app's **Product management → Product identity** has three values the package must carry: put `Package/Identity/Name`, `Package/Identity/Publisher` and `Package/Properties/PublisherDisplayName` in [`src-tauri/msix/store.json`](../src-tauri/msix/store.json) as `name`, `publisher` and `publisherDisplayName`, and the name you reserved as `displayName`, and commit it. Until it's there, `npm run msix` makes a test package (`…_test.msix`), which the Store won't take.
+4.  Fill in the Store listing: the description from the README, screenshots from `screenshots/`, the privacy policy ([SECURITY.md](../SECURITY.md#code-signing-and-privacy-policy)), the category and the age rating questions. The package declares `runFullTrust`, as every desktop app does; when Partner Center asks why, it's a desktop file explorer that reads and changes files anywhere the user can.
+
+**For a release the Store should offer:** on the release's commit (after `npm run release`, or instead of it), `npm run msix`, then in Partner Center a new submission with `release/vX.Y.Z/Glint_X.Y.Z_x64.msix` under **Packages**, and **Submit for certification**. The Store signs it; certification takes a few days. Its version can only go up, and the Store keeps the fourth number (`X.Y.Z.0`) for itself.
+
+**To try it here** (with Developer Mode on): `npm run msix -- --try` installs a test package from its folder, *Glint (test)* in Start, under its own identity so it can never stand in the Store copy's way; `npm run msix -- --untry` takes it out, with everything it kept. `--from <folder>` packages a build made elsewhere instead of building, such as a debug build with `cargo build --features tauri/custom-protocol` and the same identifier in `TAURI_CONFIG`.
+
+### As an EXE app
+
+The Store can also list Glint as an **EXE app**: it downloads the installer from a link you give it and runs it silently, and a copy installed that way updates itself like any other. Microsoft's [requirements](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msi/app-package-requirements) for that installer:
 
 -   It and every program in it are code-signed with a certificate from a CA in Microsoft's Trusted Root Program ([code signing](#2-code-signing-optional-recommended)), so the Store needs signed releases.
 -   It downloads nothing while it runs. The normal installer fetches WebView2 on a PC that doesn't have it, so the Store gets the **offline installer**, `Glint_X.Y.Z_x64_offline-setup.exe`, which carries WebView2 (about 220 MB, where the normal installer is 13 MB; [`src-tauri/tauri.microsoftstore.conf.json`](../src-tauri/tauri.microsoftstore.conf.json)). It's built after the normal one, with only the code signing (no update signature: copies from the Store update with the normal installer), and takes a minute more.
 -   It installs without showing anything when run with `/S`. The NSIS installer does, and the installer hooks only ask their question when the install isn't silent.
 -   Its address names the version, and the file there never changes: a release's download link, as long as nobody replaces the file.
 
-MSIX packages, which Microsoft signs and hosts itself, aren't an option for now: Tauri doesn't make them, and MSIX's rules would need changes to the instant search service, the Explorer integration and the updater.
-
-**Once:**
-
-1.  Sign up as an individual developer at [storedeveloper.microsoft.com](https://storedeveloper.microsoft.com/) (free; a government ID and a selfie), which opens Partner Center.
-2.  **Apps and games → New product → EXE or MSI app**, and reserve the name (*Glint*, or *Glint File Explorer* if that's taken).
-3.  Fill in the Store listing: the description from the README, screenshots from `screenshots/`, the privacy policy ([SECURITY.md](../SECURITY.md#code-signing-and-privacy-policy)), the category and the age rating questions.
-
-**For a release the Store should offer** (not every release needs it: copies from the Store update themselves from GitHub, so one installed from an older Store version is offered the newest at its first start):
+Sign up as above, but make the product an **EXE or MSI app**. For a release the Store should offer (not every release needs it: copies from the Store update themselves from GitHub, so one installed from an older Store version is offered the newest at its first start):
 
 1.  Build it code-signed and with `--store`: `npm run release -- --store --sign-config <overlay>` (or with the Azure variables) also builds the offline installer, checks its signatures and adds it to the `gh release create` command. Without code signing it still builds it, to try, but leaves it out of the release.
 2.  Once the release is published, give Partner Center the offline installer's link, which `npm run release` prints (`https://github.com/shadijhade/glint/releases/download/vX.Y.Z/Glint_X.Y.Z_x64_offline-setup.exe`), for x64, with `/S` where it asks how to install silently, and **Submit for certification**. Certification takes a few days.

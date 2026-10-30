@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { operationsDone, operationsRunning } from "./explorer";
@@ -20,8 +21,8 @@ export interface AvailableUpdate {
 
 interface UpdaterState {
     available: AvailableUpdate | null;
-    /** The last check: running, found nothing newer ("latest"), or failed. */
-    status: "idle" | "checking" | "latest" | "failed";
+    /** The last check: running, found nothing newer ("latest"), or failed; "store" when the Microsoft Store keeps this copy up to date. */
+    status: "idle" | "checking" | "latest" | "failed" | "store";
     error: string | null;
     /** Percent of the update downloaded while it installs, null otherwise. */
     progress: number | null;
@@ -53,6 +54,9 @@ export async function greetUpdate() {
     });
 }
 
+/** Whether this copy is the Microsoft Store's, which the Store updates (store_copy in lib.rs). */
+const storeCopy = invoke<boolean>("store_copy").catch(() => false);
+
 /** A newer version, from the latest release's update manifest (latest.json), or else from GitHub's latest-release API. */
 async function findUpdate(): Promise<AvailableUpdate | null> {
     try {
@@ -75,7 +79,8 @@ async function findUpdate(): Promise<AvailableUpdate | null> {
  */
 export async function checkForUpdates(manual = false) {
     const { available, status } = get();
-    if (available || status === "checking") return;
+    if (available || status === "checking" || status === "store") return;
+    if (await storeCopy) return void set({ status: "store" });
     set({ status: "checking", error: null });
     try {
         const found = await findUpdate();
