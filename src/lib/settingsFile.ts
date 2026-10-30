@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import type { Visit } from "./rank";
-import { DEFAULT_SETTINGS, type FolderRule, type HistoryItem, type RemoteConnection, type SavedSearch, type Settings, useStore } from "./store";
+import { DEFAULT_SETTINGS, type FolderRule, type FolderView, type HistoryItem, type RemoteConnection, type SavedSearch, type Settings, useStore } from "./store";
 
 /**
  * A settings file (Settings → About: Export and Import), to bring Glint's set-up to another PC. Never a
@@ -21,9 +21,10 @@ export interface SettingsFile {
     rules?: FolderRule[];
     history?: HistoryItem[];
     visits?: Record<string, Visit>;
+    folderViews?: Record<string, FolderView>;
 }
 
-export type Part = "settings" | "pinned" | "savedSearches" | "remotes" | "rules" | "history" | "visits";
+export type Part = "settings" | "pinned" | "savedSearches" | "remotes" | "rules" | "history" | "visits" | "folderViews";
 
 /** The parts, in order: what each is called, and what's to know about it. */
 export const PARTS: { part: Part; label: string; note?: string }[] = [
@@ -34,6 +35,7 @@ export const PARTS: { part: Part; label: string; note?: string }[] = [
     { part: "rules", label: "Folder rules", note: "they come turned off" },
     { part: "history", label: "Search history" },
     { part: "visits", label: "Folders Ctrl+K ranks" },
+    { part: "folderViews", label: "Folders' own views", note: "their columns, sort and list or grid" },
 ];
 
 /** How many of a part a file holds (settings: how many options Glint knows). */
@@ -59,6 +61,7 @@ export async function settingsFile(): Promise<SettingsFile> {
         rules: s.rules,
         history: s.history,
         visits: s.visits,
+        folderViews: s.folderViews,
     };
 }
 
@@ -150,6 +153,14 @@ export function importSettings(file: SettingsFile, parts: Set<Part>, replace: bo
         }
         patch.visits = visits;
         did.push(`${Object.keys(file.visits).length} ranked folders`);
+    }
+    if (parts.has("folderViews") && isObject(file.folderViews)) {
+        const views: Record<string, FolderView> = replace ? {} : { ...s.folderViews };
+        for (const [path, v] of Object.entries(file.folderViews)) {
+            if (isObject(v) && typeof v.at === "number" && !(path.toLowerCase() in (replace ? {} : s.folderViews))) views[path.toLowerCase()] = v as unknown as FolderView;
+        }
+        patch.folderViews = views;
+        did.push(`${Object.keys(file.folderViews).length} folders' views`);
     }
     useStore.setState(patch);
     return did;

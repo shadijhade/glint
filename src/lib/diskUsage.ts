@@ -71,6 +71,10 @@ export const toggleUsage = (tab = activeTabId()) => setUsage(tab, !runs()[tab]);
 export function chooseView(view: ViewMode, tab = activeTabId()) {
     setUsage(tab, false);
     setView(view, tab);
+    // The folder keeps it, while each folder keeps its own view (Settings → Files).
+    const t = tabState(tab);
+    const { settings, setFolderView } = useStore.getState();
+    if (settings.perFolderViews && t && !t.find && t.path !== THIS_PC) setFolderView(t.path, { view });
 }
 
 /**

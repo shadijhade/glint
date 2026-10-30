@@ -222,7 +222,7 @@ export function cloudState(e: FileEntry): CloudState | null {
 /** In a cloud-synced folder (OneDrive…): synced, on its way, or kept on this device or only online. */
 export const isCloudFile = (e: FileEntry) => cloudState(e) !== null;
 
-export type SortKey = "name" | "modified" | "taken" | "type" | "size";
+export type SortKey = "name" | "modified" | "taken" | "type" | "size" | "dimensions" | "duration" | "artist" | "album";
 export interface Sort {
     key: SortKey;
     desc: boolean;
@@ -271,11 +271,14 @@ export function sortEntries(
     foldersFirst: boolean,
     presorted: boolean,
     sizeOf = (e: FileEntry) => e.size,
-    takenOf: (e: FileEntry) => number | null | undefined = () => undefined
+    takenOf: (e: FileEntry) => number | null | undefined = () => undefined,
+    factsOf: (e: FileEntry) => MediaFacts | null | undefined = () => undefined
 ) {
     if (presorted && foldersFirst && sort.key === "name" && !sort.desc) return entries;
     const direction = sort.desc ? -1 : 1;
     const group = (e: FileEntry) => (foldersFirst && e.dir ? 0 : 1);
+    const pixels = (e: FileEntry) => (factsOf(e)?.width ?? 0) * (factsOf(e)?.height ?? 0);
+    const text = (e: FileEntry, field: "artist" | "album") => factsOf(e)?.[field] ?? "";
     const compare: Record<SortKey, (a: FileEntry, b: FileEntry) => number> = {
         name: byName,
         modified: (a, b) => a.modified - b.modified,
@@ -283,6 +286,10 @@ export function sortEntries(
         taken: (a, b) => (takenOf(a) ?? a.modified) - (takenOf(b) ?? b.modified),
         size: (a, b) => sizeOf(a) - sizeOf(b),
         type: (a, b) => Number(b.dir) - Number(a.dir) || (a.ext < b.ext ? -1 : a.ext > b.ext ? 1 : 0),
+        dimensions: (a, b) => pixels(a) - pixels(b),
+        duration: (a, b) => (factsOf(a)?.duration ?? -1) - (factsOf(b)?.duration ?? -1),
+        artist: (a, b) => text(a, "artist").localeCompare(text(b, "artist"), undefined, { sensitivity: "base", numeric: true }),
+        album: (a, b) => text(a, "album").localeCompare(text(b, "album"), undefined, { sensitivity: "base", numeric: true }),
     };
     const by = compare[sort.key];
     return [...entries].sort((a, b) => group(a) - group(b) || direction * by(a, b) || (presorted ? 0 : byName(a, b)));
@@ -406,7 +413,7 @@ export function propTest(key: string, value: string, now = Date.now()): ((f: Med
     }
     const wanted = value.trim().toLowerCase();
     const field = key as "camera" | "artist" | "album";
-    return (f) => f[field] !== null && f[field]!.includes(wanted);
+    return (f) => f[field] !== null && f[field]!.toLowerCase().includes(wanted);
 }
 
 /**

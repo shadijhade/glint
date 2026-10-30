@@ -859,6 +859,12 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                     </Row>
                     <SwitchRow label="Show hidden items" hint="Files and folders Windows marks as hidden · Ctrl+H" checked={settings.showHidden} onChange={(showHidden) => set({ showHidden })} />
                     <SwitchRow label="Folders first" checked={settings.foldersFirst} onChange={(foldersFirst) => set({ foldersFirst })} />
+                    <SwitchRow
+                        label="Each folder keeps its own view"
+                        hint="Its columns, sort and list or grid, as you last set them there; until then, its kind's (a folder of pictures shows dimensions and when each was taken). Right-click the list's header for the columns"
+                        checked={settings.perFolderViews}
+                        onChange={(perFolderViews) => set({ perFolderViews })}
+                    />
                     <SwitchRow label="Preview pane" hint="Alt+P" checked={settings.showPreviewPane} onChange={(showPreviewPane) => set({ showPreviewPane })} />
                     <SwitchRow
                         label="Folders in the sidebar"
