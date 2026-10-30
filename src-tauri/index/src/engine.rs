@@ -311,7 +311,7 @@ impl Engine {
                 self.log.line(&format!("{}: read the MFT in {:.0} ms", slot.letter, ms(started)));
                 // Records may hold other folders now than the notes say: folders compare from now on.
                 if growth.tracking() {
-                    growth.restart(now_ms(), tree.rec(ROOT).map_or(0, |r| r.size));
+                    growth.restart(now_ms(), tree.rec(ROOT).map_or(0, |r| r.size()));
                 }
                 tree.growth = std::mem::take(&mut growth);
                 *slot.tree.write().unwrap() = tree;
@@ -435,7 +435,7 @@ impl Engine {
         if tree.growth.last().is_some_and(|m| local_day(m.at) == local_day(now)) {
             return false;
         }
-        let total = tree.rec(ROOT).map_or(0, |r| r.size);
+        let total = tree.rec(ROOT).map_or(0, |r| r.size());
         tree.growth.mark(now, total);
         true
     }
@@ -631,7 +631,7 @@ impl Engine {
         let slot = self.ready_slot(letter).ok_or("This drive isn't indexed")?;
         let tree = slot.tree.read().unwrap();
         let dir = tree.resolve(rest).ok_or("This folder isn't in the index")?;
-        let total = tree.rec(dir).filter(|r| r.dir()).ok_or("Not a folder")?.size;
+        let total = tree.rec(dir).filter(|r| r.dir()).ok_or("Not a folder")?.size();
         Ok(Sizes { path: path.to_string(), total, sizes: tree.child_dirs(dir), elapsed: ms(started) })
     }
 
@@ -694,12 +694,12 @@ impl Engine {
                 (tree.link(item.link).rec, tree.name(item.link), item.parent)
             };
             let Some(r) = tree.rec(rec) else { continue };
-            let node = UsageNode { parent, name: name.to_string(), dir: item.dir, size: item.size, modified: unix_ms(r.modified), attrs: r.attrs };
+            let node = UsageNode { parent, name: name.to_string(), dir: item.dir, size: item.size, modified: unix_ms(r.modified), attrs: r.attrs() };
             proto::encode_usage_node(&mut payload, &node);
             if let Some(mark) = mark {
                 // Files: whether they were written since (what they held isn't kept).
                 previous.push(if item.dir {
-                    tree.growth.then(rec, r.seq, mark.epoch, item.size).unwrap_or(NEW)
+                    tree.growth.then(rec, r.seq(), mark.epoch, item.size).unwrap_or(NEW)
                 } else if node.modified >= mark.at {
                     WRITTEN
                 } else {
@@ -712,7 +712,7 @@ impl Engine {
             since: m.at,
             oldest: tree.growth.oldest().map_or(m.at, |o| o.at),
             drive_then: m.total,
-            drive_now: tree.rec(ROOT).map_or(0, |r| r.size),
+            drive_now: tree.rec(ROOT).map_or(0, |r| r.size()),
         });
         let summary = UsageSummary { path: request.path.clone(), total, items: items.len() as u64, limited, elapsed: ms(started), growth };
         Ok((payload, mark.map(|_| proto::encode_growth(&previous)), summary))
@@ -752,7 +752,7 @@ impl Engine {
 /// Where the file `file` (a file reference) is now, if its record still holds it.
 fn now_at(tree: &Tree, file: u64, letter: char, dirs: &mut HashMap<u32, String>) -> Option<String> {
     let (number, seq) = tree::split_ref(file);
-    let rec = tree.rec(u32::try_from(number).ok()?).filter(|r| r.used() && r.seq == seq && r.first_link != NONE)?;
+    let rec = tree.rec(u32::try_from(number).ok()?).filter(|r| r.used() && r.seq() == seq && r.first_link != NONE)?;
     Some(format!("{letter}:\\{}", tree.path(rec.first_link, dirs)?))
 }
 
@@ -793,7 +793,7 @@ fn encode_ranked(tree: &Tree, ranked: &[Rank], drive: &str) -> (Vec<u8>, Vec<(Ra
         let Some(path) = tree.path(rank.id, &mut dirs) else { continue };
         let Some(rec) = tree.rec(tree.link(rank.id).rec) else { continue };
         let start = out.len();
-        proto::encode_hit(&mut out, &Hit { path: format!("{drive}{path}"), dir: rec.dir(), size: rec.size, modified: unix_ms(rec.modified), attrs: rec.attrs });
+        proto::encode_hit(&mut out, &Hit { path: format!("{drive}{path}"), dir: rec.dir(), size: rec.size(), modified: unix_ms(rec.modified), attrs: rec.attrs() });
         hits.push((rank, start..out.len()));
     }
     (out, hits)
@@ -812,7 +812,7 @@ fn encode_hits(tree: &Tree, ids: &[u32], drive: &str) -> Vec<u8> {
     for &id in ids {
         let Some(path) = tree.path(id, &mut dirs) else { continue };
         let Some(rec) = tree.rec(tree.link(id).rec) else { continue };
-        let hit = Hit { path: format!("{drive}{path}"), dir: rec.dir(), size: rec.size, modified: unix_ms(rec.modified), attrs: rec.attrs };
+        let hit = Hit { path: format!("{drive}{path}"), dir: rec.dir(), size: rec.size(), modified: unix_ms(rec.modified), attrs: rec.attrs() };
         proto::encode_hit(&mut out, &hit);
     }
     out
