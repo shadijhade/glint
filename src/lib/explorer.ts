@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
-import { confirm, save } from "@tauri-apps/plugin-dialog";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, withDetails } from "./entries";
 import {
     archiveCompress,
@@ -54,12 +54,14 @@ import {
     taskbarProgress,
     onThumbButton,
     recentForget,
+    gallerySetFolders,
+    onGalleryDated,
     thumbButtons,
     watchDirs,
 } from "./fs";
 import { formatCount, plural } from "./format";
 import { zoomTiles } from "./grid";
-import { baseName, crumbs, isFolderPath, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC } from "./paths";
+import { baseName, crumbs, GALLERY, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC } from "./paths";
 import { frecency } from "./rank";
 import { initRemotes, remoteName } from "./remotes";
 import { initRules } from "./rules";
@@ -339,6 +341,7 @@ export function tabName(path: string, drives: Drive[]) {
     if (isRemotePath(path) && isRoot(path)) return remoteName(path);
     if (isRecycleBin(path)) return "Recycle Bin";
     if (isRecent(path)) return "Recent";
+    if (isGallery(path)) return "Gallery";
     if (!isRoot(path)) return baseName(path);
     const drive = drives.find((d) => samePath(d.path, path));
     return drive ? driveName(drive) : path;
@@ -726,6 +729,32 @@ async function init() {
     useExplorer.subscribe(updateThumbButtons);
     // Windows' New menu, read before it's first opened.
     setTimeout(() => void loadNewKinds(), 2000);
+    initGallery();
+}
+
+/** The gallery's folders (Pictures, Videos and the ones added in Settings) go to Rust as they change; a
+ * gallery shown is read again once the dates of what's new in it are read. */
+function initGallery() {
+    let sent = "";
+    const push = () => {
+        const { galleryFolders } = useStore.getState().settings;
+        const known = get().known.filter((k) => k.id === "pictures" || k.id === "videos").map((k) => k.path);
+        const folders = [...known, ...galleryFolders.filter((f) => !known.some((k) => samePath(k, f)))];
+        const key = folders.join("|");
+        if (key === sent) return;
+        sent = key;
+        void gallerySetFolders(folders).catch(() => {});
+    };
+    push();
+    useStore.subscribe((s, before) => {
+        if (s.settings.galleryFolders !== before.settings.galleryFolders) push();
+    });
+    useExplorer.subscribe((s, before) => {
+        if (s.known !== before.known) push();
+    });
+    void onGalleryDated(() => {
+        for (const tab of Object.values(get().tabs)) if (isGallery(tab.path) && !tab.find) void reload(tab.id);
+    });
 }
 
 let lastJumpKey: string | null = null;
@@ -1882,6 +1911,7 @@ export async function goTo(text: string) {
     if (!value || /^this pc$/i.test(value)) return navigate(THIS_PC);
     if (/^recycle bin$/i.test(value) || isRecycleBin(value)) return navigate(RECYCLE_BIN);
     if (/^recent$/i.test(value) || isRecent(value)) return navigate(RECENT);
+    if (/^gallery$/i.test(value) || isGallery(value)) return navigate(GALLERY);
     const tab = activeTabId();
     // Checking a path into a big .tar.gz reads it whole: that shows, with Stop.
     const reading = showArchiveReading(value);
@@ -2061,6 +2091,15 @@ export async function renameEntry(entry: FileEntry, name: string, tab = activeTa
     } catch (e) {
         toast.error(`Couldn't rename “${entry.name}”`, { description: String(e) });
     }
+}
+
+/** Adds a folder to the gallery's (its photos and videos, with everything below it, show there). */
+export async function addGalleryFolder() {
+    const picked = await open({ directory: true, title: "A folder for the gallery" });
+    if (typeof picked !== "string") return;
+    const { settings, setSettings } = useStore.getState();
+    if (!settings.galleryFolders.some((f) => samePath(f, picked))) setSettings({ galleryFolders: [...settings.galleryFolders, picked] });
+    for (const tab of Object.values(get().tabs)) if (isGallery(tab.path) && !tab.find) void reload(tab.id);
 }
 
 /** Takes items out of Recent (their shortcuts in Windows' Recent Items); the files stay where they are. */

@@ -52,6 +52,7 @@ import {
     HardDrive,
     History,
     ImageDown,
+    Images,
     Info,
     Keyboard,
     KeyRound,
@@ -145,6 +146,7 @@ import {
     newItem,
     newOfKind,
     forgetRecent,
+    addGalleryFolder,
     setView,
     newTab,
     nextUndo,
@@ -203,7 +205,7 @@ import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rot
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, marqueeHits, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, inArchivePath, isFolderPath, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { remoteOfPath, remotePath } from "@/lib/remotes";
 import { useStore } from "@/lib/store";
 import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
@@ -221,6 +223,7 @@ import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
 import { newMenuItems } from "./newMenu";
 import { FrequentFolders } from "./FrequentFolders";
+import { GalleryMonths } from "./GalleryMonths";
 import { type ColumnId, COLUMN_ORDER, COLUMNS, DESCENDING, FACT_SORTS, folderKind, inOrder, KINDS } from "@/lib/columns";
 import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
@@ -786,6 +789,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             inFolder && action("up", "Up one folder", ArrowUp, goUp, "Alt+Up"),
             action("this-pc", "This PC", Monitor, () => navigate(THIS_PC)),
             !isRecent(t.path) && action("recent", "Recent: the files opened lately", Clock, () => navigate(RECENT)),
+            !isGallery(t.path) && action("gallery", "Gallery: your photos and videos, by month", Images, () => navigate(GALLERY)),
             !bin && action("recycle-bin", "Recycle Bin", Trash2, () => navigate(RECYCLE_BIN)),
             action("empty-bin", "Empty the Recycle Bin", Trash2, () => void emptyRecycleBin()),
             action("new-tab", "New tab", Plus, () => newTab(), "Ctrl+T"),
@@ -1046,6 +1050,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const bin = isRecycleBin(path) && !find;
     // Recent: the files opened lately, from many folders (each says where it is).
     const recentHere = isRecent(path) && !find;
+    // Gallery: the photos and videos in its folders, newest first by when each was taken.
+    const galleryHere = isGallery(path) && !find;
     // The folder's own columns and sort (and list or grid), or, until it has its own, its kind's: a folder
     // of pictures shows when each was taken and its dimensions, Downloads its newest first. Searches and
     // the Recycle Bin have theirs; with Settings' Each folder keeps its own view off, every folder has the same.
@@ -1053,15 +1059,17 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const ownView = useStore((s) => (perFolder && !find && path !== THIS_PC ? s.folderViews[path.toLowerCase()] : undefined));
     const knownFolders = useExplorer((s) => s.known);
     const downloadsHere = !find && knownFolders.some((k) => k.id === "downloads" && samePath(k.path, path));
-    const kind = useMemo(() => folderKind(listing?.entries ?? NO_ENTRIES, recentHere ? "recent" : downloadsHere ? "downloads" : null), [listing, recentHere, downloadsHere]);
+    const place = recentHere ? "recent" : galleryHere ? "gallery" : downloadsHere ? "downloads" : null;
+    const kind = useMemo(() => folderKind(listing?.entries ?? NO_ENTRIES, place), [listing, place]);
     const columns = useMemo(
         () => (find || bin ? (["modified", "size"] as ColumnId[]) : inOrder(ownView?.columns ?? (perFolder ? KINDS[kind].columns : settings.listColumns))),
         [find, bin, ownView, perFolder, kind, settings.listColumns]
     );
     const sort = (!find && perFolder ? (ownView?.sort ?? KINDS[kind].sort) : undefined) ?? settings.sort;
-    // A folder whose own view is a grid or a list opens as it.
+    // A folder whose own view is a grid or a list opens as it (the gallery as a grid, until it has its own).
     useEffect(() => {
-        if (ownView?.view && ownView.view !== view) setView(ownView.view, tabId);
+        const wanted = ownView?.view ?? (perFolder && place ? KINDS[place].view : undefined);
+        if (wanted && wanted !== view) setView(wanted, tabId);
         // Only as the folder opens: choosing the other one there changes what it keeps.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [path, tabId]);
@@ -1696,7 +1704,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             one?.dir && !fixed && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
             one && !fixed && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(one.path) },
             !fixed && { label: "Scripts", icon: ScrollText, items: scriptItems(isFolderPath(path) ? path : parentPath(paths[0]), paths) },
-            (find || isRecent(path)) && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
+            (find || isRecent(path) || isGallery(path)) && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
             isRecent(path) && !find && { label: "Remove from Recent", icon: History, onSelect: () => void forgetRecent(paths, tabRef.current) },
             !remote &&
                 (archived
@@ -1907,6 +1915,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 <p className="font-medium text-foreground">The Recycle Bin is empty</p>
                 <p className="text-xs">What you delete waits here, to be restored or deleted for good.</p>
             </Centered>
+        ) : galleryHere && !listing.entries.length ? (
+            <Centered>
+                <Images className="size-8 stroke-[1.25] text-muted-foreground/60" />
+                <p className="font-medium text-foreground">No photos or videos here yet</p>
+                <p className="max-w-sm text-xs">The gallery shows what's in Pictures and Videos, and in the folders you add to it, with everything below them.</p>
+                <Button variant="outline" size="sm" onClick={() => void addGalleryFolder()}>
+                    <FolderPlus /> Add a folder
+                </Button>
+            </Centered>
         ) : recentHere && !listing.entries.length ? (
             <Centered>
                 <Clock className="size-8 stroke-[1.25] text-muted-foreground/60" />
@@ -1959,7 +1976,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const navAnim = navRef.current.anim;
     const viewProps = {
         rows,
-        search: !!find || recentHere,
+        search: !!find || recentHere || galleryHere,
+        dateLabel: galleryHere ? "Date" : undefined,
         recycled: bin,
         scope: find?.scope ?? path,
         sizes: sizeRun,
@@ -2165,16 +2183,21 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             )}
             {readme && <ReadmeCard key={readme.path} entry={readme} />}
             {recentHere && <FrequentFolders onContextMenu={onPlaceContextMenu} />}
-            <div key={listKey} className={cn("min-h-0 flex-1", navAnim)}>
+            <div key={listKey} className={cn("min-h-0 flex-1", galleryHere && "flex", navAnim)}>
                 {path === THIS_PC && !find ? (
                     <ThisPC onContextMenu={onPlaceContextMenu} />
                 ) : mapRows ? (
                     <DiskUsage tab={tabId} onItemContextMenu={onRowContextMenu} onFolderContextMenu={onFolderContextMenu} />
                 ) : view === "grid" ? (
-                    <FileGrid key={`${tabId}:${placeKey}`} {...viewProps} pane={index} tile={tile} onZoom={zoomGrid} />
+                    <div className="h-full min-w-0 flex-1">
+                        <FileGrid key={`${tabId}:${placeKey}`} {...viewProps} pane={index} tile={tile} onZoom={zoomGrid} />
+                    </div>
                 ) : (
-                    <FileList key={`${tabId}:${placeKey}`} {...viewProps} rowHeight={height} thumbnails={settings.listThumbnails} iconBox={remPx(settings.fontSize)} />
+                    <div className="h-full min-w-0 flex-1">
+                        <FileList key={`${tabId}:${placeKey}`} {...viewProps} rowHeight={height} thumbnails={settings.listThumbnails} iconBox={remPx(settings.fontSize)} />
+                    </div>
                 )}
+                {galleryHere && !mapRows && <GalleryMonths rows={rows} tab={tabId} current={focus ?? null} />}
             </div>
             <StatusBar shown={rows.length} hidden={hidden} selected={selected} />
             {menu.element}

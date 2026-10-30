@@ -69,6 +69,8 @@ export interface Settings {
     // folder has the same, `listColumns` and `sort`
     perFolderViews: boolean;
     listColumns: ColumnId[];
+    // Gallery: folders whose photos and videos it shows, besides Pictures and Videos
+    galleryFolders: string[];
     listThumbnails: boolean; // small thumbnails of pictures and videos in the list's icon column
     tileSize: TileSize; // how big the grid's tiles are, in every tab (Ctrl+wheel, Ctrl+= and Ctrl+-)
     confirmDelete: boolean; // ask before moving to the Recycle Bin (permanent deletes always ask)
@@ -147,6 +149,7 @@ export const DEFAULT_SETTINGS: Settings = {
     treeFollows: false,
     perFolderViews: true,
     listColumns: ['modified', 'type', 'size'],
+    galleryFolders: [],
     listThumbnails: true,
     tileSize: 'medium',
     confirmDelete: false,

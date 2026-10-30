@@ -11,6 +11,10 @@ export const isRecycleBin = (path: string) => path.toLowerCase() === "shell:recy
 export const RECENT = "shell:Recent";
 export const isRecent = (path: string) => path.toLowerCase() === "shell:recent";
 
+/** Gallery: the photos and videos in the gallery's folders, newest first by when each was taken (gallery.rs). */
+export const GALLERY = "shell:Gallery";
+export const isGallery = (path: string) => path.toLowerCase() === "shell:gallery";
+
 /** A remote connection's folders (remote/): `remote:<id>` and below, read-only, their files downloaded to be read. */
 export const REMOTE = "remote:";
 export const isRemotePath = (path: string) => path.slice(0, REMOTE.length).toLowerCase() === REMOTE;
@@ -18,7 +22,7 @@ export const isRemotePath = (path: string) => path.slice(0, REMOTE.length).toLow
 export const remoteIdOf = (path: string) => (isRemotePath(path) ? (path.slice(REMOTE.length).split(/[\\/]/)[0] ?? "") : "");
 
 /** A folder on this PC (on disk, or in an archive) rather than This PC, the Recycle Bin or a remote: what's in it has its path, for other tools too. */
-export const isFolderPath = (path: string) => path !== THIS_PC && !isRecycleBin(path) && !isRecent(path) && !isRemotePath(path);
+export const isFolderPath = (path: string) => path !== THIS_PC && !isRecycleBin(path) && !isRecent(path) && !isGallery(path) && !isRemotePath(path);
 
 const SEPARATORS = /[\\/]+$/;
 
@@ -27,7 +31,7 @@ export const inArchivePath = (path: string) => ARCHIVE_IN_PATH.test(path);
 
 /** "C:\", "C:", "\\server\share" and "/" are roots, and so are the Recycle Bin, Recent and a remote's top (This PC is above them). */
 export function isRoot(path: string) {
-    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/" || isRecycleBin(path) || isRecent(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
+    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/" || isRecycleBin(path) || isRecent(path) || isGallery(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
 }
 
 export function joinPath(dir: string, name: string) {
@@ -90,6 +94,7 @@ export function crumbs(path: string): { name: string; path: string }[] {
     if (path === THIS_PC) return [];
     if (isRecycleBin(path)) return [{ name: "Recycle Bin", path: RECYCLE_BIN }];
     if (isRecent(path)) return [{ name: "Recent", path: RECENT }];
+    if (isGallery(path)) return [{ name: "Gallery", path: GALLERY }];
     // A remote's top is named for its connection's id (the address bar shows the connection's name).
     if (isRemotePath(path)) {
         const [id, ...rest] = path.slice(REMOTE.length).split(/[\\/]/).filter(Boolean);

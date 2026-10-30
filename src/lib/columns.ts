@@ -1,6 +1,7 @@
 import type { FileEntry, Sort, SortKey } from "./entries.ts";
 import { TYPE_GROUPS, typeGroup } from "./fileTypes.ts";
 import type { Column } from "./store.ts";
+import type { ViewMode } from "./store.ts";
 
 /** The list's columns besides the name (and, in a list of items from many folders, where each is). */
 export type ColumnId = "modified" | "taken" | "type" | "size" | "dimensions" | "duration" | "artist" | "album";
@@ -42,22 +43,23 @@ export const COLUMN_ORDER: ColumnId[] = ["modified", "taken", "type", "dimension
 export const inOrder = (columns: readonly string[]) => COLUMN_ORDER.filter((id) => columns.includes(id));
 
 /** Kinds of folder, each with the columns (and sort) it opens with until it's given its own. */
-export type FolderKind = "general" | "pictures" | "videos" | "music" | "downloads" | "recent";
+export type FolderKind = "general" | "pictures" | "videos" | "music" | "downloads" | "recent" | "gallery";
 
-export const KINDS: Record<FolderKind, { label: string; columns: ColumnId[]; sort?: Sort }> = {
+export const KINDS: Record<FolderKind, { label: string; columns: ColumnId[]; sort?: Sort; view?: ViewMode }> = {
     general: { label: "Any folder", columns: ["modified", "type", "size"] },
     pictures: { label: "Pictures", columns: ["taken", "dimensions", "type", "size"] },
     videos: { label: "Videos", columns: ["modified", "duration", "dimensions", "size"] },
     music: { label: "Music", columns: ["artist", "album", "duration", "size"] },
     downloads: { label: "Downloads", columns: ["modified", "type", "size"], sort: { key: "modified", desc: true } },
     recent: { label: "Recent", columns: ["modified", "size"], sort: { key: "modified", desc: true } },
+    gallery: { label: "Gallery", columns: ["modified", "dimensions", "size"], sort: { key: "modified", desc: true }, view: "grid" },
 };
 
 /**
  * What kind of folder a listing is: Recent and Downloads by where they are, else by what's in it: mostly
  * pictures, videos or songs (at least five files, three in five of them of one kind), or any.
  */
-export function folderKind(entries: readonly FileEntry[], place: "recent" | "downloads" | null): FolderKind {
+export function folderKind(entries: readonly FileEntry[], place: "recent" | "gallery" | "downloads" | null): FolderKind {
     if (place) return place;
     let files = 0;
     const counts = { pictures: 0, videos: 0, music: 0 };

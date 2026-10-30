@@ -7,7 +7,7 @@ import { Archive, Binary, ClipboardCopy, Cloud, Download, ExternalLink, FileDown
 import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, leaveRemote, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
-import { baseName } from "@/lib/paths";
+import { baseName, samePath } from "@/lib/paths";
 import { countOf, importSettings, type Part, PARTS, readSettingsFile, type SettingsFile, writeSettingsFile } from "@/lib/settingsFile";
 import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, type McpSetup, mcpSetup, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
@@ -532,6 +532,36 @@ function CloudsSection({ onClose }: { onClose: () => void }) {
     );
 }
 
+/** The gallery's folders besides Pictures and Videos: added with a folder picker, each taken out with its cross. */
+function GalleryFolders() {
+    const folders = useStore((s) => s.settings.galleryFolders);
+    const setSettings = useStore((s) => s.setSettings);
+    const add = async () => {
+        const picked = await open({ directory: true, title: "A folder for the gallery" });
+        if (typeof picked === "string" && !folders.some((f) => samePath(f, picked))) setSettings({ galleryFolders: [...folders, picked] });
+    };
+    return (
+        <>
+            <Row label="Gallery folders" hint="Besides Pictures and Videos: their photos and videos show in the Gallery, with everything below them">
+                <Button variant="outline" size="sm" onClick={() => void add()}>
+                    <Plus /> Add a folder
+                </Button>
+            </Row>
+            {folders.map((folder) => (
+                <div key={folder} className="flex items-center gap-2 px-4 py-1.5 text-sm">
+                    <Folder className="size-4 shrink-0 fill-amber-400/80 text-amber-500" />
+                    <span className="min-w-0 flex-1 truncate" title={folder}>
+                        {folder}
+                    </span>
+                    <Button variant="ghost" size="icon" className="size-7" onClick={() => setSettings({ galleryFolders: folders.filter((f) => f !== folder) })} title="Take it out of the gallery" aria-label={`Take ${folder} out of the gallery`}>
+                        <X />
+                    </Button>
+                </div>
+            ))}
+        </>
+    );
+}
+
 /** Export and Import: Glint's set-up in a file, to bring to another PC (never a secret). */
 function SettingsFileRows() {
     const [incoming, setIncoming] = useState<{ path: string; file: SettingsFile } | null>(null);
@@ -879,6 +909,7 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                         disabled={!settings.folderTree}
                         onChange={(treeFollows) => set({ treeFollows })}
                     />
+                    <GalleryFolders />
                     <SwitchRow
                         label="Thumbnails in the list"
                         hint="Pictures and videos show a small one in place of their icon. The grid view (Ctrl+Shift+2) shows them for every file Windows has one of."

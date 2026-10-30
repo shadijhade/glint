@@ -29,7 +29,7 @@ const WHEEL_STEP = 100;
  * driven by the same handlers, so selection, keys, menus, rename and drag and drop work alike.
  */
 export function FileGrid(props: FileGridProps) {
-    const { rows, search, recycled, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dragging, flashed, dropTarget, inactive, lane, thumbScope, pane, tile } = props;
+    const { rows, search, recycled, scope, sizes, diffs, git, sort, onSort, selection, focusIndex, renaming, cut, dragging, flashed, dropTarget, inactive, lane, thumbScope, pane, tile, dateLabel } = props;
     // Items from many folders (search results, the Recycle Bin's) say where each is, under its name.
     const located = search || !!recycled;
     const [width, setWidth] = useState(() => lastWidth.get(pane) ?? 0);
@@ -73,7 +73,8 @@ export function FileGrid(props: FileGridProps) {
     const renderTile = (i: number) => {
         const entry = rows[i];
         const size = sizeOf(entry, located, sizes);
-        const where = located ? whereIs(entry) : "";
+        // The gallery's tiles are its photos alone: where each is shows in the list, and in its preview.
+        const where = located && !dateLabel ? whereIs(entry) : "";
         const selected = selection.has(entry.path);
         const sizeText = size !== undefined ? formatSize(size) : entry.dir && sizes?.running ? "…" : "";
         const diff = diffs?.get(entry.lower);
@@ -162,8 +163,12 @@ export function FileGrid(props: FileGridProps) {
             <div className="flex h-8 shrink-0 items-center gap-4 overflow-hidden border-b px-3 text-xs font-medium text-muted-foreground">
                 <span className="shrink-0">Sort by</span>
                 <Header sortKey="name" sort={sort} onSort={onSort}>Name</Header>
-                <Header sortKey="modified" sort={sort} onSort={onSort}>{recycled ? "Date deleted" : "Date modified"}</Header>
-                <Header sortKey="taken" sort={sort} onSort={onSort}>Date taken</Header>
+                <Header sortKey="modified" sort={sort} onSort={onSort}>{recycled ? "Date deleted" : (dateLabel ?? "Date modified")}</Header>
+                {!dateLabel && (
+                    <Header sortKey="taken" sort={sort} onSort={onSort}>
+                        Date taken
+                    </Header>
+                )}
                 {!located && (
                     <Header sortKey="type" sort={sort} onSort={onSort}>
                         Type
