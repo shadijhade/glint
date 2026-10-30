@@ -25,6 +25,7 @@ mod markdown;
 mod mcp;
 mod meaning;
 mod media;
+mod newmenu;
 mod native_preview;
 mod ocr;
 mod openers;
@@ -668,6 +669,8 @@ pub fn run() {
             fsx::list_drives,
             fsx::read_text_preview,
             fsx::create_entry,
+            newmenu::new_kinds,
+            newmenu::new_file,
             find::find_files,
             find::cancel_find,
             sizes::folder_sizes,

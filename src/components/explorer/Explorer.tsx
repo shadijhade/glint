@@ -142,6 +142,7 @@ import {
     modalOpen,
     navigate,
     newItem,
+    newOfKind,
     newTab,
     nextUndo,
     type NoAccess,
@@ -193,6 +194,7 @@ import {
     zoomGrid,
 } from "@/lib/explorer";
 import { formatCount, plural } from "@/lib/format";
+import { newKinds } from "@/lib/newKinds";
 import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rotateImage, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
@@ -213,6 +215,7 @@ import { openShortcuts } from "../ShortcutsDialog";
 import { ResizeHandle } from "../ResizeHandle";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
+import { newMenuItems } from "./newMenu";
 import { openBatchRename } from "./BatchRenameDialog";
 import { CommandBar } from "./CommandBar";
 import { type Command, CommandPalette } from "./CommandPalette";
@@ -496,7 +499,7 @@ function folderMenu(
         !current && { label: "Open", icon: FolderOpen, onSelect: () => navigate(folder) },
         !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
         current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find || !!archive || shut, onSelect: () => newItem(true) },
-        current && { label: "New text document", icon: FilePlus, disabled: find || !!archive || shut, onSelect: () => newItem(false) },
+        current && { label: "New", icon: FilePlus, disabled: find || !!archive || shut, items: newMenuItems(false) },
         current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", disabled: unlisted, onSelect: view.selectAll },
         "separator",
         current && { label: "Folder sizes", icon: HardDrive, disabled: find || unlisted, onSelect: calcSizes },
@@ -754,6 +757,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !!shut && !shut.remote && !shut.refused && action("get-access", "Get access to this folder", ShieldCheck, () => getAccess(t.id)),
             writable && !t.find && !shut && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
             writable && !t.find && !shut && action("new-file", "New text document", FilePlus, () => newItem(false)),
+            ...newKinds().map((kind) => writable && !t.find && !shut && action(`new-${kind.ext}`, `New ${kind.name}`, FilePlus, () => void newOfKind(kind))),
             action("find", bin ? "Filter what's in the Recycle Bin" : "Find files in this folder", Search, focusFind, "Ctrl+F"),
             bin && chosen && action("restore", "Restore the selection where it was deleted from", RotateCcw, () => void restoreRecycled(chosenEntries)),
             bin && chosen && action("purge", "Delete the selection for good", Trash2, () => void purgeRecycled(chosenEntries)),
