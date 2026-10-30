@@ -52,6 +52,8 @@ import {
     syncJumpList,
     takeLaunchTargets,
     taskbarProgress,
+    onThumbButton,
+    thumbButtons,
     watchDirs,
 } from "./fs";
 import { formatCount, plural } from "./format";
@@ -716,11 +718,27 @@ async function init() {
     restored = true;
     saveSession();
     updateJumpList();
+    // The taskbar preview's Back, Forward and Up: the active tab's.
+    void onThumbButton((button) => void (button === "back" ? goBack() : button === "forward" ? goForward() : goUp()));
+    updateThumbButtons(get());
+    useExplorer.subscribe(updateThumbButtons);
     // Windows' New menu, read before it's first opened.
     setTimeout(() => void loadNewKinds(), 2000);
 }
 
 let lastJumpKey: string | null = null;
+let lastThumbs = "";
+
+/** Back, Forward and Up under the taskbar button's preview, as the active tab can go. */
+function updateThumbButtons(s: ExplorerState) {
+    const t = shownTab(s, null);
+    if (!t) return;
+    const [back, forward, up] = [t.back.length > 0, t.forward.length > 0, t.path !== THIS_PC];
+    const key = `${back} ${forward} ${up}`;
+    if (key === lastThumbs) return;
+    lastThumbs = key;
+    void thumbButtons(back, forward, up).catch(() => {});
+}
 
 /** Keeps the Windows 11 Taskbar Jump List in sync with quick tasks, pinned folders, and most-visited folders. */
 export function updateJumpList() {

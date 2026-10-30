@@ -40,7 +40,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src-tauri/src/archive/` | Archives opened like folders (zip, 7z, RAR, cabinets, installer packages, tar, compressed files): reading their list of entries, the folder tree, extracting on demand and into staging folders, safety limits ([docs/archives.md](docs/archives.md)) |
 | `src-tauri/src/find.rs`, `sizes.rs`, `usage.rs` | fd name search, pdu folder sizes and disk-usage maps (or the index when it's on) |
 | `src-tauri/src/shell.rs` | Copy, move, delete, rename (`IFileOperation`), clipboard, drag and drop (with its drag picture), Properties, and Windows' own Share, Eject and Mount, turning pictures and the desktop background, OneDrive's keep and free up |
-| `src-tauri/src/jumplist.rs` | The taskbar button: its Jump List (tasks, pinned and most-used folders) and its progress bar |
+| `src-tauri/src/jumplist.rs` | The taskbar button: its Jump List (tasks, pinned and most-used folders), its progress bar, and Back, Forward and Up under its preview |
 | `src-tauri/src/recycle.rs` | The Recycle Bin as a place: its items from the shell and their `$I` records, and emptying it ([docs/recycle-bin.md](docs/recycle-bin.md)) |
 | `src-tauri/src/compare.rs` | Compare panes down through subfolders and by contents, and what Sync copies |
 | `src-tauri/src/filediff.rs` | Compare two files: text side by side (Difftastic's structural diff, or line by line), pictures, and bytes |
