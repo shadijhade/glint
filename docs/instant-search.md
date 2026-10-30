@@ -74,7 +74,7 @@ shadui-index run [--volume C:]...        (administrator) run in a console instea
 shadui-index bench [C:]...               (administrator) index drives in-process and time everything
 ```
 
-The NSIS installer accepts `/INSTANTSEARCH` to turn it on during a (silent) install. The service logs to `service.log` next to its snapshots.
+The installer turns it on too, from its **Extra tools** page, or with `/INSTANTSEARCH` on its command line (for a silent install). The service logs to `service.log` next to its snapshots.
 
 **Updates.** The app and the service share one version (`[workspace.package]` in `src-tauri/Cargo.toml`). When the app updates itself, the installer runs in update mode, so its uninstall hook leaves the service alone and it keeps running the version it had; the app then says *Instant search has an update* once, and Settings shows *Update* until it's done, which runs the same `install` (one administrator approval). See [releasing.md](releasing.md).
 

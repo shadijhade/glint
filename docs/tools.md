@@ -37,6 +37,8 @@ They're the official Windows x64 releases, unmodified, installed next to `Glint.
 
 Meaning search's model isn't a program, but it's listed with them: Model2Vec's [potion-base-8M](https://huggingface.co/minishlab/potion-base-8M) (30 MB), downloaded from Hugging Face the first time it's asked for, at a pinned revision and checked against its SHA-256 checksums.
 
+**Or all at once, while installing Glint.** The installer's **Extra tools** page lists them with instant search, grouped by what they're for, each with what it is and what Glint uses it for. The ones you tick install once Glint is in place, the same way as below: Glint installs them (`Glint.exe tools install <id>`), with how each is going on the installer's status line, and the last page says if one didn't. One that's on the PC already is greyed out and left as it is. A silent install picks them with `/TOOLS=difftastic,jaq` (the ids in [`tools.rs`](../src-tauri/src/tools.rs), and `meaning` for the model), and turns on instant search with `/INSTANTSEARCH`.
+
 ## Where they go
 
 -   **With winget**: `winget install --id <id> --exact --source winget --scope user`, silently, with its progress in the card and a **Stop**. That puts the tool in your account's winget folder (`%LOCALAPPDATA%\Microsoft\WinGet`), on your `PATH`, where terminals find it too. A package that can't install per user installs the way it does for everyone, which may ask for administrator approval.
