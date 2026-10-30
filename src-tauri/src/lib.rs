@@ -53,6 +53,7 @@ mod tools;
 mod usage;
 mod verbs;
 mod watch;
+mod webview;
 mod xray;
 mod zoxide;
 
@@ -587,6 +588,10 @@ pub fn run() {
         if request.open.is_empty() {
             return;
         }
+    }
+    // Glint's window is WebView2: on a PC without it, Glint offers to install it, and ends if it can't.
+    if !webview::ready() {
+        return;
     }
 
     let in_tray = std::env::args().any(|arg| arg == "--tray");

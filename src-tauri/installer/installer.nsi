@@ -1,6 +1,7 @@
 ; Glint's installer: Tauri's NSIS template (crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
 ; at tauri-cli-v2.12.2), with Glint's changes marked "Glint:". It's Tauri's own but for the Extra tools
-; page after the folder page, Glint's look (installer/look.nsh) and its version in the branding text.
+; page after the folder page, Glint's look (installer/look.nsh), its version in the branding text, and
+; a WebView2 step that's surer of what's there and lets a failed install be retried or skipped.
 ; When @tauri-apps/cli moves on, compare its template with this one (npm run release warns until the
 ; version below is updated): docs/releasing.md#the-installer.
 ; Tauri template: 2.12.2
@@ -575,8 +576,11 @@ Section WebView2
   ${Else}
     ReadRegStr $4 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
   ${EndIf}
+  ; Glint: "0.0.0.0" is what a removed or broken runtime leaves behind (Microsoft's docs): not there.
+  ${IfThen} $4 == "0.0.0.0" ${|} StrCpy $4 "" ${|}
   ${If} $4 == ""
     ReadRegStr $4 HKCU "SOFTWARE\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
+    ${IfThen} $4 == "0.0.0.0" ${|} StrCpy $4 "" ${|}
   ${EndIf}
 
   ${If} $4 == ""
@@ -585,6 +589,7 @@ Section WebView2
     ; Skip if updating
     ${If} $UpdateMode <> 1
       !if "${INSTALLWEBVIEW2MODE}" == "downloadBootstrapper"
+        download_webview2:
         Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         DetailPrint "$(webview2Downloading)"
         NSISdl::download "https://go.microsoft.com/fwlink/p/?LinkId=2124703" "$TEMP\MicrosoftEdgeWebview2Setup.exe"
@@ -593,7 +598,12 @@ Section WebView2
           DetailPrint "$(webview2DownloadSuccess)"
         ${Else}
           DetailPrint "$(webview2DownloadError)"
-          Abort "$(webview2AbortError)"
+          ; Glint: Retry, or install Glint anyway (installer/hooks.nsh), rather than stop.
+          !ifmacrodef GLINT_WEBVIEW2_FAILED
+            !insertmacro GLINT_WEBVIEW2_FAILED download_webview2 webview2_done
+          !else
+            Abort "$(webview2AbortError)"
+          !endif
         ${EndIf}
         StrCpy $6 "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         Goto install_webview2
@@ -620,12 +630,24 @@ Section WebView2
       install_webview2:
         DetailPrint "$(installingWebview2)"
         ; $6 holds the path to the webview2 installer
-        ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
+        ; Glint: Microsoft's installer shows how it's going (it downloads the runtime), but not in a silent
+        ; or passive install.
+        StrCpy $7 "${WEBVIEW2INSTALLERARGS}"
+        ${IfNot} ${Silent}
+        ${AndIf} $PassiveMode <> 1
+          StrCpy $7 ""
+        ${EndIf}
+        ExecWait '"$6" $7 /install' $1
         ${If} $1 = 0
           DetailPrint "$(webview2InstallSuccess)"
         ${Else}
           DetailPrint "$(webview2InstallError)"
-          Abort "$(webview2AbortError)"
+          ; Glint: Retry, or install Glint anyway (installer/hooks.nsh), rather than stop.
+          !ifmacrodef GLINT_WEBVIEW2_FAILED
+            !insertmacro GLINT_WEBVIEW2_FAILED install_webview2 webview2_done
+          !else
+            Abort "$(webview2AbortError)"
+          !endif
         ${EndIf}
       webview2_done:
     ${EndIf}
