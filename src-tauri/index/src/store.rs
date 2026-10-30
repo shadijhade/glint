@@ -84,7 +84,8 @@ mod tests {
     #[test]
     fn reads_package_families() {
         assert_eq!(split("Glint.Test_4cqh9yg7jc6m4"), Some(("Glint.Test", "4cqh9yg7jc6m4")));
-        assert_eq!(split("12345Shadi.Glint_a1b2c3d4e5f6g"), Some(("12345Shadi.Glint", "a1b2c3d4e5f6g")));
+        // The Store's own.
+        assert_eq!(split("shadi.Glint-FileExplorer_hbph6h7hvqyst"), Some(("shadi.Glint-FileExplorer", "hbph6h7hvqyst")));
         for bad in ["", "Glint", "_4cqh9yg7jc6m4", "Glint_short", "Gl int_4cqh9yg7jc6m4", r"..\x_4cqh9yg7jc6m4"] {
             assert_eq!(split(bad), None, "{bad}");
         }
