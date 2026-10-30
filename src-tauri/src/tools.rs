@@ -307,12 +307,24 @@ impl Installs {
     pub(crate) fn end(&self, id: &str) {
         self.downloads.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     }
+
+    /// Stops `id`'s install: winget's process, or the download.
+    fn cancel(&self, id: &str) {
+        self.winget.close(id);
+        if let Some(stop) = self.downloads.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 /// Installs a tool (or puts a bundled one back): with winget, or by downloading its release.
 #[tauri::command]
 pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: State<'_, Installs>) -> Result<ToolStatus, String> {
-    let tool = get(&id).ok_or_else(|| format!("No tool is called {id}"))?;
+    install(&id, on_progress, &installs).await
+}
+
+async fn install(id: &str, on_progress: Channel<Progress>, installs: &Installs) -> Result<ToolStatus, String> {
+    let tool = get(id).ok_or_else(|| format!("No tool is called {id}"))?;
     match tool.source {
         // pdu isn't on winget: it comes back with Glint itself.
         Source::Bundled { winget: "" } => return Err(format!("{} comes with Glint: install Glint again to put it back", tool.name)),
@@ -321,9 +333,9 @@ pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: 
             blocking(move || winget_install(winget, &lane, tool.id, &on_progress)).await?;
         }
         Source::Release { url, sha256, member, .. } => {
-            let stop = installs.begin(&id);
+            let stop = installs.begin(id);
             let done = download(tool, url, sha256, member, &stop, &on_progress).await;
-            installs.end(&id);
+            installs.end(id);
             done?;
         }
     }
@@ -336,10 +348,7 @@ pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: 
 
 #[tauri::command]
 pub fn tool_cancel_install(id: String, installs: State<Installs>) {
-    installs.winget.close(&id);
-    if let Some(stop) = installs.downloads.lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
-        stop.store(true, Ordering::SeqCst);
-    }
+    installs.cancel(&id);
 }
 
 /// winget's "no installer for that scope": the package only installs for every user.
@@ -564,6 +573,172 @@ pub async fn tool_remove(id: String) -> Result<ToolStatus, String> {
     .await
 }
 
+/// `Glint.exe tools install <id>…`: installs tools as Settings → Tools does (and `meaning`, the meaning
+/// model), for the installer's Extra tools page (installer/tools.nsh) and scripted setups. One that's on
+/// this PC already is left as it is. What it's doing goes to stdout a line at a time (the installer's
+/// details) and, with `--installer <window>`, onto the installer's status line as it goes. `--data
+/// <folder>` is Glint's local data folder, whose tools folder the downloads go in (the installer names
+/// its own; else the one Glint uses). The exit code is 0 once every one is installed, else 1.
+pub fn cli() -> Option<i32> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("tools") {
+        return None;
+    }
+    let command = args.next();
+    let (mut ids, mut data, mut window) = (Vec::new(), None, 0);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data" => data = args.next().map(PathBuf::from),
+            "--installer" => window = args.next().and_then(|w| w.parse().ok()).unwrap_or(0),
+            _ => ids.push(arg),
+        }
+    }
+    if command.as_deref() != Some("install") || ids.is_empty() {
+        say("Usage: Glint.exe tools install <tool>... [--data <folder>] [--installer <window>]");
+        return Some(2);
+    }
+    let Some(data) = data.or_else(|| Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join(identifier()?))) else {
+        say("Glint's data folder isn't known: give it with --data");
+        return Some(1);
+    };
+    set_dir(data.join("tools"));
+    let installs = Arc::new(Installs::default());
+    let status = StatusLine::find(window);
+    let failed = ids
+        .iter()
+        .filter(|id| match tauri::async_runtime::block_on(install_here(id, &installs, status.clone())) {
+            Ok(done) => {
+                say(&done);
+                false
+            }
+            Err(e) => {
+                say(&format!("Couldn't install {id}: {e}"));
+                true
+            }
+        })
+        .count();
+    Some(i32::from(failed > 0))
+}
+
+/// The app's identifier, as its local data folder is named.
+fn identifier() -> Option<String> {
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).ok()?;
+    config["identifier"].as_str().map(str::to_string)
+}
+
+/// Installs one for `tools install`, and what to say once it's done. One that stops making progress for
+/// a few minutes (a download that stalled, winget waiting on something) is stopped.
+async fn install_here(id: &str, installs: &Arc<Installs>, status: Option<StatusLine>) -> Result<String, String> {
+    const STALLED: Duration = Duration::from_secs(300);
+    let heard = Arc::new(Mutex::new(Instant::now()));
+    let done = Arc::new(AtomicBool::new(false));
+    {
+        let (heard, done, installs, id) = (heard.clone(), done.clone(), installs.clone(), id.to_string());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_secs(2));
+                if heard.lock().unwrap_or_else(|e| e.into_inner()).elapsed() > STALLED {
+                    installs.cancel(&id);
+                    break;
+                }
+            }
+        });
+    }
+    let progress = said_as_it_goes(status, heard);
+    let result = if id == "meaning" {
+        match blocking(|| Ok(crate::meaning::installed())).await? {
+            true => Ok("The meaning model is downloaded already".to_string()),
+            false => crate::meaning::install(&progress, installs).await.map(|()| "The meaning model is downloaded".to_string()),
+        }
+    } else {
+        let tool = get(id).ok_or_else(|| format!("no tool is called {id}"))?;
+        match blocking(move || Ok(proc::locate(tool.exe))).await? {
+            Some((path, _)) => Ok(format!("{} is on this PC already ({})", tool.name, path.display())),
+            None => install(id, progress, installs).await.map(|found| match found.version {
+                Some(version) => format!("{} {version} is installed", tool.name),
+                None => format!("{} is installed", tool.name),
+            }),
+        }
+    };
+    done.store(true, Ordering::SeqCst);
+    result.map_err(|e| if e == "cancelled" { "it stopped making progress, so it was stopped".to_string() } else { e })
+}
+
+/// A progress channel for `tools install`: each new stage is said once (a download's size too), and
+/// the installer's status line shows each update, bytes and all. `heard` is when the last one came.
+fn said_as_it_goes(status: Option<StatusLine>, heard: Arc<Mutex<Instant>>) -> Channel<Progress> {
+    let stage = Mutex::new(String::new());
+    Channel::new(move |body| {
+        *heard.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+        let tauri::ipc::InvokeResponseBody::Json(json) = body else { return Ok(()) };
+        let Ok(progress) = serde_json::from_str::<serde_json::Value>(&json) else { return Ok(()) };
+        let now = progress["stage"].as_str().unwrap_or_default();
+        let (done, total) = (progress["done"].as_u64().unwrap_or(0), progress["total"].as_u64().unwrap_or(0));
+        if let Some(status) = &status {
+            status.show(&if total > 0 { format!("{now} {} of {}", megabytes(done), megabytes(total)) } else { now.to_string() });
+        }
+        let mut said = stage.lock().unwrap_or_else(|e| e.into_inner());
+        if *said != now {
+            *said = now.to_string();
+            say(&if total > 0 { format!("{now} {}", megabytes(total)) } else { now.to_string() });
+        }
+        Ok(())
+    })
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / (1 << 20) as f64)
+}
+
+/// A line for whoever ran `tools install`. The installer reads it in the PC's ANSI code page, so it's
+/// kept to ASCII; and one that stopped reading doesn't stop the install.
+fn say(line: &str) {
+    let line: String = line.replace('…', "...").replace('→', "->").chars().map(|c| if c.is_ascii() { c } else { '?' }).collect();
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}").and_then(|()| out.flush());
+}
+
+/// The status line of the installer that ran `tools install` (the text over its progress bar on its
+/// install page, NSIS's item 1006), which an install's progress is shown on after what the installer put
+/// there (Installing Difftastic (2 of 5)).
+#[derive(Clone)]
+struct StatusLine {
+    text: isize,
+    prefix: String,
+}
+
+impl StatusLine {
+    fn find(installer: isize) -> Option<Self> {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetDlgItem, IsWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_GETTEXT};
+        // A silent install has no window: 0, which mustn't find some other program's.
+        if installer == 0 {
+            return None;
+        }
+        unsafe {
+            let window = HWND(installer as _);
+            if !IsWindow(Some(window)).as_bool() {
+                return None;
+            }
+            let page = FindWindowExW(Some(window), None, w!("#32770"), PCWSTR::null()).ok()?;
+            let text = GetDlgItem(Some(page), 1006).ok()?;
+            let mut buffer = [0u16; 512];
+            let mut length = 0usize;
+            SendMessageTimeoutW(text, WM_GETTEXT, WPARAM(buffer.len()), LPARAM(buffer.as_mut_ptr() as isize), SMTO_ABORTIFHUNG, 1000, Some(&mut length));
+            let prefix = String::from_utf16_lossy(&buffer[..length.min(buffer.len())]);
+            Some(StatusLine { text: text.0 as isize, prefix: prefix.trim_end_matches(['…', '.', ' ']).to_string() })
+        }
+    }
+
+    fn show(&self, what: &str) {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_SETTEXT};
+        let line: Vec<u16> = format!("{}: {what}", self.prefix).encode_utf16().chain([0]).collect();
+        unsafe { SendMessageTimeoutW(HWND(self.text as _), WM_SETTEXT, WPARAM(0), LPARAM(line.as_ptr() as isize), SMTO_ABORTIFHUNG, 1000, None) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +758,35 @@ mod tests {
         assert_eq!(bytes_of("██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  2.00 MB / 4.00 MB"), Some((2 << 20, 4 << 20)));
         assert_eq!(bytes_of("████████  512 KB / 1.00 MB"), Some((512 << 10, 1 << 20)));
         assert_eq!(bytes_of("Successfully verified installer hash"), None);
+    }
+
+    /// The installer's Extra tools page (installer/tools.nsh) lists every tool that doesn't come with
+    /// Glint, with its program and package folder as here, plus instant search and the meaning model.
+    #[test]
+    fn the_installer_offers_every_tool() {
+        let rows: Vec<Vec<&str>> = include_str!("../installer/tools.nsh")
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("!insertmacro ${ROW} "))
+            .map(|row| {
+                // index id "Name" group kind exe package \
+                let (start, rest) = row.split_once(" \"").expect("a name in quotes");
+                let (_, rest) = rest.split_once("\" ").expect("a name in quotes");
+                start.split(' ').chain(rest.split(' ').filter(|word| *word != "\\")).collect()
+            })
+            .collect();
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(row[0], i.to_string(), "{}'s index", row[1]);
+        }
+        let mut offered: Vec<(&str, &str, &str, &str)> = rows.iter().map(|row| (row[1], row[3], row[4], row[5])).collect();
+        let mut expected = vec![("instant-search", "service", "\"\"", "\"\""), ("meaning", "model", "\"\"", "\"\"")];
+        expected.extend(TOOLS.iter().filter_map(|tool| match tool.source {
+            Source::Bundled { .. } => None,
+            Source::Winget { .. } => Some((tool.id, "winget", tool.exe, tool.package)),
+            Source::Release { .. } => Some((tool.id, "release", tool.exe, tool.package)),
+        }));
+        offered.sort();
+        expected.sort();
+        assert_eq!(offered, expected, "installer/tools.nsh's rows (id, kind, program, package) differ from TOOLS");
     }
 
     #[test]

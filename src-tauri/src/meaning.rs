@@ -241,10 +241,14 @@ pub fn passages(lines: &[(String, String)]) -> Vec<Passage> {
     passages
 }
 
-/// Downloads the model (each file checked against its pinned SHA-256), into a fresh folder that then
-/// replaces any old one.
 #[tauri::command]
 pub async fn meaning_install(on_progress: Channel<Progress>, installs: State<'_, Installs>) -> Result<(), String> {
+    install(&on_progress, &installs).await
+}
+
+/// Downloads the model (each file checked against its pinned SHA-256), into a fresh folder that then
+/// replaces any old one.
+pub(crate) async fn install(on_progress: &Channel<Progress>, installs: &Installs) -> Result<(), String> {
     let dir = folder().ok_or("Glint's data folder isn't available")?;
     let fresh = dir.with_extension("new");
     let _ = fs::remove_dir_all(&fresh);
@@ -253,7 +257,7 @@ pub async fn meaning_install(on_progress: Channel<Progress>, installs: State<'_,
     let mut result = Ok(());
     for (name, sha256, _) in FILES {
         let url = format!("https://huggingface.co/minishlab/{MODEL}/resolve/{REVISION}/{name}");
-        match tools::fetch(&url, sha256, &format!("meaning-{name}"), "the meaning model", &stop, &on_progress).await {
+        match tools::fetch(&url, sha256, &format!("meaning-{name}"), "the meaning model", &stop, on_progress).await {
             Ok(file) => {
                 let moved = fs::rename(&file, fresh.join(name)).or_else(|_| fs::copy(&file, fresh.join(name)).map(|_| ()));
                 let _ = fs::remove_file(&file);

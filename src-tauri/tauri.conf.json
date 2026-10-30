@@ -70,9 +70,10 @@
     },
     "windows": {
       "nsis": {
+        "template": "installer/installer.nsi",
         "installerHooks": "installer/hooks.nsh",
-        "headerImage": "installer/nsis-header.bmp",
-        "sidebarImage": "installer/nsis-sidebar.bmp",
+        "headerImage": "installer/art/header-100.bmp",
+        "sidebarImage": "installer/art/sidebar-100.bmp",
         "installerIcon": "icons/icon.ico"
       },
       "wix": {

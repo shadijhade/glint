@@ -64,6 +64,12 @@ const licenses = run(process.execPath, [join(root, "scripts", "licenses.mjs"), "
 if (licenses.status === 2) console.warn(`! ${licenses.stderr.trim()}`);
 else if (licenses.status) fail(licenses.stderr.trim());
 
+// The installer is Tauri's template with Glint's pages (src-tauri/installer/installer.nsi): taken from an
+// older @tauri-apps/cli, it lacks what Tauri has fixed in its own since.
+const template = readFileSync(join(root, "src-tauri", "installer", "installer.nsi"), "utf8").match(/^; Tauri template: (\S+)/m)?.[1];
+const tauriCli = json("node_modules/@tauri-apps/cli/package.json").version;
+if (template !== tauriCli) console.warn(`! The installer's template is Tauri ${template}'s, but @tauri-apps/cli is ${tauriCli}: compare the two (docs/releasing.md#the-installer).`);
+
 const work = mkdtempSync(join(tmpdir(), "glint-release-"));
 process.on("exit", () => rmSync(work, { recursive: true, force: true }));
 /** A Tauri config overlay in the work folder, as the arguments that hand it to `tauri build`. */

@@ -1,6 +1,11 @@
+; Glint's installer: Tauri's NSIS template with Glint's pages (installer.nsi) includes this file, which
+; brings in how it looks (look.nsh) and the Extra tools page (tools.nsh).
+;
 ; Instant search is a Windows service (shadui-index.exe, copied to Program Files when turned on).
-; It is off unless the user turns it on in the app's settings, or the installer runs with
+; It is off unless the user turns it on: on the Extra tools page, in the app's settings, or with
 ; /INSTANTSEARCH (for silent installs). Either way Windows asks for administrator approval.
+!include "${__FILEDIR__}\look.nsh"
+!include "${__FILEDIR__}\tools.nsh"
 
 ; Until 0.3.1 the app was called shadui-ripgrep, and Windows keeps an installed app under its name:
 ; its folder, shortcuts and Installed apps entry. Installing Glint removes those (settings, tabs and
@@ -89,11 +94,8 @@ Var OldDesktopShortcut
     ${EndIf}
   ${EndIf}
 
-  ClearErrors
-  ${GetOptions} $CMDLINE "/INSTANTSEARCH" $0
-  ${IfNot} ${Errors}
-    ExecShellWait "runas" "$INSTDIR\shadui-index.exe" "install" SW_HIDE
-  ${EndIf}
+  ; Instant search and the tools picked on the Extra tools page (or given with /TOOLS= and /INSTANTSEARCH).
+  !insertmacro GLINT_INSTALL_TOOLS
 !macroend
 
 ; File Explorer's "Open in Glint" entries and opening folders in Glint by default, which the app's
