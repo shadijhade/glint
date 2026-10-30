@@ -74,6 +74,9 @@ pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
         if crate::recent::is_place(path.trim()) {
             return crate::recent::listing(started).map(tauri::ipc::Response::new).map_err(|e| ListError::other(crate::recent::PLACE, e));
         }
+        if crate::gallery::is_place(path.trim()) {
+            return crate::gallery::listing(started).map(tauri::ipc::Response::new).map_err(|e| ListError::other(crate::gallery::PLACE, e));
+        }
         let path = normalize(&path).map_err(|e| ListError::other(&path, e))?;
         if let Some(listing) = crate::archive::list(&path, started) {
             return listing.map(tauri::ipc::Response::new).map_err(|e| ListError::other(&path, e));

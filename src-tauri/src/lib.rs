@@ -15,6 +15,7 @@ mod doctext;
 mod filediff;
 mod find;
 mod fsx;
+mod gallery;
 mod git;
 mod index;
 mod jq;
@@ -678,6 +679,7 @@ pub fn run() {
             fsx::list_subfolders,
             recent::recent_forget,
             recent::recent_kept,
+            gallery::gallery_set_folders,
             newmenu::new_kinds,
             rclone::rclone_providers,
             rclone::rclone_config_start,

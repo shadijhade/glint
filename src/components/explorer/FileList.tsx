@@ -57,6 +57,8 @@ export interface FileViewProps {
     onHeaderMenu?: (e: React.MouseEvent) => void;
     /** The columns after the name (and, in a list of items from many folders, where each is), in order. */
     columns: ColumnId[];
+    /** What the date column is called, where it isn't when each was modified (Gallery's: when each was taken). */
+    dateLabel?: string;
     /** What a photo, a video or a song says about itself, as far as it's been read (its columns, and sorting by them). */
     factsOf?: (entry: FileEntry) => MediaFacts | null | undefined;
     selection: ReadonlySet<string>;
@@ -232,7 +234,7 @@ export function whereOf(relative: (path: string) => string) {
 }
 
 export function FileList(props: FileListProps) {
-    const { rows, rowHeight, search, recycled, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, columns, factsOf, selection, focusIndex, renaming, cut, dragging, flashed, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
+    const { rows, rowHeight, search, recycled, scope, sizes, diffs, git, sort, onSort, onHeaderMenu, columns, dateLabel, factsOf, selection, focusIndex, renaming, cut, dragging, flashed, dropTarget, inactive, lane, thumbScope, thumbnails, iconBox } = props;
     // Items from many folders (search results, the Recycle Bin's) say where each is, in a column of its own.
     const located = search || !!recycled;
     const grid = useMemo(() => gridTemplates(columns, located), [columns, located]);
@@ -403,7 +405,7 @@ export function FileList(props: FileListProps) {
                 {located && <span className="truncate">{recycled ? "Deleted from" : "Folder"}</span>}
                 {columns.map((id) => (
                     <Header key={id} sortKey={COLUMNS[id].sort} sort={sort} onSort={onSort} column={COLUMNS[id].width} className={cn(dropClass(id, located), COLUMNS[id].end && "justify-end")}>
-                        {id === "modified" && recycled ? "Date deleted" : COLUMNS[id].label}
+                        {id === "modified" && recycled ? "Date deleted" : id === "modified" && dateLabel ? dateLabel : COLUMNS[id].label}
                     </Header>
                 ))}
             </div>
