@@ -17,7 +17,7 @@ members = ["index"]
 # The app and the instant search service share one version: the app offers to update the service
 # whenever the two differ, so every release bumps both (see docs/releasing.md).
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 license = "MIT"
 
 [lib]
