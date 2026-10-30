@@ -47,7 +47,7 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
 
 /// The shortcut and the tray's Quick search: makes the window if it isn't there yet (off the UI
 /// thread, where making one can deadlock), then shows or hides it on the UI thread.
-fn summon(app: &AppHandle) {
+pub(crate) fn summon(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         window(&app);

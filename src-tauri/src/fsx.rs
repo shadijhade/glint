@@ -704,7 +704,7 @@ pub(crate) fn drives() -> Vec<Drive> {
     while let Ok((index, drive)) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         found[index] = Some(drive);
     }
-    letters
+    let mut list: Vec<Drive> = letters
         .iter()
         .zip(found)
         .map(|(letter, drive)| {
@@ -717,7 +717,51 @@ pub(crate) fn drives() -> Vec<Drive> {
                 free: 0,
             })
         })
-        .collect()
+        .collect();
+    list.extend(wsl_distros());
+    list
+}
+
+/// Installed WSL Linux distributions (`\\wsl.localhost\<name>`), read directly from the registry in
+/// sub-millisecond time without waking the WSL2 VM.
+#[cfg(windows)]
+fn wsl_distros() -> Vec<Drive> {
+    use windows::core::{HSTRING, PWSTR};
+    use windows::Win32::System::Registry::{RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ};
+
+    let lxss = r"Software\Microsoft\Windows\CurrentVersion\Lxss";
+    let mut root = HKEY::default();
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(lxss), None, KEY_READ, &mut root) }.is_err() {
+        return Vec::new();
+    }
+    let mut distros = Vec::new();
+    for i in 0..64 {
+        let mut buf = [0u16; 256];
+        let mut len = buf.len() as u32;
+        if unsafe { RegEnumKeyExW(root, i, Some(PWSTR(buf.as_mut_ptr())), &mut len, None, None, None, None) }.is_err() {
+            break;
+        }
+        let sub = String::from_utf16_lossy(&buf[..len as usize]);
+        if !sub.starts_with('{') {
+            continue;
+        }
+        if let Some(name) = crate::verbs::reg::get_string(&format!(r"{lxss}\{sub}"), "DistributionName") {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() && !trimmed.to_ascii_lowercase().starts_with("docker-desktop") {
+                distros.push(Drive {
+                    path: format!(r"\\wsl.localhost\{trimmed}"),
+                    label: trimmed.to_string(),
+                    kind: "wsl",
+                    fs: "WSL".into(),
+                    total: 0,
+                    free: 0,
+                });
+            }
+        }
+    }
+    let _ = unsafe { RegCloseKey(root) };
+    distros.sort_by_key(|d| d.label.to_ascii_lowercase());
+    distros
 }
 
 #[cfg(windows)]

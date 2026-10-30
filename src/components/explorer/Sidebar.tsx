@@ -1,9 +1,10 @@
-import { Cloud, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Usb, X } from "lucide-react";
+import { Cloud, Disc, Download, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Unplug, Usb, X } from "lucide-react";
+import { toast } from "sonner";
 import { remotePath, remoteWhere } from "@/lib/remotes";
 import { addRemote } from "./RemoteDialog";
 import { useShallow } from "zustand/react/shallow";
-import { type KnownFolder, middleClickOpens, navigate, runSavedSearch, useExplorer, useTab } from "@/lib/explorer";
-import { type Drive, driveName } from "@/lib/fs";
+import { type KnownFolder, middleClickOpens, navigate, refreshDrives, runSavedSearch, useExplorer, useTab } from "@/lib/explorer";
+import { type Drive, driveName, ejectDrive } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
 import { baseName, inArchivePath, isRemotePath, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { type SavedSearch, useStore } from "@/lib/store";
@@ -25,6 +26,7 @@ export const DRIVE_ICONS: Record<Drive["kind"], LucideIcon> = {
     network: Server,
     cdrom: Disc,
     ram: HardDrive,
+    wsl: SquareTerminal,
     unknown: HardDrive,
 };
 
@@ -70,7 +72,7 @@ interface PlaceProps {
 }
 
 // Below md, icons only: the sidebar is a rail, each place's name in its tooltip.
-const PLACE = "relative flex w-full items-center justify-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-colors hover:bg-accent md:justify-start";
+const PLACE = "relative flex w-full items-center justify-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-all duration-100 hover:bg-accent active:scale-[0.985] md:justify-start";
 
 // Windows 11's navigation selection: a gray fill and a short accent pill at the left edge.
 const ACTIVE = "bg-accent text-foreground before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary";
@@ -90,7 +92,7 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
             className={cn(
                 PLACE,
                 active && ACTIVE,
-                dropping && "bg-primary/20 outline-2 -outline-offset-2 outline-primary"
+                dropping && "scale-[1.01] bg-primary/20 outline-2 -outline-offset-2 outline-primary"
             )}
         >
             <Icon className={cn("size-4 shrink-0 text-muted-foreground", active && "text-foreground", iconClass)} />
@@ -166,11 +168,43 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                 >
                     <Monitor className="size-4 shrink-0 text-muted-foreground" />
                 </button>
-                {drives.map((d) => (
-                    <Place key={d.path} icon={DRIVE_ICONS[d.kind]} label={driveName(d)} path={d.path} active={here(d.path)} title={freeOf(d) || d.path} onContextMenu={onContextMenu}>
-                        <CapacityBar drive={d} className="mt-1" />
-                    </Place>
-                ))}
+                {drives.map((d) => {
+                    const ejectable = d.kind === "removable" || d.kind === "cdrom";
+                    return (
+                        <div key={d.path} className="group/drive relative">
+                            <Place
+                                icon={DRIVE_ICONS[d.kind]}
+                                iconClass={d.kind === "wsl" ? "text-amber-500" : undefined}
+                                label={driveName(d)}
+                                path={d.path}
+                                active={here(d.path)}
+                                title={freeOf(d) || d.path}
+                                onContextMenu={onContextMenu}
+                            >
+                                <CapacityBar drive={d} className="mt-1" />
+                            </Place>
+                            {ejectable && (
+                                <button
+                                    type="button"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        ejectDrive(d.path)
+                                            .then(() => {
+                                                toast.success(`Safely ejected ${driveName(d)}`);
+                                                void refreshDrives();
+                                            })
+                                            .catch((err) => toast.error(`Couldn't eject ${driveName(d)}`, { description: String(err) }));
+                                    }}
+                                    title={`Safely eject ${driveName(d)}`}
+                                    aria-label={`Eject ${driveName(d)}`}
+                                    className="absolute right-1 top-1.5 hidden rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover/drive:opacity-100 md:block"
+                                >
+                                    <Unplug className="size-3.5" />
+                                </button>
+                            )}
+                        </div>
+                    );
+                })}
                 <Place
                     icon={Trash2}
                     label="Recycle Bin"

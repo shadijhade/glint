@@ -44,10 +44,10 @@ export const grantAccess = (path: string) => invoke<"granted" | "refused" | "sti
 export const openItem = (path: string) => invoke<string | null>("open_item", { path });
 
 export interface Drive {
-    /** Root, e.g. "C:\". */
+    /** Root, e.g. "C:\" or "\\wsl.localhost\Ubuntu". */
     path: string;
     label: string;
-    kind: "fixed" | "removable" | "network" | "cdrom" | "ram" | "unknown";
+    kind: "fixed" | "removable" | "network" | "cdrom" | "ram" | "wsl" | "unknown";
     fs: string;
     total: number;
     free: number;
@@ -59,11 +59,15 @@ const DEFAULT_LABEL: Record<Drive["kind"], string> = {
     network: "Network Drive",
     cdrom: "DVD Drive",
     ram: "RAM Disk",
+    wsl: "Linux",
     unknown: "Drive",
 };
 
-/** "Local Disk (C:)", like Explorer. */
-export const driveName = (drive: Drive) => `${drive.label || DEFAULT_LABEL[drive.kind]} (${drive.path.replace(/\\$/, "")})`;
+/** "Local Disk (C:)", like Explorer, or "Ubuntu (WSL)" for WSL2 distributions. */
+export const driveName = (drive: Drive) =>
+    drive.kind === "wsl"
+        ? `${drive.label || DEFAULT_LABEL.wsl} (WSL)`
+        : `${drive.label || DEFAULT_LABEL[drive.kind]} (${drive.path.replace(/\\$/, "")})`;
 
 export const listDrives = () => invoke<Drive[]>("list_drives");
 
@@ -1119,17 +1123,50 @@ export interface LaunchTarget {
 /** Folders waiting to open, each in a new tab: the command line's at start, then each later launch's ("open-requested" says more came). */
 export const takeLaunchTargets = () => invoke<LaunchTarget[]>("take_launch_targets");
 
-/** File Explorer's "Open in Glint", and opening folders here when they're double-clicked. */
+/** File Explorer's "Open in Glint", opening folders here when double-clicked, and Win+E takeover. */
 export interface ExplorerIntegration {
     /** Only a copy the setup program or Scoop installed can turn them on. */
     available: boolean;
     menu: boolean;
     byDefault: boolean;
+    winE: boolean;
 }
 
 export const explorerIntegration = () => invoke<ExplorerIntegration>("explorer_integration");
 /** Opening folders by default needs the menu entries: the folder's entry becomes its default action. */
-export const setExplorerIntegration = (menu: boolean, byDefault: boolean) => invoke<ExplorerIntegration>("set_explorer_integration", { menu, byDefault });
+export const setExplorerIntegration = (menu: boolean, byDefault: boolean, winE?: boolean) =>
+    invoke<ExplorerIntegration>("set_explorer_integration", { menu, byDefault, winE });
+
+/** The taskbar button's Jump List: its tasks, then the pinned folders and the most used (those only when Windows shows recently opened items). */
+export const syncJumpList = (pinned: string[], frequent: string[]) => invoke<void>("sync_jump_list", { pinned, frequent });
+
+/** Updates the live Windows 11 Taskbar button progress bar (best effort: it never fails the work it shows). */
+export const taskbarProgress = (state: "none" | "indeterminate" | "normal" | "paused" | "error", completed?: number, total?: number) =>
+    invoke<void>("taskbar_progress", {
+        state,
+        completed: completed === undefined ? null : Math.max(0, Math.floor(completed)),
+        total: total === undefined ? null : Math.max(0, Math.floor(total)),
+    }).catch(() => {});
+
+/** Opens the native Windows 11 Share flyout (Nearby Sharing, Phone Link, Outlook, Teams…) for `paths`. */
+export const windowsShare = (paths: string[]) => invoke<void>("windows_share", { paths });
+
+/** Ejects a drive as its right-click menu's Eject does: a USB drive made safe to remove, a disc image unmounted, a disc. */
+export const ejectDrive = (path: string) => invoke<void>("eject_drive", { path });
+
+/** Mounts a `.iso`, `.img`, `.vhd` or `.vhdx` image and resolves to its drive (`"F:\\"`), if one shows up. */
+export const mountDiskImage = (path: string) => invoke<string | null>("mount_disk_image", { path });
+/** Whether opening a disc or disk image mounts it: Windows' own Mount is its default app. */
+export const mountsByDefault = (path: string) => invoke<boolean>("mounts_by_default", { path });
+
+/** Sets Windows Cloud Files API (`OneDrive`, `iCloud`, `Dropbox`) pin state: `pin = true` ("Always keep on this device") or `pin = false` ("Free up space"). */
+export const setCloudPin = (paths: string[], pin: boolean) => invoke<void>("set_cloud_pin", { paths, pin });
+
+/** Sets `path` as the Windows desktop wallpaper. */
+export const setDesktopWallpaper = (path: string) => invoke<void>("set_desktop_wallpaper", { path });
+
+/** Turns a picture a quarter in place (a JPEG by its EXIF orientation, so it loses nothing). */
+export const rotateImage = (path: string, clockwise: boolean) => invoke<void>("rotate_image", { path, clockwise });
 
 /** One drive in the instant search index. */
 export interface IndexVolume {

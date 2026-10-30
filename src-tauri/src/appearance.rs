@@ -38,7 +38,7 @@ pub fn appearance(window: WebviewWindow, theme: String, backdrop: bool) -> bool 
 
 /// Windows' accent color and its shades, as #rrggbb: the base, then lighter (1–3) and darker (1–3).
 /// Windows 11 fills with the darker first shade in light mode, the lighter second one in dark mode.
-#[derive(serde::Serialize, Debug, PartialEq)]
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
 pub struct Accent {
     pub accent: String,
     pub light: [String; 3],
@@ -46,15 +46,38 @@ pub struct Accent {
 }
 
 #[tauri::command]
-pub async fn accent_colors() -> Result<Accent, String> {
+pub async fn accent_colors(app: tauri::AppHandle) -> Result<Accent, String> {
+    imp::watch(app);
     crate::fsx::blocking(imp::accent).await
 }
 
 #[cfg(windows)]
 mod imp {
     use super::Accent;
+    use std::sync::OnceLock;
+    use tauri::Emitter;
+    use windows::Foundation::TypedEventHandler;
     use windows::UI::ViewManagement::{UIColorType, UISettings};
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+    pub fn watch(app: tauri::AppHandle) {
+        static WATCHING: OnceLock<()> = OnceLock::new();
+        WATCHING.get_or_init(move || {
+            std::thread::spawn(move || {
+                let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                let Ok(settings) = UISettings::new() else { return };
+                let handle = app.clone();
+                let _ = settings.ColorValuesChanged(&TypedEventHandler::<UISettings, windows::core::IInspectable>::new(move |_, _| {
+                    if let Ok(colors) = accent() {
+                        let _ = handle.emit("windows-accent-changed", colors);
+                    }
+                    Ok(())
+                }));
+                // Keep `settings` alive for the lifetime of the process so WinRT delivers change events.
+                std::mem::forget(settings);
+            });
+        });
+    }
 
     pub fn accent() -> Result<Accent, String> {
         // WinRT on a thread of the pool: in the process's multithreaded apartment.
@@ -71,6 +94,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
+    pub fn watch(_app: tauri::AppHandle) {}
     pub fn accent() -> Result<super::Accent, String> {
         Err("Only Windows has an accent color".into())
     }

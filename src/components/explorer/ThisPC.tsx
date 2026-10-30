@@ -1,18 +1,19 @@
 import { useState } from "react";
-import { FileClock, Files, LayoutDashboard, Loader2, ShieldCheck, Zap } from "lucide-react";
+import { FileClock, Files, LayoutDashboard, Loader2, ShieldCheck, Unplug, Zap } from "lucide-react";
+import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { toggleUsage, useUsage } from "@/lib/diskUsage";
-import { enableIndex, middleClickOpens, navigate, useExplorer, useTab } from "@/lib/explorer";
+import { enableIndex, middleClickOpens, navigate, refreshDrives, useExplorer, useTab } from "@/lib/explorer";
 import { Button } from "../ui/button";
 import { formatSize } from "@/lib/format";
-import { driveName } from "@/lib/fs";
+import { driveName, ejectDrive } from "@/lib/fs";
 import { cn } from "@/lib/utils";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { CapacityBar, DRIVE_ICONS, freeOf, KNOWN_ICONS } from "./Sidebar";
 import { inspectTimeline } from "./TimelineDialog";
 
 const tile =
-    "group relative flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-all duration-150 hover:border-primary/40 hover:bg-accent/60 hover:shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring";
+    "group relative flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-all duration-150 hover:border-primary/40 hover:bg-accent/60 hover:shadow-xs active:scale-[0.988] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Instant search, offered where first-time users see it: off, starting, reading a drive, or a drive that failed. */
 function InstantSearchCard() {
@@ -59,7 +60,7 @@ function InstantSearchCard() {
 export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent, path: string) => void }) {
     const { known, drives, dropTarget } = useExplorer(useShallow((s) => ({ known: s.known, drives: s.drives, dropTarget: s.dropTarget })));
     const tabId = useTab((t) => t.id);
-    const dropping = (path: string) => path === dropTarget && "border-primary bg-primary/15";
+    const dropping = (path: string) => path === dropTarget && "scale-[1.01] border-primary bg-primary/15 shadow-sm ring-1 ring-primary/50";
 
     const readyDrives = drives.filter((d) => d.total > 0);
     const totalCapacity = readyDrives.reduce((sum, d) => sum + d.total, 0);
@@ -151,7 +152,12 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                             <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-1.5">
                                     <span className="truncate text-sm font-medium">{driveName(d)}</span>
-                                    {d.fs && (
+                                    {d.kind === "wsl" && (
+                                        <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.2 font-mono text-[0.625rem] font-semibold text-amber-600 dark:text-amber-400" title="Windows Subsystem for Linux distribution">
+                                            Linux
+                                        </span>
+                                    )}
+                                    {d.fs && d.kind !== "wsl" && (
                                         <span className="shrink-0 rounded bg-muted px-1.5 py-0.2 font-mono text-[0.625rem] font-medium text-muted-foreground">
                                             {d.fs}
                                         </span>
@@ -170,40 +176,62 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                                 <CapacityBar drive={d} className="my-2 h-1.5" />
                                 <div className="flex items-center justify-between gap-2">
                                     <span className="truncate text-xs text-muted-foreground">
-                                        {freeOf(d) || (d.fs ? d.fs : "Not ready")}
+                                        {d.kind === "wsl" ? d.path : freeOf(d) || (d.fs ? d.fs : "Not ready")}
                                     </span>
-                                    {d.total > 0 && (
+                                    {(d.total > 0 || d.kind === "removable" || d.kind === "cdrom") && (
                                         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-                                            <button
-                                                type="button"
-                                                title="Map disk usage"
-                                                onClick={(e) => openDriveTreemap(e, d.path)}
-                                                className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
-                                            >
-                                                <LayoutDashboard className="size-3.5" />
-                                            </button>
-                                            <button
-                                                type="button"
-                                                title="Recent changes"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    inspectTimeline(d.path);
-                                                }}
-                                                className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
-                                            >
-                                                <FileClock className="size-3.5" />
-                                            </button>
-                                            <button
-                                                type="button"
-                                                title="Find duplicate files"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    inspectDuplicates(d.path);
-                                                }}
-                                                className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
-                                            >
-                                                <Files className="size-3.5" />
-                                            </button>
+                                            {(d.kind === "removable" || d.kind === "cdrom") && (
+                                                <button
+                                                    type="button"
+                                                    title={`Safely eject ${driveName(d)}`}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        ejectDrive(d.path)
+                                                            .then(() => {
+                                                                toast.success(`Safely ejected ${driveName(d)}`);
+                                                                void refreshDrives();
+                                                            })
+                                                            .catch((err) => toast.error(`Couldn't eject ${driveName(d)}`, { description: String(err) }));
+                                                    }}
+                                                    className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
+                                                >
+                                                    <Unplug className="size-3.5" />
+                                                </button>
+                                            )}
+                                            {d.total > 0 && (
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        title="Map disk usage"
+                                                        onClick={(e) => openDriveTreemap(e, d.path)}
+                                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
+                                                    >
+                                                        <LayoutDashboard className="size-3.5" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        title="Recent changes"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            inspectTimeline(d.path);
+                                                        }}
+                                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
+                                                    >
+                                                        <FileClock className="size-3.5" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        title="Find duplicate files"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            inspectDuplicates(d.path);
+                                                        }}
+                                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
+                                                    >
+                                                        <Files className="size-3.5" />
+                                                    </button>
+                                                </>
+                                            )}
                                         </div>
                                     )}
                                 </div>
