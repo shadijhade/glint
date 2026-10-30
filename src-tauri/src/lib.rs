@@ -791,6 +791,7 @@ pub fn run() {
             verbs::set_explorer_integration,
             jumplist::sync_jump_list,
             jumplist::taskbar_progress,
+            jumplist::thumb_buttons,
             shell::windows_share,
             shell::eject_drive,
             shell::mount_disk_image,
