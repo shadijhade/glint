@@ -861,6 +861,19 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                     <SwitchRow label="Folders first" checked={settings.foldersFirst} onChange={(foldersFirst) => set({ foldersFirst })} />
                     <SwitchRow label="Preview pane" hint="Alt+P" checked={settings.showPreviewPane} onChange={(showPreviewPane) => set({ showPreviewPane })} />
                     <SwitchRow
+                        label="Folders in the sidebar"
+                        hint="Drives, Quick access and pinned folders open with their arrow to show the folders in them"
+                        checked={settings.folderTree}
+                        onChange={(folderTree) => set({ folderTree })}
+                    />
+                    <SwitchRow
+                        label="Open the sidebar to the folder shown"
+                        hint="Its drive opens down to it as you go, as File Explorer's Expand to open folder"
+                        checked={settings.treeFollows}
+                        disabled={!settings.folderTree}
+                        onChange={(treeFollows) => set({ treeFollows })}
+                    />
+                    <SwitchRow
                         label="Thumbnails in the list"
                         hint="Pictures and videos show a small one in place of their icon. The grid view (Ctrl+Shift+2) shows them for every file Windows has one of."
                         checked={settings.listThumbnails}
