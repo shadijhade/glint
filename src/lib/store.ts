@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { toast } from 'sonner'
 import type { Sort } from './entries'
 import type { TileSize } from './grid'
+import type { ColumnId } from './columns'
 import { frecency, type Visit } from './rank'
 
 export interface HistoryItem {
@@ -64,6 +65,10 @@ export interface Settings {
     // (if asked) it opens down to the folder shown, as File Explorer's "Expand to open folder"
     folderTree: boolean;
     treeFollows: boolean;
+    // Each folder keeps its own columns, sort and view (list or grid), as File Explorer's do; off, every
+    // folder has the same, `listColumns` and `sort`
+    perFolderViews: boolean;
+    listColumns: ColumnId[];
     listThumbnails: boolean; // small thumbnails of pictures and videos in the list's icon column
     tileSize: TileSize; // how big the grid's tiles are, in every tab (Ctrl+wheel, Ctrl+= and Ctrl+-)
     confirmDelete: boolean; // ask before moving to the Recycle Bin (permanent deletes always ask)
@@ -103,7 +108,7 @@ export interface Settings {
 }
 
 /** The list's columns whose width can be dragged (the name takes what's left). */
-export type Column = 'date' | 'type' | 'size'
+export type Column = 'date' | 'type' | 'size' | 'taken' | 'dimensions' | 'duration' | 'artist' | 'album'
 
 export const DEFAULT_SETTINGS: Settings = {
     theme: 'system',
@@ -140,6 +145,8 @@ export const DEFAULT_SETTINGS: Settings = {
     showPreviewPane: true,
     folderTree: true,
     treeFollows: false,
+    perFolderViews: true,
+    listColumns: ['modified', 'type', 'size'],
     listThumbnails: true,
     tileSize: 'medium',
     confirmDelete: false,
@@ -220,6 +227,18 @@ export interface FolderRule {
     every?: number;
 }
 
+/** A folder's own view, as last set there: its columns, its sort, list or grid, and when (the least lately
+ * set are forgotten first). */
+export interface FolderView {
+    columns?: ColumnId[];
+    sort?: Sort;
+    view?: ViewMode;
+    at: number;
+}
+
+/** The most folders whose views are kept. */
+const MAX_FOLDER_VIEWS = 500;
+
 /** A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive). */
 export interface SavedSearch {
     query: string;
@@ -241,6 +260,10 @@ interface AppState {
     session: Session | null;
     /** Folders opened, for ranking in the command palette. */
     visits: Record<string, Visit>;
+    /** Each folder's own view, by its path in lower case. */
+    folderViews: Record<string, FolderView>;
+    /** Changes a folder's own view (null for none: it's like other folders of its kind again). */
+    setFolderView: (path: string, view: Omit<Partial<FolderView>, 'at'> | null) => void;
     setQuery: (query: string) => void;
     setPath: (path: string) => void;
     addToHistory: (query: string, path: string) => void;
@@ -280,6 +303,7 @@ export const useStore = create<AppState>()(
             lastFolder: null,
             session: null,
             visits: {},
+            folderViews: {},
             setQuery: (query) => set({ query }),
             setPath: (path) => set({ path }),
             addToHistory: (query, path) => set((state) => {
@@ -324,6 +348,18 @@ export const useStore = create<AppState>()(
                 rules: state.rules.some((r) => r.id === rule.id) ? state.rules.map((r) => (r.id === rule.id ? rule : r)) : [...state.rules, rule],
             })),
             removeRule: (id) => set((state) => ({ rules: state.rules.filter((r) => r.id !== id) })),
+            setFolderView: (path, view) => set((state) => {
+                const key = path.toLowerCase();
+                const folderViews = { ...state.folderViews };
+                if (view === null) delete folderViews[key];
+                else folderViews[key] = { ...folderViews[key], ...view, at: Date.now() };
+                const keys = Object.keys(folderViews);
+                if (keys.length > MAX_FOLDER_VIEWS) {
+                    keys.sort((a, b) => folderViews[a].at - folderViews[b].at);
+                    for (const old of keys.slice(0, keys.length - MAX_FOLDER_VIEWS)) delete folderViews[old];
+                }
+                return { folderViews };
+            }),
             setLastFolder: (lastFolder) => set({ lastFolder }),
             setSession: (session) => set({ session }),
             recordVisit: (path) => set((state) => {

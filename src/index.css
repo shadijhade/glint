@@ -140,34 +140,32 @@
 }
 
 @layer components {
-  /* File list columns: name, date, type, size (search results: name, folder, date, size).
-     Narrow lists drop the optional column. */
+  /* File list columns: the name, then the columns chosen (search results: the name, the folder, then
+     theirs). FileList sets the three templates (columns.ts's gridTemplates); narrow lists drop the
+     optional columns. */
   .files {
     container-type: inline-size;
     /* Dragged in the header (FileList sets them). */
     --col-date: 9.5rem;
+    --col-taken: 9.5rem;
     --col-type: 8rem;
     --col-size: 5.5rem;
+    --col-dimensions: 7rem;
+    --col-duration: 4.5rem;
+    --col-artist: 9rem;
+    --col-album: 9rem;
   }
 
   .file-row {
     display: grid;
     align-items: center;
     column-gap: 0.75rem;
-    grid-template-columns: minmax(0, 1fr) var(--col-date) var(--col-type) var(--col-size);
-  }
-
-  .file-row[data-search] {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) var(--col-date) var(--col-size);
+    grid-template-columns: var(--file-cols, minmax(0, 1fr) var(--col-date) var(--col-type) var(--col-size));
   }
 
   @container (max-width: 42rem) {
     .file-row {
-      grid-template-columns: minmax(0, 1fr) var(--col-date) var(--col-size);
-    }
-
-    .file-row[data-search] {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) var(--col-size);
+      grid-template-columns: var(--file-cols-md, minmax(0, 1fr) var(--col-date) var(--col-size));
     }
 
     /* !important: header cells are flex items, and utilities outrank this layer. */
@@ -179,7 +177,7 @@
   /* A narrow pane (dual-pane view on a small window): names and sizes only. */
   @container (max-width: 26rem) {
     .file-row {
-      grid-template-columns: minmax(0, 1fr) var(--col-size);
+      grid-template-columns: var(--file-cols-sm, minmax(0, 1fr) var(--col-size));
     }
 
     .col-narrow {
