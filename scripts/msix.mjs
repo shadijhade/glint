@@ -68,7 +68,8 @@ const tool = (name) => join(kits, sdk, "x64", name);
 
 if (!args.includes("--no-build") && !from) {
     console.log("Building Glint for the Store's package (its own data folder)…");
-    run("npx", ["tauri", "build", "--no-bundle", "--config", "src-tauri/tauri.msix.conf.json"], { stdio: "inherit", shell: true });
+    const cli = join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
+    run(process.execPath, [cli, "build", "--no-bundle", "--config", "src-tauri/tauri.msix.conf.json"], { stdio: "inherit" });
 }
 
 // The files the setup program installs, but its uninstaller: the app, the service, the tools Glint
@@ -102,6 +103,9 @@ writeFileSync(join(layout, "AppxManifest.xml"), manifest);
 // resources.pri tells Windows which logo is for which scale and size.
 const priConfig = join(out, "msix-priconfig.xml");
 run(tool("makepri.exe"), ["createconfig", "/cf", priConfig, "/dq", "en-US", "/pv", "10.0.0", "/o"]);
+// One index with every scale: makepri's config would split the scales out for a bundle's resource
+// packages, which a single package doesn't have, so Windows would only find the 100% logos.
+writeFileSync(priConfig, readFileSync(priConfig, "utf8").replace(/<packaging>[\s\S]*?<\/packaging>/, ""));
 run(tool("makepri.exe"), ["new", "/pr", layout, "/cf", priConfig, "/mn", join(layout, "AppxManifest.xml"), "/of", join(layout, "resources.pri"), "/o"]);
 rmSync(priConfig, { force: true });
 
