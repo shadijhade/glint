@@ -192,6 +192,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_IO",
     "Win32_System_JobObjects",
+    # Cloud files' (OneDrive's) states, asked of Windows where it has them (fsx.rs).
+    "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Registry",

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp, Cloud, FileX, KeyRound } from "lucide-react";
-import { ATTR, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, isListOnly, isLocked, isOnlineOnly, isRecycled, type Sort, type SortKey } from "@/lib/entries";
+import { ChevronDown, ChevronUp, CircleCheck, Cloud, FileX, KeyRound, type LucideIcon, RefreshCw } from "lucide-react";
+import { ATTR, type CloudState, cloudState, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, isListOnly, isLocked, isRecycled, type Sort, type SortKey } from "@/lib/entries";
 import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
@@ -184,6 +184,26 @@ export function LockMark({ entry, className }: { entry: FileEntry; className: st
     return <Icon className={className} aria-label={lockReason(entry)} />;
 }
 
+/** File Explorer's words and marks for cloud files' states. */
+const CLOUD_MARKS: Record<CloudState, { icon: LucideIcon; label: string; className: string }> = {
+    online: { icon: Cloud, label: "Available when online", className: "text-sky-500" },
+    local: { icon: CircleCheck, label: "Available on this device", className: "text-emerald-600 dark:text-emerald-500" },
+    kept: { icon: CircleCheck, label: "Always available on this device", className: "fill-emerald-600 text-background dark:fill-emerald-500" },
+    pending: { icon: RefreshCw, label: "Sync pending", className: "text-sky-500" },
+};
+
+/** A cloud file's state (OneDrive…), as File Explorer's Status column shows it; nothing for other files. */
+export function CloudMark({ entry, className }: { entry: FileEntry; className: string }) {
+    const state = cloudState(entry);
+    if (!state) return null;
+    const mark = CLOUD_MARKS[state];
+    return (
+        <mark.icon className={cn(className, mark.className)} aria-label={mark.label}>
+            <title>{mark.label}</title>
+        </mark.icon>
+    );
+}
+
 /** A folder that files dragged in can be dropped on: not one in an archive, which is read-only, nor one Windows keeps closed, nor one in the Recycle Bin. */
 export const dropPath = (entry: FileEntry) => (entry.dir && !isArchived(entry) && !isClosed(entry) && !isRecycled(entry) ? entry.path : undefined);
 
@@ -284,7 +304,7 @@ export function FileList(props: FileListProps) {
                             {tracked.badge.label}
                         </span>
                     )}
-                    {isOnlineOnly(entry) && <Cloud className="size-3.5 shrink-0 text-sky-500" aria-label="Online-only" />}
+                    <CloudMark entry={entry} className="size-3.5 shrink-0" />
                     {isLocked(entry) && <LockMark entry={entry} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
                 </div>
                 {located && (

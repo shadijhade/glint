@@ -1159,8 +1159,9 @@ export const mountDiskImage = (path: string) => invoke<string | null>("mount_dis
 /** Whether opening a disc or disk image mounts it: Windows' own Mount is its default app. */
 export const mountsByDefault = (path: string) => invoke<boolean>("mounts_by_default", { path });
 
-/** Sets Windows Cloud Files API (`OneDrive`, `iCloud`, `Dropbox`) pin state: `pin = true` ("Always keep on this device") or `pin = false` ("Free up space"). */
-export const setCloudPin = (paths: string[], pin: boolean) => invoke<void>("set_cloud_pin", { paths, pin });
+/** Cloud files (OneDrive's, iCloud's, Dropbox's): "keep" keeps them on this device, "free" frees up their space (online only), and "auto" leaves them on this device until Windows frees up space. */
+export type CloudPin = "keep" | "free" | "auto";
+export const setCloudPin = (paths: string[], state: CloudPin) => invoke<void>("set_cloud_pin", { paths, state });
 
 /** Sets `path` as the Windows desktop wallpaper. */
 export const setDesktopWallpaper = (path: string) => invoke<void>("set_desktop_wallpaper", { path });
