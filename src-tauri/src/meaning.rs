@@ -18,6 +18,15 @@ use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCa
 const MODEL: &str = "potion-base-8M";
 /// The model's revision on Hugging Face, and its files there: name, SHA-256 and size.
 const REVISION: &str = "bf8b056651a2c21b8d2565580b8569da283cab23";
+/// Where its files are: Hugging Face, and a copy on Glint's releases on GitHub for where Hugging Face can't
+/// be reached (https://github.com/shadijhade/glint/releases/tag/potion-base-8M-bf8b056). Each file is
+/// checked against its SHA-256 either way.
+fn sources(name: &str) -> [String; 2] {
+    [
+        format!("https://huggingface.co/minishlab/{MODEL}/resolve/{REVISION}/{name}"),
+        format!("https://github.com/shadijhade/glint/releases/download/{MODEL}-{}/{name}", &REVISION[..7]),
+    ]
+}
 const FILES: &[(&str, &str, u64)] = &[
     ("vocab.txt", "1394523a67ddd404a825428018c0582a6998bcfa044ecbcbf1f4d71adb94c61c", 219_690),
     ("model.safetensors", "f65d0f325faadc1e121c319e2faa41170d3fa07d8c89abd48ca5358d9a223de2", 30_236_760),
@@ -246,8 +255,8 @@ pub async fn meaning_install(on_progress: Channel<Progress>, installs: State<'_,
     install(&on_progress, &installs).await
 }
 
-/// Downloads the model (each file checked against its pinned SHA-256), into a fresh folder that then
-/// replaces any old one.
+/// Downloads the model (each file checked against its pinned SHA-256, from Hugging Face or else the copy
+/// on GitHub), into a fresh folder that then replaces any old one.
 pub(crate) async fn install(on_progress: &Channel<Progress>, installs: &Installs) -> Result<(), String> {
     let dir = folder().ok_or("Glint's data folder isn't available")?;
     let fresh = dir.with_extension("new");
@@ -255,9 +264,23 @@ pub(crate) async fn install(on_progress: &Channel<Progress>, installs: &Installs
     fs::create_dir_all(&fresh).map_err(|e| e.to_string())?;
     let stop = installs.begin("meaning");
     let mut result = Ok(());
+    // The source that worked for one file is tried first for the next.
+    let mut first = 0;
     for (name, sha256, _) in FILES {
-        let url = format!("https://huggingface.co/minishlab/{MODEL}/resolve/{REVISION}/{name}");
-        match tools::fetch(&url, sha256, &format!("meaning-{name}"), "the meaning model", &stop, on_progress).await {
+        let sources = sources(name);
+        let mut fetched = Err(String::new());
+        for i in [first, 1 - first] {
+            fetched = tools::fetch(&sources[i], sha256, &format!("meaning-{name}"), "the meaning model", &stop, on_progress).await;
+            match &fetched {
+                Ok(_) => {
+                    first = i;
+                    break;
+                }
+                Err(e) if e == "cancelled" => break,
+                Err(_) => {}
+            }
+        }
+        match fetched {
             Ok(file) => {
                 let moved = fs::rename(&file, fresh.join(name)).or_else(|_| fs::copy(&file, fresh.join(name)).map(|_| ()));
                 let _ = fs::remove_file(&file);
@@ -398,5 +421,26 @@ mod tests {
         assert!(made[2].2.ends_with("short"), "a short paragraph joins the passage before it");
         let page = [line("p. 4", &format!("{}.", "z".repeat(160))), line("p. 4", "Another"), line("p. 4", "and its end")];
         assert_eq!(passages(&page).into_iter().map(|(at, ..)| at).collect::<Vec<_>>(), [1..2, 2..4], "one long enough ends with its sentence");
+    }
+
+    /// Both of the model's sources serve its files as pinned. About 60 MB, so only when asked:
+    /// cargo test --lib -- --ignored model_sources
+    #[test]
+    #[ignore]
+    fn model_sources_serve_the_pinned_files() {
+        let dir = std::env::temp_dir().join(format!("glint-model-{}", std::process::id()));
+        tools::set_dir(dir.join("tools"));
+        let (quiet, stop) = (Channel::new(|_| Ok(())), std::sync::atomic::AtomicBool::new(false));
+        let mut failed = Vec::new();
+        for (name, sha256, _) in FILES {
+            for url in sources(name) {
+                match tauri::async_runtime::block_on(tools::fetch(&url, sha256, &format!("test-{name}"), name, &stop, &quiet)) {
+                    Ok(file) => fs::remove_file(file).unwrap(),
+                    Err(e) => failed.push(format!("{url}: {e}")),
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+        assert!(failed.is_empty(), "{failed:#?}");
     }
 }

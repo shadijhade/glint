@@ -703,51 +703,99 @@ async fn download(tool: &'static Tool, stop: &AtomicBool, progress: &Channel<Pro
 
 /// Downloads `url` (what `name` is) into a file of its own in Glint's data folder, with progress, and
 /// checks it against its pinned `sha256`: the file, or why not (one that doesn't match is thrown away).
+/// A download that can't connect, or breaks off, is tried again over IPv4 alone.
 pub(crate) async fn fetch(url: &str, sha256: &str, id: &str, name: &str, stop: &AtomicBool, progress: &Channel<Progress>) -> Result<PathBuf, String> {
     let dir = DIR.get().ok_or("Glint's data folder isn't available")?.clone();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // The TLS the updater uses; installing it twice is harmless.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("Glint/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut response = client.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("Couldn't download {name}: {e}"))?;
-    let total = response.content_length().unwrap_or(0);
-    if total > MAX_DOWNLOAD {
-        return Err(format!("{name}'s download is bigger than expected, so it wasn't downloaded"));
-    }
     let temp = dir.join(format!(".{id}-{}.download", std::process::id()));
-    let fetched = async {
-        let mut file = File::create(&temp).map_err(|e| e.to_string())?;
-        let mut hasher = Sha256::new();
-        let (mut done, mut told) = (0u64, Instant::now());
-        while let Some(chunk) = response.chunk().await.map_err(|e| format!("The download of {name} broke off: {e}"))? {
-            if stop.load(Ordering::SeqCst) {
-                return Err("cancelled".to_string());
-            }
-            done += chunk.len() as u64;
-            if done > MAX_DOWNLOAD {
-                return Err(format!("{name}'s download is bigger than expected, so it was stopped"));
-            }
-            hasher.update(&chunk);
-            file.write_all(&chunk).map_err(|e| e.to_string())?;
-            if told.elapsed() > Duration::from_millis(100) {
-                let _ = progress.send(Progress { stage: "Downloading".into(), done, total: total.max(done) });
-                told = Instant::now();
-            }
-        }
-        file.sync_all().map_err(|e| e.to_string())?;
-        Ok::<_, String>(hasher.finalize())
+    // As the PC finds the address first, then over IPv4 alone when that couldn't connect or broke off.
+    let mut fetched = fetch_into(&temp, url, name, false, stop, progress).await;
+    if matches!(fetched, Err(Fetch::Network(_))) {
+        fetched = fetch_into(&temp, url, name, true, stop, progress).await;
     }
-    .await;
     match fetched {
         Ok(digest) if hex(&digest).eq_ignore_ascii_case(sha256) => Ok(temp),
         other => {
             let _ = fs::remove_file(&temp);
-            Err(other.err().unwrap_or_else(|| format!("The download didn't match {name}'s published checksum, so it was thrown away")))
+            Err(match other {
+                Err(Fetch::Network(e) | Fetch::Failed(e)) => e,
+                Ok(_) => format!("The download didn't match {name}'s published checksum, so it was thrown away"),
+            })
         }
+    }
+}
+
+/// Why a download didn't finish: the network, worth another try over IPv4, or anything else.
+enum Fetch {
+    Network(String),
+    Failed(String),
+}
+
+/// Downloads `url` into `temp` with progress: its SHA-256.
+async fn fetch_into(temp: &Path, url: &str, name: &str, ipv4: bool, stop: &AtomicBool, progress: &Channel<Progress>) -> Result<sha2::digest::Output<Sha256>, Fetch> {
+    let client = client(ipv4).map_err(Fetch::Failed)?;
+    let mut response = match client.get(url).send().await {
+        Ok(response) => response.error_for_status().map_err(|e| Fetch::Failed(format!("Couldn't download {name}: {e}")))?,
+        Err(e) => return Err(Fetch::Network(format!("Couldn't download {name}: {e}"))),
+    };
+    let total = response.content_length().unwrap_or(0);
+    if total > MAX_DOWNLOAD {
+        return Err(Fetch::Failed(format!("{name}'s download is bigger than expected, so it wasn't downloaded")));
+    }
+    let _ = progress.send(Progress { stage: "Downloading".into(), done: 0, total });
+    let mut file = File::create(temp).map_err(|e| Fetch::Failed(e.to_string()))?;
+    let mut hasher = Sha256::new();
+    let (mut done, mut told) = (0u64, Instant::now());
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(e) => return Err(Fetch::Network(format!("The download of {name} broke off: {e}"))),
+        };
+        if stop.load(Ordering::SeqCst) {
+            return Err(Fetch::Failed("cancelled".to_string()));
+        }
+        done += chunk.len() as u64;
+        if done > MAX_DOWNLOAD {
+            return Err(Fetch::Failed(format!("{name}'s download is bigger than expected, so it was stopped")));
+        }
+        hasher.update(&chunk);
+        file.write_all(&chunk).map_err(|e| Fetch::Failed(e.to_string()))?;
+        if told.elapsed() > Duration::from_millis(100) {
+            let _ = progress.send(Progress { stage: "Downloading".into(), done, total: total.max(done) });
+            told = Instant::now();
+        }
+    }
+    file.sync_all().map_err(|e| Fetch::Failed(e.to_string()))?;
+    Ok(hasher.finalize())
+}
+
+/// The HTTP client Glint downloads with: the TLS the updater uses, and the PC's proxy. With `ipv4`, it
+/// connects over IPv4 alone, as a network whose IPv6 is broken (connections reset, or never answered)
+/// still gets through that way.
+pub(crate) fn client(ipv4: bool) -> Result<reqwest::Client, String> {
+    // Installing the TLS provider twice is harmless.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let builder = reqwest::Client::builder().user_agent(concat!("Glint/", env!("CARGO_PKG_VERSION"))).connect_timeout(Duration::from_secs(15));
+    let builder = if ipv4 { builder.dns_resolver(Arc::new(Ipv4Only)) } else { builder };
+    builder.build().map_err(|e| e.to_string())
+}
+
+/// Finds a name's IPv4 addresses only.
+struct Ipv4Only;
+
+impl reqwest::dns::Resolve for Ipv4Only {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let found = tauri::async_runtime::spawn_blocking(move || {
+                use std::net::ToSocketAddrs;
+                (host.as_str(), 0).to_socket_addrs().map(|addrs| addrs.filter(std::net::SocketAddr::is_ipv4).collect::<Vec<_>>())
+            })
+            .await;
+            let addrs = found.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
     }
 }
 
@@ -935,8 +983,9 @@ fn said_as_it_goes(status: Option<StatusLine>, heard: Arc<Mutex<Instant>>) -> Ch
         if let Some(status) = &status {
             status.show(&if total > 0 { format!("{now} {} of {}", megabytes(done), megabytes(total)) } else { now.to_string() });
         }
+        // Each new stage once, and each download as it starts (no bytes yet), with its size.
         let mut said = stage.lock().unwrap_or_else(|e| e.into_inner());
-        if *said != now {
+        if *said != now || (now == "Downloading" && done == 0) {
             *said = now.to_string();
             say(&if total > 0 { format!("{now} {}", megabytes(total)) } else { now.to_string() });
         }
