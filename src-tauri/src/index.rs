@@ -22,8 +22,28 @@ pub struct IndexInfo {
 #[cfg(windows)]
 pub(crate) fn info() -> IndexInfo {
     use shadui_index::client::{self, Error};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // A copy that isn't the Microsoft Store's says once that it uses the service, so it stays when the
+    // Store's copy that installed it goes; a service from before closes the pipe on that.
+    static CLAIMED: AtomicBool = AtomicBool::new(false);
     let mut info = IndexInfo { app_version: shadui_index::VERSION, ..Default::default() };
-    match client::status() {
+    let status = if crate::store_package().is_none() && !CLAIMED.load(Ordering::SeqCst) {
+        match client::claim() {
+            Ok(Some(status)) => {
+                CLAIMED.store(true, Ordering::SeqCst);
+                Ok(status)
+            }
+            // A service from before has nothing to keep.
+            Ok(None) | Err(Error::Io(_)) => {
+                CLAIMED.store(true, Ordering::SeqCst);
+                client::status()
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        client::status()
+    };
+    match status {
         Ok(status) => {
             info.state = "on";
             info.version = Some(status.version);
@@ -127,7 +147,7 @@ pub async fn index_enable(window: Window) -> Result<IndexInfo, String> {
     {
         let owner = window.hwnd().ok().map(|h| h.0 as isize);
         blocking(move || {
-            shadui_index::client::enable(&bundled()?, owner)?;
+            shadui_index::client::enable(&bundled()?, owner, crate::store_package())?;
             Ok(info())
         })
         .await

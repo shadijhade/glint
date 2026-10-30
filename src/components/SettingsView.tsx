@@ -283,7 +283,7 @@ function InstantSearch() {
                 Turning it on asks for administrator approval once: a small Windows service reads your NTFS drives' file tables, follows their change
                 journals, and answers only your account and administrators. Like Everything, it knows the name, size and date of every file on
                 those drives, including files your account can't open. Turning it off removes the service and its index files.
-                {store && " Uninstalling Glint from the Microsoft Store can't take the service away, so turn it off here first."}
+                {store && " Uninstalling Glint from the Microsoft Store removes it too, within the hour, unless another copy of Glint here uses it."}
             </p>
         </Section>
     );

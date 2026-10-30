@@ -2,9 +2,10 @@
 //! and the run loop shared with `shadui-index run` in a console.
 
 use crate::engine::{Engine, Stop};
-use crate::pipe;
 use crate::win::{self, os_error, wide};
+use crate::{pipe, store};
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{ERROR_CALL_NOT_IMPLEMENTED, NO_ERROR};
@@ -14,6 +15,7 @@ use windows::Win32::System::Services::{
     SERVICE_STATUS_CURRENT_STATE, SERVICE_STATUS_HANDLE, SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_TABLE_ENTRYW,
     SERVICE_WIN32_OWN_PROCESS,
 };
+use windows::Win32::UI::Shell::FOLDERID_ProgramFiles;
 
 /// The registry key under which the installer records the users allowed to use the index.
 pub fn parameters_key() -> String {
@@ -23,6 +25,41 @@ pub fn parameters_key() -> String {
 /// The users (SIDs) the installer allowed.
 pub fn allowed_users() -> Vec<String> {
     win::Key::create(&parameters_key(), false).and_then(|key| key.strings("AllowedUsers")).unwrap_or_default()
+}
+
+/// The Microsoft Store package that installed the service, if the Store's Glint did (store.rs).
+pub fn store_package() -> Option<String> {
+    win::Key::create(&parameters_key(), false).and_then(|key| key.string(store::VALUE)).ok().filter(|family| !family.is_empty())
+}
+
+/// A copy of Glint that isn't the Store's uses the service: it stays when the Store's copy goes. True
+/// if the Store's copy had installed it.
+pub fn claim() -> io::Result<bool> {
+    win::Key::create(&parameters_key(), true)?.delete(store::VALUE)
+}
+
+/// Whether Windows has the package family installed for any account (which only an administrator, or
+/// LocalSystem, may ask); None when it can't tell.
+fn registered(family: &str) -> Option<bool> {
+    use windows::Management::Deployment::PackageManager;
+    let packages = PackageManager::new().ok()?.FindPackagesByPackageFamilyName(&family.into()).ok()?;
+    packages.First().ok()?.HasCurrent().ok()
+}
+
+/// Once the Microsoft Store package that installed the service is gone for every account (looked for
+/// now and then, store.rs), sets `remove` and stops the service.
+fn watch_package(stop: Arc<Stop>, remove: Arc<AtomicBool>) {
+    let Ok(apps) = win::known_folder(&FOLDERID_ProgramFiles).map(|dir| dir.join("WindowsApps")) else { return };
+    std::thread::spawn(move || {
+        let present = || match store_package() {
+            Some(family) => store::present(registered(&family), store::installed_in(&apps, &family).ok()),
+            None => Some(true),
+        };
+        if store::watch(present, |time| stop.sleep(time), store::EVERY, store::AGAIN) {
+            remove.store(true, Ordering::SeqCst);
+            stop.set();
+        }
+    });
 }
 
 /// Runs the index until `stop` is set: answers on the pipe once it's listening (the drives fill
@@ -87,11 +124,17 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     let stop = Arc::new(Stop::default());
     let _ = CONTROL.set(Mutex::new(Control { status, stop: stop.clone() }));
     report(status, SERVICE_START_PENDING, 0, 10_000);
+    let remove = Arc::new(AtomicBool::new(false));
+    watch_package(stop.clone(), remove.clone());
     let result = run(&stop, &allowed_users(), None, false, || report(status, SERVICE_RUNNING, 0, 0));
     let exit = match result {
         Ok(()) => 0,
         Err(e) => e.raw_os_error().unwrap_or(1) as u32,
     };
+    if remove.load(Ordering::SeqCst) {
+        report(status, SERVICE_STOP_PENDING, 0, 30_000);
+        let _ = crate::install::remove_self();
+    }
     report(status, SERVICE_STOPPED, exit, 0);
 }
 
@@ -108,5 +151,18 @@ unsafe extern "system" fn control(code: u32, _kind: u32, _data: *mut core::ffi::
         }
         SERVICE_CONTROL_INTERROGATE => NO_ERROR.0,
         _ => ERROR_CALL_NOT_IMPLEMENTED.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asks_windows_whether_a_package_is_installed() {
+        // Every account's packages are an administrator's to read: unelevated, it can't tell (which
+        // keeps the service), never that it's gone.
+        let nothing = registered("Glint.NotInstalled_0000000000000");
+        assert_eq!(nothing, if win::is_elevated() { Some(false) } else { None });
     }
 }

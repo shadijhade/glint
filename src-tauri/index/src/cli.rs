@@ -15,7 +15,9 @@ const USAGE: &str = "\
 shadui-index: instant file name search and folder sizes for Glint
 
   service                     run as the Windows service (started by Windows)
-  install [--allow-sid SID]   install and start the service (administrator)
+  install [--allow-sid SID] [--package FAMILY]
+                              install and start the service (administrator); FAMILY: the
+                              Microsoft Store package it goes with
   uninstall                   stop and remove it, with its snapshots (administrator)
   grant SID PATH              give a user read access to a folder and what's in it, as File
                               Explorer's Continue button does (Glint's Get access)
@@ -55,7 +57,7 @@ pub fn main() -> i32 {
                 1
             }
         },
-        Some("install") => match install::install(&values(rest, "--allow-sid")) {
+        Some("install") => match install::install(&values(rest, "--allow-sid"), values(rest, "--package").first().map(String::as_str)) {
             Ok(()) => {
                 println!("Installed and started {}.", crate::SERVICE_NAME);
                 0

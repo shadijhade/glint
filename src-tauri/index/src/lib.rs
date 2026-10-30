@@ -13,6 +13,7 @@ pub mod proto;
 pub mod query;
 pub mod record;
 pub mod snapshot;
+pub mod store;
 pub mod tree;
 pub mod usn;
 

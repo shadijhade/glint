@@ -164,7 +164,7 @@ How the Store's copy differs from the setup program's:
 -   **No File Explorer integration.** Windows keeps a packaged app's registry writes to itself, so *Open in Glint*, *Open folders in Glint by default* and *Win+E opens Glint* say they need the setup program's Glint.
 -   **Start with Windows** is the package's startup task (`GlintTray`, which starts it with `--tray`), which Windows' **Startup apps** can turn off; then only they can turn it on again.
 -   **AI agents and the Jump List** start it by its `glint.exe` alias, `%LOCALAPPDATA%\Microsoft\WindowsApps\<package family>\glint.exe`, which stays put as updates come (the package's own folder has its version in its name).
--   **Instant search** turns on as it does elsewhere, with one administrator approval. Uninstalling a Store app runs nothing of Glint's, though, so the service stays until it's turned off in **Settings → Instant search**, which says so in the Store's copy.
+-   **Instant search** turns on as it does elsewhere, with one administrator approval. Uninstalling a Store app runs nothing of Glint's, so the service learns which package turned it on, checks for it every half hour, and removes itself within the hour once it's gone for every account, unless a copy from the setup program, Scoop or a portable one uses it too ([how](instant-search.md#security-model)). A test package installed with `--try` doesn't name itself, so taking it out leaves the service where it is.
 
 **Once:**
 

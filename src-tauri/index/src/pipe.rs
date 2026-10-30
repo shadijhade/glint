@@ -216,6 +216,14 @@ fn answer(pipe: Handle, engine: &Engine) {
         Request::Usage(request) => engine.usage(&request, &mut io),
         Request::List { path } => engine.list(&path, &mut io),
         Request::History(request) => proto::write_message(&mut io, &Message::History(engine.history(&request))),
+        Request::Claim => {
+            match crate::service::claim() {
+                Ok(true) => engine.log.line("a copy of Glint that isn't the Microsoft Store's uses the service: it stays when the Store's goes"),
+                Ok(false) => {}
+                Err(e) => engine.log.line(&format!("couldn't keep the service for a copy that uses it: {e}")),
+            }
+            proto::write_message(&mut io, &Message::Status(engine.status()))
+        }
     };
     match result {
         // Let the client read everything before the pipe goes away.

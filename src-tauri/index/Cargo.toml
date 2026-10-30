@@ -17,6 +17,9 @@ rayon = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
+    # Whether the Microsoft Store package that installed the service is still installed (service.rs).
+    "ApplicationModel",
+    "Management_Deployment",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
