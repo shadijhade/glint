@@ -7,7 +7,7 @@
 //! each) and notes (16 bytes each), and a checksum of everything before it.
 
 use crate::growth::{Growth, Mark, Note};
-use crate::tree::{Link, Rec, Tree, LINK_FOLDED, LINK_USED, NONE};
+use crate::tree::{IdMap, Link, Rec, Tree, LINK_FOLDED, LINK_USED, NONE};
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -15,8 +15,11 @@ use std::path::Path;
 const MAGIC: &[u8; 8] = b"SHUIIDX\0";
 /// Bumped whenever what the arrays mean changes (2: NTFS-internal attribute bits dropped; 3: what
 /// was made in a folder that took a deleted file's record is no longer lost, and one fresh scan
-/// finds what an older service lost that way; 4: folders' sizes at daily marks).
-const FORMAT: u32 = 4;
+/// finds what an older service lost that way; 4: folders' sizes at daily marks; 5: links with the
+/// same name share it in the arena).
+const FORMAT: u32 = 5;
+/// The format before names were shared, still read: they're shared once it's loaded.
+const UNSHARED: u32 = 4;
 const HEADER: usize = 8 + 4 + 4 + 8 * 4 + 8 * 5;
 const REC: usize = 28;
 const LINK: usize = 20;
@@ -98,24 +101,24 @@ pub fn save(path: &Path, tree: &Tree, meta: &Meta) -> io::Result<()> {
     for chunk in tree.recs.chunks(4096) {
         buf.clear();
         for r in chunk {
-            buf.extend_from_slice(&r.size.to_le_bytes());
+            buf.extend_from_slice(&r.size().to_le_bytes());
             buf.extend_from_slice(&r.modified.to_le_bytes());
-            buf.extend_from_slice(&r.attrs.to_le_bytes());
+            buf.extend_from_slice(&r.attrs().to_le_bytes());
             buf.extend_from_slice(&r.first_link.to_le_bytes());
-            buf.extend_from_slice(&r.seq.to_le_bytes());
-            buf.extend_from_slice(&r.flags.to_le_bytes());
+            buf.extend_from_slice(&r.seq().to_le_bytes());
+            buf.extend_from_slice(&r.flags().to_le_bytes());
         }
         put(&mut file, &buf)?;
     }
-    for chunk in tree.links.chunks(4096) {
+    for (i, chunk) in tree.links.chunks(4096).enumerate() {
         buf.clear();
-        for l in chunk {
+        for (j, l) in chunk.iter().enumerate() {
             buf.extend_from_slice(&l.rec.to_le_bytes());
             buf.extend_from_slice(&l.parent.to_le_bytes());
             buf.extend_from_slice(&l.name.to_le_bytes());
             buf.extend_from_slice(&l.len.to_le_bytes());
             buf.extend_from_slice(&l.flags.to_le_bytes());
-            buf.extend_from_slice(&l.next.to_le_bytes());
+            buf.extend_from_slice(&tree.next_name((i * 4096 + j) as u32).to_le_bytes());
         }
         put(&mut file, &buf)?;
     }
@@ -143,78 +146,111 @@ pub fn save(path: &Path, tree: &Tree, meta: &Meta) -> io::Result<()> {
 }
 
 pub fn load(path: &Path) -> Result<(Tree, Meta), String> {
-    let bytes = fs::read(path).map_err(|e| e.to_string())?;
-    decode(&bytes)
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    // Decoded as it's read: the file and the index made from it never take memory at once.
+    decode_from(io::BufReader::with_capacity(1 << 20, file), len)
 }
 
+#[cfg(test)]
 fn decode(bytes: &[u8]) -> Result<(Tree, Meta), String> {
-    let u16_at = |at: usize| u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap());
-    let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-    let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-    if bytes.len() < HEADER + 8 || &bytes[..8] != MAGIC || u32_at(8) != FORMAT {
+    decode_from(bytes, bytes.len() as u64)
+}
+
+/// A snapshot's sections, read in turn and summed as they go by.
+struct Input<R> {
+    from: R,
+    sum: Checksum,
+}
+
+impl<R: io::Read> Input<R> {
+    fn fill(&mut self, buf: &mut [u8]) -> Result<(), String> {
+        self.from.read_exact(buf).map_err(|e| format!("snapshot unreadable: {e}"))?;
+        self.sum.update(buf);
+        Ok(())
+    }
+
+    /// `count` items of `size` bytes, each made by `item` from its index and bytes.
+    fn items<T>(&mut self, count: usize, size: usize, mut item: impl FnMut(usize, &[u8]) -> T) -> Result<Vec<T>, String> {
+        let mut items = Vec::with_capacity(count);
+        let mut chunk = vec![0u8; size * 4096];
+        while items.len() < count {
+            let bytes = &mut chunk[..(count - items.len()).min(4096) * size];
+            self.fill(bytes)?;
+            for one in bytes.chunks_exact(size) {
+                items.push(item(items.len(), one));
+            }
+        }
+        Ok(items)
+    }
+}
+
+fn u16_in(bytes: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap())
+}
+
+fn u32_in(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+fn u64_in(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+}
+
+/// A snapshot of `len` bytes from `from`.
+fn decode_from(from: impl io::Read, len: u64) -> Result<(Tree, Meta), String> {
+    let mut input = Input { from, sum: Checksum::default() };
+    if len < (HEADER + 8) as u64 {
         return Err("not a snapshot of this format".into());
     }
-    let meta = Meta { volume_serial: u64_at(16), journal_id: u64_at(24), next_usn: u64_at(32) as i64, saved_at: u64_at(40) as i64 };
-    let (recs, links, names) = (u64_at(48) as usize, u64_at(56) as usize, u64_at(64) as usize);
-    let (marks, notes) = (u64_at(72) as usize, u64_at(80) as usize);
+    let mut header = [0u8; HEADER];
+    input.fill(&mut header)?;
+    let h = &header[..];
+    let format = u32_in(h, 8);
+    if &h[..8] != MAGIC || ![FORMAT, UNSHARED].contains(&format) {
+        return Err("not a snapshot of this format".into());
+    }
+    let meta = Meta { volume_serial: u64_in(h, 16), journal_id: u64_in(h, 24), next_usn: u64_in(h, 32) as i64, saved_at: u64_in(h, 40) as i64 };
+    let (recs, links, names) = (u64_in(h, 48) as usize, u64_in(h, 56) as usize, u64_in(h, 64) as usize);
+    let (marks, notes) = (u64_in(h, 72) as usize, u64_in(h, 80) as usize);
     let body = recs.checked_mul(REC).and_then(|r| {
         let growth = marks.checked_mul(MARK)?.checked_add(notes.checked_mul(NOTE)?)?;
         links.checked_mul(LINK)?.checked_add(r)?.checked_add(names)?.checked_add(growth)
     });
-    if body.and_then(|b| b.checked_add(HEADER + 8)) != Some(bytes.len()) {
+    // (So nothing below makes room for more than the file holds.)
+    if body.and_then(|b| b.checked_add(HEADER + 8)).map(|n| n as u64) != Some(len) {
         return Err("snapshot size doesn't match its header".into());
     }
-    let end = bytes.len() - 8;
-    let mut sum = Checksum::default();
-    sum.update(&bytes[..end]);
-    if sum.finish() != u64_at(end) {
+
+    let rec_list = input.items(recs, REC, |_, b| Rec::new(u64_in(b, 0), u64_in(b, 8) as i64, u32_in(b, 16), u32_in(b, 20), u16_in(b, 24), u16_in(b, 26)))?;
+    let mut next_names = IdMap::default();
+    let link_list = input.items(links, LINK, |id, b| {
+        let link = Link { rec: u32_in(b, 0), parent: u32_in(b, 4), name: u32_in(b, 8), len: u16_in(b, 12), flags: u16_in(b, 14) };
+        let next = u32_in(b, 16);
+        if next != NONE && link.flags & LINK_USED != 0 {
+            next_names.insert(id as u32, next);
+        }
+        link
+    })?;
+    let mut arena = vec![0u8; names];
+    input.fill(&mut arena)?;
+    let mark_list = input.items(marks, MARK, |_, b| Mark { epoch: u64_in(b, 0) as u16, at: u64_in(b, 8) as i64, total: u64_in(b, 16) })?;
+    let note_list = input.items(notes, NOTE, |_, b| Note { rec: u32_in(b, 0), seq: u16_in(b, 4), epoch: u16_in(b, 6), before: u64_in(b, 8) })?;
+    let mut stored = [0u8; 8];
+    input.from.read_exact(&mut stored).map_err(|e| format!("snapshot unreadable: {e}"))?;
+    if input.sum.finish() != u64::from_le_bytes(stored) {
         return Err("snapshot checksum mismatch".into());
     }
-
-    let mut at = HEADER;
-    let mut rec_list = Vec::with_capacity(recs);
-    for _ in 0..recs {
-        rec_list.push(Rec {
-            size: u64_at(at),
-            modified: u64_at(at + 8) as i64,
-            attrs: u32_at(at + 16),
-            first_link: u32_at(at + 20),
-            seq: u16_at(at + 24),
-            flags: u16_at(at + 26),
-        });
-        at += REC;
-    }
-    let mut link_list = Vec::with_capacity(links);
-    for _ in 0..links {
-        link_list.push(Link {
-            rec: u32_at(at),
-            parent: u32_at(at + 4),
-            name: u32_at(at + 8),
-            len: u16_at(at + 12),
-            flags: u16_at(at + 14),
-            next: u32_at(at + 16),
-        });
-        at += LINK;
-    }
-    let arena = bytes[at..at + names].to_vec();
-    at += names;
-    let mut mark_list = Vec::with_capacity(marks);
-    for _ in 0..marks {
-        mark_list.push(Mark { epoch: u64_at(at) as u16, at: u64_at(at + 8) as i64, total: u64_at(at + 16) });
-        at += MARK;
-    }
-    let mut note_list = Vec::with_capacity(notes);
-    for _ in 0..notes {
-        note_list.push(Note { rec: u32_at(at), seq: u16_at(at + 4), epoch: u16_at(at + 6), before: u64_at(at + 8) });
-        at += NOTE;
-    }
     // Notes that don't hang together only cost what grew: the index itself is fine.
-    let growth = Growth::from_parts(u32_at(12) as u16, mark_list, note_list).unwrap_or_default();
+    let growth = Growth::from_parts(u32_in(h, 12) as u16, mark_list, note_list).unwrap_or_default();
 
     // Everything the index will follow must stay in bounds, whatever the file says.
     let valid_link = |id: u32| id == NONE || (id as usize) < link_list.len();
     if !rec_list.iter().all(|r| valid_link(r.first_link)) {
         return Err("snapshot record points past the links".into());
+    }
+    if !next_names.values().all(|&next| valid_link(next)) {
+        return Err("snapshot link out of bounds".into());
     }
     for link in link_list.iter().filter(|l| l.flags & LINK_USED != 0) {
         let name_end = link.name as usize + link.len as usize;
@@ -222,7 +258,6 @@ fn decode(bytes: &[u8]) -> Result<(Tree, Meta), String> {
             || arena.get(name_end..name_end + 2).is_some_and(|len| name_end + 2 + u16::from_le_bytes([len[0], len[1]]) as usize <= arena.len());
         let ok = (link.rec as usize) < rec_list.len()
             && (link.parent == NONE || (link.parent as usize) < rec_list.len())
-            && valid_link(link.next)
             && name_end <= arena.len()
             && std::str::from_utf8(&arena[link.name as usize..name_end]).is_ok()
             && folded_ok;
@@ -239,10 +274,13 @@ fn decode(bytes: &[u8]) -> Result<(Tree, Meta), String> {
             if link.flags & LINK_USED == 0 || link.rec as usize != n || steps == link_list.len() {
                 return Err("snapshot names are tangled".into());
             }
-            (id, steps) = (link.next, steps + 1);
+            (id, steps) = (next_names.get(&id).copied().unwrap_or(NONE), steps + 1);
         }
     }
-    let mut tree = Tree::from_parts(rec_list, link_list, arena);
+    let mut tree = Tree::from_parts(rec_list, link_list, arena, next_names);
+    if format == UNSHARED {
+        tree.compact();
+    }
     tree.growth = growth;
     Ok((tree, meta))
 }
@@ -274,17 +312,21 @@ mod tests {
         // A mark, then a.txt grows: its folder's size before is noted.
         tree.growth.mark(1, 42);
         tree.set_record(21, &RecordState { seq: 1, size: 50, modified: 9, attrs: 0x20, names: vec![(make_ref(20, 1), "a.txt".into())], ..Default::default() });
+        // And a file with two names, the second kept aside.
+        tree.set_record(24, &RecordState { seq: 1, size: 5, names: vec![(make_ref(ROOT, 5), "one.lnk".into()), (make_ref(ROOT, 5), "two.lnk".into())], ..Default::default() });
         save(&path, &tree, &meta).unwrap();
         let (loaded, loaded_meta) = load(&path).unwrap();
         assert_eq!(loaded_meta, meta);
         assert_eq!(loaded.recs, tree.recs);
         assert_eq!(loaded.links, tree.links);
+        assert_eq!(loaded.next_names, tree.next_names);
+        assert_eq!(loaded.links_of(24).map(|id| loaded.name(id)).collect::<Vec<_>>(), ["two.lnk", "one.lnk"]);
         assert_eq!(loaded.resolve("üsers"), Some(20));
         let matcher = NameMatcher::new("txt").unwrap();
         let excludes = Excludes::default();
         let found = loaded.search(&Search { matcher: &matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: true, excludes: &excludes });
         assert_eq!(found.iter().map(|&id| loaded.path(id, &mut HashMap::new()).unwrap()).collect::<Vec<_>>(), [r"Üsers\a.txt"]);
-        assert_eq!(loaded.rec(20).unwrap().size, 50);
+        assert_eq!(loaded.rec(20).unwrap().size(), 50);
         assert_eq!(loaded.growth.last().map(|m| (m.at, m.total)), Some((1, 42)));
         assert_eq!(loaded.growth.then(20, 1, 0, 50), Some(42));
 
@@ -293,10 +335,28 @@ mod tests {
         assert!(decode(&bytes).err().unwrap().contains("checksum"));
         assert!(decode(&bytes[..bytes.len() - 1]).is_err());
         assert!(decode(b"nothing").is_err());
+        // A snapshot from before names were shared still loads, and shares them.
+        let mut twice = sample();
+        twice.set_record(23, &RecordState { seq: 1, size: 3, names: vec![(make_ref(ROOT, 5), "a.txt".into())], ..Default::default() });
+        save(&path, &twice, &meta).unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[8..12].copy_from_slice(&UNSHARED.to_le_bytes());
+        let end = bytes.len() - 8;
+        let mut sum = Checksum::default();
+        sum.update(&bytes[..end]);
+        let sum = sum.finish();
+        bytes[end..].copy_from_slice(&sum.to_le_bytes());
+        let (old, _) = decode(&bytes).unwrap();
+        // "gone.txt" (gone) and the second "a.txt" aren't kept.
+        assert_eq!(old.names.len(), twice.names.len() - "gone.txt".len() - "a.txt".len());
+        let found = old.search(&Search { matcher: &NameMatcher::new("a.txt").unwrap(), filters: &Default::default(), now: 0, scope: ROOT, hidden: true, excludes: &excludes });
+        let mut paths: Vec<String> = found.iter().map(|&id| old.path(id, &mut HashMap::new()).unwrap()).collect();
+        paths.sort();
+        assert_eq!(paths, ["a.txt", r"Üsers\a.txt"]);
         // A snapshot whose checksum is right but whose names go round in circles is refused.
         let mut looped = sample();
         let first = looped.recs[21].first_link;
-        looped.links[first as usize].next = first;
+        looped.next_names.insert(first, first);
         save(&path, &looped, &meta).unwrap();
         assert!(load(&path).err().unwrap().contains("tangled"));
         fs::remove_dir_all(&dir).unwrap();
