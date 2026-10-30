@@ -66,6 +66,7 @@ import { frecency } from "./rank";
 import { initRemotes, remoteName } from "./remotes";
 import { initRules } from "./rules";
 import { loadNewKinds, newFile, type NewKind } from "./newKinds";
+import { listenQueue, queueFiles, useQueue, whenFinished } from "./queue";
 import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
 import { shareVisit } from "./zoxide";
 import { dropThumbnails } from "./thumbs";
@@ -730,6 +731,7 @@ async function init() {
     // Windows' New menu, read before it's first opened.
     setTimeout(() => void loadNewKinds(), 2000);
     initGallery();
+    initQueue();
 }
 
 /** The gallery's folders (Pictures, Videos and the ones added in Settings) go to Rust as they change; a
@@ -1777,6 +1779,11 @@ export const offerUndo = (said: string, step: UndoStep) => toast.success(said, {
  * the person cancelled in one of its dialogs; what was done by then can still be undone.
  */
 export async function fileOp(op: FileOp): Promise<boolean> {
+    // Through Glint's copy queue, where Settings says copies and moves go there (it says what it did when it's done).
+    if ((op.kind === "copy" || op.kind === "move") && useStore.getState().settings.copyQueue) {
+        await queueFiles(op.kind, op.sources, op.dest, useStore.getState().settings.verifyCopies);
+        return true;
+    }
     const { completed, items } = await performFileOp(op);
     const done = items.flatMap((i) => (i.to ? [{ from: i.from, to: i.to }] : []));
     const what = plural(done.length, "item");
@@ -1981,6 +1988,61 @@ export async function paste(dest = currentPath()) {
     } catch (e) {
         toast.error("Couldn't paste", { description: String(e) });
     }
+}
+
+/** Paste with the copy queue: what's on the clipboard copied (or, cut, moved) into `dest` in turn, with
+ * Pause and Resume, and checked after copying (Settings → Files). */
+export async function pasteQueued(dest = currentPath()) {
+    if (isRemotePath(dest)) return readOnlyNotice();
+    if (!isFolderPath(dest)) return;
+    let files: Awaited<ReturnType<typeof clipboardGetFiles>>;
+    try {
+        files = await clipboardGetFiles();
+    } catch (e) {
+        toast.error("Couldn't read the clipboard", { description: String(e) });
+        return;
+    }
+    if (!files?.paths.length) return void toast("There are no files on the clipboard", { description: "Copy or cut some first (Ctrl+C, Ctrl+X)." });
+    await queueFiles(files.cut ? "move" : "copy", files.paths, dest, useStore.getState().settings.verifyCopies);
+    if (files.cut) {
+        set({ cut: new Set() });
+        clipboardClear().catch(() => {});
+    }
+}
+
+/** A queued copy or move that finished: Undo offered as for Windows' own, what didn't go said, and the
+ * folder it went into read again. While jobs run, the taskbar button shows how far they are. */
+function initQueue() {
+    listenQueue();
+    whenFinished((job) => {
+        const what = plural(job.made.length, "item");
+        if (job.made.length) {
+            const made = job.made;
+            if (job.kind === "copy")
+                offerUndo(`Copied ${what} to “${baseName(job.dest)}”`, rememberUndo(`copy of ${what}`, () => performFileOp({ kind: "delete", paths: made.map((m) => m.to), permanent: false, confirm: false })));
+            else
+                offerUndo(
+                    `Moved ${what} to “${baseName(job.dest)}”`,
+                    rememberUndo(`move of ${what}`, () => performFileOp({ kind: "moveBack", items: made.map((m) => ({ path: m.to, folder: parentPath(m.from), name: baseName(m.from) })) }))
+                );
+        }
+        if (job.errors.length) toast.error(`${plural(job.errors.length, "item")} didn't ${job.kind === "move" ? "move" : "copy"}`, { description: job.errors.slice(0, 3).map((e) => `${baseName(e.path)}: ${e.error}`).join("\n") });
+        for (const id of visibleTabs()) {
+            const t = tabState(id);
+            if (t && !t.find && (samePath(t.path, job.dest) || job.sources.some((s) => samePath(parentPath(s), t.path)))) void reload(id);
+        }
+    });
+    let shown = "";
+    useQueue.subscribe(({ jobs }) => {
+        const running = jobs.filter((j) => !["done", "cancelled", "failed"].includes(j.state));
+        const total = running.reduce((n, j) => n + j.bytes, 0);
+        const done = running.reduce((n, j) => n + j.bytesDone, 0);
+        const state = !running.length ? "none" : running.every((j) => j.state === "paused") ? "paused" : total ? "normal" : "indeterminate";
+        const key = `${state} ${Math.round((done / Math.max(1, total)) * 200)}`;
+        if (key === shown) return;
+        shown = key;
+        taskbarProgress(state, done, total);
+    });
 }
 
 /**

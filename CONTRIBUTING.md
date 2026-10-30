@@ -36,6 +36,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src/lib/thumbs.ts`, `grid.ts` | Thumbnails for the tiles and rows on screen (asking, dropping, keeping them); the grid's tile sizes, columns and keys, and keeping its place as they change |
 | `src/components/Results.tsx`, `Search.tsx` | Text search (ripgrep) |
 | `src-tauri/src/fsx.rs` | Folder listing (Win32 `FindFirstFileExW`, binary transfer to the UI), with cloud files' (OneDrive's) states |
+| `src-tauri/src/queue.rs`, `src/lib/queue.ts`, `src/components/explorer/CopyQueue.tsx` | The copy queue: one job at a time with CopyFileEx, paused in its progress routine, names taken asked about, each copy read back past the cache and compared (BLAKE3), moves that rename or copy and then delete |
 | `src-tauri/src/gallery.rs` | Gallery, a place listed like a folder: the photos and videos below its folders (from the index, else walked), dated by when each was taken, kept in gallery-dates.json |
 | `src-tauri/src/recent.rs` | Recent, a place listed like a folder: Windows' Recent Items, each shortcut's file at its own path |
 | `src-tauri/src/newmenu.rs` | Windows' New menu: the kinds of file the PC's apps registered (`ShellNew`), made from their templates, bytes or commands |

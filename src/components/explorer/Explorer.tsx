@@ -145,6 +145,7 @@ import {
     navigate,
     newItem,
     newOfKind,
+    pasteQueued,
     forgetRecent,
     addGalleryFolder,
     setView,
@@ -509,6 +510,7 @@ function folderMenu(
         !current && { label: "Open in new tab", icon: SquarePlus, onSelect: () => openInNewTab(folder) },
         current && { label: "New folder", icon: FolderPlus, shortcut: "Ctrl+Shift+N", disabled: find || !!archive || shut, onSelect: () => newItem(true) },
         current && { label: "New", icon: FilePlus, disabled: find || !!archive || shut, items: newMenuItems(false) },
+        current && { label: "Paste with the copy queue", icon: ClipboardPaste, disabled: find || inArchive || shut, onSelect: () => void pasteQueued(folder) },
         current && !!view && { label: "Select all", icon: ListChecks, shortcut: "Ctrl+A", disabled: unlisted, onSelect: view.selectAll },
         "separator",
         current && { label: "Folder sizes", icon: HardDrive, disabled: find || unlisted, onSelect: calcSizes },
@@ -765,6 +767,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const actions: (Command | false)[] = [
             !!shut && !shut.remote && !shut.refused && action("get-access", "Get access to this folder", ShieldCheck, () => getAccess(t.id)),
             writable && !t.find && !shut && action("new-folder", "New folder", FolderPlus, () => newItem(true), "Ctrl+Shift+N"),
+            writable && !t.find && !shut && action("paste-queued", "Paste with the copy queue: pause, resume, and each copy checked", ClipboardPaste, () => void pasteQueued(t.path)),
             writable && !t.find && !shut && action("new-file", "New text document", FilePlus, () => newItem(false)),
             ...newKinds().map((kind) => writable && !t.find && !shut && action(`new-${kind.ext}`, `New ${kind.name}`, FilePlus, () => void newOfKind(kind))),
             action("find", bin ? "Filter what's in the Recycle Bin" : "Find files in this folder", Search, focusFind, "Ctrl+F"),
