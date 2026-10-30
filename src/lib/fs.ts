@@ -1131,6 +1131,8 @@ export interface ExplorerIntegration {
     menu: boolean;
     byDefault: boolean;
     winE: boolean;
+    /** The Microsoft Store's copy, which Windows keeps out of File Explorer's settings. */
+    store: boolean;
 }
 
 export const explorerIntegration = () => invoke<ExplorerIntegration>("explorer_integration");

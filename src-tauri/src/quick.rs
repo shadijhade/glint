@@ -236,6 +236,9 @@ pub async fn set_start_with_windows(app: AppHandle, enabled: bool) -> Result<(),
 fn start_with_windows(app: &AppHandle, enabled: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
+        if crate::packaged() {
+            return startup_task(enabled);
+        }
         const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
         let name = &app.package_info().name;
         let result = if enabled {
@@ -250,6 +253,23 @@ fn start_with_windows(app: &AppHandle, enabled: bool) -> Result<(), String> {
     {
         let _ = (app, enabled);
         Ok(())
+    }
+}
+
+/// The Microsoft Store copy starts at sign-in by its package's startup task (`GlintTray`, which starts
+/// it with --tray), as a Run key it wrote would be its own alone. Windows' Startup apps can turn it
+/// off, and then only they can turn it on again.
+#[cfg(windows)]
+fn startup_task(enabled: bool) -> Result<(), String> {
+    use windows::ApplicationModel::{StartupTask, StartupTaskState};
+    let task = StartupTask::GetAsync(&"GlintTray".into()).and_then(|task| task.join()).map_err(|e| e.message())?;
+    if !enabled {
+        return task.Disable().map_err(|e| e.message());
+    }
+    match task.RequestEnableAsync().and_then(|state| state.join()).map_err(|e| e.message())? {
+        StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => Ok(()),
+        StartupTaskState::DisabledByUser => Err("Glint is turned off in Windows' Startup apps (Settings → Apps → Startup)".into()),
+        _ => Err("Windows doesn't let Glint start when you sign in".into()),
     }
 }
 
