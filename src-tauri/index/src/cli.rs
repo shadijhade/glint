@@ -346,7 +346,7 @@ fn bench(args: &[String]) -> i32 {
         tree.recompute_totals();
         println!("    recounting every folder total: {:.0} ms", ms(started));
         let started = Instant::now();
-        let (total, children) = (tree.rec(ROOT).map_or(0, |r| r.size), tree.child_dirs(ROOT));
+        let (total, children) = (tree.rec(ROOT).map_or(0, |r| r.size()), tree.child_dirs(ROOT));
         println!("    folder sizes of {letter}:\\ ({} folders, {} GB): {:.3} ms", children.len(), total >> 30, ms(started));
         for depth in [2, 4, 6] {
             let mut times = Vec::new();

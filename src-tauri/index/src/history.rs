@@ -136,13 +136,13 @@ impl<'a> Paths<'a> {
                 continue;
             }
             // The index's, if the record still holds that folder.
-            let rec = self.tree.rec(u32::try_from(number).ok()?).filter(|r| r.used() && r.dir() && (seq == 0 || r.seq == seq))?;
+            let rec = self.tree.rec(u32::try_from(number).ok()?).filter(|r| r.used() && r.dir() && (seq == 0 || r.seq() == seq))?;
             if rec.first_link == NONE {
                 return None;
             }
             names.push(self.tree.name(rec.first_link));
             let up = self.tree.link(rec.first_link).parent;
-            at = make_ref(up, self.tree.rec(up).map_or(0, |r| r.seq));
+            at = make_ref(up, self.tree.rec(up).map_or(0, |r| r.seq()));
         }
         let mut path = format!("{}:", self.letter);
         for name in names.iter().rev() {
