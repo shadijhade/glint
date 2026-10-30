@@ -34,6 +34,7 @@ mod pe;
 mod placement;
 mod proc;
 mod projects;
+mod queue;
 mod quick;
 mod rclone;
 mod recent;
@@ -680,6 +681,13 @@ pub fn run() {
             recent::recent_forget,
             recent::recent_kept,
             gallery::gallery_set_folders,
+            queue::queue_add,
+            queue::queue_pause,
+            queue::queue_resume,
+            queue::queue_cancel,
+            queue::queue_answer,
+            queue::queue_jobs,
+            queue::queue_clear,
             newmenu::new_kinds,
             rclone::rclone_providers,
             rclone::rclone_config_start,

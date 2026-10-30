@@ -27,6 +27,7 @@ import { ConvertDialog } from "./components/explorer/ConvertDialog";
 import { ShareDialog, SharingButton } from "./components/explorer/ShareDialog";
 import { RemoteDialog } from "./components/explorer/RemoteDialog";
 import { RulesDialog } from "./components/explorer/RulesDialog";
+import { CopyQueue } from "./components/explorer/CopyQueue";
 import { CleanupDialog } from "./components/explorer/CleanupDialog";
 import { CompareFilesDialog } from "./components/explorer/CompareFilesDialog";
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
@@ -495,6 +496,7 @@ function App() {
       <ShareDialog />
       <RemoteDialog />
       <RulesDialog />
+      <CopyQueue />
       <BatchRenameDialog />
       <XRayDialog />
       <ShortcutsDialog />

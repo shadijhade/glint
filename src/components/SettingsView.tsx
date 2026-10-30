@@ -911,6 +911,18 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                     />
                     <GalleryFolders />
                     <SwitchRow
+                        label="Copy and move with Glint's queue"
+                        hint="Paste, drops and the other pane's copies wait their turn in the copy queue, with Pause and Resume, instead of Windows' copy dialog. Paste with the copy queue is in the folder's menu either way"
+                        checked={settings.copyQueue}
+                        onChange={(copyQueue) => set({ copyQueue })}
+                    />
+                    <SwitchRow
+                        label="Check each copy the queue makes"
+                        hint="Each copy is read back from the disk and compared with its original (BLAKE3): it takes longer, and catches a disk or a cable that changes what it's given"
+                        checked={settings.verifyCopies}
+                        onChange={(verifyCopies) => set({ verifyCopies })}
+                    />
+                    <SwitchRow
                         label="Thumbnails in the list"
                         hint="Pictures and videos show a small one in place of their icon. The grid view (Ctrl+Shift+2) shows them for every file Windows has one of."
                         checked={settings.listThumbnails}
