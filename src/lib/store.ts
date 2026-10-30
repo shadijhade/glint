@@ -71,6 +71,10 @@ export interface Settings {
     listColumns: ColumnId[];
     // Gallery: folders whose photos and videos it shows, besides Pictures and Videos
     galleryFolders: string[];
+    // Copies and moves (paste, drops, to the other pane) go through Glint's copy queue rather than
+    // Windows' copy dialog; and the queue reads each copy back to check it against its original
+    copyQueue: boolean;
+    verifyCopies: boolean;
     listThumbnails: boolean; // small thumbnails of pictures and videos in the list's icon column
     tileSize: TileSize; // how big the grid's tiles are, in every tab (Ctrl+wheel, Ctrl+= and Ctrl+-)
     confirmDelete: boolean; // ask before moving to the Recycle Bin (permanent deletes always ask)
@@ -150,6 +154,8 @@ export const DEFAULT_SETTINGS: Settings = {
     perFolderViews: true,
     listColumns: ['modified', 'type', 'size'],
     galleryFolders: [],
+    copyQueue: false,
+    verifyCopies: true,
     listThumbnails: true,
     tileSize: 'medium',
     confirmDelete: false,
