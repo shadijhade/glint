@@ -59,19 +59,24 @@ fn installed() -> bool {
 fn install() -> Result<(), String> {
     let file = std::env::temp_dir().join(format!("MicrosoftEdgeWebview2Setup-{}.exe", std::process::id()));
     let downloaded = tauri::async_runtime::block_on(async {
-        // The TLS the updater uses; installing it twice is harmless.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("Glint/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let response = client.get(INSTALLER).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("Glint couldn't download its installer ({e})"))?;
-        let bytes = response.bytes().await.map_err(|e| format!("the download of its installer broke off ({e})"))?;
-        if bytes.len() > 64 << 20 {
-            return Err("its installer's download is bigger than expected".to_string());
+        // As the PC finds the address first, then over IPv4 alone when that couldn't connect or broke off.
+        let mut said = String::new();
+        for ipv4 in [false, true] {
+            let response = match crate::tools::client(ipv4)?.get(INSTALLER).send().await.and_then(|r| r.error_for_status()) {
+                Ok(response) => response,
+                Err(e) if e.is_status() => return Err(format!("Glint couldn't download its installer ({e})")),
+                Err(e) => {
+                    said = format!("Glint couldn't download its installer ({e})");
+                    continue;
+                }
+            };
+            match response.bytes().await {
+                Ok(bytes) if bytes.len() > 64 << 20 => return Err("its installer's download is bigger than expected".to_string()),
+                Ok(bytes) => return std::fs::write(&file, &bytes).map_err(|e| e.to_string()),
+                Err(e) => said = format!("the download of its installer broke off ({e})"),
+            }
         }
-        std::fs::write(&file, &bytes).map_err(|e| e.to_string())
+        Err(said)
     });
     if let Err(e) = downloaded {
         let _ = std::fs::remove_file(&file);

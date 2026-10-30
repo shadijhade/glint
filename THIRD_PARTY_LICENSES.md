@@ -1200,7 +1200,7 @@ SOFTWARE.
 
 ## Meaning search (its model downloaded when first used)
 
-Text mode's Meaning search ranks passages with a model the installer doesn't include: Glint downloads it from Hugging Face the first time it's asked to (**Download it** on its card, or **Settings → Tools**), pinned to one revision and checked against each file's SHA-256, into its own data folder. The model's tokenizer and the arithmetic that uses it are Glint's own code, with two crates compiled into the app.
+Text mode's Meaning search ranks passages with a model the installer doesn't include: Glint downloads it from Hugging Face (or from [a copy on Glint's GitHub releases](https://github.com/shadijhade/glint/releases/tag/potion-base-8M-bf8b056), the same files, where Hugging Face can't be reached) the first time it's asked to (**Download it** on its card, or **Settings → Tools**), pinned to one revision and checked against each file's SHA-256, into its own data folder. The model's tokenizer and the arithmetic that uses it are Glint's own code, with two crates compiled into the app.
 
 | Model or crate | Version | Used for | License |
 | :--- | :--- | :--- | :--- |
