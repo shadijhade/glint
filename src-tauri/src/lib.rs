@@ -622,6 +622,18 @@ pub(crate) fn packaged() -> bool {
     package_family().is_some()
 }
 
+/// The package family when this copy is the Microsoft Store's, installed from the Store (it runs from
+/// Program Files\WindowsApps): the instant search service it turns on goes once that package does
+/// (shadui_index::store). A test package installed from its folder (npm run msix -- --try) isn't one,
+/// so taking it out leaves the service where it is.
+#[cfg(windows)]
+pub(crate) fn store_package() -> Option<&'static str> {
+    let family = package_family()?;
+    let apps = std::path::Path::new(&std::env::var_os("ProgramFiles")?).join("WindowsApps");
+    let exe = std::env::current_exe().ok()?;
+    exe.to_string_lossy().to_lowercase().starts_with(&apps.to_string_lossy().to_lowercase()).then_some(family)
+}
+
 /// Whether the Microsoft Store keeps this copy up to date (see `package_family`): then the app doesn't
 /// look for updates itself.
 #[tauri::command]

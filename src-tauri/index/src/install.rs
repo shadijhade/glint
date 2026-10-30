@@ -3,6 +3,7 @@
 //! file its users could replace), registered to start with Windows, and told who may query it.
 
 use crate::service::{allowed_users, parameters_key};
+use crate::store;
 use crate::win::{self, known_folder, os_error, wide, Key};
 use std::fmt;
 use std::fs;
@@ -20,6 +21,7 @@ use windows::Win32::System::Services::{
     SERVICE_DESCRIPTIONW, SERVICE_ERROR_NORMAL, SERVICE_FAILURE_ACTIONSW, SERVICE_REQUIRED_PRIVILEGES_INFOW, SERVICE_RUNNING,
     SERVICE_STATUS, SERVICE_STATUS_CURRENT_STATE, SERVICE_STOPPED, SERVICE_WIN32_OWN_PROCESS,
 };
+use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT, MOVEFILE_REPLACE_EXISTING};
 use windows::Win32::UI::Shell::FOLDERID_ProgramFiles;
 
 const DESCRIPTION: &str = "Keeps the names and sizes of the files on your NTFS drives in memory so Glint can search them \
@@ -136,7 +138,10 @@ fn copy(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// Installs (or updates) the service and starts it. `allow` users are added to those who may use it.
-pub fn install(allow: &[String]) -> Result<(), Failure> {
+/// `package` is the Microsoft Store copy's package family, when that's what installs it: the service
+/// then goes once that package does (store.rs). Any other install clears it, as that copy relies on
+/// the service too.
+pub fn install(allow: &[String], package: Option<&str>) -> Result<(), Failure> {
     let fail = |step| move |e: io::Error| Failure(step, e);
     if !win::is_elevated() {
         return Err(Failure(Step::NotElevated, io::Error::from_raw_os_error(5)));
@@ -209,7 +214,13 @@ pub fn install(allow: &[String]) -> Result<(), Failure> {
             users.push(sid.clone());
         }
     }
-    Key::create(&parameters_key(), true).and_then(|key| key.set_strings("AllowedUsers", &users)).map_err(fail(Step::Register))?;
+    let parameters = Key::create(&parameters_key(), true).map_err(fail(Step::Register))?;
+    parameters.set_strings("AllowedUsers", &users).map_err(fail(Step::Register))?;
+    match package.filter(|family| store::split(family).is_some()) {
+        Some(family) => parameters.set_string(store::VALUE, family),
+        None => parameters.delete(store::VALUE).map(drop),
+    }
+    .map_err(fail(Step::Register))?;
 
     match unsafe { StartServiceW(service.0, None) } {
         Ok(()) => {}
@@ -283,6 +294,32 @@ pub fn uninstall() -> Result<(), Failure> {
             thread::sleep(Duration::from_millis(100));
         }
         let _ = fs::remove_dir(&dir);
+    }
+    Ok(())
+}
+
+/// Removes the service from inside it, once the Microsoft Store package that installed it is gone
+/// (store.rs): Windows deletes the service as it stops, its snapshots go now, and its executable, which
+/// is running, is moved aside and deleted at the next restart (as is its folder, if nothing is in it
+/// by then: turning instant search on again before that puts a new one there).
+pub fn remove_self() -> io::Result<()> {
+    let manager = open_manager()?;
+    if let Some(service) = open_service(&manager)? {
+        unsafe { DeleteService(service.0) }.map_err(os_error)?;
+    }
+    if let Ok(data) = win::data_dir() {
+        let _ = fs::remove_dir_all(&data);
+        if let Some(parent) = data.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+    let dir = install_dir()?;
+    let removed = dir.join(format!("{}.removed", crate::SERVICE_EXE));
+    let (exe, removed_w, dir_w) = (wide(dir.join(crate::SERVICE_EXE)), wide(&removed), wide(&dir));
+    unsafe {
+        MoveFileExW(PCWSTR(exe.as_ptr()), PCWSTR(removed_w.as_ptr()), MOVEFILE_REPLACE_EXISTING).map_err(os_error)?;
+        MoveFileExW(PCWSTR(removed_w.as_ptr()), PCWSTR::null(), MOVEFILE_DELAY_UNTIL_REBOOT).map_err(os_error)?;
+        let _ = MoveFileExW(PCWSTR(dir_w.as_ptr()), PCWSTR::null(), MOVEFILE_DELAY_UNTIL_REBOOT);
     }
     Ok(())
 }
