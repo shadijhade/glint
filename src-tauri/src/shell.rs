@@ -394,7 +394,7 @@ mod imp {
         DragQueryFileW, FileOperation, IDragSourceHelper2, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl,
         ILCreateFromPathW, ILFree, IShellItem, IShellItemImageFactory, IShellLinkW, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
         SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHDRAGIMAGE, SHDoDragDrop, SHObjectProperties,
-        SHOpenWithDialog, ShellExecuteExW, ShellLink, BHID_DataObject, DROPFILES, DSH_ALLOWDROPDESCRIPTIONTEXT, FILEOPERATION_FLAGS,
+        SHAddToRecentDocs, SHOpenWithDialog, ShellExecuteExW, ShellLink, BHID_DataObject, SHARD_PATHW, DROPFILES, DSH_ALLOWDROPDESCRIPTIONTEXT, FILEOPERATION_FLAGS,
         FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
         FOF_WANTNUKEWARNING, HDROP, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST,
         SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, SHOP_FILEPATH, SIIGBF_ICONONLY, SIIGBF_INCACHEONLY,
@@ -892,7 +892,14 @@ mod imp {
                 ..Default::default()
             };
             match ShellExecuteExW(&mut info) {
-                Ok(()) => Ok(None),
+                Ok(()) => {
+                    // In Windows' recent items, as File Explorer puts what it opens (Windows leaves it out
+                    // when it's set not to keep them); not a copy Glint extracted or downloaded to open.
+                    if !crate::archive::extract::is_ours(Path::new(&path)) {
+                        SHAddToRecentDocs(SHARD_PATHW.0 as u32, Some(file.as_ptr() as *const _));
+                    }
+                    Ok(None)
+                }
                 // Declined, such as an administrator approval.
                 Err(e) if e.code() == ERROR_CANCELLED.to_hresult() => Ok(None),
                 Err(e) if e.code() == ERROR_NO_ASSOCIATION.to_hresult() => pick_app(owner, &path).map(|()| None),

@@ -55,7 +55,7 @@ export interface Settings {
     saveSearchHistory: boolean;
     maxHistoryItems: number;
     // Files
-    startFolder: 'home' | 'thispc' | 'last';
+    startFolder: 'home' | 'thispc' | 'recent' | 'last';
     restoreTabs: boolean; // reopen last time's tabs and panes; startFolder when there are none
     showHidden: boolean;
     foldersFirst: boolean;

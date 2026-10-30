@@ -35,6 +35,7 @@ mod proc;
 mod projects;
 mod quick;
 mod rclone;
+mod recent;
 mod recycle;
 mod rules;
 mod remote;
@@ -675,6 +676,8 @@ pub fn run() {
             fsx::read_text_preview,
             fsx::create_entry,
             fsx::list_subfolders,
+            recent::recent_forget,
+            recent::recent_kept,
             newmenu::new_kinds,
             rclone::rclone_providers,
             rclone::rclone_config_start,

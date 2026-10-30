@@ -53,12 +53,13 @@ import {
     takeLaunchTargets,
     taskbarProgress,
     onThumbButton,
+    recentForget,
     thumbButtons,
     watchDirs,
 } from "./fs";
 import { formatCount, plural } from "./format";
 import { zoomTiles } from "./grid";
-import { baseName, crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC } from "./paths";
+import { baseName, crumbs, isFolderPath, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC } from "./paths";
 import { frecency } from "./rank";
 import { initRemotes, remoteName } from "./remotes";
 import { initRules } from "./rules";
@@ -337,6 +338,7 @@ export function tabName(path: string, drives: Drive[]) {
     if (path === THIS_PC) return "This PC";
     if (isRemotePath(path) && isRoot(path)) return remoteName(path);
     if (isRecycleBin(path)) return "Recycle Bin";
+    if (isRecent(path)) return "Recent";
     if (!isRoot(path)) return baseName(path);
     const drive = drives.find((d) => samePath(d.path, path));
     return drive ? driveName(drive) : path;
@@ -711,7 +713,7 @@ async function init() {
         showOnStart(placeOutsideTabs(launch.slice(1), false));
         await Promise.all(visibleTabs().map((id) => openTab(id)));
     } else {
-        const start = settings.startFolder === "thispc" ? THIS_PC : settings.startFolder === "last" && lastFolder !== null ? lastFolder : home;
+        const start = settings.startFolder === "thispc" ? THIS_PC : settings.startFolder === "recent" ? RECENT : settings.startFolder === "last" && lastFolder !== null ? lastFolder : home;
         const tab = activeTabId();
         if (!(await navigate(start, { tab, silent: start !== home })) && !(await navigate(home, { tab }))) await navigate(THIS_PC, { tab });
     }
@@ -1879,6 +1881,7 @@ export async function goTo(text: string) {
     const value = text.trim();
     if (!value || /^this pc$/i.test(value)) return navigate(THIS_PC);
     if (/^recycle bin$/i.test(value) || isRecycleBin(value)) return navigate(RECYCLE_BIN);
+    if (/^recent$/i.test(value) || isRecent(value)) return navigate(RECENT);
     const tab = activeTabId();
     // Checking a path into a big .tar.gz reads it whole: that shows, with Stop.
     const reading = showArchiveReading(value);
@@ -2058,6 +2061,17 @@ export async function renameEntry(entry: FileEntry, name: string, tab = activeTa
     } catch (e) {
         toast.error(`Couldn't rename “${entry.name}”`, { description: String(e) });
     }
+}
+
+/** Takes items out of Recent (their shortcuts in Windows' Recent Items); the files stay where they are. */
+export async function forgetRecent(paths: string[], tab = activeTabId()) {
+    try {
+        await recentForget(paths);
+        toast.success(paths.length === 1 ? `Took “${baseName(paths[0])}” out of Recent` : `Took ${plural(paths.length, "item")} out of Recent`, { duration: 2500 });
+    } catch (e) {
+        toast.error("Couldn't take it out of Recent", { description: String(e) });
+    }
+    void reload(tab);
 }
 
 /** Makes a file of a kind Windows' New menu has (a Word document, a zip…) in the open folder, named as
