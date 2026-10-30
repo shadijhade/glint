@@ -362,6 +362,21 @@ pub static TOOLS: &[Tool] = &[
         used_for: "Sharing a folder with a phone on this network",
     },
     Tool {
+        id: "rclone",
+        name: "rclone",
+        exe: "rclone",
+        package: "rclone.rclone",
+        bundled: false,
+        winget: "Rclone.Rclone",
+        release: release(
+            "1.75.2",
+            "https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-windows-amd64.zip",
+            "8a9db2bad1dc79a65b3348fd857069598e2aab7cf4d118b77b1df23055aff818",
+            "rclone-v1.75.2-windows-amd64/rclone.exe",
+        ),
+        used_for: "Google Drive, OneDrive, Dropbox and 60 more clouds as folders, signed in to from Glint, and folders kept in sync with them by Folder rules",
+    },
+    Tool {
         id: "nushell",
         name: "Nushell",
         exe: "nu",

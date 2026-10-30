@@ -34,6 +34,7 @@ mod placement;
 mod proc;
 mod projects;
 mod quick;
+mod rclone;
 mod recycle;
 mod rules;
 mod remote;
@@ -670,6 +671,16 @@ pub fn run() {
             fsx::read_text_preview,
             fsx::create_entry,
             newmenu::new_kinds,
+            rclone::rclone_providers,
+            rclone::rclone_config_start,
+            rclone::rclone_config_answer,
+            rclone::rclone_authorize,
+            rclone::rclone_authorize_cancel,
+            rclone::rclone_remotes,
+            rclone::rclone_delete,
+            rclone::rclone_about,
+            rclone::rclone_status,
+            rclone::rclone_unlock,
             newmenu::new_file,
             find::find_files,
             find::cancel_find,

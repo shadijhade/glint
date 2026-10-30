@@ -5,6 +5,10 @@
 //! and it opens for reading. Rules are off until they're turned on (after a preview of what they'd do),
 //! run while Glint runs, and all they do is logged, each step with its Undo. A rule doesn't act on what a
 //! rule just made, so a rename can't feed itself.
+//!
+//! A sync rule keeps the whole folder in sync with a place on one of rclone's remotes (rclone.rs): a
+//! copy there, a mirror, or both ways. It runs a minute after Glint starts, half a minute after files
+//! in the folder stop changing, and every so many minutes if asked; each run is logged with what it did.
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -30,12 +34,18 @@ pub struct Rule {
     pub max_size: u64,
     /// Files last changed at least this many days ago (0: any).
     pub older_than_days: u32,
-    /// "move", "rename", "recycle", "unblock" or "extract".
+    /// "move", "rename", "recycle", "unblock", "extract" or "sync".
     pub action: String,
-    /// Move: the folder it goes into; {year}, {month} and {day} of the file's date may be in it.
+    /// Move: the folder it goes into; {year}, {month} and {day} of the file's date may be in it. Sync:
+    /// the place on a remote of rclone's ("gdrive:Backups").
     pub target: String,
     /// Rename: the new name, made of {name}, {ext}, {date}, {time}, {year}, {month} and {day}.
     pub pattern: String,
+    /// Sync: "copy" (what's new or changed here goes there, nothing there deleted), "mirror" (there
+    /// becomes what's here) or "both" (changes go both ways).
+    pub sync: String,
+    /// Sync: also every this many minutes (0: when files change, and at start).
+    pub every: u32,
 }
 
 /// What a rule did (or would do, in a preview) to one file.
@@ -57,6 +67,9 @@ pub struct Done {
     pub error: Option<String>,
     #[serde(default)]
     pub undone: bool,
+    /// A sync's: what it did, in a few words ("3 up, 1 down").
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Default)]
@@ -70,6 +83,17 @@ struct Engine {
     log: Vec<Done>,
     next: u64,
     app: Option<AppHandle>,
+    /// Sync rules' runs, by rule id.
+    syncs: HashMap<String, Syncing>,
+}
+
+/// A sync rule's runs: whether one is going, when the last ended, and since when its folder has been
+/// changing (it runs once that stops).
+#[derive(Default)]
+struct Syncing {
+    running: bool,
+    last: Option<Instant>,
+    changed: Option<Instant>,
 }
 
 static ENGINE: LazyLock<Mutex<Engine>> = LazyLock::new(Default::default);
@@ -84,6 +108,9 @@ const SETTLE: Duration = Duration::from_secs(2);
 const MADE: Duration = Duration::from_secs(30);
 /// The log keeps the latest this many.
 const KEPT: usize = 500;
+/// A sync runs this long after files in its folder stop changing, and first this long after Glint starts.
+const SYNC_QUIET: Duration = Duration::from_secs(30);
+const SYNC_FIRST: Duration = Duration::from_secs(60);
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
@@ -193,7 +220,97 @@ fn plan(rule: &Rule, path: &Path, modified: i64) -> Result<(String, Option<PathB
         "recycle" => Ok(("Move to the Recycle Bin".into(), None)),
         "unblock" => Ok(("Unblock: take off Windows' downloaded-from-the-internet mark".into(), None)),
         "extract" => Ok(("Extract into a folder next to it".into(), None)),
+        "sync" => Ok((format!("Sync with {}", rule.target.trim()), None)),
         other => Err(format!("Rules don't know “{other}”")),
+    }
+}
+
+/// rclone's filters for the files a sync rule takes: its names (any case), sizes and age, and its
+/// folder alone unless it looks in subfolders.
+fn sync_filters(rule: &Rule) -> Vec<String> {
+    let mut filters = Vec::new();
+    let names: Vec<&str> = rule.names.split([';', ',']).map(str::trim).filter(|p| !p.is_empty()).collect();
+    if !names.is_empty() {
+        filters.push("--ignore-case".to_string());
+        for name in names {
+            filters.extend(["--include".to_string(), name.to_string()]);
+        }
+    }
+    if rule.min_size > 0 {
+        filters.extend(["--min-size".to_string(), format!("{}B", rule.min_size)]);
+    }
+    if rule.max_size > 0 {
+        filters.extend(["--max-size".to_string(), format!("{}B", rule.max_size)]);
+    }
+    if rule.older_than_days > 0 {
+        filters.extend(["--min-age".to_string(), format!("{}d", rule.older_than_days)]);
+    }
+    if !rule.subfolders {
+        filters.extend(["--max-depth".to_string(), "1".to_string()]);
+    }
+    filters
+}
+
+fn sync_of(rule: &Rule, dry: bool) -> crate::rclone::Synced {
+    let sync = crate::rclone::Sync { folder: rule.folder.trim(), target: rule.target.trim(), mode: &rule.sync, filters: sync_filters(rule), dry };
+    crate::rclone::sync(&sync).unwrap_or_else(|e| crate::rclone::Synced { errors: vec![e], ..Default::default() })
+}
+
+/// Runs a sync rule now, and logs what it did.
+fn run_sync(rule: Rule) {
+    let synced = sync_of(&rule, false);
+    let done = Done {
+        id: 0,
+        at: now_ms(),
+        rule: rule.name.clone(),
+        action: "sync".into(),
+        from: rule.folder.clone(),
+        to: Some(rule.target.clone()),
+        mark: None,
+        error: synced.errors.first().cloned(),
+        undone: false,
+        summary: Some(synced.summary()),
+    };
+    // Only a run that did something, or failed, goes in the log: a quiet one only says when it ran.
+    let worth = done.error.is_some() || synced.up + synced.down + synced.deleted_here + synced.deleted_there > 0;
+    {
+        let mut engine = engine();
+        let state = engine.syncs.entry(rule.id.clone()).or_default();
+        state.running = false;
+        state.last = Some(Instant::now());
+        // What it changed in the folder isn't a change to sync again.
+        state.changed = None;
+    }
+    if worth {
+        record(done);
+    }
+}
+
+/// Every two seconds: the sync rules that are due run (each on a thread of its own, one run at a time).
+fn sync_tick(started: Instant) {
+    let now = Instant::now();
+    let due: Vec<Rule> = {
+        let mut engine = engine();
+        let rules: Vec<Rule> = engine.rules.iter().filter(|r| r.on && r.action == "sync").cloned().collect();
+        let mut due = Vec::new();
+        for rule in rules {
+            let state = engine.syncs.entry(rule.id.clone()).or_default();
+            if state.running {
+                continue;
+            }
+            let settled = state.changed.is_some_and(|t| now.duration_since(t) >= SYNC_QUIET);
+            let timed = rule.every > 0 && state.last.is_some_and(|t| now.duration_since(t) >= Duration::from_secs(u64::from(rule.every) * 60));
+            let first = state.last.is_none() && now.duration_since(started) >= SYNC_FIRST;
+            if settled || timed || first {
+                state.running = true;
+                state.changed = None;
+                due.push(rule);
+            }
+        }
+        due
+    };
+    for rule in due {
+        std::thread::spawn(move || run_sync(rule));
     }
 }
 
@@ -219,7 +336,7 @@ fn move_anywhere(from: &Path, to: &Path) -> Result<PathBuf, String> {
 
 /// Does what `rule` says to the file at `path`: what became of it.
 fn act(rule: &Rule, path: &Path, modified: i64) -> Done {
-    let mut done = Done { id: 0, at: now_ms(), rule: rule.name.clone(), action: rule.action.clone(), from: path.to_string_lossy().into_owned(), to: None, mark: None, error: None, undone: false };
+    let mut done = Done { id: 0, at: now_ms(), rule: rule.name.clone(), action: rule.action.clone(), from: path.to_string_lossy().into_owned(), to: None, mark: None, error: None, undone: false, summary: None };
     let result: Result<Option<String>, String> = (|| match rule.action.as_str() {
         "move" | "rename" => {
             let (_, to) = plan(rule, path, modified)?;
@@ -301,6 +418,19 @@ fn check(rule: &Rule) -> Result<(), String> {
     if !folder.is_absolute() || !folder.is_dir() {
         return Err(format!("“{}” isn't a folder", rule.folder));
     }
+    if rule.action == "sync" {
+        // "gdrive:Backups", not a folder on this PC ("D:\…").
+        let remote = rule.target.trim().split_once(':').map(|(name, _)| name).filter(|name| name.len() > 1 && !name.contains(['\\', '/']));
+        if remote.is_none() {
+            return Err("Sync with which cloud? Choose one of rclone's".into());
+        }
+        if !matches!(rule.sync.as_str(), "copy" | "mirror" | "both") {
+            return Err("Sync how? Copy, mirror or both ways".into());
+        }
+        if crate::proc::locate("rclone").is_none() {
+            return Err("Syncing takes rclone: Settings → Tools installs it".into());
+        }
+    }
     if rule.action == "move" {
         let target = rule.target.trim().to_lowercase();
         let watched = rule.folder.trim().trim_end_matches('\\').to_lowercase();
@@ -315,6 +445,16 @@ fn check(rule: &Rule) -> Result<(), String> {
 /// Files that changed, from the watchers: each waits until it's complete.
 fn seen(paths: Vec<PathBuf>) {
     let mut engine = engine();
+    // A sync rule's folder changing: it runs once that stops (not while its own run is changing it).
+    let syncing: Vec<(String, String)> = engine.rules.iter().filter(|r| r.on && r.action == "sync").map(|r| (r.id.clone(), r.folder.trim().trim_end_matches('\\').to_lowercase())).collect();
+    for (id, folder) in syncing {
+        if paths.iter().any(|p| p.to_string_lossy().to_lowercase().starts_with(&format!("{folder}\\"))) {
+            let state = engine.syncs.entry(id).or_default();
+            if !state.running {
+                state.changed = Some(Instant::now());
+            }
+        }
+    }
     for path in paths {
         let key = path.to_string_lossy().into_owned();
         if engine.made.get(&key.to_lowercase()).is_some_and(|t| t.elapsed() < MADE) {
@@ -374,7 +514,7 @@ fn tick() {
         let Ok(meta) = std::fs::metadata(&path) else { continue };
         let modified = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as i64);
         let file = Path::new(&path);
-        let rule = engine().rules.iter().find(|r| r.on && covers(r, file) && takes(r, file, meta.len(), modified, now_ms())).cloned();
+        let rule = engine().rules.iter().find(|r| r.on && r.action != "sync" && covers(r, file) && takes(r, file, meta.len(), modified, now_ms())).cloned();
         if let Some(rule) = rule {
             record(act(&rule, file, modified));
         }
@@ -383,7 +523,7 @@ fn tick() {
 
 /// Every hour: what's grown old enough for the rules that wait on age.
 fn sweep() {
-    let rules: Vec<Rule> = engine().rules.iter().filter(|r| r.on && r.older_than_days > 0).cloned().collect();
+    let rules: Vec<Rule> = engine().rules.iter().filter(|r| r.on && r.older_than_days > 0 && r.action != "sync").cloned().collect();
     for rule in rules {
         for (path, _, modified) in matching(&rule, 10_000) {
             record(act(&rule, &path, modified));
@@ -407,6 +547,11 @@ fn start(app: &AppHandle) {
         std::thread::spawn(|| loop {
             std::thread::sleep(Duration::from_secs(3600));
             sweep();
+        });
+        let started = Instant::now();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(2));
+            sync_tick(started);
         });
     });
 }
@@ -457,27 +602,51 @@ fn set_rules(app: &AppHandle, rules: Vec<Rule>, latest: impl Fn() -> bool) {
     }
 }
 
-/// What `rule` would do now to what's in its folder (up to 500 files), or what's wrong with it.
+/// What `rule` would do now to what's in its folder (up to 500 files), or what's wrong with it. A sync
+/// rule's is rclone's dry run: each file it would copy or delete, and which way.
 #[tauri::command]
 pub async fn rules_preview(rule: Rule) -> Result<Vec<Done>, String> {
     crate::fsx::blocking(move || {
         check(&rule)?;
+        if rule.action == "sync" {
+            let synced = sync_of(&rule, true);
+            if let Some(error) = synced.errors.first() {
+                return Err(error.clone());
+            }
+            return Ok(synced
+                .items
+                .into_iter()
+                .map(|(what, path)| Done { id: 0, at: 0, rule: rule.name.clone(), action: what, from: path, to: None, mark: None, error: None, undone: false, summary: None })
+                .collect());
+        }
         Ok(matching(&rule, 500)
             .into_iter()
             .map(|(path, _, modified)| {
                 let (what, to) = plan(&rule, &path, modified).unwrap_or_else(|e| (e, None));
-                Done { id: 0, at: 0, rule: rule.name.clone(), action: what, from: path.to_string_lossy().into_owned(), to: to.map(|p| p.to_string_lossy().into_owned()), mark: None, error: None, undone: false }
+                Done { id: 0, at: 0, rule: rule.name.clone(), action: what, from: path.to_string_lossy().into_owned(), to: to.map(|p| p.to_string_lossy().into_owned()), mark: None, error: None, undone: false, summary: None }
             })
             .collect())
     })
     .await
 }
 
-/// Does what `rule` says to what's in its folder now (as it's turned on): how many it did.
+/// Does what `rule` says to what's in its folder now (as it's turned on): how many it did. A sync rule
+/// starts its first run, which logs what it does.
 #[tauri::command]
 pub async fn rules_apply(rule: Rule) -> Result<usize, String> {
     crate::fsx::blocking(move || {
         check(&rule)?;
+        if rule.action == "sync" {
+            let start = {
+                let mut engine = engine();
+                let state = engine.syncs.entry(rule.id.clone()).or_default();
+                !std::mem::replace(&mut state.running, true)
+            };
+            if start {
+                std::thread::spawn(move || run_sync(rule));
+            }
+            return Ok(0);
+        }
         Ok(matching(&rule, 10_000).into_iter().map(|(path, _, modified)| record(act(&rule, &path, modified))).filter(|d| d.error.is_none()).count())
     })
     .await
@@ -542,6 +711,20 @@ pub async fn rules_undo(id: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn syncs_what_it_takes() {
+        let r = Rule { action: "sync".into(), target: "gd:Backups".into(), sync: "copy".into(), names: "*.pdf; scan*".into(), min_size: 1024, older_than_days: 2, ..rule("") };
+        assert_eq!(sync_filters(&r), ["--ignore-case", "--include", "*.pdf", "--include", "scan*", "--min-size", "1024B", "--min-age", "2d", "--max-depth", "1"]);
+        assert!(sync_filters(&Rule { subfolders: true, names: String::new(), min_size: 0, older_than_days: 0, ..r.clone() }).is_empty());
+        let mut checked = Rule { folder: std::env::temp_dir().to_string_lossy().into(), ..r.clone() };
+        checked.target = r"D:\Backups".into();
+        assert!(check(&checked).unwrap_err().starts_with("Sync with which cloud"));
+        checked.target = "gd:Backups".into();
+        checked.sync = "sideways".into();
+        assert!(check(&checked).unwrap_err().starts_with("Sync how"));
+        assert_eq!(plan(&r, Path::new(r"C:\Downloads\a.pdf"), 0).unwrap().0, "Sync with gd:Backups");
+    }
 
     fn rule(names: &str) -> Rule {
         Rule { id: "r".into(), name: "R".into(), folder: r"C:\Downloads".into(), names: names.into(), action: "move".into(), target: r"D:\Docs\{year}".into(), ..Default::default() }

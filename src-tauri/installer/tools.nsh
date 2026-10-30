@@ -71,6 +71,9 @@
   !insertmacro ${ROW} 19 dufs "dufs" 5 tool dufs sigoden.dufs \
     "Sharing a folder with a phone" \
     "dufs serves a folder on this network. Share with a phone then gives a link that the phone's browser opens."
+  !insertmacro ${ROW} 20 rclone "rclone" 5 tool rclone rclone.rclone \
+    "Google Drive, OneDrive, Dropbox and 60 more clouds" \
+    "rclone reaches more than 60 cloud storage services. Glint then opens Google Drive, OneDrive, Dropbox, Box, MEGA, S3 and the rest like folders, signs you in to them, and keeps folders in sync with them."
 !macroend
 
 !macro GLINT_TOOL_GROUPS GROUP
@@ -78,7 +81,7 @@
   !insertmacro ${GROUP} 2 "Clean up, pictures and safety"
   !insertmacro ${GROUP} 3 "Code and projects"
   !insertmacro ${GROUP} 4 "Scripts and terminal"
-  !insertmacro ${GROUP} 5 "Sharing"
+  !insertmacro ${GROUP} 5 "Sharing and clouds"
 !macroend
 
 ; The list view's messages and flags NSIS doesn't define, as numbers (System::Call takes no expressions).
