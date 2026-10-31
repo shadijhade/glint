@@ -1,0 +1,38 @@
+---
+/*
+  The way in for most people: the Microsoft Store's Glint, which Microsoft signs (no SmartScreen, and
+  Smart App Control lets it run) and the Store keeps up to date. Two lines, like a store's badge, so it
+  stays as narrow as the other buttons on a phone.
+*/
+import { SITE } from "../content/site";
+import Icon from "./Icon.astro";
+
+interface Props {
+  class?: string;
+}
+
+const { class: className } = Astro.props;
+---
+
+<a class:list={["btn btn-primary btn-store", className]} href={SITE.store}>
+  <Icon name="store" />
+  <span class="store-label">
+    <small>Get it from the</small>
+    <span>Microsoft Store</span>
+  </span>
+</a>
+
+<style>
+  .store-label {
+    display: grid;
+    gap: 5px;
+    text-align: left;
+  }
+
+  small {
+    font-size: 0.7em;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    opacity: 0.8;
+  }
+</style>

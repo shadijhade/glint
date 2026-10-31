@@ -467,6 +467,33 @@ kbd {
   font-size: 17px;
 }
 
+/* The Get Glint chapter's two ways in. */
+.btn-xl {
+  min-height: 68px;
+  padding: 0 40px;
+  font-size: 18px;
+}
+
+.btn-xl svg {
+  width: 21px;
+  height: 21px;
+}
+
+.btn-primary.btn-xl {
+  box-shadow:
+    0 24px 80px -16px rgba(255, 181, 38, 0.6),
+    0 0 0 10px rgba(255, 217, 102, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+@media (max-width: 520px) {
+  .btn-xl {
+    width: 100%;
+    padding: 0 24px;
+    font-size: 17px;
+  }
+}
+
 /* ---------- Surfaces ---------- */
 .glass {
   border: 1px solid var(--line);

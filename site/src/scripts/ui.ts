@@ -1,5 +1,5 @@
 /*
-  The page's controls: the latest release's details on every Download button, copy buttons, the phone
+  The page's controls: the latest release's details on every installer link, copy buttons, the phone
   menu, in-page links, the pause control, and the header's state.
 */
 import { SITE } from "../content/site";
@@ -32,7 +32,7 @@ function release() {
       if (!setup) return;
       const version = rel.tag_name.replace(/^v/, "");
       document.querySelectorAll<HTMLAnchorElement>("[data-download]").forEach((a) => (a.href = setup.browser_download_url));
-      document.querySelectorAll("[data-release]").forEach((s) => (s.textContent = `Version ${version} · ${Math.round(setup.size / 1048576)} MB · `));
+      document.querySelectorAll("[data-release]").forEach((s) => (s.textContent = `Version ${version} · installer ${Math.round(setup.size / 1048576)} MB · `));
       document.querySelectorAll<HTMLAnchorElement>("[data-notes]").forEach((a) => (a.href = rel.html_url));
       const offline = assets.find((a) => a.name.endsWith("_offline-setup.exe"));
       if (offline) {
