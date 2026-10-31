@@ -13,7 +13,9 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [pdu](https://github.com/K
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 
-**[Download for Windows](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** · [Website](https://glint.rafd.tech/) · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
+<a href="https://apps.microsoft.com/detail/9NQLRJ3HF1C9"><img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200" alt="Get Glint from the Microsoft Store"></a>
+
+**[Download the installer](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** · [Website](https://glint.rafd.tech/) · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
 
 <img src="screenshots/demo.gif" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes, the command palette and two panes side by side" width="100%">
 
@@ -287,15 +289,23 @@ AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.i
 
 ## Install
 
-**[Download Glint](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** and open it. It installs for your account in a few seconds, without administrator rights, with ripgrep, fd and pdu inside. Its **Extra tools** page offers the rest, each with what Glint uses it for: instant search, and the free tools some features need ([which ones](docs/tools.md)), which you can also add later in **Settings → Tools**. Each installs with or without winget: from its own release, checked against its checksum, where winget isn't. Windows 10 or 11, 64-bit, with Microsoft Edge WebView2, which Windows 11 has: where it's missing, the installer adds it, and so does Glint when it starts (a Scoop or copied install too).
+**[Get Glint from the Microsoft Store](https://apps.microsoft.com/detail/9NQLRJ3HF1C9).** Microsoft signs the Store's copy, so Windows installs it without a warning, even with Smart App Control on, and the Store keeps it up to date. It's the same Glint, apart from what Windows doesn't let Store apps do: change File Explorer's settings, so *Open in Glint* on File Explorer's menu, *Open folders in Glint by default* and *Win+E opens Glint* need the installer's copy. The two keep their settings apart; **Settings → About → Settings file** moves them across.
 
-The installer isn't code-signed yet, so Windows may say *Windows protected your PC*: choose **More info**, then **Run anyway** ([why](SECURITY.md#code-signing-and-privacy-policy)). If your browser holds the download back because the file isn't commonly downloaded, choose **Keep**.
+Or **[download the installer](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** and open it. It installs for your account in a few seconds, without administrator rights, with ripgrep, fd and pdu inside. Its **Extra tools** page offers the rest, each with what Glint uses it for: instant search, and the free tools some features need ([which ones](docs/tools.md)), which you can also add later in **Settings → Tools**. Each installs with or without winget: from its own release, checked against its checksum, where winget isn't. Windows 10 or 11, 64-bit, with Microsoft Edge WebView2, which Windows 11 has: where it's missing, the installer adds it, and so does Glint when it starts (a Scoop or copied install too).
 
-From then on Glint updates itself: when a new version is out, it says so, and **Install** (in that notice or in **Settings → About**) downloads it, checks its signature and restarts into it in a few seconds.
+The installer isn't code-signed yet, so Windows may say *Windows protected your PC*: choose **More info**, then **Run anyway** ([why](SECURITY.md#code-signing-and-privacy-policy)). If your browser holds the download back because the file isn't commonly downloaded, choose **Keep**. With Smart App Control on, Windows doesn't run it at all: get Glint from the Microsoft Store there.
+
+From then on the installer's Glint updates itself: when a new version is out, it says so, and **Install** (in that notice or in **Settings → About**) downloads it, checks its signature and restarts into it in a few seconds.
 
 Glint was called ShadUI Ripgrep before 0.3.1. Installing Glint replaces ShadUI Ripgrep and keeps your settings, tabs and instant search.
 
 ### With a package manager
+
+winget installs the Microsoft Store's copy:
+
+```powershell
+winget install 9NQLRJ3HF1C9 --source msstore
+```
 
 [Scoop](https://scoop.sh/) checks the download against its hash and doesn't trigger SmartScreen. It keeps Glint up to date itself (`scoop update glint`), and the app only tells you a new version is out:
 
@@ -304,7 +314,7 @@ scoop bucket add shadijhade https://github.com/shadijhade/scoop-bucket
 scoop install shadijhade/glint
 ```
 
-winget, once [microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306) is merged (new packages wait about six weeks for a moderator there):
+The installer's own winget package, once [microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306) is merged (new packages wait about six weeks for a moderator there):
 
 ```powershell
 winget install shadijhade.Glint
@@ -444,7 +454,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] A Scoop package
 -   [ ] Code-signed installers (the SignPath Foundation invited a new application once Glint is better known)
 -   [ ] The winget package (in review: [microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306))
--   [ ] The Microsoft Store (it takes code-signed installers only)
+-   [x] [The Microsoft Store](https://apps.microsoft.com/detail/9NQLRJ3HF1C9), signed by Microsoft
 -   [x] Zip, 7z, RAR, cabinet and tar archives (compressed too) opened like folders, Extract here, and Compress to zip
 -   [x] Undo (`Ctrl+Z`) for copies, moves, renames, deletes and new items
 -   [x] Quick search from anywhere (`Ctrl+Alt+F`), the tray, and starting with Windows

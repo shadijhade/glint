@@ -151,6 +151,8 @@ The NSIS installer is Tauri's own with Glint's pages, in [`src-tauri/installer/`
 
 ## The Microsoft Store
 
+Glint has been in the Store since 2026-10-31, as an MSIX package: [its listing](https://apps.microsoft.com/detail/9NQLRJ3HF1C9) (Store ID 9NQLRJ3HF1C9) is where the README's badge and the website's main buttons go, and `winget install 9NQLRJ3HF1C9 --source msstore` installs it from there too.
+
 The Store takes Glint two ways. **As an MSIX package**, which `npm run msix` builds: Partner Center takes the file itself and the Store signs it, free, so no code-signing certificate is needed. **As an EXE app**, it downloads the setup program and runs it, and then that has to be code-signed ([below](#as-an-exe-app)).
 
 ### As an MSIX package
@@ -190,9 +192,6 @@ Sign up as above, but make the product an **EXE or MSI app**. For a release the 
 
 1.  Build it code-signed and with `--store`: `npm run release -- --store --sign-config <overlay>` (or with the Azure variables) also builds the offline installer, checks its signatures and adds it to the `gh release create` command. Without code signing it still builds it, to try, but leaves it out of the release.
 2.  Once the release is published, give Partner Center the offline installer's link, which `npm run release` prints (`https://github.com/shadijhade/glint/releases/download/vX.Y.Z/Glint_X.Y.Z_x64_offline-setup.exe`), for x64, with `/S` where it asks how to install silently, and **Submit for certification**. Certification takes a few days.
-
-Once Glint is in the Store, `winget install` finds it there too (winget's `msstore` source), and the README and the website can show the Store's badge.
-
 ## The website
 
 [glint.rafd.tech](https://glint.rafd.tech/) is Glint's home page, one of Rafd's free innovations, built the way [rafd.tech](https://rafd.tech/) is: [`site/`](../site) is an Astro project of its own (GSAP and Lenis for the motion, a hand-written WebGL2 field in `site/src/scripts/field.ts`), published from this PC as the Cloudflare Worker `glint-site`, static assets only. `site/wrangler.toml` declares the domain, so every deploy keeps glint.rafd.tech attached (DNS record and certificate) on the rafd.tech zone.
@@ -207,7 +206,7 @@ npm run deploy   # build + wrangler deploy (signs in to Cloudflare in a browser 
 
 `npm run site` at the root runs its dev server. All the words and numbers are in `site/src/content/site.ts`, every time and count there is the README's, and the screenshots come from `screenshots/`, made into AVIF and WebP when it builds. The search demo searches `site/public/data/names.txt`: 9,474 of Windows' own file names (programs whose version information names Microsoft; no fonts, drivers or other files a third party installed), worth regenerating only if Windows changes a lot.
 
-Its Download buttons link to `releases/latest/download/Glint-setup.exe`, like the README's, and the page asks GitHub's API for the latest release to show its version and size, and a link to the offline installer when the release has one. Nothing on it changes for a release; deploy it again when its words, numbers or screenshots change.
+Its main buttons go to the Microsoft Store's listing (`SITE.store`) and its installer links to `releases/latest/download/Glint-setup.exe`, like the README's; the page asks GitHub's API for the latest release to show its version and the installer's size, and a link to the offline installer when the release has one. Nothing on it changes for a release; deploy it again when its words, numbers or screenshots change.
 
 ## Trying the updater locally
 
