@@ -1,9 +1,11 @@
 ---
-/* 05 Get Glint: the download and why to trust it, the other ways in, and the questions people ask. */
+/* 05 Get Glint: the Microsoft Store or the installer and why to trust them, the other ways in, and the
+   questions people ask. */
 import { GET, SITE } from "../content/site";
 import Icon from "./Icon.astro";
 import Label from "./Label.astro";
 import Lines from "./Lines.astro";
+import StoreButton from "./StoreButton.astro";
 ---
 
 <section class="chapter get" id="get" data-chapter="get">
@@ -15,10 +17,13 @@ import Lines from "./Lines.astro";
       <Lines lines={GET.lines} class="display" />
       <p class="lead get-body" data-reveal>{GET.body}</p>
       <div class="get-cta" data-reveal>
-        <a class="btn btn-primary btn-xl" href={SITE.download} data-download>
-          <Icon name="download" />
-          <span>Download for Windows</span>
-        </a>
+        <div class="get-buttons">
+          <StoreButton class="btn-xl" />
+          <a class="btn btn-ghost btn-xl" href={SITE.download} data-download>
+            <Icon name="download" />
+            <span>Download the installer</span>
+          </a>
+        </div>
         <p class="get-meta mono"><span data-release></span>{GET.requirements}</p>
       </div>
       <ul class="trust" data-reveal>
@@ -131,19 +136,12 @@ import Lines from "./Lines.astro";
     margin-top: 34px;
   }
 
-  .btn-xl {
-    min-height: 68px;
-    padding: 0 40px;
-    font-size: 18px;
-    box-shadow:
-      0 24px 80px -16px rgba(255, 181, 38, 0.6),
-      0 0 0 10px rgba(255, 217, 102, 0.06),
-      inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  }
-
-  .btn-xl :global(.icon) {
-    width: 21px;
-    height: 21px;
+  /* Side by side and as wide as each other; one above the other once they don't fit. */
+  .get-buttons {
+    display: grid;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
+    gap: 14px;
   }
 
   .get-meta {
@@ -367,11 +365,15 @@ import Lines from "./Lines.astro";
     }
   }
 
+  @media (max-width: 720px) {
+    .get-buttons {
+      grid-auto-flow: row;
+    }
+  }
+
   @media (max-width: 520px) {
-    .btn-xl {
+    .get-buttons {
       width: 100%;
-      padding: 0 24px;
-      font-size: 17px;
     }
 
     .trust {

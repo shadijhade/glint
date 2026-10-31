@@ -2,6 +2,7 @@
 import { HERO, SITE } from "../content/site";
 import Icon from "./Icon.astro";
 import Lines from "./Lines.astro";
+import StoreButton from "./StoreButton.astro";
 ---
 
 <section class="hero" id="top" data-chapter="top" data-scene="0">
@@ -19,17 +20,14 @@ import Lines from "./Lines.astro";
     <p class="body hero-body" data-reveal data-hero-step>{HERO.body}</p>
 
     <div class="hero-cta" data-reveal data-hero-step>
-      <a class="btn btn-primary btn-lg" href={SITE.download} data-download>
-        <Icon name="download" />
-        <span>Download for Windows</span>
-      </a>
+      <StoreButton class="btn-lg" />
       <a class="btn btn-ghost btn-lg" href="#open" data-nav-link>
         <span>See it work</span>
         <Icon name="down" />
       </a>
     </div>
     <p class="hero-meta mono" data-reveal data-hero-step>
-      <span data-release></span>Free · no administrator rights · <a href={SITE.latest} data-notes>What's new</a>
+      Free · no administrator rights · <a href={SITE.download} data-download>Or download the installer</a> · <a href={SITE.latest} data-notes>What's new</a>
     </p>
   </div>
 
@@ -120,6 +118,7 @@ import Lines from "./Lines.astro";
   }
 
   .hero-meta a {
+    white-space: nowrap;
     color: var(--pink);
     text-decoration: underline;
     text-decoration-color: rgba(255, 143, 208, 0.4);
@@ -199,7 +198,7 @@ import Lines from "./Lines.astro";
   }
 
   @media (max-width: 520px) {
-    .hero-cta .btn {
+    .hero-cta :global(.btn) {
       flex: 1 1 100%;
     }
 
