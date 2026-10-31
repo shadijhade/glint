@@ -12,6 +12,9 @@ export const SITE = {
   description:
     "Glint is a free, open-source file explorer for Windows 10 and 11. Folders open in milliseconds, every folder shows its size, and any file on any drive turns up as you type.",
   repo: REPO,
+  /** The Microsoft Store's Glint, which Microsoft signs and the Store keeps up to date: the way in for most people. */
+  store: "https://apps.microsoft.com/detail/9NQLRJ3HF1C9",
+  /** The setup program, which can also change File Explorer's settings (Store apps can't). */
   download: `${REPO}/releases/latest/download/Glint-setup.exe`,
   latest: `${REPO}/releases/latest`,
   latestApi: "https://api.github.com/repos/shadijhade/glint/releases/latest",
@@ -25,7 +28,7 @@ export const SITE = {
   source: `${REPO}#build-from-source`,
   rafd: "https://rafd.tech/en/",
   scoop: ["scoop bucket add shadijhade https://github.com/shadijhade/scoop-bucket", "scoop install shadijhade/glint"],
-  winget: "winget install shadijhade.Glint",
+  winget: "winget install 9NQLRJ3HF1C9 --source msstore",
 };
 
 /** The chapters, in order: the header, the rail and the WebGL field all read this. */
@@ -132,14 +135,15 @@ export const GET = {
     { icon: "code", text: "Open source, MIT" },
   ],
   smartscreen:
-    "The installer isn't code-signed yet, so Windows may say it protected your PC: choose More info, then Run anyway.",
+    "Microsoft signs the Store's copy. The installer isn't code-signed yet, so Windows may say it protected your PC: choose More info, then Run anyway.",
   ways: [
+    { title: "winget", commands: [SITE.winget], note: "Installs the Microsoft Store's Glint, which the Store keeps up to date." },
     { title: "Scoop", commands: SITE.scoop, note: "Checks the download against its hash and keeps Glint up to date." },
-    { title: "winget", commands: [SITE.winget], note: "Once winget's moderators have reviewed Glint, a few weeks for a new package." },
   ],
   faq: [
     { q: "Is Glint free?", a: "Yes. It's open source under the MIT license, with no ads and no account." },
-    { q: "Why does Windows say it protected my PC?", a: "Glint's installer isn't code-signed yet, and Windows warns about programs it hasn't seen many people run. Choose More info, then Run anyway. All of Glint's code is on GitHub, every update is signed and checked before it installs, and each download's SHA-256 is on its release page. On a PC with Smart App Control on, Windows doesn't run unsigned programs at all, so Glint can't run there until its installer is signed." },
+    { q: "The Microsoft Store or the installer?", a: "Either: it's the same Glint. Microsoft signs the Store's copy, so Windows installs it without a warning, and the Store keeps it up to date. The installer's copy updates itself from GitHub, and it can also add Open in Glint to File Explorer's menu, open folders in Glint by default and make Win+E open Glint, which Windows doesn't let Store apps do." },
+    { q: "Why does Windows say it protected my PC?", a: "Glint's installer isn't code-signed yet, and Windows warns about programs it hasn't seen many people run. Choose More info, then Run anyway. All of Glint's code is on GitHub, every update is signed and checked before it installs, and each download's SHA-256 is on its release page. On a PC with Smart App Control on, Windows doesn't run unsigned programs at all: get Glint from the Microsoft Store there, which Microsoft signs." },
     { q: "Does it collect any data?", a: "No. There's no telemetry and no analytics: on its own, Glint only asks GitHub whether there's a new version." },
     { q: "Does it replace File Explorer?", a: "No, it runs next to it, and copying and drag and drop work between the two. Instant search, the index behind the fastest searches, is off until you turn it on. To remove Glint, uninstall it from Settings → Apps." },
   ],
