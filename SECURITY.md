@@ -20,8 +20,8 @@ The parts of the app worth a closer look:
 
 ## Code signing and privacy policy
 
-Releases aren't code-signed yet: the SignPath Foundation, which signs open-source projects for free, asked for a new application once Glint is better known. Until then, check a download against the SHA-256 GitHub shows next to it on the release page (Glint's File X-Ray compares a pasted one), or install with Scoop, which checks it for you.
+Releases on GitHub aren't code-signed yet: the SignPath Foundation, which signs open-source projects for free, asked for a new application once Glint is better known. Until then, get Glint from the [Microsoft Store](https://apps.microsoft.com/detail/9NQLRJ3HF1C9), whose copy Microsoft signs, check a download against the SHA-256 GitHub shows next to it on the release page (Glint's File X-Ray compares a pasted one), or install with Scoop, which checks it for you.
 
 -   **Team roles (committers, reviewers and approvers):** [Shadi Saadi (`@shadijhade`)](https://github.com/shadijhade) is the sole maintainer, reviewer and release approver.
--   **Privacy policy:** Glint does not collect telemetry, analytics or personal data, and will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. Its only network requests are checking GitHub Releases (`github.com/shadijhade/glint`) for application updates and downloading an update when the user chooses to install one.
+-   **Privacy policy:** Glint does not collect telemetry, analytics or personal data, and will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. Its only network requests are checking GitHub Releases (`github.com/shadijhade/glint`) for application updates and downloading an update when the user chooses to install one. The Microsoft Store's copy makes neither: the Store updates it.
 
