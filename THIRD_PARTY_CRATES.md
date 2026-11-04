@@ -6,13 +6,13 @@ This file is made by [cargo-about](https://github.com/EmbarkStudios/cargo-about)
 
 | License | Crates |
 | :--- | ---: |
-| MIT License | 419 |
+| MIT License | 430 |
 | ISC License | 23 |
 | Unicode License v3 | 20 |
 | Apache License 2.0 | 13 |
 | BSD 3-Clause "New" or "Revised" License | 12 |
 | Mozilla Public License 2.0 | 5 |
-| MIT No Attribution | 3 |
+| MIT No Attribution | 4 |
 | zlib License | 3 |
 | BSD 2-Clause "Simplified" License | 2 |
 | Creative Commons Zero v1.0 Universal | 2 |
@@ -4501,6 +4501,39 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
+[cipher 0.5.2](https://github.com/RustCrypto/traits)
+
+````text
+Copyright (c) 2016-2025 RustCrypto Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+````
+
+## MIT License
+
 [reqwest 0.13.5](https://github.com/seanmonstar/reqwest)
 
 ````text
@@ -4529,7 +4562,7 @@ THE SOFTWARE.
 
 ## MIT License
 
-[sha2 0.11.1](https://github.com/RustCrypto/hashes)
+[sha1 0.11.0](https://github.com/RustCrypto/hashes), [sha2 0.11.1](https://github.com/RustCrypto/hashes)
 
 ````text
 Copyright (c) 2016-2026 The RustCrypto Project Developers
@@ -4565,10 +4598,44 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-[digest 0.10.7](https://github.com/RustCrypto/traits)
+[digest 0.10.7](https://github.com/RustCrypto/traits), [hmac 0.13.0](https://github.com/RustCrypto/MACs)
 
 ````text
 Copyright (c) 2017 Artyom Pavlov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+````
+
+## MIT License
+
+[pbkdf2 0.13.0](https://github.com/RustCrypto/password-hashes)
+
+````text
+Copyright (c) 2017 Artyom Pavlov
+Copyright (c) 2018-2023 The RustCrypto Project Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -5427,7 +5494,7 @@ SOFTWARE.
 
 ## MIT License
 
-[cbc 0.1.2](https://github.com/RustCrypto/block-modes)
+[cbc 0.1.2](https://github.com/RustCrypto/block-modes), [cbc 0.2.1](https://github.com/RustCrypto/block-modes)
 
 ````text
 Copyright (c) 2018-2022 RustCrypto Developers
@@ -5490,6 +5557,40 @@ THE SOFTWARE.
 
 ## MIT License
 
+[aes 0.9.4](https://github.com/RustCrypto/block-ciphers)
+
+````text
+Copyright (c) 2018-2024 The RustCrypto Project Developers
+Copyright (c) 2018 Artyom Pavlov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+````
+
+## MIT License
+
 [getrandom 0.2.17](https://github.com/rust-random/getrandom)
 
 ````text
@@ -5524,7 +5625,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-[block-buffer 0.12.1](https://github.com/RustCrypto/utils)
+[block-buffer 0.12.1](https://github.com/RustCrypto/utils), [block-padding 0.4.2](https://github.com/RustCrypto/utils)
 
 ````text
 Copyright (c) 2018-2025 The RustCrypto Project Developers
@@ -6302,7 +6403,41 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-[hybrid-array 0.4.15](https://github.com/RustCrypto/hybrid-array)
+[inout 0.2.5](https://github.com/RustCrypto/utils)
+
+````text
+Copyright (c) 2022-2025 The RustCrypto Project Developers
+Copyright (c) 2022 Artyom Pavlov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+````
+
+## MIT License
+
+[cmov 0.5.4](https://github.com/RustCrypto/utils), [hybrid-array 0.4.15](https://github.com/RustCrypto/hybrid-array)
 
 ````text
 Copyright (c) 2022-2026 The RustCrypto Project Developers
@@ -6488,6 +6623,39 @@ THE SOFTWARE.
 
 ## MIT License
 
+[cpubits 0.1.1](https://github.com/RustCrypto/utils)
+
+````text
+Copyright (c) 2023-2026 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+````
+
+## MIT License
+
 [deranged 0.5.9](https://github.com/jhpratt/deranged)
 
 ````text
@@ -6519,6 +6687,39 @@ SOFTWARE.
 
 ````text
 Copyright (c) 2025 Dmitry Rodionov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+````
+
+## MIT License
+
+[ctutils 0.4.8](https://github.com/RustCrypto/utils)
+
+````text
+Copyright (c) 2025-2026 The RustCrypto Project Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -8651,7 +8852,7 @@ SOFTWARE.
 
 ## MIT License
 
-[calamine 0.37.0](https://github.com/tafia/calamine), [quick-xml 0.42.0](https://github.com/tafia/quick-xml)
+[calamine 0.38.0](https://github.com/tafia/calamine), [quick-xml 0.42.0](https://github.com/tafia/quick-xml)
 
 ````text
 The MIT License (MIT)
@@ -9064,7 +9265,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## MIT No Attribution
 
-[constant_time_eq 0.4.2](https://github.com/cesarb/constant_time_eq)
+[constant_time_eq 0.4.2](https://github.com/cesarb/constant_time_eq), [constant_time_eq 0.6.1](https://codeberg.org/cesarb/constant_time_eq)
 
 ````text
 Permission is hereby granted, free of charge, to any person obtaining a
