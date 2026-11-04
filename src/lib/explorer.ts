@@ -717,16 +717,18 @@ let restored = false;
 export const initExplorer = () => (initialized ??= init());
 
 async function init() {
-    // Rust has the remote connections before a tab on one opens; folder rules start watching.
-    await initRemotes();
-    void initRules();
     // Drives fill in when they answer; a sleeping network drive mustn't hold up the first folder.
     refreshDrives();
-    // Asked first (briefly), so the first folder can already show its sizes from the index.
-    await Promise.race([refreshIndex().then(noticeServiceUpdate), new Promise((resolve) => setTimeout(resolve, 300))]);
-    await loadKnownFolders();
-    // Folders from File Explorer, a double-click or the command line, each in a tab of its own.
-    const launch = await takeLaunchTargets().catch((): LaunchTarget[] => []);
+    // All asked at once, none waiting on another, before the first folder opens.
+    const [, , , launch] = await Promise.all([
+        // Rust has the remote connections before a tab on one opens; folder rules start watching.
+        initRemotes().then(() => void initRules()),
+        // The index (briefly), so the first folder can already show its sizes from it.
+        Promise.race([refreshIndex().then(noticeServiceUpdate), new Promise((resolve) => setTimeout(resolve, 300))]),
+        loadKnownFolders(),
+        // Folders from File Explorer, a double-click or the command line, each in a tab of its own.
+        takeLaunchTargets().catch((): LaunchTarget[] => []),
+    ]);
     const { settings, lastFolder, session } = useStore.getState();
     const home = homeFolder();
     if (settings.restoreTabs && session && restoreSession(session)) {
