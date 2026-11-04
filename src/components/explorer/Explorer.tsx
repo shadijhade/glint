@@ -1392,13 +1392,16 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             const ctrl = e.ctrlKey || e.metaKey;
             const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
             const target = e.target instanceof Element ? e.target : null;
-            // A focused button handles its own Enter and Space.
-            if ((key === "Enter" || key === " ") && target?.closest("button, a")) return;
+            // A button the keyboard moved to handles its own Enter and Space. One that was only clicked
+            // doesn't keep them: Enter after a click on Delete would delete again.
+            if ((key === "Enter" || key === " ") && target?.closest("button, a") && keyboardElsewhere(target, null)) return;
             // Fields keep their keys, except that navigation (and tabs) also work from the search box, as in Explorer.
             if (target?.closest("input, textarea, select, [contenteditable=true], dialog, [popover], [data-terminal]")) {
+                // Esc leaves a field in Quick Look (a jq filter, a query); the next one closes Quick Look.
+                if (key === "Escape" && target instanceof HTMLElement && target.closest("[data-quicklook]")) return target.blur();
                 const navigation =
                     (e.altKey && !ctrl && ["ArrowLeft", "ArrowRight", "ArrowUp", "d"].includes(key)) ||
-                    (ctrl && !e.altKey && ["l", "f", "e", "t", "w", "d", "Tab"].includes(key)) ||
+                    (ctrl && !e.altKey && ["l", "f", "e", "t", "w", "d", "k", "p", "Tab"].includes(key)) ||
                     ["F3", "F4", "F5", "F6"].includes(key);
                 if (target.id !== FIND_BOX_ID || !navigation) return;
             }
@@ -1472,12 +1475,16 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "m") {
                     const pair = useActiveView.getState().comparePair;
                     if (pair) compareFiles(pair[0].path, pair[1].path);
-                    else return;
+                    else toast.message("Select two files to compare", { id: "compare-pair", description: "Or one in each pane, side by side (Ctrl+Shift+D)." });
                 }
                 else if (/^[1-9]$/.test(key) && !e.shiftKey) selectTab(Number(key));
                 else if (key === "Enter") openSelectedInTabs();
                 else if (key === "a") selectAll(rows);
-                else if (key === "c" && e.shiftKey) paths.length && copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths");
+                // The selection's paths; with nothing selected, the folder's (as the address bar's button says).
+                else if (key === "c" && e.shiftKey) {
+                    if (paths.length) copyText(paths.join("\r\n"), paths.length === 1 ? "path" : "paths");
+                    else if (!s.find && isFolderPath(s.path)) copyText(s.path, "path");
+                }
                 else if (key === "c") copyToClipboard(paths, false);
                 else if (key === "x") copyToClipboard(paths, true);
                 else if (key === "v") paste();
