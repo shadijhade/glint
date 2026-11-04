@@ -24,7 +24,7 @@ import {
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { type FileEntry, isArchiveFile, isHidden, terms } from "@/lib/entries";
-import { clearFind, goBack, goForward, goTo, goUp, leaveFind, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
+import { clearFind, findsAsTyped, goBack, goForward, goTo, goUp, leaveFind, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName, listDir, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { crumbs, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
@@ -485,7 +485,8 @@ export function AddressBar() {
             .filter((t) => !INCOMPLETE_FILTER.test(t))
             .map((t) => (/\s/.test(t) ? `"${t}"` : t))
             .join(" ");
-        if (!readyQuery) return;
+        // Subfolders as you type only where the index answers in milliseconds; an fd walk waits for Enter.
+        if (!readyQuery || !findsAsTyped(readyQuery, path)) return;
         findTimer.current = setTimeout(() => void runFind(readyQuery), 100);
     };
 
@@ -714,7 +715,7 @@ export function AddressBar() {
                     spellCheck={false}
                     placeholder={`Search ${folderName}`}
                     aria-label={`Search ${folderName} and its subfolders.`}
-                    title="Searches this folder and its subfolders by name or path as you type, with the instant search index or fd (* and ? work, words all must match). Filters: ext:pdf, path:src\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
+                    title="Typing filters this folder · Enter searches its subfolders too, by name or path, with the instant search index or fd (* and ? work, words all must match); where the index covers them, they're searched as you type. Filters: ext:pdf, path:src\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
                     className={cn("fluent-field h-8 w-full pl-8 text-sm outline-hidden placeholder:text-muted-foreground", filter || find ? "pr-8" : "pr-8 max-sm:pr-0 max-sm:focus:pr-2")}
                 />
                 {(filter || find) && (
@@ -751,7 +752,7 @@ export function AddressBar() {
                 {findFocused && !filter && !find && (
                     // Mouse down keeps the focus in the box, which each filter starts.
                     <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
-                        <p className="text-muted-foreground">Searches this folder and its subfolders by name or path as you type.</p>
+                        <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too, by name or path: as you type, where instant search covers them.</p>
                         {[
                             { title: "", filters: inRepository ? [...FILTERS, GIT_FILTER] : FILTERS },
                             { title: "What photos, videos and songs say (read from the files):", filters: PROP_FILTERS },
