@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
+import { plural } from "./format";
 import { baseName } from "./paths";
 import { type FolderRule, useStore } from "./store";
 
@@ -19,8 +20,8 @@ export interface RuleDone {
 }
 
 export const rulesPreview = (rule: FolderRule) => invoke<RuleDone[]>("rules_preview", { rule });
-/** Does what `rule` says to what's in its folder now: how many it did. */
-export const rulesApply = (rule: FolderRule) => invoke<number>("rules_apply", { rule });
+/** Does what `rule` says to what's in its folder now: how many it did, and how many it couldn't (the log says why). */
+export const rulesApply = (rule: FolderRule) => invoke<[number, number]>("rules_apply", { rule });
 export const rulesLog = () => invoke<RuleDone[]>("rules_log");
 export const rulesClearLog = () => invoke("rules_clear_log");
 export const rulesUndo = (id: number) => invoke("rules_undo", { id });
@@ -40,6 +41,37 @@ export async function undoRule(done: RuleDone) {
     }
 }
 
+/** What one rule did to one file, said with Undo. */
+function tell(done: RuleDone) {
+    if (done.error) toast.error(`Rule “${done.rule}” couldn't do it: ${baseName(done.from)}`, { description: done.error });
+    // A sync says what it did, and has no Undo.
+    else if (done.action === "sync") toast.success(`Rule “${done.rule}”: ${didWhat(done)}`);
+    else toast.success(`Rule “${done.rule}”: ${didWhat(done)}`, { description: done.to ?? undefined, action: { label: "Undo", onClick: () => void undoRule(done) } });
+}
+
+/** What rules did in the last moment: said a moment later, all of it at once. */
+let burst: RuleDone[] = [];
+
+/**
+ * A few things a rule did are each said, with Undo; more at once (a folder of files landing, the hourly
+ * sweep) is said once for that rule, and What they did lists each, with Undo.
+ */
+function tellBurst() {
+    const byRule = new Map<string, RuleDone[]>();
+    for (const done of burst) byRule.set(done.rule, [...(byRule.get(done.rule) ?? []), done]);
+    burst = [];
+    for (const [rule, dones] of byRule) {
+        if (dones.length <= 3) {
+            dones.forEach(tell);
+            continue;
+        }
+        const failed = dones.filter((d) => d.error);
+        const did = dones.find((d) => !d.error);
+        if (did) toast.success(`Rule “${rule}”: ${DID[did.action] ?? did.action} ${plural(dones.length - failed.length, "file")}`, { description: "What they did lists each, with Undo." });
+        if (failed.length) toast.error(`Rule “${rule}” couldn't do it to ${plural(failed.length, "file")}`, { description: failed[0].error ?? undefined });
+    }
+}
+
 /** Tells Rust the rules (at start and whenever they change), and says what they do as they do it, with Undo. */
 export function initRules() {
     const push = (rules: FolderRule[]) => invoke("rules_set", { rules }).catch(() => {});
@@ -47,10 +79,8 @@ export function initRules() {
         if (s.rules !== before.rules) void push(s.rules);
     });
     void listen<RuleDone>("rule-did", ({ payload: done }) => {
-        if (done.error) toast.error(`Rule “${done.rule}” couldn't do it: ${baseName(done.from)}`, { description: done.error });
-        // A sync says what it did, and has no Undo.
-        else if (done.action === "sync") toast.success(`Rule “${done.rule}”: ${didWhat(done)}`);
-        else toast.success(`Rule “${done.rule}”: ${didWhat(done)}`, { description: done.to ?? undefined, action: { label: "Undo", onClick: () => void undoRule(done) } });
+        if (!burst.length) setTimeout(tellBurst, 300);
+        burst.push(done);
     });
     return push(useStore.getState().rules);
 }
