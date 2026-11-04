@@ -593,7 +593,6 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         refreshScripts();
     }, [palette]);
     const showPreviewPane = useStore((s) => s.settings.showPreviewPane);
-    const { selected, comparePair } = useActiveView(useShallow((v) => ({ selected: v.selected, comparePair: v.comparePair })));
     const pinned = useStore((s) => s.pinned);
     const { setSettings, togglePin } = useStore.getState();
     const menu = useMenu();
@@ -947,9 +946,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             <Sidebar onContextMenu={onPlaceContextMenu} />
             {/* The files on a layer of their own: the backdrop shows only around them. */}
             <div className="flex min-w-0 flex-1 flex-col bg-background">
-                <CommandBar
-                    selected={selected}
-                    comparePair={comparePair}
+                <ActiveCommandBar
                     onRename={() => activePaneActions()?.startRename()}
                     onDelete={() => activePaneActions()?.deleteSelected(false)}
                     onSearchText={searchTextHere}
@@ -965,6 +962,12 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             {palette && <CommandPalette commands={paletteCommands()} onGoTo={(text) => goTo(text)} onClose={() => useExplorer.setState({ palette: false })} />}
         </div>
     );
+}
+
+/** The command bar, for the active pane's selection: subscribed here, so a click draws the bar again, not every pane. */
+function ActiveCommandBar(props: Omit<React.ComponentProps<typeof CommandBar>, "selected" | "comparePair">) {
+    const { selected, comparePair } = useActiveView(useShallow((v) => ({ selected: v.selected, comparePair: v.comparePair })));
+    return <CommandBar {...props} selected={selected} comparePair={comparePair} />;
 }
 
 /** The selection (or the folder) of the pane the keyboard acts on. Its left edge drags its width. */
@@ -1317,7 +1320,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const folder = find?.scope ?? path;
     const total = binTotal ?? sizeRun?.total;
     const shut = !!noAccess && !find;
-    const repo = !find && !!listing && !listing.archive && listing.entries.some((e) => e.lower === ".git");
+    const repo = useMemo(() => !find && !!listing && !listing.archive && listing.entries.some((e) => e.lower === ".git"), [find, listing]);
     useLayoutEffect(() => {
         if (current) useActiveView.setState({ selected, comparePair, items: rows.length, folder, total, noAccess: shut, repo });
     }, [current, selected, comparePair, rows.length, folder, total, shut, repo]);
