@@ -62,10 +62,14 @@ const COPIES_KEPT: usize = 2_000;
 /// Why something in an archive couldn't be read or extracted.
 #[derive(Debug, Clone)]
 pub enum Failure {
-    /// The entry is password-protected.
+    /// The entry is password-protected, and its archive has no password yet.
     Encrypted,
-    /// A 7z whose list of entries is itself encrypted.
-    EncryptedList,
+    /// A 7z or RAR whose list of entries is itself encrypted: the archive as the UI writes it, once
+    /// `opened` knows it.
+    EncryptedList(String),
+    /// The password given for the archive doesn't open it: the archive as the UI writes it, when it's
+    /// its list of entries that didn't open.
+    WrongPassword(String),
     /// Compressed with a method Glint doesn't have ("MP3", "Quantum").
     Unsupported(String),
     /// Something else Glint doesn't read ("it's a sparse file…").
@@ -100,8 +104,9 @@ impl Failure {
     /// What to tell the user, as a sentence about the entry or archive in question.
     pub fn message(&self) -> String {
         match self {
-            Failure::Encrypted => "It's password-protected, and Glint can't open encrypted files in archives yet.".into(),
-            Failure::EncryptedList => "This archive is password-protected, its list of files included, and Glint can't open encrypted archives yet.".into(),
+            Failure::Encrypted => "It's password-protected: its preview takes the password.".into(),
+            Failure::EncryptedList(_) => "This archive is password-protected, its list of files included.".into(),
+            Failure::WrongPassword(_) => "The password doesn't open it.".into(),
             Failure::Unsupported(what) => format!("It's compressed with {what}, which Glint can't read."),
             Failure::Unreadable(what) => format!("Glint can't read it: {what}."),
             Failure::Damaged(what) => format!("The archive is damaged: {what}."),
@@ -113,6 +118,15 @@ impl Failure {
             Failure::NotAFolder => "It's a file, not a folder.".into(),
             Failure::Cancelled => "cancelled".into(),
             Failure::Io(text) => text.clone(),
+        }
+    }
+
+    /// Names `archive` in a failure to read its list of entries for want of the right password.
+    fn of_archive(self, archive: &str) -> Failure {
+        match self {
+            Failure::EncryptedList(at) if at.is_empty() => Failure::EncryptedList(archive.to_string()),
+            Failure::WrongPassword(at) if at.is_empty() => Failure::WrongPassword(archive.to_string()),
+            other => other,
         }
     }
 }
@@ -301,6 +315,9 @@ struct State {
     /// One read of each archive at a time: the listing, the preview and folder sizes asking at once
     /// share it.
     loading: HashMap<String, Arc<Mutex<()>>>,
+    /// The password given for each archive (lowercase path, as the UI writes it), while the app runs.
+    /// ponytail: one per archive; an entry under another password asks again, and that one replaces it.
+    passwords: HashMap<String, String>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
@@ -341,11 +358,12 @@ fn opened(path: &str, outer: &str, stamp: (u64, i64), format: Format, file: impl
         return Ok((found, true));
     }
     let started = Instant::now();
+    let password = state().passwords.get(&key).cloned();
     let read = file().and_then(|file| {
         let size = std::fs::metadata(&file).map_or(0, |m| m.len());
         let scan = Arc::new(stream::Scan::new(size));
         state().scans.insert(key.clone(), (path.to_string(), scan.clone()));
-        let read = guarded(|| Source::open(&file, format, &scan));
+        let read = guarded(|| Source::open(&file, format, &scan, password.as_deref())).map_err(|e| e.of_archive(path));
         state().scans.remove(&key);
         read.map(|read| (file, read))
     });
@@ -852,6 +870,80 @@ pub async fn archive_extract(path: String, purpose: String) -> Result<String, St
         guarded(|| copy_of(&spot.archive, spot.node, purpose)).map(|p| p.to_string_lossy().into_owned()).map_err(|e| e.message())
     })
     .await
+}
+
+/// Keeps `password` for the archive `path` goes into, once it opens what's there: the archive's list
+/// of files when that's encrypted, or the password-protected file `path` is. One that doesn't is
+/// forgotten again. Passwords stay in memory, until Glint closes.
+#[tauri::command]
+pub async fn archive_unlock(path: String, password: String) -> Result<(), String> {
+    fsx::blocking(move || guarded(|| unlock(&path, &password)).map_err(|e| e.message())).await
+}
+
+fn unlock(path: &str, password: &str) -> Result<(), Failure> {
+    let archive = match spot(path).ok_or(Failure::NotFound)? {
+        Err(Failure::EncryptedList(archive) | Failure::WrongPassword(archive)) if !archive.is_empty() => archive,
+        Err(e) => return Err(e),
+        Ok(spot) => match locked_by(&spot) {
+            Some(archive) => archive,
+            None => return Ok(()),
+        },
+    };
+    let key = archive.to_lowercase();
+    let before = state().passwords.insert(key.clone(), password.to_string());
+    forget(&key);
+    if spot(path).ok_or(Failure::NotFound)?.and_then(|spot| opens(&spot, &key)).is_err() {
+        match before {
+            Some(before) => state().passwords.insert(key.clone(), before),
+            None => state().passwords.remove(&key),
+        };
+        forget(&key);
+        return Err(Failure::WrongPassword(String::new()));
+    }
+    Ok(())
+}
+
+/// The archive (as the UI writes it) whose password opens the file at `spot`, if one is wanted: the
+/// archive it's in, when it's password-protected there and that archive has no password yet; the
+/// archive it is, when its list of files is; or the archive it's in, whose password isn't this file's.
+fn locked_by(spot: &Spot) -> Option<String> {
+    let node = spot.node();
+    if node.dir {
+        return None;
+    }
+    let item = node.item as ItemIndex;
+    if matches!(spot.archive.source.problem(item), Some(Failure::Encrypted)) {
+        return Some(spot.archive.path.clone());
+    }
+    if let Err(Failure::EncryptedList(archive) | Failure::WrongPassword(archive)) = enter(&spot.archive, spot.node) {
+        if !archive.is_empty() {
+            return Some(archive);
+        }
+    }
+    spot.archive.source.encrypted(item).then(|| spot.archive.path.clone())
+}
+
+/// Whether, with the password now kept for the archive `key` (lowercase), what `spot` is opens: its list
+/// of files (read to get to a folder), a file's first byte when the password is for the archive it's in,
+/// or else the list of files of the archive the file is.
+fn opens(spot: &Spot, key: &str) -> Result<(), Failure> {
+    if spot.node().dir {
+        Ok(())
+    } else if spot.archive.path.to_lowercase() == key {
+        head_of(&spot.archive, spot.node, 1).map(|_| ())
+    } else {
+        enter(&spot.archive, spot.node).map(|_| ())
+    }
+}
+
+/// Drops the archive at `key` (lowercase), and archives in it, from memory: they're read again, with
+/// the password they have now.
+fn forget(key: &str) {
+    let inside = format!("{key}\\");
+    state().opened.retain(|o| {
+        let path = o.path.to_lowercase();
+        path != key && !path.starts_with(&inside)
+    });
 }
 
 #[derive(Serialize, Clone, Debug)]

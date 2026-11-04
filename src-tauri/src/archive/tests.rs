@@ -568,7 +568,7 @@ fn refuses_stream_bombs_and_stops_when_asked() {
     fs::write(&gz, compressed(&write_tar(&[("a.bin", &vec![9u8; 4 << 20])]), Codec::Gz)).unwrap();
     let scan = stream::Scan::new(0);
     scan.stop.store(true, Ordering::SeqCst);
-    let stopped = Source::open(&gz, Format::Tar(Codec::Gz), &scan);
+    let stopped = Source::open(&gz, Format::Tar(Codec::Gz), &scan, None);
     assert!(matches!(stopped, Err(Failure::Cancelled)), "{:?}", stopped.err());
 }
 
@@ -1052,6 +1052,44 @@ fn says_when_entries_are_password_protected() {
 }
 
 #[test]
+fn opens_password_protected_entries_with_their_password() {
+    let dir = scratch("unlock");
+    let read = |path: &str| fs::read(copy(path, Purpose::Preview).unwrap()).unwrap();
+    // A wrong password is refused and forgotten; the right one opens the file, and its folder lists it unlocked.
+    for name in ["aes.zip", "zipcrypto.zip", "encrypted.7z"] {
+        let archive = fixture(name, &dir);
+        let readme = format!("{archive}\\docs\\readme.txt");
+        assert!(matches!(unlock(&readme, "wrong"), Err(Failure::WrongPassword(_))), "{name}");
+        assert!(matches!(copy(&readme, Purpose::Preview), Err(Failure::Encrypted)), "{name}: still locked");
+        unlock(&readme, "secret").unwrap();
+        assert!(read(&readme).starts_with(b"hello from 7-Zip"), "{name}");
+        assert_eq!(listing(&format!("{archive}\\docs")).items[0].3 & ENCRYPTED, 0, "{name}");
+    }
+    // A 7z whose list of files is encrypted: unlocked at the archive, which then lists.
+    let hidden = fixture("encrypted-list.7z", &dir);
+    assert!(unlock(&hidden, "wrong").is_err());
+    assert!(list(&hidden, Instant::now()).unwrap().unwrap_err().contains("password-protected"), "still locked");
+    unlock(&hidden, "secret").unwrap();
+    assert!(read(&format!("{hidden}\\docs\\readme.txt")).starts_with(b"hello from 7-Zip"));
+    // RAR: files under passwords of their own, the one given last kept; names encrypted too.
+    for name in ["rar4-encrypted.rar", "rar5-encrypted.rar"] {
+        let archive = fixture(name, &dir);
+        unlock(&format!("{archive}\\b.txt"), "password").unwrap();
+        assert_eq!(read(&format!("{archive}\\b.txt")), b"This is from b.txt", "{name}");
+        assert!(matches!(copy(&format!("{archive}\\d.txt"), Purpose::Preview), Err(Failure::WrongPassword(_))), "{name}: d.txt has its own");
+        unlock(&format!("{archive}\\d.txt"), "password2").unwrap();
+        assert_eq!(read(&format!("{archive}\\d.txt")), b"This is from d.txt", "{name}");
+    }
+    for name in ["rar4-encrypted-names.rar", "rar5-encrypted-names.rar"] {
+        let archive = fixture(name, &dir);
+        assert!(unlock(&archive, "wrong").is_err(), "{name}");
+        unlock(&archive, "password").unwrap();
+        assert_eq!(names(&listing(&archive)), ["a.txt", "b.txt", "c.txt", "d.txt"], "{name}");
+        assert_eq!(read(&format!("{archive}\\c.txt")), b"This is from c.txt", "{name}");
+    }
+}
+
+#[test]
 fn reads_what_7zip_made() {
     let dir = scratch("real");
     for name in ["real.7z", "real.zip"] {
@@ -1252,7 +1290,7 @@ fn lists_50000_entries_in_milliseconds() {
     let z = text(&zip);
     for _ in 0..3 {
         let started = Instant::now();
-        let (_, items, _) = Source::open(&zip, Format::Zip, &stream::Scan::new(0)).unwrap();
+        let (_, items, _) = Source::open(&zip, Format::Zip, &stream::Scan::new(0), None).unwrap();
         let read = ms_since(started);
         let started = Instant::now();
         let tree = Tree::build(&items);

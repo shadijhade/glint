@@ -36,6 +36,7 @@ import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
 import { Explorer } from "./components/explorer/Explorer";
 import { HistoryDialog } from "./components/explorer/HistoryDialog";
 import { LocksDialog } from "./components/explorer/LocksDialog";
+import { PasswordDialog } from "./components/explorer/PasswordDialog";
 import { TimelineDialog } from "./components/explorer/TimelineDialog";
 import { XRayDialog } from "./components/explorer/XRayDialog";
 import { Button } from "./components/ui/button";
@@ -528,6 +529,7 @@ function App() {
       <CopyQueue />
       <BatchRenameDialog />
       <XRayDialog />
+      <PasswordDialog />
       <ShortcutsDialog />
       <HistoryPopover onPick={pickHistory} />
       <dialog

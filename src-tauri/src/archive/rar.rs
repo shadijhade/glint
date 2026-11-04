@@ -126,10 +126,22 @@ pub struct RarSource {
     before: Vec<u64>,
     packed: u64,
     unpacked: u64,
+    /// Which entries are password-protected, and what UnRAR is given when it asks for the password.
+    encrypted: Vec<bool>,
+    password: Option<String>,
 }
 
 fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain([0]).collect()
+}
+
+/// What an UnRAR error means for something read with a password: that it's the wrong one, when the
+/// error says so, or for bad data (a wrong password decrypts RAR 4's to noise, with no check of its own).
+fn failure_with(code: i32, missing: &Option<String>, password: bool) -> Failure {
+    match code {
+        codes::ERAR_MISSING_PASSWORD | codes::ERAR_BAD_PASSWORD | codes::ERAR_BAD_DATA if password => Failure::WrongPassword(String::new()),
+        code => failure(code, missing),
+    }
 }
 
 fn text(units: &[u16]) -> String {
@@ -157,6 +169,8 @@ struct Feed {
     /// Whether the data now coming is an entry being served (else it's read through, in a solid archive).
     serving: bool,
     missing: Option<String>,
+    /// What UnRAR gets when it asks for the password (UTF-16, without its NUL); without one, it's told no.
+    password: Option<Vec<u16>>,
 }
 
 enum Piece {
@@ -202,7 +216,19 @@ extern "system" fn callback(msg: u32, user: isize, p1: isize, p2: isize) -> i32 
             -1
         }
         codes::UCM_CHANGEVOLUME if p2 == codes::RAR_VOL_NOTIFY => 1,
-        // No passwords yet; nor the narrow-string versions of these.
+        codes::UCM_NEEDPASSWORDW => match &feed.password {
+            Some(password) if (password.len() as isize) < p2 => {
+                // Safety: UnRAR passes a buffer of `p2` UTF-16 units for the password, which fits it and its NUL.
+                unsafe {
+                    let dest = p1 as *mut u16;
+                    std::ptr::copy_nonoverlapping(password.as_ptr(), dest, password.len());
+                    *dest.add(password.len()) = 0;
+                }
+                1
+            }
+            _ => -1,
+        },
+        // Nor the narrow-string versions of these.
         _ => -1,
     }
 }
@@ -249,8 +275,8 @@ impl Opened {
                 unsafe { ffi::RARCloseArchive(handle) };
             }
             return Err(match result {
-                codes::ERAR_MISSING_PASSWORD | codes::ERAR_BAD_PASSWORD => Failure::EncryptedList,
-                code => failure(code, &feed.missing),
+                codes::ERAR_MISSING_PASSWORD | codes::ERAR_BAD_PASSWORD if feed.password.is_none() => Failure::EncryptedList(String::new()),
+                code => failure_with(code, &feed.missing, feed.password.is_some()),
             });
         }
         Ok(Opened { handle, flags: data.flags, feed, name: vec![0; MAX_TARGET], target: vec![0; MAX_TARGET] })
@@ -331,14 +357,17 @@ fn first_volume(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-/// Lists the archive (from its first volume, when `path` is a later one and the first is there).
-pub fn open(path: &Path, max_entries: usize) -> Result<(RarSource, Vec<Item>), Failure> {
+/// Lists the archive (from its first volume, when `path` is a later one and the first is there), with
+/// `password` for encrypted names and entries.
+pub fn open(path: &Path, max_entries: usize, password: Option<&str>) -> Result<(RarSource, Vec<Item>), Failure> {
     let first = first_volume(path);
-    let mut archive = Opened::open(&first, codes::RAR_OM_LIST, Feed { tx: None, stop: Arc::new(AtomicBool::new(false)), serving: false, missing: None })?;
+    let feed = Feed { tx: None, stop: Arc::new(AtomicBool::new(false)), serving: false, missing: None, password: password.map(|p| p.encode_utf16().collect()) };
+    let mut archive = Opened::open(&first, codes::RAR_OM_LIST, feed)?;
     let solid = archive.flags & codes::ROADF_SOLID != 0;
     let mut items: Vec<Item> = Vec::new();
     let mut data = Vec::new();
     let mut problems: Vec<Option<Failure>> = Vec::new();
+    let mut encrypted = Vec::new();
     let mut targets = Vec::new();
     let mut packed = 0u64;
     // Whether the last file read goes on into the next volume.
@@ -356,7 +385,7 @@ pub fn open(path: &Path, max_entries: usize) -> Result<(RarSource, Vec<Item>), F
                 }
                 break;
             }
-            Err(code) if items.is_empty() => return Err(failure(code, &archive.feed().missing)),
+            Err(code) if items.is_empty() => return Err(failure_with(code, &archive.feed().missing, password.is_some())),
             // Damage past the first files: what was read so far lists.
             Err(_) => break,
         };
@@ -383,7 +412,7 @@ pub fn open(path: &Path, max_entries: usize) -> Result<(RarSource, Vec<Item>), F
             // An older RAR's Unix symlink keeps its target as its data, which UnRAR reads only to
             // make the link, never to hand it on.
             1..=3 => (Data::Unrar, Some(Failure::Unreadable("it's a symbolic link from an older RAR, whose target UnRAR doesn't pass on".into()))),
-            _ if flags & codes::RHDF_ENCRYPTED != 0 => (Data::Unrar, Some(Failure::Encrypted)),
+            _ if flags & codes::RHDF_ENCRYPTED != 0 => (Data::Unrar, password.is_none().then_some(Failure::Encrypted)),
             _ if flags & codes::RHDF_SPLITBEFORE != 0 => (Data::Unrar, Some(Failure::Unreadable("it begins in the volume before this one, which isn't there".into()))),
             _ => (Data::Unrar, None),
         };
@@ -393,6 +422,7 @@ pub fn open(path: &Path, max_entries: usize) -> Result<(RarSource, Vec<Item>), F
         items.push(item);
         data.push(entry);
         problems.push(problem);
+        encrypted.push(flags & codes::RHDF_ENCRYPTED != 0);
         let code = archive.process(codes::RAR_SKIP);
         if code != 0 {
             // The file goes on in a volume that isn't there.
@@ -424,7 +454,7 @@ pub fn open(path: &Path, max_entries: usize) -> Result<(RarSource, Vec<Item>), F
         sum = sum.saturating_add(item.size);
     }
     let unpacked = sum;
-    Ok((RarSource { first, data, problems, solid, before, packed, unpacked }, items))
+    Ok((RarSource { first, data, problems, solid, before, packed, unpacked, encrypted, password: password.map(str::to_string) }, items))
 }
 
 impl RarSource {
@@ -446,6 +476,10 @@ impl RarSource {
 
     pub fn problem(&self, item: usize) -> Option<Failure> {
         self.problems.get(item).cloned().flatten()
+    }
+
+    pub fn encrypted(&self, item: usize) -> bool {
+        self.encrypted.get(item).copied().unwrap_or(false)
     }
 
     /// Links' targets from memory; the rest in passes through the archive in order, each header
@@ -493,8 +527,11 @@ impl RarSource {
         let (tx, rx) = sync_channel(QUEUED);
         let stop = Arc::new(AtomicBool::new(false));
         let headers: Vec<usize> = pass.iter().map(|&(h, _)| h).collect();
+        // Which of them a wrong password would fail.
+        let locked: Vec<bool> = headers.iter().map(|&h| self.password.is_some() && self.encrypted(h)).collect();
+        let password = self.password.as_deref().map(|p| p.encode_utf16().collect());
         let (first, solid, worker_stop) = (self.first.clone(), self.solid, stop.clone());
-        let worker = std::thread::spawn(move || serve(&first, &headers, solid, tx, worker_stop));
+        let worker = std::thread::spawn(move || serve(&first, &headers, &locked, password, solid, tx, worker_stop));
         let mut served = vec![false; pass.len()];
         let mut go = true;
         loop {
@@ -549,9 +586,9 @@ impl RarSource {
 }
 
 /// UnRAR's side of a pass: tests each header wanted, in order, sending its bytes; reads through
-/// (a solid archive) or skips the rest.
-fn serve(first: &Path, headers: &[usize], solid: bool, tx: SyncSender<Piece>, stop: Arc<AtomicBool>) {
-    let feed = Feed { tx: Some(tx.clone()), stop: stop.clone(), serving: false, missing: None };
+/// (a solid archive) or skips the rest. `locked` says which wanted headers a wrong password fails.
+fn serve(first: &Path, headers: &[usize], locked: &[bool], password: Option<Vec<u16>>, solid: bool, tx: SyncSender<Piece>, stop: Arc<AtomicBool>) {
+    let feed = Feed { tx: Some(tx.clone()), stop: stop.clone(), serving: false, missing: None, password };
     let mut archive = match Opened::open(first, codes::RAR_OM_EXTRACT, feed) {
         Ok(a) => a,
         Err(e) => {
@@ -582,11 +619,12 @@ fn serve(first: &Path, headers: &[usize], solid: bool, tx: SyncSender<Piece>, st
             if tx.send(Piece::Begin(next)).is_err() {
                 return;
             }
+            let locked = locked.get(next).copied().unwrap_or(false);
             next += 1;
             archive.feed().serving = true;
             let code = archive.process(codes::RAR_TEST);
             archive.feed().serving = false;
-            let why = (code != 0).then(|| failure(code, &archive.feed().missing));
+            let why = (code != 0).then(|| failure_with(code, &archive.feed().missing, locked));
             if tx.send(Piece::End(why)).is_err() {
                 return;
             }
