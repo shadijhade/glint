@@ -8,6 +8,17 @@ const TYPED = "input:not([type=checkbox], [type=radio], [type=range], [type=butt
 const FOCUSABLE = "button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
 
 /**
+ * Whether `box` is the dialog on top, the one Esc is for: the last one in the page (they share a
+ * layer, so a later one shows over an earlier one: F1 over Compare), with no native dialog (Settings)
+ * open over it.
+ */
+function onTop(box: Element) {
+    const modals = document.querySelectorAll('[aria-modal="true"]');
+    const native = document.querySelector("dialog:modal");
+    return modals[modals.length - 1] === box && (!native || native.contains(box));
+}
+
+/**
  * A dialog over the panes, as the tool dialogs share it: focus moves into it (to what asks for it,
  * else the dialog itself), Tab stays inside, and focus goes back where it was when it closes. Esc
  * leaves a field with something typed in it first (what's typed stays), then closes the dialog, as
@@ -27,11 +38,13 @@ export function Modal({ label, onClose, onSubmit, className, children }: { label
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             const box = ref.current;
-            // A menu open in it closes on its own.
-            if (e.key !== "Escape" || !box || box.querySelector(":popover-open")) return;
+            // A menu open in it closes on its own, and a dialog over it takes the Esc.
+            if (e.key !== "Escape" || !box || box.querySelector(":popover-open") || !onTop(box)) return;
+            const field = document.activeElement;
+            // A field with an Esc of its own (cancelling a line's edit, closing a find bar) keeps it.
+            if (field instanceof HTMLElement && box.contains(field) && field.closest("[data-own-escape]")) return;
             e.preventDefault();
             e.stopPropagation();
-            const field = document.activeElement;
             if (field instanceof HTMLElement && box.contains(field) && field.matches(TYPED) && (field as HTMLInputElement).value) return box.focus();
             onClose();
         };
