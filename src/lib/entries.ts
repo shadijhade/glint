@@ -270,11 +270,37 @@ export function sortEntries(
     sort: Sort,
     foldersFirst: boolean,
     presorted: boolean,
+    sizeOf?: (e: FileEntry) => number,
+    takenOf?: (e: FileEntry) => number | null | undefined,
+    factsOf?: (e: FileEntry) => MediaFacts | null | undefined
+) {
+    if (presorted && foldersFirst && sort.key === "name" && !sort.desc) return entries;
+    return [...entries].sort(entryOrder(sort, foldersFirst, presorted, sizeOf, takenOf, factsOf));
+}
+
+/**
+ * `sorted` with `more` sorted into it, both in `order`: a list that grows (a search's results, batch by
+ * batch) sorts only what's new. Ties keep `sorted`'s first, as sorting them all (stably) would.
+ */
+export function mergeSorted(sorted: FileEntry[], more: FileEntry[], order: (a: FileEntry, b: FileEntry) => number) {
+    const tail = [...more].sort(order);
+    const out = new Array<FileEntry>(sorted.length + tail.length);
+    let [i, j, k] = [0, 0, 0];
+    while (i < sorted.length && j < tail.length) out[k++] = order(tail[j], sorted[i]) < 0 ? tail[j++] : sorted[i++];
+    while (i < sorted.length) out[k++] = sorted[i++];
+    while (j < tail.length) out[k++] = tail[j++];
+    return out;
+}
+
+/** How sortEntries orders two entries. */
+export function entryOrder(
+    sort: Sort,
+    foldersFirst: boolean,
+    presorted: boolean,
     sizeOf = (e: FileEntry) => e.size,
     takenOf: (e: FileEntry) => number | null | undefined = () => undefined,
     factsOf: (e: FileEntry) => MediaFacts | null | undefined = () => undefined
 ) {
-    if (presorted && foldersFirst && sort.key === "name" && !sort.desc) return entries;
     const direction = sort.desc ? -1 : 1;
     const group = (e: FileEntry) => (foldersFirst && e.dir ? 0 : 1);
     const pixels = (e: FileEntry) => (factsOf(e)?.width ?? 0) * (factsOf(e)?.height ?? 0);
@@ -292,7 +318,7 @@ export function sortEntries(
         album: (a, b) => text(a, "album").localeCompare(text(b, "album"), undefined, { sensitivity: "base", numeric: true }),
     };
     const by = compare[sort.key];
-    return [...entries].sort((a, b) => group(a) - group(b) || direction * by(a, b) || (presorted ? 0 : byName(a, b)));
+    return (a: FileEntry, b: FileEntry) => group(a) - group(b) || direction * by(a, b) || (presorted ? 0 : byName(a, b));
 }
 
 /** Splits a query into terms; "double quotes" keep spaces in one term (matches the Rust side). */
