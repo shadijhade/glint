@@ -750,8 +750,9 @@ export function AddressBar() {
                     </div>
                 )}
                 {findFocused && !filter && !find && (
-                    // Mouse down keeps the focus in the box, which each filter starts.
-                    <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
+                    // Mouse down keeps the focus in the box, which each filter starts. Each meaning wraps
+                    // rather than being cut off, and in a short window the list scrolls.
+                    <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 max-h-[calc(100vh-3.5rem)] w-[max(100%,19rem)] overflow-y-auto rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
                         <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too, by name or path: as you type, where instant search covers them.</p>
                         {[
                             { title: "", filters: inRepository ? [...FILTERS, GIT_FILTER] : FILTERS },
@@ -762,7 +763,7 @@ export function AddressBar() {
                                 {filters.map(([start, example, meaning]) => (
                                     <button key={start} type="button" tabIndex={-1} onClick={() => onFilterChange(start)} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
                                         <code className="shrink-0 font-mono text-[0.6875rem] text-primary">{example}</code>
-                                        <span className="truncate text-muted-foreground">{meaning}</span>
+                                        <span className="text-muted-foreground">{meaning}</span>
                                     </button>
                                 ))}
                             </div>

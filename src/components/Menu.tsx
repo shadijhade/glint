@@ -65,7 +65,9 @@ export function useMenu() {
         });
         const menu = ref.current!;
         if (!menu.matches(":popover-open")) menu.showPopover();
-        const { width, height } = menu.getBoundingClientRect();
+        // Its layout size: the box on screen is still scaled down as it pops in, and placed by that it
+        // would end up below the window's bottom.
+        const { offsetWidth: width, offsetHeight: height } = menu;
         const left = Math.max(4, Math.min(at.clientX, innerWidth - width - 4));
         const top = Math.max(4, Math.min(at.clientY, innerHeight - height - 4));
         menu.style.left = `${left}px`;
@@ -82,7 +84,7 @@ export function useMenu() {
             setStack((s) => [...s, { label, items }]);
             setItems(next);
         });
-        const { height } = menu.getBoundingClientRect();
+        const height = menu.offsetHeight;
         menu.style.top = `${Math.max(4, Math.min(top - 4, innerHeight - height - 4))}px`;
         focusFirst(menu);
     };
@@ -97,7 +99,7 @@ export function useMenu() {
             setStack((s) => s.slice(0, -1));
             setItems(prev.items);
         });
-        const { height } = menu.getBoundingClientRect();
+        const height = menu.offsetHeight;
         menu.style.top = `${Math.max(4, Math.min(top, innerHeight - height - 4))}px`;
         focusFirst(menu);
     };
@@ -136,7 +138,8 @@ export function useMenu() {
             popover="auto"
             role="menu"
             onKeyDown={onKeyDown}
-            className="fixed inset-auto m-0 min-w-[14.5rem] rounded-lg border border-border/80 bg-popover/95 p-1 text-popover-foreground shadow-xl backdrop-blur-xl"
+            // No taller than the window (it can be 360 px): what doesn't fit scrolls.
+            className="fixed inset-auto m-0 max-h-[calc(100vh-0.5rem)] min-w-[14.5rem] overflow-y-auto rounded-lg border border-border/80 bg-popover/95 p-1 text-popover-foreground shadow-xl backdrop-blur-xl"
         >
             {parent && (
                 <button
