@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { askArchivePassword, needsPassword } from "./archives";
-import { type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, terms, withDetails } from "./entries";
+import { type FileEntry, hasFilterOrPath, hasPropFilter, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, terms, withDetails } from "./entries";
 import {
     archiveCompress,
     archiveExtract,
@@ -1508,10 +1508,12 @@ const searchedDrives = () => get().drives.filter((d) => d.kind === "fixed" || d.
 /**
  * Whether a search for `query` from `path` is the index's alone, answered in milliseconds, so it can
  * run as it's typed. fd's walks, .gitignore rules and what photos, videos and songs say (read from each
- * file) wait for Enter, while typing filters what's shown.
+ * file) wait for Enter, while typing filters what's shown; so do filters and paths while the service is
+ * older than the app, as fd answers them until it's updated.
  */
 export function findsAsTyped(query: string, path: string) {
     if (useStore.getState().settings.findRespectIgnore || hasPropFilter(query)) return false;
+    if (serviceOutdated(get().index) && hasFilterOrPath(query)) return false;
     const scope = findScope(query, path);
     return scope === THIS_PC ? searchedDrives().every((d) => indexed(d.path)) : indexed(scope);
 }
