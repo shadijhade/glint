@@ -408,6 +408,9 @@ const PROPS = /^(width|height|duration|taken|camera|artist|album):(.*)$/;
 /** Whether a search holds a property filter (width:, taken:…), which needs files read to apply. */
 export const hasPropFilter = (query: string) => terms(query.toLowerCase()).some((t) => PROPS.test(t));
 
+/** Whether a search holds a filter (ext:, size:, dm:, file:, folder:) or a path (src\lib, path:docs), which an instant search service older than the app doesn't read. */
+export const hasFilterOrPath = (query: string) => terms(query.toLowerCase()).some((t) => /^(ext|size|dm|files?|folders?|path):/.test(t) || /[\\/]/.test(t));
+
 /**
  * A property filter's test of what a file says (media.rs, as the search applies it), or null when it
  * doesn't read right: `width:>1920`, `height:`, `duration:>5m`, `taken:2024` (2024-06, 2024-06-15, after

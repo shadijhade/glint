@@ -7,7 +7,7 @@ use crate::fsx::{encode_items, entry_for_path, ms_since, Entry};
 use crate::proc::Slot;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
-use shadui_index::query::{parse, without_props, Kind};
+use shadui_index::query::{parse, without_props, Filters, Kind};
 use std::io::{BufRead, BufReader, Read};
 use std::process::Stdio;
 use std::collections::HashMap;
@@ -301,6 +301,18 @@ pub(crate) fn same_service() -> bool {
     false
 }
 
+/// Whether the running service reads all of a query: an older one reads ext: and the like, and paths
+/// (src\lib, path:docs), as part of a name and finds nothing, so fd answers those until it's updated.
+/// Asking it can wait on its pipe.
+pub(crate) fn service_reads(terms: &[String], filters: &Filters) -> bool {
+    any_service_reads(terms, filters) || same_service()
+}
+
+/// A query of names alone, which every version of the service reads.
+fn any_service_reads(terms: &[String], filters: &Filters) -> bool {
+    filters.is_empty() && !terms.iter().any(|t| shadui_index::query::is_path_term(t))
+}
+
 #[cfg(not(windows))]
 fn search_index(_: &[String], _: &str, _: &FindOptions, _: &AtomicBool, _: &mut Out) -> Option<Answered> {
     None
@@ -382,9 +394,9 @@ pub async fn find_files(
     let run = state.finds.start(&lane);
     let finds = state.finds.clone();
     thread::spawn(move || {
-        // An older service would read ext: and the like as part of a name, and find nothing: until it's
-        // updated, fd answers queries with filters. Asking it can wait on its pipe, so it's asked here.
-        let index_reads_filters = filters.is_empty() || same_service();
+        // Until an older service is updated, fd answers queries with filters or paths. Asking it can wait
+        // on its pipe, so it's asked here.
+        let index_reads = service_reads(&terms, &filters);
         let (stop, slot) = (&run.stop, &run.fd);
         let started = Instant::now();
         // With properties to check, the index and fd find every candidate, which four threads read
@@ -449,7 +461,7 @@ pub async fn find_files(
                 }
             }
             // .gitignore rules are fd's alone; anything else goes to the index first.
-            if !options.respect_ignore && index_reads_filters {
+            if !options.respect_ignore && index_reads {
                 if let Some(answered) = search_index(&roots, &query, &options, stop, &mut out) {
                     (fd_roots, limited, fuzzy) = (answered.skipped, answered.limited, answered.fuzzy);
                 }
@@ -526,6 +538,18 @@ mod tests {
         assert!(args.contains(&"--full-path".into()) && !args.contains(&"--glob".into()) && !args.contains(&"--fixed-strings".into()));
         assert!(args.ends_with(&[r"--and=util[^\\/]*$".into(), r"--and=(?:^|[\\/])[^\\/]*\.ts$".into(), "--".into(), r"src\\lib".into(), r"C:\Users".into()]));
         assert!(fd_args(r"path:docs\*.md", &roots, &options()).unwrap().ends_with(&["--".into(), r"docs\\.*\.md".into(), r"C:\Users".into()]));
+    }
+
+    #[test]
+    fn an_older_service_is_asked_only_for_names() {
+        let reads = |query: &str| {
+            let (terms, filters) = parse(query).unwrap();
+            any_service_reads(&terms, &filters)
+        };
+        assert!(reads("budget 2026") && reads("*.pdf -draft"));
+        for query in ["ext:pdf", "report folder:", r"src\lib main", "src/lib", "path:docs", r"D:\photos"] {
+            assert!(!reads(query), "{query}");
+        }
     }
 
     #[test]
