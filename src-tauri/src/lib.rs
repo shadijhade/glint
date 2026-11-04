@@ -804,6 +804,7 @@ pub fn run() {
             filediff::compare_bytes,
             filediff::file_bytes,
             filediff::next_byte_difference,
+            filediff::prev_byte_difference,
             term::term_shells,
             term::term_spawn,
             term::term_write,

@@ -839,12 +839,17 @@ impl Tree {
     /// typos allowed) the closest first.
     pub fn search(&self, search: &Search) -> Vec<u32> {
         const CHUNK: usize = 1 << 14;
+        let has_paths = search.matcher.has_paths();
         let found: Vec<Vec<(u32, u32)>> = self
             .links
             .par_chunks(CHUNK)
             .enumerate()
             .map(|(chunk, links)| {
                 let mut found = Vec::new();
+                let mut chain = Vec::with_capacity(if has_paths { MAX_DEPTH } else { 0 });
+                let mut path_buf = Vec::with_capacity(if has_paths { 256 } else { 0 });
+                let mut last_parent = NONE;
+                let mut last_dir_len = 0;
                 for (i, link) in links.iter().enumerate() {
                     if link.flags & LINK_USED == 0 || link.rec < FIRST_USER_RECORD {
                         continue;
@@ -864,6 +869,35 @@ impl Tree {
                     }
                     if search.excludes.name(name, folded) || !self.reachable(link.parent, search) {
                         continue;
+                    }
+                    if has_paths {
+                        if link.parent != last_parent {
+                            path_buf.clear();
+                            chain.clear();
+                            let mut at = link.parent;
+                            while at != ROOT {
+                                let Some(rec) = self.recs.get(at as usize) else { break };
+                                if !rec.used() || rec.first_link == NONE || chain.len() >= MAX_DEPTH {
+                                    break;
+                                }
+                                chain.push(rec.first_link);
+                                at = self.links[rec.first_link as usize].parent;
+                            }
+                            for &up_id in chain.iter().rev() {
+                                let up = &self.links[up_id as usize];
+                                let up_name = &self.names[up.name as usize..up.name as usize + up.len as usize];
+                                path_buf.extend_from_slice(Tree::folded_in(&self.names, up).unwrap_or(up_name));
+                                path_buf.push(b'\\');
+                            }
+                            last_parent = link.parent;
+                            last_dir_len = path_buf.len();
+                        } else {
+                            path_buf.truncate(last_dir_len);
+                        }
+                        path_buf.extend_from_slice(folded.unwrap_or(name));
+                        if !search.matcher.matches_path(&path_buf) {
+                            continue;
+                        }
                     }
                     if search.excludes.has_paths() && self.excluded_path(id, search) {
                         continue;
@@ -1478,6 +1512,11 @@ mod tests {
         assert_eq!(find(&tree, "*", 21, true, &[]).len(), 5);
         assert_eq!(find(&tree, "*", 21, true, &["docs"]), [r"Users\me\a.txt"]);
         assert_eq!(find(&tree, "*", 21, true, &[r"docs\.hidden", "*.txt"]), [r"Users\me\docs", r"Users\me\docs\b.pdf"]);
+        // Path terms (`\`, `/` or `path:`) match against the item's path.
+        assert_eq!(find(&tree, r"me\docs\b.pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
+        assert_eq!(find(&tree, "Users/me/docs/b.pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
+        assert_eq!(find(&tree, r"C:\Users\me\docs\b.pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
+        assert_eq!(find(&tree, "path:docs b.pdf", ROOT, false, &[]), [r"Users\me\docs\b.pdf"]);
         // The root folder itself and NTFS metadata never show up.
         assert!(find(&tree, ".", ROOT, true, &[]).iter().all(|p| p.contains('.')));
     }

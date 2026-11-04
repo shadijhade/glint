@@ -23,11 +23,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
-import { type FileEntry, isArchiveFile, isHidden } from "@/lib/entries";
-import { clearFind, goBack, goForward, goTo, goUp, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
+import { type FileEntry, isArchiveFile, isHidden, terms } from "@/lib/entries";
+import { clearFind, goBack, goForward, goTo, goUp, leaveFind, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName, listDir, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
-import { crumbs, GALLERY, inArchivePath, isGallery, isRecent, isRecycleBin, isRemotePath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { crumbs, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { plainQuery } from "@/lib/plain";
 import { remoteName, remotePath } from "@/lib/remotes";
 import { editsAllowed, typoDistance } from "@/lib/rank";
@@ -42,13 +42,14 @@ export const FIND_BOX_ID = "find-box";
 /** The search box's filters, as it offers them when empty: what choosing one types, an example, and what it means. */
 const FILTERS: [string, string, string][] = [
     ["ext:", "ext:pdf", "of a type (ext:jpg,png for more)"],
+    ["path:", "path:src\\lib", "matching folder or file path (or type \\ or /)"],
     ["size:>", "size:>10mb", "bigger than (size:<1kb smaller)"],
     ["dm:", "dm:7d", "changed in the last 7 days (dm:>1y before)"],
     ["file:", "file:", "files only"],
     ["folder:", "folder:", "folders only"],
 ];
 
-/** What photos, videos and songs say of themselves (media.rs reads it): as you type for what's here, by the search on Enter. */
+/** What photos, videos and songs say of themselves (media.rs reads it): as you type. */
 const PROP_FILTERS: [string, string, string][] = [
     ["width:>", "width:>1920", "wider than (height:<1080 too), photos and videos"],
     ["taken:", "taken:2024", "taken in 2024 (taken:2024-06, taken:>2023, taken:7d)"],
@@ -57,11 +58,14 @@ const PROP_FILTERS: [string, string, string][] = [
     ["artist:", "artist:beatles", "songs by (album: too)"],
 ];
 
-/** Offered too in a Git repository: it filters what's on screen (Enter doesn't take it into subfolders). */
+/** Offered too in a Git repository: it filters what's on screen. */
 const GIT_FILTER: [string, string, string] = ["git:", "git:changed", "changed in Git (git:new, git:staged…), here"];
 
 /** Whether a search holds a git: filter, which works on the folder shown only. */
 const hasGitFilter = (text: string) => /(^|\s)git:/i.test(text);
+
+/** A filter prefix whose value hasn't been typed yet (e.g. "ext:", "size:>"). */
+const INCOMPLETE_FILTER = /^(ext|size|dm|width|height|duration|taken|camera|artist|album|path):[<>=]*$/i;
 
 function NavButton({ icon: Icon, label, className, ...props }: { icon: LucideIcon; label: string } & React.ComponentProps<"button">) {
     return (
@@ -464,18 +468,39 @@ export function AddressBar() {
     };
 
     // Plain words read as filters ("pdfs from last week over 5 mb"), offered under the box: Tab takes them.
-    const plain = useMemo(() => (findFocused && !find ? plainQuery(filter) : null), [findFocused, find, filter]);
+    const plain = useMemo(() => (findFocused ? plainQuery(filter) : null), [findFocused, filter]);
+    const findTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    useEffect(() => () => clearTimeout(findTimer.current), [tab]);
+
+    const onFilterChange = (value: string) => {
+        clearTimeout(findTimer.current);
+        updateTab({ filter: value });
+        const trimmed = value.trim();
+        if (!trimmed || hasGitFilter(trimmed)) {
+            leaveFind();
+            return;
+        }
+        if (path !== THIS_PC && !isFolderPath(path) && !/^[A-Za-z]:[\\/]/.test(trimmed)) return;
+        const readyQuery = terms(trimmed)
+            .filter((t) => !INCOMPLETE_FILTER.test(t))
+            .map((t) => (/\s/.test(t) ? `"${t}"` : t))
+            .join(" ");
+        if (!readyQuery) return;
+        findTimer.current = setTimeout(() => void runFind(readyQuery), 100);
+    };
 
     const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === "Tab" && !e.shiftKey && plain) {
             e.preventDefault();
-            updateTab({ filter: plain.query });
+            onFilterChange(plain.query);
         } else if (e.key === "Enter") {
             e.preventDefault();
+            clearTimeout(findTimer.current);
             // Git's marks are the folder shown's: a search of its subfolders couldn't ask them.
-            if (hasGitFilter(filter)) toast.message("git: filters this folder, as you type", { id: "git-filter", description: "Enter searches subfolders by name, where Git's marks don't reach." });
-            else runFind(filter);
+            if (hasGitFilter(filter)) toast.message("git: filters this folder, as you type", { id: "git-filter", description: "Git's marks are for the open folder only." });
+            else void runFind(filter);
         } else if (e.key === "Escape") {
+            clearTimeout(findTimer.current);
             // Like Explorer: clear the search and go back to the list.
             if (filter || find) clearFind();
             e.currentTarget.blur();
@@ -682,25 +707,33 @@ export function AddressBar() {
                 <input
                     id={FIND_BOX_ID}
                     value={filter}
-                    onChange={(e) => updateTab({ filter: e.target.value })}
+                    onChange={(e) => onFilterChange(e.target.value)}
                     onKeyDown={onFindKeyDown}
                     onFocus={() => setFindFocused(true)}
                     onBlur={() => setFindFocused(false)}
                     spellCheck={false}
                     placeholder={`Search ${folderName}`}
-                    aria-label={`Search ${folderName}. Typing filters; Enter searches subfolders too.`}
-                    title="Typing filters this folder · Enter searches subfolders by name, with the instant search index or fd (* and ? work, words all must match). Filters: ext:pdf, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
+                    aria-label={`Search ${folderName} and its subfolders.`}
+                    title="Searches this folder and its subfolders by name or path as you type, with the instant search index or fd (* and ? work, words all must match). Filters: ext:pdf, path:src\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
                     className={cn("fluent-field h-8 w-full pl-8 text-sm outline-hidden placeholder:text-muted-foreground", filter || find ? "pr-8" : "pr-8 max-sm:pr-0 max-sm:focus:pr-2")}
                 />
                 {(filter || find) && (
-                    <button onClick={clearFind} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground" title="Clear (Esc)" aria-label="Clear search">
+                    <button
+                        onClick={() => {
+                            clearTimeout(findTimer.current);
+                            clearFind();
+                        }}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground"
+                        title="Clear (Esc)"
+                        aria-label="Clear search"
+                    >
                         <X className="size-4" />
                     </button>
                 )}
                 {plain && (
                     // Mouse down keeps the focus in the box; a click takes the filters, as Tab does.
                     <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-1.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
-                        <button type="button" tabIndex={-1} onClick={() => updateTab({ filter: plain.query })} className="flex w-full flex-col items-start gap-1.5 rounded-sm px-1.5 py-1.5 text-left hover:bg-accent">
+                        <button type="button" tabIndex={-1} onClick={() => onFilterChange(plain.query)} className="flex w-full flex-col items-start gap-1.5 rounded-sm px-1.5 py-1.5 text-left hover:bg-accent">
                             <span className="flex flex-wrap gap-1">
                                 {plain.chips.map((chip) => (
                                     <span key={chip} className="rounded-[4px] bg-primary/12 px-1.5 py-0.5 font-medium text-primary">
@@ -718,7 +751,7 @@ export function AddressBar() {
                 {findFocused && !filter && !find && (
                     // Mouse down keeps the focus in the box, which each filter starts.
                     <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
-                        <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too.</p>
+                        <p className="text-muted-foreground">Searches this folder and its subfolders by name or path as you type.</p>
                         {[
                             { title: "", filters: inRepository ? [...FILTERS, GIT_FILTER] : FILTERS },
                             { title: "What photos, videos and songs say (read from the files):", filters: PROP_FILTERS },
@@ -726,7 +759,7 @@ export function AddressBar() {
                             <div key={title} className="mt-1.5 flex flex-col">
                                 {title && <p className="px-1.5 pb-0.5 pt-1 text-muted-foreground">{title}</p>}
                                 {filters.map(([start, example, meaning]) => (
-                                    <button key={start} type="button" tabIndex={-1} onClick={() => updateTab({ filter: start })} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
+                                    <button key={start} type="button" tabIndex={-1} onClick={() => onFilterChange(start)} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
                                         <code className="shrink-0 font-mono text-[0.6875rem] text-primary">{example}</code>
                                         <span className="truncate text-muted-foreground">{meaning}</span>
                                     </button>

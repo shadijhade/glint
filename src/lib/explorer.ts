@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
-import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, withDetails } from "./entries";
+import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, terms, withDetails } from "./entries";
 import {
     archiveCompress,
     archiveExtract,
@@ -1464,14 +1464,25 @@ export async function runSavedSearch({ query, folder }: SavedSearch) {
     return runFind(query);
 }
 
-/** Searches the open folder and its subfolders (or every drive from This PC) by name: index, else fd. */
+/** Searches the open folder and its subfolders (or every drive from This PC) by name or path: index, else fd. */
 export async function runFind(query: string, wider: Wider = {}) {
     if (!query.trim()) return clearFind();
     const tab = activeTabId();
     const t = tabState(tab);
     if (!t) return;
     const settings = useStore.getState().settings;
-    const scope = wider.scope ?? t.path;
+    let scope = wider.scope ?? t.path;
+    // An absolute drive path typed outside the open folder searches that drive automatically.
+    if (!wider.scope && scope !== THIS_PC) {
+        const driveTerm = terms(query).find((w) => /^[A-Za-z]:[\\/]/.test(w.replace(/^path:/i, "").replace(/^\\\\\?\\/, "")));
+        if (driveTerm) {
+            const normTerm = driveTerm.replace(/^path:/i, "").replace(/^\\\\\?\\/, "").replace(/\//g, "\\").toLowerCase();
+            const normScope = scope.replace(/[\\/]+$/, "").toLowerCase();
+            if (!normTerm.startsWith(normScope)) {
+                scope = `${normTerm[0].toUpperCase()}:\\`;
+            }
+        }
+    }
     // What's in the Recycle Bin isn't in folders to search: the box filters it as it's typed.
     if (isRecycleBin(scope)) {
         toast.message("Nothing to search below the Recycle Bin", { id: "find-recycled", description: "What you type already narrows what's shown in it." });
@@ -1490,9 +1501,11 @@ export async function runFind(query: string, wider: Wider = {}) {
     };
     const skipped = [...options.exclude, ...(options.respectIgnore ? ["what .gitignore files list"] : [])];
     const started = performance.now();
+    const prev = t.find?.scope === scope ? t.find.entries : [];
+    let fresh = true;
     updateTab(
         {
-            find: { id, query, engine: "", scope, entries: [], running: true, elapsed: 0, limited: false, fuzzy: false, error: "", skipped },
+            find: { id, query, engine: t.find?.engine ?? "", scope, entries: prev, running: true, elapsed: 0, limited: false, fuzzy: false, error: "", skipped },
             selection: new Set(),
             focus: null,
             anchor: null,
@@ -1508,17 +1521,20 @@ export async function runFind(query: string, wider: Wider = {}) {
         await findFiles(roots, query, options, tab, (event) => {
             const find = tabState(tab)?.find;
             if (find?.id !== id) return;
-            if (event.type === "entries") update({ entries: find.entries.concat(event.entries) });
-            else if (event.type === "started") update({ engine: event.engine });
-            else if (event.type === "error") update({ error: event.message });
+            if (event.type === "entries") {
+                const entries = fresh ? event.entries : find.entries.concat(event.entries);
+                fresh = false;
+                update({ entries });
+            } else if (event.type === "started") update({ engine: event.engine });
+            else if (event.type === "error") update({ error: event.message, entries: [] });
             else {
                 const elapsed = performance.now() - started;
-                update({ running: false, elapsed, limited: event.limited, fuzzy: event.fuzzy });
+                update({ running: false, elapsed, limited: event.limited, fuzzy: event.fuzzy, ...(fresh ? { entries: [] } : {}) });
                 if (elapsed > 1000 && find.engine === "fd") offerIndex();
             }
         });
     } catch (e) {
-        update({ running: false, error: String(e) });
+        update({ running: false, error: String(e), entries: [] });
     }
 }
 
@@ -1537,6 +1553,15 @@ export const stopFind = () => {
     const tab = activeTabId();
     if (tabState(tab)?.find?.running) cancelFind(tab);
 };
+
+/** Leaves search results while keeping whatever text is in the filter box. */
+export function leaveFind(tab = activeTabId()) {
+    const find = tabState(tab)?.find;
+    if (!find) return;
+    if (find.running) cancelFind(tab);
+    updateTab({ find: null, selection: new Set(), focus: null, anchor: null }, tab);
+    void reload(tab);
+}
 
 /** Leaves search results (and the filter) for the folder itself. */
 export function clearFind() {
