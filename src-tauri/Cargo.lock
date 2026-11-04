@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "shadui-index"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "memchr",
  "rayon",
@@ -5648,7 +5648,7 @@ dependencies = [
 
 [[package]]
 name = "shadui-ripgrep"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
