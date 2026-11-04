@@ -105,7 +105,7 @@ import { useShallow } from "zustand/react/shallow";
 import { SINGLE_FILE } from "@/lib/archives";
 import { scanWithDefender } from "@/lib/defender";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
-import { ATTR, cloudState, compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isCloudFile, isHidden, isRecycled, isRemote, matcher, sortEntries, type SortKey } from "@/lib/entries";
+import { ATTR, cloudState, compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isCloudFile, isHidden, isRecycled, isRemote, matcher, entryOrder, mergeSorted, sortEntries, type SortKey } from "@/lib/entries";
 import {
     activateTab,
     archiveOf,
@@ -1134,7 +1134,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const filterReads = !find && hasPropFilter(deferredFilter);
     // Columns of what photos, videos and songs say (dimensions, duration, artist…), and sorting by them:
     // read the same way, and shown as they come.
-    const factsWanted = FACT_SORTS.includes(sort.key) || columns.some((id) => COLUMNS[id].facts);
+    // Only a list shows columns: the grid (the Gallery's) reads none of them for every photo.
+    const factsWanted = FACT_SORTS.includes(sort.key) || (view === "list" && columns.some((id) => COLUMNS[id].facts));
     const factsMap = useFacts((s) => (factsWanted || filterReads ? s.facts : null));
     const takenOf = useMemo(() => {
         if (!factsMap || sort.key !== "taken") return undefined;
@@ -1149,13 +1150,26 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         if (sort.key === "taken" && !factsWanted) void readTaken(source);
         if (filterReads || factsWanted) void readFacts(source);
     }, [sort.key, source, filterReads, factsWanted]);
+    // Facts sort only a sort by them: a column of them fills in as they're read, without sorting again.
+    const factsSorted = FACT_SORTS.includes(sort.key) ? factsShown : undefined;
+    // What was sorted last, and in what order: a search's next batch is sorted into it, not all of it again.
+    const lastSort = useRef<{ source: FileEntry[]; sorted: FileEntry[]; by: unknown[] } | null>(null);
     const sorted = useMemo(() => {
         const sizeOf = sizeRun ? (e: FileEntry) => (e.dir ? (sizeRun.sizes.get(e.name) ?? -1) : e.size) : undefined;
         // Listings arrive sorted by name from Rust, so the default view needs no work here; close matches
         // arrive closest first from the index, and keep that order unless another one is chosen.
         const presorted = source === listing?.entries || (!!find?.fuzzy && source === found);
-        return sortEntries(source, sort, foldersFirst, presorted, sizeOf, takenOf, factsShown);
-    }, [source, listing, find?.fuzzy, found, sort, foldersFirst, sizeRun, takenOf, factsShown]);
+        const by = [sort, foldersFirst, sizeRun, takenOf, factsSorted];
+        const last = lastSort.current;
+        // The results only grew (each batch is added after the last): same first ones, same order.
+        const at = last ? last.source.length : 0;
+        const grew = !presorted && last !== null && at > 0 && source.length > at && source[at - 1] === last.source[at - 1] && by.every((v, i) => v === last.by[i]);
+        const result = grew
+            ? mergeSorted(last.sorted, source.slice(at), entryOrder(sort, foldersFirst, false, sizeOf, takenOf, factsSorted))
+            : sortEntries(source, sort, foldersFirst, presorted, sizeOf, takenOf, factsSorted);
+        lastSort.current = { source, sorted: result, by };
+        return result;
+    }, [source, listing, find?.fuzzy, found, sort, foldersFirst, sizeRun, takenOf, factsSorted]);
 
     // Compared deeper (the compare bar's Subfolders and Contents): Rust's answer for these two folders, once it's in.
     const deep = useDeepCompare();

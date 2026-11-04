@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, linkedPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC, volumeOf } from "./paths.ts";
-import { ATTR, compareEntries, decodeItems, decodeListing, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, isRemote, matcher, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
+import { ATTR, compareEntries, decodeItems, decodeListing, entryOrder, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, isRemote, matcher, mergeSorted, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
 import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping, runLine } from "./cd.ts";
@@ -159,6 +159,14 @@ assert.equal(names(sortEntries(presorted, { key: "size", desc: true }, true, tru
 const shots = [entry("a.jpg", { modified: 50 }), entry("b.jpg", { modified: 10 }), entry("c.txt", { modified: 30 })];
 assert.equal(names(sortEntries(shots, { key: "taken", desc: false }, true, false, undefined, (e) => (e.name === "a.jpg" ? 5 : undefined))), "a.jpg,b.jpg,c.txt");
 assert.equal(names(sortEntries(shots, { key: "taken", desc: true }, true, false, undefined, (e) => (e.name === "a.jpg" ? 5 : null))), "c.txt,b.jpg,a.jpg");
+// A list that grows (search results, batch by batch) sorts what's new into what's sorted, as sorting it all would.
+for (const sort of [{ key: "name", desc: false }, { key: "size", desc: true }, { key: "modified", desc: false }] as const) {
+    const all = [...listing, ...shots, entry("a.txt", { size: 30, modified: 3 }), entry("d/")];
+    for (let cut = 0; cut <= all.length; cut++) {
+        const grown = mergeSorted(sortEntries(all.slice(0, cut), sort, true, false), all.slice(cut), entryOrder(sort, true, false));
+        assert.deepEqual(grown, sortEntries(all, sort, true, false), `${sort.key} cut at ${cut}`);
+    }
+}
 
 // Dual-pane comparison
 assert.equal(compareEntries(entry("a.txt", { size: 10, modified: 5000 }), undefined), "unique");
