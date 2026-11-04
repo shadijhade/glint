@@ -371,7 +371,16 @@ fn act(rule: &Rule, path: &Path, modified: i64) -> Done {
 }
 
 /// Logs what a rule did, tells the app (it says so, with Undo), and remembers what it made.
-fn record(mut done: Done) -> Done {
+fn record(done: Done) -> Done {
+    let done = note(done, true);
+    save_log(&engine().log);
+    done
+}
+
+/// `record`, with the log written once the batch it's in is done (`save_log`), not for each file:
+/// turning a rule on can do 10,000, and each write is the whole log. Not `told`, the app hears nothing
+/// of it: its caller says how many.
+fn note(mut done: Done, told: bool) -> Done {
     let mut engine = engine();
     engine.next += 1;
     done.id = engine.next;
@@ -381,8 +390,7 @@ fn record(mut done: Done) -> Done {
     engine.log.push(done.clone());
     let excess = engine.log.len().saturating_sub(KEPT);
     engine.log.drain(..excess);
-    save_log(&engine.log);
-    if let Some(app) = &engine.app {
+    if let Some(app) = engine.app.as_ref().filter(|_| told) {
         let _ = app.emit("rule-did", &done);
     }
     done
@@ -498,6 +506,7 @@ fn tick() {
         engine.made.retain(|_, t| t.elapsed() < MADE);
         ready
     };
+    let mut did = false;
     for path in ready {
         if !complete(&path) {
             // Still open for writing: it waits on.
@@ -516,8 +525,12 @@ fn tick() {
         let file = Path::new(&path);
         let rule = engine().rules.iter().find(|r| r.on && r.action != "sync" && covers(r, file) && takes(r, file, meta.len(), modified, now_ms())).cloned();
         if let Some(rule) = rule {
-            record(act(&rule, file, modified));
+            note(act(&rule, file, modified), true);
+            did = true;
         }
+    }
+    if did {
+        save_log(&engine().log);
     }
 }
 
@@ -525,11 +538,18 @@ fn tick() {
 fn sweep() {
     let rules: Vec<Rule> = engine().rules.iter().filter(|r| r.on && r.older_than_days > 0 && r.action != "sync").cloned().collect();
     for rule in rules {
-        for (path, _, modified) in matching(&rule, 10_000) {
-            record(act(&rule, &path, modified));
+        let found = matching(&rule, 10_000);
+        for (path, _, modified) in &found {
+            note(act(&rule, path, *modified), true);
+        }
+        if !found.is_empty() {
+            save_log(&engine().log);
         }
     }
 }
+
+/// The timers rules run on, from when one is first turned on: with none, Glint doesn't wake for them.
+static TIMERS: Once = Once::new();
 
 fn start(app: &AppHandle) {
     engine().app = Some(app.clone());
@@ -540,6 +560,11 @@ fn start(app: &AppHandle) {
             engine.next = log.last().map_or(0, |d| d.id);
             engine.log = log;
         }
+    });
+}
+
+fn start_timers() {
+    TIMERS.call_once(|| {
         std::thread::spawn(|| loop {
             std::thread::sleep(Duration::from_millis(500));
             tick();
@@ -575,6 +600,9 @@ pub async fn rules_set(app: AppHandle, rules: Vec<Rule>) -> Result<(), String> {
 
 fn set_rules(app: &AppHandle, rules: Vec<Rule>, latest: impl Fn() -> bool) {
     start(app);
+    if rules.iter().any(|r| r.on) {
+        start_timers();
+    }
     let mut watchers = Vec::new();
     let mut folders = HashSet::new();
     for rule in rules.iter().filter(|r| r.on && check(r).is_ok()) {
@@ -630,10 +658,11 @@ pub async fn rules_preview(rule: Rule) -> Result<Vec<Done>, String> {
     .await
 }
 
-/// Does what `rule` says to what's in its folder now (as it's turned on): how many it did. A sync rule
-/// starts its first run, which logs what it does.
+/// Does what `rule` says to what's in its folder now (as it's turned on): how many it did, and how many
+/// it couldn't. Each is in the log, and the app says how many rather than each (up to 10,000). A sync
+/// rule starts its first run, which logs what it does.
 #[tauri::command]
-pub async fn rules_apply(rule: Rule) -> Result<usize, String> {
+pub async fn rules_apply(rule: Rule) -> Result<(usize, usize), String> {
     crate::fsx::blocking(move || {
         check(&rule)?;
         if rule.action == "sync" {
@@ -645,9 +674,12 @@ pub async fn rules_apply(rule: Rule) -> Result<usize, String> {
             if start {
                 std::thread::spawn(move || run_sync(rule));
             }
-            return Ok(0);
+            return Ok((0, 0));
         }
-        Ok(matching(&rule, 10_000).into_iter().map(|(path, _, modified)| record(act(&rule, &path, modified))).filter(|d| d.error.is_none()).count())
+        let done: Vec<Done> = matching(&rule, 10_000).into_iter().map(|(path, _, modified)| note(act(&rule, &path, modified), false)).collect();
+        save_log(&engine().log);
+        let failed = done.iter().filter(|d| d.error.is_some()).count();
+        Ok((done.len() - failed, failed))
     })
     .await
 }
