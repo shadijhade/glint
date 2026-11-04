@@ -450,7 +450,9 @@ pub(crate) fn expand_vars(text: &str) -> String {
 
 /// Folders first, then names in natural order ("file2" before "file10"), ignoring case like Explorer.
 pub fn sort_entries(entries: &mut Vec<Entry>) {
-    let mut keyed: Vec<(Vec<u8>, Entry)> = entries.drain(..).map(|e| (natural_key(&e.name.to_lowercase()), e)).collect();
+    // natural_key lowercases ASCII itself: only other names need a lowercase copy first.
+    let key = |name: &str| if name.is_ascii() { natural_key(name) } else { natural_key(&name.to_lowercase()) };
+    let mut keyed: Vec<(Vec<u8>, Entry)> = entries.drain(..).map(|e| (key(&e.name), e)).collect();
     keyed.sort_unstable_by(|(ka, a), (kb, b)| b.dir.cmp(&a.dir).then_with(|| ka.cmp(kb)).then_with(|| a.name.cmp(&b.name)));
     entries.extend(keyed.into_iter().map(|(_, e)| e));
 }
