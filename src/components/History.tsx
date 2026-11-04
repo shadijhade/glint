@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { History as HistoryIcon, X } from "lucide-react";
 import { clearWithUndo, HistoryItem, useStore } from "@/lib/store";
 import { Button } from "./ui/button";
@@ -45,17 +46,25 @@ export function HistoryPopover({ onPick }: { onPick: (item: HistoryItem) => void
     const [filter, setFilter] = useState("");
     const ref = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+    // Its rows are drawn while it's open, and before it shows (so it never opens empty); closed, it's
+    // mounted from the start with nothing in it.
+    const [open, setOpen] = useState(false);
 
     useEffect(() => {
         const popover = ref.current!;
+        const onBeforeToggle = (e: Event) => flushSync(() => setOpen((e as ToggleEvent).newState === "open"));
         const onToggle = (e: Event) => (e as ToggleEvent).newState === "open" && inputRef.current?.focus();
+        popover.addEventListener("beforetoggle", onBeforeToggle);
         popover.addEventListener("toggle", onToggle);
-        return () => popover.removeEventListener("toggle", onToggle);
+        return () => {
+            popover.removeEventListener("beforetoggle", onBeforeToggle);
+            popover.removeEventListener("toggle", onToggle);
+        };
     }, []);
 
     const q = filter.toLowerCase();
     // ponytail: renders at most 100 rows; the filter reaches older entries.
-    const items = history.filter((h) => `${h.query}\n${h.path}`.toLowerCase().includes(q)).slice(0, 100);
+    const items = open ? history.filter((h) => `${h.query}\n${h.path}`.toLowerCase().includes(q)).slice(0, 100) : [];
 
     return (
         <div
