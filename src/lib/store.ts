@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, type PersistStorage } from 'zustand/middleware'
 import { toast } from 'sonner'
 import type { Sort } from './entries'
 import type { TileSize } from './grid'
@@ -296,6 +296,42 @@ interface AppState {
 
 const MAX_VISITS = 300;
 
+/** The state waiting to be written, and when it will be. */
+let unsaved: { name: string; value: unknown } | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Writes what's waiting now: before Glint closes or installs an update, and when its window hides. */
+export function saveNow() {
+    clearTimeout(saveTimer);
+    if (unsaved) localStorage.setItem(unsaved.name, JSON.stringify(unsaved.value));
+    unsaved = null;
+}
+
+/**
+ * localStorage, written a moment after the last change rather than on every one: opening a folder
+ * changes three things, and each write turned the whole state (history, visits, folder views) into
+ * text again, and had the hidden quick search window read it all back.
+ */
+const savedLater: PersistStorage<unknown> = {
+    getItem: (name) => {
+        const text = localStorage.getItem(name);
+        return text ? JSON.parse(text) : null;
+    },
+    setItem: (name, value) => {
+        unsaved = { name, value };
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(saveNow, 300);
+    },
+    removeItem: (name) => {
+        unsaved = null;
+        localStorage.removeItem(name);
+    },
+};
+if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', saveNow);
+    document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && saveNow());
+}
+
 export const useStore = create<AppState>()(
     persist(
         (set) => ({
@@ -385,6 +421,7 @@ export const useStore = create<AppState>()(
         }),
         {
             name: 'shadui-ripgrep-storage',
+            storage: savedLater,
             // Deep-merge settings so options added in newer versions get their defaults.
             merge: (persisted, current) => {
                 const p = (persisted ?? {}) as Partial<AppState>;
