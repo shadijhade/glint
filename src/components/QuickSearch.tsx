@@ -22,13 +22,16 @@ const ASKED = 1000;
 /** Windows' own folders, and caches: what a search for your files rarely means. */
 const SYSTEM = /\\(windows\\(winsxs|servicing|assembly|installer|system32|syswow64|softwaredistribution|systemapps|immersivecontrolpanel)|programdata|\$recycle\.bin|appdata\\local\\(temp|packages|microsoft)|node_modules|\.git)\\/i;
 
-/** The words typed, without filters (ext:pdf…) and wildcards. */
+/** The words typed, without filters (ext:pdf…) and wildcards; for paths, the last segment named. */
 const wordsOf = (query: string) =>
     query
         .toLowerCase()
         .split(/\s+/)
-        .filter((w) => w && !w.includes(":"))
-        .map((w) => w.replace(/[*?"]/g, ""))
+        .filter((w) => w && (!w.includes(":") || /^[a-z]:[\\/]/.test(w) || w.startsWith("path:")))
+        .map((w) => {
+            const clean = (w.startsWith("path:") ? w.slice(5) : w).replace(/[*?"]/g, "");
+            return clean.split(/[\\/]+/).filter(Boolean).pop() ?? "";
+        })
         .filter(Boolean);
 
 /**

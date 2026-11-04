@@ -474,6 +474,15 @@ export function matcher(query: string, git?: Readonly<Record<string, GitMark>>, 
     const tests = parts.map((term) => {
         const filter = filterTest(term, git, facts);
         if (filter) return filter;
+        if (term.includes("\\") || term.includes("/") || term.startsWith("path:")) {
+            const raw = (term.startsWith("path:") ? term.slice(5) : term).replace(/^\\\\\?\\/, "").replace(/\//g, "\\").replace(/(?<=.)\\+/g, "\\");
+            const clean = raw.length > 1 && !/^[a-z]:\\$/.test(raw) ? raw.replace(/\\+$/, "") : raw;
+            if (!clean) return () => true;
+            if (!/[*?]/.test(clean)) return (e: FileEntry) => e.path.toLowerCase().replace(/\//g, "\\").includes(clean);
+            const pat = `${clean.startsWith("*") ? "" : "*"}${clean}${clean.endsWith("*") ? "" : "*"}`;
+            const re = globToRegExp(pat);
+            return (e: FileEntry) => re.test(e.path.toLowerCase().replace(/\//g, "\\"));
+        }
         if (!/[*?]/.test(term)) return (e: FileEntry) => e.lower.includes(term);
         const re = globToRegExp(term);
         return (e: FileEntry) => re.test(e.lower);

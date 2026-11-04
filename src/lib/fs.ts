@@ -628,6 +628,10 @@ export const gitHeadDiscard = (path: string) => invoke("git_head_discard", { pat
 export interface TextCompare {
     left: string[];
     right: string[];
+    leftCrlf: boolean;
+    rightCrlf: boolean;
+    leftNewline: boolean;
+    rightNewline: boolean;
     /** The rows side by side, by line on each side (from 0); null where only the other side has one. */
     rows: [number | null, number | null][];
     /** The changed lines on each side (by line), with what changed in them: [start, end) in the line; none listed: all of it. */
@@ -644,7 +648,17 @@ export interface TextCompare {
     elapsed: number;
 }
 
-export const compareTextFiles = (left: string, right: string) => invoke<TextCompare>("compare_text_files", { left, right });
+export interface CompareTextOptions {
+    ignoreWhitespace?: "none" | "trailing" | "all";
+    ignoreCase?: boolean;
+    lineMode?: boolean;
+}
+
+export const compareTextFiles = (left: string, right: string, options?: CompareTextOptions, leftOverride?: string, rightOverride?: string) =>
+    invoke<TextCompare>("compare_text_files", { left, right, options: options ?? null, leftOverride: leftOverride ?? null, rightOverride: rightOverride ?? null });
+
+/** Saves `content` to `path` atomically (ReplaceFileW). */
+export const writeFileContent = (path: string, content: string) => invoke<void>("write_file_content", { path, content });
 
 /** A window of two files' bytes, and their sizes. */
 export interface BytesWindow {
@@ -702,6 +716,9 @@ export async function fileBytes(path: string, offset: number, len: number) {
 
 /** The first offset at or after `from` where the files differ; null when they don't from there on. */
 export const nextByteDifference = (left: string, right: string, from: number) => invoke<number | null>("next_byte_difference", { left, right, from });
+
+/** The last offset before `before` where the files differ; null when they don't before there. */
+export const prevByteDifference = (left: string, right: string, before: number) => invoke<number | null>("prev_byte_difference", { left, right, before });
 
 /** Export as ncdu JSON: the folder `path` walked into `dest` (written as `dest.part` until done); progress counts entries, with no total. */
 export const exportNcdu = (path: string, dest: string, lane: string, onProgress: Progress) =>

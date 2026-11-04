@@ -729,7 +729,10 @@ pub fn search(root: &str, query: &str, hidden: bool, exclude: &[String], max: Op
                             continue;
                         }
                         let full = format!("{path}\\{}", c.name);
-                        if matcher.matches(c.name.as_bytes(), folded) && filters.accepts(c.name.as_bytes(), folded, c.dir, c.size, (now - c.modified) / 1000) {
+                        let full_folded = (matcher.has_paths() && !full.is_ascii()).then(|| fold(&full));
+                        if matcher.matches_in(c.name.as_bytes(), folded, full_folded.as_deref().unwrap_or(&full).as_bytes())
+                            && filters.accepts(c.name.as_bytes(), folded, c.dir, c.size, (now - c.modified) / 1000)
+                        {
                             if found == max {
                                 return Ok((archive.format.label(), true));
                             }

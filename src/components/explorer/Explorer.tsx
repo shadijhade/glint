@@ -641,6 +641,30 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         return () => window.removeEventListener("keydown", onKey, true);
     }, []);
 
+    // Mouse side buttons (Mouse 4 Back, Mouse 5 Forward) navigate folder history in the pane under the pointer.
+    useEffect(() => {
+        const suppressBrowserNav = (e: MouseEvent) => {
+            if (e.button === 3 || e.button === 4) e.preventDefault();
+        };
+        const onMouseUp = (e: MouseEvent) => {
+            if (e.button !== 3 && e.button !== 4) return;
+            e.preventDefault();
+            if (!activeRef.current || modalOpen()) return;
+            const pane = (e.target instanceof Element ? e.target : null)?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+            if (pane !== undefined) focusPane(Number(pane));
+            if (e.button === 3) void goBack();
+            else void goForward();
+        };
+        window.addEventListener("mousedown", suppressBrowserNav, true);
+        window.addEventListener("auxclick", suppressBrowserNav, true);
+        window.addEventListener("mouseup", onMouseUp, true);
+        return () => {
+            window.removeEventListener("mousedown", suppressBrowserNav, true);
+            window.removeEventListener("auxclick", suppressBrowserNav, true);
+            window.removeEventListener("mouseup", onMouseUp, true);
+        };
+    }, []);
+
     // Files dragged in from File Explorer, the desktop or the other pane land on the folder row,
     // breadcrumb segment, or sidebar place under the pointer, or else in the folder open in the pane
     // under it. Hovering an inactive tab for a moment spring-loads it open.
