@@ -264,9 +264,10 @@ export function FileList(props: FileListProps) {
         // Folders found by the index come with their total; fd's come without one (0).
         const size = sizeOf(entry, located, sizes);
         const selected = selection.has(entry.path);
-        // A bar only where it says something: 8% of the biggest here or more (smaller ones would be slivers).
+        // A bar only where it says something: 40% of the biggest here or more. Narrower, it sits behind
+        // just the last letters of the size (at the column's usual width) and reads as a glitch.
         const share = size && maxSize > 0 ? (size / maxSize) * 100 : 0;
-        const sizePct = share >= 8 ? Math.round(share) : 0;
+        const sizePct = share >= 40 ? Math.round(share) : 0;
         const isHot = !recycled && entry.modified > 0 && nowMs - entry.modified >= 0 && nowMs - entry.modified < 3_600_000;
         const diff = diffs?.get(entry.lower);
         const badge = diff && diff !== "same" ? DIFF_BADGE[diff] : undefined;
