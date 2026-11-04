@@ -202,7 +202,7 @@ import {
 import { formatCount, plural } from "@/lib/format";
 import { newKinds } from "@/lib/newKinds";
 import { recentKept } from "@/lib/fs";
-import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rotateImage, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
+import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rotateImage, runAsAdmin, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, marqueeHits, TILE_SIZES, zoomTiles } from "@/lib/grid";
@@ -1832,6 +1832,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 label: "Open with…",
                 icon: AppWindow,
                 onSelect: () => (archived || remote ? openArchivedWith(one, openWith) : openWith(one.path).catch(report("Couldn't open the app picker"))),
+            },
+            // Programs and scripts, as File Explorer offers it: Windows asks for administrator approval.
+            one && !one.dir && !closed && !archived && !remote && !isRecycleBin(path) && /\.(exe|bat|cmd|com|msc)$/i.test(one.name) && {
+                label: "Run as administrator",
+                icon: ShieldCheck,
+                onSelect: () => void runAsAdmin(one.path).catch(report("Couldn't run it as administrator")),
             },
             one?.dir && !fixed && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
             one && !fixed && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(one.path) },
