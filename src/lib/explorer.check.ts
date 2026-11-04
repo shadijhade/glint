@@ -42,11 +42,13 @@ assert.equal(parentPath("C:\\Users\\me"), "C:\\Users");
 assert.equal(parentPath("C:\\Users"), "C:\\");
 assert.equal(parentPath("C:\\"), THIS_PC);
 assert.equal(parentPath("\\\\server\\share\\docs"), "\\\\server\\share");
-assert.equal(parentPath("\\\\server\\share"), THIS_PC);
-assert.ok(isRoot("D:") && isRoot("D:\\") && isRoot("\\\\nas\\media") && !isRoot("C:\\Users"));
+// A share's parent is its server, which lists its shares.
+assert.equal(parentPath("\\\\server\\share"), "\\\\server");
+assert.equal(parentPath("\\\\server"), THIS_PC);
+assert.ok(isRoot("D:") && isRoot("D:\\") && isRoot("\\\\nas\\media") && isRoot("\\\\nas") && !isRoot("C:\\Users"));
 assert.ok(samePath("c:\\users\\", "C:\\Users"));
 assert.deepEqual(crumbs("C:\\Users\\me").map((c) => c.path), ["C:\\", "C:\\Users", "C:\\Users\\me"]);
-assert.deepEqual(crumbs("\\\\nas\\media\\tv").map((c) => c.name), ["\\\\nas\\media", "tv"]);
+assert.deepEqual(crumbs("\\\\nas\\media\\tv").map((c) => c.path), ["\\\\nas", "\\\\nas\\media", "\\\\nas\\media\\tv"]);
 
 // Links in Markdown: relative to its folder, / to the repository, never to another scheme or a share by name
 const repo = "C:\\src\\app";
