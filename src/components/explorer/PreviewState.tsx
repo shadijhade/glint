@@ -1,21 +1,24 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
-import type { FileEntry } from "@/lib/entries";
+import { needsPassword } from "@/lib/archives";
+import { type FileEntry, isArchived } from "@/lib/entries";
 import { kindOf } from "@/lib/fileTypes";
 import { cn } from "@/lib/utils";
+import { PasswordForm } from "./PasswordDialog";
 
 /** The preview pane's states, as every kind of preview shows them: what's in the middle of it. */
 export function Centered({ children, className }: { children: React.ReactNode; className?: string }) {
     return <div className={cn("flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground", className)}>{children}</div>;
 }
 
-/** The file's kind, large, with why it isn't shown (or nothing to show). */
+/** The file's kind, large, with why it isn't shown (or nothing to show), and its password when that's why. */
 export function BigIcon({ entry, note }: { entry: FileEntry; note?: string }) {
     const kind = kindOf(entry);
     return (
         <Centered>
             <kind.icon className={cn("size-16 stroke-[1.25]", kind.tone)} />
             {note && <p>{note}</p>}
+            {note && isArchived(entry) && needsPassword(note) && <PasswordForm path={entry.path} />}
         </Centered>
     );
 }

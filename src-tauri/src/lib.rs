@@ -789,6 +789,7 @@ pub fn run() {
             shell::open_terminal,
             shell::start_drag,
             archive::archive_extract,
+            archive::archive_unlock,
             archive::archive_stage,
             archive::archive_compress,
             archive::archive_extract_here,

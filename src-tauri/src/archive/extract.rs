@@ -234,6 +234,8 @@ fn read_failure(e: io::Error) -> Failure {
     let lower = text.to_lowercase();
     if lower.contains("checksum") || lower.contains("crc") {
         Failure::Damaged("its checksum doesn't match".into())
+    } else if lower.contains("password doesn't open") {
+        Failure::WrongPassword(String::new())
     } else if lower.contains("password") {
         Failure::Encrypted
     } else if matches!(e.kind(), io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput | io::ErrorKind::UnexpectedEof | io::ErrorKind::Other) {

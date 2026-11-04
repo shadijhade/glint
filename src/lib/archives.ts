@@ -1,3 +1,5 @@
+import { create } from "zustand";
+
 /**
  * The archives Glint reads (src-tauri/src/archive/read.rs): the label of each format by its code, as a
  * listing's header and a disk-usage map's engine give it, and which file names Enter opens like folders.
@@ -25,3 +27,15 @@ export const ON_REQUEST = [
 
 /** A path into an archive, by its names (one opened by its bytes says so in its listing instead). */
 export const ARCHIVE_IN_PATH = new RegExp(`\\.(${[...BROWSED, ...ON_REQUEST].join("|")})([\\\\/]|$)`, "i");
+
+/** Whether an error from an archive asks for its password: password-protected, or the one given doesn't open it. */
+export const needsPassword = (error: string) => /password-protected|password doesn't open/i.test(error);
+
+/** The archive the password dialog asks about (where opening it failed), and what to do once it opens. */
+export const usePasswordAsk = create<{ path: string | null; retry?: () => void }>(() => ({ path: null }));
+
+/** Asks for the password of what `path` leads to in an archive, then runs `retry`. */
+export const askArchivePassword = (path: string, retry: () => void) => usePasswordAsk.setState({ path, retry });
+
+/** Counts the passwords that opened something, so what failed for want of one is read again. */
+export const useUnlocks = create(() => ({ count: 0 }));
