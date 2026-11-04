@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
-import { type FileEntry, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, terms, withDetails } from "./entries";
+import { type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, terms, withDetails } from "./entries";
 import {
     archiveCompress,
     archiveExtract,
@@ -1464,6 +1464,29 @@ export async function runSavedSearch({ query, folder }: SavedSearch) {
     return runFind(query);
 }
 
+/** Where a search from the folder `path` looks: there, unless an absolute drive path typed outside it names another. */
+function findScope(query: string, path: string) {
+    if (path === THIS_PC) return path;
+    const driveTerm = terms(query).find((w) => /^[A-Za-z]:[\\/]/.test(w.replace(/^path:/i, "").replace(/^\\\\\?\\/, "")));
+    if (!driveTerm) return path;
+    const normTerm = driveTerm.replace(/^path:/i, "").replace(/^\\\\\?\\/, "").replace(/\//g, "\\").toLowerCase();
+    return normTerm.startsWith(path.replace(/[\\/]+$/, "").toLowerCase()) ? path : `${normTerm[0].toUpperCase()}:\\`;
+}
+
+/** The drives a search from This PC looks through. */
+const searchedDrives = () => get().drives.filter((d) => d.kind === "fixed" || d.kind === "removable");
+
+/**
+ * Whether a search for `query` from `path` is the index's alone, answered in milliseconds, so it can
+ * run as it's typed. fd's walks, .gitignore rules and what photos, videos and songs say (read from each
+ * file) wait for Enter, while typing filters what's shown.
+ */
+export function findsAsTyped(query: string, path: string) {
+    if (useStore.getState().settings.findRespectIgnore || hasPropFilter(query)) return false;
+    const scope = findScope(query, path);
+    return scope === THIS_PC ? searchedDrives().every((d) => indexed(d.path)) : indexed(scope);
+}
+
 /** Searches the open folder and its subfolders (or every drive from This PC) by name or path: index, else fd. */
 export async function runFind(query: string, wider: Wider = {}) {
     if (!query.trim()) return clearFind();
@@ -1471,25 +1494,14 @@ export async function runFind(query: string, wider: Wider = {}) {
     const t = tabState(tab);
     if (!t) return;
     const settings = useStore.getState().settings;
-    let scope = wider.scope ?? t.path;
-    // An absolute drive path typed outside the open folder searches that drive automatically.
-    if (!wider.scope && scope !== THIS_PC) {
-        const driveTerm = terms(query).find((w) => /^[A-Za-z]:[\\/]/.test(w.replace(/^path:/i, "").replace(/^\\\\\?\\/, "")));
-        if (driveTerm) {
-            const normTerm = driveTerm.replace(/^path:/i, "").replace(/^\\\\\?\\/, "").replace(/\//g, "\\").toLowerCase();
-            const normScope = scope.replace(/[\\/]+$/, "").toLowerCase();
-            if (!normTerm.startsWith(normScope)) {
-                scope = `${normTerm[0].toUpperCase()}:\\`;
-            }
-        }
-    }
+    const scope = wider.scope ?? findScope(query, t.path);
     // What's in the Recycle Bin isn't in folders to search: the box filters it as it's typed.
     if (isRecycleBin(scope)) {
         toast.message("Nothing to search below the Recycle Bin", { id: "find-recycled", description: "What you type already narrows what's shown in it." });
         return;
     }
     const id = ++findSeq;
-    const roots = scope === THIS_PC ? get().drives.filter((d) => d.kind === "fixed" || d.kind === "removable").map((d) => d.path) : [scope];
+    const roots = scope === THIS_PC ? searchedDrives().map((d) => d.path) : [scope];
     const options = {
         hidden: settings.showHidden,
         respectIgnore: settings.findRespectIgnore && !wider.skipNothing,
