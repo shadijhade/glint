@@ -264,53 +264,127 @@ enum Term {
     Near(Near),
 }
 
+#[derive(Debug, Clone)]
+struct PathTerm {
+    drive: Option<char>,
+    term: Term,
+}
+
+/// Whether a query term matches against the item's path rather than its base name alone: any term
+/// containing a path separator (`\` or `/`) or starting with `path:`.
+pub fn is_path_term(term: &str) -> bool {
+    term.contains(['\\', '/']) || term.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("path:"))
+}
+
+/// Normalizes a path term (`/` to `\`, strips `path:` and `\\?\`, collapses duplicate slashes, and
+/// trims a trailing backslash below the root); leaves plain name terms unchanged.
+pub fn clean_term(term: &str) -> String {
+    if !is_path_term(term) {
+        return term.to_string();
+    }
+    let rest = if term.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("path:")) { &term[5..] } else { term };
+    let rest = rest.strip_prefix(r"\\?\").unwrap_or(rest);
+    let mut out = String::with_capacity(rest.len());
+    let mut prev_slash = false;
+    for (i, c) in rest.chars().enumerate() {
+        let c = if c == '/' { '\\' } else { c };
+        if c == '\\' {
+            if prev_slash && i > 1 {
+                continue;
+            }
+            prev_slash = true;
+        } else {
+            prev_slash = false;
+        }
+        out.push(c);
+    }
+    while out.len() > 1 && out.ends_with('\\') && !(out.len() == 3 && out.as_bytes()[1] == b':') {
+        out.pop();
+    }
+    out
+}
+
+/// Splits a drive prefix (`C:` or `C:\Users\me`) into the uppercase drive letter and the path below the root.
+pub fn split_drive_term(term: &str) -> Option<(char, &str)> {
+    let bytes = term.as_bytes();
+    if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return None;
+    }
+    let rest = &term[2..];
+    if !(rest.is_empty() || rest.starts_with(['\\', '/'])) {
+        return None;
+    }
+    Some((bytes[0].to_ascii_uppercase() as char, rest.trim_start_matches(['\\', '/'])))
+}
+
 /// A parsed query: every term must match.
 #[derive(Debug, Clone)]
 pub struct NameMatcher {
     terms: Vec<Term>,
+    paths: Vec<PathTerm>,
 }
 
 impl NameMatcher {
     /// None when the query has no terms.
     pub fn new(query: &str) -> Option<Self> {
         let matcher = NameMatcher::from_terms(terms(query));
-        (!matcher.terms.is_empty()).then_some(matcher)
+        (!matcher.terms.is_empty() || !matcher.paths.is_empty()).then_some(matcher)
     }
 
     /// Every term must match; with none, every name does (a query of filters only).
-    pub fn from_terms(terms: Vec<String>) -> Self {
-        let terms = terms
-            .into_iter()
-            .map(|t| {
-                if t.contains(['*', '?']) {
-                    Term::Glob(Glob::new(&t))
+    pub fn from_terms(raw_terms: Vec<String>) -> Self {
+        let mut terms = Vec::new();
+        let mut paths = Vec::new();
+        for raw in raw_terms {
+            if is_path_term(&raw) {
+                let cleaned = clean_term(&raw);
+                let (drive, rest) = match split_drive_term(&cleaned) {
+                    Some((d, r)) => (Some(d), r),
+                    None => (None, cleaned.trim_start_matches('\\')),
+                };
+                let term = if rest.is_empty() {
+                    Term::Glob(Glob::new("*"))
+                } else if rest.contains(['*', '?']) {
+                    let pat = if rest.starts_with('*') { rest.to_string() } else { format!("*{rest}") };
+                    let pat = if pat.ends_with('*') { pat } else { format!("{pat}*") };
+                    Term::Glob(Glob::new(&pat))
                 } else {
-                    let folded = fold(&t);
+                    let folded = fold(rest);
                     Term::Contains { ascii: folded.is_ascii(), folded }
-                }
-            })
-            .collect();
-        NameMatcher { terms }
+                };
+                paths.push(PathTerm { drive, term });
+            } else if raw.contains(['*', '?']) {
+                terms.push(Term::Glob(Glob::new(&raw)));
+            } else {
+                let folded = fold(&raw);
+                terms.push(Term::Contains { ascii: folded.is_ascii(), folded });
+            }
+        }
+        NameMatcher { terms, paths }
     }
 
     /// The same terms with typos allowed: each word of 4 letters or more may be an edit or two from
     /// the start of a word of the name (see `edits`); globs, numbers and shorter words match as typed.
     /// None when no word is long enough to have typos looked for.
-    pub fn near(terms: Vec<String>) -> Option<Self> {
+    pub fn near(raw_terms: Vec<String>) -> Option<Self> {
         let mut near = false;
-        let terms = terms
-            .into_iter()
-            .map(|t| {
-                let word: Vec<char> = fold(&t).chars().collect();
-                let k = edits(word.len());
-                if t.contains(['*', '?']) || k == 0 || word.len() > MAX_NEAR || word.iter().all(|c| c.is_numeric()) {
-                    return NameMatcher::from_terms(vec![t]).terms.remove(0);
-                }
-                near = true;
-                Term::Near(Near { word, k })
-            })
-            .collect();
-        near.then_some(NameMatcher { terms })
+        let mut terms = Vec::new();
+        let mut paths = Vec::new();
+        for t in raw_terms {
+            if is_path_term(&t) {
+                paths.extend(NameMatcher::from_terms(vec![t]).paths);
+                continue;
+            }
+            let word: Vec<char> = fold(&t).chars().collect();
+            let k = edits(word.len());
+            if t.contains(['*', '?']) || k == 0 || word.len() > MAX_NEAR || word.iter().all(|c| c.is_numeric()) {
+                terms.extend(NameMatcher::from_terms(vec![t]).terms);
+                continue;
+            }
+            near = true;
+            terms.push(Term::Near(Near { word, k }));
+        }
+        near.then_some(NameMatcher { terms, paths })
     }
 
     /// Whether this looks for close matches rather than the terms as typed.
@@ -318,9 +392,35 @@ impl NameMatcher {
         self.terms.iter().any(|t| matches!(t, Term::Near(_)))
     }
 
+    /// Whether the query includes any path terms (`\` / `/` or `path:`).
+    pub fn has_paths(&self) -> bool {
+        !self.paths.is_empty()
+    }
+
+    /// Whether drive `letter` satisfies any drive prefixes in the query's path terms.
+    pub fn wants_drive(&self, letter: char) -> bool {
+        let upper = letter.to_ascii_uppercase();
+        self.paths.iter().all(|p| p.drive.is_none_or(|d| d == upper))
+    }
+
+    /// Whether `path` (with non-ASCII characters folded to lowercase and `\` separators) matches all
+    /// path terms in the query.
+    pub fn matches_path(&self, path: &[u8]) -> bool {
+        self.paths.iter().all(|p| match &p.term {
+            Term::Contains { folded: needle, .. } => contains_ascii(path, needle.as_bytes()),
+            Term::Glob(glob) => glob.matches(path, None),
+            Term::Near(_) => true,
+        })
+    }
+
     /// `name` is the name as stored; `folded` its lowercase form, given when the name isn't ASCII.
     pub fn matches(&self, name: &[u8], folded: Option<&[u8]>) -> bool {
-        self.distance(name, folded).is_some()
+        self.distance(name, folded).is_some() && (self.paths.is_empty() || self.matches_path(folded.unwrap_or(name)))
+    }
+
+    /// Matches both name terms against `(name, folded)` and path terms against `path`.
+    pub fn matches_in(&self, name: &[u8], folded: Option<&[u8]>, path: &[u8]) -> bool {
+        self.distance(name, folded).is_some() && self.matches_path(path)
     }
 
     /// How many edits away the name is, when it matches (0 for terms matched as typed).
@@ -485,6 +585,13 @@ pub fn parse(query: &str) -> Result<(Vec<String>, Filters), String> {
             }
             "file" | "files" if value.is_empty() => filters.kind = Some(Kind::Files),
             "folder" | "folders" if value.is_empty() => filters.kind = Some(Kind::Folders),
+            "path" => {
+                let v = value.trim();
+                if v.is_empty() {
+                    return Err("“path:”: give part of a folder or file path, like path:Users\\me".into());
+                }
+                names.push(format!("path:{v}"));
+            }
             key if PROPS.contains(&key) => filters.props.push(prop(key, value).ok_or_else(|| format!("“{term}”: {}", prop_help(key)))?),
             _ => names.push(term),
         }

@@ -122,11 +122,27 @@ pub(crate) fn fd_args(query: &str, roots: &[String], options: &FindOptions) -> R
     if terms.is_empty() && filters.is_empty() {
         return Err("Type part of a file name to search for".into());
     }
+    let full_path = terms.iter().any(|t| shadui_index::query::is_path_term(t));
+    let terms: Vec<String> = terms.into_iter().map(|t| shadui_index::query::clean_term(&t)).collect();
     // Filters alone search every name.
     let glob = terms.is_empty() || terms.iter().any(|t| t.contains(['*', '?']));
-    let mut patterns = terms.into_iter().map(|t| if glob && !t.contains(['*', '?']) { format!("*{t}*") } else { t });
+    let mut patterns = terms.into_iter().map(|t| {
+        if !glob {
+            t
+        } else if !t.contains(['*', '?']) {
+            format!("*{t}*")
+        } else if full_path {
+            let pat = if t.starts_with('*') { t } else { format!("*{t}") };
+            if pat.ends_with('*') { pat } else { format!("{pat}*") }
+        } else {
+            t
+        }
+    });
 
     let mut args: Vec<String> = ["--color=never", "--absolute-path", "--ignore-case"].map(String::from).into();
+    if full_path {
+        args.push("--full-path".into());
+    }
     args.push(if glob { "--glob" } else { "--fixed-strings" }.into());
     if options.hidden {
         args.push("--hidden".into());

@@ -586,10 +586,17 @@ impl Engine {
             }
         }
         proto::write_message(out, &Message::Plan { indexed, skipped })?;
+        targets.retain(|(slot, _)| matcher.wants_drive(slot.letter));
 
         let max = request.max_results.filter(|&m| m > 0).unwrap_or(MAX_HITS).min(MAX_HITS);
-        // What a ranked search compares names with: the first word typed, folded, without wildcards.
-        let word = names.first().map(|w| query::fold(w).replace(['*', '?', '"'], "")).unwrap_or_default();
+        // What a ranked search compares names with: the first word typed (or the last segment of a path), folded, without wildcards.
+        let word = names
+            .first()
+            .map(|w| {
+                let seg = w.rsplit(['\\', '/', ':']).find(|s| !s.is_empty()).unwrap_or(w);
+                query::fold(seg).replace(['*', '?', '"'], "")
+            })
+            .unwrap_or_default();
         let mut send = |matcher: &NameMatcher| -> io::Result<(usize, bool)> {
             if request.rank {
                 return send_ranked(&targets, matcher, &filters, now, request.hidden, &excludes, word.as_bytes(), max, out);
