@@ -495,8 +495,12 @@ export async function navigate(target: string, { select, history = true, quiet =
     else if (state.path !== THIS_PC && samePath(parentPath(state.path), path)) wanted = [state.path];
     let selection: string[] = [];
     if (wanted.length && listing) {
-        const byLower = new Map(listing.entries.map((e) => [e.path.toLowerCase(), e.path]));
-        selection = wanted.flatMap((p) => byLower.get(p.replace(/[\\/]+$/, "").toLowerCase()) ?? []);
+        const asked = wanted.map((p) => p.replace(/[\\/]+$/, ""));
+        // Only what's as long as something asked for is lowercased: a big folder read again (a change on
+        // disk) with a few items selected doesn't lowercase every path in it.
+        const lengths = new Set(asked.map((p) => p.length));
+        const byLower = new Map(listing.entries.filter((e) => lengths.has(e.path.length)).map((e) => [e.path.toLowerCase(), e.path]));
+        selection = asked.flatMap((p) => byLower.get(p.toLowerCase()) ?? []);
     }
     const focus = same && state.focus && selection.includes(state.focus) ? state.focus : (selection[selection.length - 1] ?? null);
 
@@ -630,8 +634,26 @@ export function reloadFolder(folder: string) {
     const s = get();
     for (const id of visibleTabs(s)) {
         const t = s.tabs[id];
-        if (t && !t.find && t.path !== THIS_PC && samePath(folder, watchedFolder(t))) reload(id);
+        if (t && !t.find && t.path !== THIS_PC && samePath(folder, watchedFolder(t))) reread(id, folder);
     }
+}
+
+/** Tabs reading their folder again for a change on disk: the folder that changed once more meanwhile, if one did. */
+const rereading = new Map<string, string | null>();
+
+/**
+ * One read at a time per tab, then one more for what changed meanwhile: a big folder that takes longer
+ * to read than changes take to come (a build, an unzip) isn't read several times over at once.
+ */
+function reread(tab: string, folder: string) {
+    if (rereading.has(tab)) return void rereading.set(tab, folder);
+    rereading.set(tab, null);
+    void reload(tab).finally(() => {
+        const again = rereading.get(tab);
+        rereading.delete(tab);
+        const t = tabState(tab);
+        if (again && t && !t.find && samePath(again, watchedFolder(t))) reread(tab, again);
+    });
 }
 
 /** Tabs refreshed with F5, until what waits for it (Git status in a very big repository) has run. */
