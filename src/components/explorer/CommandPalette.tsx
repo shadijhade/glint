@@ -219,11 +219,12 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                             className={cn("flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm", i === active && "bg-accent")}
                         >
                             <c.icon className={cn("size-4 shrink-0 text-muted-foreground", c.iconClass)} />
-                            <span className="shrink-0 truncate">
+                            {/* A long label is cut short too (not scrolled sideways), once its detail is gone. */}
+                            <span className="min-w-0 truncate">
                                 {c.id === "go" ? c.label : <FuzzyText text={c.label} query={highlightQuery} />}
                             </span>
                             {c.detail && (
-                                <span className="min-w-0 truncate text-xs text-muted-foreground">
+                                <span className="min-w-0 shrink-[999] truncate text-xs text-muted-foreground">
                                     <FuzzyText text={c.detail} query={highlightQuery} tight />
                                 </span>
                             )}

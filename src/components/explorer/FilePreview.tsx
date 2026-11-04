@@ -666,7 +666,7 @@ function Details({ entry }: { entry: FileEntry }) {
             {rows.map(([label, value]) => (
                 <div key={label} className="contents">
                     <dt className="text-muted-foreground">{label}</dt>
-                    <dd className="select-text truncate" title={value}>
+                    <dd className="select-text line-clamp-2 [overflow-wrap:anywhere]" title={value}>
                         {label === "Place" && place ? (
                             <button type="button" onClick={() => void openUrl(mapLink(place))} title="Show it on OpenStreetMap" className="text-primary hover:underline">
                                 {value}
