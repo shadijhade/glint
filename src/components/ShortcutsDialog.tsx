@@ -21,6 +21,8 @@ const groups = (quick: string | null): [string, [string, string][]][] => [
             ["Ctrl+F", "Search this folder and its subfolders (by name or path)"],
             ["Ctrl+L", "Type a path"],
             ["Alt+← → ↑", "Back, forward (or Mouse 4 / 5), up"],
+            ["Backspace", "Back"],
+            ["A–Z", "The next name starting with what's typed"],
             ["F2", "Rename (several selected: all at once)"],
             ["Ctrl+Shift+R", "Rename several, with find and replace"],
             ["Delete", "To the Recycle Bin (Shift: for good)"],
@@ -74,6 +76,25 @@ const groups = (quick: string | null): [string, [string, string][]][] => [
             ...(quick ? ([[quick, "Quick search, from any app"]] as [string, string][]) : []),
             ["Ctrl+,", "Settings"],
             ["F1", "This sheet"],
+        ],
+    ],
+    [
+        "Quick Look",
+        [
+            ["Space or Esc", "Close it"],
+            ["← → ↑ ↓", "The next item in the folder"],
+            ["PageUp / PageDown", "Scroll it"],
+        ],
+    ],
+    [
+        "Compare two files",
+        [
+            ["Alt+↑ ↓", "The previous or next change"],
+            ["Alt+→ ←", "Copy the change to the right, or to the left"],
+            ["Double-click", "Edit a line (Enter keeps it, Esc doesn't)"],
+            ["Ctrl+Z", "Undo the last copy or edit"],
+            ["Ctrl+S", "Save what's changed"],
+            ["Ctrl+F", "Find text in both"],
         ],
     ],
 ];

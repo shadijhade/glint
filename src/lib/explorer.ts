@@ -1928,7 +1928,7 @@ export function revealInApp(path: string) {
  * list underneath: Delete there would recycle the selection. Quick Look is the exception, as its
  * arrows move through the list.
  */
-export const modalOpen = () => !!document.querySelector('[aria-modal="true"]:not([data-quicklook])');
+export const modalOpen = () => !!document.querySelector('[aria-modal="true"]:not([data-quicklook]), dialog:modal');
 
 /**
  * The control the keyboard moved to (Tab, a shortcut), or null when the last focus came from a click.
