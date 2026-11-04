@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Check, Copy, Database, FileCode, Hash, Rows3, Search, Table2, ToggleLeft, Type } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, Check, Copy, Database, FileCode, Hash, Rows3, Search, Table2, ToggleLeft, Type, X } from "lucide-react";
 import { toast } from "sonner";
 import type { FileEntry } from "@/lib/entries";
 import { formatCount, formatSize } from "@/lib/format";
@@ -306,6 +306,9 @@ export function TableView({
     const [rawText, setRawText] = useState<{ text: string; truncated: boolean } | null>(null);
     const [query, setQuery] = useState("");
     const [sortCol, setSortCol] = useState<{ index: number; desc: boolean } | null>(null);
+    const gridRef = useRef<HTMLDivElement | null>(null);
+    const [scrollTop, setScrollTop] = useState(0);
+    const [viewportHeight, setViewportHeight] = useState(600);
 
     useEffect(() => {
         if (mode !== "raw" || rawText) return;
@@ -338,6 +341,23 @@ export function TableView({
         });
     }, [table, query, sortCol]);
 
+    useEffect(() => {
+        if (gridRef.current) {
+            gridRef.current.scrollTop = 0;
+            setScrollTop(0);
+            if (gridRef.current.clientHeight > 0) setViewportHeight(gridRef.current.clientHeight);
+        }
+    }, [query, sortCol, table]);
+
+    const ROW_HEIGHT = 25;
+    const OVERSCAN = 20;
+    const virtualized = rows.length > 80;
+    const startRow = virtualized ? Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN) : 0;
+    const endRow = virtualized ? Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN) : rows.length;
+    const topPad = startRow * ROW_HEIGHT;
+    const bottomPad = Math.max(0, (rows.length - endRow) * ROW_HEIGHT);
+    const visibleRows = virtualized ? rows.slice(startRow, endRow) : rows;
+
     const ColumnTypeIcon = ({ kind }: { kind: "number" | "boolean" | "text" }) => {
         if (kind === "number") return <Hash className="size-3 shrink-0 text-amber-500" />;
         if (kind === "boolean") return <ToggleLeft className="size-3 shrink-0 text-emerald-500" />;
@@ -353,6 +373,11 @@ export function TableView({
                 </span>
                 <span className="text-muted-foreground">
                     <b className="font-semibold text-foreground">{formatCount(table.columns.length)}</b> cols ·{" "}
+                    {query.trim() ? (
+                        <>
+                            <b className="font-semibold text-foreground">{formatCount(rows.length)}</b> of{" "}
+                        </>
+                    ) : null}
                     <b className="font-semibold text-foreground">{formatCount(total ?? table.totalRowsSampled)}</b>
                     {table.truncated && total === undefined ? "+" : ""} rows
                 </span>
@@ -361,15 +386,31 @@ export function TableView({
                 {extra}
                 <div className="ml-auto flex items-center gap-1">
                     {mode === "grid" && (
-                        <div className="relative w-36">
+                        <div className="relative w-40">
                             <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
                             <input
                                 type="text"
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Escape" && query) {
+                                        e.stopPropagation();
+                                        setQuery("");
+                                    }
+                                }}
                                 placeholder="Filter rows…"
-                                className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[0.6875rem] outline-hidden focus:border-primary"
+                                className="h-6 w-full rounded border bg-background pl-6 pr-5 text-[0.6875rem] outline-hidden focus:border-primary"
                             />
+                            {query && (
+                                <button
+                                    type="button"
+                                    onClick={() => setQuery("")}
+                                    title="Clear filter"
+                                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+                                >
+                                    <X className="size-3" />
+                                </button>
+                            )}
                         </div>
                     )}
                     {raw && (
@@ -405,7 +446,14 @@ export function TableView({
                     )}
                 </div>
             ) : (
-                <div className="min-h-0 flex-1 overflow-auto select-text">
+                <div
+                    ref={gridRef}
+                    onScroll={(e) => {
+                        setScrollTop(e.currentTarget.scrollTop);
+                        setViewportHeight(e.currentTarget.clientHeight);
+                    }}
+                    className="min-h-0 flex-1 overflow-auto select-text"
+                >
                     <table className="w-full border-collapse text-left font-mono text-[0.6875rem]">
                         <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-xs">
                             <tr className="border-b">
@@ -445,29 +493,42 @@ export function TableView({
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-border/50">
-                            {rows.map((row, rIdx) => (
-                                <tr key={rIdx} className="hover:bg-muted/30">
-                                    <td className="border-r bg-muted/10 px-2 py-1 text-right text-[0.625rem] text-muted-foreground tabular-nums select-none">
-                                        {rIdx + 1}
-                                    </td>
-                                    {table.columns.map((col, cIdx) => {
-                                        const val = row[cIdx] ?? "";
-                                        return (
-                                            <td
-                                                key={cIdx}
-                                                title={val}
-                                                className={cn(
-                                                    "max-w-[16rem] truncate border-r px-2.5 py-1",
-                                                    col.kind === "number" && "text-right tabular-nums text-amber-700 dark:text-amber-400",
-                                                    col.kind === "boolean" && "text-emerald-700 dark:text-emerald-400"
-                                                )}
-                                            >
-                                                {val}
-                                            </td>
-                                        );
-                                    })}
+                            {topPad > 0 && (
+                                <tr aria-hidden="true" style={{ height: topPad }}>
+                                    <td colSpan={table.columns.length + 1} />
                                 </tr>
-                            ))}
+                            )}
+                            {visibleRows.map((row, offset) => {
+                                const rIdx = startRow + offset;
+                                return (
+                                    <tr key={rIdx} className="hover:bg-muted/30">
+                                        <td className="border-r bg-muted/10 px-2 py-1 text-right text-[0.625rem] text-muted-foreground tabular-nums select-none">
+                                            {rIdx + 1}
+                                        </td>
+                                        {table.columns.map((col, cIdx) => {
+                                            const val = row[cIdx] ?? "";
+                                            return (
+                                                <td
+                                                    key={cIdx}
+                                                    title={val}
+                                                    className={cn(
+                                                        "max-w-[16rem] truncate border-r px-2.5 py-1",
+                                                        col.kind === "number" && "text-right tabular-nums text-amber-700 dark:text-amber-400",
+                                                        col.kind === "boolean" && "text-emerald-700 dark:text-emerald-400"
+                                                    )}
+                                                >
+                                                    {val}
+                                                </td>
+                                            );
+                                        })}
+                                    </tr>
+                                );
+                            })}
+                            {bottomPad > 0 && (
+                                <tr aria-hidden="true" style={{ height: bottomPad }}>
+                                    <td colSpan={table.columns.length + 1} />
+                                </tr>
+                            )}
                         </tbody>
                     </table>
                     {table.truncated && (

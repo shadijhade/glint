@@ -241,7 +241,7 @@ export function DataTree({ entry, format }: { entry: FileEntry; format: "json" |
                                         if (container) (e.altKey && !r.open ? openAll : toggle)(r);
                                     }}
                                     className={cn(
-                                        "absolute inset-x-0 flex h-[22px] items-center gap-1 whitespace-pre pr-4 font-mono text-[0.8125rem] leading-[22px]",
+                                        "absolute left-0 flex h-[22px] w-max min-w-full items-center gap-1 whitespace-pre pr-4 font-mono text-[0.8125rem] leading-[22px]",
                                         r.id === selected ? "bg-accent" : "hover:bg-accent/60"
                                     )}
                                 >

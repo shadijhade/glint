@@ -103,7 +103,7 @@ export function FileGrid(props: FileGridProps) {
                     .join("\n")}
                 className={cn(
                     "relative m-0.5 flex min-w-0 cursor-default flex-col items-center rounded-md px-1.5 pt-2 text-center transition-[background-color,transform] duration-100 active:scale-[0.985]",
-                    selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
+                    selected ? (inactive ? "bg-primary/10 ring-1 ring-inset ring-primary/25 dark:bg-primary/12" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
                     entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary",
                     entry.path === dropTarget && "scale-[1.015] bg-primary/20 outline-2 -outline-offset-2 outline-primary",
                     (isHidden(entry) || cut.has(entry.path) || tracked.ignored) && "opacity-55",
