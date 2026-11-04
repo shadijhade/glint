@@ -35,10 +35,15 @@ export function VirtualList({ count, rowHeight, scrollToIndex = -1, scrollKey, i
     const scrolled = useRef(initialScrollTop);
     const laidOut = useRef({ cols: perRow ?? 0, rowHeight });
     const relaidOut = useRef(false);
+    // Read by the ResizeObserver's `measure`, which is the first render's.
+    const rowHeightRef = useRef(rowHeight);
+    rowHeightRef.current = rowHeight;
     const measure = () => {
         const el = ref.current;
         if (!el) return;
-        setView((v) => (v.top === el.scrollTop && v.height === el.clientHeight ? v : { top: el.scrollTop, height: el.clientHeight }));
+        // To the row it's in: scrolling within a row draws nothing again (the rows scroll as they are).
+        const top = Math.floor(el.scrollTop / rowHeightRef.current) * rowHeightRef.current;
+        setView((v) => (v.top === top && v.height === el.clientHeight ? v : { top, height: el.clientHeight }));
         widthRef.current?.(el.clientWidth);
     };
 
@@ -86,7 +91,8 @@ export function VirtualList({ count, rowHeight, scrollToIndex = -1, scrollKey, i
     }, [scrollToIndex, rowHeight, scrollKey, perRow]);
 
     const first = Math.max(0, Math.floor(view.top / rowHeight) - overscan);
-    const last = Math.min(count, Math.ceil((view.top + view.height) / rowHeight) + overscan);
+    // One more than the rows from `top`: the list can be scrolled up to a row further than it says.
+    const last = Math.min(count, Math.ceil((view.top + view.height) / rowHeight) + 1 + overscan);
     const rows: ReactNode[] = [];
     for (let i = first; i < last; i++) {
         rows.push(
