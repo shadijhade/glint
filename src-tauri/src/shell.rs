@@ -293,6 +293,14 @@ pub async fn open_with(window: Window, path: String) -> Result<(), String> {
     blocking(move || imp::open_with(owner, path)).await
 }
 
+/// Runs a program or script as administrator, as File Explorer's "Run as administrator" does: Windows
+/// asks for approval, and declining it is no error. It starts in the folder it's in.
+#[tauri::command]
+pub async fn run_as_admin(window: Window, path: String) -> Result<(), String> {
+    let owner = owner(&window);
+    blocking(move || imp::run_as_admin(owner, path)).await
+}
+
 /// Drags files out of the window (into Explorer, a mail, a chat…) with the shell's own drag data,
 /// as Explorer does. Must start while the mouse button is down; resolves once the drop or cancel
 /// happens with "copy", "move", "link" or "none", or with "released" when the button was already up.
@@ -910,6 +918,28 @@ mod imp {
         })
     }
 
+    pub fn run_as_admin(owner: isize, path: String) -> Result<(), String> {
+        in_sta(move || unsafe {
+            let file = HSTRING::from(path.as_str());
+            let folder = HSTRING::from(Path::new(&path).parent().map(|p| p.as_os_str()).unwrap_or_default());
+            let mut info = SHELLEXECUTEINFOW {
+                cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+                fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+                hwnd: hwnd(owner),
+                lpVerb: windows::core::w!("runas"),
+                lpFile: PCWSTR(file.as_ptr()),
+                lpDirectory: PCWSTR(folder.as_ptr()),
+                nShow: SW_SHOWNORMAL.0,
+                ..Default::default()
+            };
+            match ShellExecuteExW(&mut info) {
+                // Declined at Windows' approval prompt.
+                Err(e) if e.code() != ERROR_CANCELLED.to_hresult() => Err(message(e)),
+                _ => Ok(()),
+            }
+        })
+    }
+
     /// Where a shortcut points, when that's a folder (not a file, nor a place such as This PC).
     unsafe fn shortcut_folder(path: &str) -> Option<String> {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -1505,6 +1535,10 @@ mod imp {
     }
 
     pub fn open_with(_: isize, _: String) -> Result<(), String> {
+        Err(WINDOWS_ONLY.into())
+    }
+
+    pub fn run_as_admin(_: isize, _: String) -> Result<(), String> {
         Err(WINDOWS_ONLY.into())
     }
 

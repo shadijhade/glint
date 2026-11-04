@@ -786,6 +786,7 @@ pub fn run() {
             shell::show_properties,
             shell::open_item,
             shell::open_with,
+            shell::run_as_admin,
             shell::open_terminal,
             shell::start_drag,
             archive::archive_extract,

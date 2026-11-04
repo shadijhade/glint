@@ -766,6 +766,8 @@ export const showProperties = (path: string) => invoke("show_properties", { path
  *  options": what's chosen the shell runs, except "rename" and "delete", which come back for Glint's own. */
 export const shellMenu = (paths: string[], x: number, y: number) => invoke<string>("shell_menu", { paths, x, y });
 export const openWith = (path: string) => invoke("open_with", { path });
+/** Runs a program or script as administrator, as File Explorer's "Run as administrator" (Windows asks first). */
+export const runAsAdmin = (path: string) => invoke("run_as_admin", { path });
 export const openTerminal = (path: string) => invoke("open_terminal", { path });
 
 export interface LockingProcess {
