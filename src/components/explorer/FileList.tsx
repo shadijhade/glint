@@ -105,7 +105,10 @@ export function RenameInput({ entry, onCommit, onCancel, className }: { entry: F
         // Like Explorer: select the name but not the extension.
         const dot = entry.dir ? -1 : entry.name.lastIndexOf(".");
         input.setSelectionRange(0, dot > 0 ? dot : entry.name.length);
-    }, [entry]);
+        // By path: the folder read again (a download landing next to it) makes a new entry for the same
+        // file, and selecting the name again then would have the next key replace what's typed.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [entry.path]);
     const finish = (commit: boolean) => {
         if (done.current) return;
         done.current = true;
