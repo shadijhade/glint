@@ -193,10 +193,11 @@ fn search_files(args: &Value) -> Result<Value, String> {
     };
     let exclude: Vec<String> = vec!["node_modules".into(), ".git".into()];
     let (mut found, mut engines, mut more) = (Vec::new(), Vec::new(), false);
-    // What the index doesn't answer for (no service, a network share, a FAT drive…) fd looks through.
+    // What the index doesn't answer for (no service, a network share, a FAT drive…) fd looks through, and
+    // everything while an older service can't read the query (find::service_reads).
     let mut left = roots.clone();
     #[cfg(windows)]
-    {
+    if shadui_index::query::parse(&query).is_ok_and(|(terms, filters)| crate::find::service_reads(&terms, &filters)) {
         use shadui_index::client::Event;
         let request = shadui_index::proto::SearchRequest { query: query.clone(), roots: roots.clone(), hidden, exclude: exclude.clone(), max_results: Some(limit), fuzzy: true, rank: true };
         let _ = shadui_index::client::search(&request, |event| {

@@ -1,7 +1,7 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
 import { crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, linkedPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC, volumeOf } from "./paths.ts";
-import { ATTR, compareEntries, decodeItems, decodeListing, entryOrder, type FileEntry, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, isRemote, matcher, mergeSorted, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
+import { ATTR, compareEntries, decodeItems, decodeListing, entryOrder, type FileEntry, hasFilterOrPath, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, isRemote, matcher, mergeSorted, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
 import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
 import { cdCommand, isTyping, runLine } from "./cd.ts";
@@ -236,6 +236,9 @@ for (const bad of ["width:wide", "width:<0", "height:>", "duration:5x", "duratio
     assert.equal(propTest(key, value), null, bad);
 }
 assert.ok(hasPropFilter("holiday Width:>10") && !hasPropFilter("holiday ext:jpg"));
+// What an older instant search service doesn't read: filters and paths, not names.
+for (const query of ["report EXT:pdf", "size:>1mb", "dm:7d", "files:", "folder:", "src\\lib main", "src/lib", "PATH:docs", "D:\\photos"]) assert.ok(hasFilterOrPath(query), query);
+for (const query of ["budget 2026", "*.pdf -draft", `"q3 final"`, "taken:2024"]) assert.ok(!hasFilterOrPath(query), query);
 // In a folder, a file shows once what it says is read; in search results (no facts) the search checked them.
 const pictures = [entry("big.png", { size: 1 }), entry("small.png", { size: 1 }), entry("unread.png", { size: 1 }), entry("notes.txt", { size: 1 })];
 const said = new Map<string, MediaFacts | null>([["big.png", { ...photo, width: 3000 }], ["small.png", { ...photo, width: 800 }], ["notes.txt", null]]);
