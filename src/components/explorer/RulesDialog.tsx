@@ -194,9 +194,10 @@ function Editor({ start }: { start: FolderRule }) {
     const turnOnWithThese = async () => {
         save(true);
         try {
-            const did = await rulesApply({ ...named, on: true });
+            const [did, failed] = await rulesApply({ ...named, on: true });
             if (named.action === "sync") return void toast.success(`Rule “${named.name}” is on`, { description: "It's syncing now; What they did shows what it does." });
             toast.success(`Rule “${named.name}” is on`, { description: `It did it to ${plural(did, "file")} there now; what comes later goes the same way.` });
+            if (failed) toast.error(`Rule “${named.name}” couldn't do it to ${plural(failed, "file")}`, { description: "What they did says why, for each." });
         } catch (e) {
             toast.error("Couldn't do it to what's there", { description: String(e) });
         }
