@@ -232,6 +232,7 @@ function Half({
                     type="text"
                     value={draft}
                     autoFocus
+                    data-own-escape
                     onChange={(e) => setDraft(e.target.value)}
                     onBlur={() => onCommitEdit(draft)}
                     onKeyDown={(e) => {
@@ -870,6 +871,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                     <input
                         ref={searchInputRef}
                         type="text"
+                        data-own-escape
                         value={searchQuery}
                         onChange={(e) => {
                             setSearchQuery(e.target.value);
