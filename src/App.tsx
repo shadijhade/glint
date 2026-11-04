@@ -2,13 +2,15 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, Sparkles, TextSearch } from "lucide-react";
 import logo from "./assets/logo.svg";
 import { astGrepApply, cancelSearch, isDocument, RgMatch, searchBatched, useRewrite } from "./lib/ripgrep";
-import { HistoryItem, Mode, SearchOptions, useStore } from "./lib/store";
-import { archiveOf, closedNotice, closedOf, currentPath, defaultTextSearchFolder, openRequested, refreshIndex, revealInApp } from "./lib/explorer";
+import { HistoryItem, Mode, saveNow, SearchOptions, useStore } from "./lib/store";
+import { archiveOf, closedNotice, closedOf, currentPath, defaultTextSearchFolder, openRequested, operationsRunning, refreshIndex, revealInApp } from "./lib/explorer";
+import { finished, useQueue } from "./lib/queue";
 import { isFolderPath } from "./lib/paths";
 import { replaceText, toRegExp } from "./lib/text";
 import { checkForUpdates, greetUpdate, useUpdater } from "./lib/updater";
@@ -29,7 +31,7 @@ import { RemoteDialog } from "./components/explorer/RemoteDialog";
 import { RulesDialog } from "./components/explorer/RulesDialog";
 import { CopyQueue } from "./components/explorer/CopyQueue";
 import { CleanupDialog } from "./components/explorer/CleanupDialog";
-import { CompareFilesDialog } from "./components/explorer/CompareFilesDialog";
+import { CompareFilesDialog, discardCompareEdits } from "./components/explorer/CompareFilesDialog";
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
 import { Explorer } from "./components/explorer/Explorer";
 import { HistoryDialog } from "./components/explorer/HistoryDialog";
@@ -48,6 +50,14 @@ export interface SearchRun {
   limit: number | null;
   /** Searched again skipping nothing. */
   everything?: boolean;
+}
+
+/** Whether quitting may go ahead: asked when it would cut a copy or move short, or lose Compare's edits. */
+async function mayQuit() {
+  const copying = operationsRunning() || useQueue.getState().jobs.some((job) => !finished(job));
+  const ask = { title: "Close Glint?", kind: "warning", okLabel: "Close anyway", cancelLabel: "Keep it open" } as const;
+  if (copying && !(await confirm("A copy or move is still running, and closing Glint stops it where it is.", ask))) return false;
+  return discardCompareEdits();
 }
 
 /** How often a long-running session looks for a new version again (it also looks at start). */
@@ -183,6 +193,25 @@ function App() {
       cancelAnimationFrame(frame);
       clearTimeout(ahead);
     };
+  }, []);
+
+  // Closing asks first when it would cut a copy short or lose Compare's edits. The close is held here
+  // and then asked for again without this listener (let through, the API would destroy the window,
+  // which Glint isn't allowed), so Rust's on_close decides: hidden with the tray on, else quitting.
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const guard = () =>
+      win.onCloseRequested(async (event) => {
+        event.preventDefault();
+        // Hidden in the tray, nothing stops.
+        if (!useStore.getState().settings.keepInTray && !(await mayQuit())) return;
+        saveNow();
+        (await stop)();
+        await win.close();
+        stop = guard();
+      });
+    let stop = guard();
+    return () => void stop.then((f) => f());
   }, []);
 
   useEffect(() => {
