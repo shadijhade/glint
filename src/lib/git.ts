@@ -25,10 +25,16 @@ function save(tab: string, run: GitRun | null) {
     });
 }
 
+/** Tabs asked again while their folder's status was being worked out: the folder, to look at once more after. */
+const again = new Map<string, string>();
+
 /** Asks for Git in a tab's folder; a view of the same folder stays on screen meanwhile. */
 export async function refreshGit(tab: string, folder: string, force = false) {
     const before = runs()[tab];
     const same = before && samePath(before.folder, folder);
+    // Asked again while the same folder's status runs (a build writing all the time): once more after it,
+    // rather than starting over, which a big repository's status would never get through.
+    if (same && before.running && !force) return void again.set(tab, folder);
     save(tab, { folder, view: same ? before.view : null, running: true });
     try {
         const view = await gitView(folder, tab, useStore.getState().settings.gitTrusted, force);
@@ -38,6 +44,10 @@ export async function refreshGit(tab: string, folder: string, force = false) {
         if (samePath(runs()[tab]?.folder ?? "", folder) && runs()[tab]?.running) save(tab, same && before.view ? { ...before, running: false } : null);
     }
     watchShown();
+    const next = again.get(tab);
+    if (next === undefined) return;
+    again.delete(tab);
+    if (samePath(runs()[tab]?.folder ?? "", next)) void refreshGit(tab, next);
 }
 
 /** Takes Git off a tab (it closed, or shows something that isn't a folder on disk). */
