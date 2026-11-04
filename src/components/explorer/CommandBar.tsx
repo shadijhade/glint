@@ -81,6 +81,7 @@ import { Button } from "../ui/button";
 import { checkForSecrets, checkWithYara } from "./CheckDialog";
 import { newMenuItems } from "./newMenu";
 import { canConvert, convertPictures } from "./ConvertDialog";
+import { compareFiles } from "./CompareFilesDialog";
 import { openCleanup } from "./CleanupDialog";
 import { offerOnNetwork, offerToPC } from "./ShareDialog";
 import { openReceive } from "@/lib/share";
@@ -216,13 +217,14 @@ function useFold(buttons: unknown) {
 
 interface CommandBarProps {
     selected: FileEntry[];
+    comparePair: [FileEntry, FileEntry] | null;
     onRename: () => void;
     onDelete: () => void;
     onSearchText: () => void;
 }
 
 /** Acts on the active pane (its tab and selection). */
-export function CommandBar({ selected, onRename, onDelete, onSearchText }: CommandBarProps) {
+export function CommandBar({ selected, comparePair, onRename, onDelete, onSearchText }: CommandBarProps) {
     const { path, find, tab, view, readOnly, closed, bin, wholeArchive } = useTab(
         useShallow((t) => {
             const archive = t.listing?.archive;
@@ -265,7 +267,7 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
     const terminal = () => openTerminal(path).catch((e) => toast.error("Couldn't open a terminal", { description: String(e) }));
     // What this folder's projects can run (its own, and those above it to the repository's root).
     const tasks = useProjectTasks(inFolder && !readOnly && !find ? path : null);
-    const [ref, fold] = useFold(`${dual} ${readOnly} ${bin} ${tasks.length > 0}`);
+    const [ref, fold] = useFold(`${dual} ${!!comparePair} ${readOnly} ${bin} ${tasks.length > 0}`);
     const menu = useMenu();
 
     /** New, under the arrow by New folder: a folder, a text document, and what Windows' New menu makes. */
@@ -314,6 +316,13 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             { label: "Terminal here, under the files", icon: SquareTerminal, shortcut: "Ctrl+`", onSelect: () => toggleTerminal(terminalFolder()) },
             { label: "Open in Terminal", icon: SquareTerminal, disabled: !inFolder, onSelect: terminal },
             { heading: "Inspect" },
+            {
+                label: comparePair ? `Compare “${comparePair[0].name}” and “${comparePair[1].name}”` : "Compare two files",
+                icon: GitCompareArrows,
+                shortcut: "Ctrl+M",
+                disabled: !comparePair,
+                onSelect: () => comparePair && compareFiles(comparePair[0].path, comparePair[1].path),
+            },
             { label: "File X-Ray: hashes and hidden streams", icon: Fingerprint, disabled: !file, onSelect: () => file && inspectXRay(file.path) },
             { label: paths.length ? "What's locking the selection?" : "What's locking this folder?", icon: Lock, disabled: !inFolder && !paths.length, onSelect: () => inspectLocks(paths.length ? paths : [path]) },
             { label: "Recent changes in this folder", icon: FileClock, disabled: !inFolder, onSelect: () => inspectTimeline(path) },
@@ -382,6 +391,13 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
             { label: "Paste", icon: ClipboardPaste, shortcut: "Ctrl+V", disabled: !inFolder || find || readOnly, onSelect: () => paste() },
             dual && { label: "Copy to the other pane", icon: CopyPlus, disabled: !paths.length || !other, onSelect: () => copyToOtherPane(false, paths) },
             dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !paths.length || !other || readOnly, onSelect: () => copyToOtherPane(true, paths) },
+            (dual || !!comparePair) && {
+                label: comparePair ? `Compare “${comparePair[0].name}” and “${comparePair[1].name}”` : "Compare selected files",
+                icon: GitCompareArrows,
+                shortcut: "Ctrl+M",
+                disabled: !comparePair,
+                onSelect: () => comparePair && compareFiles(comparePair[0].path, comparePair[1].path),
+            },
             "separator",
             { label: selected.length > 1 ? `Rename ${selected.length} items` : "Rename", icon: PenLine, shortcut: "F2", disabled: !selected.length || readOnly, onSelect: onRename },
             { label: "Delete", icon: Trash2, shortcut: "Del", danger: true, disabled: !paths.length || readOnly, onSelect: onDelete },
@@ -428,6 +444,18 @@ export function CommandBar({ selected, onRename, onDelete, onSearchText }: Comma
                                     <Tool icon={CopyPlus} label="Copy to the other pane" disabled={!paths.length || !other} onClick={() => copyToOtherPane(false, paths)} />
                                     <Tool icon={FolderOutput} label="Move to the other pane" disabled={!paths.length || !other || readOnly} onClick={() => copyToOtherPane(true, paths)} />
                                 </>
+                            )}
+                            {(dual || !!comparePair) && (
+                                <Tool
+                                    icon={GitCompareArrows}
+                                    label={
+                                        comparePair
+                                            ? `Compare “${comparePair[0].name}” and “${comparePair[1].name}” (Ctrl+M)`
+                                            : "Compare files: select two files, or one file in each pane (Ctrl+M)"
+                                    }
+                                    disabled={!comparePair}
+                                    onClick={() => comparePair && compareFiles(comparePair[0].path, comparePair[1].path)}
+                                />
                             )}
                             <Tool
                                 icon={PenLine}

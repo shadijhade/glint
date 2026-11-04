@@ -48,6 +48,7 @@ const groups = (quick: string | null): [string, [string, string][]][] => [
             ["Ctrl+1…9", "Go to a tab"],
             ["Ctrl+Enter", "Open in a new tab"],
             ["Ctrl+Shift+D", "Two panes"],
+            ["Ctrl+M", "Compare two selected files (or one in each pane)"],
             ["Ctrl+Shift+M", "Compare the panes"],
             ["F6", "The other pane"],
             ["Ctrl+`", "The terminal, under the files (it follows the folder shown)"],

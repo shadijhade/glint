@@ -51,6 +51,7 @@ import { VirtualList } from "../VirtualList";
 export interface CompareSide {
     path: string;
     label?: string;
+    readOnly?: boolean;
 }
 
 interface CompareState {
@@ -95,8 +96,8 @@ function CompareModal({ left, right, onClose }: { left: CompareSide; right: Comp
         ...(pictures ? [{ key: "pictures" as View, label: "Pictures", icon: ImageIcon }] : []),
         { key: "bytes", label: "Bytes", icon: Binary },
     ];
-    // Where they are: each folder once, leaving out a side that has a label (a temp copy's folder says nothing).
-    const folders = [...new Set([a, b].filter((side) => !side.label).map((side) => parentPath(side.path)))];
+    // Where they are: each folder once, leaving out a read-only temp copy.
+    const folders = [...new Set([a, b].filter((side) => !side.readOnly).map((side) => parentPath(side.path)))];
     const subtitle = (folders.length ? folders : [parentPath(a.path)]).join("  ·  ");
 
     return (
@@ -541,8 +542,8 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
     }, [blocks, rowToVisibleIndex]);
 
     // Merge actions (Copy block left -> right or right -> left)
-    const canEditLeft = !left.label;
-    const canEditRight = !right.label;
+    const canEditLeft = !left.readOnly;
+    const canEditRight = !right.readOnly;
 
     const copyBlock = useCallback(
         (blockIndex: number, direction: "toRight" | "toLeft") => {
@@ -595,7 +596,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
         async (side: 0 | 1) => {
             const lines = side === 0 ? leftLines : rightLines;
             const target = side === 0 ? left : right;
-            if (!lines || target.label) return;
+            if (!lines || target.readOnly) return;
             const meta = diskMeta.current;
             const content = serializeLines(lines, side === 0 ? (meta?.leftCrlf ?? false) : (meta?.rightCrlf ?? false), side === 0 ? (meta?.leftNewline ?? true) : (meta?.rightNewline ?? true));
             setSavingSide(side);
