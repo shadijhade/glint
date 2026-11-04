@@ -123,27 +123,25 @@ pub(crate) fn fd_args(query: &str, roots: &[String], options: &FindOptions) -> R
         return Err("Type part of a file name to search for".into());
     }
     let full_path = terms.iter().any(|t| shadui_index::query::is_path_term(t));
-    let terms: Vec<String> = terms.into_iter().map(|t| shadui_index::query::clean_term(&t)).collect();
     // Filters alone search every name.
-    let glob = terms.is_empty() || terms.iter().any(|t| t.contains(['*', '?']));
+    let glob = !full_path && (terms.is_empty() || terms.iter().any(|t| t.contains(['*', '?'])));
     let mut patterns = terms.into_iter().map(|t| {
-        if !glob {
-            t
-        } else if !t.contains(['*', '?']) {
+        if full_path {
+            full_path_regex(&t)
+        } else if glob && !t.contains(['*', '?']) {
             format!("*{t}*")
-        } else if full_path {
-            let pat = if t.starts_with('*') { t } else { format!("*{t}") };
-            if pat.ends_with('*') { pat } else { format!("{pat}*") }
         } else {
             t
         }
     });
 
     let mut args: Vec<String> = ["--color=never", "--absolute-path", "--ignore-case"].map(String::from).into();
+    // Over full paths, fd's globs don't reach across `\`: its patterns are regular expressions there.
     if full_path {
         args.push("--full-path".into());
+    } else {
+        args.push(if glob { "--glob" } else { "--fixed-strings" }.into());
     }
-    args.push(if glob { "--glob" } else { "--fixed-strings" }.into());
     if options.hidden {
         args.push("--hidden".into());
     }
@@ -173,6 +171,27 @@ pub(crate) fn fd_args(query: &str, roots: &[String], options: &FindOptions) -> R
     args.push(first);
     args.extend(roots.iter().cloned());
     Ok(args)
+}
+
+/// A term as a regular expression over the full paths fd matches with --full-path, as the index
+/// matches it: a path term anywhere in the path, a name term in its last part. `*` is any run of
+/// characters (within the name, for a name term), `?` one.
+fn full_path_regex(term: &str) -> String {
+    let path = shadui_index::query::is_path_term(term);
+    let (any, one) = if path { (".*", ".") } else { (r"[^\\/]*", r"[^\\/]") };
+    let body: String = shadui_index::query::clean_term(term)
+        .chars()
+        .map(|c| match c {
+            '*' => any.into(),
+            '?' => one.into(),
+            c => regex::escape(c.encode_utf8(&mut [0; 4])),
+        })
+        .collect();
+    match (path, term.contains(['*', '?'])) {
+        (true, _) => body,
+        (false, true) => format!(r"(?:^|[\\/]){body}$"),
+        (false, false) => format!(r"{body}[^\\/]*$"),
+    }
 }
 
 /// Sends results in batches: up to 10,000 at a time, at least every 40 ms.
@@ -501,6 +520,12 @@ mod tests {
         assert!(args.ends_with(&["--".into(), "*".into(), r"C:\Users".into()]));
         assert!(fd_args("report folder: dm:>1y", &roots, &options()).unwrap().contains(&"--type=directory".into()));
         assert!(fd_args("size:huge", &roots, &options()).is_err());
+
+        // A path term matches the full path, and the names in its last part, by regular expressions.
+        let args = fd_args("src/lib util *.ts", &roots, &options()).unwrap();
+        assert!(args.contains(&"--full-path".into()) && !args.contains(&"--glob".into()) && !args.contains(&"--fixed-strings".into()));
+        assert!(args.ends_with(&[r"--and=util[^\\/]*$".into(), r"--and=(?:^|[\\/])[^\\/]*\.ts$".into(), "--".into(), r"src\\lib".into(), r"C:\Users".into()]));
+        assert!(fd_args(r"path:docs\*.md", &roots, &options()).unwrap().ends_with(&["--".into(), r"docs\\.*\.md".into(), r"C:\Users".into()]));
     }
 
     #[test]

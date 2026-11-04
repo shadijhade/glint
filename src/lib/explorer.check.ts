@@ -178,6 +178,11 @@ assert.equal(match("b"), "b,B.txt");
 assert.equal(match("?.txt"), "a.txt,B.txt");
 assert.equal(match("*.t"), "");
 assert.equal(matcher("   "), null);
+// Path terms (a \ or /, or path:) match the whole path, with * and ? anywhere in it.
+assert.equal(match("x/b"), "b,B.txt");
+assert.equal(match("path:X\\*.MD"), "c.md");
+assert.equal(match("c:/x/ txt"), "a.txt,B.txt");
+assert.equal(match("y\\b"), "");
 // Filters, as the index and fd read them: a.txt is 30 B, B.txt 20 B, c.md 10 B; b is a folder.
 assert.equal(match("ext:TXT"), "a.txt,B.txt");
 assert.equal(match("size:>=20 ext:txt;md"), "a.txt,B.txt");
