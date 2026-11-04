@@ -855,6 +855,25 @@ mod tests {
     }
 
     #[test]
+    fn path_terms_match_where_items_are() {
+        assert!(is_path_term(r"src\lib") && is_path_term("src/lib") && is_path_term("PATH:docs") && !is_path_term("report.pdf"));
+        assert_eq!(clean_term("path:C://Users//me/"), r"C:\Users\me");
+        assert_eq!(clean_term(r"\\?\C:\"), r"C:\", "a root keeps its backslash");
+        assert_eq!(clean_term("report"), "report", "names are left alone");
+        assert_eq!(parse("path:src main").unwrap().0, ["path:src", "main"]);
+        assert!(parse("path:").is_err());
+        // An item's path as the index builds it: its folders below the root and its name, by `\`.
+        let m = NameMatcher::new("src/lib main").unwrap();
+        assert!(m.has_paths() && m.wants_drive('c'));
+        assert!(m.matches_in(b"main.rs", None, br"Repo\SRC\lib\main.rs"));
+        assert!(!m.matches_in(b"main.rs", None, br"Repo\src\main.rs"));
+        // A drive keeps to that drive, and a glob is matched against the whole path.
+        let m = NameMatcher::new(r"D:\photos\*.jpg").unwrap();
+        assert!(m.wants_drive('d') && !m.wants_drive('C'));
+        assert!(m.matches_path(br"photos\2024\beach.jpg") && !m.matches_path(br"music\beach.jpg"));
+    }
+
+    #[test]
     fn splits_terms_with_quotes() {
         assert_eq!(terms(r#"  report "q3 final"  pdf "#), ["report", "q3 final", "pdf"]);
         assert!(terms("   ").is_empty());
