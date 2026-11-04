@@ -8,6 +8,7 @@ mod cleanup;
 mod codesearch;
 mod compare;
 mod convert;
+mod crash;
 mod data_lens;
 mod dedup;
 mod defender;
@@ -240,6 +241,9 @@ async fn diagnostics(app: tauri::AppHandle) -> Result<String, String> {
         #[cfg(windows)]
         if let Some(log) = shadui_index::log_path() {
             let _ = writeln!(out, "Service log (administrators can open it): {}", log.display());
+        }
+        if let Some(panic) = crash::last() {
+            let _ = writeln!(out, "Last panic:\n{panic}");
         }
         Ok(out)
     })
@@ -921,6 +925,7 @@ pub fn run() {
                 use tauri::Manager;
                 app.state::<thumbs::Thumbs>().warm_up();
                 if let Ok(data) = app.path().app_local_data_dir() {
+                    crash::install(&data);
                     tools::set_dir(data.join("tools"));
                     if let Some(window) = app.get_webview_window("main") {
                         placement::restore(&window, &data);
