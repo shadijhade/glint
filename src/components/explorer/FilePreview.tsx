@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Check, Clock, Cloud, Copy, ExternalLink, Images, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, Maximize2, Minimize2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, WrapText, X } from "lucide-react";
 import { toast } from "sonner";
+import { useUnlocks } from "@/lib/archives";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly, isRecycled, isRemote } from "@/lib/entries";
 import { archiveOf, calcSizes, compressEntries, currentPath, navigate, openEntry, openFile, reload, restoreRecycled, useExplorer } from "@/lib/explorer";
 import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
@@ -29,6 +30,7 @@ import { LockMark } from "./FileList";
 import { MarkdownView } from "./MarkdownView";
 import { RepoCard } from "./RepoCard";
 import { ShellPreview } from "./ShellPreview";
+import { PasswordForm } from "./PasswordDialog";
 import { BigIcon, Centered, Waiting } from "./PreviewState";
 import { Thumbnail } from "./Thumbnail";
 import { inspectXRay } from "./XRayDialog";
@@ -593,7 +595,8 @@ function LockedPreview({ entry }: { entry: FileEntry }) {
     return (
         <Centered>
             <LockMark entry={entry} className="size-14 stroke-[1.25] text-amber-600 dark:text-amber-500" />
-            <p className="max-w-sm">{encrypted ? "This file is password-protected, and Glint can't open encrypted files in archives yet." : (reason ?? "Glint can't read this file from the archive.")}</p>
+            <p className="max-w-sm">{encrypted ? "This file is password-protected." : (reason ?? "Glint can't read this file from the archive.")}</p>
+            {encrypted && <PasswordForm path={entry.path} />}
         </Centered>
     );
 }
@@ -731,6 +734,7 @@ export function EntryPreview({
     ];
     const chosen = usePreviewView((s) => s.view);
     const view = views.some((v) => v.view === chosen) ? chosen : "file";
+    const unlocks = useUnlocks((s) => s.count);
     let body: React.ReactNode;
     if (view === "changes") body = <ChangesView entry={entry} />;
     else if (view === "hex") body = <HexView entry={entry} />;
@@ -871,7 +875,10 @@ export function EntryPreview({
                     )}
                 </div>
             </div>
-            <div data-quicklook-scroll className="min-h-0 flex-1 overflow-auto bg-card">{body}</div>
+            {/* Read again once a password opens something: what failed for want of it may open now. */}
+            <div key={unlocks} data-quicklook-scroll className="min-h-0 flex-1 overflow-auto bg-card">
+                {body}
+            </div>
             <Details entry={entry} />
         </div>
     );

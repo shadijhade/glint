@@ -191,20 +191,26 @@ pub struct ZipSource {
     /// Whether two entries share bytes: a trick of zip bombs (many entries pointing at the same
     /// compressed data) that real archives never use.
     pub overlapping: bool,
+    /// What password-protected entries are decrypted with.
+    password: Option<String>,
 }
 
 pub struct SevenZSource {
     archive: SevenZ,
     /// Each entry's block and how much of the block comes before it.
     place: Vec<Option<(usize, u64)>>,
-    /// Each block's unpacked and packed sizes, and what keeps it from being read (encryption, a method).
+    /// Each block's unpacked and packed sizes, and what keeps it from being read (a method).
     blocks: Vec<BlockInfo>,
+    /// What encrypted blocks are decrypted with.
+    password: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct BlockInfo {
     unpacked: u64,
     packed: u64,
+    /// AES-encrypted: read only with a password.
+    encrypted: bool,
     problem: Option<Failure>,
     /// Decoded by Glint itself rather than by sevenz-rust2 (`decoded_here`).
     here: bool,
@@ -216,8 +222,9 @@ pub type ItemIndex = usize;
 impl Source {
     /// Reads the archive's list of entries (for a compressed tar, its whole stream, with progress and
     /// Stop through `scan`). The format comes back corrected by the file's first bytes: a ".zip" that's
-    /// a 7z, a ".gz" that holds a tar.
-    pub fn open(path: &Path, format: Format, scan: &Scan) -> Result<(Source, Vec<Item>, Format), Failure> {
+    /// a 7z, a ".gz" that holds a tar. With `password`, password-protected entries (and a 7z's or RAR's
+    /// encrypted list of entries) are read with it, and aren't marked as locked.
+    pub fn open(path: &Path, format: Format, scan: &Scan, password: Option<&str>) -> Result<(Source, Vec<Item>, Format), Failure> {
         let format = match File::open(path).and_then(|f| {
             let mut head = Vec::with_capacity(4096);
             f.take(4096).read_to_end(&mut head).map(|_| head)
@@ -230,11 +237,11 @@ impl Source {
             Err(e) => return Err(Failure::from(e)),
         };
         match format {
-            Format::Zip => open_zip(path).map(|(s, items)| (s, items, format)),
-            Format::SevenZ => open_7z(path).map(|(s, items)| (s, items, format)),
+            Format::Zip => open_zip(path, password).map(|(s, items)| (s, items, format)),
+            Format::SevenZ => open_7z(path, password).map(|(s, items)| (s, items, format)),
             Format::Cab => open_cab(path).map(|(s, items)| (s, items, format)),
             Format::Msi => msi::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Msi(Box::new(s)), items, format)),
-            Format::Rar => rar::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Rar(Box::new(s)), items, format)),
+            Format::Rar => rar::open(path, MAX_ENTRIES, password).map(|(s, items)| (Source::Rar(Box::new(s)), items, format)),
             Format::Ncdu(codec) => open_ncdu(path, codec, scan),
             Format::Tar(_) | Format::Single(_) => {
                 let kind = stream::kind_of(path).ok_or_else(|| Failure::Damaged("it isn't a tar archive or a compressed file Glint reads".into()))?;
@@ -301,12 +308,22 @@ impl Source {
         }
     }
 
-    /// Why `item` can't be extracted at all, if it can't: encrypted, an unknown method, or (zip) an
-    /// archive whose entries overlap.
+    /// Whether `item` is password-protected, whether or not there's a password for it.
+    pub fn encrypted(&self, item: ItemIndex) -> bool {
+        match self {
+            Source::Zip(z) => z.meta.entry(item).is_ok_and(|e| e.encrypted()),
+            Source::SevenZ(s) => s.place.get(item).copied().flatten().is_some_and(|(block, _)| s.blocks[block].encrypted),
+            Source::Rar(r) => r.encrypted(item),
+            _ => false,
+        }
+    }
+
+    /// Why `item` can't be extracted at all, if it can't: encrypted (with no password), an unknown
+    /// method, or (zip) an archive whose entries overlap.
     pub fn problem(&self, item: ItemIndex) -> Option<Failure> {
         match self {
             Source::Zip(z) => z.problem(item),
-            Source::SevenZ(s) => s.place.get(item).copied().flatten().and_then(|(block, _)| s.blocks[block].problem.clone()),
+            Source::SevenZ(s) => s.place.get(item).copied().flatten().and_then(|(block, _)| s.block_problem(block)),
             Source::Stream(s) => s.problem(item),
             Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| f.problem.clone()),
             Source::Msi(m) => m.problem(item),
@@ -434,7 +451,8 @@ fn zip_problem(encrypted: bool, method: CompressionMethod) -> Option<Failure> {
     }
     match method {
         _ if is_zstd(method) => None,
-        CompressionMethod::Unsupported(99) => Some(Failure::Encrypted),
+        // AES without the extra field that names its real method: nothing a password could decode.
+        CompressionMethod::AES | CompressionMethod::Unsupported(99) => Some(Failure::Encrypted),
         CompressionMethod::Unsupported(n) => Some(Failure::Unsupported(zip_method_name(n))),
         _ => None,
     }
@@ -452,7 +470,7 @@ fn zip_method_name(method: u16) -> String {
     }
 }
 
-fn open_zip(path: &Path) -> Result<(Source, Vec<Item>), Failure> {
+fn open_zip(path: &Path, password: Option<&str>) -> Result<(Source, Vec<Item>), Failure> {
     let tail = ZipTail::open(path)?;
     let archive = ZipArchive::new(tail).map_err(zip_failure)?;
     let meta = archive.metadata();
@@ -478,9 +496,9 @@ fn open_zip(path: &Path) -> Result<(Source, Vec<Item>), Failure> {
             zip::System::Dos => entry.external_attributes() & 0xFF,
             _ => 0,
         };
-        if entry.encrypted() {
+        if entry.encrypted() && password.is_none() {
             attrs |= ENCRYPTED;
-        } else if zip_problem(false, entry.compression()).is_some() {
+        } else if zip_problem(false, entry.compression()).is_some() || (entry.encrypted() && is_zstd(entry.compression())) {
             attrs |= UNREADABLE;
         }
         let dir = entry.is_dir();
@@ -491,7 +509,7 @@ fn open_zip(path: &Path) -> Result<(Source, Vec<Item>), Failure> {
     }
     spans.sort_unstable();
     let overlapping = spans.windows(2).any(|w| w[1].0 < w[0].1);
-    Ok((Source::Zip(ZipSource { meta, overlapping }), items))
+    Ok((Source::Zip(ZipSource { meta, overlapping, password: password.map(str::to_string) }), items))
 }
 
 fn zip_failure(e: zip::result::ZipError) -> Failure {
@@ -502,7 +520,7 @@ fn zip_failure(e: zip::result::ZipError) -> Failure {
         ZipError::UnsupportedArchive(what) if what.contains("multi-disk") => Failure::Unreadable("it's split into several files (a multi-volume zip)".into()),
         ZipError::UnsupportedArchive(what) if what == ZipError::PASSWORD_REQUIRED => Failure::Encrypted,
         ZipError::UnsupportedArchive(what) => Failure::Unreadable(what.to_string()),
-        ZipError::InvalidPassword => Failure::Encrypted,
+        ZipError::InvalidPassword => Failure::WrongPassword(String::new()),
         // No end-of-directory record: cut short, or not a zip at all.
         ZipError::InvalidArchive(what) if what.contains("EOCD") => Failure::Damaged("its list of files, at the end of the file, is missing (is it complete, and is it a zip file?)".into()),
         other => Failure::Damaged(other.to_string()),
@@ -638,7 +656,11 @@ impl ZipSource {
             return Some(Failure::Bomb("its entries overlap each other, as in zip bombs".into()));
         }
         let entry = self.meta.entry(item).ok()?;
-        zip_problem(entry.encrypted(), entry.compression())
+        // Glint decodes Zstandard itself, from the stored bytes, which a password would leave encrypted.
+        if entry.encrypted() && self.password.is_some() && is_zstd(entry.compression()) {
+            return Some(Failure::Unsupported("Zstandard, behind a password".into()));
+        }
+        zip_problem(entry.encrypted() && self.password.is_none(), entry.compression())
     }
 
     fn read_each(&self, file: &Path, items: &[ItemIndex], each: &mut dyn FnMut(ItemIndex, &mut dyn Read) -> bool) -> Vec<(ItemIndex, Failure)> {
@@ -664,12 +686,15 @@ impl ZipSource {
                 continue;
             }
             let zstd = self.meta.entry(item).is_ok_and(|e| is_zstd(e.compression()));
+            let password = self.password.as_deref().filter(|_| self.meta.entry(item).is_ok_and(|e| e.encrypted()));
             let read = if zstd {
                 // The stored bytes, decoded here, then checked against the entry's CRC32.
                 zip.by_index_raw(item).map(|raw| {
                     let crc = raw.crc32();
                     stopped = !each(item, &mut Crc32Checked::new(Zstd::new(BufReader::new(raw)), crc));
                 })
+            } else if let Some(password) = password {
+                zip.by_index_decrypt(item, password.as_bytes()).map(|mut entry| stopped = !each(item, &mut entry))
             } else {
                 zip.by_index(item).map(|mut entry| stopped = !each(item, &mut entry))
             };
@@ -737,11 +762,14 @@ fn sevenz_method_name(id: &[u8]) -> String {
     }
 }
 
-fn open_7z(path: &Path) -> Result<(Source, Vec<Item>), Failure> {
+fn open_7z(path: &Path, password: Option<&str>) -> Result<(Source, Vec<Item>), Failure> {
     let mut reader = BufReader::new(File::open(path)?);
-    check_7z_header(&mut reader)?;
+    let encrypted_list = check_7z_header(&mut reader, password.is_some())?;
     reader.seek(SeekFrom::Start(0))?;
-    let archive = SevenZ::read(&mut reader, &Password::empty()).map_err(sevenz_failure)?;
+    let archive = SevenZ::read(&mut reader, &password.map_or_else(Password::empty, Password::from)).map_err(|e| {
+        // A wrong password unpacks the list of entries to noise, which fails however it fails.
+        if encrypted_list { Failure::WrongPassword(String::new()) } else { sevenz_failure(e) }
+    })?;
     if archive.files.len() > MAX_ENTRIES {
         return Err(Failure::TooManyEntries(archive.files.len()));
     }
@@ -756,14 +784,18 @@ fn open_7z(path: &Path) -> Result<(Source, Vec<Item>), Failure> {
             let start = firsts.get(b).and_then(|&p| offsets.get(p)).copied().unwrap_or(0);
             let end = firsts.get(b + 1).and_then(|&p| offsets.get(p)).copied().unwrap_or(packed_total);
             let here = decoded_here(block);
-            let problem = if block.coders.iter().any(|c| c.encoder_method_id() == EncoderMethod::ID_AES256_SHA256) {
-                Some(Failure::Encrypted)
-            } else if here {
+            let encrypted = block.coders.iter().any(|c| c.encoder_method_id() == EncoderMethod::ID_AES256_SHA256);
+            let problem = if here {
                 None
             } else {
-                block.coders.iter().find(|c| !sevenz_supported(c.encoder_method_id())).map(|c| Failure::Unsupported(sevenz_method_name(c.encoder_method_id())))
+                block
+                    .coders
+                    .iter()
+                    .map(|c| c.encoder_method_id())
+                    .find(|&id| id != EncoderMethod::ID_AES256_SHA256 && !sevenz_supported(id))
+                    .map(|id| Failure::Unsupported(sevenz_method_name(id)))
             };
-            BlockInfo { unpacked: block.get_unpack_size(), packed: end.saturating_sub(start), problem, here }
+            BlockInfo { unpacked: block.get_unpack_size(), packed: end.saturating_sub(start), encrypted, problem, here }
         })
         .collect();
     // Where each entry sits in its block: everything before it there is decompressed to reach it.
@@ -785,15 +817,19 @@ fn open_7z(path: &Path) -> Result<(Source, Vec<Item>), Failure> {
         .enumerate()
         .map(|(i, f)| {
             let mut attrs = if f.has_windows_attributes { f.windows_attributes & 0xFF } else { 0 };
-            if let Some(problem) = place[i].and_then(|(b, _)| blocks[b].problem.clone()) {
-                attrs |= if matches!(problem, Failure::Encrypted) { ENCRYPTED } else { UNREADABLE };
+            if let Some((b, _)) = place[i] {
+                if blocks[b].encrypted && password.is_none() {
+                    attrs |= ENCRYPTED;
+                } else if blocks[b].problem.is_some() {
+                    attrs |= UNREADABLE;
+                }
             }
             let modified = if f.has_last_modified_date { filetime_ms(u64::from(f.last_modified_date)).unwrap_or(0) } else { 0 };
             let path = if f.is_anti_item { String::new() } else { f.name.clone() };
             Item { path, dir: f.is_directory, size: if f.is_directory { 0 } else { f.size }, modified, attrs }
         })
         .collect();
-    Ok((Source::SevenZ(Box::new(SevenZSource { archive, place, blocks })), items))
+    Ok((Source::SevenZ(Box::new(SevenZSource { archive, place, blocks, password: password.map(str::to_string) })), items))
 }
 
 fn sevenz_failure(e: sevenz_rust2::Error) -> Failure {
@@ -814,8 +850,9 @@ fn sevenz_failure(e: sevenz_rust2::Error) -> Failure {
 
 /// A 7z's list of entries is usually compressed itself, and the archive says how big it unpacks to.
 /// That's checked before the archive is read: a crafted few-kilobyte header could otherwise unpack
-/// to more memory than the PC has. Also spots a list of entries that's encrypted.
-fn check_7z_header(reader: &mut (impl Read + Seek)) -> Result<(), Failure> {
+/// to more memory than the PC has. Also spots a list of entries that's encrypted, which takes a
+/// password to read (true when it is, and there's one).
+fn check_7z_header(reader: &mut (impl Read + Seek), password: bool) -> Result<bool, Failure> {
     let len = reader.seek(SeekFrom::End(0))?;
     reader.seek(SeekFrom::Start(0))?;
     let mut start = [0u8; 32];
@@ -827,7 +864,7 @@ fn check_7z_header(reader: &mut (impl Read + Seek)) -> Result<(), Failure> {
     let size = u64::from_le_bytes(start[20..28].try_into().unwrap());
     if size == 0 {
         // An empty archive, or one still being written: sevenz-rust2 looks for the header itself.
-        return Ok(());
+        return Ok(false);
     }
     let at = offset.checked_add(32).filter(|&at| at.checked_add(size).is_some_and(|end| end <= len));
     let Some(at) = at else { return Err(Failure::Damaged("it ends before its list of files (is it complete?)".into())) };
@@ -839,16 +876,16 @@ fn check_7z_header(reader: &mut (impl Read + Seek)) -> Result<(), Failure> {
     let mut header = vec![0u8; size.min(64 << 10) as usize];
     reader.read_exact(&mut header)?;
     if header.first() != Some(&0x17) {
-        return Ok(());
+        return Ok(false);
     }
     let info = encoded_header_info(&header[1..]).ok_or_else(|| Failure::Damaged("its list of files can't be read".into()))?;
-    if info.encrypted {
-        return Err(Failure::EncryptedList);
+    if info.encrypted && !password {
+        return Err(Failure::EncryptedList(String::new()));
     }
     if info.largest > MAX_7Z_HEADER {
         return Err(Failure::Bomb(format!("its list of files unpacks to {} bytes", info.largest)));
     }
-    Ok(())
+    Ok(info.encrypted)
 }
 
 struct EncodedHeader {
@@ -1000,13 +1037,19 @@ impl Bytes<'_> {
 }
 
 impl SevenZSource {
+    /// What keeps `block` from being read: its encryption, with no password, or a method.
+    fn block_problem(&self, block: usize) -> Option<Failure> {
+        let b = &self.blocks[block];
+        if b.encrypted && self.password.is_none() { Some(Failure::Encrypted) } else { b.problem.clone() }
+    }
+
     fn read_each(&self, file: &Path, items: &[ItemIndex], each: &mut dyn FnMut(ItemIndex, &mut dyn Read) -> bool, skipped: &mut dyn FnMut(u64) -> bool) -> Vec<(ItemIndex, Failure)> {
         let mut failed = Vec::new();
         let mut by_block: BTreeMap<usize, Vec<ItemIndex>> = BTreeMap::new();
         for &item in items {
             match self.place.get(item).copied().flatten() {
-                Some((block, _)) => match &self.blocks[block].problem {
-                    Some(problem) => failed.push((item, problem.clone())),
+                Some((block, _)) => match self.block_problem(block) {
+                    Some(problem) => failed.push((item, problem)),
                     None => by_block.entry(block).or_default().push(item),
                 },
                 // No data: an empty file.
@@ -1024,7 +1067,7 @@ impl SevenZSource {
                 return failed;
             }
         };
-        let password = Password::empty();
+        let password = self.password.as_deref().map_or_else(Password::empty, Password::from);
         let mut stopped = false;
         for (block, mut wanted) in by_block {
             if stopped {
@@ -1068,7 +1111,8 @@ impl SevenZSource {
                 BlockDecoder::new(1, block, &self.archive, &password, &mut source).for_each_entries(&mut on_entry)
             };
             if let Err(e) = decoded {
-                let failure = sevenz_failure(e);
+                // A wrong password decrypts to noise, which fails however it fails.
+                let failure = if self.blocks[block].encrypted { Failure::WrongPassword(String::new()) } else { sevenz_failure(e) };
                 failed.extend(wanted.iter().filter(|i| !done.contains(i)).map(|&i| (i, failure.clone())));
             } else {
                 failed.extend(wanted.iter().filter(|i| !done.contains(i)).map(|&i| (i, Failure::Cancelled)));

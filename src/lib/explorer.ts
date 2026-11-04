@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { askArchivePassword, needsPassword } from "./archives";
 import { type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isClosed, isRecycled, isRemote, terms, withDetails } from "./entries";
 import {
     archiveCompress,
@@ -468,8 +469,12 @@ export async function navigate(target: string, { select, history = true, quiet =
             else {
                 if (seq === r.navSeq) {
                     updateTab({ loading: false }, tab);
-                    // Stopped reading an archive: nothing to report.
-                    if (!silent && failure?.message !== "cancelled") toast.error(`Can't open “${baseName(target)}”`, { description: failure?.message ?? String(e) });
+                    const message = failure?.message ?? String(e);
+                    // Stopped reading an archive: nothing to report. One whose list of files is encrypted asks for its password.
+                    if (!silent && message !== "cancelled") {
+                        if (needsPassword(message)) askArchivePassword(target, () => void navigate(target, { select, history, tab }));
+                        else toast.error(`Can't open “${baseName(target)}”`, { description: message });
+                    }
                 }
                 return false;
             }

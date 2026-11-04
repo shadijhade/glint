@@ -467,6 +467,13 @@ export const startDrag = (paths: string[], copyOnly = false) => invoke<"copy" | 
  */
 export const archiveExtract = (path: string, purpose: "preview" | "open") => invoke<string>("archive_extract", { path, purpose });
 
+/**
+ * Tries `password` on what `path` leads to in an archive (a password-protected file in it, or an archive
+ * whose list of files is encrypted), and keeps it for that archive, in memory until Glint closes, once it
+ * opens it. Rejects with "The password doesn't open it." when it doesn't.
+ */
+export const archiveUnlock = (path: string, password: string) => invoke<void>("archive_unlock", { path, password });
+
 export interface Staged {
     /** The staging folder, to delete once its contents are copied (`archiveUnstage`). */
     folder: string;
