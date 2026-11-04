@@ -175,6 +175,8 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
+    # A server's shares, listed at \\server (fsx.rs): NetShareEnum's answer is freed with NetApiBufferFree.
+    "Win32_NetworkManagement_NetManagement",
     "Win32_NetworkManagement_WNet",
     # Whether Windows lets other devices reach a share on this network: its firewall's rules for dufs,
     # and the kind of network the share's address is on (lan.rs).

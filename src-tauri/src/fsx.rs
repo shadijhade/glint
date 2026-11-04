@@ -81,6 +81,11 @@ pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
         if let Some(listing) = crate::archive::list(&path, started) {
             return listing.map(tauri::ipc::Response::new).map_err(|e| ListError::other(&path, e));
         }
+        if let Some(server) = server_of(&path) {
+            let mut entries = shares(server).map_err(|e| ListError { kind: "other", message: format!("Glint couldn't list the shares on {server}: {e}"), path: path.clone(), remote: true })?;
+            sort_entries(&mut entries);
+            return Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started), None, false)));
+        }
         let mut from_index = false;
         let (path, mut entries) = match read_dir(&path) {
             Ok(entries) => (path, entries),
@@ -168,6 +173,52 @@ pub fn on_other_computer(path: &str) -> bool {
 #[cfg(not(windows))]
 pub fn on_other_computer(_: &str) -> bool {
     false
+}
+
+/// The server `path` names on its own (`\\nas`, as File Explorer opens it to show its shares); None
+/// for a share or anything below one, and for `\\?\` and `\\.\` paths.
+fn server_of(path: &str) -> Option<&str> {
+    let server = path.strip_prefix(r"\\")?.trim_end_matches(['\\', '/']);
+    (!server.is_empty() && !server.contains(['\\', '/']) && server != "?" && server != ".").then_some(server)
+}
+
+/// The folders `server` shares, as File Explorer lists them; its administrative ones (C$, ADMIN$) are
+/// marked hidden, and show with hidden files.
+#[cfg(windows)]
+fn shares(server: &str) -> io::Result<Vec<Entry>> {
+    use windows::core::PCWSTR;
+    use windows::Win32::NetworkManagement::NetManagement::{NetApiBufferFree, MAX_PREFERRED_LENGTH, NERR_Success};
+    use windows::Win32::Storage::FileSystem::{NetShareEnum, SHARE_INFO_1, STYPE_DISKTREE, STYPE_MASK, STYPE_SPECIAL};
+    const ERROR_MORE_DATA: u32 = 234;
+    let name = win::wide_str(&format!(r"\\{server}"));
+    let mut buffer: *mut u8 = std::ptr::null_mut();
+    let (mut read, mut total) = (0u32, 0u32);
+    // Safety: the out-parameters live through the call; what it fills in is freed below.
+    let status = unsafe { NetShareEnum(PCWSTR(name.as_ptr()), 1, &mut buffer, MAX_PREFERRED_LENGTH, &mut read, &mut total, None) };
+    let entries = if status == NERR_Success || status == ERROR_MORE_DATA {
+        // Safety: on success the buffer holds `read` SHARE_INFO_1 records, their names in it too.
+        let infos = if buffer.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(buffer as *const SHARE_INFO_1, read as usize) } };
+        Ok(infos
+            .iter()
+            .filter(|s| s.shi1_type.0 & STYPE_MASK.0 == STYPE_DISKTREE.0)
+            .map(|s| {
+                let name = unsafe { s.shi1_netname.to_string() }.unwrap_or_default();
+                let admin = s.shi1_type.0 & STYPE_SPECIAL.0 != 0 || name.ends_with('$');
+                Entry { name, path: None, dir: true, size: 0, modified: 0, attrs: if admin { 0x2 } else { 0 } }
+            })
+            .collect())
+    } else {
+        Err(io::Error::from_raw_os_error(status as i32))
+    };
+    if !buffer.is_null() {
+        unsafe { NetApiBufferFree(Some(buffer as *const _)) };
+    }
+    entries
+}
+
+#[cfg(not(windows))]
+fn shares(_: &str) -> io::Result<Vec<Entry>> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 /// What a listing shows of each item: a folder's entries, or an archive's.
@@ -1194,6 +1245,19 @@ mod tests {
         assert_eq!(normalize("C:\\Windows\\System32\\..").unwrap(), "C:\\Windows");
         assert_eq!(normalize("C:\\").unwrap(), "C:\\");
         assert!(normalize("  ").is_err());
+    }
+
+    #[test]
+    fn knows_a_server_from_its_shares() {
+        assert_eq!(server_of(r"\\nas"), Some("nas"));
+        assert_eq!(server_of(r"\\nas\"), Some("nas"));
+        for not in [r"\\nas\media", r"\\nas\media\films", r"\\?\C:\Windows", r"\\.\pipe", r"\\", r"C:\", "remote:x"] {
+            assert_eq!(server_of(not), None, "{not}");
+        }
+        // This PC's own shares (where its Server service runs): folders, the administrative ones hidden.
+        if let Ok(shares) = shares("localhost") {
+            assert!(shares.iter().all(|s| s.dir && (s.attrs & 0x2 != 0) == s.name.ends_with('$')), "{:?}", shares.iter().map(|s| &s.name).collect::<Vec<_>>());
+        }
     }
 
     #[test]
