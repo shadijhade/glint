@@ -84,40 +84,30 @@ pub fn record_notify_event(event: &notify::Event) {
         _ => return,
     };
     let ts = now_ms();
-    // The disk is asked before the lock is taken, so a burst of events doesn't hold it up.
-    let seen: Vec<_> = event
-        .paths
-        .iter()
-        .map(|p| {
-            let path_str = p.to_string_lossy().into_owned();
-            let name = p.file_name().map_or_else(|| path_str.clone(), |n| n.to_string_lossy().into_owned());
-            let (size, dir) = match std::fs::metadata(p) {
-                Ok(m) => (if m.is_dir() { None } else { Some(m.len()) }, m.is_dir()),
-                Err(_) => (None, false),
-            };
-            (path_str, name, size, dir)
-        })
-        .collect();
+    // Only what happened, with nothing read from the disk: this runs for every change in the folders on
+    // screen (a build writes thousands), on the watcher's own thread, and a slow one loses events. The
+    // few shown are sized when Recent changes opens (`build_timeline`).
     let mut log = FLIGHT_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
-    for (path_str, name, size, dir) in seen {
+    for p in &event.paths {
+        let path_str = p.to_string_lossy().into_owned();
         // Coalesce consecutive identical events on the same path within 500 ms.
         if let Some(front) = log.front_mut() {
             if front.path.eq_ignore_ascii_case(&path_str) && front.kind == kind && (ts - front.timestamp_ms).abs() < 500 {
                 front.timestamp_ms = ts;
-                front.size = size;
                 continue;
             }
         }
         if log.len() >= MAX_LIVE_EVENTS {
             log.pop_back();
         }
+        let name = p.file_name().map_or_else(|| path_str.clone(), |n| n.to_string_lossy().into_owned());
         log.push_front(LiveFsEvent {
             path: path_str,
             name,
             kind: kind.to_string(),
             timestamp_ms: ts,
-            size,
-            dir,
+            size: None,
+            dir: false,
         });
     }
 }
@@ -223,7 +213,7 @@ pub fn build_timeline(root: &str, window_ms: i64, cancel: &AtomicBool) -> Result
     hot_folders.sort_by(|a, b| b.bytes_changed.cmp(&a.bytes_changed).then_with(|| b.files_changed.cmp(&a.files_changed)));
     hot_folders.truncate(8);
 
-    let live_events: Vec<LiveFsEvent> = FLIGHT_RECORDER
+    let mut live_events: Vec<LiveFsEvent> = FLIGHT_RECORDER
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
@@ -235,6 +225,12 @@ pub fn build_timeline(root: &str, window_ms: i64, cancel: &AtomicBool) -> Result
         .take(100)
         .cloned()
         .collect();
+    // Sized now, outside the lock: what's there now (what was deleted, nothing).
+    for ev in live_events.iter_mut().filter(|ev| ev.kind != "deleted") {
+        if let Some(found) = fsx::stat(&ev.path) {
+            (ev.size, ev.dir) = ((!found.dir).then_some(found.size), found.dir);
+        }
+    }
 
     Ok(TimelineReport {
         root: root.to_string(),
