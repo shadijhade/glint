@@ -292,6 +292,8 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
     const [savingSide, setSavingSide] = useState<0 | 1 | null>(null);
     const [editingCell, setEditingCell] = useState<{ side: 0 | 1; line: number } | null>(null);
     const diskMeta = useRef<{ leftCrlf: boolean; rightCrlf: boolean; leftNewline: boolean; rightNewline: boolean } | null>(null);
+    // Each file as last read from disk (or saved): a save over a file changed elsewhere since is refused.
+    const diskHash = useRef<[string | null, string | null]>([null, null]);
 
     // Inline search state
     const [searchOpen, setSearchOpen] = useState(false);
@@ -330,6 +332,8 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                         rightNewline: found.rightNewline,
                     };
                 }
+                if (found.leftHash) diskHash.current[0] = found.leftHash;
+                if (found.rightHash) diskHash.current[1] = found.rightHash;
                 setCompare(found);
             },
             (e) => !stale && setError(String(e))
@@ -542,8 +546,9 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
     }, [blocks, rowToVisibleIndex]);
 
     // Merge actions (Copy block left -> right or right -> left)
-    const canEditLeft = !left.readOnly;
-    const canEditRight = !right.readOnly;
+    // A side that isn't UTF-8 shows � where it isn't: saved, every such byte would become one.
+    const canEditLeft = !left.readOnly && compare?.leftUtf8 !== false;
+    const canEditRight = !right.readOnly && compare?.rightUtf8 !== false;
 
     const copyBlock = useCallback(
         (blockIndex: number, direction: "toRight" | "toLeft") => {
@@ -601,7 +606,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
             const content = serializeLines(lines, side === 0 ? (meta?.leftCrlf ?? false) : (meta?.rightCrlf ?? false), side === 0 ? (meta?.leftNewline ?? true) : (meta?.rightNewline ?? true));
             setSavingSide(side);
             try {
-                await writeFileContent(target.path, content);
+                diskHash.current[side] = await writeFileContent(target.path, content, diskHash.current[side] ?? undefined);
                 if (side === 0) setLeftLines(null);
                 else setRightLines(null);
                 toast.success(`Saved ${nameOf(target)}`);
@@ -696,6 +701,11 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                             </span>
                             {side.label && <span className="truncate text-muted-foreground">{baseName(side.path)}</span>}
                             {dirty && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">Modified</span>}
+                            {!canEdit && !side.readOnly && (
+                                <span className="shrink-0 rounded bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground" title="Its text isn't UTF-8: it shows � where Glint can't read it, so it isn't edited or saved here">
+                                    Read-only: not UTF-8
+                                </span>
+                            )}
                             <div className="ml-auto flex items-center gap-1">
                                 {dirty && canEdit && (
                                     <Button

@@ -632,6 +632,12 @@ export interface TextCompare {
     rightCrlf: boolean;
     leftNewline: boolean;
     rightNewline: boolean;
+    /** Whether each side is UTF-8: one that isn't shows � where it isn't, and isn't saved from here. */
+    leftUtf8: boolean;
+    rightUtf8: boolean;
+    /** Each file as read from disk, for a save to check it hasn't changed since; null when compared as edited. */
+    leftHash: string | null;
+    rightHash: string | null;
     /** The rows side by side, by line on each side (from 0); null where only the other side has one. */
     rows: [number | null, number | null][];
     /** The changed lines on each side (by line), with what changed in them: [start, end) in the line; none listed: all of it. */
@@ -657,8 +663,9 @@ export interface CompareTextOptions {
 export const compareTextFiles = (left: string, right: string, options?: CompareTextOptions, leftOverride?: string, rightOverride?: string) =>
     invoke<TextCompare>("compare_text_files", { left, right, options: options ?? null, leftOverride: leftOverride ?? null, rightOverride: rightOverride ?? null });
 
-/** Saves `content` to `path` atomically (ReplaceFileW). */
-export const writeFileContent = (path: string, content: string) => invoke<void>("write_file_content", { path, content });
+/** Saves `content` to `path` atomically (ReplaceFileW), answering its hash; with `expected` (a compare's
+ *  hash of it), only while the file is still what was read. */
+export const writeFileContent = (path: string, content: string, expected?: string) => invoke<string>("write_file_content", { path, content, expected: expected ?? null });
 
 /** A window of two files' bytes, and their sizes. */
 export interface BytesWindow {

@@ -108,9 +108,19 @@ async fn read_file_chunk(path: String, start_line: usize, end_line: usize) -> Re
     .await
 }
 
+/// Saves `content` to `path`, answering its hash ([`filediff::content_hash`]). With `expected`, only
+/// while the file still holds what was read then: a change made elsewhere since isn't overwritten.
 #[tauri::command]
-async fn write_file_content(path: String, content: String) -> Result<(), String> {
-    blocking(move || replace_contents(std::path::Path::new(&path), content.as_bytes()).map_err(|e| e.to_string())).await
+async fn write_file_content(path: String, content: String, expected: Option<String>) -> Result<String, String> {
+    blocking(move || {
+        let path = std::path::Path::new(&path);
+        if expected.is_some_and(|expected| fs::read(path).map(|now| filediff::content_hash(&now)).ok() != Some(expected)) {
+            return Err("it was changed or removed since it was compared. Compare again first".into());
+        }
+        replace_contents(path, content.as_bytes()).map_err(|e| e.to_string())?;
+        Ok(filediff::content_hash(content.as_bytes()))
+    })
+    .await
 }
 
 /// Writes a temp file next to `path` and swaps it in (ReplaceFileW keeps the original's attributes,
@@ -988,6 +998,27 @@ mod tests {
         replace_contents(&new, b"{}").unwrap();
         assert_eq!(fs::read_to_string(&new).unwrap(), "{}");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2, "no temp file left");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_compare_saves_only_over_what_it_read() {
+        let dir = std::env::temp_dir().join(format!("glint-compare-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (latin1, utf8) = (dir.join("latin1.txt"), dir.join("utf8.txt"));
+        fs::write(&latin1, b"caf\xe9\r\n").unwrap();
+        fs::write(&utf8, "café\r\n").unwrap();
+        let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+        let compare = tauri::async_runtime::block_on(filediff::compare_text_files(text(&latin1), text(&utf8), None, None, None)).unwrap();
+        // Saving Latin-1 from here would turn its é into �.
+        assert!(!compare.left_utf8 && compare.right_utf8);
+        let read = compare.right_hash.unwrap();
+        let save = |expected: &str| tauri::async_runtime::block_on(write_file_content(text(&utf8), "cafe\r\n".into(), Some(expected.into())));
+        let saved = save(&read).unwrap();
+        assert_eq!(fs::read_to_string(&utf8).unwrap(), "cafe\r\n");
+        assert!(save(&read).is_err(), "it changed since it was read");
+        assert!(save(&saved).is_ok());
         fs::remove_dir_all(&dir).unwrap();
     }
 }
