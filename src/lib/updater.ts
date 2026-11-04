@@ -6,6 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { operationsDone, operationsRunning } from "./explorer";
 import { stopTools } from "./fs";
+import { saveNow } from "./store";
 import { firstNotice } from "./utils";
 
 const RELEASES = "https://github.com/shadijhade/glint/releases";
@@ -127,6 +128,7 @@ export async function installUpdate() {
         toast.loading(`Installing version ${version}…`, { id });
         // The installer replaces rg, fd and pdu too, which it can't while one of them is running.
         await stopTools().catch(() => {});
+        saveNow();
         await update.install(); // on Windows the app exits here, and the installer reopens it
     } catch (e) {
         set({ progress: null });
