@@ -38,6 +38,7 @@ export function ShellPreview({ entry, over, quiet, children }: { entry: FileEntr
     useEffect(() => {
         const id = ++ids;
         let frame = 0;
+        let timer = 0;
         let last = "";
         // Where the box is, in the window's physical pixels; null when it's out of sight or covered.
         const place = (): PixelRect | null => {
@@ -53,6 +54,8 @@ export function ShellPreview({ entry, over, quiet, children }: { entry: FileEntr
             const [x, y] = [Math.round(r.left * d), Math.round(r.top * d)];
             return { x, y, width: Math.round(r.right * d) - x, height: Math.round(r.bottom * d) - y };
         };
+        // Every frame while Glint has the focus (a menu or a dialog can open over it at any moment); four
+        // times a second while another app has it, when little can, so a preview left open costs nothing.
         const follow = () => {
             const at = place();
             const key = JSON.stringify(at);
@@ -60,7 +63,17 @@ export function ShellPreview({ entry, over, quiet, children }: { entry: FileEntr
                 last = key;
                 void nativePreviewPlace(id, at);
             }
-            frame = requestAnimationFrame(follow);
+            if (document.hasFocus()) frame = requestAnimationFrame(follow);
+            else timer = window.setTimeout(follow, 250);
+        };
+        const halt = () => {
+            cancelAnimationFrame(frame);
+            clearTimeout(timer);
+        };
+        // Back to every frame at once: a click that focuses Glint can open a menu over it.
+        const resume = () => {
+            halt();
+            follow();
         };
         const claim: Claim = {
             over: !!over,
@@ -70,9 +83,13 @@ export function ShellPreview({ entry, over, quiet, children }: { entry: FileEntr
                 const dark = document.documentElement.classList.contains("dark");
                 void nativePreviewShow(id, entry.path, at, dark, (event) => setNote(event.type === "unavailable" ? event.reason : ""));
                 frame = requestAnimationFrame(follow);
+                window.addEventListener("focus", resume);
+                window.addEventListener("resize", resume);
             },
             stop: () => {
-                cancelAnimationFrame(frame);
+                halt();
+                window.removeEventListener("focus", resume);
+                window.removeEventListener("resize", resume);
                 void nativePreviewClose(id);
             },
         };
