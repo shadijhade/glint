@@ -29,6 +29,14 @@ pub struct TextCompare {
     /// Whether each file ends with a newline on disk.
     pub left_newline: bool,
     pub right_newline: bool,
+    /// Whether each side is UTF-8. One that isn't is shown with `�` where it isn't, and isn't saved
+    /// from here: writing it back would turn every such byte into that.
+    pub left_utf8: bool,
+    pub right_utf8: bool,
+    /// Each file as read from disk ([`content_hash`]), so a save can tell it hasn't changed since;
+    /// None for a side compared as edited, or too big to compare as text.
+    pub left_hash: Option<String>,
+    pub right_hash: Option<String>,
     /// The rows side by side, by line (from 0) on each side; None where only the other side has one.
     pub rows: Vec<[Option<u32>; 2]>,
     /// The changed lines on each side, with what changed in them: [start, end) in UTF-16 units of the
@@ -64,6 +72,11 @@ pub struct CompareOptions {
     pub ignore_case: bool,
     #[serde(default)]
     pub line_mode: bool,
+}
+
+/// What a file holds, to tell later whether it changed: its BLAKE3, in hex.
+pub fn content_hash(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
 }
 
 /// A file's text, lines evened out (CRLF or LF); None when it's binary.
@@ -140,9 +153,12 @@ fn tokens_eq(a: &str, b: &str, options: CompareOptions) -> bool {
     }
 }
 
+/// A byte range `[start, end)` in a line.
+type Span = (usize, usize);
+
 /// Refines a paired unmatched byte range `(ls..le)` and `(rs..re)` by trimming shared prefix/suffix
 /// characters when the two slices are closely related (e.g. a single-character edit inside an identifier).
-fn refine_pair(left: &str, right: &str, (ls, le): (usize, usize), (rs, re): (usize, usize), ignore_case: bool) -> (Option<(usize, usize)>, Option<(usize, usize)>, bool) {
+fn refine_pair(left: &str, right: &str, (ls, le): Span, (rs, re): Span, ignore_case: bool) -> (Option<Span>, Option<Span>, bool) {
     let (lt, rt) = (&left[ls..le], &right[rs..re]);
     let mut p_chars = 0usize;
     let mut p_l = 0usize;
@@ -402,6 +418,7 @@ fn compare_text(left: &str, right: &str, options: CompareOptions, left_override:
     let started = Instant::now();
     let mut compare = TextCompare::default();
     let has_override = left_override.is_some() || right_override.is_some();
+    let from_disk = (left_override.is_none(), right_override.is_none());
     let ((left_bytes, left_big), (right_bytes, right_big)) = (
         match left_override {
             Some(text) => (text.into_bytes(), false),
@@ -417,6 +434,10 @@ fn compare_text(left: &str, right: &str, options: CompareOptions, left_override:
     compare.right_crlf = right_bytes.windows(2).any(|w| w == b"\r\n");
     compare.left_newline = left_bytes.ends_with(b"\n");
     compare.right_newline = right_bytes.ends_with(b"\n");
+    compare.left_utf8 = std::str::from_utf8(&left_bytes).is_ok();
+    compare.right_utf8 = std::str::from_utf8(&right_bytes).is_ok();
+    compare.left_hash = (from_disk.0 && !left_big).then(|| content_hash(&left_bytes));
+    compare.right_hash = (from_disk.1 && !right_big).then(|| content_hash(&right_bytes));
     let (Some(left_text), Some(right_text)) = (text_of(&left_bytes), text_of(&right_bytes)) else {
         compare.binary = !compare.too_big;
         compare.elapsed = ms_since(started);
