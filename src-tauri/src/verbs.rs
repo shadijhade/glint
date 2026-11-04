@@ -488,15 +488,21 @@ mod imp {
         use super::*;
         use windows::Win32::System::Registry::REG_EXPAND_SZ;
 
+        /// How many tests hold a `Scratch`: the last one out removes Software\GlintTests, and one that
+        /// starts meanwhile waits, so the key isn't deleted under a test making its own (ERROR_KEY_DELETED).
+        static RUNNING: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
         /// A scratch HKCU\Software\GlintTests\… standing in for Software\Classes, removed afterwards.
         struct Scratch(String);
 
         impl Scratch {
             fn new(test: &str) -> Scratch {
+                let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
                 let root = format!(r"Software\GlintTests\{}-{test}", std::process::id());
                 let _ = reg::delete_tree(&root);
                 // Software\Classes is always there.
                 reg::create(&format!(r"{root}\Classes")).unwrap();
+                *running += 1;
                 Scratch(root)
             }
 
@@ -508,7 +514,11 @@ mod imp {
         impl Drop for Scratch {
             fn drop(&mut self) {
                 let _ = reg::delete_tree(&self.0);
-                let _ = reg::delete_if_empty(r"Software\GlintTests");
+                let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+                *running -= 1;
+                if *running == 0 {
+                    let _ = reg::delete_if_empty(r"Software\GlintTests");
+                }
             }
         }
 
