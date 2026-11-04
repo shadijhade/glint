@@ -145,8 +145,13 @@ fn job(id: u64) -> Result<Arc<Job>, String> {
 }
 
 /// Adds a copy or a move of `sources` into `dest`: its id. It starts when the ones before it are done.
+/// Off the UI thread: a sleeping network share can take seconds to say it's a folder.
 #[tauri::command]
-pub fn queue_add(app: AppHandle, kind: String, sources: Vec<String>, dest: String, verify: bool) -> Result<u64, String> {
+pub async fn queue_add(app: AppHandle, kind: String, sources: Vec<String>, dest: String, verify: bool) -> Result<u64, String> {
+    crate::fsx::blocking(move || add(app, kind, sources, dest, verify)).await
+}
+
+fn add(app: AppHandle, kind: String, sources: Vec<String>, dest: String, verify: bool) -> Result<u64, String> {
     if kind != "copy" && kind != "move" {
         return Err(format!("The queue doesn't know “{kind}”"));
     }
