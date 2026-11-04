@@ -519,10 +519,9 @@ fn stream_search(window: Window, search_id: String, mut child: std::process::Chi
                     SearchEvent {
                         id: search_id.clone(),
                         r#type: "data".to_string(),
-                        lines: batch.clone(),
+                        lines: std::mem::take(&mut batch),
                     },
                 );
-                batch.clear();
                 last_emit = Instant::now();
             }
 
