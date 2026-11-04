@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import {
     AlertTriangle,
     ArrowLeft,
@@ -63,11 +64,25 @@ interface CompareState {
 
 const useCompareStore = create<CompareState>(() => ({ left: null, right: null }));
 
+/** Whether the text view has edits not saved yet, which closing it (or Swap, or another view) would lose. */
+let unsaved = false;
+
+/** Asks before edits not saved yet are lost: true to go ahead (there are none, or Discard was chosen). */
+export async function discardCompareEdits() {
+    if (!unsaved) return true;
+    const discard = await confirm("The edits made in Compare aren't saved. Discard them?", { title: "Unsaved edits", kind: "warning", okLabel: "Discard", cancelLabel: "Keep editing" });
+    if (discard) unsaved = false;
+    return discard;
+}
+
 /** Opens two files side by side: text (by Difftastic when it's installed), pictures, or bytes. */
 export function compareFiles(left: string | CompareSide, right: string | CompareSide, onClose?: () => void) {
     const side = (s: string | CompareSide) => (typeof s === "string" ? { path: s } : s);
-    useCompareStore.getState().onClose?.();
-    useCompareStore.setState({ left: side(left), right: side(right), onClose });
+    void discardCompareEdits().then((go) => {
+        if (!go) return onClose?.();
+        useCompareStore.getState().onClose?.();
+        useCompareStore.setState({ left: side(left), right: side(right), onClose });
+    });
 }
 
 function closeCompare() {
@@ -99,17 +114,20 @@ function CompareModal({ left, right, onClose }: { left: CompareSide; right: Comp
     // Where they are: each folder once, leaving out a read-only temp copy.
     const folders = [...new Set([a, b].filter((side) => !side.readOnly).map((side) => parentPath(side.path)))];
     const subtitle = (folders.length ? folders : [parentPath(a.path)]).join("  ·  ");
+    // Closing, Swap and another view start the text view over: edits not saved yet are asked about first.
+    const close = useCallback(() => void discardCompareEdits().then((go) => go && onClose()), [onClose]);
+    const unlessEdited = (then: () => void) => void discardCompareEdits().then((go) => go && then());
 
     return (
-        <Modal label={`Compare ${nameOf(left)} and ${nameOf(right)}`} onClose={onClose} className="h-[min(92vh,64rem)] max-h-none max-w-[min(96vw,120rem)]">
-            <ModalHeader icon={GitCompareArrows} title={`Compare “${nameOf(a)}” and “${nameOf(b)}”`} subtitle={subtitle} onClose={onClose}>
+        <Modal label={`Compare ${nameOf(left)} and ${nameOf(right)}`} onClose={close} className="h-[min(92vh,64rem)] max-h-none max-w-[min(96vw,120rem)]">
+            <ModalHeader icon={GitCompareArrows} title={`Compare “${nameOf(a)}” and “${nameOf(b)}”`} subtitle={subtitle} onClose={close}>
                 <div role="group" aria-label="Compare as" className="flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
                     {views.map((v) => (
                         <button
                             key={v.key}
                             type="button"
                             aria-pressed={view === v.key}
-                            onClick={() => setView(v.key)}
+                            onClick={() => v.key !== view && unlessEdited(() => setView(v.key))}
                             className={cn(
                                 "flex h-6 items-center gap-1 rounded-[4px] px-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
                                 view === v.key && "bg-background text-primary shadow-xs dark:bg-foreground/[0.12]"
@@ -119,7 +137,7 @@ function CompareModal({ left, right, onClose }: { left: CompareSide; right: Comp
                         </button>
                     ))}
                 </div>
-                <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2 text-xs" onClick={() => setSwapped((s) => !s)} title="Swap the sides">
+                <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2 text-xs" onClick={() => unlessEdited(() => setSwapped((s) => !s))} title="Swap the sides">
                     <ArrowLeftRight className="size-3.5" /> Swap
                 </Button>
             </ModalHeader>
@@ -598,8 +616,10 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
         });
     }, []);
 
+    // The latest save, for a toast's Save anyway clicked after more edits.
+    const saveRef = useRef<(side: 0 | 1, overwrite?: boolean) => Promise<void>>(async () => {});
     const saveSide = useCallback(
-        async (side: 0 | 1) => {
+        async (side: 0 | 1, overwrite = false) => {
             const lines = side === 0 ? leftLines : rightLines;
             const target = side === 0 ? left : right;
             if (!lines || target.readOnly) return;
@@ -607,30 +627,57 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
             const content = serializeLines(lines, side === 0 ? (meta?.leftCrlf ?? false) : (meta?.rightCrlf ?? false), side === 0 ? (meta?.leftNewline ?? true) : (meta?.rightNewline ?? true));
             setSavingSide(side);
             try {
-                diskHash.current[side] = await writeFileContent(target.path, content, diskHash.current[side] ?? undefined);
+                diskHash.current[side] = await writeFileContent(target.path, content, overwrite ? undefined : (diskHash.current[side] ?? undefined));
                 if (side === 0) setLeftLines(null);
                 else setRightLines(null);
                 toast.success(`Saved ${nameOf(target)}`);
                 run();
             } catch (e) {
-                toast.error(`Couldn't save ${nameOf(target)}: ${String(e)}`);
+                // Changed on disk since it was compared: saving over that anyway is a choice, as editors offer.
+                const changed = String(e).includes("since it was compared");
+                toast.error(`Couldn't save ${nameOf(target)}: ${String(e)}`, changed ? { action: { label: "Save anyway", onClick: () => void saveRef.current(side, true) } } : undefined);
             } finally {
                 setSavingSide(null);
             }
         },
         [leftLines, rightLines, left, right, run]
     );
+    saveRef.current = saveSide;
+
+    // What closing would lose: edits not saved yet.
+    useEffect(() => {
+        unsaved = leftLines !== null || rightLines !== null;
+    }, [leftLines, rightLines]);
+    useEffect(() => () => void (unsaved = false), []);
+
+    // Ctrl+S while a line is edited: the edit goes in as its field loses focus, and then the save.
+    const saveSoon = useRef(false);
+    useEffect(() => {
+        if (!saveSoon.current || editingCell) return;
+        saveSoon.current = false;
+        if (leftLines) void saveSide(0);
+        if (rightLines) void saveSide(1);
+    }, [editingCell, leftLines, rightLines, saveSide]);
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if (editingCell) return;
+            if (editingCell) {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+                    e.preventDefault();
+                    saveSoon.current = true;
+                    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+                }
+                return;
+            }
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
                 e.preventDefault();
                 setSearchOpen(true);
                 requestAnimationFrame(() => searchInputRef.current?.focus());
                 return;
             }
-            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && history.length > 0) {
+            // In the find box, Ctrl+Z is the box's own.
+            const typing = e.target instanceof Element && e.target.matches("input, textarea");
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && history.length > 0 && !typing) {
                 e.preventDefault();
                 undo();
                 return;
