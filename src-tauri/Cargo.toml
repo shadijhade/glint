@@ -74,7 +74,7 @@ jaq-fmts = { version = "0.1", default-features = false, features = ["yaml", "tom
 # Spreadsheets without Office (Excel's .xlsx/.xlsb/.xls, OpenDocument's .ods) and Parquet files, as
 # tables. Parquet without Arrow, and without Brotli (rare in Parquet, and 1.2 MB on its own); its
 # Zstandard is the C library's (0.4 MB).
-calamine = "0.37"
+calamine = "0.38"
 parquet = { version = "60", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "zstd"] }
 # SQL in the preview: SQLite itself (built in, 1.7 MB), over a database opened read-only or a table file
 # loaded into memory (sql.rs); `hooks` for its authorizer and progress handler.
