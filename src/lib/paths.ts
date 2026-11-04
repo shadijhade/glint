@@ -29,9 +29,9 @@ const SEPARATORS = /[\\/]+$/;
 /** In an archive (or the archive itself), by its names: read-only, and not on disk for other tools. */
 export const inArchivePath = (path: string) => ARCHIVE_IN_PATH.test(path);
 
-/** "C:\", "C:", "\\server\share" and "/" are roots, and so are the Recycle Bin, Recent and a remote's top (This PC is above them). */
+/** "C:\", "C:", "\\server\share", "\\server" (its shares) and "/" are roots, and so are the Recycle Bin, Recent and a remote's top (This PC is above them). */
 export function isRoot(path: string) {
-    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+\\[^\\]+\\?$/.test(path) || path === "/" || isRecycleBin(path) || isRecent(path) || isGallery(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
+    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+(\\[^\\]+)?\\?$/.test(path) || path === "/" || isRecycleBin(path) || isRecent(path) || isGallery(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
 }
 
 export function joinPath(dir: string, name: string) {
@@ -44,8 +44,10 @@ export function baseName(path: string) {
     return trimmed.slice(Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/")) + 1) || path;
 }
 
-/** "C:\a\b" → "C:\a", "C:\a" → "C:\", and a root → This PC. */
+/** "C:\a\b" → "C:\a", "C:\a" → "C:\", a share → its server, and a root → This PC. */
 export function parentPath(path: string) {
+    const share = /^(\\\\[^\\]+)\\[^\\]+\\?$/.exec(path);
+    if (share) return share[1];
     if (path === THIS_PC || isRoot(path)) return THIS_PC;
     const trimmed = path.replace(SEPARATORS, "");
     const cut = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
@@ -102,7 +104,8 @@ export function crumbs(path: string): { name: string; path: string }[] {
         for (const part of rest) trail.push({ name: part, path: joinPath(trail[trail.length - 1].path, part) });
         return trail;
     }
-    const unc = path.match(/^(\\\\[^\\]+\\[^\\]+)(.*)$/);
+    // A share comes after its server, which lists its shares.
+    const unc = path.match(/^(\\\\[^\\]+)(.*)$/);
     let root: string;
     let rest: string;
     if (unc) [root, rest] = [unc[1], unc[2]];
