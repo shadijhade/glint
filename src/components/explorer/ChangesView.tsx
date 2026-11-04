@@ -13,7 +13,7 @@ import { Centered } from "./PreviewState";
 async function sideBySide(entry: FileEntry) {
     try {
         const copy = await gitHeadCopy(entry.path);
-        if (copy) compareFiles({ path: copy, label: "In the last commit" }, { path: entry.path, label: "Now" }, () => void gitHeadDiscard(copy));
+        if (copy) compareFiles({ path: copy, label: "In the last commit", readOnly: true }, { path: entry.path, label: "Now" }, () => void gitHeadDiscard(copy));
     } catch (e) {
         toast.error("Couldn't read it from the last commit", { description: String(e) });
     }

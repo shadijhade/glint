@@ -281,7 +281,7 @@ export function FileList(props: FileListProps) {
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
                 className={cn(
                     "file-row h-full cursor-default px-3 text-sm transition-colors duration-75",
-                    selected ? (inactive ? "bg-foreground/[0.07]" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
+                    selected ? (inactive ? "bg-primary/10 ring-1 ring-inset ring-primary/25 dark:bg-primary/12" : "bg-primary/15 dark:bg-primary/20") : "hover:bg-accent/60",
                     entry.path === focusPath && !inactive && "outline -outline-offset-1 outline-primary",
                     entry.path === dropTarget && "bg-primary/20 outline-2 -outline-offset-2 outline-primary",
                     (isHidden(entry) || cut.has(entry.path) || tracked.ignored) && "opacity-55",

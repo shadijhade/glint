@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Clock, Cloud, ExternalLink, Images, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, X } from "lucide-react";
+import { Check, Clock, Cloud, Copy, ExternalLink, Images, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, Maximize2, Minimize2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, WrapText, X } from "lucide-react";
 import { toast } from "sonner";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly, isRecycled, isRemote } from "@/lib/entries";
 import { archiveOf, calcSizes, compressEntries, currentPath, navigate, openEntry, openFile, reload, restoreRecycled, useExplorer } from "@/lib/explorer";
@@ -482,6 +482,8 @@ const SHOWS_START = "Preview shows the beginning of the file. Open it to see the
 function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
     const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
     const state = useText(entry);
+    const [wrap, setWrap] = useState(false);
+    const [copied, setCopied] = useState(false);
 
     if (!state) return <Waiting />;
     if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
@@ -499,8 +501,17 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
     const cut = lines.length > TEXT_LINES;
     // An ncdu export (`ncdu -o`) opens as the folders it describes.
     const ncdu = !isArchived(entry) && NCDU_EXPORT.test(state.text);
+    const copyTextContent = () => {
+        navigator.clipboard.writeText(state.text).then(
+            () => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+            },
+            () => toast.error("Couldn't copy text")
+        );
+    };
     return (
-        <div className="min-h-full select-text">
+        <div className="relative min-h-full select-text">
             {ncdu && (
                 <div className="flex items-center gap-3 border-b px-4 py-2 text-xs text-muted-foreground">
                     <span className="min-w-0 flex-1">An ncdu export: its folders and their sizes can be browsed.</span>
@@ -509,13 +520,35 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
                     </Button>
                 </div>
             )}
+            <div className="sticky top-2 z-10 float-right mr-3 flex items-center gap-0.5 rounded-md border bg-card/90 p-0.5 shadow-xs backdrop-blur-xs select-none">
+                <button
+                    type="button"
+                    aria-pressed={wrap}
+                    onClick={() => setWrap((w) => !w)}
+                    title={wrap ? "Unwrap lines (scroll horizontally)" : "Wrap long lines"}
+                    className={cn(
+                        "flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+                        wrap && "bg-primary/15 text-primary"
+                    )}
+                >
+                    <WrapText className="size-3.5" />
+                </button>
+                <button
+                    type="button"
+                    onClick={copyTextContent}
+                    title="Copy text to clipboard"
+                    className="flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                    {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+                </button>
+            </div>
             <SyntaxHighlighter
                 language={languageFor(entry.ext)}
                 useInlineStyles={false}
                 showLineNumbers={showLineNumbers}
                 wrapLines
-                lineProps={{ className: "block pl-3 pr-4" }}
-                className="min-w-max py-2 font-mono text-[0.8125rem] leading-5"
+                lineProps={{ className: cn("block pl-3 pr-4", wrap && "whitespace-pre-wrap break-words") }}
+                className={cn("py-2 font-mono text-[0.8125rem] leading-5", wrap ? "w-full" : "min-w-max")}
             >
                 {cut ? lines.slice(0, TEXT_LINES).join("\n") : state.text}
             </SyntaxHighlighter>
@@ -649,7 +682,19 @@ function Details({ entry }: { entry: FileEntry }) {
 }
 
 /** One item's preview with its name, actions and details; Quick Look shows it large, with a close button. */
-export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: () => void }) {
+export function EntryPreview({
+    entry,
+    comparePair,
+    onClose,
+    maximized,
+    onToggleMaximize,
+}: {
+    entry: FileEntry;
+    comparePair?: [FileEntry, FileEntry] | null;
+    onClose?: () => void;
+    maximized?: boolean;
+    onToggleMaximize?: () => void;
+}) {
     const kind = previewKind(entry);
     const archived = isArchived(entry);
     const archive = archived ? archiveOf() : undefined;
@@ -746,8 +791,11 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
     const reveal = () => (archive ? revealItemInDir(archive.outer) : revealItemInDir(entry.path));
 
     return (
-        <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b pl-3 pr-1.5">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div
+                onDoubleClick={onToggleMaximize}
+                className="flex h-10 shrink-0 items-center gap-2 border-b pl-3 pr-1.5"
+            >
                 <span className="truncate text-sm font-medium" title={entry.path}>
                     {entry.name}
                 </span>
@@ -771,6 +819,17 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                     </div>
                 )}
                 <div className={cn("flex shrink-0", views.length < 2 && "ml-auto")}>
+                    {comparePair && !entry.dir && !archived && !closed && !recycled && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7 text-primary hover:text-primary"
+                            onClick={() => compareFiles(comparePair[0].path, comparePair[1].path)}
+                            title={`Compare “${comparePair[0].name}” and “${comparePair[1].name}” (Ctrl+M)`}
+                        >
+                            <GitCompareArrows />
+                        </Button>
+                    )}
                     {!entry.dir && !archived && !closed && !recycled && (
                         <Button variant="ghost" size="icon" className="size-7" onClick={() => inspectXRay(entry.path)} title="File X-Ray: hashes and hidden streams">
                             <Fingerprint />
@@ -793,6 +852,18 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                             </Button>
                         </>
                     )}
+                    {onToggleMaximize && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7"
+                            onClick={onToggleMaximize}
+                            title={maximized ? "Restore size" : "Maximize preview"}
+                            aria-label={maximized ? "Restore size" : "Maximize preview"}
+                        >
+                            {maximized ? <Minimize2 /> : <Maximize2 />}
+                        </Button>
+                    )}
                     {onClose && (
                         <Button variant="ghost" size="icon" className="size-7" onClick={onClose} title="Close (Space or Esc)" aria-label="Close">
                             <X />
@@ -800,7 +871,7 @@ export function EntryPreview({ entry, onClose }: { entry: FileEntry; onClose?: (
                     )}
                 </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto bg-card">{body}</div>
+            <div data-quicklook-scroll className="min-h-0 flex-1 overflow-auto bg-card">{body}</div>
             <Details entry={entry} />
         </div>
     );
@@ -827,7 +898,7 @@ interface FolderSummary {
     repo?: boolean;
 }
 
-export function FilePreview({ selected, folder }: { selected: FileEntry[]; folder: FolderSummary }) {
+export function FilePreview({ selected, comparePair, folder }: { selected: FileEntry[]; comparePair?: [FileEntry, FileEntry] | null; folder: FolderSummary }) {
     const entry = useSettled(selected.length === 1 ? selected[0] : null);
     if (selected.length > 1) {
         const files = selected.filter((e) => !e.dir);
@@ -953,5 +1024,5 @@ export function FilePreview({ selected, folder }: { selected: FileEntry[]; folde
             </Centered>
         );
     }
-    return <EntryPreview key={entry.path} entry={entry} />;
+    return <EntryPreview key={entry.path} entry={entry} comparePair={comparePair} />;
 }

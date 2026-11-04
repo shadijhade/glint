@@ -413,6 +413,8 @@ function ClosedBar({ tab, info }: { tab: string; info: NoAccess | null }) {
 /** What the active pane shows, for the toolbar and the preview pane, which sit outside the panes. */
 interface ActiveView {
     selected: FileEntry[];
+    /** Two files ready to compare: two in the active pane, one in each split-screen pane, or one and its namesake in the other pane. */
+    comparePair: [FileEntry, FileEntry] | null;
     items: number;
     folder: string;
     total?: number;
@@ -421,7 +423,7 @@ interface ActiveView {
     /** The folder is a Git repository's own (it has its .git). */
     repo?: boolean;
 }
-const useActiveView = create<ActiveView>(() => ({ selected: NO_ENTRIES, items: 0, folder: THIS_PC }));
+const useActiveView = create<ActiveView>(() => ({ selected: NO_ENTRIES, comparePair: null, items: 0, folder: THIS_PC }));
 
 /** What only a pane can do (it needs the pane's sorted, filtered rows), for the toolbar. */
 interface PaneActions {
@@ -591,7 +593,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         refreshScripts();
     }, [palette]);
     const showPreviewPane = useStore((s) => s.settings.showPreviewPane);
-    const selected = useActiveView((v) => v.selected);
+    const { selected, comparePair } = useActiveView(useShallow((v) => ({ selected: v.selected, comparePair: v.comparePair })));
     const pinned = useStore((s) => s.pinned);
     const { setSettings, togglePin } = useStore.getState();
     const menu = useMenu();
@@ -880,11 +882,17 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             (inFolder || !!t.find) && action("invert-selection", "Invert selection", ListChecks, () => activePaneActions()?.invertSelection()),
             writable && !t.find && !shut && action("batch-rename", chosen ? "Rename the selected items" : "Rename items in this folder", PenLine, () => activePaneActions()?.startBatchRename(), "Ctrl+Shift+R"),
             !archive && !remote && !closedItems && (!!t.focus || chosen) && action("file-xray", "File X-Ray: hashes and hidden streams", Fingerprint, () => inspectXRay(t.focus ?? [...t.selection][0])),
-            !archive && !remote &&
-                !closedItems &&
-                chosenEntries.length === 2 &&
-                chosenEntries.every((e) => !e.dir) &&
-                action("compare-files", "Compare the two selected files", GitCompareArrows, () => compareFiles(chosenEntries[0].path, chosenEntries[1].path)),
+            !!useActiveView.getState().comparePair &&
+                action(
+                    "compare-files",
+                    `Compare “${useActiveView.getState().comparePair![0].name}” and “${useActiveView.getState().comparePair![1].name}”`,
+                    GitCompareArrows,
+                    () => {
+                        const pair = useActiveView.getState().comparePair;
+                        if (pair) compareFiles(pair[0].path, pair[1].path);
+                    },
+                    "Ctrl+M"
+                ),
             writable && !shut && action("timeline", "Recent changes in this folder", FileClock, () => inspectTimeline(t.path)),
             action("history", "Moved and deleted: where did a file go?", History, () => openHistory()),
             writable && !shut && action("duplicates", "Find duplicate files in this folder", Files, () => inspectDuplicates(t.path)),
@@ -941,6 +949,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             <div className="flex min-w-0 flex-1 flex-col bg-background">
                 <CommandBar
                     selected={selected}
+                    comparePair={comparePair}
                     onRename={() => activePaneActions()?.startRename()}
                     onDelete={() => activePaneActions()?.deleteSelected(false)}
                     onSearchText={searchTextHere}
@@ -960,7 +969,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 
 /** The selection (or the folder) of the pane the keyboard acts on. Its left edge drags its width. */
 function PreviewPane() {
-    const { selected, items, folder, total, noAccess, repo } = useActiveView();
+    const { selected, comparePair, items, folder, total, noAccess, repo } = useActiveView();
     const width = useStore((s) => s.settings.previewWidth);
     const drag = useRef({ from: 0, now: 0, pane: null as HTMLElement | null });
     return (
@@ -988,7 +997,7 @@ function PreviewPane() {
                 }}
                 onReset={() => useStore.getState().setSettings({ previewWidth: null })}
             />
-            <FilePreview selected={selected} folder={{ path: folder, items, total, noAccess, repo }} />
+            <FilePreview selected={selected} comparePair={comparePair} folder={{ path: folder, items, total, noAccess, repo }} />
         </aside>
     );
 }
@@ -1036,10 +1045,12 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         otherPath,
         otherSizes,
         otherWritable,
+        otherSelection,
+        otherEntries,
     } = useExplorer(
         useShallow((s) => {
             const t = s.tabs[(s.panes[index] ?? s.panes[0]).active];
-            const otherPane = s.dual && s.comparePanes ? s.panes[1 - index] : undefined;
+            const otherPane = s.dual ? s.panes[1 - index] : undefined;
             const otherTab = otherPane ? s.tabs[otherPane.active] : undefined;
             const otherReady = !!otherTab?.ready && isFolderPath(otherTab.path) && !otherTab.find;
             return {
@@ -1068,6 +1079,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 otherPath: otherReady ? otherTab.path : null,
                 otherSizes: otherReady ? s.sizes[otherTab.path] : undefined,
                 otherWritable: otherReady && !otherTab.listing?.archive && !otherTab.noAccess,
+                otherSelection: otherTab?.selection,
+                otherEntries: otherTab ? (otherTab.find ? otherTab.find.entries : (otherTab.listing?.entries ?? NO_ENTRIES)) : NO_ENTRIES,
             };
         })
     );
@@ -1152,14 +1165,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const deepSync = deepResult ? (index === 0 ? deepResult.toRight : deepResult.toLeft) : null;
     // The left pane asks for it, when both show folders on disk.
     const deepOn = settings.compareSubfolders || settings.compareContents;
-    const asks = index === 0 && dual && comparePanes && deepOn && !find && isFolderPath(path) && !!listing && !listing.archive && otherWritable && !!otherPath;
+    const sameFolderInBothPanes = !!dual && !!otherPath && !find && isFolderPath(path) && samePath(path, otherPath);
+    const asks = index === 0 && dual && comparePanes && deepOn && !find && isFolderPath(path) && !!listing && !listing.archive && otherWritable && !!otherPath && !sameFolderInBothPanes;
     useEffect(() => {
         if (asks) void runDeepCompare(path, otherPath!);
         else if (index === 0 && useDeepCompare.getState().key) stopDeepCompare();
     }, [asks, index, path, otherPath, listing, otherListing, settings.compareSubfolders, settings.compareContents, showHidden, settings.findExclusions]);
 
     const comparison = useMemo(() => {
-        if (!dual || !comparePanes || find || !isFolderPath(path) || !listing || !otherListing) return null;
+        if (!dual || !comparePanes || find || !isFolderPath(path) || !listing || !otherListing || sameFolderInBothPanes) return null;
         const otherMap = new Map<string, FileEntry>();
         for (const e of otherListing.entries) {
             if (showHidden || !isHidden(e)) otherMap.set(e.lower, e);
@@ -1198,7 +1212,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             }
         }
         return { diffs, unique, newer, differ, older, same, diffPaths, syncPaths };
-    }, [dual, comparePanes, find, path, listing, otherListing, sorted, showHidden, sizeRun, otherSizes, deepStatuses]);
+    }, [dual, comparePanes, find, path, listing, otherListing, sorted, showHidden, sizeRun, otherSizes, deepStatuses, sameFolderInBothPanes]);
 
     const findQuery = find?.query;
     const { rows: listRows, hidden } = useMemo(() => {
@@ -1228,8 +1242,22 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     );
     const rows = mapRows ?? listRows;
 
-    const focusIndex = useMemo(() => (focus ? rows.findIndex((r) => r.path === focus) : -1), [rows, focus]);
-    const selected = useMemo(() => (selection.size ? rows.filter((r) => selection.has(r.path)) : NO_ENTRIES), [rows, selection]);
+    const rowIndexByPath = useMemo(() => {
+        const map = new Map<string, number>();
+        for (let i = 0; i < rows.length; i++) map.set(rows[i].path, i);
+        return map;
+    }, [rows]);
+
+    const focusIndex = useMemo(() => (focus ? (rowIndexByPath.get(focus) ?? -1) : -1), [rowIndexByPath, focus]);
+    const selected = useMemo(() => {
+        if (!selection.size) return NO_ENTRIES;
+        if (selection.size === 1) {
+            const only = selection.values().next().value;
+            const idx = only !== undefined ? rowIndexByPath.get(only) : undefined;
+            return idx !== undefined ? [rows[idx]] : NO_ENTRIES;
+        }
+        return rows.filter((r) => selection.has(r.path));
+    }, [rows, rowIndexByPath, selection]);
     // Quick Look follows the cursor, so arrowing through the list flips through previews.
     const looked = quickLook && current ? (rows[focusIndex] ?? selected[0]) : undefined;
     useEffect(() => {
@@ -1244,22 +1272,57 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         if (recentHere) recentKept().then((kept) => setRecentOff(!kept), () => {});
     }, [recentHere]);
     const binTotal = useMemo(() => (bin && listing ? listing.entries.reduce((sum, e) => sum + e.size, 0) : undefined), [bin, listing]);
+    // In split screen, files selected in each pane (same or different folders, or search results) can be compared directly.
+    const ownSelectedFiles = useMemo(() => (selection.size ? selected.filter((e) => !e.dir && onDisk(e)) : NO_ENTRIES), [selected, selection.size]);
+    const otherSelectedFiles = useMemo(() => {
+        if (!dual || !otherSelection?.size) return NO_ENTRIES;
+        return otherEntries.filter((e) => otherSelection.has(e.path) && !e.dir && onDisk(e));
+    }, [dual, otherEntries, otherSelection]);
+    const crossPair = useMemo<[FileEntry, FileEntry] | null>(() => {
+        if (!dual || ownSelectedFiles.length !== 1 || otherSelectedFiles.length !== 1) return null;
+        const a = ownSelectedFiles[0];
+        const b = otherSelectedFiles[0];
+        if (samePath(a.path, b.path)) return null;
+        return index === 0 ? [a, b] : [b, a];
+    }, [dual, index, ownSelectedFiles, otherSelectedFiles]);
+    const namesakeFile = useMemo<FileEntry | null>(() => {
+        if (!dual || ownSelectedFiles.length !== 1 || !otherListing || otherListing.archive || !otherPath || samePath(path, otherPath)) return null;
+        const target = ownSelectedFiles[0];
+        return otherListing.entries.find((e) => !e.dir && e.lower === target.lower && onDisk(e)) ?? null;
+    }, [dual, ownSelectedFiles, otherListing, otherPath, path]);
+    const comparePair = useMemo<[FileEntry, FileEntry] | null>(() => {
+        if (ownSelectedFiles.length === 2 && selected.length === 2) return [ownSelectedFiles[0], ownSelectedFiles[1]];
+        if (crossPair) return crossPair;
+        if (namesakeFile && ownSelectedFiles.length === 1 && !samePath(ownSelectedFiles[0].path, namesakeFile.path)) {
+            return index === 0 ? [ownSelectedFiles[0], namesakeFile] : [namesakeFile, ownSelectedFiles[0]];
+        }
+        return null;
+    }, [ownSelectedFiles, selected.length, crossPair, namesakeFile, index]);
+
     // The toolbar and the preview pane show what the active pane shows.
     const folder = find?.scope ?? path;
     const total = binTotal ?? sizeRun?.total;
     const shut = !!noAccess && !find;
     const repo = !find && !!listing && !listing.archive && listing.entries.some((e) => e.lower === ".git");
     useLayoutEffect(() => {
-        if (current) useActiveView.setState({ selected, items: rows.length, folder, total, noAccess: shut, repo });
-    }, [current, selected, rows.length, folder, total, shut, repo]);
+        if (current) useActiveView.setState({ selected, comparePair, items: rows.length, folder, total, noAccess: shut, repo });
+    }, [current, selected, comparePair, rows.length, folder, total, shut, repo]);
 
     const rowsRef = useRef(rows);
     rowsRef.current = rows;
+    const rowIndexByPathRef = useRef(rowIndexByPath);
+    rowIndexByPathRef.current = rowIndexByPath;
     const typeahead = useRef({ text: "", at: 0 });
 
     const selectedNow = () => {
         const t = tabState(tabRef.current);
-        return t ? rowsRef.current.filter((r) => t.selection.has(r.path)) : NO_ENTRIES;
+        if (!t || !t.selection.size) return NO_ENTRIES;
+        if (t.selection.size === 1) {
+            const only = t.selection.values().next().value;
+            const idx = only !== undefined ? rowIndexByPathRef.current.get(only) : undefined;
+            return idx !== undefined ? [rowsRef.current[idx]] : NO_ENTRIES;
+        }
+        return rowsRef.current.filter((r) => t.selection.has(r.path));
     };
 
     const startBatchRename = () => {
@@ -1292,8 +1355,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const chosen = selectedNow();
         if (!chosen.length) return;
         const picked = new Set(chosen.map((r) => r.path));
-        const first = rows.indexOf(chosen[0]);
-        const last = rows.indexOf(chosen[chosen.length - 1]);
+        const first = rowIndexByPathRef.current.get(chosen[0].path) ?? 0;
+        const last = rowIndexByPathRef.current.get(chosen[chosen.length - 1].path) ?? rows.length - 1;
         const next = rows.slice(last + 1).find((r) => !picked.has(r.path)) ?? rows.slice(0, first).reverse().find((r) => !picked.has(r.path));
         // In the Recycle Bin, Delete is for good (asked first), as in File Explorer.
         if (recycleBinOf(tabRef.current)) void purgeRecycled(chosen, next?.path);
@@ -1343,7 +1406,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             const tab = tabRef.current;
             const s = tabState(tab);
             if (!s) return;
-            const at = s.focus ? rows.findIndex((r) => r.path === s.focus) : -1;
+            const at = s.focus ? (rowIndexByPathRef.current.get(s.focus) ?? -1) : -1;
             // The grid moves by tiles and rows of tiles (Left and Right too), the list by rows.
             const grid = paneRef.current?.querySelector<HTMLElement>("[data-file-grid]");
             const cols = Number(grid?.dataset.cols) || 1;
@@ -1357,6 +1420,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else selectOnly(rows[index].path);
             };
             const { quickLook, dual } = useExplorer.getState();
+            if (quickLook && !ctrl && !e.altKey && (key === "PageDown" || key === "PageUp")) {
+                const scrollers = document.querySelectorAll<HTMLElement>("[data-quicklook] [data-quicklook-scroll], [data-quicklook] .overflow-auto");
+                const scroller = Array.from(scrollers).reverse().find((el) => el.scrollHeight > el.clientHeight);
+                if (scroller) {
+                    scroller.scrollBy({ top: (key === "PageDown" ? 0.85 : -0.85) * scroller.clientHeight, behavior: "smooth" });
+                    e.preventDefault();
+                    return;
+                }
+            }
             const listKey =
                 (to !== null && !e.altKey) ||
                 ["Enter", " ", "Delete", "F2", "ContextMenu"].includes(key) ||
@@ -1397,6 +1469,11 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "w") closeTab();
                 else if (key === "d" && e.shiftKey) toggleDual();
                 else if (key === "m" && e.shiftKey) toggleComparePanes();
+                else if (key === "m") {
+                    const pair = useActiveView.getState().comparePair;
+                    if (pair) compareFiles(pair[0].path, pair[1].path);
+                    else return;
+                }
                 else if (/^[1-9]$/.test(key) && !e.shiftKey) selectTab(Number(key));
                 else if (key === "Enter") openSelectedInTabs();
                 else if (key === "a") selectAll(rows);
@@ -1660,10 +1737,14 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const cloud = !fixed && targets.every((t) => onDisk(t) && isCloudFile(t));
         const kept = cloud && targets.every((t) => (t.attrs & ATTR.pinned) !== 0);
         const freed = cloud && targets.every((t) => !t.dir && cloudState(t) === "online");
-        // Two files side by side: the two chosen, or (comparing panes) one and its namesake in the other pane.
+        // Two files side by side: the two chosen in this pane, the one chosen here against the one chosen in the other pane, or its namesake in the other pane.
         const pair = targets.length === 2 && !fixed && targets.every((t) => !t.dir) ? targets : null;
-        const status = one && !one.dir && !fixed && otherPath ? comparison?.diffs.get(one.lower) : undefined;
-        const namesake = status && status !== "unique" && otherPath && one ? joinPath(otherPath, one.name) : null;
+        const otherChosen = dual && one && !one.dir && !fixed && otherSelectedFiles.length === 1 && !samePath(one.path, otherSelectedFiles[0].path) ? otherSelectedFiles[0] : null;
+        const namesakeEntry =
+            dual && one && !one.dir && !fixed && otherListing && !otherListing.archive && otherPath && !samePath(path, otherPath)
+                ? (otherListing.entries.find((e) => !e.dir && e.lower === one.lower && onDisk(e)) ?? null)
+                : null;
+        const namesake = namesakeEntry && (!otherChosen || !samePath(otherChosen.path, namesakeEntry.path)) ? namesakeEntry.path : null;
         // Quick-action icon bar at the top, then Open, dual-pane/archive actions, grouped tools, properties.
         return [
             {
@@ -1740,8 +1821,19 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             "separator",
             dual && { label: "Copy to the other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
             dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || fixed, onSelect: () => copyToOtherPane(true, paths) },
-            pair && { label: "Compare the two files", icon: GitCompareArrows, onSelect: () => compareFiles(pair[0].path, pair[1].path) },
-            !!namesake && one && { label: "Compare with the other pane's", icon: GitCompareArrows, onSelect: () => (index === 0 ? compareFiles(one.path, namesake) : compareFiles(namesake, one.path)) },
+            pair && { label: `Compare “${pair[0].name}” and “${pair[1].name}”`, icon: GitCompareArrows, shortcut: "Ctrl+M", onSelect: () => compareFiles(pair[0].path, pair[1].path) },
+            otherChosen && one && {
+                label: `Compare with “${otherChosen.name}” in the other pane`,
+                icon: GitCompareArrows,
+                shortcut: "Ctrl+M",
+                onSelect: () => (index === 0 ? compareFiles(one.path, otherChosen.path) : compareFiles(otherChosen.path, one.path)),
+            },
+            !!namesake && one && {
+                label: `Compare with “${one.name}” in the other pane`,
+                icon: GitCompareArrows,
+                shortcut: !otherChosen ? "Ctrl+M" : undefined,
+                onSelect: () => (index === 0 ? compareFiles(one.path, namesake) : compareFiles(namesake, one.path)),
+            },
             !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
             pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
             one && canWallpaper(one) && { label: "Set as desktop background", icon: Wallpaper, onSelect: () => void setWallpaper(one.path) },
@@ -2113,6 +2205,22 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 </div>
             )}
             {listing?.fromIndex && !find && <ClosedBar tab={tabId} info={noAccess} />}
+            {dual && !comparePanes && crossPair && current && (
+                <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-b bg-primary/5 px-2.5 py-1 text-xs">
+                    <GitCompareArrows className="size-3.5 shrink-0 text-primary" />
+                    <span className="min-w-0 truncate text-muted-foreground">
+                        Selected across panes: <b className="font-medium text-foreground">“{crossPair[0].name}”</b> ↔ <b className="font-medium text-foreground">“{crossPair[1].name}”</b>
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => compareFiles(crossPair[0].path, crossPair[1].path)}
+                        title="Compare the two files selected across both panes (Ctrl+M)"
+                        className="ml-auto flex shrink-0 items-center gap-1 rounded-[4px] bg-primary/15 px-2 py-0.5 font-medium text-primary transition-colors hover:bg-primary/25"
+                    >
+                        <GitCompareArrows className="size-3" /> Compare files
+                    </button>
+                </div>
+            )}
             {dual && comparePanes && !find && isFolderPath(path) && (
                 <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-1.5 border-b bg-primary/5 px-2.5 py-1 text-xs">
                     <GitCompareArrows className="size-3.5 shrink-0 text-primary" />
@@ -2149,6 +2257,16 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                 </span>
                             )}
                             <div className="ml-auto flex shrink-0 items-center gap-1">
+                                {crossPair && (
+                                    <button
+                                        type="button"
+                                        onClick={() => compareFiles(crossPair[0].path, crossPair[1].path)}
+                                        title={`Compare “${crossPair[0].name}” and “${crossPair[1].name}” (Ctrl+M)`}
+                                        className="flex items-center gap-1 rounded-[4px] bg-primary/15 px-1.5 py-0.5 font-medium text-primary transition-colors hover:bg-primary/25"
+                                    >
+                                        <GitCompareArrows className="size-3" /> Compare “{crossPair[0].name}” ↔ “{crossPair[1].name}”
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     aria-haspopup="menu"
@@ -2194,16 +2312,34 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                         </>
                     ) : (
                         <>
-                            <span className="truncate text-muted-foreground">Open a folder in the other pane to compare</span>
-                            <button
-                                type="button"
-                                onClick={toggleComparePanes}
-                                title="Stop comparing panes (Ctrl+Shift+M)"
-                                aria-label="Stop comparing panes"
-                                className="ml-auto grid size-5 shrink-0 place-items-center rounded-[4px] text-muted-foreground hover:bg-accent hover:text-foreground"
-                            >
-                                <X className="size-3.5" />
-                            </button>
+                            <span className="truncate text-muted-foreground">
+                                {sameFolderInBothPanes
+                                    ? crossPair
+                                        ? `Comparing “${crossPair[0].name}” and “${crossPair[1].name}” in this folder`
+                                        : "Both panes show this folder — select a file in each pane to compare them, or open another folder"
+                                    : "Open a folder in the other pane to compare"}
+                            </span>
+                            <div className="ml-auto flex shrink-0 items-center gap-1">
+                                {crossPair && (
+                                    <button
+                                        type="button"
+                                        onClick={() => compareFiles(crossPair[0].path, crossPair[1].path)}
+                                        title={`Compare “${crossPair[0].name}” and “${crossPair[1].name}” (Ctrl+M)`}
+                                        className="flex items-center gap-1 rounded-[4px] bg-primary/15 px-2 py-0.5 font-medium text-primary transition-colors hover:bg-primary/25"
+                                    >
+                                        <GitCompareArrows className="size-3" /> Compare files
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={toggleComparePanes}
+                                    title="Stop comparing panes (Ctrl+Shift+M)"
+                                    aria-label="Stop comparing panes"
+                                    className="grid size-5 shrink-0 place-items-center rounded-[4px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                                >
+                                    <X className="size-3.5" />
+                                </button>
+                            </div>
                         </>
                     )}
                 </div>
