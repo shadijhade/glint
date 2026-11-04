@@ -904,8 +904,9 @@ export function FilePreview({ selected, comparePair, folder }: { selected: FileE
         const files = selected.filter((e) => !e.dir);
         const deck = selected.slice(0, 3);
         const mtimes = selected.map((e) => e.modified).filter((m) => m > 0);
-        const oldest = mtimes.length ? Math.min(...mtimes) : 0;
-        const newest = mtimes.length ? Math.max(...mtimes) : 0;
+        // Not Math.min(...mtimes): spread past ~120k arguments (Ctrl+A in a big folder) throws.
+        const oldest = mtimes.length ? mtimes.reduce((a, b) => Math.min(a, b)) : 0;
+        const newest = mtimes.length ? mtimes.reduce((a, b) => Math.max(a, b)) : 0;
         const dateSpan =
             oldest > 0 && newest > 0
                 ? formatDate(oldest) === formatDate(newest)
