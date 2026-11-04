@@ -90,8 +90,10 @@ ReleaseNotesUrl: ${REPO}/releases/tag/v${version}
 ${footer("defaultLocale")}`,
 };
 
-// Scoop: extracts the NSIS setup with 7-Zip instead of running it. Without the setup's uninstall.exe the
-// app knows it didn't come from the installer and leaves updating to `scoop update` (see lib.rs).
+// Scoop: extracts the NSIS setup with 7-Zip instead of running it, which also lays out the installer's own
+// files ($PLUGINSDIR, and WebView2's bootstrapper under $TEMP), so they're deleted. Without the setup's
+// uninstall.exe the app knows it didn't come from the installer and leaves updating to `scoop update` (see
+// lib.rs).
 // Uninstalling it (not updating: Scoop's $cmd tells them apart) does what the setup's uninstaller does.
 //
 // File Explorer's entries: a Scoop copy adds them running Glint through the app's `current` link, which
@@ -177,7 +179,7 @@ const scoop = {
             hash: sha256.toLowerCase(),
         },
     },
-    pre_install: "Remove-Item \"$dir\\`$PLUGINSDIR\", \"$dir\\uninstall.exe\" -Recurse -Force -ErrorAction SilentlyContinue",
+    pre_install: "Remove-Item \"$dir\\`$PLUGINSDIR\", \"$dir\\`$TEMP\", \"$dir\\uninstall.exe\" -Recurse -Force -ErrorAction SilentlyContinue",
     uninstaller: {
         script: [
             "# Instant search's service runs from Program Files; uninstalling (not updating) removes it, as the setup's uninstaller does.",
