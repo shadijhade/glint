@@ -139,6 +139,19 @@
   background-color: transparent;
 }
 
+/* The tab strip's fades (.tabs-fade): registered as lengths so they grow smoothly as it scrolls. */
+@property --tabs-fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --tabs-fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
 @layer components {
   /* File list columns: the name, then the columns chosen (search results: the name, the folder, then
      theirs). FileList sets the three templates (columns.ts's gridTemplates); narrow lists drop the
@@ -211,6 +224,35 @@
     border-bottom-color: transparent;
     background: hsl(var(--field-focus));
     box-shadow: inset 0 -2px 0 hsl(var(--primary));
+  }
+
+  /* More tabs than fit: the strip fades out at each end that has tabs scrolled past it. Its own scroll
+     position drives the fades (a scroll timeline); with nothing to scroll the timeline is inactive and
+     neither shows. A mask, so Mica shows through the faded part too. */
+  .tabs-fade {
+    mask-image: linear-gradient(to right, transparent, #000 var(--tabs-fade-start), #000 calc(100% - var(--tabs-fade-end)), transparent);
+    animation-name: tabs-fade;
+    animation-duration: auto;
+    animation-timing-function: linear;
+    animation-fill-mode: both;
+    animation-timeline: scroll(x self);
+  }
+
+  @keyframes tabs-fade {
+    from {
+      --tabs-fade-start: 0px;
+      --tabs-fade-end: 1.5rem;
+    }
+    10% {
+      --tabs-fade-start: 1.5rem;
+    }
+    90% {
+      --tabs-fade-end: 1.5rem;
+    }
+    to {
+      --tabs-fade-start: 1.5rem;
+      --tabs-fade-end: 0px;
+    }
   }
 
   /* Minimize, maximize and close, sized and colored like Windows 11's own caption buttons. */

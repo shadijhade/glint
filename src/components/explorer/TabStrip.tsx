@@ -184,7 +184,8 @@ export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu:
                 onWheel={(e) => {
                     if (e.deltaY) e.currentTarget.scrollLeft += e.deltaY;
                 }}
-                className="flex h-full min-w-0 flex-1 items-end gap-0.5 overflow-x-auto overflow-y-hidden [scrollbar-width:none]"
+                // Its ends fade while tabs are scrolled past them; a tab brought into view stops clear of the fade.
+                className="tabs-fade flex h-full min-w-0 flex-1 scroll-px-6 items-end gap-0.5 overflow-x-auto overflow-y-hidden [scrollbar-width:none]"
             >
                 {tabs.map((id, index) => (
                     <Tab key={id} id={id} pane={pane} index={index} selected={id === active} current={id === active && paneActive} canClose={canClose} onContextMenu={onContextMenu} />
