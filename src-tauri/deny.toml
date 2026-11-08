@@ -22,6 +22,9 @@ allow = [
     "BSL-1.0",
     "bzip2-1.0.6",
     "CC0-1.0",
+    # webpki-roots (Mozilla's root certificates, through iroh for Devices): a data licence that asks
+    # for its text to go with it, which THIRD_PARTY_CRATES.md carries.
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
     "MIT-0",
