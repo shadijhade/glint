@@ -17,6 +17,7 @@ mod dedup;
 mod defender;
 mod devices;
 mod dialogs;
+mod dragdrop;
 mod doctext;
 mod filediff;
 mod find;
@@ -191,6 +192,10 @@ static QUICK_AT_START: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 fn app_ready(window: tauri::WebviewWindow) {
     if window.label() == "main" && !IN_TRAY.load(std::sync::atomic::Ordering::Relaxed) && !window.is_visible().unwrap_or(true) {
         placement::show(&window);
+    }
+    // Files dragged onto an Explorer window go to Glint's own drop target (again after a reload).
+    if window.label() == "main" || window.label().starts_with("glint-") {
+        dragdrop::register(&window);
     }
     // Another window (Open in new window, a tab dragged out): shown once it has painted, in front.
     if window.label().starts_with("glint-") {
@@ -934,6 +939,7 @@ pub fn run() {
             shell::run_as_admin,
             shell::open_terminal,
             shell::start_drag,
+            dragdrop::drag_under,
             archive::archive_extract,
             archive::archive_unlock,
             archive::archive_stage,

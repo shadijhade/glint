@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { ArchiveFormat } from "./archives";
 import { decodeItems, decodeListing, type DiffStatus, type FileEntry, type Listing } from "./entries";
 import { type JsonValue, parseJson } from "./jsonTree";
@@ -523,6 +524,26 @@ export const clipboardClear = () => invoke("clipboard_clear");
  * and nothing else (files extracted from an archive).
  */
 export const startDrag = (paths: string[], copyOnly = false) => invoke<"copy" | "move" | "link" | "none" | "released">("start_drag", { paths, copyOnly });
+
+/**
+ * Files dragged over the window, as Glint's own drop target reports them (dragdrop.rs): the pointer in
+ * physical pixels from the webview's corner; a drop says whether it moves (Shift, or a source that
+ * only moves) or copies.
+ */
+export type DragHeard =
+    | { type: "enter"; paths: string[]; x: number; y: number }
+    | { type: "over"; x: number; y: number }
+    | { type: "drop"; paths: string[]; x: number; y: number; move: boolean }
+    | { type: "leave" };
+
+/** Hears files dragged over this window. Resolves to a function that stops. */
+export const listenDrags = (on: (heard: DragHeard) => void) => getCurrentWebviewWindow().listen<DragHeard>("glint://drag", (e) => on(e.payload));
+
+/**
+ * Tells Windows what a drop would go into now (null: nothing), for the cursor and the words on the
+ * dragged picture: `copy` and `move` in Glint's language, `%1` standing for `name`.
+ */
+export const dragUnder = (under: { name: string; copy: string; move: string; alwaysMove?: boolean } | null) => invoke("drag_under", { under });
 
 /**
  * A file in a zip or 7z archive extracted to a read-only temp copy, made once and reused: to

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { AR } from "./i18n-ar.ts";
 import { translate } from "./i18n.ts";
-import { crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, isShadowPath, joinPath, linkedPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, shadowNames, THIS_PC, volumeOf } from "./paths.ts";
+import { crumbs, droppable, isFolderPath, isRecycleBin, isRemotePath, isRoot, isShadowPath, joinPath, linkedPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, shadowNames, THIS_PC, volumeOf } from "./paths.ts";
 import { ATTR, compareEntries, decodeItems, decodeListing, entryOrder, type FileEntry, hasFilterOrPath, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, isRemote, matcher, mergeSorted, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
 import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
@@ -782,5 +782,12 @@ assert.equal(translate("ar", "Open"), "فتح");
 assert.equal(translate("ar", "Search {folder}").replace("{folder}", "Docs"), "البحث في Docs");
 assert.equal(translate("ar", "Not in the catalog"), "Not in the catalog");
 assert.equal(translate("en", "Open"), "Open");
+
+// What a drop on a folder would do something with: not what's in it already, nor it or a folder above it.
+assert.deepEqual(droppable(["C:\\a\\x.txt", "C:\\b\\y.txt"], "C:\\a"), ["C:\\b\\y.txt"]);
+assert.deepEqual(droppable(["C:\\a"], "C:\\a"), []);
+assert.deepEqual(droppable(["C:\\a"], "C:\\a\\sub"), []);
+assert.deepEqual(droppable(["C:\\ab"], "C:\\a\\sub"), ["C:\\ab"]);
+assert.deepEqual(droppable(["D:\\photos"], "C:\\"), ["D:\\photos"]);
 
 console.log("explorer.check: all assertions passed");
