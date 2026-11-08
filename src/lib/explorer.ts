@@ -68,7 +68,8 @@ import {
 } from "./fs";
 import { formatCount, formatFullDate, plural } from "./format";
 import { zoomTiles } from "./grid";
-import { baseName, crumbs, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, isShadowPath, joinPath, parentPath, RECENT, RECYCLE_BIN, remoteIdOf, samePath, shadowName, shadowNames, THIS_PC } from "./paths";
+import { t } from "./i18n";
+import { baseName, droppable, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, isShadowPath, joinPath, parentPath, RECENT, RECYCLE_BIN, remoteIdOf, samePath, shadowName, shadowNames, THIS_PC } from "./paths";
 import { frecency } from "./rank";
 import { initRemotes, remoteName } from "./remotes";
 import { initRules } from "./rules";
@@ -1164,7 +1165,7 @@ export function closeTab(id = activeTabId()) {
 }
 
 /** Closes a pane in dual-pane view, with its tabs; the other one is left on its own. */
-function closePane(pane: number) {
+export function closePane(pane: number) {
     const s = get();
     if (!s.dual || s.panes.length < 2) return;
     const gone = s.panes[pane];
@@ -1258,6 +1259,68 @@ export function focusPane(pane: number) {
 
 /** F6 in dual-pane view: the other pane. */
 export const switchPane = () => focusPane(1 - get().activePane);
+
+/** Ctrl+Shift+U in dual-pane view: the panes trade places, tabs and all; the keyboard stays with its folder. */
+export function swapPanes() {
+    const s = get();
+    if (!s.dual || s.panes.length < 2) return;
+    set({ panes: [s.panes[1], s.panes[0]], activePane: 1 - s.activePane, editingAddress: false });
+}
+
+/**
+ * Folder `path` in the pane beside pane `from` (the active one), in the tab showing there (dual-pane view
+ * is turned on for it first); the keyboard stays where it was.
+ */
+export function openInOtherPane(path: string, from = get().activePane) {
+    const was = get().dual ? get().activePane : 0;
+    const here = get().dual ? from : 0;
+    if (!get().dual) toggleDual();
+    const s = get();
+    const tab = s.dual ? s.panes[1 - here]?.active : undefined;
+    if (!tab) return;
+    focusPane(was);
+    void navigate(path, { tab });
+}
+
+/**
+ * A tab dragged onto the far half of the only pane: two panes, the tab in the second. A pane's only tab
+ * stays where it is and the second pane opens on its folder.
+ */
+export function splitWithTab(id: string) {
+    const s = get();
+    const t = s.tabs[id];
+    if (s.dual || !t || paneOf(id, s) !== 0) return;
+    const [left, right] = s.panes;
+    if (left.tabs.length < 2) {
+        const copy = newTabId();
+        set({
+            tabs: { ...s.tabs, [copy]: blankTab(copy, t.path, t.view) },
+            panes: [left, right ? { tabs: [...right.tabs, copy], active: copy } : { tabs: [copy], active: copy }],
+            dual: true,
+            activePane: 1,
+            quickLook: false,
+            editingAddress: false,
+        });
+        openTab(copy);
+    } else {
+        const at = left.tabs.indexOf(id);
+        const rest = left.tabs.filter((other) => other !== id);
+        const leftActive = left.active === id ? rest[Math.min(at, rest.length - 1)] : left.active;
+        set({ panes: [{ tabs: rest, active: leftActive }, right ? { tabs: [...right.tabs, id], active: id } : { tabs: [id], active: id }], dual: true });
+        if (left.active === id) showTab(leftActive);
+        activateTab(id);
+    }
+    syncWatches();
+    useStore.getState().setLastFolder(currentPath());
+}
+
+/** A tab dragged onto the other pane's files: it moves there (a pane's only tab stays). */
+export function moveTabToPane(id: string, to: number) {
+    const s = get();
+    const from = paneOf(id, s);
+    if (!s.dual || from < 0 || from === to || !s.panes[to]) return;
+    placeTab(id, to, s.panes[to].tabs.indexOf(s.panes[to].active) + 1);
+}
 
 /** Ctrl+Shift+D: two panes side by side, or back to one. The right pane keeps its tabs while hidden. */
 export function toggleDual() {
@@ -2286,8 +2349,14 @@ async function pasteAsFile(dest: string, tab: string) {
     } else toast.success(`Pasted “${baseName(made)}” into “${baseName(dest)}”`);
 }
 
-/** Files dropped in from outside: moved within a drive, copied across drives, as Explorer does; on the Recycle Bin, recycled. */
-export async function dropFiles(paths: string[], dest: string) {
+/** A drop target's name, for the words on the drag ("Copy to Documents"). */
+export const dropName = (path: string) => t(tabName(path, get().drives));
+
+/**
+ * Files dropped on a folder (from File Explorer, the desktop, another pane or tab): copied, or moved
+ * when `move` (Shift was held, as the drag's picture said); on the Recycle Bin, recycled.
+ */
+export async function dropFiles(paths: string[], dest: string, move = false) {
     if (isRemotePath(dest)) return readOnlyNotice();
     if (isRecycleBin(dest)) {
         const what = plural(paths.length, "item");
@@ -2298,10 +2367,8 @@ export async function dropFiles(paths: string[], dest: string) {
         }
         return;
     }
-    const sources = paths.filter((p) => !samePath(parentPath(p), dest) && !samePath(p, dest));
+    const sources = droppable(paths, dest);
     if (!sources.length) return;
-    const root = (p: string) => crumbs(p)[0]?.path.toLowerCase();
-    const move = sources.every((p) => root(p) === root(dest));
     const what = plural(sources.length, "item");
     try {
         const done = await busy(`${move ? "Moving" : "Copying"} ${what}…`, fileOp({ kind: move ? "move" : "copy", sources, dest }));

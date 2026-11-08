@@ -53,6 +53,8 @@ const groups = (quick: string | null): [string, [string, string][]][] => [
             ["Ctrl+M", "Compare two selected files (or one in each pane)"],
             ["Ctrl+Shift+M", "Compare the panes"],
             ["F6", "The other pane"],
+            ["Ctrl+Shift+U", "Swap the panes"],
+            ["Shift+drop", "Move what's dropped (a plain drop copies)"],
             ["Ctrl+`", "The terminal, under the files (it follows the folder shown)"],
         ],
     ],

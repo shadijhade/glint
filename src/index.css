@@ -665,3 +665,41 @@
 [dir="rtl"] .truncate:not(.text-center, .text-end, .text-start) {
     text-align: right;
 }
+
+/* A tab with files held over it fills as it's about to open (in 450 ms, the timer in Explorer.tsx). */
+.spring-load {
+    transform-origin: left;
+    animation: spring-load 450ms linear forwards;
+}
+[dir="rtl"] .spring-load {
+    transform-origin: right;
+}
+@keyframes spring-load {
+    from {
+        transform: scaleX(0);
+    }
+    to {
+        transform: scaleX(1);
+    }
+}
+
+/* Dual-pane view: the pane the keyboard doesn't act on steps back a little, until the pointer is on it. */
+[data-pane] .files {
+    transition: opacity 150ms ease-out;
+}
+[data-pane][data-inactive] .files {
+    opacity: 0.84;
+}
+[data-pane][data-inactive]:hover .files {
+    opacity: 1;
+}
+
+/* Where a dragged tab would go (TabStrip's PaneDropZone): it fades in. */
+.zone-in {
+    animation: zone-in 150ms ease-out;
+}
+@keyframes zone-in {
+    from {
+        opacity: 0;
+    }
+}

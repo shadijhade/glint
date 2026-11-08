@@ -140,3 +140,9 @@ export function crumbs(path: string): { name: string; path: string }[] {
     }
     return trail;
 }
+
+/** Of `paths`, those a drop on `dest` would do something with: not already in it, nor it or a folder above it. */
+export function droppable(paths: string[], dest: string) {
+    const below = (p: string) => dest.toLowerCase().startsWith(p.replace(/[\\/]+$/, "").toLowerCase() + "\\");
+    return paths.filter((p) => !samePath(parentPath(p), dest) && !samePath(p, dest) && !below(p));
+}

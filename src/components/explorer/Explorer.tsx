@@ -11,6 +11,7 @@ import {
     ArchiveRestore,
     ArrowLeft,
     ArrowRight,
+    ArrowLeftRight,
     ArrowRightLeft,
     ArrowUp,
     Bookmark,
@@ -119,6 +120,7 @@ import {
     closedNotice,
     closeOtherTabs,
     compressEntries,
+    closePane,
     closeTab,
     copyToClipboard,
     copyToOtherPane,
@@ -130,6 +132,7 @@ import {
     deletePaths,
     dragFromArchive,
     dropFiles,
+    dropName,
     duplicateTab,
     emptyRecycleBin,
     focusPane,
@@ -145,6 +148,7 @@ import {
     markShown,
     mountImage,
     moveTabToOtherPane,
+    openInOtherPane,
     modalOpen,
     navigate,
     newItem,
@@ -188,6 +192,7 @@ import {
     selectTab,
     stopDeepCompare,
     stopFind,
+    swapPanes,
     switchPane,
     syncInto,
     openInNewWindow,
@@ -207,11 +212,12 @@ import {
 import { formatCount, plural } from "@/lib/format";
 import { newKinds } from "@/lib/newKinds";
 import { recentKept } from "@/lib/fs";
-import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rotateImage, runAsAdmin, sandboxRun, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
+import { type CloudPin, type DragHeard, dragUnder, driveName, listenDrags, openIn, openItem, openTerminal, openWith, rotateImage, runAsAdmin, sandboxRun, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
+import { t } from "@/lib/i18n";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, marqueeHits, TILE_SIZES, zoomTiles } from "@/lib/grid";
-import { baseName, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
+import { baseName, droppable, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { remoteOfPath, remotePath } from "@/lib/remotes";
 import { useStore } from "@/lib/store";
 import { refreshZoxide, usedFolders, usedScore, useZoxide } from "@/lib/zoxide";
@@ -225,6 +231,7 @@ import { gridTile, remPx, rowHeight } from "@/hooks/useTheme";
 import { type MenuItem, useMenu } from "../Menu";
 import { openShortcuts } from "../ShortcutsDialog";
 import { ResizeHandle } from "../ResizeHandle";
+import { PaneDropZone } from "./TabStrip";
 import { Button } from "../ui/button";
 import { FIND_BOX_ID } from "./AddressBar";
 import { newMenuItems } from "./newMenu";
@@ -582,11 +589,36 @@ function tabMenu(id: string): MenuItem[] {
     const tabs = s.panes.find((p) => p.tabs.includes(id))?.tabs.length ?? 0;
     return [
         { label: "Duplicate tab", icon: Copy, onSelect: () => duplicateTab(id) },
+        {
+            label: s.dual ? "Open in the other pane" : "Open side by side",
+            icon: Columns2,
+            onSelect: () => {
+                const path = s.tabs[id]?.path;
+                if (path) openInOtherPane(path, s.panes.findIndex((p) => p.tabs.includes(id)));
+            },
+        },
         s.dual && { label: "Move to the other pane", icon: ArrowRightLeft, disabled: tabs < 2, onSelect: () => moveTabToOtherPane(id) },
         "separator",
         { label: "Close tab", icon: X, shortcut: "Ctrl+W", disabled: tabs < 2 && !s.dual, onSelect: () => closeTab(id) },
         { label: "Close other tabs", icon: X, disabled: tabs < 2, onSelect: () => closeOtherTabs(id) },
         { label: "Reopen closed tab", icon: RotateCcw, shortcut: "Ctrl+Shift+T", disabled: !canReopenTab(), onSelect: reopenClosedTab },
+    ];
+}
+
+/** A pane's own menu, by its tabs in dual-pane view. */
+function paneMenu(pane: number): MenuItem[] {
+    const s = useExplorer.getState();
+    const here = s.tabs[s.panes[pane]?.active ?? ""];
+    const there = s.tabs[s.panes[1 - pane]?.active ?? ""];
+    const even = useStore.getState().settings.dualSplit === null;
+    const isFolder = (path?: string) => !!path && path !== THIS_PC;
+    return [
+        { label: "Swap panes", icon: ArrowLeftRight, shortcut: "Ctrl+Shift+U", onSelect: swapPanes },
+        { label: "Show this folder in the other pane", icon: Columns2, disabled: !isFolder(here?.path), onSelect: () => here && openInOtherPane(here.path, pane) },
+        { label: "Open the other pane's folder here", icon: FolderInput, disabled: !isFolder(there?.path), onSelect: () => there && openInOtherPane(there.path, 1 - pane) },
+        "separator",
+        { label: "Even out the panes", icon: Columns2, disabled: even, onSelect: () => useStore.getState().setSettings({ dualSplit: null }) },
+        { label: "Close this pane", icon: X, onSelect: () => closePane(pane) },
     ];
 }
 
@@ -682,51 +714,77 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         };
     }, []);
 
-    // Files dragged in from File Explorer, the desktop or the other pane land on the folder row,
-    // breadcrumb segment, or sidebar place under the pointer, or else in the folder open in the pane
-    // under it. Hovering an inactive tab for a moment spring-loads it open.
+    // Files dragged onto the window (from File Explorer, the desktop, the other pane or another tab) land
+    // on the folder row, tab, breadcrumb or sidebar place under the pointer, or else in the folder open in
+    // the pane under it: copied, or moved with Shift, as the drag's picture says. Hovering a tab that isn't
+    // showing opens it after a moment, to drop into its folder.
     useEffect(() => {
         let springTimer: ReturnType<typeof setTimeout> | undefined;
-        let hoveredTab: string | null = null;
-        const setSpring = (tabId: string | null) => {
-            if (hoveredTab === tabId) return;
-            clearTimeout(springTimer);
-            hoveredTab = tabId;
+        let springing: string | null = null;
+        let dragged: string[] = [];
+        let told: string | null | undefined;
+        /** The tab under the pointer: lit, and soon shown when it isn't. */
+        const hoverTab = (tabId: string | null) => {
             if (useExplorer.getState().springTab !== tabId) useExplorer.setState({ springTab: tabId });
-            if (tabId) {
+            const hidden = !!tabId && !useExplorer.getState().panes.some((p) => p.active === tabId);
+            const next = hidden ? tabId : null;
+            if (springing === next) return;
+            clearTimeout(springTimer);
+            springing = next;
+            if (next)
                 springTimer = setTimeout(() => {
-                    hoveredTab = null;
-                    useExplorer.setState({ springTab: null });
-                    activateTab(tabId);
+                    springing = null;
+                    activateTab(next);
                 }, 450);
-            }
+        };
+        /** Tells Windows what a drop would go into, for the cursor and the words on the drag. */
+        const tell = (target: string | null) => {
+            if (target === told) return;
+            told = target;
+            void dragUnder(target ? { name: dropName(target), copy: t("Copy to %1"), move: t("Move to %1"), alwaysMove: isRecycleBin(target) } : null).catch(() => {});
         };
         const targetAt = ({ x, y }: { x: number; y: number }) => {
             const under = document.elementFromPoint(x / devicePixelRatio, y / devicePixelRatio);
-            const tabEl = under?.closest<HTMLElement>("[data-tab]");
-            const overTab = tabEl?.dataset.tab ?? null;
+            hoverTab(under?.closest<HTMLElement>("[data-tab]")?.dataset.tab ?? null);
             const s = useExplorer.getState();
-            const isInactiveTab = !!overTab && !s.panes.some((p) => p.active === overTab);
-            setSpring(isInactiveTab ? overTab : null);
-            const place = under?.closest<HTMLElement>("[data-drop]")?.dataset.drop;
-            if (place) return place;
-            const pane = under?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
-            if (pane === undefined || !under?.closest(".files")) return null;
-            const tab = s.panes[Number(pane)] && s.tabs[s.panes[Number(pane)].active];
-            // Nothing can be dropped into an archive (it's read-only), nor into a folder Windows keeps closed.
-            return tab && tab.path !== THIS_PC && !tab.find && !tab.listing?.archive && !tab.noAccess ? tab.path : null;
+            let target = under?.closest<HTMLElement>("[data-drop]")?.dataset.drop ?? null;
+            if (!target) {
+                const pane = under?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+                const tab = pane !== undefined && under?.closest(".files") ? s.panes[Number(pane)] && s.tabs[s.panes[Number(pane)].active] : undefined;
+                // Nothing can be dropped into an archive (it's read-only), nor into a folder Windows keeps closed.
+                target = tab && tab.path !== THIS_PC && !tab.find && !tab.listing?.archive && !tab.noAccess ? tab.path : null;
+            }
+            // Where they all are already, or into one of them: nothing to do there.
+            return target && dragged.length && !isRecycleBin(target) && !droppable(dragged, target).length ? null : target;
         };
-        const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
-            const activeDrag = activeRef.current && payload.type !== "leave";
-            if (!activeDrag || payload.type === "drop") setSpring(null);
-            const target = activeDrag ? targetAt(payload.position) : null;
-            if (payload.type === "drop" && target) dropFiles(payload.paths, target);
-            const dropTarget = payload.type === "drop" ? null : target;
+        const onDrag = (heard: DragHeard) => {
+            if (heard.type === "enter") dragged = heard.paths;
+            const live = activeRef.current && heard.type !== "leave";
+            if (!live || heard.type === "drop") hoverTab(null);
+            const target = live ? targetAt(heard) : null;
+            if (heard.type === "drop") {
+                if (target) void dropFiles(heard.paths, target, heard.move);
+                dragged = [];
+                told = undefined;
+            } else if (heard.type === "leave") {
+                dragged = [];
+                told = undefined;
+            } else tell(target);
+            const dropTarget = heard.type === "drop" ? null : target;
             if (useExplorer.getState().dropTarget !== dropTarget) useExplorer.setState({ dropTarget });
+        };
+        const ours = listenDrags(onDrag);
+        // Tauri's report, where Glint's own drop target couldn't take the window over (a drop copies then).
+        const tauris = getCurrentWebview().onDragDropEvent(({ payload }) => {
+            if (payload.type === "leave") onDrag({ type: "leave" });
+            else if (payload.type === "drop") onDrag({ type: "drop", paths: payload.paths, x: payload.position.x, y: payload.position.y, move: false });
+            else if (payload.type === "enter") onDrag({ type: "enter", paths: payload.paths, x: payload.position.x, y: payload.position.y });
+            else onDrag({ type: "over", x: payload.position.x, y: payload.position.y });
         });
         return () => {
             clearTimeout(springTimer);
-            unlisten.then((stop) => stop());
+            ours.then((stop) => stop());
+            tauris.then((stop) => stop());
         };
     }, []);
 
@@ -848,6 +906,10 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
             action("compare-panes", s.dual && s.comparePanes ? "Stop comparing panes" : "Compare panes: highlight differences between both panes", GitCompareArrows, toggleComparePanes, "Ctrl+Shift+M"),
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
+            s.dual && action("swap-panes", "Swap panes", ArrowLeftRight, swapPanes, "Ctrl+Shift+U"),
+            (inFolder || remote) && !t.find && action("open-other", s.dual ? "Show this folder in the other pane" : "Show this folder side by side", Columns2, () => openInOtherPane(t.path)),
+            !!other && action("open-here", "Open the other pane's folder here", FolderInput, () => void navigate(other.path)),
+            s.dual && now.dualSplit !== null && action("even-panes", "Even out the panes", Columns2, () => setSettings({ dualSplit: null })),
             !archive && !remote &&
                 !closedItems &&
                 !bin &&
@@ -985,6 +1047,40 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
 function ActiveCommandBar(props: Omit<React.ComponentProps<typeof CommandBar>, "selected" | "comparePair">) {
     const { selected, comparePair } = useActiveView(useShallow((v) => ({ selected: v.selected, comparePair: v.comparePair })));
     return <CommandBar {...props} selected={selected} comparePair={comparePair} />;
+}
+
+/** The line between the two panes: dragged, it shares out the width (double-click: halves again). */
+function PaneDivider() {
+    const drag = useRef({ total: 0, first: 0, share: 0.5, panes: [] as HTMLElement[] });
+    return (
+        <ResizeHandle
+            label="Pane widths"
+            className="-start-1"
+            onStart={(bar) => {
+                const panes = [...(bar.closest("[data-pane]")?.parentElement?.querySelectorAll<HTMLElement>(":scope > [data-pane]") ?? [])];
+                if (panes.length < 2) return;
+                const first = panes[0].getBoundingClientRect().width;
+                const total = first + panes[1].getBoundingClientRect().width;
+                drag.current = { total, first, share: first / total, panes };
+            }}
+            onDrag={(left) => {
+                const d = drag.current;
+                if (d.panes.length < 2 || !d.total) return;
+                // Right to left, the first pane is on the right: it grows as the line goes left.
+                const rtl = document.documentElement.dir === "rtl";
+                d.share = Math.min(0.8, Math.max(0.2, (d.first + (rtl ? left : -left)) / d.total));
+                d.panes[0].style.flexGrow = String(d.share);
+                d.panes[1].style.flexGrow = String(1 - d.share);
+            }}
+            onEnd={() => {
+                const d = drag.current;
+                if (d.panes.length < 2) return;
+                useStore.getState().setSettings({ dualSplit: Math.abs(d.share - 0.5) < 0.01 ? null : Math.round(d.share * 1000) / 1000 });
+                d.panes = [];
+            }}
+            onReset={() => useStore.getState().setSettings({ dualSplit: null })}
+        />
+    );
 }
 
 /** The selection (or the folder) of the pane the keyboard acts on. Its left edge drags its width. */
@@ -1524,6 +1620,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "n" && !e.shiftKey) openInNewWindow();
                 else if (key === "w") closeTab();
                 else if (key === "d" && e.shiftKey) toggleDual();
+                else if (key === "u" && e.shiftKey) swapPanes();
                 else if (key === "m" && e.shiftKey) toggleComparePanes();
                 else if (key === "m") {
                     const pair = useActiveView.getState().comparePair;
@@ -1716,7 +1813,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 useExplorer.setState({ dragging: new Set(paths) });
                 startDrag(paths)
                     .then((effect) => {
-                        if (effect === "move") reload(from);
+                        // A move into a folder on the same drive comes back as "none" (File Explorer, or
+                        // Glint, moved them itself).
+                        if (effect === "move" || effect === "none") reload(from);
                     })
                     .catch(report("Couldn't drag these items"))
                     .finally(() => useExplorer.setState({ dragging: new Set() }));
@@ -1782,7 +1881,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const paths = targets.map((t) => t.path);
         // Archives open like folders: in a new tab too.
         const folders = targets.filter((t) => t.dir || isArchiveFile(t));
-        const other = dual && !!otherPaneFolder();
+        const otherFolder = dual ? otherPaneFolder() : null;
+        const other = !!otherFolder;
+        const otherName = otherFolder ? dropName(otherFolder.path) : null;
         // Inside an archive, nothing changes: what would is greyed out, and opening a file extracts it.
         const archived = targets.some(isArchived) ? archiveOf(tabRef.current) : undefined;
         // Listed from the index (Windows keeps their folder closed): nothing changes, and only folders open.
@@ -1845,6 +1946,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 shortcut: "Ctrl+Enter",
                 onSelect: () => folders.forEach((f) => openInNewTab(f.path)),
             },
+            one?.dir && !closed && !isRecycled(one) && { label: dual ? "Open in the other pane" : "Open side by side", icon: Columns2, onSelect: () => openInOtherPane(one.path) },
             one && {
                 label: "Quick Look",
                 icon: Eye,
@@ -1894,8 +1996,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     ? { label: "Show the archive in File Explorer", icon: FolderSearch, onSelect: () => revealArchive(archived) }
                     : { label: "Show in File Explorer", icon: FolderSearch, onSelect: () => revealItemInDir(paths).catch(report("Couldn't open File Explorer")) }),
             "separator",
-            dual && { label: "Copy to the other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
-            dual && { label: "Move to the other pane", icon: FolderOutput, disabled: !other || fixed, onSelect: () => copyToOtherPane(true, paths) },
+            dual && { label: otherName ? t("Copy to “{name}” in the other pane", { name: otherName }) : "Copy to the other pane", icon: CopyPlus, disabled: !other, onSelect: () => copyToOtherPane(false, paths) },
+            dual && { label: otherName ? t("Move to “{name}” in the other pane", { name: otherName }) : "Move to the other pane", icon: FolderOutput, disabled: !other || fixed, onSelect: () => copyToOtherPane(true, paths) },
             pair && { label: `Compare “${pair[0].name}” and “${pair[1].name}”`, icon: GitCompareArrows, shortcut: "Ctrl+M", onSelect: () => compareFiles(pair[0].path, pair[1].path) },
             otherChosen && one && {
                 label: `Compare with “${otherChosen.name}” in the other pane`,
@@ -2263,10 +2365,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         <div
             ref={paneRef}
             data-pane={index}
+            // The pane the keyboard doesn't act on steps back a little (not while comparing, nor as a drop's target).
+            data-inactive={dual && !current && !comparePanes && dropTarget !== path ? "" : undefined}
             onMouseDownCapture={() => focusPane(index)}
             className={cn("relative flex min-w-0 flex-1 basis-0 flex-col", index > 0 && "border-s")}
+            style={dual ? { flexGrow: index === 0 ? (settings.dualSplit ?? 0.5) : 1 - (settings.dualSplit ?? 0.5) } : undefined}
         >
-            <TabStrip pane={index} onContextMenu={(e, id) => menu.open(e, tabMenu(id))} />
+            {index > 0 && <PaneDivider />}
+            <PaneDropZone pane={index} />
+            <TabStrip pane={index} onContextMenu={(e, id) => menu.open(e, tabMenu(id))} onPaneMenu={(at) => menu.open(at, paneMenu(index))} />
             {loading && <div className="absolute inset-x-0 top-9 z-10 h-0.5 animate-pulse bg-primary" />}
             {find && (
                 <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-primary/5 px-3 text-sm">

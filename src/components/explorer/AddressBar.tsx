@@ -4,6 +4,8 @@ import {
     ArrowLeft,
     ArrowRight,
     ArrowUp,
+    PanelLeft,
+    PanelRight,
     Check,
     ChevronRight,
     Clock,
@@ -25,7 +27,7 @@ import {
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { asksModels, type FileEntry, isArchiveFile, isHidden, terms } from "@/lib/entries";
-import { clearFind, findsAsTyped, goBack, goForward, goTo, goUp, leaveFind, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
+import { clearFind, findsAsTyped, goBack, goForward, goTo, goUp, leaveFind, middleClickOpens, navigate, refresh, runFind, switchPane, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName, listDir, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { crumbs, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
@@ -315,7 +317,7 @@ export function AddressBar() {
     );
     // The archives on the way are marked, so it's clear where the folders on disk end.
     const isArchive = (crumb: string) => !!archive && (samePath(crumb, archive.path) || samePath(crumb, archive.outer));
-    const { drives, known, editing, dropTarget } = useExplorer(useShallow((s) => ({ drives: s.drives, known: s.known, editing: s.editingAddress, dropTarget: s.dropTarget })));
+    const { drives, known, editing, dropTarget, dual } = useExplorer(useShallow((s) => ({ drives: s.drives, known: s.known, editing: s.editingAddress, dropTarget: s.dropTarget, dual: s.dual })));
     const showHidden = useStore((s) => s.settings.showHidden);
     const trailRef = useRef<HTMLDivElement>(null);
     const crumbsRef = useRef<HTMLDivElement>(null);
@@ -529,6 +531,7 @@ export function AddressBar() {
 
             {/* In the title bar, but a click here types a path or picks a crumb rather than moving the window. */}
             <div data-tauri-drag-region="false" className="fluent-field flex h-8 min-w-0 flex-1 items-center">
+                {dual && <PaneSide />}
                 {editing ? (
                     <AddressInput path={path} />
                 ) : (
@@ -779,3 +782,22 @@ export function AddressBar() {
     );
 }
 
+/** Dual-pane view: which pane the address bar shows; a click shows the other one's (F6). */
+function PaneSide() {
+    const pane = useExplorer((s) => s.activePane);
+    // The first pane is on the left, or on the right in a right-to-left language.
+    const left = (pane === 0) !== (document.documentElement.dir === "rtl");
+    const Icon = left ? PanelLeft : PanelRight;
+    const label = t(left ? "The left pane: F6 for the right one" : "The right pane: F6 for the left one");
+    return (
+        <button
+            type="button"
+            onClick={switchPane}
+            title={label}
+            aria-label={label}
+            className="ms-1 grid size-6 shrink-0 place-items-center rounded-[4px] text-primary transition-colors hover:bg-accent"
+        >
+            <Icon className="size-4" />
+        </button>
+    );
+}
