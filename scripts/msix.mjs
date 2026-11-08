@@ -19,6 +19,8 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { signService } from "./sign-service.mjs";
+import { hasUpdateKey, unlockUpdateKey } from "./update-key.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = process.argv.slice(2);
@@ -89,6 +91,24 @@ for (const exe of [app, "shadui-index.exe", ...config.bundle.externalBin.map((bi
     copyFileSync(source, join(layout, exe));
 }
 for (const [from, to] of Object.entries(config.bundle.resources)) copyFileSync(join(root, "src-tauri", from), join(layout, to));
+
+// The service's update signature, so the Store's copy updates its service without administrator approval
+// (src-tauri/index/src/update.rs): the build's own when it's for these very bytes, else made now with the
+// update key (TAURI_SIGNING_PRIVATE_KEY).
+const service = join(layout, "shadui-index.exe");
+const builtSignature = join(built, "shadui-index.exe.sig");
+if (existsSync(builtSignature) && spawnSync(service, ["verify-update", service, builtSignature]).status === 0) {
+    copyFileSync(builtSignature, join(layout, "shadui-index.exe.sig"));
+} else if (hasUpdateKey()) {
+    try {
+        unlockUpdateKey();
+        console.log(`✓ ${signService(service)}`);
+    } catch (e) {
+        fail(`Couldn't sign the instant search service: ${e.message}`);
+    }
+} else {
+    console.warn("! TAURI_SIGNING_PRIVATE_KEY isn't set and the build has no signature for its service, so this package's Glint updates its service only with administrator approval.");
+}
 
 console.log("Drawing the logos…");
 run("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(root, "scripts", "msix-assets.ps1"), "-Source", join(root, "src-tauri", "icons", "icon.png"), "-Out", join(layout, "Assets")]);

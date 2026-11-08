@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Check, Loader2, Search } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
@@ -78,6 +79,8 @@ const searchable = () => listDrives().then((drives) => drives.filter((d) => d.ki
 export function QuickSearch() {
     useTheme();
     const [query, setQuery] = useState("");
+    // Summoned over an Open or Save As dialog: a folder chosen goes there.
+    const [overDialog, setOverDialog] = useState(false);
     const [found, setFound] = useState<FileEntry[]>([]);
     const [status, setStatus] = useState("");
     const [busy, setBusy] = useState(false);
@@ -93,6 +96,7 @@ export function QuickSearch() {
     useEffect(() => {
         const reload = () => void useStore.persist.rehydrate();
         const ready = () => {
+            void invoke<boolean>("quick_dialog").then(setOverDialog);
             reload();
             void refreshZoxide();
             searchable().then((r) => (roots.current = r), () => {});
@@ -167,9 +171,14 @@ export function QuickSearch() {
         list.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
     }, [active]);
 
-    // Folders open in Glint; files with their app, or in Glint with Alt.
+    // Folders open in Glint (or, summoned over an Open or Save As dialog, in that dialog); files with
+    // their app, or in Glint with Alt.
     const open = (entry: FileEntry | undefined, inGlint: boolean) => {
         if (!entry) return;
+        if (entry.dir && !inGlint && overDialog) {
+            void invoke<boolean>("quick_jump", { folder: entry.path }).then((jumped) => (jumped ? void quickHide() : void quickReveal(entry.path, true)));
+            return;
+        }
         if (inGlint || entry.dir) return void quickReveal(entry.path, entry.dir);
         void quickHide();
         // A shortcut to a folder opens the folder in Glint.
@@ -235,7 +244,7 @@ export function QuickSearch() {
                 />
             </div>
             {plain && (
-                <button type="button" tabIndex={-1} onClick={() => setQuery(plain.query)} className="flex shrink-0 items-center gap-2 border-b px-4 py-2 text-left text-xs hover:bg-accent">
+                <button type="button" tabIndex={-1} onClick={() => setQuery(plain.query)} className="flex shrink-0 items-center gap-2 border-b px-4 py-2 text-start text-xs hover:bg-accent">
                     <Kbd>Tab</Kbd>
                     <span className="flex min-w-0 flex-wrap gap-1">
                         {plain.chips.map((chip) => (
@@ -273,7 +282,7 @@ export function QuickSearch() {
                                 dragRef.current = null;
                             }}
                             onClick={(e) => open(entry, e.altKey)}
-                            className={cn("flex w-full items-center gap-3 rounded-md px-3 py-1.5 text-left", i === active && "bg-accent")}
+                            className={cn("flex w-full items-center gap-3 rounded-md px-3 py-1.5 text-start", i === active && "bg-accent")}
                         >
                             <kind.icon className={cn("size-4 shrink-0", entry.dir ? "fill-amber-400/80 text-amber-500" : kind.tone)} />
                             <span className="min-w-0 flex-1">
@@ -304,7 +313,7 @@ export function QuickSearch() {
                         ""
                     )}
                 </span>
-                {hint("Enter", "open")}
+                {hint("Enter", overDialog ? "open (a folder: in the dialog)" : "open")}
                 {hint("Alt+Enter", "show in Glint")}
                 {hint("Ctrl+C", "copy path")}
                 {hint("Esc", "close")}

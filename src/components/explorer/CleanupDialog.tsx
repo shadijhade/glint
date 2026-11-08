@@ -476,7 +476,7 @@ function CleanupModal({ root, onClose }: { root: string; onClose: () => void }) 
             </ModalHeader>
 
             <div className="flex min-h-0 flex-1">
-                <nav aria-label="What to look for" className="flex w-48 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-chrome/60 p-2">
+                <nav aria-label="What to look for" className="flex w-48 shrink-0 flex-col gap-3 overflow-y-auto border-e bg-chrome/60 p-2">
                     {SECTIONS.map((section) => (
                         <div key={section.title} role="tablist" aria-label={section.title} aria-orientation="vertical" className="flex flex-col gap-0.5">
                             <span className="px-2 pb-0.5 text-[0.625rem] font-semibold tracking-wide text-muted-foreground uppercase">{section.title}</span>
@@ -491,7 +491,7 @@ function CleanupModal({ root, onClose }: { root: string; onClose: () => void }) 
                                         aria-selected={key === mode}
                                         onClick={() => useCleanupStore.setState({ mode: key })}
                                         className={cn(
-                                            "flex h-7 items-center gap-2 rounded-md px-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground",
+                                            "flex h-7 items-center gap-2 rounded-md px-2 text-start text-xs font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground",
                                             key === mode && "bg-background text-primary shadow-xs hover:bg-background dark:bg-foreground/[0.12]"
                                         )}
                                     >
@@ -601,7 +601,7 @@ function CleanupModal({ root, onClose }: { root: string; onClose: () => void }) 
                                                 />
                                                 <span className="min-w-0 truncate font-semibold text-foreground">{group.title}</span>
                                                 {!info.grouped && <span className="shrink-0 text-muted-foreground">· {plural(group.rows.length, info.folders ? "folder" : "file")}</span>}
-                                                {group.size > 0 && <span className="ml-auto shrink-0 font-medium text-amber-700 tabular-nums dark:text-amber-400">{formatSize(group.size)}</span>}
+                                                {group.size > 0 && <span className="ms-auto shrink-0 font-medium text-amber-700 tabular-nums dark:text-amber-400">{formatSize(group.size)}</span>}
                                             </label>
                                             <div className="divide-y">
                                                 {group.rows.map(({ item, entry }) => {
@@ -640,7 +640,7 @@ function CleanupModal({ root, onClose }: { root: string; onClose: () => void }) 
                                                                     {formatDate(item.date)}
                                                                 </span>
                                                             )}
-                                                            {(item.size > 0 || !info.folders) && <span className="w-16 shrink-0 text-right tabular-nums text-foreground">{formatSize(item.size)}</span>}
+                                                            {(item.size > 0 || !info.folders) && <span className="w-16 shrink-0 text-end tabular-nums text-foreground">{formatSize(item.size)}</span>}
                                                             <Button
                                                                 variant="ghost"
                                                                 size="icon"
@@ -672,7 +672,7 @@ function CleanupModal({ root, onClose }: { root: string; onClose: () => void }) 
                     {shown ? summary : ""}
                 </span>
                 {shown && (
-                    <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    <div className="ms-auto flex shrink-0 items-center gap-1.5">
                         {info.helpers.map((helper) => (
                             <Button key={helper.label} variant="ghost" size="sm" className="h-7 px-2 text-xs" title={helper.title} onClick={() => setChosen(() => new Set(helper.pick(items, now).map((i) => i.path)))}>
                                 {helper.label}

@@ -1,13 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { isHidden, isListOnly, isLocked } from "@/lib/entries";
+import { isArchived, isHidden, isListOnly, isLocked } from "@/lib/entries";
 import { typeLabel } from "@/lib/fileTypes";
 import { formatFullDate, formatSize } from "@/lib/format";
 import { gridColumns, type GridTile, placeOf, topOf } from "@/lib/grid";
+import { hoverFolder, leaveFolder, prefetchFolder } from "@/lib/explorer";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
 import { VirtualList } from "../VirtualList";
 import { CloudMark, DIFF_BADGE, dropPath, type FileViewProps, gitOf, Header, LockMark, relativeTo, RenameInput, sizeOf, whereOf } from "./FileList";
 import { Thumbnail } from "./Thumbnail";
+import { VideoScrub } from "./VideoScrub";
+import { isVideoEntry } from "@/lib/fileTypes";
 
 interface FileGridProps extends FileViewProps {
     /** The pane it's in: each pane's grid starts as wide as its last one was. */
@@ -89,7 +92,13 @@ export function FileGrid(props: FileGridProps) {
                 aria-selected={selected}
                 aria-label={entry.name}
                 data-drop={dropPath(entry)}
-                onMouseDown={(e) => props.onRowMouseDown(e, i)}
+                onMouseDown={(e) => {
+                    // The first click of what may be a double-click reads the folder ahead.
+                    if (entry.dir && e.button === 0) prefetchFolder(entry.path);
+                    props.onRowMouseDown(e, i);
+                }}
+                onMouseEnter={entry.dir ? () => hoverFolder(entry.path) : undefined}
+                onMouseLeave={entry.dir ? leaveFolder : undefined}
                 onDoubleClick={() => props.onOpen(entry)}
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
                 title={[
@@ -114,10 +123,11 @@ export function FileGrid(props: FileGridProps) {
             >
                 <div className="relative grid shrink-0 place-items-center" style={{ width: tile.thumb, height: tile.thumb }}>
                     <Thumbnail entry={entry} box={tile.thumb} lane={lane} enabled={!entry.dir && !isLocked(entry) && !isListOnly(entry)} bottom iconSize={tile.thumb * (entry.dir ? 2 / 3 : 7 / 12)} iconClassName="stroke-[1.1]" />
+                    {isVideoEntry(entry) && !isLocked(entry) && !isListOnly(entry) && !isArchived(entry) && <VideoScrub path={entry.path} box={tile.thumb} />}
                     {badge && (
                         <span
                             title={badge.title}
-                            className={cn(" absolute top-0.5 right-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[0.5625rem] font-medium leading-tight shadow-xs backdrop-blur-xs", badge.className)}
+                            className={cn(" absolute top-0.5 end-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[0.5625rem] font-medium leading-tight shadow-xs backdrop-blur-xs", badge.className)}
                         >
                             {badge.label}
                         </span>
@@ -125,13 +135,13 @@ export function FileGrid(props: FileGridProps) {
                     {tracked.badge && (
                         <span
                             data-git
-                            className={cn("absolute top-0.5 left-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[0.5625rem] font-medium leading-tight shadow-xs backdrop-blur-xs", tracked.badge.className)}
+                            className={cn("absolute top-0.5 start-0.5 rounded-[4px] bg-background/90 px-1 py-px text-[0.5625rem] font-medium leading-tight shadow-xs backdrop-blur-xs", tracked.badge.className)}
                         >
                             {tracked.badge.label}
                         </span>
                     )}
-                    <CloudMark entry={entry} className="absolute bottom-0.5 right-0.5 size-4 fill-background" />
-                    {isLocked(entry) && <LockMark entry={entry} className="absolute bottom-0.5 right-0.5 size-4 fill-background text-amber-600 dark:text-amber-500" />}
+                    <CloudMark entry={entry} className="absolute bottom-0.5 end-0.5 size-4 fill-background" />
+                    {isLocked(entry) && <LockMark entry={entry} className="absolute bottom-0.5 end-0.5 size-4 fill-background text-amber-600 dark:text-amber-500" />}
                 </div>
                 {renaming === entry.path ? (
                     <RenameInput

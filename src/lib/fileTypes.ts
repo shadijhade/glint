@@ -139,6 +139,8 @@ export const typeGroup = (entry: FileEntry) => kindOf(entry).group;
 
 /** Pictures and videos: what a thumbnail in the list's icon column tells apart better than an icon. */
 export const isPictureOrVideo = (entry: FileEntry) => !entry.dir && (kindOf(entry).group === G.images || kindOf(entry).group === G.video);
+/** A video (by its type), whose tile can be scrubbed. */
+export const isVideoEntry = (entry: FileEntry) => !entry.dir && kindOf(entry).group === G.video;
 
 /** Filter string (`ext:png;jpg;...`) for all extensions belonging to `group`. */
 export function groupFilter(group: TypeGroup): string {

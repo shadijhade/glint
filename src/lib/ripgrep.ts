@@ -95,9 +95,14 @@ export async function searchBatched(
         // ripgrep's (or ast-grep's) arguments are built in Rust from these options. The folder comes back as searched.
         const exclusions = options.exclusions ?? [];
         const text = { query, path, caseSensitive: !!options.caseSensitive, wholeWord: !!options.wholeWord, regex: !!options.regex, exclusions, everything: !!options.everything, ocr: !!options.ocr, meaning: !!options.meaning };
+        // Words alone, in a folder the content index covers: answered by the index, in milliseconds.
+        const plainWords = !options.code && !options.documents && !options.meaning && !options.regex && !options.caseSensitive && !options.wholeWord && !options.everything;
+        const indexed = plainWords && (await invoke<boolean>("content_covers", { path }).catch(() => false));
         const folder = options.code
             ? await invoke<string>("run_ast_grep", { request: { query, path, rewrite: options.rewrite || null, exclusions, everything: !!options.everything }, searchId, maxResults: options.maxResults })
-            : await invoke<string>(options.documents || options.meaning ? "run_doc_search" : "run_ripgrep_batched", { request: text, searchId, maxResults: options.maxResults });
+            : indexed
+              ? await invoke<string>("run_content_search", { request: { query, path }, searchId, maxResults: options.maxResults })
+              : await invoke<string>(options.documents || options.meaning ? "run_doc_search" : "run_ripgrep_batched", { request: text, searchId, maxResults: options.maxResults });
         return { stop: unlisten, folder };
     } catch (e) {
         onError(String(e));

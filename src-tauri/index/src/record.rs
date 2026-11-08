@@ -167,7 +167,20 @@ pub struct Attribute<'a> {
     pub kind: u32,
     /// Length of the attribute's own name in UTF-16 units (0 for the default $DATA stream).
     pub name_len: u8,
+    /// The name itself, as UTF-16LE bytes.
+    pub name: &'a [u8],
     pub body: Body<'a>,
+}
+
+/// The stream Glint keeps a file's tags in (`file:glint.tags`), as UTF-16LE bytes: a resident one is
+/// read with the rest of the record.
+const TAGS_STREAM: &[u8] = b"g\0l\0i\0n\0t\0.\0t\0a\0g\0s\0";
+
+/// A file's tags from its tags stream: one per line, UTF-8, blank lines left out.
+pub fn tags_text(value: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(value);
+    let tags: Vec<&str> = text.lines().map(str::trim).filter(|t| !t.is_empty()).take(64).collect();
+    (!tags.is_empty()).then(|| tags.join("\n"))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -224,6 +237,8 @@ pub fn attributes<'a>(record: &'a [u8], header: &Header) -> impl Iterator<Item =
         let attr = &record[at..at + len];
         at += len;
         let name_len = attr[9];
+        let name_at = u16_at(attr, 10)? as usize;
+        let name = attr.get(name_at..name_at + name_len as usize * 2).unwrap_or(&[]);
         let body = if attr[8] == 0 {
             let size = u32_at(attr, 0x10)? as usize;
             let offset = u16_at(attr, 0x14)? as usize;
@@ -232,7 +247,7 @@ pub fn attributes<'a>(record: &'a [u8], header: &Header) -> impl Iterator<Item =
             let runs = u16_at(attr, 0x20)? as usize;
             Body::NonResident { lowest_vcn: u64_at(attr, 0x10)?, data_size: u64_at(attr, 0x30)?, runs: attr.get(runs..)? }
         };
-        Some(Attribute { kind, name_len, body })
+        Some(Attribute { kind, name_len, name, body })
     })
 }
 
@@ -273,6 +288,8 @@ pub struct Parsed {
     /// Size of the unnamed data stream, from its first extent.
     pub size: Option<u64>,
     pub attribute_list: Option<AttributeList>,
+    /// Glint's tags, from a resident `glint.tags` stream (one per line).
+    pub tags: Option<String>,
 }
 
 /// Parses one record in place (fixups are applied to `record`). None when it isn't a valid file record.
@@ -301,6 +318,7 @@ pub fn parse(record: &mut [u8], strict: bool) -> Option<Parsed> {
                 Body::NonResident { lowest_vcn: 0, data_size, .. } => parsed.size = Some(data_size),
                 Body::NonResident { .. } => {}
             },
+            (ATTR_DATA, Body::Resident(value)) if attr.name == TAGS_STREAM => parsed.tags = tags_text(value),
             (ATTR_ATTRIBUTE_LIST, Body::Resident(value)) => parsed.attribute_list = Some(AttributeList::Resident(value.to_vec())),
             (ATTR_ATTRIBUTE_LIST, Body::NonResident { data_size, runs, .. }) => {
                 parsed.attribute_list = parse_runs(runs).ok().map(|runs| AttributeList::NonResident { runs, size: data_size });

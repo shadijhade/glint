@@ -537,13 +537,13 @@ fn item_root(dest: &Path, source: &str) -> PathBuf {
 }
 
 /// "name (2).ext" and on: the first that isn't taken.
-fn free_name(path: &Path) -> PathBuf {
+pub(crate) fn free_name(path: &Path) -> PathBuf {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else { return path.to_path_buf() };
     let name = name.to_string_lossy();
     (2..10_000).map(|n| parent.join(crate::fsx::numbered(&name, false, n))).find(|p| !p.exists()).unwrap_or_else(|| path.to_path_buf())
 }
 
-fn clear_read_only(path: &Path) {
+pub(crate) fn clear_read_only(path: &Path) {
     if let Ok(meta) = std::fs::metadata(path) {
         let mut permissions = meta.permissions();
         if permissions.readonly() {

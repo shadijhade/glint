@@ -36,6 +36,7 @@ export function remoteId(name: string) {
 export function remoteWhere(r: RemoteConnection) {
     const folder = r.root.trim() ? `, in ${r.root.trim()}` : "";
     if (r.kind === "rclone") return `${serviceName(r.service ?? "")} through rclone (its remote “${r.rclone ?? ""}”)${folder}`;
+    if (r.kind === "device") return `The folders “${r.name}” shares with this PC, over Glint's devices (read-only)`;
     if (r.kind === "sftp") return `SFTP at ${r.user ? `${r.user}@` : ""}${r.host ?? ""}${r.port && r.port !== 22 ? `:${r.port}` : ""}${folder}`;
     return r.kind === "s3" ? `S3 bucket “${r.bucket}” at ${r.endpoint.trim() || `Amazon S3 (${r.region.trim() || "us-east-1"})`}${folder}` : `WebDAV at ${r.endpoint}${folder}`;
 }

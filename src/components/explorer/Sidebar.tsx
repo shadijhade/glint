@@ -1,4 +1,5 @@
 import { Clock, Database, Disc, Download, Images, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Unplug, Usb, X } from "lucide-react";
+import { t } from "@/lib/i18n";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
 import { type CloudSpace, rcloneAbout } from "@/lib/rclone";
@@ -12,6 +13,7 @@ import { type Drive, driveName, ejectDrive } from "@/lib/fs";
 import { formatSize } from "@/lib/format";
 import { baseName, GALLERY, inArchivePath, isGallery, isRecent, isRemotePath, RECENT, RECYCLE_BIN, samePath, THIS_PC } from "@/lib/paths";
 import { type RemoteConnection, type SavedSearch, useStore } from "@/lib/store";
+import { allTags, tagColor, useTags } from "@/lib/tags";
 import { cn } from "@/lib/utils";
 
 export const KNOWN_ICONS: Record<KnownFolder["id"], LucideIcon> = {
@@ -76,7 +78,7 @@ function useCloudSpace(r: RemoteConnection) {
 /** A remote connection in the sidebar: a cloud with how full it is, where its service says. */
 function RemotePlace({ remote, active, onContextMenu }: { remote: RemoteConnection; active: boolean; onContextMenu: (e: React.MouseEvent, path: string) => void }) {
     const space = useCloudSpace(remote);
-    const icon = remote.kind === "rclone" ? serviceIcon(remote.service ?? "") : remote.kind === "s3" ? Database : remote.kind === "sftp" ? SquareTerminal : Server;
+    const icon = remote.kind === "rclone" ? serviceIcon(remote.service ?? "") : remote.kind === "s3" ? Database : remote.kind === "sftp" ? SquareTerminal : remote.kind === "device" ? Monitor : Server;
     const where = remoteWhere(remote);
     return (
         <Place icon={icon} label={remote.name} path={remotePath(remote)} active={active} title={space ? `${where}\n${freeOf(space)}` : where} onContextMenu={onContextMenu}>
@@ -91,10 +93,10 @@ function Section({ title, onTitleClick, active, children }: { title: string; onT
             <h2 className="mb-1 hidden px-2 md:block">
                 {onTitleClick ? (
                     <button onClick={onTitleClick} className={cn("text-xs font-semibold text-muted-foreground hover:text-foreground", active && "text-foreground")}>
-                        {title}
+                        {t(title)}
                     </button>
                 ) : (
-                    <span className="text-xs font-semibold text-muted-foreground">{title}</span>
+                    <span className="text-xs font-semibold text-muted-foreground">{t(title)}</span>
                 )}
             </h2>
             <div className="space-y-px">{children}</div>
@@ -119,10 +121,10 @@ interface PlaceProps {
 const opens = (path: string) => (/^[a-z]:\\/i.test(path) || path.startsWith("\\\\")) && !inArchivePath(path) && !isRemotePath(path);
 
 // Below md, icons only: the sidebar is a rail, each place's name in its tooltip.
-const PLACE = "relative flex w-full items-center justify-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-foreground/90 transition-all duration-100 hover:bg-accent active:scale-[0.985] md:justify-start";
+const PLACE = "relative flex w-full items-center justify-center gap-2.5 rounded-md px-2 py-1.5 text-start text-sm text-foreground/90 transition-all duration-100 hover:bg-accent active:scale-[0.985] md:justify-start";
 
 // Windows 11's navigation selection: a gray fill and a short accent pill at the left edge.
-const ACTIVE = "bg-accent text-foreground before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary";
+const ACTIVE = "bg-accent text-foreground before:absolute before:start-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary";
 
 function Place({ icon: Icon, iconClass, label, path, active, title, onContextMenu, children, tree }: PlaceProps) {
     const dropping = useExplorer((s) => s.dropTarget === path);
@@ -142,14 +144,14 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
             aria-current={active ? "page" : undefined}
             className={cn(
                 PLACE,
-                gutter && "md:pl-6",
+                gutter && "md:ps-6",
                 active && ACTIVE,
                 dropping && "scale-[1.01] bg-primary/20 outline-2 -outline-offset-2 outline-primary"
             )}
         >
             <Icon className={cn("size-4 shrink-0 text-muted-foreground", active && "text-foreground", iconClass)} />
             <div className="hidden min-w-0 flex-1 md:block">
-                <div className="truncate">{label}</div>
+                <div className="truncate">{t(label)}</div>
                 {children}
             </div>
         </button>
@@ -171,7 +173,7 @@ function SavedSearchItem({ search }: { search: SavedSearch }) {
     const toggle = useStore((s) => s.toggleSavedSearch);
     return (
         <div className="group relative">
-            <button onClick={() => void runSavedSearch(search)} title={`Search for “${search.query}” in ${search.folder || "every drive"}`} className={cn(PLACE, "md:pr-7")}>
+            <button onClick={() => void runSavedSearch(search)} title={`Search for “${search.query}” in ${search.folder || "every drive"}`} className={cn(PLACE, "md:pe-7")}>
                 <Search className="size-4 shrink-0 text-muted-foreground" />
                 <div className="hidden min-w-0 flex-1 md:block">
                     <div className="truncate">{search.query}</div>
@@ -182,11 +184,38 @@ function SavedSearchItem({ search }: { search: SavedSearch }) {
                 onClick={() => toggle(search)}
                 title="Remove from the sidebar"
                 aria-label={`Remove the saved search “${search.query}”`}
-                className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 md:block"
+                className="absolute end-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 md:block"
             >
                 <X className="size-3.5" />
             </button>
         </div>
+    );
+}
+
+/**
+ * Tags: every tag on the drives instant search covers (with how many items have it), else the ones used
+ * here lately. A click finds what has it, on every drive.
+ */
+function TagsSection() {
+    const recent = useTags((s) => s.recent);
+    const [indexed, setIndexed] = useState<[string, number][]>([]);
+    useEffect(() => {
+        void allTags().then(setIndexed);
+    }, [recent]);
+    const shown: [string, number | null][] = indexed.length ? indexed.slice(0, 12) : recent.slice(0, 8).map((t) => [t, null]);
+    if (!shown.length) return null;
+    return (
+        <Section title="Tags">
+            {shown.map(([tag, count]) => (
+                <button key={tag} onClick={() => void runSavedSearch({ query: `tag:"${tag}"`, folder: THIS_PC })} title={`What's tagged “${tag}”${count !== null ? ` (${count})` : ""}`} className={PLACE}>
+                    <span className="grid size-4 shrink-0 place-items-center">
+                        <span className="size-2.5 rounded-full" style={{ background: tagColor(tag) }} />
+                    </span>
+                    <span className="hidden min-w-0 flex-1 truncate text-start md:block">{tag}</span>
+                    {count !== null && <span className="hidden text-xs tabular-nums text-muted-foreground md:block">{count}</span>}
+                </button>
+            ))}
+        </Section>
     );
 }
 
@@ -216,7 +245,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
     }, [showHidden]);
 
     return (
-        <nav aria-label="Places" onKeyDown={onTreeKey} className="flex w-12 shrink-0 flex-col gap-4 overflow-y-auto border-r p-1.5 pt-3 md:w-56 md:p-2 md:pt-3">
+        <nav aria-label="Places" onKeyDown={onTreeKey} className="flex w-12 shrink-0 flex-col gap-4 overflow-y-auto border-e p-1.5 pt-3 md:w-56 md:p-2 md:pt-3">
             <Section title="Quick access">
                 <Place icon={Clock} label="Recent" path={RECENT} active={isRecent(path)} title="The files you opened lately, here or in any app, newest first" onContextMenu={onContextMenu} />
                 <Place icon={Images} label="Gallery" path={GALLERY} active={isGallery(path)} title="Your photos and videos, newest first by when each was taken" onContextMenu={onContextMenu} />
@@ -231,6 +260,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                     ))}
                 </Section>
             )}
+            <TagsSection />
             {saved.length > 0 && (
                 <Section title="Searches">
                     {saved.map((s) => (
@@ -279,7 +309,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                                     }}
                                     title={`Safely eject ${driveName(d)}`}
                                     aria-label={`Eject ${driveName(d)}`}
-                                    className="absolute right-1 top-1.5 hidden rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover/drive:opacity-100 md:block"
+                                    className="absolute end-1 top-1.5 hidden rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover/drive:opacity-100 md:block"
                                 >
                                     <Unplug className="size-3.5" />
                                 </button>
@@ -307,7 +337,7 @@ export function Sidebar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent
                     className={cn(PLACE, "text-muted-foreground")}
                 >
                     <Plus className="size-4 shrink-0" />
-                    <span className="hidden truncate md:inline">Add a connection</span>
+                    <span className="hidden truncate md:inline">{t("Add a connection")}</span>
                 </button>
             </Section>
         </nav>

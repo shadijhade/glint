@@ -43,7 +43,7 @@ export function GalleryMonths({ rows, tab, current }: { rows: readonly FileEntry
     if (months.length < 2) return null;
     const go = (entry: FileEntry) => updateTab({ selection: new Set([entry.path]), focus: entry.path, anchor: entry.path }, tab);
     return (
-        <nav aria-label="Months" className="hidden w-40 shrink-0 overflow-y-auto border-l py-2 text-xs md:block">
+        <nav aria-label="Months" className="hidden w-40 shrink-0 overflow-y-auto border-s py-2 text-xs md:block">
             {months.map((m, i) => (
                 <div key={`${m.year}-${m.month}`}>
                     {(i === 0 || months[i - 1].year !== m.year) && <h3 className="px-3 pt-2 pb-1 font-semibold text-foreground">{m.year}</h3>}
@@ -51,7 +51,7 @@ export function GalleryMonths({ rows, tab, current }: { rows: readonly FileEntry
                         type="button"
                         onClick={() => go(m.first)}
                         className={cn(
-                            "flex w-full items-center justify-between gap-2 px-3 py-1 text-left text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                            "flex w-full items-center justify-between gap-2 px-3 py-1 text-start text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                             here === `${m.year}-${m.month}` && "bg-accent/60 font-medium text-foreground"
                         )}
                     >

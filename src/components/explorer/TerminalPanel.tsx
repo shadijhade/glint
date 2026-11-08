@@ -282,7 +282,7 @@ export function TerminalPanel() {
                                 }}
                                 onClick={() => useTerminals.setState({ active: tab.key })}
                                 className={cn(
-                                    "group flex h-6 max-w-48 shrink-0 cursor-default items-center gap-1.5 rounded-[4px] pr-0.5 pl-2 text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground",
+                                    "group flex h-6 max-w-48 shrink-0 cursor-default items-center gap-1.5 rounded-[4px] pe-0.5 ps-2 text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground",
                                     tab.key === active && "bg-background text-foreground shadow-xs dark:bg-foreground/[0.1]",
                                     tab.exited !== null && "opacity-60"
                                 )}
@@ -313,7 +313,7 @@ export function TerminalPanel() {
                         <ChevronDown className="size-3" />
                     </button>
                 )}
-                <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                <div className="ms-auto flex shrink-0 items-center gap-0.5">
                     <button
                         type="button"
                         aria-pressed={follow}

@@ -396,7 +396,7 @@ export function BatchRenameDialog() {
                     </div>
                     <div className="flex flex-wrap items-center gap-1">
                         {reading && (
-                            <span className="mr-1 flex items-center gap-1 text-[0.625rem] text-muted-foreground">
+                            <span className="me-1 flex items-center gap-1 text-[0.625rem] text-muted-foreground">
                                 <Loader2 className="size-3 animate-spin" /> Reading the files' details…
                             </span>
                         )}
@@ -417,10 +417,10 @@ export function BatchRenameDialog() {
 
             {/* Live preview matrix */}
             <div className="min-h-[16rem] flex-1 overflow-y-auto">
-                <table className="w-full border-collapse text-left text-xs">
+                <table className="w-full border-collapse text-start text-xs">
                     <thead className="sticky top-0 z-10 border-b bg-muted/90 backdrop-blur-xs">
                         <tr>
-                            <th className="w-10 px-3 py-2 text-right font-normal text-muted-foreground">#</th>
+                            <th className="w-10 px-3 py-2 text-end font-normal text-muted-foreground">#</th>
                             <th className="w-[44%] px-3 py-2 font-semibold text-foreground">Current name</th>
                             <th className="w-6 px-1 py-2" />
                             <th className="px-3 py-2 font-semibold text-foreground">New name</th>
@@ -439,7 +439,7 @@ export function BatchRenameDialog() {
                                           : "hover:bg-muted/30"
                                 )}
                             >
-                                <td className="px-3 py-1.5 text-right font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
+                                <td className="px-3 py-1.5 text-end font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
                                     {idx + 1}
                                 </td>
                                 <td className="max-w-[18rem] truncate px-3 py-1.5 font-mono text-muted-foreground" title={row.entry.name}>
@@ -464,7 +464,7 @@ export function BatchRenameDialog() {
                                             {row.newName}
                                         </span>
                                         {row.conflict && (
-                                            <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 font-sans text-[0.625rem] font-medium text-destructive">
+                                            <span className="ms-auto inline-flex shrink-0 items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 font-sans text-[0.625rem] font-medium text-destructive">
                                                 <AlertTriangle className="size-3" /> {row.conflict}
                                             </span>
                                         )}

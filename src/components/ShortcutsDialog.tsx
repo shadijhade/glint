@@ -113,7 +113,7 @@ export function ShortcutsDialog() {
                         <dl className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-1.5 text-sm">
                             {keys.map(([key, what]) => (
                                 <div key={key} className="contents">
-                                    <dt className="text-right">
+                                    <dt className="text-end">
                                         <Kbd className="text-xs text-foreground">{key}</Kbd>
                                     </dt>
                                     <dd className="text-muted-foreground">{what}</dd>

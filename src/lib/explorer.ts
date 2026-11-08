@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { createContext, useContext } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
@@ -21,6 +22,7 @@ import {
     clipboardGetFiles,
     clipboardPasteFile,
     clipboardSetFiles,
+    type CompressFormat,
     compareFolders,
     createEntry,
     type Drive,
@@ -34,11 +36,13 @@ import {
     grantAccess,
     indexDisable,
     indexEnable,
+    indexUpdate,
     type IndexInfo,
     indexStatus,
     type LaunchTarget,
     type ListFailure,
     type Progress,
+    folderStamp,
     listDir,
     listDrives,
     type Listing,
@@ -59,16 +63,18 @@ import {
     onGalleryDated,
     thumbButtons,
     watchDirs,
+    shadowCopies,
+    versionCopy,
 } from "./fs";
-import { formatCount, plural } from "./format";
+import { formatCount, formatFullDate, plural } from "./format";
 import { zoomTiles } from "./grid";
-import { baseName, crumbs, GALLERY, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, joinPath, parentPath, RECENT, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC } from "./paths";
+import { baseName, crumbs, GALLERY, inArchivePath, isFolderPath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, isShadowPath, joinPath, parentPath, RECENT, RECYCLE_BIN, remoteIdOf, samePath, shadowName, shadowNames, THIS_PC } from "./paths";
 import { frecency } from "./rank";
 import { initRemotes, remoteName } from "./remotes";
 import { initRules } from "./rules";
 import { loadNewKinds, newFile, type NewKind } from "./newKinds";
 import { listenQueue, queueFiles, useQueue, whenFinished } from "./queue";
-import { DEFAULT_SETTINGS, type SavedSearch, type Session, useStore, type ViewMode } from "./store";
+import { DEFAULT_SETTINGS, type SavedSearch, SECONDARY_WINDOW, type Session, useStore, type ViewMode } from "./store";
 import { shareVisit } from "./zoxide";
 import { dropThumbnails } from "./thumbs";
 import { firstNotice } from "./utils";
@@ -344,6 +350,7 @@ export function tabName(path: string, drives: Drive[]) {
     if (isRecycleBin(path)) return "Recycle Bin";
     if (isRecent(path)) return "Recent";
     if (isGallery(path)) return "Gallery";
+    if (isShadowPath(path) && isRoot(path)) return shadowName(path);
     if (!isRoot(path)) return baseName(path);
     const drive = drives.find((d) => samePath(d.path, path));
     return drive ? driveName(drive) : path;
@@ -450,11 +457,63 @@ function showArchiveReading(target: string) {
     };
 }
 
+/**
+ * Folders read ahead: the one under the pointer (after a moment, or at once on the first click of a
+ * double-click) and the one the arrow keys land on. Opening it then shows that listing at once, as long
+ * as it's fresh: under two seconds old, and the folder's own date (which every add, delete and rename in
+ * it changes) as it was. From then on its watcher keeps it current.
+ */
+const prefetched = new Map<string, { at: number; stamp: number; listing: Promise<Listing | null> }>();
+const PREFETCH_FRESH_MS = 2000;
+
+export function prefetchFolder(path: string) {
+    if (!isFolderPath(path) || inArchivePath(path)) return;
+    const key = path.toLowerCase();
+    const known = prefetched.get(key);
+    if (known && performance.now() - known.at < PREFETCH_FRESH_MS) return;
+    const at = performance.now();
+    const listing = folderStamp(path).then(
+        (stamp) => {
+            const entry = prefetched.get(key);
+            if (entry && entry.at === at) entry.stamp = stamp;
+            return listDir(path);
+        },
+        () => null
+    );
+    prefetched.set(key, { at, stamp: -1, listing: listing.catch(() => null) });
+    // A few at most: they're for the next click.
+    while (prefetched.size > 8) prefetched.delete(prefetched.keys().next().value!);
+}
+
+/** The listing read ahead for `path`, if it's still as the folder is; taken, so it's used once. */
+async function takePrefetched(path: string): Promise<Listing | null> {
+    const key = path.toLowerCase();
+    const entry = prefetched.get(key);
+    if (!entry) return null;
+    prefetched.delete(key);
+    if (performance.now() - entry.at > PREFETCH_FRESH_MS) return null;
+    const [listing, stamp] = await Promise.all([entry.listing, folderStamp(path).catch(() => -2)]);
+    return listing && entry.stamp >= 0 && stamp === entry.stamp ? listing : null;
+}
+
+let hovering: ReturnType<typeof setTimeout> | undefined;
+
+/** The pointer rests on a folder: read it ahead after a moment. */
+export function hoverFolder(path: string) {
+    clearTimeout(hovering);
+    hovering = setTimeout(() => prefetchFolder(path), 80);
+}
+
+export function leaveFolder() {
+    clearTimeout(hovering);
+}
+
 /** Opens a folder (or This PC) in a tab. Resolves false if it couldn't, or a newer navigation won. */
 export async function navigate(target: string, { select, history = true, quiet = false, silent = false, tab = activeTabId() }: NavOptions = {}) {
     const r = rt(tab);
     const seq = ++r.navSeq;
     const started = performance.now();
+    if (isShadowPath(target)) void learnShadowNames();
     if (!quiet) updateTab({ loading: true }, tab);
     let listing: Listing | null = null;
     // A folder Windows keeps this account out of opens all the same: its tab says why, with Get access.
@@ -462,7 +521,7 @@ export async function navigate(target: string, { select, history = true, quiet =
     if (target !== THIS_PC) {
         const reading = showArchiveReading(target);
         try {
-            listing = await listDir(target);
+            listing = (await takePrefetched(target)) ?? (await listDir(target));
         } catch (e) {
             const failure = e as Partial<ListFailure> | null;
             if (failure?.kind === "denied" && failure.path) denied = failure as ListFailure;
@@ -722,6 +781,7 @@ let restored = false;
 export const initExplorer = () => (initialized ??= init());
 
 async function init() {
+    if (SECONDARY_WINDOW) return initSecondary(SECONDARY_WINDOW.path);
     // Drives fill in when they answer; a sleeping network drive mustn't hold up the first folder.
     refreshDrives();
     // All asked at once, none waiting on another, before the first folder opens.
@@ -729,7 +789,7 @@ async function init() {
         // Rust has the remote connections before a tab on one opens; folder rules start watching.
         initRemotes().then(() => void initRules()),
         // The index (briefly), so the first folder can already show its sizes from it.
-        Promise.race([refreshIndex().then(noticeServiceUpdate), new Promise((resolve) => setTimeout(resolve, 300))]),
+        Promise.race([refreshIndex().then(() => void noticeServiceUpdate()), new Promise((resolve) => setTimeout(resolve, 300))]),
         loadKnownFolders(),
         // Folders from File Explorer, a double-click or the command line, each in a tab of its own.
         takeLaunchTargets().catch((): LaunchTarget[] => []),
@@ -761,6 +821,37 @@ async function init() {
     setTimeout(() => void loadNewKinds(), 2000);
     initGallery();
     initQueue();
+    // The folder shown goes to Rust, for Ctrl+Alt+G in a file dialog (dialogs.rs).
+    let reported = "";
+    useExplorer.subscribe(() => {
+        const path = currentPath();
+        if (path && path !== reported && isFolderPath(path) && !inArchivePath(path)) {
+            reported = path;
+            void invoke("report_folder", { path }).catch(() => {});
+        }
+    });
+}
+
+/**
+ * A window of its own (Open in new window, a tab dragged out): one tab, on the folder it was opened
+ * with. The main window keeps the session, the folder rules, the jump list and the copy queue; this
+ * one takes the main window's settings as they're saved.
+ */
+async function initSecondary(path: string) {
+    refreshDrives();
+    await Promise.all([refreshIndex(), loadKnownFolders()]);
+    const tab = activeTabId();
+    if (!(await navigate(path || homeFolder(), { tab }))) await navigate(homeFolder(), { tab });
+    const name = useStore.persist.getOptions().name;
+    window.addEventListener("storage", (e) => {
+        if (e.key === name) void useStore.persist.rehydrate();
+    });
+}
+
+/** Opens `path` (the folder shown when none) in a window of its own. */
+export function openInNewWindow(path = currentPath(), at?: { x: number; y: number }) {
+    const target = path && isFolderPath(path) ? path : homeFolder();
+    void invoke("open_window", { path: target, x: at?.x ?? null, y: at?.y ?? null }).catch((e) => toast.error("Couldn't open a new window", { description: String(e) }));
 }
 
 /** The gallery's folders (Pictures, Videos and the ones added in Settings) go to Rust as they change; a
@@ -1359,19 +1450,20 @@ async function staging<T>(
 }
 
 /**
- * Compress to zip: `entries` (on disk) into a zip next to them, named after the first one as
- * Explorer does, then renamed in place like a new folder. Ctrl+Z takes it back.
+ * Compress to: `entries` (on disk) into an archive next to them (a zip unless `format` says a 7z or a
+ * tar.zst), named after the first one as Explorer does, then renamed in place like a new folder. A zip
+ * or a 7z can have a `password`. Ctrl+Z takes it back.
  */
-export function compressEntries(entries: FileEntry[]) {
+export function compressEntries(entries: FileEntry[], format: CompressFormat = "zip", password?: string) {
     const tab = activeTabId();
     if (!entries.length) return;
     if (entries.some(isArchived)) return readOnlyNotice();
     if (entries.some(isClosed)) return closedNotice(tab);
     const first = entries[0];
     const folder = parentPath(first.path);
-    const name = `${first.dir || !first.name.includes(".") ? first.name : first.name.slice(0, first.name.lastIndexOf("."))}.zip`;
+    const name = `${first.dir || !first.name.includes(".") ? first.name : first.name.slice(0, first.name.lastIndexOf("."))}.${format}`;
     const what = entries.length === 1 ? `“${first.name}”` : plural(entries.length, "item");
-    return staging({ doing: `Compressing ${what}`, failed: `Couldn't compress ${what}`, skipped: "added" }, (lane, p) => archiveCompress(entries.map((e) => e.path), folder, name, lane, p), async (staged) => {
+    return staging({ doing: `Compressing ${what}`, failed: `Couldn't compress ${what}`, skipped: "added" }, (lane, p) => archiveCompress(entries.map((e) => e.path), folder, name, lane, p, format, password), async (staged) => {
         const zip = staged.paths[0];
         rememberUndo(`compression into “${baseName(zip)}”`, () => performFileOp({ kind: "delete", paths: [zip], permanent: false, confirm: false }));
         const t = tabState(tab);
@@ -1682,16 +1774,34 @@ export function indexed(path: string) {
     return index?.state === "on" && index.volumes.some((v) => v.volume === drive && v.state === "ready");
 }
 
-/** Whether the service runs an older (or newer) build than the app's: true after the app updated itself. */
+/** Whether the service runs an older build than the app's: true after the app updated itself. (A newer one, from another account's Glint, serves this one as it is.) */
 export const serviceOutdated = (index: IndexInfo | null) =>
-    index?.state === "on" && !!index.version && index.version !== index.appVersion;
+    index?.state === "on" && !!index.version && /^\d+(\.\d+)*$/.test(index.appVersion) && index.appVersion.localeCompare(index.version, undefined, { numeric: true }) > 0;
 
-/** After the app updates, the service keeps running the version it had until it's updated too (one more approval). */
-function noticeServiceUpdate() {
+let updatingQuietly = false;
+
+/**
+ * After the app updates, its service follows: it takes the build that ships with the app by itself, once
+ * it's one that can (from after 0.9) and the build has the release's signature for it. Otherwise it keeps
+ * running the version it had until it's updated with administrator approval, which a notice offers.
+ */
+async function noticeServiceUpdate() {
     const { index } = get();
-    if (!index || !serviceOutdated(index) || !firstNotice("service-update-notice", index.appVersion)) return;
+    if (!index || !serviceOutdated(index) || updatingQuietly) return;
+    updatingQuietly = true;
+    try {
+        set({ index: await busy("Updating instant search…", indexUpdate()) });
+        refreshIndex();
+        toast.success("Instant search is updated", { description: `Its service now runs version ${get().index?.version}.` });
+        return;
+    } catch {
+        // Only the approval route can.
+    } finally {
+        updatingQuietly = false;
+    }
+    if (!firstNotice("service-update-notice", index.appVersion)) return;
     toast.info("Instant search has an update", {
-        description: `Its service is still version ${index.version}. Updating it asks for administrator approval.`,
+        description: `Its service is still version ${index.version}. Updating it asks for administrator approval this time.`,
         action: { label: "Update", onClick: () => void enableIndex() },
         duration: 15_000,
     });
@@ -1814,9 +1924,47 @@ export function openEntry(entry: FileEntry) {
     }
     // An archive opens like a folder.
     if (entry.dir || isArchiveFile(entry)) return navigate(entry.path);
+    // A previous version opens as a read-only copy: apps can't open it where it is.
+    if (isShadowPath(entry.path)) return openVersionFile(entry.path);
     if (isDiskImage(entry)) return openDiskImage(entry.path);
     if (isArchived(entry)) return openFromArchive(entry);
     return openFile(entry.path);
+}
+
+// Previous versions: Windows' shadow copies (versions.rs), browsed like folders, read-only.
+
+/** Names a shadow copy's top for tabs and crumbs: its drive and when it was taken. */
+export function nameShadowCopy(root: string, drive: string, created: number, exact: boolean) {
+    shadowNames.set(root.toLowerCase(), created ? `${drive || "Drive"} on ${exact ? "" : "≈ "}${formatFullDate(created)}` : `${drive || "Drive"} (shadow copy)`);
+}
+
+let shadowNamesLearned = false;
+async function learnShadowNames() {
+    if (shadowNamesLearned) return;
+    shadowNamesLearned = true;
+    const copies = await shadowCopies().catch(() => []);
+    for (const c of copies) nameShadowCopy(c.root, c.drive, c.created, c.exact);
+    // Tabs and crumbs say which copy they're in.
+    if (copies.length) set((s) => ({ tabs: { ...s.tabs } }));
+}
+
+/** A file in a shadow copy, opened as a read-only temp copy. */
+export async function openVersionFile(path: string) {
+    try {
+        const copy = await busy(`Copying out “${baseName(path)}”…`, versionCopy(path));
+        await openItem(copy);
+    } catch (e) {
+        toast.error(`Couldn't open “${baseName(path)}”`, { description: String(e) });
+    }
+}
+
+/** Previous versions' Compare for a folder: now on the left, as it was on the right, the panes compared. */
+export async function compareWithVersion(now: string, then: string) {
+    if (!get().dual) toggleDual();
+    const { panes } = get();
+    await navigate(now, { tab: panes[0].active });
+    if (panes[1]) await navigate(then, { tab: panes[1].active });
+    set({ comparePanes: true, diffOnly: false, activePane: 1 });
 }
 
 // Undo (Ctrl+Z): the last file operations, newest last, each with what takes it back.

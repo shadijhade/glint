@@ -107,7 +107,7 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                     >
                         {info.journalMode} mode
                     </span>
-                    <span className="ml-auto font-mono text-[0.625rem] text-muted-foreground tabular-nums">{info.elapsedMs.toFixed(2)} ms</span>
+                    <span className="ms-auto font-mono text-[0.625rem] text-muted-foreground tabular-nums">{info.elapsedMs.toFixed(2)} ms</span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[0.6875rem]">
@@ -166,14 +166,14 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                         Views & Triggers ({totalOther})
                     </button>
                 )}
-                <div className="relative ml-auto min-w-[7rem] flex-1">
-                    <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+                <div className="relative ms-auto min-w-[7rem] flex-1">
+                    <Search className="pointer-events-none absolute start-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
                     <input
                         type="text"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="Filter schema…"
-                        className="h-6 w-full rounded border bg-background pl-6 pr-2 text-[0.6875rem] outline-hidden focus:border-primary"
+                        className="h-6 w-full rounded border bg-background ps-6 pe-2 text-[0.6875rem] outline-hidden focus:border-primary"
                     />
                 </div>
             </div>
@@ -192,7 +192,7 @@ export function SqlitePreview({ entry }: { entry: FileEntry }) {
                                         on {obj.tableName}
                                     </span>
                                 )}
-                                <span className="ml-auto font-mono text-[0.625rem] text-muted-foreground tabular-nums">
+                                <span className="ms-auto font-mono text-[0.625rem] text-muted-foreground tabular-nums">
                                     page #{obj.rootPage}
                                 </span>
                                 {(obj.kind === "table" || obj.kind === "view") && (
@@ -384,10 +384,10 @@ export function TableView({
                 <span className="font-mono text-[0.625rem] text-muted-foreground tabular-nums">{table.elapsedMs.toFixed(2)} ms</span>
 
                 {extra}
-                <div className="ml-auto flex items-center gap-1">
+                <div className="ms-auto flex items-center gap-1">
                     {mode === "grid" && (
                         <div className="relative w-40">
-                            <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+                            <Search className="pointer-events-none absolute start-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
                             <input
                                 type="text"
                                 value={query}
@@ -399,14 +399,14 @@ export function TableView({
                                     }
                                 }}
                                 placeholder="Filter rows…"
-                                className="h-6 w-full rounded border bg-background pl-6 pr-5 text-[0.6875rem] outline-hidden focus:border-primary"
+                                className="h-6 w-full rounded border bg-background ps-6 pe-5 text-[0.6875rem] outline-hidden focus:border-primary"
                             />
                             {query && (
                                 <button
                                     type="button"
                                     onClick={() => setQuery("")}
                                     title="Clear filter"
-                                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+                                    className="absolute end-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
                                 >
                                     <X className="size-3" />
                                 </button>
@@ -436,7 +436,7 @@ export function TableView({
                             useInlineStyles={false}
                             showLineNumbers={showLineNumbers}
                             wrapLines
-                            lineProps={{ className: "block pl-3 pr-4" }}
+                            lineProps={{ className: "block ps-3 pe-4" }}
                             className="min-w-max py-2 font-mono text-[0.8125rem] leading-5"
                         >
                             {rawText.text}
@@ -454,10 +454,10 @@ export function TableView({
                     }}
                     className="min-h-0 flex-1 overflow-auto select-text"
                 >
-                    <table className="w-full border-collapse text-left font-mono text-[0.6875rem]">
+                    <table className="w-full border-collapse text-start font-mono text-[0.6875rem]">
                         <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-xs">
                             <tr className="border-b">
-                                <th className="w-9 border-r px-2 py-1.5 text-right font-normal text-muted-foreground select-none">#</th>
+                                <th className="w-9 border-e px-2 py-1.5 text-end font-normal text-muted-foreground select-none">#</th>
                                 {table.columns.map((col, idx) => {
                                     const sorted = sortCol?.index === idx;
                                     return (
@@ -472,7 +472,7 @@ export function TableView({
                                                         : { index: idx, desc: false }
                                                 )
                                             }
-                                            className="max-w-[16rem] cursor-pointer border-r px-2.5 py-1.5 font-semibold text-foreground transition-colors select-none hover:bg-muted"
+                                            className="max-w-[16rem] cursor-pointer border-e px-2.5 py-1.5 font-semibold text-foreground transition-colors select-none hover:bg-muted"
                                         >
                                             <div className="flex items-center gap-1.5">
                                                 <ColumnTypeIcon kind={col.kind} />
@@ -482,9 +482,9 @@ export function TableView({
                                                 {types?.[idx] && <span className="shrink-0 text-[0.625rem] font-normal text-muted-foreground">{types[idx]}</span>}
                                                 {sorted &&
                                                     (sortCol.desc ? (
-                                                        <ArrowDown className="ml-auto size-3 shrink-0 text-primary" />
+                                                        <ArrowDown className="ms-auto size-3 shrink-0 text-primary" />
                                                     ) : (
-                                                        <ArrowUp className="ml-auto size-3 shrink-0 text-primary" />
+                                                        <ArrowUp className="ms-auto size-3 shrink-0 text-primary" />
                                                     ))}
                                             </div>
                                         </th>
@@ -502,7 +502,7 @@ export function TableView({
                                 const rIdx = startRow + offset;
                                 return (
                                     <tr key={rIdx} className="hover:bg-muted/30">
-                                        <td className="border-r bg-muted/10 px-2 py-1 text-right text-[0.625rem] text-muted-foreground tabular-nums select-none">
+                                        <td className="border-e bg-muted/10 px-2 py-1 text-end text-[0.625rem] text-muted-foreground tabular-nums select-none">
                                             {rIdx + 1}
                                         </td>
                                         {table.columns.map((col, cIdx) => {
@@ -512,8 +512,8 @@ export function TableView({
                                                     key={cIdx}
                                                     title={val}
                                                     className={cn(
-                                                        "max-w-[16rem] truncate border-r px-2.5 py-1",
-                                                        col.kind === "number" && "text-right tabular-nums text-amber-700 dark:text-amber-400",
+                                                        "max-w-[16rem] truncate border-e px-2.5 py-1",
+                                                        col.kind === "number" && "text-end tabular-nums text-amber-700 dark:text-amber-400",
                                                         col.kind === "boolean" && "text-emerald-700 dark:text-emerald-400"
                                                     )}
                                                 >

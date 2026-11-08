@@ -41,6 +41,8 @@ export interface Session {
 
 export interface Settings {
     theme: 'dark' | 'light' | 'system';
+    /** The interface's language (i18n.ts): Windows' own where Glint speaks it, or one chosen. */
+    language: 'system' | 'en' | 'ar';
     /** Windows 11's Mica behind the title bar and the sidebar, or a solid window. */
     backdrop: 'mica' | 'solid';
     /** Glint's pink, or the accent color chosen in Windows. */
@@ -118,6 +120,7 @@ export type Column = 'date' | 'type' | 'size' | 'taken' | 'dimensions' | 'durati
 
 export const DEFAULT_SETTINGS: Settings = {
     theme: 'system',
+    language: 'system',
     backdrop: 'mica',
     accent: 'glint',
     fontSize: 'medium',
@@ -188,7 +191,8 @@ export const DEFAULT_SETTINGS: Settings = {
 export interface RemoteConnection {
     id: string;
     name: string;
-    kind: "s3" | "webdav" | "sftp" | "rclone";
+    /** "device": a paired PC's shared folders (devices.rs), its key in `host`. */
+    kind: "s3" | "webdav" | "sftp" | "rclone" | "device";
     /** S3: the service's address (Amazon's, from the region, when empty); WebDAV: the server's URL. */
     endpoint: string;
     region: string;
@@ -296,6 +300,14 @@ interface AppState {
 
 const MAX_VISITS = 300;
 
+/**
+ * A window opened from the main one (Open in new window, a tab dragged out): the folder it opens. It
+ * writes nothing of what's kept (the main window keeps the settings, tabs and history) and takes the
+ * main window's changes as they're saved.
+ */
+export const SECONDARY_WINDOW: { id: number; path: string } | null =
+    typeof window !== "undefined" ? ((window as unknown as { __GLINT_WINDOW__?: { id: number; path: string } }).__GLINT_WINDOW__ ?? null) : null;
+
 /** The state waiting to be written, and when it will be. */
 let unsaved: { name: string; value: unknown } | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -318,6 +330,7 @@ const savedLater: PersistStorage<unknown> = {
         return text ? JSON.parse(text) : null;
     },
     setItem: (name, value) => {
+        if (SECONDARY_WINDOW) return;
         unsaved = { name, value };
         clearTimeout(saveTimer);
         saveTimer = setTimeout(saveNow, 300);
