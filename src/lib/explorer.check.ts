@@ -1,6 +1,8 @@
 // Self-check for the explorer's pure helpers. Run: node src/lib/explorer.check.ts
 import assert from "node:assert/strict";
-import { crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, joinPath, linkedPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, THIS_PC, volumeOf } from "./paths.ts";
+import { AR } from "./i18n-ar.ts";
+import { translate } from "./i18n.ts";
+import { crumbs, isFolderPath, isRecycleBin, isRemotePath, isRoot, isShadowPath, joinPath, linkedPath, parentPath, RECYCLE_BIN, remoteIdOf, samePath, shadowNames, THIS_PC, volumeOf } from "./paths.ts";
 import { ATTR, compareEntries, decodeItems, decodeListing, entryOrder, type FileEntry, hasFilterOrPath, hasPropFilter, isArchived, isArchiveFile, isBrowsable, isClosed, isListOnly, isLocked, isRecycled, isRemote, matcher, mergeSorted, naturalCompare, propTest, sortEntries, terms, withDetails } from "./entries.ts";
 import type { MediaFacts } from "./media.ts";
 import { inArchivePath } from "./paths.ts";
@@ -66,6 +68,17 @@ assert.equal(linkedPath("100%.md", docs, repo), "C:\\src\\app\\docs\\100%.md");
 assert.equal(linkedPath("pic.png", "\\\\nas\\media\\docs", "\\\\nas\\media\\"), "\\\\nas\\media\\docs\\pic.png");
 assert.equal(volumeOf("\\\\nas\\media\\docs\\a"), "\\\\nas\\media");
 assert.equal(volumeOf("c:\\x"), "c:");
+// A shadow copy (previous versions) is a drive of its own, its top named for the drive and the time.
+const shadowTop = "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy7\\";
+assert.ok(isShadowPath(shadowTop + "Users") && !isShadowPath("\\\\?\\GLOBALROOT\\Device\\HarddiskVolume7\\Users"));
+assert.ok(isRoot(shadowTop) && isRoot(shadowTop.slice(0, -1)) && !isRoot(shadowTop + "Users"));
+assert.equal(parentPath(shadowTop + "Users"), shadowTop);
+assert.equal(parentPath(shadowTop + "Users\\me"), shadowTop + "Users");
+assert.equal(parentPath(shadowTop), THIS_PC);
+assert.equal(volumeOf(shadowTop + "Users\\a.txt"), shadowTop.slice(0, -1));
+assert.deepEqual(crumbs(shadowTop + "Users\\me").map((c) => c.name), ["Shadow copy 7", "Users", "me"]);
+shadowNames.set(shadowTop.toLowerCase(), "C: on 2 Nov");
+assert.deepEqual(crumbs(shadowTop + "Users"), [{ name: "C: on 2 Nov", path: shadowTop }, { name: "Users", path: shadowTop + "Users" }]);
 assert.equal(safeHref("javascript:alert(1)"), null);
 assert.equal(safeHref(" JavaScript:alert(1)"), null);
 assert.equal(safeHref("data:text/html,<b>"), null);
@@ -761,5 +774,13 @@ assert.equal(groupFilter(typeGroup(entry("unknown.xyz"))), "");
     assert.deepEqual(by("duration"), ["b.mp3", "a.mp3", "c.mp3"]);
     assert.deepEqual(by("artist"), ["b.mp3", "c.mp3", "a.mp3"], "artists in any case");
 }
+
+
+// Arabic: what's translated keeps the parts filled in ({folder}…), and what isn't stays English.
+for (const [english, arabic] of Object.entries(AR)) for (const hole of english.match(/\{\w+\}/g) ?? []) assert.ok(arabic.includes(hole), `${english} → ${arabic}`);
+assert.equal(translate("ar", "Open"), "فتح");
+assert.equal(translate("ar", "Search {folder}").replace("{folder}", "Docs"), "البحث في Docs");
+assert.equal(translate("ar", "Not in the catalog"), "Not in the catalog");
+assert.equal(translate("en", "Open"), "Open");
 
 console.log("explorer.check: all assertions passed");

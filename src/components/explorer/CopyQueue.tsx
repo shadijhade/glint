@@ -95,7 +95,7 @@ function JobCard({ job }: { job: QueueJob }) {
                         <Button size="sm" variant="outline" className="h-7" onClick={() => void queueAnswer(job.id, "both", all)}>
                             Keep both
                         </Button>
-                        <label className="ml-1 flex items-center gap-1.5">
+                        <label className="ms-1 flex items-center gap-1.5">
                             <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} className="accent-primary" /> For the rest too
                         </label>
                     </div>
@@ -139,14 +139,14 @@ export function CopyQueue() {
             <button
                 type="button"
                 onClick={() => useQueue.setState({ open: true })}
-                className={cn("fixed right-4 bottom-10 z-40 flex items-center gap-2 rounded-full border bg-popover px-3 py-1.5 text-xs shadow-lg hover:bg-accent", asking && "border-amber-500")}
+                className={cn("fixed end-4 bottom-10 z-40 flex items-center gap-2 rounded-full border bg-popover px-3 py-1.5 text-xs shadow-lg hover:bg-accent", asking && "border-amber-500")}
             >
                 <Copy className="size-3.5 text-primary" />
                 {asking ? "The copy queue asks you" : `Copy queue · ${bytes ? Math.round((done / bytes) * 100) : 0}%`}
             </button>
         ) : null;
     return (
-        <section aria-label="Copy queue" className="fixed right-4 bottom-10 z-40 flex max-h-[60vh] w-[27rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-popover shadow-2xl">
+        <section aria-label="Copy queue" className="fixed end-4 bottom-10 z-40 flex max-h-[60vh] w-[27rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border bg-popover shadow-2xl">
             <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
                 <ShieldCheck className="size-4 text-primary" />
                 <h2 className="flex-1 text-sm font-semibold">Copy queue</h2>

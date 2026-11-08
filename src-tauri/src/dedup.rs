@@ -244,11 +244,36 @@ pub fn scan_duplicates(root: &str, min_bytes: u64, cancel: &AtomicBool) -> Resul
     let mut hardlinks_skipped = 0usize;
     let mut by_edge: CandidateGroups = HashMap::new();
 
-    for cand in same_size {
+    // With many candidates, every one's first and last 4 KB are read at once through an I/O ring
+    // (ioring.rs) where Windows has one; otherwise one file after another.
+    let ring = (same_size.len() >= 64)
+        .then(|| {
+            let asks: Vec<crate::ioring::Ask> = same_size
+                .iter()
+                .map(|c| crate::ioring::Ask {
+                    path: &c.path,
+                    slices: if c.size > EDGE_BYTES { vec![(0, EDGE_BYTES as u32), (c.size - EDGE_BYTES, EDGE_BYTES as u32)] } else { vec![(0, EDGE_BYTES as u32)] },
+                })
+                .collect();
+            crate::ioring::read_many(&asks)
+        })
+        .flatten();
+    for (i, cand) in same_size.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".into());
         }
-        let Some((phys_id, digest)) = edge_digest(&cand.path, cand.size) else {
+        let edge = match &ring {
+            Some(got) => got[i].as_ref().map(|got| {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(&cand.size.to_le_bytes());
+                got.slices.iter().for_each(|slice| {
+                    hasher.update(slice);
+                });
+                (got.id, *hasher.finalize().as_bytes())
+            }),
+            None => edge_digest(&cand.path, cand.size),
+        };
+        let Some((phys_id, digest)) = edge else {
             continue;
         };
         if let Some(id) = phys_id {

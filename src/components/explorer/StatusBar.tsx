@@ -136,7 +136,7 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
         return (
             <div className="flex h-7 shrink-0 items-center gap-2 border-t px-3 text-xs text-muted-foreground">
                 <span>{`${drives} ${drives === 1 ? "drive" : "drives"}`}</span>
-                <span className="ml-auto">{turnOn ?? indexing}</span>
+                <span className="ms-auto">{turnOn ?? indexing}</span>
             </div>
         );
     }
@@ -293,18 +293,18 @@ export function StatusBar({ shown, hidden, selected }: StatusBarProps) {
                     type="button"
                     popoverTarget={`status-${tab}`}
                     onClick={placePopover}
-                    className="ml-auto hidden min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded-[4px] px-1.5 py-0.5 tabular-nums transition-colors hover:bg-accent hover:text-foreground @2xs:flex"
+                    className="ms-auto hidden min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded-[4px] px-1.5 py-0.5 tabular-nums transition-colors hover:bg-accent hover:text-foreground @2xs:flex"
                 >
                     {indexing && <span className="hidden @md:inline-flex">{indexing}</span>}
                     {work}
                     {thumbsHere && <ThumbWork run={thumbsHere} />}
                 </button>
             ) : (
-                <span className="ml-auto hidden min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap tabular-nums @2xs:flex">
+                <span className="ms-auto hidden min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap tabular-nums @2xs:flex">
                     {indexing && <span className="hidden @md:inline-flex">{indexing}</span>}
                     {work}
                     {thumbsHere && <ThumbWork run={thumbsHere} />}
-                    {find && !find.running && find.engine === "fd" && turnOn && <span className="ml-1 hidden @lg:inline-flex">{turnOn}</span>}
+                    {find && !find.running && find.engine === "fd" && turnOn && <span className="ms-1 hidden @lg:inline-flex">{turnOn}</span>}
                 </span>
             )}
             {listing && !mapped && !find && (

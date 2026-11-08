@@ -93,7 +93,7 @@ export function BinaryPreview({ entry }: { entry: FileEntry }) {
                 {info.isDotnet && (
                     <span className="rounded-md bg-violet-500/15 px-2 py-0.5 font-medium text-violet-600 dark:text-violet-400">.NET CLR</span>
                 )}
-                <span className="ml-auto flex items-center gap-1 text-[0.6875rem] text-muted-foreground tabular-nums" title="Parsed directly from the PE header">
+                <span className="ms-auto flex items-center gap-1 text-[0.6875rem] text-muted-foreground tabular-nums" title="Parsed directly from the PE header">
                     <Zap className="size-3 text-primary" /> {formatDuration(info.elapsedMs)}
                 </span>
             </div>

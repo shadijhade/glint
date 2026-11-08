@@ -105,8 +105,8 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
     return (
         <div className="flex min-w-0 flex-1 items-start gap-2">
             <div className="fluent-field min-w-0 flex-1 divide-y overflow-hidden">
-                <div className="flex items-start pr-1">
-                    <SearchIcon className="ml-3 mt-2.5 size-4 shrink-0 text-muted-foreground" />
+                <div className="flex items-start pe-1">
+                    <SearchIcon className="ms-3 mt-2.5 size-4 shrink-0 text-muted-foreground" />
                     <textarea
                         ref={queryRef}
                         rows={1}
@@ -150,8 +150,8 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                 </div>
 
                 {replaceOpen && (
-                    <div className="flex items-center pr-1">
-                        <Replace className="ml-3 size-4 shrink-0 text-muted-foreground" />
+                    <div className="flex items-center pe-1">
+                        <Replace className="ms-3 size-4 shrink-0 text-muted-foreground" />
                         <input
                             spellCheck={false}
                             value={replacement}
@@ -176,8 +176,8 @@ export function SearchBar({ searching, canReplace, onSearch, onStop, onReplace }
                     </div>
                 )}
 
-                <div className="flex items-center pr-1">
-                    <FolderOpen className="ml-3 size-4 shrink-0 text-muted-foreground" />
+                <div className="flex items-center pe-1">
+                    <FolderOpen className="ms-3 size-4 shrink-0 text-muted-foreground" />
                     <input
                         spellCheck={false}
                         list="recent-paths"

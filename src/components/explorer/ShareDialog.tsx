@@ -386,7 +386,7 @@ function ServeForm({ path }: { path: string }) {
                     ))}
                 </select>
             </label>
-            <label className="flex items-start gap-2 pl-[5.75rem]">
+            <label className="flex items-start gap-2 ps-[5.75rem]">
                 <input type="checkbox" checked={choice.uploads} onChange={(e) => choose({ uploads: e.target.checked })} className="mt-0.5 accent-primary" />
                 <span>
                     Let them add files to it

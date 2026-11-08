@@ -100,9 +100,13 @@ import {
     X,
     ZoomIn,
     ZoomOut,
+    Box,
+    Circle,
+    Tag,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { SINGLE_FILE } from "@/lib/archives";
+import { SINGLE_FILE, useCompressAsk } from "@/lib/archives";
+import { COLOR_TAGS, setTags, useTags, useTagsEdit } from "@/lib/tags";
 import { scanWithDefender } from "@/lib/defender";
 import { chooseView, showsUsage, toggleUsage, useMapRows } from "@/lib/diskUsage";
 import { ATTR, cloudState, compareEntries, type DiffStatus, type FileEntry, hasPropFilter, type InArchive, isArchived, isArchiveFile, isBrowsable, isClosed, isCloudFile, isHidden, isRecycled, isRemote, matcher, entryOrder, mergeSorted, sortEntries, type SortKey } from "@/lib/entries";
@@ -186,6 +190,7 @@ import {
     stopFind,
     switchPane,
     syncInto,
+    openInNewWindow,
     tabState,
     toggleComparePanes,
     toggleDiffOnly,
@@ -202,7 +207,7 @@ import {
 import { formatCount, plural } from "@/lib/format";
 import { newKinds } from "@/lib/newKinds";
 import { recentKept } from "@/lib/fs";
-import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rotateImage, runAsAdmin, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
+import { type CloudPin, driveName, openIn, openItem, openTerminal, openWith, rotateImage, runAsAdmin, sandboxRun, setCloudPin, setDesktopWallpaper, shellMenu, showProperties, startDrag, windowsShare } from "@/lib/fs";
 import { useGit } from "@/lib/git";
 import { readFacts, readTaken, takenKey, useFacts } from "@/lib/media";
 import { gridMove, marqueeHits, TILE_SIZES, zoomTiles } from "@/lib/grid";
@@ -232,6 +237,7 @@ import { type Command, CommandPalette } from "./CommandPalette";
 import { checkForSecrets, checkWithYara, secretsCheckFirst } from "./CheckDialog";
 import { offerOnNetwork, offerToPC } from "./ShareDialog";
 import { addRemote, editRemote, removeRemote } from "./RemoteDialog";
+import { hideOnDemand, refreshOnDemand, showOnDemand, useOnDemand } from "@/lib/ondemand";
 import { openRules } from "./RulesDialog";
 import { openCleanup } from "./CleanupDialog";
 import { compareFiles } from "./CompareFilesDialog";
@@ -242,6 +248,7 @@ import { FileGrid } from "./FileGrid";
 import { FileList } from "./FileList";
 import { FilePreview } from "./FilePreview";
 import { openHistory } from "./HistoryDialog";
+import { openVersions } from "./VersionsDialog";
 import { inspectLocks } from "./LocksDialog";
 import { QuickLook } from "./QuickLook";
 import { DRIVE_ICONS, KNOWN_ICONS, Sidebar } from "./Sidebar";
@@ -252,6 +259,9 @@ import { TerminalPanel, terminalFolder } from "./TerminalPanel";
 import { ThisPC } from "./ThisPC";
 import { inspectTimeline } from "./TimelineDialog";
 import { inspectXRay } from "./XRayDialog";
+
+// The remotes shown in File Explorer, for the remote's menu.
+void refreshOnDemand();
 
 const NO_ENTRIES: FileEntry[] = [];
 
@@ -469,7 +479,12 @@ function folderMenu(
             { label: "Copy path", icon: ClipboardCopy, onSelect: () => copyText(folder, "path") },
             !remote && { label: pinned ? "Unpin from sidebar" : "Pin to sidebar", icon: pinned ? PinOff : Pin, onSelect: () => ctx.togglePin(folder) },
             !!remote && "separator",
-            !!remote && { label: "Edit the connection…", icon: PlugZap, onSelect: () => editRemote(remote) },
+            // As OneDrive does: in File Explorer and every app's Open dialog, each file downloaded when it's read.
+            !!remote &&
+                (useOnDemand.getState().mounts.some((m) => m.id === remote.id)
+                    ? { label: "Stop showing in File Explorer", icon: EyeOff, onSelect: () => void hideOnDemand(remote.id) }
+                    : { label: "Show in File Explorer, on demand", icon: AppWindow, onSelect: () => void showOnDemand(remote.id, remote.name) }),
+            !!remote && remote.kind !== "device" && { label: "Edit the connection…", icon: PlugZap, onSelect: () => editRemote(remote) },
             !!remote && { label: "Remove the connection…", icon: Trash2, onSelect: () => void removeRemote(remote) },
             "separator",
             REMOTE_NOTE,
@@ -523,6 +538,7 @@ function folderMenu(
             items: [
                 !inArchive && !shut && { label: "Recent changes", icon: FileClock, onSelect: () => inspectTimeline(folder) },
                 !inArchive && !shut && { label: "Moved and deleted here", icon: History, onSelect: () => openHistory(folder) },
+                !inArchive && !shut && /^[a-z]:\\/i.test(folder) && { label: "Previous versions of this folder", icon: ArchiveRestore, onSelect: () => openVersions(folder) },
                 !inArchive && { label: "What's locking this?", icon: Lock, onSelect: () => inspectLocks([folder]) },
                 "separator",
                 !inArchive && !shut && { label: "Scan with Microsoft Defender", icon: ShieldCheck, onSelect: () => void scanWithDefender([folder]) },
@@ -821,6 +837,7 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             !bin && action("recycle-bin", "Recycle Bin", Trash2, () => navigate(RECYCLE_BIN)),
             action("empty-bin", "Empty the Recycle Bin", Trash2, () => void emptyRecycleBin()),
             action("new-tab", "New tab", Plus, () => newTab(), "Ctrl+T"),
+            action("new-window", "New window", AppWindow, () => openInNewWindow(), "Ctrl+N"),
             (tabs > 1 || s.dual) && action("close-tab", "Close tab", X, () => closeTab(), "Ctrl+W"),
             tabs > 1 && action("close-other-tabs", "Close the other tabs", X, () => closeOtherTabs(t.id)),
             action("duplicate-tab", "Duplicate tab", Copy, () => duplicateTab(t.id)),
@@ -978,12 +995,12 @@ function PreviewPane() {
     return (
         // A narrow window narrows it first: the list keeps 16rem beside the sidebar (3rem as a rail, 14rem from md).
         <aside
-            className="relative flex bg-background w-[min(28%,28rem)] min-w-[min(16rem,100%_-_19rem)] max-w-[min(60%,100%_-_19rem)] shrink-0 border-l md:min-w-[min(16rem,100%_-_30rem)] md:max-w-[min(60%,100%_-_30rem)]"
+            className="relative flex bg-background w-[min(28%,28rem)] min-w-[min(16rem,100%_-_19rem)] max-w-[min(60%,100%_-_19rem)] shrink-0 border-s md:min-w-[min(16rem,100%_-_30rem)] md:max-w-[min(60%,100%_-_30rem)]"
             style={width ? { width } : undefined}
         >
             <ResizeHandle
                 label="Preview pane width"
-                className="-left-1"
+                className="-start-1"
                 onStart={(bar) => {
                     const pane = bar.parentElement!;
                     drag.current = { from: pane.getBoundingClientRect().width, now: 0, pane };
@@ -1010,6 +1027,24 @@ interface PaneProps {
     /** Files mode is on screen (keys are only handled then). */
     active: boolean;
     menuContext: MenuContext;
+}
+
+/**
+ * Run in Windows Sandbox: a copy of the file, opened in a fresh Windows that's thrown away when its
+ * window closes. Where Windows has no Sandbox (or it's off), says how to turn it on.
+ */
+async function runInSandbox(path: string) {
+    try {
+        await sandboxRun(path);
+        toast.success("Opening it in Windows Sandbox", { description: "A copy, in a Windows of its own without the network: closing the sandbox throws away everything it did." });
+    } catch (e) {
+        if (String(e) !== "notInstalled") return toast.error("Couldn't run it in Windows Sandbox", { description: String(e) });
+        toast.info("Windows Sandbox isn't on", {
+            description: "It comes with Windows 11 Pro, Enterprise and Education: turn on “Windows Sandbox” in Windows' optional features (Windows restarts once).",
+            action: { label: "Optional features", onClick: () => void openPath("C:\\Windows\\System32\\OptionalFeatures.exe") },
+            duration: 15_000,
+        });
+    }
 }
 
 /** One side of the window: a tab strip over the list of the tab it shows, and that tab's status bar. */
@@ -1486,6 +1521,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "Tab") cycleTab(e.shiftKey ? -1 : 1);
                 else if (key === "t" && e.shiftKey) reopenClosedTab();
                 else if (key === "t") newTab();
+                else if (key === "n" && !e.shiftKey) openInNewWindow();
                 else if (key === "w") closeTab();
                 else if (key === "d" && e.shiftKey) toggleDual();
                 else if (key === "m" && e.shiftKey) toggleComparePanes();
@@ -1839,7 +1875,16 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 icon: ShieldCheck,
                 onSelect: () => void runAsAdmin(one.path).catch(report("Couldn't run it as administrator")),
             },
+            // A program, an installer, a script or a document from somewhere it's not trusted, tried out in a throwaway Windows.
+            one && !one.dir && !closed && !archived && !remote && !isRecycleBin(path) && {
+                label: "Run in Windows Sandbox",
+                icon: Box,
+                onSelect: () => void runInSandbox(one.path),
+            },
+            // As File Explorer's Previous Versions: what Windows' restore points and backups kept of it.
+            one && !closed && !archived && !remote && /^[a-z]:\\/i.test(one.path) && { label: "Previous versions…", icon: ArchiveRestore, onSelect: () => openVersions(one.path) },
             one?.dir && !fixed && { label: "Open in Terminal", icon: SquareTerminal, onSelect: () => terminal(one.path) },
+            one?.dir && !archived && !remote && !closed && { label: "Open in new window", icon: AppWindow, shortcut: "Ctrl+N", onSelect: () => openInNewWindow(one.path) },
             one && !fixed && useOpeners.getState().list.length > 0 && { label: "Open in", icon: AppWindow, items: openInItems(one.path) },
             !fixed && { label: "Scripts", icon: ScrollText, items: scriptItems(isFolderPath(path) ? path : parentPath(paths[0]), paths) },
             (find || isRecent(path) || isGallery(path)) && one && { label: "Open file location", icon: FolderInput, onSelect: () => revealInApp(one.path) },
@@ -1864,7 +1909,36 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 shortcut: !otherChosen ? "Ctrl+M" : undefined,
                 onSelect: () => (index === 0 ? compareFiles(one.path, namesake) : compareFiles(namesake, one.path)),
             },
-            !fixed && { label: "Compress to zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
+            !fixed && {
+                label: "Tags",
+                icon: Tag,
+                items: [
+                    ...COLOR_TAGS.map((t) => {
+                        const all = paths.every((p) => (useTags.getState().byPath[p.toLowerCase()] ?? []).some((x) => x.toLowerCase() === t.name.toLowerCase()));
+                        return { label: t.name, icon: Circle, checked: all, toggle: true, onSelect: () => void (all ? setTags(paths, [], [t.name]) : setTags(paths, [t.name])) };
+                    }),
+                    "separator" as const,
+                    { label: "Edit tags…", icon: Tag, onSelect: () => useTagsEdit.setState({ paths }) },
+                ],
+            },
+            !fixed && {
+                label: "Compress to",
+                icon: FileArchive,
+                items: [
+                    { label: "Zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
+                    { label: "7z file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Compress anyway", () => compressEntries(targets, "7z")) },
+                    { label: "tar.zst file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Compress anyway", () => compressEntries(targets, "tar.zst")) },
+                    "separator",
+                    {
+                        label: "With a password…",
+                        icon: KeyRound,
+                        onSelect: () =>
+                            void secretsCheckFirst(paths, "Compress anyway", () =>
+                                useCompressAsk.setState({ run: (format, password) => void compressEntries(targets, format, password), format: "7z", what: targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} items` })
+                            ),
+                    },
+                ],
+            },
             pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
             one && canWallpaper(one) && { label: "Set as desktop background", icon: Wallpaper, onSelect: () => void setWallpaper(one.path) },
             rotatable.length > 0 && { label: "Rotate right", icon: RotateCwSquare, onSelect: () => void rotatePictures(rotatable.map((t) => t.path), true, tabRef.current) },
@@ -2190,7 +2264,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             ref={paneRef}
             data-pane={index}
             onMouseDownCapture={() => focusPane(index)}
-            className={cn("relative flex min-w-0 flex-1 basis-0 flex-col", index > 0 && "border-l")}
+            className={cn("relative flex min-w-0 flex-1 basis-0 flex-col", index > 0 && "border-s")}
         >
             <TabStrip pane={index} onContextMenu={(e, id) => menu.open(e, tabMenu(id))} />
             {loading && <div className="absolute inset-x-0 top-9 z-10 h-0.5 animate-pulse bg-primary" />}
@@ -2202,7 +2276,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                         {find.scope !== THIS_PC && " and its subfolders"}
                     </span>
                     {find.limited && (
-                        <span className="flex shrink-0 items-center gap-1.5 rounded-md bg-amber-500/10 py-0.5 pl-2 pr-0.5 text-xs font-medium text-amber-800 dark:text-amber-400">
+                        <span className="flex shrink-0 items-center gap-1.5 rounded-md bg-amber-500/10 py-0.5 ps-2 pe-0.5 text-xs font-medium text-amber-800 dark:text-amber-400">
                             Stopped at {formatCount(settings.findMaxResults ?? 0)}
                             <button
                                 type="button"
@@ -2214,7 +2288,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                             </button>
                         </span>
                     )}
-                    <div className="ml-auto flex shrink-0 gap-1">
+                    <div className="ms-auto flex shrink-0 gap-1">
                         <Button
                             variant="ghost"
                             size="sm"
@@ -2245,7 +2319,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                         type="button"
                         onClick={() => compareFiles(crossPair[0].path, crossPair[1].path)}
                         title="Compare the two files selected across both panes (Ctrl+M)"
-                        className="ml-auto flex shrink-0 items-center gap-1 rounded-[4px] bg-primary/15 px-2 py-0.5 font-medium text-primary transition-colors hover:bg-primary/25"
+                        className="ms-auto flex shrink-0 items-center gap-1 rounded-[4px] bg-primary/15 px-2 py-0.5 font-medium text-primary transition-colors hover:bg-primary/25"
                     >
                         <GitCompareArrows className="size-3" /> Compare files
                     </button>
@@ -2286,7 +2360,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                     Couldn't compare deeper: {deep.error}
                                 </span>
                             )}
-                            <div className="ml-auto flex shrink-0 items-center gap-1">
+                            <div className="ms-auto flex shrink-0 items-center gap-1">
                                 {crossPair && (
                                     <button
                                         type="button"
@@ -2309,7 +2383,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                     )}
                                 >
                                     <SlidersHorizontal className="size-3.5" />
-                                    {comparingMore && <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-primary" />}
+                                    {comparingMore && <span className="absolute -end-0.5 -top-0.5 size-1.5 rounded-full bg-primary" />}
                                 </button>
                                 <button
                                     type="button"
@@ -2349,7 +2423,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                                         : "Both panes show this folder — select a file in each pane to compare them, or open another folder"
                                     : "Open a folder in the other pane to compare"}
                             </span>
-                            <div className="ml-auto flex shrink-0 items-center gap-1">
+                            <div className="ms-auto flex shrink-0 items-center gap-1">
                                 {crossPair && (
                                     <button
                                         type="button"

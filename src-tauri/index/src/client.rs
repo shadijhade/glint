@@ -228,6 +228,76 @@ pub(crate) fn history_on(pipe: Handle, request: &HistoryRequest) -> Result<Histo
     }
 }
 
+/// Every tag on the indexed drives with how many items have it, most used first. An older service closes
+/// the pipe on it: an Io error.
+pub fn tags() -> Result<Vec<(String, u64)>, Error> {
+    let pipe = ask(connect()?, &Request::Tags)?;
+    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
+        Some((kind, payload)) => match message(kind, &payload)? {
+            Message::Tags { tags } => Ok(tags),
+            _ => Err(unexpected()),
+        },
+        None => Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection"))),
+    }
+}
+
+/// Windows' shadow copies of every volume, newest first, with the times VSS took them (which only an
+/// administrator, the service, may ask). An older service closes the pipe on it: an Io error.
+pub fn snapshots() -> Result<Vec<crate::shadow::Snapshot>, Error> {
+    let pipe = ask(connect()?, &Request::Snapshots)?;
+    match proto::read_frame(&mut PipeIo(&pipe), MAX_FRAME).map_err(Error::Io)? {
+        Some((kind, payload)) => match message(kind, &payload)? {
+            Message::Snapshots { snapshots } => Ok(snapshots),
+            _ => Err(unexpected()),
+        },
+        None => Err(Error::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "the instant search service closed the connection"))),
+    }
+}
+
+/// Hands the running service a later build of itself: `exe`, the service executable that ships with the
+/// app, and `signature`, its .sig file's text (update.rs). Ok(Some(version)) once the service has taken
+/// it and is restarting into it; Ok(None) from a service from before it could update itself, which
+/// hangs up on the request.
+pub fn update(exe: &[u8], signature: &str) -> Result<Option<String>, Error> {
+    update_on(connect()?, exe, signature)
+}
+
+pub(crate) fn update_on(pipe: Handle, exe: &[u8], signature: &str) -> Result<Option<String>, Error> {
+    use std::io::Write;
+    let mut io = PipeIo(&pipe);
+    let request = Request::Update { signature: signature.to_string(), size: exe.len() as u64 };
+    let hung_up = |e: &io::Error| matches!(e.raw_os_error(), Some(109 | 232)); // ERROR_BROKEN_PIPE, ERROR_NO_DATA
+    match proto::write_request(&mut io, &request).and_then(|()| io.write_all(exe)) {
+        Ok(()) => {}
+        Err(e) if hung_up(&e) => return Ok(None),
+        Err(e) => return Err(Error::Io(e)),
+    }
+    match proto::read_frame(&mut io, MAX_FRAME).map_err(Error::Io)? {
+        None => Ok(None),
+        Some((kind, payload)) => match message(kind, &payload)? {
+            Message::Updating { version } => Ok(Some(version)),
+            _ => Err(unexpected()),
+        },
+    }
+}
+
+/// After an update: waits for the service to answer as `version`, up to `limit`.
+pub fn wait_for_version(version: &str, limit: std::time::Duration) -> Result<Status, Error> {
+    let started = std::time::Instant::now();
+    loop {
+        match status() {
+            Ok(status) if status.version == version => return Ok(status),
+            // Still the old one, stopping, or not up yet.
+            Ok(_) | Err(Error::NotRunning | Error::Io(_)) => {}
+            Err(e) => return Err(e),
+        }
+        if started.elapsed() > limit {
+            return Err(Error::Io(io::Error::new(io::ErrorKind::TimedOut, format!("the instant search service didn't come back as version {version}"))));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
 pub enum Event {
     /// The roots the index answers for, and those it doesn't (to search some other way).
     Plan { indexed: Vec<String>, skipped: Vec<String> },

@@ -238,7 +238,7 @@ export function CheckDialog() {
                 <span className="truncate">
                     {report && !running && `${formatCount(count)} ${count === 1 ? "finding" : "findings"}${byFile.length > 1 ? ` in ${formatCount(byFile.length)} files` : ""} · ${formatDuration(report.elapsedMs)}`}
                     {!secrets && rules && (
-                        <button type="button" className="ml-2 underline underline-offset-2 hover:text-foreground" onClick={() => void chooseRules()}>
+                        <button type="button" className="ms-2 underline underline-offset-2 hover:text-foreground" onClick={() => void chooseRules()}>
                             Other rules…
                         </button>
                     )}

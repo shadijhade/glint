@@ -4,6 +4,7 @@
 
 use crate::engine::Engine;
 use crate::proto::{self, Message, Request};
+use crate::update::{self, Updater};
 use crate::win::{self, os_error, wide, Handle, SecurityDescriptor};
 use std::io::{self, Read, Write};
 use std::os::windows::io::AsRawHandle;
@@ -93,11 +94,13 @@ fn instance(name: &str, sd: &SecurityDescriptor, first: bool) -> io::Result<Hand
     Ok(Handle(handle))
 }
 
-pub fn serve(engine: Arc<Engine>, allowed: &[String]) -> io::Result<Server> {
+/// Serves the engine to the `allowed` users; `updater` when this is the installed service, which can
+/// update itself (update.rs).
+pub fn serve(engine: Arc<Engine>, allowed: &[String], updater: Option<Arc<Updater>>) -> io::Result<Server> {
     let sddl = sddl(allowed);
-    serve_on(crate::PIPE_NAME, engine.clone(), &sddl).or_else(|e| {
+    serve_on(crate::PIPE_NAME, engine.clone(), &sddl, updater.clone()).or_else(|e| {
         engine.log.line(&format!("can't serve under the protected prefix ({e}); serving on {}", crate::LEGACY_PIPE_NAME));
-        serve_on(crate::LEGACY_PIPE_NAME, engine, &sddl)
+        serve_on(crate::LEGACY_PIPE_NAME, engine, &sddl, updater)
     })
 }
 
@@ -110,7 +113,7 @@ const REQUEST_WAIT: Duration = Duration::from_secs(10);
 
 /// Serves `name` with the given DACL. Each connection gets a fresh pipe instance, which takes
 /// FILE_CREATE_PIPE_INSTANCE: SYSTEM and administrators have it, users never do.
-pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str) -> io::Result<Server> {
+pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str, updater: Option<Arc<Updater>>) -> io::Result<Server> {
     let sd = SecurityDescriptor::from_sddl(sddl)?;
     let mut next = instance(name, &sd, true)?;
     let pipe_name = name.to_string();
@@ -144,9 +147,9 @@ pub(crate) fn serve_on(name: &str, engine: Arc<Engine>, sddl: &str) -> io::Resul
             continue;
         }
         active.fetch_add(1, Ordering::SeqCst);
-        let (engine, active) = (engine.clone(), active.clone());
+        let (engine, active, updater) = (engine.clone(), active.clone(), updater.clone());
         thread::spawn(move || {
-            answer(pipe, &engine);
+            answer(pipe, &engine, updater.as_deref());
             active.fetch_sub(1, Ordering::SeqCst);
         });
     });
@@ -196,13 +199,33 @@ fn request_arrives(pipe: &Handle, limit: Duration) -> bool {
     }
 }
 
+/// Reads the executable that follows an Update request and hands it to the updater: its version, once
+/// it's in place and this service is to stop. Read in full first, so the client hears why if it isn't.
+fn receive_update(io: &mut PipeIo, signature: &str, size: u64, updater: Option<&Updater>) -> Result<String, String> {
+    // One arriving at a time, so connections can't each hold an executable's worth of memory.
+    static RECEIVING: AtomicBool = AtomicBool::new(false);
+    if size > update::MAX_SIZE {
+        return Err(format!("an executable of {size} bytes isn't the service"));
+    }
+    if RECEIVING.swap(true, Ordering::SeqCst) {
+        return Err("another update is arriving".into());
+    }
+    let mut exe = vec![0u8; size as usize];
+    let arrived = io.read_exact(&mut exe).map_err(|e| format!("it didn't all arrive: {e}"));
+    RECEIVING.store(false, Ordering::SeqCst);
+    arrived?;
+    updater.ok_or("this one doesn't update itself (it isn't running as the installed service)")?.take(&exe, signature)
+}
+
 /// Serves one connection: one request, its answer, then the pipe is closed.
-fn answer(pipe: Handle, engine: &Engine) {
+fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
     if !request_arrives(&pipe, REQUEST_WAIT) {
         return;
     }
     let mut io = PipeIo(&pipe);
     let Ok(request) = proto::read_request(&mut io) else { return };
+    // Set once an update is in place: the service stops after answering.
+    let mut stop_after = None;
     let result = match request {
         Request::Status => proto::write_message(&mut io, &Message::Status(engine.status())),
         Request::Search(request) => engine.search(&request, &mut io),
@@ -224,6 +247,25 @@ fn answer(pipe: Handle, engine: &Engine) {
             }
             proto::write_message(&mut io, &Message::Status(engine.status()))
         }
+        Request::Tags => proto::write_message(&mut io, &Message::Tags { tags: engine.tags() }),
+        Request::Snapshots => proto::write_message(
+            &mut io,
+            &match crate::shadow::list() {
+                Ok(snapshots) => Message::Snapshots { snapshots },
+                Err(message) => Message::Error { message },
+            },
+        ),
+        Request::Update { signature, size } => match receive_update(&mut io, &signature, size, updater) {
+            Ok(version) => {
+                engine.log.line(&format!("updating to {version}: restarting into it"));
+                stop_after = updater.map(|u| u.stop.clone());
+                proto::write_message(&mut io, &Message::Updating { version })
+            }
+            Err(message) => {
+                engine.log.line(&format!("didn't take an update: {message}"));
+                proto::write_message(&mut io, &Message::Error { message: format!("The instant search service didn't take the update: {message}") })
+            }
+        },
     };
     match result {
         // Let the client read everything before the pipe goes away.
@@ -235,6 +277,10 @@ fn answer(pipe: Handle, engine: &Engine) {
     }
     unsafe {
         let _ = DisconnectNamedPipe(pipe.0);
+    }
+    // finish-update waits for this process to stop, then starts the service from the new executable.
+    if let Some(stop) = stop_after {
+        stop.set();
     }
 }
 
@@ -285,7 +331,7 @@ mod tests {
             record(1_001, 22, REASON_RENAME_NEW_NAME | REASON_CLOSE, 0x20, "report.pdf"),
             record(2_000, 30, REASON_FILE_DELETE | REASON_CLOSE, 0x20, "old.txt"),
         ]);
-        let server = serve_on(&name, engine, &dacl).unwrap();
+        let server = serve_on(&name, engine, &dacl, None).unwrap();
         // The app refuses a server that isn't SYSTEM or administrators: a test run isn't.
         if !win::is_elevated() {
             assert!(matches!(client::connect_to(&name, &client::trusted), Err(Error::Untrusted(_))));
@@ -401,9 +447,56 @@ mod tests {
             return; // administrators are always let in
         }
         let name = test_pipe("refuses");
-        let server = serve_on(&name, Engine::with_tree('T', sample()), &sddl(&[])).unwrap();
+        let server = serve_on(&name, Engine::with_tree('T', sample()), &sddl(&[]), None).unwrap();
         assert!(matches!(client::connect_to(&name, &|_: &str| true), Err(Error::NoAccess)));
         server.stop();
+    }
+
+    #[test]
+    fn takes_an_update_signed_with_the_key_over_a_real_pipe() {
+        use crate::update::tests::{EXE, KEY, SIGNED};
+        use std::path::Path;
+        use std::sync::Mutex;
+        let me = win::current_user_sid().unwrap();
+        let dacl = format!("{}(A;;GA;;;{me})", sddl(&[]));
+        let trust = |_: &str| true;
+        let dir = std::env::temp_dir().join(format!("shadui-index-pipe-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let installed = dir.join(crate::SERVICE_EXE);
+        std::fs::write(&installed, b"the running one").unwrap();
+
+        // A console run (no updater) says it can't; a service from before would close the pipe instead.
+        let name = test_pipe("no-update");
+        let server = serve_on(&name, Engine::with_tree('T', sample()), &dacl, None).unwrap();
+        let said = client::update_on(client::connect_to(&name, &trust).unwrap(), EXE, SIGNED);
+        assert!(matches!(&said, Err(Error::Service(m)) if m.contains("doesn't update itself")), "{said:?}");
+        server.stop();
+
+        static STARTED: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
+        fn finisher(exe: &Path) -> io::Result<()> {
+            STARTED.lock().unwrap().push(exe.to_path_buf());
+            Ok(())
+        }
+        let updater = Arc::new(Updater::for_test(KEY, dir.clone(), finisher));
+        let name = test_pipe("update");
+        let server = serve_on(&name, Engine::with_tree('T', sample()), &dacl, Some(updater.clone())).unwrap();
+        // Bytes that aren't what was signed: refused, nothing changed, still running.
+        let said = client::update_on(client::connect_to(&name, &trust).unwrap(), b"MZ something else", SIGNED);
+        assert!(matches!(&said, Err(Error::Service(m)) if m.contains("doesn't hold")), "{said:?}");
+        assert_eq!(std::fs::read(&installed).unwrap(), b"the running one");
+        assert!(!updater.stop.is_set());
+        // What was signed: in place, finish-update started from it, and the service stopping.
+        let said = client::update_on(client::connect_to(&name, &trust).unwrap(), EXE, SIGNED);
+        assert_eq!(said.unwrap(), Some("999.0.0".to_string()));
+        assert_eq!(std::fs::read(&installed).unwrap(), EXE);
+        assert_eq!(*STARTED.lock().unwrap(), std::slice::from_ref(&installed));
+        assert!(updater.stop.is_set());
+        // One at a time.
+        let said = client::update_on(client::connect_to(&name, &trust).unwrap(), EXE, SIGNED);
+        assert!(matches!(&said, Err(Error::Service(m)) if m.contains("already under way")), "{said:?}");
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

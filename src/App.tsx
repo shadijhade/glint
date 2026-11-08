@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Activity, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -8,7 +8,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { FolderOpen, History as HistoryIcon, Loader2, Settings as SettingsIcon, Sparkles, TextSearch } from "lucide-react";
 import logo from "./assets/logo.svg";
 import { astGrepApply, cancelSearch, isDocument, RgMatch, searchBatched, useRewrite } from "./lib/ripgrep";
-import { HistoryItem, Mode, saveNow, SearchOptions, useStore } from "./lib/store";
+import { HistoryItem, Mode, saveNow, SearchOptions, SECONDARY_WINDOW, useStore } from "./lib/store";
 import { archiveOf, closedNotice, closedOf, currentPath, defaultTextSearchFolder, openRequested, operationsRunning, refreshIndex, revealInApp } from "./lib/explorer";
 import { finished, useQueue } from "./lib/queue";
 import { isFolderPath } from "./lib/paths";
@@ -35,8 +35,10 @@ import { CompareFilesDialog, discardCompareEdits } from "./components/explorer/C
 import { DuplicatesDialog } from "./components/explorer/DuplicatesDialog";
 import { Explorer } from "./components/explorer/Explorer";
 import { HistoryDialog } from "./components/explorer/HistoryDialog";
+import { VersionsDialog } from "./components/explorer/VersionsDialog";
 import { LocksDialog } from "./components/explorer/LocksDialog";
-import { PasswordDialog } from "./components/explorer/PasswordDialog";
+import { CompressPasswordDialog, PasswordDialog } from "./components/explorer/PasswordDialog";
+import { TagsDialog } from "./components/explorer/TagsDialog";
 import { TimelineDialog } from "./components/explorer/TimelineDialog";
 import { XRayDialog } from "./components/explorer/XRayDialog";
 import { Button } from "./components/ui/button";
@@ -79,7 +81,7 @@ function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => 
       <span
         aria-hidden
         className={cn(
-          "pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 w-[calc(50%-2px)] rounded-[5px] bg-background shadow-xs transition-transform duration-150 ease-out dark:bg-foreground/[0.12]",
+          "pointer-events-none absolute bottom-0.5 start-0.5 top-0.5 w-[calc(50%-2px)] rounded-[5px] bg-background shadow-xs transition-transform duration-150 ease-out dark:bg-foreground/[0.12]",
           mode === "text" && "translate-x-full"
         )}
       />
@@ -128,6 +130,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState<{ section?: string } | null>(null);
 
   const openSettings = (section?: string) => {
+    // Settings are kept by the main window: from another window, they open there.
+    if (SECONDARY_WINDOW) return void invoke("open_main_settings", { section: section ?? null });
     const dialog = settingsRef.current;
     if (dialog && !dialog.open) {
       setSettingsOpen({ section });
@@ -225,9 +229,20 @@ function App() {
     };
   }, []);
 
-  // Folders handed over by File Explorer or a later launch of the app open in new tabs, in front of
-  // Text mode and Settings.
+  // Settings asked for in another window open here, in the main one, which keeps them.
   useEffect(() => {
+    if (SECONDARY_WINDOW) return;
+    const stop = listen<string | null>("open-settings", (e) => openSettings(e.payload ?? undefined));
+    return () => {
+      stop.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Folders handed over by File Explorer or a later launch of the app open in new tabs, in front of
+  // Text mode and Settings (in the main window: another window leaves them to it).
+  useEffect(() => {
+    if (SECONDARY_WINDOW) return;
     const open = () => openRequested().then((opened) => opened && settingsRef.current?.close());
     const stop = listen("open-requested", open);
     // Any that came in before the listener was ready.
@@ -448,7 +463,7 @@ function App() {
   return (
     <div className="flex h-full flex-col">
       {/* The window's title bar (it has no system one): drag it by any empty spot, double-click to maximize. */}
-      <header data-tauri-drag-region="deep" className="on-backdrop flex h-11 shrink-0 items-center gap-2 border-b bg-chrome pl-3">
+      <header data-tauri-drag-region="deep" className="on-backdrop flex h-11 shrink-0 items-center gap-2 border-b bg-chrome ps-3">
         <img src={logo} alt="" draggable={false} className="size-[18px] shrink-0 max-sm:hidden" />
         {/* Text keeps the folder it searched last; the search bar fills an empty one when it opens. */}
         <ModeSwitch mode={mode} onChange={setMode} />
@@ -490,6 +505,8 @@ function App() {
         {mode === "text" && <RipgrepCard />}
         {mode === "text" && <AstGrepCard />}
         {mode === "text" && <MeaningCard />}
+        {/* Out of sight, Text's results keep their place but render last and run no effects. */}
+        <Activity mode={mode === "text" ? "visible" : "hidden"}>
         {run ? (
           <Results
             key={run.id}
@@ -512,6 +529,7 @@ function App() {
         ) : (
           <Home onPick={pickHistory} />
         )}
+        </Activity>
       </div>
 
       {/* Over either mode: Text's results open X-Ray and the locks dialog too. */}
@@ -521,6 +539,7 @@ function App() {
       <CompareFilesDialog />
       <TimelineDialog />
       <HistoryDialog />
+      <VersionsDialog />
       <CheckDialog />
       <ConvertDialog />
       <ShareDialog />
@@ -530,6 +549,8 @@ function App() {
       <BatchRenameDialog />
       <XRayDialog />
       <PasswordDialog />
+      <CompressPasswordDialog />
+      <TagsDialog />
       <ShortcutsDialog />
       <HistoryPopover onPick={pickHistory} />
       <dialog

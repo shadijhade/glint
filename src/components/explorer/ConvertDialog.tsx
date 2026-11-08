@@ -153,7 +153,7 @@ function ConvertModal({ pictures }: { pictures: FileEntry[] }) {
                                         title={hint}
                                         onClick={() => choose({ format })}
                                         className={cn(
-                                            "rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-accent",
+                                            "rounded-md border px-2 py-1.5 text-start transition-colors hover:bg-accent",
                                             choice.format === format && "border-primary bg-primary/10 hover:bg-primary/15"
                                         )}
                                     >
@@ -168,7 +168,7 @@ function ConvertModal({ pictures }: { pictures: FileEntry[] }) {
                             <label className="flex items-center gap-3">
                                 <span className="w-20 shrink-0 text-xs font-semibold text-muted-foreground">Quality</span>
                                 <input type="range" min={1} max={100} value={choice.quality} onChange={(e) => choose({ quality: Number(e.target.value) })} className="min-w-0 flex-1 accent-primary" />
-                                <span className="w-8 text-right tabular-nums">{choice.quality}</span>
+                                <span className="w-8 text-end tabular-nums">{choice.quality}</span>
                             </label>
                         )}
 
@@ -187,7 +187,7 @@ function ConvertModal({ pictures }: { pictures: FileEntry[] }) {
                                 ))}
                             </select>
                         </label>
-                        <label className="flex items-center gap-2 pl-[5.75rem]">
+                        <label className="flex items-center gap-2 ps-[5.75rem]">
                             <input type="checkbox" checked={choice.strip} onChange={(e) => choose({ strip: e.target.checked })} className="accent-primary" />
                             <span>Take out the camera, the place and when it was taken</span>
                         </label>
@@ -221,7 +221,7 @@ function ConvertModal({ pictures }: { pictures: FileEntry[] }) {
                                 <input type="radio" name="where" checked={choice.where === "replace"} onChange={() => choose({ where: "replace" })} className="accent-primary" />
                                 <span>In their place, the pictures moved to the Recycle Bin</span>
                             </label>
-                            <p className="pl-6 text-xs text-muted-foreground">A name that's taken gets “(2)”. Each keeps its picture's date modified, and Ctrl+Z takes it all back.</p>
+                            <p className="ps-6 text-xs text-muted-foreground">A name that's taken gets “(2)”. Each keeps its picture's date modified, and Ctrl+Z takes it all back.</p>
                         </section>
                     </>
                 )}

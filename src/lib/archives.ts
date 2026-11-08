@@ -37,5 +37,8 @@ export const usePasswordAsk = create<{ path: string | null; retry?: () => void }
 /** Asks for the password of what `path` leads to in an archive, then runs `retry`. */
 export const askArchivePassword = (path: string, retry: () => void) => usePasswordAsk.setState({ path, retry });
 
+/** Compress with a password: what to compress, and in which format, until the password is given. */
+export const useCompressAsk = create<{ run: ((format: "zip" | "7z", password: string) => void) | null; format: "zip" | "7z"; what: string }>(() => ({ run: null, format: "zip", what: "" }));
+
 /** Counts the passwords that opened something, so what failed for want of one is read again. */
 export const useUnlocks = create(() => ({ count: 0 }));

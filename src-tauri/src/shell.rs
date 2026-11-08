@@ -98,6 +98,29 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
         if touches_archive {
             return Err(crate::fsx::READ_ONLY.into());
         }
+        // A shadow copy (previous versions: versions.rs) can't change, and Windows' file engine can't
+        // read from one: what's copied out of it is copied here.
+        let shadow = crate::versions::is_shadow;
+        let changes_shadow = match &op {
+            FileOp::Copy { dest, .. } => shadow(dest),
+            FileOp::Move { sources, dest } => shadow(dest) || sources.iter().any(|s| shadow(s)),
+            FileOp::Delete { paths, .. } | FileOp::Purge { paths } => paths.iter().any(|p| shadow(p)),
+            FileOp::Rename { path, .. } => shadow(path),
+            FileOp::MoveBack { items } | FileOp::Restore { items } | FileOp::CopyInto { items } => items.iter().any(|b| shadow(&b.folder) || (!matches!(op, FileOp::CopyInto { .. }) && shadow(&b.path))),
+        };
+        if changes_shadow {
+            return Err("Previous versions are read-only: copy what you need out of them".into());
+        }
+        if let FileOp::Copy { sources, dest } = &op {
+            if sources.iter().any(|s| shadow(s)) {
+                return crate::versions::copy_out(sources, dest);
+            }
+        }
+        if let FileOp::CopyInto { items } = &op {
+            if items.iter().any(|b| shadow(&b.path)) {
+                return crate::versions::copy_into(items);
+            }
+        }
         // A preview handler may hold the file open: what's moved, renamed or deleted goes from the preview first.
         let leaving: Vec<String> = match &op {
             FileOp::Move { sources, .. } => sources.clone(),
@@ -117,6 +140,11 @@ pub async fn file_op(window: Window, op: FileOp) -> Result<Performed, String> {
 /// Moves `paths` to the Recycle Bin without asking first (pictures Convert replaced): where each went.
 pub(crate) fn recycle(owner: isize, paths: Vec<String>) -> Result<Performed, String> {
     imp::file_op(owner, FileOp::Delete { paths, permanent: false, confirm: false })
+}
+
+/// A move, rename or Undo an AI agent asked for (and you allowed: agents.rs), through Windows' file engine.
+pub(crate) fn agent_op(owner: isize, op: FileOp) -> Result<Performed, String> {
+    imp::file_op(owner, op)
 }
 
 /// Puts items back from the Recycle Bin, with no window to ask from (a folder rule's Undo).

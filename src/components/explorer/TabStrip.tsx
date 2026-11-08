@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import { Clock, Cloud, Folder, HardDrive, Images, Monitor, Plus, Search, Trash2, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { activateTab, closeTab, newTab, placeTab, tabName, useExplorer } from "@/lib/explorer";
+import { activateTab, closeTab, newTab, openInNewWindow, placeTab, tabName, tabState, useExplorer } from "@/lib/explorer";
 import { isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, THIS_PC } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 
@@ -39,6 +39,15 @@ function dropAt(x: number, y: number): TabDrag["over"] {
 }
 
 /** Pressing a tab and moving it drags it with live neighbor reflow, as in a browser; just a press shows it. */
+/** A tab dropped outside the window: its folder in a window of its own, where it was dropped (the tab closes, unless it's the last). */
+function tearOffTab(id: string, at: { x: number; y: number }) {
+    const path = tabState(id)?.path;
+    if (!path) return;
+    openInNewWindow(path, at);
+    const all = useExplorer.getState().panes.reduce((n, p) => n + p.tabs.length, 0);
+    if (all > 1) closeTab(id);
+}
+
 function dragTab(e: React.PointerEvent, id: string, fromPane: number, fromIndex: number) {
     if (e.button !== 0 || (e.target as Element).closest("button")) return;
     const [x0, y0] = [e.clientX, e.clientY];
@@ -56,13 +65,19 @@ function dragTab(e: React.PointerEvent, id: string, fromPane: number, fromIndex:
             over: dropAt(m.clientX, m.clientY),
         });
     };
-    const up = () => {
+    // Held, the pointer keeps reporting past the window's edge, where a tab can be dropped to have a
+    // window of its own.
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    const up = (u: PointerEvent) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
         const { over } = useTabDrag.getState();
         useTabDrag.setState({ id: null, fromPane: 0, fromIndex: 0, width: 0, dx: 0, over: null });
         if (dragging && over) placeTab(id, over.pane, over.index);
+        // Dropped outside the window, or pulled well away from the strip: a window of its own.
+        const outside = u.clientX < 0 || u.clientY < 0 || u.clientX > window.innerWidth || u.clientY > window.innerHeight;
+        if (dragging && !over && u.type === "pointerup" && (outside || Math.abs(u.clientY - y0) > 90)) tearOffTab(id, { x: u.screenX, y: u.screenY });
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -133,7 +148,7 @@ function Tab({ id, pane, index, selected, current, canClose, onContextMenu }: Ta
             }}
             style={shiftX ? { transform: `translate3d(${shiftX}px, 0, 0)` } : undefined}
             className={cn(
-                "group relative -mb-px flex h-8 min-w-24 max-w-52 flex-1 basis-0 cursor-default items-center gap-1.5 rounded-t-md border border-transparent pl-2.5 pr-1 text-[0.8125rem] text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                "group relative -mb-px flex h-8 min-w-24 max-w-52 flex-1 basis-0 cursor-default items-center gap-1.5 rounded-t-md border border-transparent ps-2.5 pe-1 text-[0.8125rem] text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                 !dragged && "transition-[background-color,color,transform] duration-150 ease-out",
                 selected && "border-border border-b-background bg-background text-foreground hover:bg-background",
                 dragged && "z-20 border-border bg-background text-foreground shadow-md",
@@ -175,7 +190,7 @@ export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu:
     // Where a tab dragged from the OTHER pane over this strip would go.
     const over = useTabDrag((s) => (s.over?.pane === pane && s.fromPane !== pane ? s.over.x : null));
     return (
-        <div data-tabstrip={pane} className="relative flex h-9 shrink-0 items-end border-b bg-chrome pl-1.5 pr-1">
+        <div data-tabstrip={pane} className="relative flex h-9 shrink-0 items-end border-b bg-chrome ps-1.5 pe-1">
             {over !== null && <span aria-hidden className="pointer-events-none absolute bottom-1 top-1.5 z-10 w-0.5 -translate-x-1/2 rounded-full bg-primary" style={{ left: over }} />}
             <div
                 role="tablist"
@@ -196,7 +211,7 @@ export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu:
                 onClick={() => newTab()}
                 title="New tab (Ctrl+T)"
                 aria-label="New tab"
-                className="mb-1 ml-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-92"
+                className="mb-1 ms-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-92"
             >
                 <Plus className="size-4" />
             </button>

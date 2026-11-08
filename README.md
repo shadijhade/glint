@@ -71,6 +71,24 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 <img src="screenshots/folder-sizes.png" alt="C:\Windows sorted by size, with the size of every folder" width="100%">
 
+### New since 0.9
+
+-   **Photo search: `shows:`.** Type `shows:dog on a beach`, `shows:receipt` or `shows:whiteboard` in the search box: pictures are found by what's in them. OpenAI's CLIP (MIT) runs on this PC with ONNX Runtime, both downloaded when you turn it on in **Settings → Photos and recordings** (about 240 MB), and reads the folders you choose in the background, at low priority, with Windows' own codecs (so HEIC, AVIF and camera RAW too, with their extensions). What it learns of a picture is kept under the file's ID, so a move or rename keeps it.
+-   **Speech search: `says:`.** `says:budget meeting` finds recordings and videos by what's said in them, in any language: whisper.cpp with Whisper's base model (MIT, about 70 MB) transcribes them on this PC, FFmpeg reading videos when it's there. The preview of a recording shows what's said, each line a jump to when it's said, the words searched for marked.
+-   **Previous versions.** Right-click a file or folder → **Previous versions…**: what Windows' restore points and backups kept of it (its shadow copies), with **Open**, **Compare** (side by side for a folder, a diff for a file) and **Restore** or **Restore a copy**. A shadow copy opens as a read-only folder of its own, and copying out of one works as from any folder. The times come from the instant search service; without it, Glint finds the copies by itself.
+-   **Devices.** Glint on your other PCs: **Settings → Devices** shares folders you pick, read-only, with the PCs you pair with a code, connected directly and end-to-end encrypted over [iroh](https://github.com/n0-computer/iroh), through routers and firewalls. A paired PC shows in the sidebar's Remote section and browses, previews and copies as from any remote.
+-   **Remotes in File Explorer, on demand.** Right-click a remote (a cloud through rclone, S3, WebDAV, SFTP or a paired PC) → **Show in File Explorer, on demand**: it appears in File Explorer and every app's Open dialog, as OneDrive does, with Windows' Cloud Files API. Folders fill in as they're opened, and a file downloads when an app reads it. Read-only for now, while Glint runs.
+-   **Search inside files instantly.** **Settings → Search inside files instantly** keeps an index (tantivy) of the text, code and documents below folders you choose, current as they change: Text mode answers from it in milliseconds. Meaning search speaks 101 languages with the multilingual model.
+-   **Tags.** Tag files and folders (**Tags** in the menu); `tag:work` finds them, the sidebar lists every tag, and the tags travel with the files on NTFS, in a stream of their own that the instant search index reads.
+-   **Compress to 7z and tar.zst**, with a password for zip (AES) and 7z (names encrypted too).
+-   **Content Credentials.** A picture's or video's C2PA credentials in its preview and the File X-Ray: who made it, with what, and whether AI made or changed it (c2patool).
+-   **Run in Windows Sandbox**, from a file's menu: a throwaway Windows to try a program or a document in.
+-   **More windows.** `Ctrl+N` opens a window, and a tab dragged out of the strip becomes one.
+-   **The file dialog jump.** `Ctrl+Alt+G` in any app's Open or Save dialog takes it to the folder open in Glint.
+-   **Glint in Arabic**, right to left, with **Settings → Appearance → Language**; Windows' own language is the default where Glint speaks it.
+-   **AI agents can tidy up, with your OK**: moving, renaming, making folders and recycling, each asked in a Windows dialog and undoable from Settings; folder sizes come with a map in agents that show apps; and Glint can add itself to Windows' own agent registry where Windows has one.
+-   **Faster**: folders read ahead when the pointer rests on them, listings handed to the window in shared memory, reads batched with Windows' I/O ring, and the window resting when it's in the tray; Markdown previews draw math and Mermaid diagrams.
+
 ### Files
 
 -   **Instant folders.** Each folder is read in one Win32 enumeration pass and sorted in Rust in natural order (`img9` before `img10`), then drawn as a virtual list. The status bar says how long it took: *read in 0.3 ms · shown in 6.3 ms*.
@@ -86,7 +104,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Git at a glance.** In a Git repository, files and folders show **Changed**, **Staged**, **New** or **Conflict** (a folder shows the strongest of what's below it), what `.gitignore` leaves out is faded, and the status bar says how long status took: 13–15 ms in Glint's own repository here, once its files are in Windows' cache. The address bar shows the branch, with how far it is ahead of or behind the branch it tracks (⎇ main ↑2 ↓1), and a click on it shows what changed and **Show changes**. Typing `git:changed` (or `git:new`, `git:staged`, `git:conflict`, `git:ignored`) in the search box filters the folder to them. A changed file's preview (and Quick Look) can show **Changes**: what changed since its last commit, line by line with the lines around each change, as the preview stays on Changes from one changed file to the next. [gitoxide](https://github.com/GitoxideLabs/gitoxide) reads the repository inside Glint, so Git needn't be installed, and nothing is written to it. Status stops at 4 s and shows what it found by then; a repository of over 300,000 files, or one on another computer, shows it on `F5`. A repository whose own settings name programs for status to run (filter drivers such as Git LFS's, or `core.fsmonitor`) is left alone until you trust it, from the branch in the address bar.
 -   **Archives.** `Enter` opens a zip, 7z, RAR, cabinet or tar (compressed or not) like a folder, read-only, with previews, thumbnails and copying out: see [Archives](#archives) below.
 -   **Tools.** Find duplicates, clean up developer junk, see what's locking a file, the recent changes in a folder, a file's checksums and hidden streams, and batch rename: see [Tools](#tools) below.
--   **Preview pane and Quick Look.** Syntax-highlighted code and text, images, video, audio, PDFs and folder summaries, in the side pane (`Alt+P`) or full size on `Space`. Quick Look fills the window from its maximize button (or a double-click on its title), `PageUp` and `PageDown` scroll it, and text and code can wrap their long lines and be copied whole. asciinema recordings (.cast) play in the terminal pane's own renderer, with a scrubber and 1×, 2× and 4×, long pauses cut short. **Copy text** under a picture copies the text in it, read by Windows' own OCR. Below a photo: when and where it was taken (the place opens on OpenStreetMap), the camera, lens and exposure; below a song: its artist, album, track, length and quality, with its cover; below a video: when it was recorded and its length. Markdown reads as it does on GitHub, with its tables, task lists, footnotes, highlighted code, the pictures beside it and the HTML READMEs use (centered headers, collapsible sections, keys), as GitHub allows it: nothing in a file runs, and pictures from the web aren't fetched. Its links open their file or folder in Glint, web links in your browser, and **Source** shows it as written. A folder's README.md shows above its list too, folded to its title until you open it. JSON, YAML and TOML files show as a tree of their values (with **Text** for the file as written), and a jq filter runs over them, `.items[] | select(.size > 1000)`, in [jaq](https://github.com/01mf02/jaq) (jq rewritten in Rust, installed with one click). The file is read, and the filter run, in a process of their own held to 1 GB and 10 seconds, so one that never ends stops there. Each value's jq path is a click away, to copy or filter by. Every file has a **Hex** view as well: its bytes as [hexyl](https://github.com/sharkdp/hexyl) shows them, colored by kind (zero, text, whitespace, other ASCII, the rest), with **Go to** an offset and the byte under the cursor as numbers; a file Glint knows nothing about that isn't text shows that way. CSV, TSV and JSON-lines files show as tables with their column types, and so do Excel and OpenDocument workbooks (.xlsx, .xlsb, .xls, .ods) without Office, a sheet at a time with the others a click away (**Previewer** shows one through Windows' previewer instead: Excel's, with Office installed), and Parquet files with their columns' types; their first 1,000 rows. SQLite databases show as their tables, indexes and views, each table's rows a click away, and programs and DLLs with their architecture, security features, sections, imports and exports. **Query** runs SQL over any of these, reading only: a CSV, JSON-lines or Parquet file is the table `data`, a workbook's sheets are tables by their names, and a database is opened read-only, without a lock or journal file ever appearing next to it; one statement at a time, stopped at 10 seconds, the first 1,000 rows shown. Everything else Windows has a previewer for shows through that previewer, as in File Explorer: Word and PowerPoint documents, fonts, Visio drawings… (not files downloaded from the internet, which File Explorer doesn't preview either). Online-only OneDrive files are left alone, so nothing downloads by accident.
+-   **Preview pane and Quick Look.** Syntax-highlighted code and text, images, video, audio, PDFs and folder summaries, in the side pane (`Alt+P`) or full size on `Space`. Quick Look fills the window from its maximize button (or a double-click on its title), `PageUp` and `PageDown` scroll it, and text and code can wrap their long lines and be copied whole. asciinema recordings (.cast) play in the terminal pane's own renderer, with a scrubber and 1×, 2× and 4×, long pauses cut short. **Copy text** under a picture copies the text in it, read by Windows' own OCR. Below a photo: when and where it was taken (the place opens on OpenStreetMap), the camera, lens and exposure; below a song: its artist, album, track, length and quality, with its cover; below a video: when it was recorded and its length. Markdown reads as it does on GitHub, with its tables, task lists, footnotes, highlighted code, math (`$…$`, `$$…$$` and ```` ```math ```` blocks, drawn as MathML), Mermaid diagrams (```` ```mermaid ```` blocks, drawn as pictures), the pictures beside it and the HTML READMEs use (centered headers, collapsible sections, keys), as GitHub allows it: nothing in a file runs, and pictures from the web aren't fetched. Its links open their file or folder in Glint, web links in your browser, and **Source** shows it as written. A folder's README.md shows above its list too, folded to its title until you open it. JSON, YAML and TOML files show as a tree of their values (with **Text** for the file as written), and a jq filter runs over them, `.items[] | select(.size > 1000)`, in [jaq](https://github.com/01mf02/jaq) (jq rewritten in Rust, installed with one click). The file is read, and the filter run, in a process of their own held to 1 GB and 10 seconds, so one that never ends stops there. Each value's jq path is a click away, to copy or filter by. Every file has a **Hex** view as well: its bytes as [hexyl](https://github.com/sharkdp/hexyl) shows them, colored by kind (zero, text, whitespace, other ASCII, the rest), with **Go to** an offset and the byte under the cursor as numbers; a file Glint knows nothing about that isn't text shows that way. CSV, TSV and JSON-lines files show as tables with their column types, and so do Excel and OpenDocument workbooks (.xlsx, .xlsb, .xls, .ods) without Office, a sheet at a time with the others a click away (**Previewer** shows one through Windows' previewer instead: Excel's, with Office installed), and Parquet files with their columns' types; their first 1,000 rows. SQLite databases show as their tables, indexes and views, each table's rows a click away, and programs and DLLs with their architecture, security features, sections, imports and exports. **Query** runs SQL over any of these, reading only: a CSV, JSON-lines or Parquet file is the table `data`, a workbook's sheets are tables by their names, and a database is opened read-only, without a lock or journal file ever appearing next to it; one statement at a time, stopped at 10 seconds, the first 1,000 rows shown. Everything else Windows has a previewer for shows through that previewer, as in File Explorer: Word and PowerPoint documents, fonts, Visio drawings… (not files downloaded from the internet, which File Explorer doesn't preview either). Online-only OneDrive files are left alone, so nothing downloads by accident.
 -   **A repository's card.** A Git repository's folder, previewed (selected, or open with nothing selected), shows what it is: from [onefetch](https://github.com/o2sh/onefetch), its version, license, branch, commits, when it last changed, its languages as a bar and who works on it, with its web address; from [tokei](https://github.com/XAMPPRocky/tokei), its lines of code by language. Both install with one click on the card, and a card is kept for the commit the repository is at.
 -   **Command palette.** `Ctrl+K` finds any command, or a folder you've been to by typing a few of its letters (`dl` finds Downloads) or with a typo (`stetings` finds Settings), with the folders you open most often and most recently first. A folder's path counts as well as its name, when the letters typed are close together in it. Type a path, `~` or `%APPDATA%` to go there. Type `=` and a sum to work it out as you type, units and all: `= 3 ft to cm`, `= 1 GiB / (3 MB/s) to s`, `= 0x1F + 1` ([fend](https://github.com/printfn/fend), built in); `Enter` copies the answer.
 -   **Folder history shared with zoxide.** With [zoxide](https://github.com/ajeetdsouza/zoxide) installed (one click in **Settings → Tools**) and **Settings → History → Share folder history with zoxide** on, the folders you `cd` to in a terminal rank in `Ctrl+K` and quick search with the ones you open here, and `z` in a terminal finds the folders you open in Glint. zoxide's scores are read when the palette opens, and added to as you go (a burst of folders passed through adds the last); turning it off leaves Glint's own history as it was.
@@ -220,13 +238,13 @@ These work on files on disk, not inside archives.
 
 <img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 37 ms" width="100%">
 
-It's off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and pdu take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
+It's off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. When Glint updates, the service updates itself too, without asking again: it takes only a build signed with Glint's update key, and only a newer one. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and pdu take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
 
 The service only runs once you opt in, with every privilege removed except the three it needs. It answers only you and administrators, over a named pipe no other program can pose as. It knows the names of all files on the indexed drives, including ones your account can't open, so on a shared PC turn it on only for accounts that may see every file name. Measurements, how it works and the full security model are in **[docs/instant-search.md](docs/instant-search.md)**.
 
 ### AI agents
 
-AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.io/) (Claude Code and Claude Desktop, VS Code's Copilot, Cursor and others) can use Glint's engines. `Glint.exe mcp` is the server: the agent starts it, and it answers on its standard input and output with five tools, which only read.
+AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.io/) (Claude Code and Claude Desktop, VS Code's Copilot, Cursor and others) can use Glint's engines. `Glint.exe mcp` is the server: the agent starts it, and it answers on its standard input and output with nine tools. Five only read; four change files, and only after you allow each in a Windows dialog naming exactly what will happen.
 
 | Tool | What it answers | How |
 | :--- | :--- | :--- |
@@ -235,6 +253,9 @@ AI agents that speak the [Model Context Protocol](https://modelcontextprotocol.i
 | `largest_files` | The biggest files anywhere below a folder | The index's disk-usage map |
 | `recent_changes` | What was renamed, moved, deleted or recycled lately, and where each item went | The index's 30 days of changes |
 | `search_text` | Lines of text files that contain a pattern | ripgrep |
+| `move_items`, `rename_item`, `create_folder`, `recycle_items` | Moves, renames, new folders and the Recycle Bin, asked first and listed in **Settings → AI agents** with Undo | Windows' file engine |
+
+Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a map of the folder.
 
 **Settings → AI agents** has each agent's setup to copy: `claude mcp add glint -- "C:\…\Glint.exe" mcp` for Claude Code, `code --add-mcp` for VS Code, and the `mcpServers` entry for Claude Desktop, Cursor and the like. Once told, the agent starts Glint for itself and sees the names and text it asks for; Glint tells it that what files are named and contain is data, not instructions. Measured here, through the server as an agent asks: `kernel32.dll` on every drive in 8 ms, `C:\Windows`'s folder sizes in 1 ms, the biggest files on `C:\` in 41 ms.
 
@@ -303,7 +324,13 @@ Glint was called ShadUI Ripgrep before 0.3.1. Installing Glint replaces ShadUI R
 
 ### With a package manager
 
-winget installs the Microsoft Store's copy:
+winget installs the installer's copy, which updates itself:
+
+```powershell
+winget install shadijhade.Glint
+```
+
+or the Microsoft Store's:
 
 ```powershell
 winget install 9NQLRJ3HF1C9 --source msstore
@@ -314,12 +341,6 @@ winget install 9NQLRJ3HF1C9 --source msstore
 ```powershell
 scoop bucket add shadijhade https://github.com/shadijhade/scoop-bucket
 scoop install shadijhade/glint
-```
-
-The installer's own winget package, once [microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306) is merged (new packages wait about six weeks for a moderator there):
-
-```powershell
-winget install shadijhade.Glint
 ```
 
 ## Keyboard shortcuts
@@ -456,7 +477,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] Auto-update, with signed update packages
 -   [x] A Scoop package
 -   [ ] Code-signed installers (the SignPath Foundation invited a new application once Glint is better known)
--   [ ] The winget package (in review: [microsoft/winget-pkgs#455306](https://github.com/microsoft/winget-pkgs/pull/455306))
+-   [x] The winget package (`winget install shadijhade.Glint`)
 -   [x] [The Microsoft Store](https://apps.microsoft.com/detail/9NQLRJ3HF1C9), signed by Microsoft
 -   [x] Zip, 7z, RAR, cabinet and tar archives (compressed too) opened like folders, Extract here, and Compress to zip
 -   [x] Password-protected zip, 7z and RAR archives, opened with their password
@@ -475,6 +496,10 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] Windows 11's Mica and your accent color, Windows' own context menu, marquee selection
 -   [x] Plain words read as filters, and name searches ranked across every drive
 -   [x] An MCP server, so AI agents can use Glint's instant search
+-   [x] Photo search (`shows:`) and speech search (`says:`), on this PC
+-   [x] Previous versions, from Windows' shadow copies
+-   [x] Your other PCs as devices, and remotes in File Explorer on demand
+-   [x] Search inside files from an index, tags, and Glint in Arabic
 
 Missing something? [Open an issue](https://github.com/shadijhade/glint/issues/new/choose). If the app saves you time, a star helps other people find it.
 

@@ -57,7 +57,7 @@ export function ResizeHandle({
             className={cn(
                 "group/handle",
                 across
-                    ? "absolute left-0 z-10 h-2 w-full cursor-row-resize touch-none after:absolute after:inset-x-1 after:top-1/2 after:h-px after:-translate-y-1/2 after:transition-colors hover:after:bg-primary/60"
+                    ? "absolute start-0 z-10 h-2 w-full cursor-row-resize touch-none after:absolute after:inset-x-1 after:top-1/2 after:h-px after:-translate-y-1/2 after:transition-colors hover:after:bg-primary/60"
                     : "absolute top-0 z-10 h-full w-2 cursor-col-resize touch-none after:absolute after:inset-y-1 after:left-1/2 after:w-px after:-translate-x-1/2 after:transition-colors hover:after:bg-primary/60",
                 className
             )}

@@ -217,16 +217,16 @@ export function Results({ active, run, matches, searching, error, duration, file
                     }}
                     onDoubleClick={() => onOpen(row.path)}
                     onContextMenu={(e) => openMenu(e, row.path)}
-                    className="flex h-full cursor-default items-center gap-1.5 bg-muted/50 pl-2 pr-3 hover:bg-accent"
+                    className="flex h-full cursor-default items-center gap-1.5 bg-muted/50 ps-2 pe-3 hover:bg-accent"
                     title={`${row.path}\nClick to ${isCollapsed ? "expand" : "collapse"} matches · Double-click to open`}
                 >
                     <ChevronRight className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150", !isCollapsed && "rotate-90")} />
                     <FileText className="size-4 shrink-0 text-muted-foreground" />
                     <span className="truncate text-sm">
                         <span className="font-medium">{basename(row.path)}</span>
-                        <span className="ml-2 text-xs text-muted-foreground">{relative(row.path).slice(0, -basename(row.path).length)}</span>
+                        <span className="ms-2 text-xs text-muted-foreground">{relative(row.path).slice(0, -basename(row.path).length)}</span>
                     </span>
-                    <span className="relative ml-auto flex h-5 min-w-9 shrink-0 items-center justify-end overflow-hidden rounded-full bg-background px-2 text-xs tabular-nums text-muted-foreground">
+                    <span className="relative ms-auto flex h-5 min-w-9 shrink-0 items-center justify-end overflow-hidden rounded-full bg-background px-2 text-xs tabular-nums text-muted-foreground">
                         {pct > 0 && (
                             <span
                                 aria-hidden
@@ -250,14 +250,14 @@ export function Results({ active, run, matches, searching, error, duration, file
                     openMenu(e, path, match);
                 }}
                 className={cn(
-                    "relative flex h-full cursor-default items-center gap-2 pl-4 pr-3 hover:bg-accent/60",
-                    i === selectedRow && "bg-primary/10 before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-primary hover:bg-primary/15"
+                    "relative flex h-full cursor-default items-center gap-2 ps-4 pe-3 hover:bg-accent/60",
+                    i === selectedRow && "bg-primary/10 before:absolute before:inset-y-0 before:start-0 before:w-0.5 before:bg-primary hover:bg-primary/15"
                 )}
             >
                 {match.data.label !== undefined ? (
-                    <span className="w-24 shrink-0 truncate text-right text-xs tabular-nums text-muted-foreground/70" title={match.data.label}>{match.data.label}</span>
+                    <span className="w-24 shrink-0 truncate text-end text-xs tabular-nums text-muted-foreground/70" title={match.data.label}>{match.data.label}</span>
                 ) : (
-                    <span className="w-12 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground/70">{match.data.line_number}</span>
+                    <span className="w-12 shrink-0 text-end font-mono text-xs tabular-nums text-muted-foreground/70">{match.data.line_number}</span>
                 )}
                 {/* A document's text is prose: in the sans font. */}
                 <span className={cn("min-w-0 truncate text-[0.8125rem]", match.data.label === undefined && "font-mono")}>
@@ -281,7 +281,7 @@ export function Results({ active, run, matches, searching, error, duration, file
             <Centered>
                 <AlertTriangle className="size-6 text-destructive" />
                 <p className="font-medium text-foreground">The search failed</p>
-                <pre className="max-w-full select-text whitespace-pre-wrap text-left font-mono text-xs">{error}</pre>
+                <pre className="max-w-full select-text whitespace-pre-wrap text-start font-mono text-xs">{error}</pre>
                 <Button variant="outline" size="sm" onClick={() => onSearchAgain(!!run.everything)}>
                     <RotateCw /> Try again
                 </Button>
@@ -348,7 +348,7 @@ export function Results({ active, run, matches, searching, error, duration, file
                         Stopped at {fmt(run.limit!)} · Show all
                     </button>
                 )}
-                <div className="ml-auto flex items-center gap-1.5">
+                <div className="ms-auto flex items-center gap-1.5">
                     {exts.length > 1 && exts.map(([ext, count]) => {
                         const active = activeExts.includes(ext);
                         return (
@@ -363,7 +363,7 @@ export function Results({ active, run, matches, searching, error, duration, file
                         );
                     })}
                     <div className="relative">
-                        <SearchIcon className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <SearchIcon className="pointer-events-none absolute start-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <input
                             value={filter}
                             onChange={(e) => setFilter(e.target.value)}
@@ -371,10 +371,10 @@ export function Results({ active, run, matches, searching, error, duration, file
                             placeholder="Filter results"
                             aria-label="Filter results"
                             spellCheck={false}
-                            className="fluent-field h-7 w-44 pl-7 pr-6 text-xs outline-hidden placeholder:text-muted-foreground"
+                            className="fluent-field h-7 w-44 ps-7 pe-6 text-xs outline-hidden placeholder:text-muted-foreground"
                         />
                         {filter && (
-                            <button onClick={() => setFilter("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label="Clear filter">
+                            <button onClick={() => setFilter("")} className="absolute end-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label="Clear filter">
                                 <X className="size-3.5" />
                             </button>
                         )}
@@ -404,7 +404,7 @@ export function Results({ active, run, matches, searching, error, duration, file
                 <div className="min-w-0 flex-1">{body}</div>
                 {menu.element}
                 {matches.length > 0 && (
-                    <div className="hidden min-w-0 flex-1 border-l md:flex">
+                    <div className="hidden min-w-0 flex-1 border-s md:flex">
                         <Preview match={selectedMatch} onOpen={onOpen} onReveal={onReveal} />
                     </div>
                 )}

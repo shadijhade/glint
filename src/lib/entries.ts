@@ -497,7 +497,11 @@ function filterTest(term: string, git?: Readonly<Record<string, GitMark>>, facts
  * (ext:pdf, size:>10mb, dm:7d, file:, folder:) narrow it as the index does; git:changed by `git`,
  * the folder's Git marks by lowercase name; width:, taken: and the like by `facts`, what files say.
  */
+/** shows: and says: (photo and speech search, media_ai.rs) are asked of their models on Enter: typing them filters nothing. */
+export const asksModels = (query: string) => /(^|[\s"])(shows|says):/i.test(query);
+
 export function matcher(query: string, git?: Readonly<Record<string, GitMark>>, facts?: (e: FileEntry) => MediaFacts | null | undefined): ((e: FileEntry) => boolean) | null {
+    if (asksModels(query)) return null;
     const parts = terms(query.toLowerCase());
     if (!parts.length) return null;
     const tests = parts.map((term) => {

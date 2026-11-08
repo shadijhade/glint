@@ -48,6 +48,8 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
 /// The shortcut and the tray's Quick search: makes the window if it isn't there yet (off the UI
 /// thread, where making one can deadlock), then shows or hides it on the UI thread.
 pub(crate) fn summon(app: &AppHandle) {
+    // Summoned over an Open or Save As dialog: a folder chosen goes to that dialog (dialogs.rs).
+    crate::dialogs::note_dialog();
     let app = app.clone();
     std::thread::spawn(move || {
         window(&app);
@@ -283,6 +285,10 @@ pub fn on_close(window: &tauri::Window, api: &tauri::CloseRequestApi) {
     if app.state::<Quick>().keep_running.load(Ordering::SeqCst) {
         api.prevent_close();
         let _ = window.hide();
+        #[cfg(windows)]
+        if let Some(webview) = app.get_webview_window("main") {
+            crate::rest_webview(&webview);
+        }
     } else if let Some(search) = app.get_webview_window(WINDOW) {
         let _ = search.destroy();
     }

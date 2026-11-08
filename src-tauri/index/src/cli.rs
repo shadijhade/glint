@@ -6,7 +6,7 @@ use crate::proto::{SearchRequest, UsageRequest};
 use crate::query::{Excludes, NameMatcher};
 use crate::tree::{Search, ROOT};
 use crate::volume::Volume;
-use crate::{access, install, proto, service, snapshot, win};
+use crate::{access, install, proto, service, snapshot, update, win};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
@@ -31,6 +31,12 @@ shadui-index: instant file name search and folder sizes for Glint
   history [QUERY] [--days N] [--max N]
                               what was renamed, moved and deleted, newest first (30 days, 100)
   bench [C:]...               read drives directly and time indexing and queries (administrator)
+  verify-update FILE [SIG]    whether FILE is this version of the service, signed with the update
+                              key (SIG: FILE.sig), as the installed service checks an update
+  update FILE [SIG]           hand the running service a later build of itself, as the app does
+                              after it updates (SIG: FILE.sig); waits for it to come back
+  finish-update PID           run by the service from its new executable as it updates itself:
+                              starts the service again once process PID has stopped
 ";
 
 fn values(args: &[String], flag: &str) -> Vec<String> {
@@ -113,11 +119,68 @@ pub fn main() -> i32 {
         Some("usage") if rest.first().is_some_and(|p| !p.starts_with("--")) => usage(rest),
         Some("history") => history(rest),
         Some("bench") => bench(rest),
+        Some("verify-update") if !rest.is_empty() => verify_update(rest),
+        Some("update") if !rest.is_empty() => send_update(rest),
+        Some("finish-update") if rest.len() == 1 => match rest[0].parse() {
+            Ok(pid) => update::finish(pid),
+            Err(_) => 1,
+        },
         _ => {
             eprint!("{USAGE}");
             1
         }
     }
+}
+
+/// For a release (scripts/sign-service.mjs): FILE must be this very version of the service, signed with
+/// the update key this build trusts, as an installed service would check it before taking it.
+fn verify_update(args: &[String]) -> i32 {
+    let signature_path = args.get(1).cloned().unwrap_or_else(|| format!("{}.sig", args[0]));
+    let (exe, signature) = match (std::fs::read(&args[0]), std::fs::read_to_string(&signature_path)) {
+        (Ok(exe), Ok(signature)) => (exe, signature),
+        (Err(e), _) => return fail(&format!("{}: {e}", args[0])),
+        (_, Err(e)) => return fail(&format!("{signature_path}: {e}")),
+    };
+    let Some(key) = update::update_key() else { return fail("This build has no update key (plugins.updater.pubkey in tauri.conf.json)") };
+    match update::check(&exe, &signature, &key) {
+        Ok(signed) if signed.file == crate::SERVICE_EXE && signed.version.as_deref() == Some(crate::VERSION) => {
+            println!("{} {} is signed with the update key: an older installed service takes it as its update.", signed.file, crate::VERSION);
+            0
+        }
+        Ok(signed) => fail(&format!("It's signed for \"{}\", version {}, not {} {}", signed.file, signed.version.as_deref().unwrap_or("(none)"), crate::SERVICE_EXE, crate::VERSION)),
+        Err(e) => fail(&format!("Not signed with the update key: {e}")),
+    }
+}
+
+/// Hands the running service FILE and its signature, as the app does once it has updated, and waits for
+/// the service to come back as the version the signature names.
+fn send_update(args: &[String]) -> i32 {
+    let signature_path = args.get(1).cloned().unwrap_or_else(|| format!("{}.sig", args[0]));
+    let (exe, signature) = match (std::fs::read(&args[0]), std::fs::read_to_string(&signature_path)) {
+        (Ok(exe), Ok(signature)) => (exe, signature),
+        (Err(e), _) => return fail(&format!("{}: {e}", args[0])),
+        (_, Err(e)) => return fail(&format!("{signature_path}: {e}")),
+    };
+    let started = Instant::now();
+    match client::update(&exe, &signature) {
+        Ok(Some(version)) => {
+            eprintln!("The service took it ({:.0} ms); waiting for it to come back as {version}…", ms(started));
+            match client::wait_for_version(&version, std::time::Duration::from_secs(120)) {
+                Ok(status) => {
+                    println!("Updated: the service runs {} ({:.1} s after it was handed the update).", status.version, started.elapsed().as_secs_f64());
+                    0
+                }
+                Err(e) => fail(&e.to_string()),
+            }
+        }
+        Ok(None) => fail("This service is from before it could update itself: install the new one (administrator)."),
+        Err(e) => fail(&e.to_string()),
+    }
+}
+
+fn fail(message: &str) -> i32 {
+    eprintln!("{message}");
+    1
 }
 
 static CONSOLE_STOP: OnceLock<Arc<Stop>> = OnceLock::new();
@@ -144,7 +207,7 @@ fn run(args: &[String]) -> i32 {
     unsafe {
         let _ = SetConsoleCtrlHandler(Some(on_ctrl_c), true);
     }
-    match service::run(&stop, &allowed, only, true, || eprintln!("Listening on {}; Ctrl+C stops.", crate::PIPE_NAME)) {
+    match service::run(&stop, &allowed, only, true, false, || eprintln!("Listening on {}; Ctrl+C stops.", crate::PIPE_NAME)) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");
@@ -162,7 +225,7 @@ fn median_p95(mut times: Vec<f64>) -> (f64, f64) {
 fn search(args: &[String]) -> i32 {
     let mut roots = values(args, "--in");
     if roots.is_empty() {
-        roots = crate::volume::fixed_ntfs_drives().iter().map(|l| format!(r"{l}:\")).collect();
+        roots = crate::volume::fixed_indexed_drives().iter().map(|l| format!(r"{l}:\")).collect();
     }
     let request = SearchRequest {
         query: args[0].clone(),

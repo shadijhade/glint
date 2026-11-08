@@ -91,7 +91,7 @@ export function ChangesView({ entry }: { entry: FileEntry }) {
                         <span className="text-red-700 dark:text-red-400">−{formatCount(diff.removed)}</span> since the last commit
                     </span>
                 )}
-                <span className="ml-auto truncate font-mono text-[0.6875rem] text-muted-foreground" title={`${diff.path}, compared in ${formatDuration(diff.elapsed)}`}>
+                <span className="ms-auto truncate font-mono text-[0.6875rem] text-muted-foreground" title={`${diff.path}, compared in ${formatDuration(diff.elapsed)}`}>
                     {diff.path}
                 </span>
                 {!diff.newFile && <SideBySide entry={entry} />}
@@ -111,10 +111,10 @@ export function ChangesView({ entry }: { entry: FileEntry }) {
                             <Fragment key={i}>
                                 {gap && <div className="border-y border-dashed bg-muted/40 px-3 text-center text-[0.6875rem] text-muted-foreground">⋯</div>}
                                 <div role="row" className={cn("flex", ROW[line.kind])}>
-                                    <span className="w-10 shrink-0 select-none pr-1.5 text-right text-muted-foreground/70 tabular-nums">{line.old || ""}</span>
-                                    <span className="w-10 shrink-0 select-none pr-1.5 text-right text-muted-foreground/70 tabular-nums">{line.new || ""}</span>
+                                    <span className="w-10 shrink-0 select-none pe-1.5 text-end text-muted-foreground/70 tabular-nums">{line.old || ""}</span>
+                                    <span className="w-10 shrink-0 select-none pe-1.5 text-end text-muted-foreground/70 tabular-nums">{line.new || ""}</span>
                                     <span className="w-4 shrink-0 select-none text-center">{SIGN[line.kind]}</span>
-                                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-all pr-3">{line.text || " "}</span>
+                                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-all pe-3">{line.text || " "}</span>
                                 </div>
                             </Fragment>
                         );

@@ -69,7 +69,7 @@ export function RepoCard({ path }: { path: string }) {
     const lines = card.lines.slice(0, 3);
     const site = card.url?.replace(/^git@([^:]+):/, "https://$1/").replace(/\.git$/, "");
     return (
-        <div className="w-full max-w-sm space-y-2 rounded-lg border bg-card/60 p-3 text-left text-xs">
+        <div className="w-full max-w-sm space-y-2 rounded-lg border bg-card/60 p-3 text-start text-xs">
             {card.onefetch && card.name && (
                 <>
                     <div className="flex items-center gap-1.5">

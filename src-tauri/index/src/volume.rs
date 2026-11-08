@@ -1,8 +1,11 @@
 //! Raw access to an NTFS volume (needs an administrator or SYSTEM): one fast sequential read of the
 //! whole $MFT, single records read through the file system (current, unlike the disk, whose copy of
-//! the MFT can lag a few seconds behind), and the USN change journal.
+//! the MFT can lag a few seconds behind), and the USN change journal. A ReFS volume (a Dev Drive) has
+//! no MFT: refs.rs reads it its own way, behind the same calls.
 
 use crate::record::{self, Geometry, Parsed, Run};
+use crate::refs;
+use std::path::Path;
 use crate::tree::{split_ref, Builder, RecordState, Tree};
 use crate::win::{os_error, wide, Handle};
 use rayon::prelude::*;
@@ -91,10 +94,20 @@ pub struct Volume {
     pub serial: u64,
     /// How much of the $MFT holds records (the rest was never written).
     mft_valid: u64,
+    /// A ReFS volume's record numbers for its 128-bit file ids (refs.rs); None on NTFS.
+    refs: Option<std::sync::Mutex<refs::Ids>>,
 }
 
-/// Local fixed drives formatted NTFS, by letter.
-pub fn fixed_ntfs_drives() -> Vec<char> {
+/// The file system a drive letter's volume has ("NTFS", "ReFS"…).
+fn file_system(letter: char) -> Option<String> {
+    let root = wide(format!(r"{letter}:\"));
+    let mut fs = [0u16; MAX_PATH as usize + 1];
+    unsafe { GetVolumeInformationW(PCWSTR(root.as_ptr()), None, None, None, None, Some(&mut fs)) }.ok()?;
+    Some(String::from_utf16_lossy(&fs).trim_end_matches('\0').to_string())
+}
+
+/// Local fixed drives the index reads, by letter: NTFS, and ReFS (Dev Drives).
+pub fn fixed_indexed_drives() -> Vec<char> {
     let mask = unsafe { GetLogicalDrives() };
     (0..26u8)
         .filter(|i| mask & (1 << i) != 0)
@@ -104,9 +117,7 @@ pub fn fixed_ntfs_drives() -> Vec<char> {
             if unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } != DRIVE_FIXED {
                 return false;
             }
-            let mut fs = [0u16; MAX_PATH as usize + 1];
-            let ok = unsafe { GetVolumeInformationW(PCWSTR(root.as_ptr()), None, None, None, None, Some(&mut fs)) }.is_ok();
-            ok && String::from_utf16_lossy(&fs).trim_end_matches('\0') == "NTFS"
+            matches!(file_system(letter).as_deref(), Some("NTFS" | "ReFS"))
         })
         .collect()
 }
@@ -128,7 +139,16 @@ impl Volume {
         .map_err(os_error)?;
         let handle = Handle(handle);
         let mut data = NTFS_VOLUME_DATA_BUFFER::default();
-        ioctl(&handle, FSCTL_GET_NTFS_VOLUME_DATA, &[], as_bytes_mut(&mut data))?;
+        if let Err(e) = ioctl(&handle, FSCTL_GET_NTFS_VOLUME_DATA, &[], as_bytes_mut(&mut data)) {
+            if file_system(letter).as_deref() != Some("ReFS") {
+                return Err(e);
+            }
+            let root = wide(format!(r"{letter}:\"));
+            let mut serial = 0u32;
+            unsafe { GetVolumeInformationW(PCWSTR(root.as_ptr()), None, Some(&mut serial), None, None, None) }.map_err(os_error)?;
+            let geometry = Geometry { bytes_per_sector: 0, bytes_per_cluster: 0, record_size: 0, mft_lcn: 0, total_sectors: 0 };
+            return Ok(Volume { handle, letter, geometry, serial: serial as u64, mft_valid: 0, refs: Some(std::sync::Mutex::new(refs::Ids::default())) });
+        }
         let geometry = Geometry {
             bytes_per_sector: data.BytesPerSector,
             bytes_per_cluster: data.BytesPerCluster,
@@ -139,7 +159,33 @@ impl Volume {
         if geometry.record_size < 1024 || !geometry.record_size.is_power_of_two() || geometry.bytes_per_cluster == 0 {
             return Err(io::Error::other(format!("unexpected NTFS geometry {geometry:?}")));
         }
-        Ok(Volume { handle, letter, geometry, serial: data.VolumeSerialNumber as u64, mft_valid: data.MftValidDataLength as u64 })
+        Ok(Volume { handle, letter, geometry, serial: data.VolumeSerialNumber as u64, mft_valid: data.MftValidDataLength as u64, refs: None })
+    }
+
+    /// Whether it's a ReFS volume (read by refs.rs).
+    pub fn is_refs(&self) -> bool {
+        self.refs.is_some()
+    }
+
+    /// A ReFS volume's record numbers, saved next to its snapshot.
+    pub fn save_ids(&self, path: &Path) -> io::Result<()> {
+        match &self.refs {
+            Some(ids) => ids.lock().unwrap().save(path),
+            None => Ok(()),
+        }
+    }
+
+    /// Reads back a ReFS volume's record numbers with its snapshot; false when they aren't there (the
+    /// snapshot can't be used without them).
+    pub fn load_ids(&self, path: &Path) -> bool {
+        match (&self.refs, refs::Ids::load(path)) {
+            (Some(ids), Ok(loaded)) => {
+                *ids.lock().unwrap() = loaded;
+                true
+            }
+            (Some(_), Err(_)) => false,
+            (None, _) => true,
+        }
     }
 
     /// Reads `buf.len()` bytes at `offset` (both sector-aligned, as unbuffered reads require).
@@ -300,6 +346,11 @@ impl Volume {
     /// chunk is read) and builds the index. `progress` gets (records read, records in all) and
     /// returns false to stop.
     pub fn scan(&self, progress: &(dyn Fn(u64, u64) -> bool + Sync)) -> io::Result<Tree> {
+        if let Some(ids) = &self.refs {
+            let (tree, found) = refs::scan(self.letter, progress)?;
+            *ids.lock().unwrap() = found;
+            return Ok(tree);
+        }
         let (layout, size) = self.mft_layout()?;
         let record_size = self.geometry.record_size as u64;
         let total = size.min(if self.mft_valid > 0 { self.mft_valid } else { size }) / record_size;
@@ -376,6 +427,9 @@ impl Volume {
 
     /// What record `number` holds now: None for a deleted file (or one the index doesn't keep).
     pub fn record_state(&self, number: u32) -> io::Result<Option<RecordState>> {
+        if let Some(ids) = &self.refs {
+            return refs::record_state(&self.handle, self.letter, &mut ids.lock().unwrap(), number);
+        }
         let Some(mut bytes) = self.file_record(number as u64)? else { return Ok(None) };
         let Some(parsed) = record::parse(&mut bytes, false).filter(|p| p.in_use && p.base == 0) else { return Ok(None) };
         let mut state = RecordState {
@@ -385,6 +439,7 @@ impl Volume {
             modified: parsed.modified.unwrap_or(0),
             size: parsed.size.unwrap_or(0),
             names: parsed.names.into_iter().map(|n| (n.parent, n.name)).collect(),
+            tags: parsed.tags,
         };
         let mut size = parsed.size;
         // Names and the data stream can sit in extension records, listed in the attribute list.
@@ -401,6 +456,7 @@ impl Volume {
             }
             state.names.extend(parsed.names.into_iter().map(|n| (n.parent, n.name)));
             size = size.or(parsed.size);
+            state.tags = state.tags.take().or(parsed.tags);
         }
         state.size = size.unwrap_or(0);
         Ok(Some(state))
@@ -471,11 +527,16 @@ impl Volume {
             MinMajorVersion: 2,
             MaxMajorVersion: 3,
         };
-        ioctl(&self.handle, FSCTL_READ_USN_JOURNAL, as_bytes(&input), buf).map_err(|e| match e.raw_os_error() {
+        let len = ioctl(&self.handle, FSCTL_READ_USN_JOURNAL, as_bytes(&input), buf).map_err(|e| match e.raw_os_error() {
             Some(ERROR_JOURNAL_ENTRY_DELETED | ERROR_JOURNAL_DELETE_IN_PROGRESS | ERROR_JOURNAL_NOT_ACTIVE | ERROR_INVALID_PARAMETER) => {
                 JournalError::Lost
             }
             _ => JournalError::Io(e),
+        })?;
+        // ReFS writes 128-bit ids (USN_RECORD_V3): the index reads them as its own record numbers.
+        Ok(match &self.refs {
+            Some(ids) => refs::translate_page(buf, len, &mut ids.lock().unwrap()),
+            None => len,
         })
     }
 }
@@ -504,6 +565,9 @@ fn merge(builder: &mut Builder, number: u64, parsed: Parsed) {
     };
     if let Some(size) = parsed.size {
         builder.size(owner, size);
+    }
+    if let Some(tags) = parsed.tags {
+        builder.tags(owner, tags);
     }
     for name in parsed.names {
         builder.name(owner, name.parent, &name.name);

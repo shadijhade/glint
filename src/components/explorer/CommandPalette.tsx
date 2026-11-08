@@ -216,7 +216,7 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                             aria-selected={i === active}
                             onMouseMove={() => i !== active && setActive(i)}
                             onClick={() => run(c)}
-                            className={cn("flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm", i === active && "bg-accent")}
+                            className={cn("flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-start text-sm", i === active && "bg-accent")}
                         >
                             <c.icon className={cn("size-4 shrink-0 text-muted-foreground", c.iconClass)} />
                             {/* A long label is cut short too (not scrolled sideways), once its detail is gone. */}
@@ -228,7 +228,7 @@ export function CommandPalette({ commands, onGoTo, onClose }: { commands: Comman
                                     <FuzzyText text={c.detail} query={highlightQuery} tight />
                                 </span>
                             )}
-                            {c.shortcut && <span className="ml-auto shrink-0 pl-4 text-xs text-muted-foreground">{c.shortcut}</span>}
+                            {c.shortcut && <span className="ms-auto shrink-0 ps-4 text-xs text-muted-foreground">{c.shortcut}</span>}
                         </button>
                         </Fragment>
                     ))}

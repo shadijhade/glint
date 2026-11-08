@@ -144,7 +144,7 @@ function CompareModal({ left, right, onClose }: { left: CompareSide; right: Comp
             {view !== "text" && (
                 <div className="flex shrink-0 border-b bg-chrome/60 text-xs">
                     {[a, b].map((side, n) => (
-                        <div key={n} className={cn("flex min-w-0 flex-1 items-baseline gap-2 px-3.5 py-1.5", n === 1 && "border-l")}>
+                        <div key={n} className={cn("flex min-w-0 flex-1 items-baseline gap-2 px-3.5 py-1.5", n === 1 && "border-s")}>
                             <span className={cn("size-2 shrink-0 self-center rounded-full", n === 0 ? "bg-red-500/70" : "bg-emerald-500/70")} />
                             <span className="truncate font-medium text-foreground" title={side.path}>
                                 {nameOf(side)}
@@ -244,7 +244,7 @@ function Half({
             title={editable && !editing ? `${text ?? ""}\n(Double-click to edit line ${line + 1})` : text}
             onDoubleClick={editable && !editing ? onStartEdit : undefined}
         >
-            <span className="w-12 shrink-0 select-none pr-2 text-right tabular-nums text-muted-foreground/70">{line + 1}</span>
+            <span className="w-12 shrink-0 select-none pe-2 text-end tabular-nums text-muted-foreground/70">{line + 1}</span>
             {editing ? (
                 <input
                     type="text"
@@ -266,7 +266,7 @@ function Half({
                     className="h-5 min-w-0 flex-1 bg-background px-1 font-mono text-xs text-foreground outline outline-1 outline-primary"
                 />
             ) : (
-                <span className="min-w-0 flex-1 overflow-hidden whitespace-pre text-ellipsis pr-2 [tab-size:4]">
+                <span className="min-w-0 flex-1 overflow-hidden whitespace-pre text-ellipsis pe-2 [tab-size:4]">
                     {spans?.length || searchSpans?.length ? <Marked text={text ?? ""} spans={spans ?? []} mark={mark} searchSpans={searchSpans} /> : text || " "}
                 </span>
             )}
@@ -742,7 +742,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                     const dirty = n === 0 ? leftLines !== null : rightLines !== null;
                     const canEdit = n === 0 ? canEditLeft : canEditRight;
                     return (
-                        <div key={n} className={cn("flex min-w-0 flex-1 items-center gap-2 px-3.5 py-1.5", n === 1 && "border-l")}>
+                        <div key={n} className={cn("flex min-w-0 flex-1 items-center gap-2 px-3.5 py-1.5", n === 1 && "border-s")}>
                             <span className={cn("size-2 shrink-0 rounded-full", n === 0 ? "bg-red-500/70" : "bg-emerald-500/70")} />
                             <span className="truncate font-medium text-foreground" title={side.path}>
                                 {nameOf(side)}
@@ -754,7 +754,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                                     Read-only: not UTF-8
                                 </span>
                             )}
-                            <div className="ml-auto flex items-center gap-1">
+                            <div className="ms-auto flex items-center gap-1">
                                 {dirty && canEdit && (
                                     <Button
                                         variant="default"
@@ -806,7 +806,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                 )}
 
                 {/* View filter: All / Context / Diffs */}
-                <div role="group" aria-label="Rows to show" className="ml-2 flex rounded-md bg-foreground/[0.05] p-0.5">
+                <div role="group" aria-label="Rows to show" className="ms-2 flex rounded-md bg-foreground/[0.05] p-0.5">
                     {(
                         [
                             ["all", "All"],
@@ -879,7 +879,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                     )}
                 </div>
 
-                <div className="ml-auto flex items-center gap-1">
+                <div className="ms-auto flex items-center gap-1">
                     {history.length > 0 && (
                         <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-xs" onClick={undo} title="Undo last merge or edit (Ctrl+Z)">
                             <RotateCcw className="size-3" /> Undo
@@ -975,7 +975,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="ml-auto size-6"
+                        className="ms-auto size-6"
                         onClick={() => {
                             setSearchOpen(false);
                             setSearchQuery("");
@@ -1105,7 +1105,7 @@ function TextView({ left, right, onBytes }: { left: CompareSide; right: CompareS
                             });
                             selectBlock(best);
                         }}
-                        className="relative w-3 shrink-0 cursor-pointer select-none border-l bg-chrome/50"
+                        className="relative w-3 shrink-0 cursor-pointer select-none border-s bg-chrome/50"
                     >
                         {blocks.map((b, idx) => {
                             const topPct = (b.startRow / totalRows) * 100;
@@ -1276,7 +1276,7 @@ function PicturesView({ left, right }: { left: CompareSide; right: CompareSide }
                         )}
                     </div>
                 )}
-                <div className="ml-auto flex items-center gap-1">
+                <div className="ms-auto flex items-center gap-1">
                     <Button variant="ghost" size="icon" className="size-6" onClick={() => setZoom((z) => Math.max(0.25, +(z - 0.25).toFixed(2)))} title="Zoom out">
                         <ZoomOut className="size-3.5" />
                     </Button>
@@ -1294,7 +1294,7 @@ function PicturesView({ left, right }: { left: CompareSide; right: CompareSide }
                     <Button variant="ghost" size="icon" className="size-6" onClick={() => setZoom((z) => Math.min(8, +(z + 0.25).toFixed(2)))} title="Zoom in">
                         <ZoomIn className="size-3.5" />
                     </Button>
-                    <span className="ml-2 tabular-nums">
+                    <span className="ms-2 tabular-nums">
                         {dims[0] || "…"} · {dims[1] || "…"}
                     </span>
                 </div>
@@ -1334,7 +1334,7 @@ function PicturesView({ left, right }: { left: CompareSide; right: CompareSide }
                 {mode === "side" ? (
                     <div className="flex min-h-0 flex-1">
                         {[0, 1].map((n) => (
-                            <div key={n} className={cn(checker, n === 1 && "border-l")}>
+                            <div key={n} className={cn(checker, n === 1 && "border-s")}>
                                 <img src={src[n]} alt={baseName(n === 0 ? left.path : right.path)} className={img} style={imgStyle} draggable={false} />
                             </div>
                         ))}
@@ -1484,7 +1484,7 @@ function BytesView({ left, right }: { left: CompareSide; right: CompareSide }) {
             const mark = differs ? (n === 0 ? "bg-red-500/30" : "bg-emerald-500/30") : "";
             const here = offset + k === shown ? "outline outline-1 outline-primary" : "";
             cells.push(
-                <span key={k} className={cn("w-[2.5ch] text-center", k === 8 && "ml-[1ch]", mark, here)}>
+                <span key={k} className={cn("w-[2.5ch] text-center", k === 8 && "ms-[1ch]", mark, here)}>
                     {byte === undefined ? "  " : hex(byte, 2)}
                 </span>
             );
@@ -1495,7 +1495,7 @@ function BytesView({ left, right }: { left: CompareSide; right: CompareSide }) {
             );
         }
         return (
-            <div className={cn("flex min-w-0 flex-1 gap-3", n === 1 && "border-l pl-3")}>
+            <div className={cn("flex min-w-0 flex-1 gap-3", n === 1 && "border-s ps-3")}>
                 <span className="flex">{cells}</span>
                 <span className="flex whitespace-pre text-muted-foreground">{chars}</span>
             </div>
@@ -1510,7 +1510,7 @@ function BytesView({ left, right }: { left: CompareSide; right: CompareSide }) {
                     · {formatSize(sizes[0])} and {formatSize(sizes[1])}
                     {sizes[0] !== sizes[1] ? ` (${formatCount(Math.abs(sizes[0] - sizes[1]))} bytes apart)` : ""}
                 </span>
-                <div className="ml-auto flex items-center gap-1.5">
+                <div className="ms-auto flex items-center gap-1.5">
                     <input
                         type="text"
                         value={offsetInput}

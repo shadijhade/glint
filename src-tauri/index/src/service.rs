@@ -2,6 +2,7 @@
 //! and the run loop shared with `shadui-index run` in a console.
 
 use crate::engine::{Engine, Stop};
+use crate::update::Updater;
 use crate::win::{self, os_error, wide};
 use crate::{pipe, store};
 use std::io;
@@ -62,12 +63,27 @@ fn watch_package(stop: Arc<Stop>, remove: Arc<AtomicBool>) {
     });
 }
 
+/// The installed service can update itself (update.rs), from the folder it runs in: Program Files,
+/// where only administrators can write. A copy run from anywhere else can't.
+fn updater(stop: &Arc<Stop>) -> Option<Arc<Updater>> {
+    let exe = std::env::current_exe().ok()?;
+    let installed = crate::install::install_dir().ok()?.join(crate::SERVICE_EXE);
+    let same = matches!((std::fs::canonicalize(&exe), std::fs::canonicalize(&installed)), (Ok(a), Ok(b)) if a == b);
+    let dir = exe.parent().filter(|_| same)?.to_path_buf();
+    Some(Arc::new(Updater::new(dir, stop.clone())))
+}
+
 /// Runs the index until `stop` is set: answers on the pipe once it's listening (the drives fill
-/// in as they're read), then stops the workers, which save their snapshots.
-pub fn run(stop: &Stop, allowed: &[String], only: Option<Vec<char>>, echo: bool, ready: impl FnOnce()) -> io::Result<()> {
+/// in as they're read), then stops the workers, which save their snapshots. `installed` when it's the
+/// Windows service, which can update itself.
+pub fn run(stop: &Arc<Stop>, allowed: &[String], only: Option<Vec<char>>, echo: bool, installed: bool, ready: impl FnOnce()) -> io::Result<()> {
     let engine = Engine::start(win::data_dir()?, only, echo);
     engine.log.line(&format!("allowed users: {}", if allowed.is_empty() { "administrators only".to_string() } else { allowed.join(", ") }));
-    let server = match pipe::serve(engine.clone(), allowed) {
+    let updater = if installed { updater(stop) } else { None };
+    if installed && updater.is_none() {
+        engine.log.line("not running from Program Files: it won't update itself");
+    }
+    let server = match pipe::serve(engine.clone(), allowed, updater) {
         Ok(server) => server,
         Err(e) => {
             engine.log.line(&format!("can't open the pipe: {e}"));
@@ -126,7 +142,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     report(status, SERVICE_START_PENDING, 0, 10_000);
     let remove = Arc::new(AtomicBool::new(false));
     watch_package(stop.clone(), remove.clone());
-    let result = run(&stop, &allowed_users(), None, false, || report(status, SERVICE_RUNNING, 0, 0));
+    let result = run(&stop, &allowed_users(), None, false, true, || report(status, SERVICE_RUNNING, 0, 0));
     let exit = match result {
         Ok(()) => 0,
         Err(e) => e.raw_os_error().unwrap_or(1) as u32,

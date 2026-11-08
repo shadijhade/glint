@@ -687,7 +687,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                     </button>
                 )}
                 {/* What doesn't fit wraps onto a second line, out of sight, rather than being cut. */}
-                <div className="ml-auto flex h-full min-w-0 flex-wrap items-center justify-end gap-x-1 overflow-hidden text-muted-foreground">
+                <div className="ms-auto flex h-full min-w-0 flex-wrap items-center justify-end gap-x-1 overflow-hidden text-muted-foreground">
                     {legend.map(([group, bytes]) => {
                         const pinned = pinnedSpot === group.name;
                         const active = activeSpot === group.name;
@@ -757,7 +757,7 @@ function UsageMapView({ tab, run, onItemContextMenu, onFolderContextMenu }: Disk
                 <canvas ref={overlayRef} className={cn("pointer-events-none absolute inset-0 size-full", (!current || body) && "hidden")} />
                 {body && <div className="absolute inset-0">{body}</div>}
                 {tip && (
-                    <div ref={tipRef} className="pointer-events-none absolute left-0 top-0 z-10 max-w-[min(28rem,80%)] rounded-md border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg">
+                    <div ref={tipRef} className="pointer-events-none absolute start-0 top-0 z-10 max-w-[min(28rem,80%)] rounded-md border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg">
                         {tip}
                     </div>
                 )}
@@ -820,7 +820,7 @@ function GrowthStrip({ tab, path, map, title }: { tab: string; path: string; map
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 overflow-hidden" style={{ height: "1.75rem" }}>
                 <span className="flex h-full shrink-0 items-center text-foreground">
                     {title} {grew > 0 ? `grew ${formatSize(grew)}` : grew < 0 ? `shrank ${formatSize(-grew)}` : "hasn't changed size"} since {markDate(growth.since)}
-                    {shorter && <span className="ml-1 text-muted-foreground">(as far back as the marks go)</span>}
+                    {shorter && <span className="ms-1 text-muted-foreground">(as far back as the marks go)</span>}
                 </span>
                 {leaders.map((i) => (
                     <span key={i} className="flex h-full shrink-0 items-center" title={`${map.paths[i]}: ${signed(grewBy(map, i))}`}>

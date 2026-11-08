@@ -163,8 +163,8 @@ function TreeRow({ path, name, has, depth, parent, current, onContextMenu }: { p
                     title={path}
                     style={{ paddingLeft: indent }}
                     className={cn(
-                        "relative flex w-full items-center gap-2 rounded-md py-1 pr-2 text-left text-[0.8125rem] text-foreground/85 transition-colors duration-100 hover:bg-accent",
-                        active && "bg-accent text-foreground before:absolute before:left-0 before:top-1/2 before:h-3.5 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary",
+                        "relative flex w-full items-center gap-2 rounded-md py-1 pe-2 text-start text-[0.8125rem] text-foreground/85 transition-colors duration-100 hover:bg-accent",
+                        active && "bg-accent text-foreground before:absolute before:start-0 before:top-1/2 before:h-3.5 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary",
                         dropping && "bg-primary/20 outline-2 -outline-offset-2 outline-primary"
                     )}
                 >

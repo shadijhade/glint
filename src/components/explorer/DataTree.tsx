@@ -158,7 +158,7 @@ export function DataTree({ entry, format }: { entry: FileEntry; format: "json" |
                     run(typed);
                 }}
             >
-                <span className="pl-1 font-mono text-xs font-medium text-muted-foreground" title="A jq filter, run by jaq">
+                <span className="ps-1 font-mono text-xs font-medium text-muted-foreground" title="A jq filter, run by jaq">
                     jq
                 </span>
                 <input
@@ -223,7 +223,7 @@ export function DataTree({ entry, format }: { entry: FileEntry; format: "json" |
                                         type="button"
                                         onClick={() => more(r)}
                                         style={{ top, paddingLeft: indent + 18 }}
-                                        className={cn("absolute left-0 flex h-[22px] items-center pr-3 text-xs text-primary hover:underline", r.id === selected && "bg-accent")}
+                                        className={cn("absolute start-0 flex h-[22px] items-center pe-3 text-xs text-primary hover:underline", r.id === selected && "bg-accent")}
                                     >
                                         {formatCount(r.more)} more… (show {formatCount(Math.min(PAGE, r.more))})
                                     </button>
@@ -241,7 +241,7 @@ export function DataTree({ entry, format }: { entry: FileEntry; format: "json" |
                                         if (container) (e.altKey && !r.open ? openAll : toggle)(r);
                                     }}
                                     className={cn(
-                                        "absolute left-0 flex h-[22px] w-max min-w-full items-center gap-1 whitespace-pre pr-4 font-mono text-[0.8125rem] leading-[22px]",
+                                        "absolute start-0 flex h-[22px] w-max min-w-full items-center gap-1 whitespace-pre pe-4 font-mono text-[0.8125rem] leading-[22px]",
                                         r.id === selected ? "bg-accent" : "hover:bg-accent/60"
                                     )}
                                 >

@@ -134,7 +134,7 @@ export function HexView({ entry }: { entry: FileEntry }) {
                     {size >= 1024 && ` (${formatCount(size)} bytes)`}
                 </span>
                 {size > pageBytes && (
-                    <span className="ml-auto flex shrink-0 items-center gap-0.5">
+                    <span className="ms-auto flex shrink-0 items-center gap-0.5">
                         <Button variant="ghost" size="icon" className="size-6" disabled={base === 0} onClick={() => move(base - pageBytes)} title="The part before">
                             <ChevronLeft />
                         </Button>
@@ -180,7 +180,7 @@ export function HexView({ entry }: { entry: FileEntry }) {
                                     <span
                                         key={k}
                                         data-at={k < row.length ? offset + k : undefined}
-                                        className={cn("w-[2.5ch] text-center", k === 8 && "ml-[1ch]", k < row.length && `hx-${byteClass(row[k])}`, offset + k === at && "hx-at")}
+                                        className={cn("w-[2.5ch] text-center", k === 8 && "ms-[1ch]", k < row.length && `hx-${byteClass(row[k])}`, offset + k === at && "hx-at")}
                                     >
                                         {k < row.length ? hex(row[k], 2) : "  "}
                                     </span>

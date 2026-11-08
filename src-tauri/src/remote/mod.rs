@@ -12,6 +12,7 @@
 //! rustls already built for updates (OpenDAL would have added 5.7 MB).
 
 mod dav;
+pub(crate) mod device;
 mod rclone;
 mod s3;
 mod sftp;
@@ -93,6 +94,8 @@ enum Backend {
     Dav(dav::Server),
     Sftp(sftp::Server),
     Rclone(rclone::Remote),
+    /// A paired PC's shared folders (devices.rs).
+    Device(device::Peer),
 }
 
 impl Backend {
@@ -102,6 +105,7 @@ impl Backend {
             Backend::Dav(d) => d.list(path).await,
             Backend::Sftp(s) => s.list(path).await,
             Backend::Rclone(r) => r.list(path).await,
+            Backend::Device(d) => d.list(path).await,
         }
     }
 
@@ -111,6 +115,7 @@ impl Backend {
             Backend::Dav(d) => d.stat(path).await,
             Backend::Sftp(s) => s.stat(path).await,
             Backend::Rclone(r) => r.stat(path).await,
+            Backend::Device(d) => d.stat(path).await,
         }
     }
 
@@ -119,6 +124,7 @@ impl Backend {
             Backend::S3(b) => b.get(path, first).await,
             Backend::Dav(d) => d.get(path, first).await,
             Backend::Sftp(_) => Err("SFTP isn't read over HTTP".into()),
+            Backend::Device(_) => Err("A device isn't read over HTTP".into()),
             Backend::Rclone(r) => r.get(path, first).await,
         }
     }
@@ -210,6 +216,10 @@ fn make(connection: &Connection, secret: &str) -> Result<Backend, String> {
                 return Err("Which of rclone's remotes? Its name goes in the connection".into());
             }
             Ok(Backend::Rclone(rclone::Remote { name: name.into(), root }))
+        }
+        "device" => {
+            let id = connection.host.trim().parse().map_err(|_| "That device's key isn't right: pair it again in Settings → Devices".to_string())?;
+            Ok(Backend::Device(device::Peer { id }))
         }
         other => Err(format!("Glint doesn't know connections of the kind “{other}”")),
     }
@@ -321,6 +331,7 @@ async fn download(backend: &Backend, raw: &str, dest: &Path, expected: Option<u6
         }
         let written = match backend {
             Backend::Sftp(server) => sftp_fetch(server, raw, dest, expected.unwrap_or(0), tick).await?,
+            Backend::Device(peer) => peer.fetch(raw, dest, expected, tick).await?,
             _ => http_fetch(backend, raw, dest, expected, tick).await?,
         };
         finish(dest, modified, read_only)?;
@@ -432,6 +443,9 @@ pub async fn read_prefix(path: &str, limit: usize) -> Result<(Vec<u8>, bool), St
     let raw = raw(id, &shown);
     if let Backend::Sftp(server) = &*backend {
         return sftp_prefix(server, &raw, limit).await;
+    }
+    if let Backend::Device(peer) = &*backend {
+        return peer.prefix(&raw, limit).await;
     }
     let mut response = match backend.get(&raw, Some(limit as u64 + 1)).await {
         // A range the server won't give: the whole file, read only as far as needed.
@@ -755,6 +769,24 @@ pub fn remote_secret_delete(id: String) {
 #[tauri::command]
 pub fn remote_secret_saved(id: String) -> bool {
     secrets::read(&id).is_some()
+}
+
+/// A remote folder's items, by the connection's id and the folder's own path (the remote's names,
+/// joined with /): Files On-Demand's listing (ondemand.rs).
+pub async fn list_raw(id: &str, raw: &str) -> Result<Vec<Item>, String> {
+    let (_, backend) = backend(id)?;
+    backend.list(raw).await
+}
+
+/// A file by its own path, downloaded to `dest` for Files On-Demand, which hands it to Windows from there.
+pub async fn download_raw(id: &str, raw: &str, dest: &Path, size: u64, tick: &mut (dyn FnMut(u64) -> bool + Send)) -> Result<u64, String> {
+    let (_, backend) = backend(id)?;
+    download(&backend, raw, dest, Some(size), 0, false, tick).await
+}
+
+/// Keeps the connection pairing made, for the device's first listing.
+pub fn device_connected(id: iroh::EndpointId, connection: iroh::endpoint::Connection) {
+    device::connected(id, connection);
 }
 
 /// Tries a connection as it's typed (with `secret`, or the one kept when there's none): says what's

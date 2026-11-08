@@ -22,6 +22,7 @@ use windows::Win32::System::Services::{
     SERVICE_STATUS, SERVICE_STATUS_CURRENT_STATE, SERVICE_STOPPED, SERVICE_WIN32_OWN_PROCESS,
 };
 use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT, MOVEFILE_REPLACE_EXISTING};
+use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
 use windows::Win32::UI::Shell::FOLDERID_ProgramFiles;
 
 const DESCRIPTION: &str = "Keeps the names and sizes of the files on your NTFS drives in memory so Glint can search them \
@@ -222,12 +223,48 @@ pub fn install(allow: &[String], package: Option<&str>) -> Result<(), Failure> {
     }
     .map_err(fail(Step::Register))?;
 
+    start(&service).map_err(fail(Step::Start))
+}
+
+/// Starts the service and waits for it to run.
+fn start(service: &Sc) -> io::Result<()> {
     match unsafe { StartServiceW(service.0, None) } {
         Ok(()) => {}
         Err(e) if e.code() == ERROR_SERVICE_ALREADY_RUNNING.to_hresult() => {}
-        Err(e) => return Err(Failure(Step::Start, os_error(e))),
+        Err(e) => return Err(os_error(e)),
     }
-    wait_for(&service, SERVICE_RUNNING, Duration::from_secs(30)).map_err(fail(Step::Start))
+    wait_for(service, SERVICE_RUNNING, Duration::from_secs(60))
+}
+
+fn installed_service() -> io::Result<Sc> {
+    let manager = open_manager()?;
+    open_service(&manager)?.ok_or_else(|| io::Error::from_raw_os_error(ERROR_SERVICE_DOES_NOT_EXIST.0 as i32))
+}
+
+/// For `finish-update` (update.rs): once the service's old process (`pid`) has stopped, starts the
+/// service again, from the executable now in place.
+pub(crate) fn start_after(pid: u32) -> io::Result<()> {
+    let service = installed_service()?;
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.ok().map(win::Handle);
+    // Stopping saves the snapshots, which takes a while on big drives.
+    let started = Instant::now();
+    while state(&service)? != SERVICE_STOPPED {
+        if started.elapsed() > Duration::from_secs(300) {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "the service didn't stop"));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    if let Some(process) = process {
+        unsafe { WaitForSingleObject(process.0, 30_000) };
+    }
+    start(&service)
+}
+
+/// For `finish-update`, once the executable from before is back in place: starts it.
+pub(crate) fn start_again() -> io::Result<()> {
+    let service = installed_service()?;
+    let _ = wait_for(&service, SERVICE_STOPPED, Duration::from_secs(30));
+    start(&service)
 }
 
 /// Description, a delayed start (so it never slows down booting), restarts after a crash, and only

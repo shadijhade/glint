@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { t } from "@/lib/i18n";
 import {
     ArchiveRestore,
     BrushCleaning,
@@ -93,7 +94,8 @@ import { terminalFolder } from "./TerminalPanel";
 import { inspectTimeline } from "./TimelineDialog";
 import { inspectXRay } from "./XRayDialog";
 
-function Tool({ icon: Icon, label, pressed, className, ...props }: { icon: LucideIcon; label: string; pressed?: boolean } & React.ComponentProps<"button">) {
+function Tool({ icon: Icon, label: english, pressed, className, ...props }: { icon: LucideIcon; label: string; pressed?: boolean } & React.ComponentProps<"button">) {
+    const label = t(english);
     return (
         <button
             type="button"
@@ -131,13 +133,13 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
                 <span
                     aria-hidden
                     className={cn(
-                        "pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 w-8 rounded-[5px] bg-background shadow-xs transition-transform duration-150 ease-out dark:bg-foreground/[0.12]",
+                        "pointer-events-none absolute bottom-0.5 start-0.5 top-0.5 w-8 rounded-[5px] bg-background shadow-xs transition-transform duration-150 ease-out dark:bg-foreground/[0.12]",
                         view === "grid" && "translate-x-full",
                         disabled && "opacity-40"
                     )}
                 />
             )}
-            {VIEWS.map(({ view: v, icon: Icon, label }) => (
+            {VIEWS.map(({ view: v, icon: Icon, label: english }) => ({ v, Icon, label: t(english) })).map(({ v, Icon, label }) => (
                 <button
                     key={v}
                     type="button"
@@ -429,7 +431,7 @@ export function CommandBar({ selected, comparePair, onRename, onDelete, onSearch
                         aria-haspopup="menu"
                         disabled={!inFolder || find || readOnly}
                         onClick={showNew}
-                        className="-ml-1 grid h-7 w-5 shrink-0 place-items-center rounded-[5px] text-muted-foreground transition-all duration-100 hover:bg-accent hover:text-foreground active:scale-93 disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-3.5"
+                        className="-ms-1 grid h-7 w-5 shrink-0 place-items-center rounded-[5px] text-muted-foreground transition-all duration-100 hover:bg-accent hover:text-foreground active:scale-93 disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-3.5"
                     >
                         <ChevronDown />
                     </button>
@@ -494,19 +496,19 @@ export function CommandBar({ selected, comparePair, onRename, onDelete, onSearch
                     ) : (
                         <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showTools} title="Tools: Terminal, File X-Ray, what's locking, recent changes, duplicate files">
                             <Wrench /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Tools</span>
-                            <ChevronDown className="-ml-1 size-3.5! opacity-70" />
+                            <ChevronDown className="-ms-1 size-3.5! opacity-70" />
                         </Button>
                     )}
                     {tasks.length > 0 && (
                         <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showTasks} title="Run: this project's scripts, recipes and commands, in the terminal under the files">
                             <Play /> <span data-fold="1" className={cn(fold >= 1 && "sr-only")}>Run</span>
-                            <ChevronDown className="-ml-1 size-3.5! opacity-70" />
+                            <ChevronDown className="-ms-1 size-3.5! opacity-70" />
                         </Button>
                     )}
                 </>
             )}
 
-            <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            <div className="ms-auto flex shrink-0 items-center gap-0.5">
                 {fold < 5 && <ViewSwitch view={view} mapped={mapped && !find} disabled={!inFolder && !find && !bin} tileSize={tileSize} onChange={(v) => chooseView(v, tab)} onSizes={showSizes} />}
                 {fold < 4 && (
                 <>
@@ -556,7 +558,7 @@ export function CommandBar({ selected, comparePair, onRename, onDelete, onSearch
                 ) : (
                     <Button variant="ghost" size="sm" aria-haspopup="menu" onClick={showToggles} title={fold >= 5 ? "View: list or grid, hidden items, preview pane, dual pane, compare panes" : "View: hidden items, preview pane, dual pane, compare panes"}>
                         <SlidersHorizontal />
-                        <ChevronDown className="-ml-1 size-3.5! opacity-70" />
+                        <ChevronDown className="-ms-1 size-3.5! opacity-70" />
                     </Button>
                 )}
             </div>

@@ -640,6 +640,25 @@ fn walk(folder: &Path, search: &DocSearch, run: u64, paths: mpsc::SyncSender<Pat
     });
 }
 
+/// A document's lines, read by a worker process of its own (kept for the next one), as Documents search
+/// reads them: the content index's way to read documents without risking the app on a hostile one.
+pub fn read_isolated(path: &Path) -> Result<Lines, String> {
+    static READER: Mutex<Option<Reader>> = Mutex::new(None);
+    let mut slot = READER.lock().unwrap_or_else(|e| e.into_inner());
+    for _ in 0..2 {
+        if slot.is_none() {
+            *slot = Some(Reader::start()?);
+        }
+        match slot.as_mut().map(|r| r.read(path, None)) {
+            Some(Ok(lines)) => return Ok(lines),
+            Some(Err(Some(why))) => return Err(why),
+            // It died on that one, or took too long: a new one for the next.
+            _ => *slot = None,
+        }
+    }
+    Err("The document reader couldn't read it".into())
+}
+
 /// A worker process and its pipes; dropping it (its job) ends it.
 struct Reader {
     _job: Job,
@@ -781,7 +800,7 @@ fn read_all(queue: mpsc::Receiver<PathBuf>, run: u64, found: mpsc::Sender<Docume
 
 /// A match as ripgrep's JSON line of one: its line number the place in the document of its first line
 /// (of `lines`), its label where that is ("p. 3"); a passage's, how many lines it spans.
-fn as_ripgrep(path: &Path, lines: Range<usize>, label: &str, text: &str, spans: &[(usize, usize)]) -> String {
+pub(crate) fn as_ripgrep(path: &Path, lines: Range<usize>, label: &str, text: &str, spans: &[(usize, usize)]) -> String {
     let submatches: Vec<_> = spans.iter().map(|&(s, e)| serde_json::json!({ "match": { "text": &text[s..e] }, "start": s, "end": e })).collect();
     let mut data = serde_json::json!({
         "path": { "text": path.to_string_lossy() },

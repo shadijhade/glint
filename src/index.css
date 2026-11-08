@@ -530,6 +530,23 @@
     margin: 0 0 0.6em 1.4em;
   }
 
+  /* Math (MathML, Windows' Cambria Math) and Mermaid diagrams. */
+  .markdown .md-math {
+    margin: 0.6em 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+
+  .markdown math {
+    font-family: "Cambria Math", "STIX Two Math", math;
+  }
+
+  .markdown .md-mermaid {
+    display: block;
+    max-width: 100%;
+    margin: 0.6em auto;
+  }
+
   /* A picture that isn't shown: from the web, or not found. */
   .markdown .md-missing {
     display: inline-flex;
@@ -623,4 +640,28 @@
   input[role="switch"]:checked::before {
     background-color: HighlightText;
   }
+}
+
+/* Right to left (Arabic, i18n.ts): arrows and chevrons point the way the text reads. */
+[dir="rtl"] :is(.lucide-chevron-right, .lucide-chevron-left, .lucide-chevrons-right, .lucide-chevrons-left, .lucide-arrow-left, .lucide-arrow-right, .lucide-corner-down-left, .lucide-undo-2, .lucide-redo-2) {
+    transform: scaleX(-1);
+}
+
+/* Right to left, code, paths and terminals still read left to right. */
+[dir="rtl"] :is(pre, code, kbd, .font-mono, .xterm) {
+    direction: ltr;
+    unicode-bidi: isolate;
+    text-align: left;
+}
+
+/* Right to left, each piece of text still reads in its own direction (a name like ".git", "17 MB", an
+   English sentence not translated yet), and one-line names keep to the right, beside their icons. */
+[dir="rtl"] body {
+    text-align: right;
+}
+[dir="rtl"] body :where(*) {
+    unicode-bidi: plaintext;
+}
+[dir="rtl"] .truncate:not(.text-center, .text-end, .text-start) {
+    text-align: right;
 }

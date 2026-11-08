@@ -1,24 +1,28 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
+import { LANGUAGES, t } from "@/lib/i18n";
 import { getVersion } from "@tauri-apps/api/app";
-import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { audioDir, desktopDir, documentDir, pictureDir, videoDir } from "@tauri-apps/api/path";
+import { confirm, open, open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Archive, Binary, ClipboardCopy, Cloud, Download, ExternalLink, FileDown, FileUp, Folder, Heart, Image, Keyboard, Loader2, Lock, LockOpen, LogOut, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Wand2, X, Zap } from "lucide-react";
+import { Archive, Binary, ClipboardCopy, Cloud, Copy, Download, ExternalLink, FileDown, FileUp, Folder, Heart, Image, Keyboard, Loader2, Lock, LockOpen, LogOut, Plus, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Type, Wand2, X, Zap } from "lucide-react";
 import logo from "@/assets/logo.svg";
 import { disableIndex, enableIndex, leaveRemote, refreshIndex, serviceOutdated, useExplorer } from "@/lib/explorer";
 import { formatCount, formatDate, formatDuration, formatSize } from "@/lib/format";
 import { baseName, samePath } from "@/lib/paths";
 import { countOf, importSettings, type Part, PARTS, readSettingsFile, type SettingsFile, writeSettingsFile } from "@/lib/settingsFile";
-import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, type McpSetup, mcpSetup, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
+import { diagnostics, type ExplorerIntegration, explorerIntegration, type IndexVolume, type McpSetup, mcpSetup, type MediaConfig, mediaConfigure, type MediaStatus, mediaStatus, setExplorerIntegration, type ToolProgress, type ToolStatus } from "@/lib/fs";
 import { TILE_SIZES, type TileSize } from "@/lib/grid";
 import { clearWithUndo, DEFAULT_SETTINGS, useStore } from "@/lib/store";
 import { knownShells, useTerminals } from "@/lib/terminal";
 import { cancelInstall, describeProgress, installTool, refreshTools, removeTool, useTool, useTools } from "@/lib/tools";
 import { checkForUpdates, installUpdate, useUpdater } from "@/lib/updater";
 import { cn } from "@/lib/utils";
-import { cancelMeaning, installMeaning, refreshMeaning, removeMeaning, useMeaning } from "@/lib/meaning";
+import { cancelMeaning, installMeaning, installMultilingual, refreshMeaning, removeMeaning, removeMultilingual, useMeaning } from "@/lib/meaning";
 import { refreshZoxide } from "@/lib/zoxide";
 import { refreshOpeners, useOpeners } from "@/lib/openers";
+import { devicesConfigure, devicesForget, devicesPairCode, devicesStatus, type DevicesStatus, pairDevice, type Share } from "@/lib/devices";
 import { type RcloneRemote, rcloneDelete, rcloneRemotes, type RcloneStatus, rcloneStatus, rcloneUnlock, serviceName } from "@/lib/rclone";
 import { connectionFor } from "./explorer/CloudSetup";
 import { addRemote } from "./explorer/RemoteDialog";
@@ -80,9 +84,10 @@ function AgentsSection() {
     return (
         <Section title="AI agents">
             <p className="px-4 py-3 text-xs text-muted-foreground">
-                AI agents that speak the Model Context Protocol can ask Glint to find files by name on every drive in milliseconds (with instant search on), measure folders, list the biggest files, say what was moved or deleted lately and search text inside files.
-                Glint's tools only read. Once told how, the agent starts Glint for itself, and sees the names and text it asks for.
+                AI agents that speak the Model Context Protocol can ask Glint to find files by name on every drive in milliseconds (with instant search on), measure folders (as a map, in agents that show apps), list the biggest files, say what was moved or deleted lately and search text inside files.
+                They can also ask to move, rename, make folders and recycle: Glint asks you first each time, in a Windows dialog naming exactly what will happen, and lists what was done below, with Undo. Once told how, the agent starts Glint for itself, and sees the names and text it asks for.
             </p>
+            <WindowsAgentsRow />
             {AGENTS.map(([label, hint, key]) => (
                 <div key={key} className="px-4 py-3">
                     <div className="flex items-center justify-between gap-4">
@@ -97,7 +102,79 @@ function AgentsSection() {
                     {setup && <pre className="mt-2 select-text overflow-x-auto rounded-sm bg-muted px-2 py-1.5 font-mono text-[0.6875rem] text-muted-foreground">{setup[key]}</pre>}
                 </div>
             ))}
+            <AgentActions />
         </Section>
+    );
+}
+
+/** Windows' own agent registry (odr.exe, in newer Windows builds): Glint added to it, so Windows' agents find it. */
+function WindowsAgentsRow() {
+    const [available, setAvailable] = useState(false);
+    useEffect(() => {
+        void invoke<boolean>("agents_registry_available").then(setAvailable, () => {});
+    }, []);
+    return (
+        <Row label="Windows' agent registry" hint={available ? "Adds Glint to the agents Windows itself knows (odr.exe), so its agents and the apps using them find Glint without setup." : "Newer Windows builds have one (odr.exe): then Glint can be added to it here."}>
+            <Button
+                variant="outline"
+                size="sm"
+                disabled={!available}
+                onClick={() =>
+                    void invoke<string>("agents_register").then(
+                        (said) => toast.success("Glint is in Windows' agent registry", { description: said || undefined }),
+                        (e) => toast.error("Couldn't add Glint to Windows' agent registry", { description: String(e) })
+                    )
+                }
+            >
+                Add Glint
+            </Button>
+        </Row>
+    );
+}
+
+interface AgentAction {
+    id: number;
+    at: number;
+    kind: string;
+    summary: string;
+    items: [string, string | null][];
+    undone: boolean;
+}
+
+/** What agents did through Glint (each one allowed in Windows' dialog), newest first, with Undo. */
+function AgentActions() {
+    const [actions, setActions] = useState<AgentAction[]>([]);
+    const refresh = () => void invoke<AgentAction[]>("agent_actions").then(setActions, () => {});
+    useEffect(refresh, []);
+    if (!actions.length) return null;
+    return (
+        <div className="space-y-1 px-4 pb-3">
+            <div className="text-sm">What agents did</div>
+            {actions.slice(0, 20).map((a) => (
+                <div key={a.id} className="flex items-center justify-between gap-3 text-xs">
+                    <span className={cn("truncate", a.undone && "text-muted-foreground line-through")} title={a.items.map(([from, to]) => `${from} → ${to ?? "—"}`).join("\n")}>
+                        {new Date(a.at).toLocaleString()} · {a.summary}
+                    </span>
+                    {!a.undone && (
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                                void invoke("agent_undo", { id: a.id }).then(
+                                    () => {
+                                        toast.success("Undone", { description: a.summary });
+                                        refresh();
+                                    },
+                                    (e) => toast.error("Couldn't undo it", { description: String(e) })
+                                )
+                            }
+                        >
+                            Undo
+                        </Button>
+                    )}
+                </div>
+            ))}
+        </div>
     );
 }
 
@@ -105,7 +182,7 @@ function Section({ title, action, children }: { title: string; action?: ReactNod
     return (
         <section id={sectionId(title)} className="scroll-mt-5">
             <div className="mb-2 flex h-7 items-center justify-between px-1">
-                <h3 className="text-sm font-semibold">{title}</h3>
+                <h3 className="text-sm font-semibold">{t(title)}</h3>
                 {action}
             </div>
             <div className="divide-y rounded-lg border bg-card">{children}</div>
@@ -118,8 +195,8 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
         // In a narrow window, what's chosen goes under the label rather than squeezing it.
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3">
             <div className="min-w-48 flex-1">
-                <div className="text-sm">{label}</div>
-                {hint && <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>}
+                <div className="text-sm">{t(label)}</div>
+                {hint && <div className="mt-0.5 text-xs text-muted-foreground">{t(hint)}</div>}
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">{children}</div>
         </div>
@@ -131,8 +208,8 @@ function SwitchRow({ label, hint, checked, disabled, onChange }: { label: string
     return (
         <label className={cn("flex items-center justify-between gap-6 px-4 py-3", disabled ? "cursor-default" : "cursor-pointer")}>
             <div className="min-w-0">
-                <div className={cn("text-sm", disabled && "text-muted-foreground")}>{label}</div>
-                {hint && <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>}
+                <div className={cn("text-sm", disabled && "text-muted-foreground")}>{t(label)}</div>
+                {hint && <div className="mt-0.5 text-xs text-muted-foreground">{t(hint)}</div>}
             </div>
             <input
                 type="checkbox"
@@ -140,7 +217,7 @@ function SwitchRow({ label, hint, checked, disabled, onChange }: { label: string
                 checked={checked}
                 disabled={disabled}
                 onChange={(e) => onChange(e.target.checked)}
-                className="relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full bg-input transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-4 before:rounded-full before:bg-white before:shadow-xs before:transition-transform checked:bg-primary checked:before:translate-x-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50"
+                className="relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full bg-input transition-colors before:absolute before:start-0.5 before:top-0.5 before:size-4 before:rounded-full before:bg-white before:shadow-xs before:transition-transform checked:bg-primary checked:before:translate-x-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50"
             />
         </label>
     );
@@ -160,7 +237,7 @@ function Segmented<T extends string | number | null>({ value, options, onChange 
                         option === value && "bg-background text-foreground shadow-xs dark:bg-foreground/[0.12]"
                     )}
                 >
-                    {label}
+                    {t(label)}
                 </button>
             ))}
         </div>
@@ -192,7 +269,7 @@ function PatternEditor({ value, onChange, placeholder }: { value: string[]; onCh
             <div className="flex max-h-44 flex-wrap gap-1.5 overflow-y-auto">
                 {value.length === 0 && <p className="text-sm text-muted-foreground">Nothing is excluded.</p>}
                 {value.map((ex) => (
-                    <span key={ex} className="inline-flex items-center gap-1 rounded-md border bg-background py-0.5 pl-2 pr-0.5 font-mono text-xs">
+                    <span key={ex} className="inline-flex items-center gap-1 rounded-md border bg-background py-0.5 ps-2 pe-0.5 font-mono text-xs">
                         {ex}
                         <button
                             type="button"
@@ -268,7 +345,12 @@ function InstantSearch() {
                 <div className="flex shrink-0 items-center gap-1.5">
                     {working && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
                     {(state !== "on" || outdated) && state !== "unsupported" && (
-                        <Button size="sm" disabled={working} onClick={() => run(enableIndex)} title="Windows asks for administrator approval">
+                        <Button
+                            size="sm"
+                            disabled={working}
+                            onClick={() => run(enableIndex)}
+                            title={outdated ? "The service updates itself when it can; otherwise Windows asks for administrator approval" : "Windows asks for administrator approval"}
+                        >
                             <ShieldCheck /> {enable}
                         </Button>
                     )}
@@ -378,6 +460,361 @@ function MeaningRow() {
     );
 }
 
+/** The 101-language meaning model, beside the English one. */
+function MultilingualRow() {
+    const { multilingual, progress } = useMeaning();
+    return (
+        <Row label="Meaning in 101 languages (potion-multilingual-128M)" hint={`Meaning search in Arabic, Chinese, Spanish and 98 more (Model2Vec, 512 MB to download, 130 MB in memory, MIT) · ${multilingual ? "Downloaded: meaning search uses it" : "Not downloaded"}`}>
+            {progress ? null : multilingual ? (
+                <Button variant="outline" size="sm" onClick={() => void removeMultilingual()}>
+                    Remove
+                </Button>
+            ) : (
+                <Button size="sm" variant="outline" onClick={() => void installMultilingual()} title="Downloads it from Hugging Face and checks it against its pinned checksums">
+                    <Download /> Download
+                </Button>
+            )}
+        </Row>
+    );
+}
+
+interface ContentStatus {
+    enabled: boolean;
+    folders: string[];
+    files: number;
+    indexing: boolean;
+    seen: number;
+    indexed: number;
+    bytes: number;
+    error: string | null;
+}
+
+/**
+ * Search inside files instantly: an index of what the files below the chosen folders hold (text, code
+ * and documents), kept current as they change, which Text mode answers from in milliseconds.
+ */
+function ContentIndexSection() {
+    const [status, setStatus] = useState<ContentStatus | null>(null);
+    const refresh = () => void invoke<ContentStatus>("content_status").then(setStatus, () => {});
+    useEffect(() => {
+        refresh();
+        const timer = setInterval(refresh, 1500);
+        return () => clearInterval(timer);
+    }, []);
+    const configure = async (enabled: boolean, folders: string[]) => {
+        try {
+            setStatus(await invoke<ContentStatus>("content_configure", { enabled, folders }));
+        } catch (e) {
+            toast.error("Couldn't change content indexing", { description: String(e) });
+        }
+    };
+    const add = async () => {
+        const folder = await openDialog({ directory: true, title: "A folder to search inside instantly" });
+        if (typeof folder === "string" && status && !status.folders.includes(folder)) await configure(status.enabled || true, [...status.folders, folder]);
+    };
+    if (!status) return null;
+    const start = async () => {
+        const folders = status.folders.length ? status.folders : [await documentDir(), await desktopDir()].map((p) => p.replace(/[\\/]+$/, ""));
+        await configure(true, folders);
+    };
+    return (
+        <Section title="Search inside files instantly">
+            <SwitchRow
+                label="Index what's in my files"
+                hint={
+                    status.enabled
+                        ? status.indexing
+                            ? `Reading the folders: ${formatCount(status.seen)} files looked at, ${formatCount(status.indexed)} indexed…`
+                            : `${formatCount(status.files)} files in the index (${formatSize(status.bytes)}). Words typed in Text mode in these folders are found in milliseconds; regular expressions, case and whole words still read the files.`
+                        : "Text, code and documents (PDF, Word, Excel, PowerPoint, EPUB) below the folders you choose, kept current as they change. The index stays on this PC, in Glint's data folder."
+                }
+                checked={status.enabled}
+                onChange={(on) => void (on ? start() : configure(false, status.folders))}
+            />
+            {status.enabled && (
+                <div className="space-y-1 px-4 pb-3">
+                    {status.folders.map((folder) => (
+                        <div key={folder} className="flex items-center justify-between gap-2 text-sm">
+                            <span className="truncate" title={folder}>
+                                {folder}
+                            </span>
+                            <Button variant="ghost" size="sm" onClick={() => void configure(true, status.folders.filter((f) => f !== folder))}>
+                                Remove
+                            </Button>
+                        </div>
+                    ))}
+                    <Button variant="outline" size="sm" onClick={() => void add()}>
+                        <Plus /> Add a folder
+                    </Button>
+                </div>
+            )}
+        </Section>
+    );
+}
+
+interface Fetching {
+    stage: string;
+    done: number;
+    total: number;
+}
+
+/**
+ * Photo search and speech search (shows: and says:): CLIP sees what's in the pictures, Whisper hears
+ * what's said in recordings and videos, in the folders chosen here, on this PC alone.
+ */
+function MediaSearchSection() {
+    const [status, setStatus] = useState<MediaStatus | null>(null);
+    const [fetching, setFetching] = useState<Record<string, Fetching | undefined>>({});
+    const refresh = () => void mediaStatus().then(setStatus, () => {});
+    useEffect(() => {
+        refresh();
+        const timer = setInterval(refresh, 2000);
+        return () => clearInterval(timer);
+    }, []);
+    if (!status) return null;
+    const configure = async (config: MediaConfig) => {
+        try {
+            setStatus(await mediaConfigure(config));
+        } catch (e) {
+            toast.error("Couldn't change photo and speech search", { description: String(e) });
+        }
+    };
+    const install = async (kind: "photos" | "speech") => {
+        const channel = new Channel<Fetching>();
+        channel.onmessage = (p) => setFetching((f) => ({ ...f, [kind]: p }));
+        setFetching((f) => ({ ...f, [kind]: { stage: "Starting", done: 0, total: 0 } }));
+        try {
+            setStatus(await invoke<MediaStatus>("media_ai_install", { kind, onProgress: channel }));
+            toast.success(kind === "photos" ? "Photo search is ready: it reads the photos in the background" : "Speech search is ready: it listens to the recordings in the background");
+        } catch (e) {
+            if (String(e) !== "cancelled") toast.error("Couldn't download it", { description: String(e) });
+        } finally {
+            setFetching((f) => ({ ...f, [kind]: undefined }));
+        }
+    };
+    const sides = [
+        {
+            kind: "photos" as const,
+            label: "Photo search (shows:)",
+            on: status.config.photos,
+            folders: status.config.photoFolders,
+            installed: status.photosInstalled,
+            progress: status.photos,
+            what: "photos read",
+            about: "Finds pictures by what's in them: type shows:dog on a beach, shows:receipt or shows:whiteboard. OpenAI's CLIP with ONNX Runtime (about 240 MB to download, MIT).",
+            defaults: async () => [await pictureDir()],
+            set: (on: boolean, folders: string[]) => ({ ...status.config, photos: on, photoFolders: folders }),
+        },
+        {
+            kind: "speech" as const,
+            label: "Speech search (says:)",
+            on: status.config.speech,
+            folders: status.config.speechFolders,
+            installed: status.speechInstalled,
+            progress: status.speech,
+            what: "recordings heard",
+            about: "Finds recordings and videos by what's said in them, in any language: type says:budget meeting. whisper.cpp with Whisper's base model (about 70 MB to download, MIT); FFmpeg, if installed, reads videos and every format.",
+            defaults: async () => [await audioDir(), await videoDir()],
+            set: (on: boolean, folders: string[]) => ({ ...status.config, speech: on, speechFolders: folders }),
+        },
+    ];
+    return (
+        <Section title="Photos and recordings">
+            <p className="px-4 pt-3 text-xs text-muted-foreground">Both run on this PC, at low priority: no picture, recording or word typed is sent anywhere. What they learn is kept in Glint's data folder, under each file's ID, so moving or renaming a file keeps it.</p>
+            {sides.map((side) => {
+                const busy = fetching[side.kind];
+                const p = side.progress;
+                const hint = !side.on
+                    ? side.about
+                    : busy
+                      ? `${busy.stage}${busy.total ? `: ${Math.round((busy.done / busy.total) * 100)}%` : "…"}`
+                      : !side.installed
+                        ? "Its model isn't downloaded yet."
+                        : p.error
+                          ? `Stopped: ${p.error}`
+                          : p.working
+                            ? `${formatCount(p.known)} ${side.what}, ${formatCount(p.pending)} to go…`
+                            : `${formatCount(p.known)} ${side.what}. New ones are read every two hours, and when the folders change here.`;
+                return (
+                    <div key={side.kind}>
+                        <SwitchRow
+                            label={side.label}
+                            hint={hint}
+                            checked={side.on}
+                            onChange={(on) =>
+                                void (async () => {
+                                    const folders = on && !side.folders.length ? (await side.defaults()).map((f) => f.replace(/[\\/]+$/, "")) : side.folders;
+                                    await configure(side.set(on, folders));
+                                    if (on && !side.installed && !busy) await install(side.kind);
+                                })()
+                            }
+                        />
+                        {side.on && (
+                            <div className="space-y-1 px-4 pb-3">
+                                {side.folders.map((folder) => (
+                                    <div key={folder} className="flex items-center justify-between gap-2 text-sm">
+                                        <span className="truncate" title={folder}>
+                                            {folder}
+                                        </span>
+                                        <Button variant="ghost" size="sm" onClick={() => void configure(side.set(true, side.folders.filter((f) => f !== folder)))}>
+                                            Remove
+                                        </Button>
+                                    </div>
+                                ))}
+                                <div className="flex gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() =>
+                                            void (async () => {
+                                                const folder = await openDialog({ directory: true, title: side.kind === "photos" ? "A folder of photos" : "A folder of recordings or videos" });
+                                                if (typeof folder === "string" && !side.folders.includes(folder)) await configure(side.set(true, [...side.folders, folder]));
+                                            })()
+                                        }
+                                    >
+                                        <Plus /> Add a folder
+                                    </Button>
+                                    {!side.installed && !busy && (
+                                        <Button size="sm" variant="outline" onClick={() => void install(side.kind)} title="Downloads it and checks it against its pinned checksums">
+                                            <Download /> Download
+                                        </Button>
+                                    )}
+                                    {busy && (
+                                        <Button size="sm" variant="ghost" onClick={() => ["photos", "speech", "whisper", "onnxruntime"].forEach((id) => void invoke("tool_cancel_install", { id }))}>
+                                            Stop
+                                        </Button>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            })}
+        </Section>
+    );
+}
+
+/**
+ * Devices: Glint on your other PCs, over iroh. This PC shares the folders chosen here with the PCs paired
+ * with it (read-only); a PC paired the other way shows in the sidebar's Remote section, to browse.
+ */
+function DevicesSection() {
+    const [status, setStatus] = useState<DevicesStatus | null>(null);
+    const [code, setCode] = useState<string | null>(null);
+    const [typed, setTyped] = useState("");
+    const [pairing, setPairing] = useState(false);
+    useEffect(() => {
+        const refresh = () => void devicesStatus().then(setStatus, () => {});
+        refresh();
+        const timer = setInterval(refresh, 3000);
+        return () => clearInterval(timer);
+    }, []);
+    if (!status) return null;
+    const configure = async (sharing: boolean, shares: Share[]) => {
+        try {
+            setStatus(await devicesConfigure(sharing, shares));
+        } catch (e) {
+            toast.error("Couldn't change what's shared", { description: String(e) });
+        }
+    };
+    const pair = async () => {
+        setPairing(true);
+        try {
+            const remote = await pairDevice(typed);
+            setTyped("");
+            toast.success(`Paired with “${remote.name}”`, { description: "It's in the sidebar's Remote section: what it shares opens like a folder." });
+        } catch (e) {
+            toast.error("Couldn't pair them", { description: String(e) });
+        } finally {
+            setPairing(false);
+        }
+    };
+    return (
+        <Section title="Devices">
+            <p className="px-4 pt-3 text-xs text-muted-foreground">
+                Glint on your other PCs, connected directly and end-to-end encrypted, through routers and firewalls (iroh's relays pass the encrypted traffic only when there's no direct path). A paired PC sees only the folders shared here, and only reads them.
+            </p>
+            <SwitchRow
+                label={`Share folders from ${status.name}`}
+                hint={status.sharing ? `${status.shares.length} folder${status.shares.length === 1 ? "" : "s"} shared with ${status.allowed.length} paired PC${status.allowed.length === 1 ? "" : "s"}, while Glint runs.` : "Your paired PCs browse and copy from the folders you choose, read-only."}
+                checked={status.sharing}
+                onChange={(on) =>
+                    void (async () => {
+                        const shares = on && !status.shares.length ? [{ name: "", path: (await pictureDir()).replace(/[\\/]+$/, "") }] : status.shares;
+                        await configure(on, shares);
+                    })()
+                }
+            />
+            {status.sharing && (
+                <div className="space-y-1 px-4 pb-3">
+                    {status.shares.map((share) => (
+                        <div key={share.path} className="flex items-center justify-between gap-2 text-sm">
+                            <span className="truncate" title={share.path}>
+                                {share.name} <span className="text-muted-foreground">· {share.path}</span>
+                            </span>
+                            <Button variant="ghost" size="sm" onClick={() => void configure(true, status.shares.filter((s) => s.path !== share.path))}>
+                                Remove
+                            </Button>
+                        </div>
+                    ))}
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                                void (async () => {
+                                    const folder = await openDialog({ directory: true, title: "A folder to share with your PCs" });
+                                    if (typeof folder === "string" && !status.shares.some((s) => s.path === folder)) await configure(true, [...status.shares, { name: "", path: folder }]);
+                                })()
+                            }
+                        >
+                            <Plus /> Share a folder
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => void devicesPairCode().then(setCode, (e) => toast.error("Couldn't make a pairing code", { description: String(e) }))}>
+                            Show a pairing code
+                        </Button>
+                    </div>
+                    {code && (
+                        <div className="space-y-1 rounded-md border bg-muted/30 p-2">
+                            <div className="flex items-center gap-2">
+                                <code className="min-w-0 flex-1 select-all break-all text-xs">{code}</code>
+                                <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(code).then(() => toast.success("Copied"))}>
+                                    <Copy /> Copy
+                                </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground">On the other PC, enter it in Settings → Devices → Add a PC, within ten minutes. It pairs one PC, once.</p>
+                        </div>
+                    )}
+                    {status.allowed.map((peer) => (
+                        <div key={peer.id} className="flex items-center justify-between gap-2 text-sm">
+                            <span className="truncate" title={peer.id}>
+                                {peer.name} <span className="text-muted-foreground">· paired {new Date(peer.paired).toLocaleDateString()}</span>
+                            </span>
+                            <Button variant="ghost" size="sm" onClick={() => void devicesForget(peer.id).then(setStatus, (e) => toast.error("Couldn't forget it", { description: String(e) }))}>
+                                Forget
+                            </Button>
+                        </div>
+                    ))}
+                </div>
+            )}
+            <Row label="Add a PC" hint="Its pairing code, from Settings → Devices on it: that PC then shows in the sidebar's Remote section.">
+                <div className="flex gap-2">
+                    <input
+                        value={typed}
+                        onChange={(e) => setTyped(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && typed.trim() && !pairing && void pair()}
+                        placeholder="Pairing code"
+                        className="h-8 w-56 rounded-md border bg-background px-2 text-xs outline-hidden focus:border-primary"
+                    />
+                    <Button size="sm" disabled={!typed.trim() || pairing} onClick={() => void pair()}>
+                        {pairing && <Loader2 className="animate-spin" />} Pair
+                    </Button>
+                </div>
+            </Row>
+        </Section>
+    );
+}
+
 /** The programs Glint drives: the ones that come with it, and the optional ones it installs when a feature needs them. */
 function ToolsSection() {
     const tools = useTools((s) => s.tools);
@@ -406,6 +843,7 @@ function ToolsSection() {
                 <ToolRow key={tool.id} tool={tool} progress={busy[tool.id]} />
             ))}
             <MeaningRow />
+            <MultilingualRow />
             <p className="px-4 py-3 text-xs text-muted-foreground">
                 ripgrep, fd and pdu come with Glint. Other tools install when a feature needs them, for your account only: with winget, or from the
                 tool's own GitHub release, which Glint checks against the checksum it knows for it before unpacking anything.
@@ -841,14 +1279,14 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
     return (
         <div className="flex h-full flex-col">
             <div className="flex h-12 shrink-0 items-center justify-between border-b px-5">
-                <h2 className="font-semibold">Settings</h2>
+                <h2 className="font-semibold">{t("Settings")}</h2>
                 <Button variant="ghost" size="icon" onClick={onClose} title="Close (Esc)" aria-label="Close settings">
                     <X />
                 </Button>
             </div>
 
             <div className="flex min-h-0 flex-1">
-            <nav aria-label="Settings sections" className="hidden w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-r p-2 md:flex">
+            <nav aria-label="Settings sections" className="hidden w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-e p-2 md:flex">
                 {SECTIONS.map(([title, name]) => (
                     <button
                         key={title}
@@ -859,11 +1297,11 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                             setCurrent(title);
                         }}
                         className={cn(
-                            "rounded-md px-2.5 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                            "rounded-md px-2.5 py-1.5 text-start text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                             current === title && "bg-accent font-medium text-foreground"
                         )}
                     >
-                        {name}
+                        {t(name)}
                     </button>
                 ))}
             </nav>
@@ -871,6 +1309,9 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                 <Section title="Appearance">
                     <Row label="Theme">
                         <Segmented value={settings.theme} onChange={(theme) => set({ theme })} options={[["light", "Light"], ["dark", "Dark"], ["system", "System"]]} />
+                    </Row>
+                    <Row label="Language" hint="The interface's language. Glint restarts its window to change it; what isn't translated yet stays in English.">
+                        <Segmented value={settings.language ?? "system"} onChange={(language) => set({ language })} options={LANGUAGES} />
                     </Row>
                     <Row
                         label="Backdrop"
@@ -957,6 +1398,9 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                 </Section>
 
                 <InstantSearch />
+                <ContentIndexSection />
+                <MediaSearchSection />
+                <DevicesSection />
 
                 <Section title="Find files by name">
                     <Row label="Result limit" hint="Stops after this many files and folders">
@@ -1046,13 +1490,13 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                                                 : [...settings.exclusions, ...items.filter((item) => !settings.exclusions.includes(item))],
                                         })}
                                         className={cn(
-                                            "flex items-center gap-2 rounded-md border px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent [&_svg]:size-4",
+                                            "flex items-center gap-2 rounded-md border px-2.5 py-2 text-start text-sm transition-colors hover:bg-accent [&_svg]:size-4",
                                             all ? "border-primary/40 bg-primary/10" : active > 0 && "border-dashed"
                                         )}
                                     >
                                         <Icon className={all ? "text-primary" : "text-muted-foreground"} />
                                         {label}
-                                        <span className="ml-auto text-xs tabular-nums text-muted-foreground">{active}/{items.length}</span>
+                                        <span className="ms-auto text-xs tabular-nums text-muted-foreground">{active}/{items.length}</span>
                                     </button>
                                 );
                             })}

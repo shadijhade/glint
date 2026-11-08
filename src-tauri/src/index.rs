@@ -139,14 +139,56 @@ pub(crate) fn bundled() -> Result<std::path::PathBuf, String> {
     Err(format!("{} is missing next to the app; reinstall the app", shadui_index::SERVICE_EXE))
 }
 
-/// Installs (or updates) and starts the service for this user, after the UAC prompt.
-/// Rejects with "cancelled" when the prompt is declined.
+/// Updates a running service older than the app to the one that ships with it, without administrator
+/// approval: the service takes it only with its signature from the release (update.rs in the index
+/// crate). Err with why not when it can't that way (a service from before it could, a build without the
+/// signature, or the service refused it), leaving the UAC route.
+#[cfg(windows)]
+fn update_quietly() -> Result<(), String> {
+    use shadui_index::{client, update};
+    let running = client::status().map_err(|e| e.to_string())?.version;
+    if !update::newer(shadui_index::VERSION, &running) {
+        return Err(format!("the service runs {running}, which this app ({}) doesn't update", shadui_index::VERSION));
+    }
+    let exe = bundled()?;
+    let signature = std::fs::read_to_string(exe.with_file_name(update::SIGNATURE_FILE)).map_err(|_| "this build has no signature for its service".to_string())?;
+    let bytes = std::fs::read(&exe).map_err(|e| e.to_string())?;
+    match client::update(&bytes, &signature).map_err(|e| e.to_string())? {
+        Some(version) => client::wait_for_version(&version, std::time::Duration::from_secs(120)).map(drop).map_err(|e| e.to_string()),
+        None => Err(format!("the service ({running}) is from before it could update itself")),
+    }
+}
+
+/// Updates an older service to this app's without administrator approval (update_quietly); rejects
+/// with why not, for the UI to offer the UAC route instead.
+#[tauri::command]
+pub async fn index_update() -> Result<IndexInfo, String> {
+    #[cfg(windows)]
+    {
+        blocking(|| {
+            update_quietly()?;
+            Ok(info())
+        })
+        .await
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Instant search needs Windows and NTFS".into())
+    }
+}
+
+/// Installs (or updates) and starts the service for this user, after the UAC prompt; an update goes
+/// without the prompt when the service can take it by itself. Rejects with "cancelled" when the prompt
+/// is declined.
 #[tauri::command]
 pub async fn index_enable(window: Window) -> Result<IndexInfo, String> {
     #[cfg(windows)]
     {
         let owner = window.hwnd().ok().map(|h| h.0 as isize);
         blocking(move || {
+            if update_quietly().is_ok() {
+                return Ok(info());
+            }
             shadui_index::client::enable(&bundled()?, owner, crate::store_package())?;
             Ok(info())
         })

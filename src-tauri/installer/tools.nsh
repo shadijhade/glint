@@ -74,6 +74,12 @@
   !insertmacro ${ROW} 20 rclone "rclone" 5 tool rclone rclone.rclone \
     "Google Drive, OneDrive, Dropbox and 60 more clouds" \
     "rclone reaches more than 60 cloud storage services. Glint then opens Google Drive, OneDrive, Dropbox, Box, MEGA, S3 and the rest like folders, signs you in to them, and keeps folders in sync with them."
+  !insertmacro ${ROW} 21 c2patool "c2patool" 2 tool c2patool c2patool \
+    "Content Credentials: who made a picture, and whether AI did" \
+    "The Content Authenticity Initiative's c2patool reads a picture's or video's Content Credentials (C2PA): who made it, with what, and whether AI made or changed it. The preview and the File X-Ray show them."
+  !insertmacro ${ROW} 22 whisper "whisper.cpp" 1 tool whisper-cli whisper \
+    "Speech search: what's said in recordings and videos" \
+    "whisper.cpp runs OpenAI's Whisper on this PC. Speech search (says: in the search box) then finds recordings and videos by what's said in them, in any language; its model downloads when speech search is turned on in Settings."
 !macroend
 
 !macro GLINT_TOOL_GROUPS GROUP

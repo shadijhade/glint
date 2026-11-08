@@ -13,7 +13,7 @@ import { CapacityBar, DRIVE_ICONS, freeOf, KNOWN_ICONS } from "./Sidebar";
 import { inspectTimeline } from "./TimelineDialog";
 
 const tile =
-    "group relative flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-all duration-150 hover:border-primary/40 hover:bg-accent/60 hover:shadow-xs active:scale-[0.988] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring";
+    "group relative flex items-center gap-3 rounded-lg border bg-card p-3 text-start transition-all duration-150 hover:border-primary/40 hover:bg-accent/60 hover:shadow-xs active:scale-[0.988] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Instant search, offered where first-time users see it: off, starting, reading a drive, or a drive that failed. */
 function InstantSearchCard() {
@@ -165,7 +165,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
                                     {d.total > 0 && (
                                         <span
                                             className={cn(
-                                                "ml-auto shrink-0 font-mono text-[0.6875rem] font-semibold tabular-nums",
+                                                "ms-auto shrink-0 font-mono text-[0.6875rem] font-semibold tabular-nums",
                                                 nearlyFull ? "text-destructive" : "text-muted-foreground"
                                             )}
                                         >

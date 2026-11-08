@@ -8,9 +8,10 @@ import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, 
 import { archiveOf, calcSizes, compressEntries, currentPath, navigate, openEntry, openFile, reload, restoreRecycled, useExplorer } from "@/lib/explorer";
 import { dataFormat, isKnownType, isMarkdown, previewKind, typeLabel } from "@/lib/fileTypes";
 import { formatCount, formatDate, formatFullDate, formatSize, plural } from "@/lib/format";
-import { archiveExtract, type ArchivePeek, archivePeek, listDir, ocrText, readTextPreview, rotateImage, setDesktopWallpaper } from "@/lib/fs";
+import { archiveExtract, type ArchivePeek, archivePeek, type Heard, listDir, ocrText, readTextPreview, rotateImage, setDesktopWallpaper, speechTranscript } from "@/lib/fs";
 import { useGitMark } from "@/lib/git";
 import { mapLink, useMediaDetails } from "@/lib/media";
+import { CredentialsSection } from "./XRayDialog";
 import { usePreviewView, type View } from "@/lib/preview";
 import { languageFor, SyntaxHighlighter } from "@/lib/highlight";
 import { baseName, isGallery, isRecent, isRecycleBin, parentPath } from "@/lib/paths";
@@ -279,7 +280,7 @@ function ImagePreview({ entry, src }: { entry: FileEntry; src: string }) {
                 )}
             </div>
             <div className="flex flex-wrap items-center justify-center gap-1.5">
-                {dimensions && <span className="mr-1 text-xs tabular-nums">{dimensions} px</span>}
+                {dimensions && <span className="me-1 text-xs tabular-nums">{dimensions} px</span>}
                 {zoom > 1 && (
                     <button
                         type="button"
@@ -346,11 +347,13 @@ type MediaKind = "image" | "video" | "audio" | "pdf";
 
 /** A picture, video, sound or PDF, from a file on disk. */
 function Media({ entry, kind, src }: { entry: FileEntry; kind: MediaKind; src: string }) {
+    const player = useRef<HTMLVideoElement>(null);
     if (kind === "image") return <ImagePreview entry={entry} src={src} />;
     if (kind === "video")
         return (
             <Centered className="p-3">
-                <video src={src} controls className="max-h-full max-w-full rounded-sm" />
+                <video ref={player} src={src} controls className="max-h-full max-w-full rounded-sm" />
+                {!isArchived(entry) && !isRemote(entry) && <Transcript path={entry.path} player={player} />}
             </Centered>
         );
     if (kind === "audio") return <AudioPreview entry={entry} src={src} />;
@@ -360,11 +363,67 @@ function Media({ entry, kind, src }: { entry: FileEntry; kind: MediaKind; src: s
 /** A song with its cover, when it has one, over its player. */
 function AudioPreview({ entry, src }: { entry: FileEntry; src: string }) {
     const cover = useMediaDetails(entry, !isArchived(entry))?.cover;
+    const player = useRef<HTMLAudioElement>(null);
     return (
         <Centered>
             {cover ? <img src={cover} alt="Cover" draggable={false} className="size-44 rounded-md object-cover shadow-md" /> : <BigIcon entry={entry} />}
-            <audio src={src} controls className="w-full max-w-sm" />
+            <audio ref={player} src={src} controls className="w-full max-w-sm" />
+            {!isArchived(entry) && !isRemote(entry) && <Transcript path={entry.path} player={player} />}
         </Centered>
+    );
+}
+
+/** 3:07, or 1:02:09. */
+function clock(ms: number) {
+    const s = Math.floor(ms / 1000);
+    const [h, m, sec] = [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60];
+    return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+/** What speech search heard in a recording, each part a jump to when it's said; what a says: search asked for marked. */
+function Transcript({ path, player }: { path: string; player: React.RefObject<HTMLMediaElement | null> }) {
+    const query = useExplorer((s) => {
+        const tab = s.panes[s.activePane]?.active;
+        return (tab && s.tabs[tab]?.find?.query) || "";
+    });
+    const words = /(?:^|[\s"])says:(.*)$/i.exec(query)?.[1]?.replace(/"/g, "").trim() ?? "";
+    const [heard, setHeard] = useState<Heard | null>(null);
+    const box = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        let live = true;
+        void speechTranscript(path, words || null).then(
+            (h) => live && setHeard(h),
+            () => live && setHeard(null)
+        );
+        return () => {
+            live = false;
+        };
+    }, [path, words]);
+    useEffect(() => box.current?.querySelector("[data-hit]")?.scrollIntoView({ block: "nearest" }), [heard]);
+    if (!heard?.parts.length) return null;
+    const hits = new Set(heard.hits);
+    return (
+        <div ref={box} className="mt-3 max-h-48 w-full max-w-md overflow-y-auto rounded-md border bg-card/40 p-2 text-xs">
+            <div className="mb-1 font-medium text-muted-foreground">What's said{heard.lang ? ` (${heard.lang})` : ""}</div>
+            {heard.parts.map(([ms, text], i) => (
+                <button
+                    key={i}
+                    type="button"
+                    data-hit={hits.has(i) || undefined}
+                    title="Play from here"
+                    className={cn("block w-full rounded px-1 py-0.5 text-start hover:bg-muted", hits.has(i) && "bg-primary/15")}
+                    onClick={() => {
+                        const media = player.current;
+                        if (!media) return;
+                        media.currentTime = ms / 1000;
+                        void media.play();
+                    }}
+                >
+                    <span className="me-2 tabular-nums text-muted-foreground">{clock(ms)}</span>
+                    {text}
+                </button>
+            ))}
+        </div>
     );
 }
 
@@ -522,7 +581,7 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
                     </Button>
                 </div>
             )}
-            <div className="sticky top-2 z-10 float-right mr-3 flex items-center gap-0.5 rounded-md border bg-card/90 p-0.5 shadow-xs backdrop-blur-xs select-none">
+            <div className="sticky top-2 z-10 float-right me-3 flex items-center gap-0.5 rounded-md border bg-card/90 p-0.5 shadow-xs backdrop-blur-xs select-none">
                 <button
                     type="button"
                     aria-pressed={wrap}
@@ -549,7 +608,7 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
                 useInlineStyles={false}
                 showLineNumbers={showLineNumbers}
                 wrapLines
-                lineProps={{ className: cn("block pl-3 pr-4", wrap && "whitespace-pre-wrap break-words") }}
+                lineProps={{ className: cn("block ps-3 pe-4", wrap && "whitespace-pre-wrap break-words") }}
                 className={cn("py-2 font-mono text-[0.8125rem] leading-5", wrap ? "w-full" : "min-w-max")}
             >
                 {cut ? lines.slice(0, TEXT_LINES).join("\n") : state.text}
@@ -680,6 +739,12 @@ function Details({ entry }: { entry: FileEntry }) {
                     </dd>
                 </div>
             ))}
+            {/* A picture's or video's Content Credentials, when c2patool is installed and it has some. */}
+            {media && !entry.dir && !isArchived(entry) && (
+                <div className="col-span-2 pt-1">
+                    <CredentialsSection path={entry.path} compact />
+                </div>
+            )}
         </dl>
     );
 }
@@ -798,13 +863,13 @@ export function EntryPreview({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div
                 onDoubleClick={onToggleMaximize}
-                className="flex h-10 shrink-0 items-center gap-2 border-b pl-3 pr-1.5"
+                className="flex h-10 shrink-0 items-center gap-2 border-b ps-3 pe-1.5"
             >
                 <span className="truncate text-sm font-medium" title={entry.path}>
                     {entry.name}
                 </span>
                 {views.length > 1 && (
-                    <div role="group" aria-label="Show" className="ml-auto flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
+                    <div role="group" aria-label="Show" className="ms-auto flex shrink-0 rounded-md bg-foreground/[0.05] p-0.5">
                         {views.map((choice) => (
                             <button
                                 key={choice.view}
@@ -822,7 +887,7 @@ export function EntryPreview({
                         ))}
                     </div>
                 )}
-                <div className={cn("flex shrink-0", views.length < 2 && "ml-auto")}>
+                <div className={cn("flex shrink-0", views.length < 2 && "ms-auto")}>
                     {comparePair && !entry.dir && !archived && !closed && !recycled && (
                         <Button
                             variant="ghost"

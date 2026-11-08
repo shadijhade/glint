@@ -226,7 +226,7 @@ function Editor({ start }: { start: FolderRule }) {
                     </Button>
                 </span>
             </Field>
-            <label className="flex items-center gap-2 pl-[7.75rem]">
+            <label className="flex items-center gap-2 ps-[7.75rem]">
                 <input type="checkbox" checked={rule.subfolders} onChange={(e) => change({ subfolders: e.target.checked })} className="accent-primary" />
                 <span>Its subfolders too</span>
             </label>

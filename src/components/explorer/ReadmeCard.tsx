@@ -43,13 +43,13 @@ export function ReadmeCard({ entry }: { entry: FileEntry }) {
     if (text === "") return null;
     return (
         <div className={cn("flex shrink-0 flex-col border-b", open && "max-h-[50%]")}>
-            <div className="flex h-8 shrink-0 items-center gap-1 pl-2 pr-1.5 text-xs">
+            <div className="flex h-8 shrink-0 items-center gap-1 ps-2 pe-1.5 text-xs">
                 <button
                     type="button"
                     aria-expanded={open}
                     onClick={() => setSettings({ readmeOpen: !open })}
                     title={open ? "Fold the README" : "Show the README"}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch rounded-[4px] px-1 text-left hover:text-foreground"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch rounded-[4px] px-1 text-start hover:text-foreground"
                 >
                     <ChevronRight className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
                     <BookOpen className="size-3.5 shrink-0 text-primary" />

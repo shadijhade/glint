@@ -236,15 +236,15 @@ export function HistoryDialog() {
                         {f.label}
                     </button>
                 ))}
-                <div className="relative ml-auto w-64">
-                    <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <div className="relative ms-auto w-64">
+                    <Search className="pointer-events-none absolute start-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                     <input
                         type="text"
                         value={typed}
                         autoFocus
                         onChange={(e) => setTyped(e.target.value)}
                         placeholder="Part of a name or a path…"
-                        className="h-7 w-full rounded-md border bg-background pl-7 pr-2 text-xs outline-hidden focus:border-primary"
+                        className="h-7 w-full rounded-md border bg-background ps-7 pe-2 text-xs outline-hidden focus:border-primary"
                     />
                 </div>
             </div>

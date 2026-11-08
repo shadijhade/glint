@@ -208,7 +208,7 @@ impl Engine {
     }
 
     fn discover(self: &Arc<Self>) {
-        let drives = volume::fixed_ntfs_drives();
+        let drives = volume::fixed_indexed_drives();
         let mut slots = self.slots.write().unwrap();
         for letter in drives {
             if self.stop.is_set() || self.only.as_ref().is_some_and(|only| !only.contains(&letter)) || slots.iter().any(|s| s.letter == letter) {
@@ -303,12 +303,13 @@ impl Engine {
                     (status.progress, status.progress_total) = (done, total);
                     !self.stop.is_set()
                 };
+                let what = if volume.is_refs() { "the folders" } else { "the MFT" };
                 let mut tree = match volume.scan(&progress) {
                     Ok(tree) => tree,
                     Err(_) if self.stop.is_set() => return Ok(()),
-                    Err(e) => return Err(retry("can't read the MFT", e)),
+                    Err(e) => return Err(retry(&format!("can't read {what}"), e)),
                 };
-                self.log.line(&format!("{}: read the MFT in {:.0} ms", slot.letter, ms(started)));
+                self.log.line(&format!("{}: read {what} in {:.0} ms", slot.letter, ms(started)));
                 // Records may hold other folders now than the notes say: folders compare from now on.
                 if growth.tracking() {
                     growth.restart(now_ms(), tree.rec(ROOT).map_or(0, |r| r.size()));
@@ -369,7 +370,7 @@ impl Engine {
         let meta = |cursor| Meta { volume_serial: volume.serial, journal_id: journal.id, next_usn: cursor, saved_at: now_ms() };
         let marked = self.mark_day(slot);
         if source == "scan" {
-            self.save(slot, &path, meta(cursor));
+            self.save(slot, &volume, &path, meta(cursor));
         }
         // A snapshot the journal had to catch up gets saved again at the next chance.
         let (mut dirty, mut saved_at, mut counted_at) = (source == "snapshot" && (replayed > 0 || marked), Instant::now(), Instant::now());
@@ -377,7 +378,7 @@ impl Engine {
         loop {
             if self.stop.is_set() {
                 if dirty {
-                    self.save(slot, &path, meta(cursor));
+                    self.save(slot, &volume, &path, meta(cursor));
                 }
                 return Ok(());
             }
@@ -390,7 +391,7 @@ impl Engine {
                 today = local_day(now_ms());
             }
             if dirty && saved_at.elapsed() > SAVE_EVERY {
-                self.save(slot, &path, meta(cursor));
+                self.save(slot, &volume, &path, meta(cursor));
                 (dirty, saved_at) = (false, Instant::now());
             }
             if counted_at.elapsed() > RECOUNT_EVERY {
@@ -424,6 +425,15 @@ impl Engine {
             self.log.line(&format!("{letter}: the journal no longer reaches back to the snapshot"));
             return (None, tree.growth);
         }
+        // A ReFS snapshot goes with the record numbers its file ids were given.
+        if !volume.load_ids(&path.with_extension("ids")) {
+            self.log.line(&format!("{letter}: the snapshot's record numbers are missing"));
+            return (None, tree.growth);
+        }
+        let mut tree = tree;
+        // Tags are kept beside the snapshot (a snapshot from before them has none: they come back
+        // as their files change, or at the next read of the disk).
+        tree.tags = load_tags(&path.with_extension("tags"));
         self.log.line(&format!("{letter}: loaded the snapshot in {:.0} ms", ms(started)));
         (Some((tree, meta)), Growth::default())
     }
@@ -440,8 +450,14 @@ impl Engine {
         true
     }
 
-    fn save(&self, slot: &Slot, path: &Path, meta: Meta) {
+    fn save(&self, slot: &Slot, volume: &Volume, path: &Path, meta: Meta) {
         let started = Instant::now();
+        if let Err(e) = volume.save_ids(&path.with_extension("ids")) {
+            self.log.line(&format!("{}: couldn't save the record numbers: {e}", slot.letter));
+        }
+        if let Err(e) = save_tags(&path.with_extension("tags"), &slot.tree.read().unwrap().tags) {
+            self.log.line(&format!("{}: couldn't save the tags: {e}", slot.letter));
+        }
         let saved = snapshot::save(path, &slot.tree.read().unwrap(), &meta);
         match saved {
             Ok(()) => self.log.line(&format!("{}: saved the snapshot in {:.0} ms", slot.letter, ms(started))),
@@ -539,6 +555,19 @@ impl Engine {
 
     fn ready_slot(&self, letter: char) -> Option<Arc<Slot>> {
         self.slots.read().unwrap().iter().find(|s| s.letter == letter && s.ready.load(Ordering::SeqCst)).cloned()
+    }
+
+    /// Every tag on the ready drives, with how many items have it, most used first.
+    pub fn tags(&self) -> Vec<(String, u64)> {
+        let mut all: std::collections::HashMap<String, (String, u64)> = std::collections::HashMap::new();
+        for slot in self.slots.read().unwrap().iter().filter(|s| s.ready.load(Ordering::SeqCst)) {
+            for (tag, count) in slot.tree.read().unwrap().tag_counts() {
+                all.entry(tag.to_lowercase()).or_insert_with(|| (tag, 0)).1 += count;
+            }
+        }
+        let mut out: Vec<(String, u64)> = all.into_values().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        out
     }
 
     pub fn status(&self) -> Status {
@@ -826,6 +855,38 @@ fn encode_hits(tree: &Tree, ids: &[u32], drive: &str) -> Vec<u8> {
 }
 
 /// The drive letter and the path below its root, for `C:\Users\me` or `\\?\C:\Users\me`.
+/// Tags beside a snapshot: "GLINTTAG", a count, then each record's number, length and text.
+fn save_tags(path: &Path, tags: &HashMap<u32, Box<str>>) -> io::Result<()> {
+    let mut out = Vec::with_capacity(16 + tags.len() * 16);
+    out.extend_from_slice(b"GLINTTAG");
+    out.extend_from_slice(&(tags.len() as u64).to_le_bytes());
+    for (n, text) in tags {
+        out.extend_from_slice(&n.to_le_bytes());
+        out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+    let tmp = path.with_extension("tags.tmp");
+    fs::write(&tmp, out)?;
+    fs::rename(tmp, path)
+}
+
+fn load_tags(path: &Path) -> HashMap<u32, Box<str>> {
+    let mut tags = HashMap::new();
+    let Ok(bytes) = fs::read(path) else { return tags };
+    if bytes.get(..8) != Some(b"GLINTTAG") {
+        return tags;
+    }
+    let mut at = 16;
+    while at + 8 <= bytes.len() {
+        let n = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+        let Some(text) = bytes.get(at + 8..at + 8 + len) else { break };
+        tags.insert(n, String::from_utf8_lossy(text).into());
+        at += 8 + len;
+    }
+    tags
+}
+
 pub fn split_drive(path: &str) -> Option<(char, &str)> {
     let path = path.strip_prefix(r"\\?\").unwrap_or(path);
     let bytes = path.as_bytes();

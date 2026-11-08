@@ -120,9 +120,22 @@ jobs:
       - name: Repackage NSIS installer with signed inner binaries
         if: env.HAS_SIGNPATH == 'true'
         shell: pwsh
+        env:
+          # For the service's update signature, made over the signed service it goes with.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           Expand-Archive -Path "$env:RUNNER_TEMP\signed-binaries\glint-binaries.zip" -DestinationPath "src-tauri\target\release" -Force
-          npx tauri bundle --bundles nsis
+          $overlay = @()
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+            # An installed service updates itself to this release with it (scripts/sign-service.mjs).
+            node scripts/sign-service.mjs
+            $serviceOverlay = "$env:RUNNER_TEMP\service-overlay.json"
+            Set-Content -Path $serviceOverlay -Value (@{ bundle = @{ resources = @{ "$PWD\src-tauri\target\release\shadui-index.exe.sig" = "shadui-index.exe.sig" } } } | ConvertTo-Json -Depth 5)
+            $overlay = @("--config", $serviceOverlay)
+          }
+          npx tauri bundle --bundles nsis @overlay
 
       - name: Upload unsigned NSIS installer artifact
         id: upload-installer
@@ -175,9 +188,13 @@ jobs:
               Set-Content -Path $useSignedCmd -Value "@echo off`r`nif /I `"%~nx1`"==`"$($env:INSTALLER_NAME)`" copy /Y `"$env:RUNNER_TEMP\signed-installer\$($env:INSTALLER_NAME)`" `"%~1`" >nul`r`n"
               $cfg = @{ bundle = @{ createUpdaterArtifacts = $true; windows = @{ signCommand = @{ cmd = $useSignedCmd; args = @("%1") } } } }
             } else {
+              # An installed service updates itself to this release with its signature (scripts/sign-service.mjs).
+              node scripts/sign-service.mjs
               $cfg = @{ bundle = @{ createUpdaterArtifacts = $true } }
             }
-            Set-Content -Path $overlayJson -Value ($cfg | ConvertTo-Json -Depth 6)
+            # The service's signature goes in next to it (made over the SignPath-signed service, in that case).
+            $cfg.bundle.resources = @{ "$PWD\src-tauri\target\release\shadui-index.exe.sig" = "shadui-index.exe.sig" }
+            Set-Content -Path $overlayJson -Value ($cfg | ConvertTo-Json -Depth 8)
             npx tauri bundle --bundles nsis --config $overlayJson
 
             Copy-Item "$nsisInstaller.sig" "$outDir\$($env:INSTALLER_NAME).sig" -Force
