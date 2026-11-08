@@ -71,7 +71,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 <img src="screenshots/folder-sizes.png" alt="C:\Windows sorted by size, with the size of every folder" width="100%">
 
-### New since 0.9
+### New in 0.9.5
 
 -   **Photo search: `shows:`.** Type `shows:dog on a beach`, `shows:receipt` or `shows:whiteboard` in the search box: pictures are found by what's in them. OpenAI's CLIP (MIT) runs on this PC with ONNX Runtime, both downloaded when you turn it on in **Settings → Photos and recordings** (about 240 MB), and reads the folders you choose in the background, at low priority, with Windows' own codecs (so HEIC, AVIF and camera RAW too, with their extensions). What it learns of a picture is kept under the file's ID, so a move or rename keeps it.
 -   **Speech search: `says:`.** `says:budget meeting` finds recordings and videos by what's said in them, in any language: whisper.cpp with Whisper's base model (MIT, about 70 MB) transcribes them on this PC, FFmpeg reading videos when it's there. The preview of a recording shows what's said, each line a jump to when it's said, the words searched for marked.
