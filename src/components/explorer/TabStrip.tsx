@@ -1,12 +1,16 @@
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
-import { Clock, Cloud, Folder, HardDrive, Images, Monitor, Plus, Search, Trash2, X } from "lucide-react";
+import { Clock, Cloud, Columns2, Folder, HardDrive, Images, Monitor, Plus, Search, Trash2, X } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { activateTab, closeTab, newTab, openInNewWindow, placeTab, tabName, tabState, useExplorer } from "@/lib/explorer";
-import { isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, THIS_PC } from "@/lib/paths";
+import { activateTab, closeTab, moveTabToPane, newTab, openInNewWindow, placeTab, splitWithTab, tabName, tabState, useExplorer } from "@/lib/explorer";
+import { t } from "@/lib/i18n";
+import { inArchivePath, isGallery, isRecent, isRecycleBin, isRemotePath, isRoot, THIS_PC } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 
-/** A tab being dragged, and where it would go: its starting pane/slot, live pointer delta, and target slot. */
+/**
+ * A tab being dragged, and where it would go: its starting pane/slot, live pointer delta, and target slot
+ * in a strip, or, over the files, a pane (`split`: a second one, beside the only pane).
+ */
 interface TabDrag {
     id: string | null;
     fromPane: number;
@@ -14,8 +18,46 @@ interface TabDrag {
     width: number;
     dx: number;
     over: { pane: number; index: number; x: number } | null;
+    zone: { pane: number; split: boolean } | null;
 }
-const useTabDrag = create<TabDrag>(() => ({ id: null, fromPane: 0, fromIndex: 0, width: 0, dx: 0, over: null }));
+const NO_DRAG: TabDrag = { id: null, fromPane: 0, fromIndex: 0, width: 0, dx: 0, over: null, zone: null };
+const useTabDrag = create<TabDrag>(() => NO_DRAG);
+
+/**
+ * Over the files, where a dragged tab would go: into the other pane (not its pane's only tab), or with
+ * one pane, from its far half, into a second pane beside it.
+ */
+function zoneAt(x: number, y: number, fromPane: number): TabDrag["zone"] {
+    const under = document.elementFromPoint(x, y);
+    const pane = under?.closest<HTMLElement>("[data-pane]");
+    if (!pane || under?.closest("[data-tabstrip]")) return null;
+    const index = Number(pane.dataset.pane);
+    const s = useExplorer.getState();
+    if (s.dual) return index !== fromPane && (s.panes[fromPane]?.tabs.length ?? 0) > 1 ? { pane: index, split: false } : null;
+    const box = pane.getBoundingClientRect();
+    const far = document.documentElement.dir === "rtl" ? x < box.left + box.width / 2 : x > box.left + box.width / 2;
+    return far ? { pane: 0, split: true } : null;
+}
+
+/** Where a tab dragged over the files would go, shown on the pane: the other pane, or a second one beside the only pane. */
+export function PaneDropZone({ pane }: { pane: number }) {
+    const zone = useTabDrag((s) => s.zone);
+    if (!zone || zone.pane !== pane) return null;
+    return (
+        <div
+            aria-hidden
+            className={cn(
+                "pointer-events-none absolute top-9 bottom-0 z-30 grid place-items-center rounded-md border-2 border-dashed border-primary/70 bg-primary/10 zone-in",
+                zone.split ? "end-0 w-1/2" : "inset-x-0"
+            )}
+        >
+            <span className="flex items-center gap-1.5 rounded-md bg-background/95 px-2.5 py-1 text-sm font-medium text-primary shadow-sm">
+                <Columns2 className="size-4" />
+                {t(zone.split ? "Open side by side" : "Move the tab here")}
+            </span>
+        </div>
+    );
+}
 
 /** Where a tab dropped at (x, y) would go: the strip under it, and the gap nearest among its tabs. */
 function dropAt(x: number, y: number): TabDrag["over"] {
@@ -56,13 +98,15 @@ function dragTab(e: React.PointerEvent, id: string, fromPane: number, fromIndex:
     const move = (m: PointerEvent) => {
         if (!dragging && Math.hypot(m.clientX - x0, m.clientY - y0) < 6) return;
         dragging = true;
+        const over = dropAt(m.clientX, m.clientY);
         useTabDrag.setState({
             id,
             fromPane,
             fromIndex,
             width,
             dx: m.clientX - x0,
-            over: dropAt(m.clientX, m.clientY),
+            over,
+            zone: over ? null : zoneAt(m.clientX, m.clientY, fromPane),
         });
     };
     // Held, the pointer keeps reporting past the window's edge, where a tab can be dropped to have a
@@ -72,9 +116,14 @@ function dragTab(e: React.PointerEvent, id: string, fromPane: number, fromIndex:
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
-        const { over } = useTabDrag.getState();
-        useTabDrag.setState({ id: null, fromPane: 0, fromIndex: 0, width: 0, dx: 0, over: null });
+        const { over, zone } = useTabDrag.getState();
+        useTabDrag.setState(NO_DRAG);
         if (dragging && over) placeTab(id, over.pane, over.index);
+        else if (dragging && zone && u.type === "pointerup") {
+            if (zone.split) splitWithTab(id);
+            else moveTabToPane(id, zone.pane);
+            return;
+        }
         // Dropped outside the window, or pulled well away from the strip: a window of its own.
         const outside = u.clientX < 0 || u.clientY < 0 || u.clientX > window.innerWidth || u.clientY > window.innerHeight;
         if (dragging && !over && u.type === "pointerup" && (outside || Math.abs(u.clientY - y0) > 90)) tearOffTab(id, { x: u.screenX, y: u.screenY });
@@ -96,14 +145,22 @@ interface TabProps {
 }
 
 function Tab({ id, pane, index, selected, current, canClose, onContextMenu }: TabProps) {
-    const { path, query, busy, spring } = useExplorer(
+    const { path, query, busy, spring, dropInto, dropTarget } = useExplorer(
         useShallow((s) => {
             const t = s.tabs[id];
             return {
                 path: t?.path ?? THIS_PC,
                 query: t?.find?.query ?? null,
                 busy: !!t?.loading || !!t?.find?.running,
+                // Files dragged over it: lit (and soon shown).
                 spring: s.springTab === id,
+                // What a drop there would go into, while it's the tab under the pointer.
+                dropTarget: s.springTab === id ? s.dropTarget : null,
+                // Files dropped on it go into its folder: not a search, an archive, a remote (read-only), This PC, Recent or Gallery.
+                dropInto:
+                    t && !t.find && t.path !== THIS_PC && !t.listing?.archive && !t.noAccess && !inArchivePath(t.path) && !isRemotePath(t.path) && !isRecent(t.path) && !isGallery(t.path)
+                        ? t.path
+                        : undefined,
             };
         })
     );
@@ -132,6 +189,7 @@ function Tab({ id, pane, index, selected, current, canClose, onContextMenu }: Ta
         <div
             ref={ref}
             data-tab={id}
+            data-drop={dropInto}
             role="tab"
             aria-selected={selected}
             onPointerDown={(e) => dragTab(e, id, pane, index)}
@@ -152,10 +210,12 @@ function Tab({ id, pane, index, selected, current, canClose, onContextMenu }: Ta
                 !dragged && "transition-[background-color,color,transform] duration-150 ease-out",
                 selected && "border-border border-b-background bg-background text-foreground hover:bg-background",
                 dragged && "z-20 border-border bg-background text-foreground shadow-md",
-                spring && "bg-primary/15 text-primary ring-1 ring-inset ring-primary"
+                spring && (!selected || (dropInto !== undefined && dropTarget === dropInto)) && "bg-primary/15 text-primary ring-1 ring-inset ring-primary"
             )}
         >
             {current && <span className="absolute inset-x-2 top-0 h-0.5 rounded-full bg-primary" />}
+            {/* Files held over a tab that isn't showing: it fills as it's about to open. */}
+            {spring && !selected && <span aria-hidden className="spring-load absolute inset-x-1.5 bottom-0.5 h-0.5 rounded-full bg-primary" />}
             <Icon className={cn("size-3.5 shrink-0", folder ? "fill-amber-400/80 text-amber-500" : "text-muted-foreground", busy && "animate-pulse")} />
             <span className="min-w-0 flex-1 truncate">{name}</span>
             {canClose && (
@@ -178,7 +238,7 @@ function Tab({ id, pane, index, selected, current, canClose, onContextMenu }: Ta
 }
 
 /** A pane's tabs, browser-style: click to show, middle-click or × to close, double-click the empty strip for a new one. */
-export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu: (e: React.MouseEvent, id: string) => void }) {
+export function TabStrip({ pane, onContextMenu, onPaneMenu }: { pane: number; onContextMenu: (e: React.MouseEvent, id: string) => void; onPaneMenu: (at: { clientX: number; clientY: number }) => void }) {
     const { tabs, active, paneActive, dual } = useExplorer(
         useShallow((s) => {
             // Selectors also run for a pane that's about to go (its pane already closed).
@@ -215,6 +275,20 @@ export function TabStrip({ pane, onContextMenu }: { pane: number; onContextMenu:
             >
                 <Plus className="size-4" />
             </button>
+            {dual && (
+                <button
+                    type="button"
+                    onClick={(e) => {
+                        const below = e.currentTarget.getBoundingClientRect();
+                        onPaneMenu({ clientX: below.left, clientY: below.bottom + 4 });
+                    }}
+                    title={t("This pane: swap, show a folder in the other pane, even out, close")}
+                    aria-label={t("Pane menu")}
+                    className="mb-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-92"
+                >
+                    <Columns2 className="size-4" />
+                </button>
+            )}
         </div>
     );
 }

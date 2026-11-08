@@ -95,6 +95,8 @@ export interface Settings {
     // Widths dragged in the list's header and at the preview pane's edge, in pixels (unset: the defaults)
     columns: Partial<Record<Column, number>>;
     previewWidth: number | null;
+    // Dual-pane view: the first pane's share of the width, dragged at the line between them (unset: half)
+    dualSplit: number | null;
     // Git repositories (their roots) whose own settings name programs for status to run (filter
     // drivers), trusted to run them
     gitTrusted: string[];
@@ -173,6 +175,7 @@ export const DEFAULT_SETTINGS: Settings = {
     compareContents: false,
     columns: {},
     previewWidth: null,
+    dualSplit: null,
     gitTrusted: [],
     terminalShell: '',
     terminalHeight: null,
