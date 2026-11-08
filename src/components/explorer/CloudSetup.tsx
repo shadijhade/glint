@@ -393,7 +393,7 @@ export function CloudSetup({ onDone, onCancel }: { onDone: (connection: RemoteCo
                                                     setName(r.name);
                                                     void test(null, r.name, r.name);
                                                 }}
-                                                className="flex items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-accent"
+                                                className="flex items-center gap-2 rounded-md border px-2 py-1.5 text-start transition-colors hover:bg-accent"
                                             >
                                                 <Icon className="size-4 shrink-0 text-primary" />
                                                 <span className="min-w-0">
@@ -409,8 +409,8 @@ export function CloudSetup({ onDone, onCancel }: { onDone: (connection: RemoteCo
                         <section className="space-y-1.5">
                             <h3 className="text-xs font-semibold text-muted-foreground">{unused.length ? "Or connect another" : "Which cloud?"}</h3>
                             <div className="relative">
-                                <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                                <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${listed.length} services`} aria-label="Search services" className={cn(INPUT, "pl-7")} />
+                                <Search className="pointer-events-none absolute top-1/2 start-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                                <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${listed.length} services`} aria-label="Search services" className={cn(INPUT, "ps-7")} />
                             </div>
                             <div className="grid max-h-72 grid-cols-2 gap-1 overflow-y-auto">
                                 {listed.map((p) => {
@@ -422,7 +422,7 @@ export function CloudSetup({ onDone, onCancel }: { onDone: (connection: RemoteCo
                                             type="button"
                                             onClick={() => choose(p)}
                                             title={p.description}
-                                            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent"
+                                            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-start transition-colors hover:bg-accent"
                                         >
                                             <Icon className="size-4 shrink-0 text-muted-foreground" />
                                             <span className="min-w-0 flex-1">

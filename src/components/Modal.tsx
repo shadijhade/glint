@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { t } from "@/lib/i18n";
 import { type LucideIcon, RotateCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
@@ -135,7 +136,7 @@ export function ModalHeader({
                 <Icon className="size-4" />
             </div>
             <div className="min-w-0 flex-1">
-                <h2 className="truncate text-sm font-semibold">{title}</h2>
+                <h2 className="truncate text-sm font-semibold">{typeof title === "string" ? t(title) : title}</h2>
                 {subtitle && (
                     <p className={cn("truncate text-xs text-muted-foreground", subtitleClassName)} title={typeof subtitle === "string" ? subtitle : undefined}>
                         {subtitle}

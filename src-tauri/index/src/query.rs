@@ -473,6 +473,8 @@ pub struct Filters {
     /// What photos, videos and songs say of themselves (`Prop`), which the app reads: the index and fd
     /// are given the query `without_props`.
     pub props: Vec<Prop>,
+    /// Glint's tags (`tag:work`, `tag:red;blue`): each group needs one of its tags (any case).
+    pub tags: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -582,6 +584,13 @@ pub fn parse(query: &str) -> Result<(Vec<String>, Filters), String> {
                 } else {
                     filters.newer_than = Some(secs);
                 }
+            }
+            "tag" | "tags" => {
+                let any: Vec<String> = value.split([';', ',']).map(|t| t.trim().trim_matches('"').to_string()).filter(|t| !t.is_empty()).collect();
+                if any.is_empty() {
+                    return Err("“tag:”: give a tag, like tag:work or tag:red;blue".into());
+                }
+                filters.tags.push(any);
             }
             "file" | "files" if value.is_empty() => filters.kind = Some(Kind::Files),
             "folder" | "folders" if value.is_empty() => filters.kind = Some(Kind::Folders),
@@ -711,6 +720,16 @@ pub fn without_props(query: &str) -> String {
     terms(query)
         .into_iter()
         .filter(|t| !t.split_once(':').is_some_and(|(key, _)| PROPS.contains(&key.to_ascii_lowercase().as_str())))
+        .map(|t| if t.contains(char::is_whitespace) { format!("\"{t}\"") } else { t })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The query without its `tag:` terms, for what can't read tags (fd).
+pub fn without_tags(query: &str) -> String {
+    terms(query)
+        .into_iter()
+        .filter(|t| !t.split_once(':').is_some_and(|(key, _)| matches!(key.to_ascii_lowercase().as_str(), "tag" | "tags")))
         .map(|t| if t.contains(char::is_whitespace) { format!("\"{t}\"") } else { t })
         .collect::<Vec<_>>()
         .join(" ")

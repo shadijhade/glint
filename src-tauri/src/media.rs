@@ -84,13 +84,54 @@ pub async fn media_details(path: String) -> Result<Option<MediaDetails>, String>
 #[tauri::command]
 pub async fn media_details_many(paths: Vec<String>) -> Result<Vec<Option<MediaDetails>>, String> {
     blocking(move || {
-        let chunk = paths.len().div_ceil(4).max(1);
-        Ok(std::thread::scope(|scope| {
-            let parts: Vec<_> = paths.chunks(chunk).map(|part| scope.spawn(move || part.iter().map(|p| details(p, false)).collect::<Vec<_>>())).collect();
+        // JPEGs keep what's asked of them in their first bytes: with many, those are read all at once
+        // through an I/O ring (ioring.rs) and parsed from memory; a header longer than that, and every
+        // other kind, is read from its file.
+        let jpeg = |p: &String| Path::new(p).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"));
+        let mut known: HashMap<usize, Option<MediaDetails>> = HashMap::new();
+        let jpegs: Vec<usize> = (0..paths.len()).filter(|&i| jpeg(&paths[i])).collect();
+        if jpegs.len() >= 16 {
+            let asks: Vec<crate::ioring::Ask> = jpegs.iter().map(|&i| crate::ioring::Ask { path: &paths[i], slices: vec![(0, HEADER_BYTES)] }).collect();
+            if let Some(got) = crate::ioring::read_many(&asks) {
+                for (&i, got) in jpegs.iter().zip(got) {
+                    let Some(bytes) = got.and_then(|g| g.slices.into_iter().next()) else { continue };
+                    let whole = bytes.len() < HEADER_BYTES as usize;
+                    match jpeg_details(bytes) {
+                        Some(found) => {
+                            known.insert(i, Some(found));
+                        }
+                        None if whole => {
+                            known.insert(i, None);
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        let rest: Vec<usize> = (0..paths.len()).filter(|i| !known.contains_key(i)).collect();
+        let chunk = rest.len().div_ceil(4).max(1);
+        let read: Vec<(usize, Option<MediaDetails>)> = std::thread::scope(|scope| {
+            let paths = &paths;
+            let parts: Vec<_> = rest.chunks(chunk).map(|part| scope.spawn(move || part.iter().map(|&i| (i, details(&paths[i], false))).collect::<Vec<_>>())).collect();
             parts.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
-        }))
+        });
+        known.extend(read);
+        Ok((0..paths.len()).map(|i| known.remove(&i).flatten()).collect())
     })
     .await
+}
+
+/// How much of a JPEG is read through the I/O ring: its EXIF (64 KB at most) and its frame header.
+const HEADER_BYTES: u32 = 128 << 10;
+
+/// A JPEG's details from its first bytes; None when they don't hold them.
+fn jpeg_details(bytes: Vec<u8>) -> Option<MediaDetails> {
+    let size = imagesize::blob_size(&bytes).ok();
+    let mut found = picture_or_video_from(MediaSource::seekable(std::io::Cursor::new(bytes)).ok()?).unwrap_or_default();
+    let size = size?;
+    let (w, h) = (u32::try_from(size.width).ok(), u32::try_from(size.height).ok());
+    (found.width, found.height) = if found.turned { (h, w) } else { (w, h) };
+    Some(found)
 }
 
 fn details(path: &str, cover: bool) -> Option<MediaDetails> {
@@ -157,7 +198,10 @@ fn exposure(seconds: f64) -> String {
 }
 
 fn picture_or_video(path: &str) -> Option<MediaDetails> {
-    let source = MediaSource::open(path).ok()?;
+    picture_or_video_from(MediaSource::open(path).ok()?)
+}
+
+fn picture_or_video_from<R: std::io::Read + std::io::Seek>(source: MediaSource<R>) -> Option<MediaDetails> {
     let mut parser = MediaParser::new();
     let mut out = MediaDetails::default();
     match source.kind() {

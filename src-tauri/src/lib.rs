@@ -1,4 +1,5 @@
 mod access;
+mod agents;
 mod appearance;
 mod archive;
 mod batch_rename;
@@ -7,11 +8,15 @@ mod check;
 mod cleanup;
 mod codesearch;
 mod compare;
+mod content;
 mod convert;
+mod credentials;
 mod crash;
 mod data_lens;
 mod dedup;
 mod defender;
+mod devices;
+mod dialogs;
 mod doctext;
 mod filediff;
 mod find;
@@ -19,6 +24,7 @@ mod fsx;
 mod gallery;
 mod git;
 mod index;
+mod ioring;
 mod jq;
 mod jumplist;
 mod launch;
@@ -26,12 +32,16 @@ mod locks;
 mod markdown;
 mod mcp;
 mod meaning;
+mod multilingual;
 mod media;
+mod media_ai;
 mod newmenu;
 mod native_preview;
 mod ocr;
+mod ondemand;
 mod openers;
 mod pe;
+mod photos;
 mod placement;
 mod proc;
 mod projects;
@@ -41,17 +51,22 @@ mod rclone;
 mod recent;
 mod recycle;
 mod rules;
+mod sandbox;
+mod scrub;
 mod remote;
 mod repo;
 mod scripts;
 mod lan;
 mod share;
+mod shared;
+mod tags;
 mod sheet;
 mod shell;
 mod shellmenu;
 mod sign;
 mod sql;
 mod snap;
+mod speech;
 mod sizes;
 mod term;
 mod thumbs;
@@ -59,7 +74,9 @@ mod timeline;
 mod tools;
 mod usage;
 mod verbs;
+mod versions;
 mod watch;
+mod more_windows;
 mod webview;
 mod xray;
 mod zoxide;
@@ -175,11 +192,40 @@ fn app_ready(window: tauri::WebviewWindow) {
     if window.label() == "main" && !IN_TRAY.load(std::sync::atomic::Ordering::Relaxed) && !window.is_visible().unwrap_or(true) {
         placement::show(&window);
     }
+    // Another window (Open in new window, a tab dragged out): shown once it has painted, in front.
+    if window.label().starts_with("glint-") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
     if window.label() == "main" {
         use tauri::Manager;
         quick::warm(window.app_handle());
+        // Search inside files instantly: the index catches up with what changed while Glint was closed.
+        static CONTENT: std::sync::Once = std::sync::Once::new();
+        CONTENT.call_once(|| {
+            content::start(window.app_handle());
+            // Photo and speech search read their folders in the background, when they're on.
+            media_ai::start();
+            // Sharing with your other PCs: they find this one from the start.
+            devices::start();
+            // Remotes shown in File Explorer answer it again.
+            ondemand::start();
+        });
+        // Ctrl+Alt+G puts the file dialog in front in the folder shown.
+        static DIALOG_KEY: std::sync::Once = std::sync::Once::new();
+        DIALOG_KEY.call_once(dialogs::listen);
         if QUICK_AT_START.swap(false, std::sync::atomic::Ordering::Relaxed) {
             quick::summon(window.app_handle());
+        }
+        // Started in the tray: once the first folder is ready, the hidden window rests until it's shown.
+        #[cfg(windows)]
+        if IN_TRAY.load(std::sync::atomic::Ordering::Relaxed) && !window.is_visible().unwrap_or(true) {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                if !window.is_visible().unwrap_or(true) {
+                    rest_webview(&window);
+                }
+            });
         }
     }
 }
@@ -251,10 +297,10 @@ async fn diagnostics(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[derive(Clone, serde::Serialize)]
-struct SearchEvent {
-    id: String,
-    r#type: String,
-    lines: Vec<String>,
+pub(crate) struct SearchEvent {
+    pub(crate) id: String,
+    pub(crate) r#type: String,
+    pub(crate) lines: Vec<String>,
 }
 
 /// Text searches in the order they were asked for: one that took longer to start (its folder on a share
@@ -599,6 +645,50 @@ pub(crate) fn disable_browser_keys(window: &tauri::WebviewWindow) {
     });
 }
 
+/// The main window put away in the tray: its WebView2 stops drawing, is suspended (its timers and
+/// scripts pause) and gives back what memory it can, so Glint waiting in the tray holds little. The
+/// quick search window keeps its own WebView2 awake, so Ctrl+Alt+F answers at once.
+/// The main window's WebView2 rests (rest_webview) until the window is shown again.
+static RESTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+pub(crate) fn rest_webview(window: &tauri::WebviewWindow) {
+    RESTING.store(true, std::sync::atomic::Ordering::SeqCst);
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_19, ICoreWebView2_3, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW};
+    use webview2_com::TrySuspendCompletedHandler;
+    use windows::core::Interface;
+    let _ = window.with_webview(|webview| unsafe {
+        let controller = webview.controller();
+        // Suspending takes a WebView2 that isn't visible.
+        let _ = controller.SetIsVisible(false);
+        let Ok(core) = controller.CoreWebView2() else { return };
+        if let Ok(core) = core.cast::<ICoreWebView2_19>() {
+            let _ = core.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
+        }
+        if let Ok(core) = core.cast::<ICoreWebView2_3>() {
+            let _ = core.TrySuspend(&TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(()))));
+        }
+    });
+}
+
+/// The main window shown again: its WebView2 draws (which resumes it) with all the memory it wants.
+#[cfg(windows)]
+pub(crate) fn wake_webview(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_19, ICoreWebView2_3, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL};
+    use windows::core::Interface;
+    let _ = window.with_webview(|webview| unsafe {
+        let controller = webview.controller();
+        let Ok(core) = controller.CoreWebView2() else { return };
+        if let Ok(core) = core.cast::<ICoreWebView2_3>() {
+            let _ = core.Resume();
+        }
+        let _ = controller.SetIsVisible(true);
+        if let Ok(core) = core.cast::<ICoreWebView2_19>() {
+            let _ = core.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
+        }
+    });
+}
+
 /// Whether the setup program installed this copy (it leaves `uninstall.exe` next to the app; the Scoop
 /// manifest deletes the one 7-Zip extracts). Only those update themselves: a Scoop or portable copy, or
 /// a dev build, is updated by whatever put it there, so the app just links to the new release.
@@ -703,6 +793,17 @@ pub fn run() {
                 }
                 quick::on_close(window, api);
             }
+            // Back from the tray (or from a second launch, the taskbar, quick search's Show in Glint):
+            // the main window's WebView2 is awake again before anything is drawn in it.
+            #[cfg(windows)]
+            if let tauri::WindowEvent::Focused(true) = event {
+                use tauri::Manager;
+                if window.label() == "main" && RESTING.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    if let Some(webview) = window.app_handle().get_webview_window("main") {
+                        wake_webview(&webview);
+                    }
+                }
+            }
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -726,6 +827,7 @@ pub fn run() {
             meaning::meaning_install,
             meaning::meaning_status,
             meaning::meaning_remove,
+            meaning::meaning_models,
             recycle::recycle_empty,
             tools::tools_status,
             tools::tool_install,
@@ -741,6 +843,44 @@ pub fn run() {
             cancel_search,
             stop_tools,
             fsx::list_dir,
+            fsx::folder_stamp,
+            fsx::list_dir_shared,
+            tags::tags_read,
+            tags::tags_set,
+            tags::tags_all,
+            credentials::content_credentials,
+            sandbox::sandbox_run,
+            sandbox::sandbox_available,
+            scrub::video_frames,
+            dialogs::report_folder,
+            dialogs::quick_dialog,
+            dialogs::quick_jump,
+            more_windows::open_window,
+            more_windows::open_main_settings,
+            content::content_status,
+            content::content_configure,
+            content::content_covers,
+            content::run_content_search,
+            agents::agent_actions,
+            agents::agent_undo,
+            agents::agents_registry_available,
+            agents::agents_register,
+            versions::shadow_copies,
+            media_ai::media_ai_status,
+            devices::devices_status,
+            ondemand::ondemand_list,
+            ondemand::ondemand_mount,
+            ondemand::ondemand_unmount,
+            devices::devices_configure,
+            devices::devices_forget,
+            devices::devices_pair_code,
+            devices::devices_pair,
+            media_ai::media_ai_configure,
+            media_ai::media_ai_install,
+            speech::speech_transcript,
+            versions::previous_versions,
+            versions::restore_version,
+            versions::version_copy,
             access::grant_access,
             fsx::resolve_path,
             fsx::list_drives,
@@ -780,6 +920,7 @@ pub fn run() {
             index::index_status,
             index::index_history,
             index::index_enable,
+            index::index_update,
             index::index_disable,
             shell::file_op,
             shell::clipboard_set_files,

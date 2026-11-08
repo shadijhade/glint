@@ -55,7 +55,7 @@ sha2 = "0.10"
 percent-encoding = "2"
 url = "2"
 # SFTP's runs waited on off the async threads (remote/sftp.rs), as Tauri's tokio already has it.
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1", features = ["rt", "time", "sync"] }
 crc32fast = "1.5"
 blake3 = "1.8"
 # Paste as file: a picture on the clipboard as a PNG (already in the build through Tauri).
@@ -109,8 +109,16 @@ regex = "1"
 # Zstandard entries and 7z blocks are decoded with ruzstd, a pure Rust decoder; sevenz-rust2's LZ4 is
 # lz4_flex, pure Rust.
 zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64", "bzip2", "lzma", "xz", "ppmd", "legacy-zip", "aes-crypto"] }
-sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate", "lz4", "aes256"] }
+sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "ppmd", "deflate", "lz4", "aes256", "compress"] }
 ruzstd = "0.9.1"
+# Search inside files instantly: the content index (content.rs).
+tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression"] }
+# Photo search (photos.rs): ONNX Runtime, its DLL downloaded when photo search is turned on, never bundled.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std"] }
+# Devices (devices.rs): QUIC between Glint on your PCs, dialed by key, through NATs (ring, as rustls already uses).
+iroh = { version = "1.4", default-features = false, features = ["tls-ring", "portmapper"] }
+# Compress to tar.zst (with ruzstd's encoder).
+tar = { version = "0.4", default-features = false }
 # Tar and single compressed files (.gz, .xz, .bz2, .lz4), all pure Rust: the first three are already
 # in the build through zip-rs (zlib-rs, libbz2-rs-sys, lzma-rust2); lz4_flex is new.
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
@@ -172,7 +180,14 @@ windows = { version = "0.62", features = [
     "UI_ViewManagement",
     "Win32_Foundation",
     "Win32_Globalization",
+    # A video's frames for scrubbing its tile in the grid (scrub.rs).
+    "Win32_Media_MediaFoundation",
     "Win32_Graphics_Gdi",
+    # Photo search reads pictures with Windows' own codecs (photos.rs).
+    "Win32_Graphics_Imaging",
+    # Files On-Demand for remotes (ondemand.rs).
+    "Win32_Storage_CloudFilters",
+    "Win32_System_CorrelationVector",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     # A server's shares, listed at \\server (fsx.rs): NetShareEnum's answer is freed with NetApiBufferFree.

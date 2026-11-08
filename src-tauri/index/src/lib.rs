@@ -12,9 +12,11 @@ pub mod history;
 pub mod proto;
 pub mod query;
 pub mod record;
+pub mod shadow;
 pub mod snapshot;
 pub mod store;
 pub mod tree;
+pub mod update;
 pub mod usn;
 
 #[cfg(windows)]
@@ -29,6 +31,8 @@ mod engine;
 mod install;
 #[cfg(windows)]
 mod pipe;
+#[cfg(windows)]
+mod refs;
 #[cfg(windows)]
 mod service;
 #[cfg(windows)]

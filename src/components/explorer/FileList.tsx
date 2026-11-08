@@ -1,8 +1,9 @@
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp, CircleCheck, Cloud, FileX, KeyRound, type LucideIcon, RefreshCw } from "lucide-react";
 import { ATTR, type CloudState, cloudState, type DiffStatus, type FileEntry, isArchived, isClosed, isHidden, isListOnly, isLocked, isRecycled, type Sort, type SortKey } from "@/lib/entries";
-import { INVALID_NAME_HINT, type SizeRun } from "@/lib/explorer";
+import { hoverFolder, INVALID_NAME_HINT, leaveFolder, prefetchFolder, type SizeRun } from "@/lib/explorer";
+import { TagDots } from "./TagsDialog";
 import { isPictureOrVideo, typeLabel } from "@/lib/fileTypes";
 import { formatDate, formatFullDate, formatSize } from "@/lib/format";
 import type { GitMark } from "@/lib/fs";
@@ -160,7 +161,7 @@ function ColumnEdge({ column, name }: { column: Column; name: string }) {
     return (
         <ResizeHandle
             label={`${name} column width`}
-            className="-left-2.5"
+            className="-start-2.5"
             onStart={(bar) => {
                 drag.current = { width: bar.parentElement!.getBoundingClientRect().width, files: bar.closest<HTMLElement>(".files"), now: 0 };
             }}
@@ -242,6 +243,13 @@ export function FileList(props: FileListProps) {
     const located = search || !!recycled;
     const grid = useMemo(() => gridTemplates(columns, located), [columns, located]);
     const focusPath = rows[focusIndex]?.path;
+    // The arrow keys landing on a folder read it ahead: Enter is likely next.
+    const focusedFolder = rows[focusIndex]?.dir ? focusPath : undefined;
+    useEffect(() => {
+        if (!focusedFolder) return;
+        const timer = setTimeout(() => prefetchFolder(focusedFolder), 120);
+        return () => clearTimeout(timer);
+    }, [focusedFolder]);
     const widths = useStore((s) => s.settings.columns);
     const where = useMemo(() => whereOf(relativeTo(scope)), [scope]);
     const maxSize = useMemo(() => {
@@ -280,7 +288,13 @@ export function FileList(props: FileListProps) {
                 aria-selected={selected}
                 data-search={located || undefined}
                 data-drop={dropPath(entry)}
-                onMouseDown={(e) => props.onRowMouseDown(e, i)}
+                onMouseDown={(e) => {
+                    // The first click of what may be a double-click reads the folder ahead.
+                    if (entry.dir && e.button === 0) prefetchFolder(entry.path);
+                    props.onRowMouseDown(e, i);
+                }}
+                onMouseEnter={entry.dir ? () => hoverFolder(entry.path) : undefined}
+                onMouseLeave={entry.dir ? leaveFolder : undefined}
                 onDoubleClick={() => props.onOpen(entry)}
                 onContextMenu={(e) => props.onRowContextMenu(e, i)}
                 className={cn(
@@ -313,6 +327,7 @@ export function FileList(props: FileListProps) {
                             {tracked.badge.label}
                         </span>
                     )}
+                    <TagDots path={entry.path} />
                     <CloudMark entry={entry} className="size-3.5 shrink-0" />
                     {isLocked(entry) && <LockMark entry={entry} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />}
                 </div>
@@ -364,7 +379,7 @@ export function FileList(props: FileListProps) {
                             );
                         case "duration":
                             return (
-                                <span key={id} className={cn("truncate text-right text-xs tabular-nums text-muted-foreground", drop)}>
+                                <span key={id} className={cn("truncate text-end text-xs tabular-nums text-muted-foreground", drop)}>
                                     {facts?.duration ? clockTime(facts.duration) : ""}
                                 </span>
                             );
@@ -377,7 +392,7 @@ export function FileList(props: FileListProps) {
                             );
                         case "size":
                             return (
-                                <span key={id} className="relative flex h-5 items-center justify-end overflow-hidden rounded-[3px] px-1 text-right text-xs tabular-nums text-muted-foreground">
+                                <span key={id} className="relative flex h-5 items-center justify-end overflow-hidden rounded-[3px] px-1 text-end text-xs tabular-nums text-muted-foreground">
                                     {sizePct > 0 && (
                                         <span
                                             aria-hidden

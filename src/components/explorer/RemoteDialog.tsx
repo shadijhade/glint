@@ -151,7 +151,7 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
                     role="radio"
                     aria-checked={form.kind === kind}
                     onClick={() => change({ kind })}
-                    className={cn("flex items-start gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-accent", form.kind === kind && "border-primary bg-primary/10 hover:bg-primary/15")}
+                    className={cn("flex items-start gap-2 rounded-md border px-2 py-1.5 text-start transition-colors hover:bg-accent", form.kind === kind && "border-primary bg-primary/10 hover:bg-primary/15")}
                 >
                     <Icon className="mt-0.5 size-4 shrink-0 text-primary" />
                     <span className="min-w-0">
@@ -305,7 +305,7 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
                         </Field>
                     </>
                 )}
-                <label className="flex items-start gap-2 pl-[7.75rem]">
+                <label className="flex items-start gap-2 ps-[7.75rem]">
                     <input type="checkbox" checked={!!form.thumbnails} onChange={(e) => change({ thumbnails: e.target.checked })} className="mt-0.5 accent-primary" />
                     <span>
                         Thumbnails of pictures in the grid
@@ -317,7 +317,7 @@ function RemoteForm({ editing }: { editing: RemoteConnection | null }) {
                         <p className="flex items-start gap-2 font-medium">
                             <KeyRound className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-500" /> Glint hasn't seen this server before. Its host key:
                         </p>
-                        <ul className="space-y-0.5 pl-5.5 font-mono break-all">
+                        <ul className="space-y-0.5 ps-5.5 font-mono break-all">
                             {hostKeys.fingerprints.map((f) => (
                                 <li key={f}>{f}</li>
                             ))}

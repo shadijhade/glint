@@ -8,7 +8,8 @@
 // Usage: npm run release [-- --sign-config <tauri config overlay>] [--store] [--allow-dirty]
 //
 // Update signing: TAURI_SIGNING_PRIVATE_KEY (the key, or the path to it) and, if the key has one,
-// TAURI_SIGNING_PRIVATE_KEY_PASSWORD (otherwise Tauri asks for it).
+// TAURI_SIGNING_PRIVATE_KEY_PASSWORD (otherwise this asks for it once, before building). The same key signs
+// the instant search service, so an installed one updates itself to the release (scripts/sign-service.mjs).
 // Code signing with Azure Artifact Signing: AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT and
 // AZURE_SIGNING_PROFILE, signed in with `az login` or AZURE_CLIENT_ID, AZURE_CLIENT_SECRET and
 // AZURE_TENANT_ID. Any other signing (a certificate in the Windows store, another tool): --sign-config.
@@ -18,6 +19,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { unlockUpdateKey } from "./update-key.mjs";
 
 const REPO = "https://github.com/shadijhade/glint";
 const root = resolve(import.meta.dirname, "..");
@@ -86,6 +88,14 @@ if (hasKey && !pubkey) fail("TAURI_SIGNING_PRIVATE_KEY is set, but plugins.updat
 if (pubkey && !hasKey) fail("Set TAURI_SIGNING_PRIVATE_KEY (the private key or its path): without it the app couldn't install this release.");
 const updater = pubkey ? overlay("updater.json", { bundle: { createUpdaterArtifacts: true } }) : [];
 if (!pubkey) console.warn("! No updater key is set up yet, so the app can't install this release by itself.");
+// The password, asked once and checked now rather than after the build.
+if (hasKey) {
+    try {
+        unlockUpdateKey();
+    } catch (e) {
+        fail(`The update key can't sign: ${e.message}`);
+    }
+}
 
 // 3. Code signing: Azure Artifact Signing, your own overlay, or none.
 const azure = ["AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT", "AZURE_SIGNING_PROFILE"].map((name) => process.env[name]);
@@ -100,6 +110,25 @@ if (signConfig) {
 }
 const codeSigned = !!signConfig || azure.every(Boolean);
 if (store && !codeSigned) console.warn("! The Microsoft Store only takes a code-signed installer, so the offline installer is only for trying out.");
+
+// The instant search service's update signature (src-tauri/index/src/update.rs), made with the update key
+// once the service is built and before the installer is packed, which carries it next to the service: an
+// installed service then updates itself to this release without administrator approval. Code signing
+// changes shadui-index.exe after that point, so a code-signed release leaves it out. The app's build
+// script wants every resource there before the service is even built, so a placeholder stands in until
+// then (one the service could never take, if it ever went out).
+const serviceSignature = join(root, "src-tauri", "target", "service-signature", "shadui-index.exe.sig");
+let service = [];
+if (pubkey && !codeSigned) {
+    mkdirSync(join(serviceSignature, ".."), { recursive: true });
+    writeFileSync(serviceSignature, "Not signed yet: scripts/sign-service.mjs puts the signature here once the service is built.\n");
+    service = overlay("service.json", {
+        build: { beforeBundleCommand: { script: "node scripts/sign-service.mjs --copy-to src-tauri/target/service-signature/shadui-index.exe.sig", cwd: root } },
+        bundle: { resources: { [serviceSignature]: "shadui-index.exe.sig" } },
+    });
+} else if (pubkey) {
+    console.warn("! Code signing changes shadui-index.exe after its update signature is made, so this release's service updates only with administrator approval (docs/releasing.md).");
+}
 
 /** signtool with Microsoft's Artifact Signing plugin (fetched once into release/.tools, checked by its SHA-256). */
 async function artifactSigning(endpoint, account, profile) {
@@ -149,6 +178,12 @@ function bundle(configs) {
     if (codeSigned) cpSync(join(work, "binaries"), tools, { recursive: true });
     if (build.error || build.status) fail("The build failed");
     if (!existsSync(installer)) fail(`${installer} wasn't built`);
+    if (service.length) {
+        // The service packed is the one that was signed.
+        const exe = join(root, "src-tauri", "target", "release", "shadui-index.exe");
+        const check = run(exe, ["verify-update", exe, serviceSignature]);
+        if (check.status) fail(`The service's update signature doesn't match what was packed: ${(check.stderr || check.stdout).trim()}`);
+    }
     if (!codeSigned) return;
     const files = [installer, join(root, "src-tauri", "target", "release", `${config.mainBinaryName}.exe`), join(root, "src-tauri", "target", "release", "shadui-index.exe")];
     const check = join(work, "check-signatures.ps1");
@@ -157,7 +192,7 @@ function bundle(configs) {
     console.log(result.stdout.trim());
     if (result.status) fail("Not everything is validly code-signed");
 }
-bundle([...updater, ...signing]);
+bundle([...updater, ...service, ...signing]);
 
 // 5. The update the app downloads, checked the way the app checks it, and the package manifests.
 const out = join(root, "release", `v${version}`);
@@ -189,7 +224,7 @@ if (run(process.execPath, manifests, { stdio: "inherit" }).status) fail("Couldn'
 // Store's copies update with the normal installer, like every other copy.
 const offline = `${config.productName}_${version}_x64_offline-setup.exe`;
 if (store) {
-    bundle([...signing, "--config", join(root, "src-tauri", "tauri.microsoftstore.conf.json")]);
+    bundle([...service, ...signing, "--config", join(root, "src-tauri", "tauri.microsoftstore.conf.json")]);
     copyFileSync(installer, join(out, offline));
 }
 

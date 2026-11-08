@@ -204,11 +204,14 @@ struct Out<'a> {
     /// With property filters (width:, taken:…): what's found goes to be read first (`check`), not
     /// straight to the app.
     check: Option<mpsc::SyncSender<Entry>>,
+    /// With tag: filters, what fd finds keeps only what has the tags (read from each file's stream;
+    /// the index reads them itself).
+    tags: Vec<Vec<String>>,
 }
 
 impl<'a> Out<'a> {
     fn new(channel: &'a Channel, check: Option<mpsc::SyncSender<Entry>>) -> Self {
-        Out { channel, batch: Vec::new(), sent: Instant::now(), count: 0, started: false, check }
+        Out { channel, batch: Vec::new(), sent: Instant::now(), count: 0, started: false, check, tags: Vec::new() }
     }
 
     fn started(&mut self, engine: &'static str) {
@@ -218,6 +221,9 @@ impl<'a> Out<'a> {
     }
 
     fn push(&mut self, entry: Entry) {
+        if !self.tags.is_empty() && !entry.path.as_deref().is_some_and(|path| crate::tags::matches(path, &self.tags)) {
+            return;
+        }
         self.count += 1;
         if let Some(check) = &self.check {
             let _ = check.send(entry);
@@ -370,6 +376,30 @@ pub async fn find_files(
     on_event: Channel,
     lane: String,
 ) -> Result<(), String> {
+    // shows: and says: (what's in photos, what's said in recordings: media_ai.rs) are answered from
+    // what their models learned, best match first.
+    if let Some(ask) = crate::media_ai::asked(&query) {
+        let run = state.finds.start(&lane);
+        let finds = state.finds.clone();
+        let max = options.max_results.filter(|&m| m > 0).unwrap_or(1000);
+        thread::spawn(move || {
+            let started = Instant::now();
+            tell(&on_event, FindEvent::Started { engine: ask.engine() });
+            let mut count = 0;
+            match crate::media_ai::search(&ask, &roots, max, &run.stop) {
+                Ok(entries) => {
+                    count = entries.len();
+                    if !entries.is_empty() {
+                        let _ = on_event.send(InvokeResponseBody::Raw(encode_items("", &entries, &[], 0.0, false)));
+                    }
+                }
+                Err(message) => tell(&on_event, FindEvent::Error { message }),
+            }
+            tell(&on_event, FindEvent::Finished { count, elapsed: ms_since(started), limited: false, fuzzy: false });
+            finds.finished(&lane, &run);
+        });
+        return Ok(());
+    }
     let (terms, filters) = parse(&query)?;
     if terms.is_empty() && filters.is_empty() {
         return Err("Type part of a file name to search for".into());
@@ -469,8 +499,13 @@ pub async fn find_files(
             let left = options.max_results.filter(|&m| m > 0).map(|m| m.saturating_sub(out.count));
             if !fd_roots.is_empty() && !stop.load(Ordering::SeqCst) && left != Some(0) {
                 out.started("fd");
-                let options = FindOptions { max_results: left, ..options };
-                match search_fd(slot, &fd_roots, &query, &options, &mut out) {
+                // fd doesn't read tags: it gets the rest of the query, and what it finds is checked.
+                let tags = parse(&query).map(|(_, f)| f.tags).unwrap_or_default();
+                let fd_query = if tags.is_empty() { query.clone() } else { shadui_index::query::without_tags(&query) };
+                let fd_query = if fd_query.trim().is_empty() { "*".to_string() } else { fd_query };
+                out.tags = tags;
+                let options = FindOptions { max_results: if out.tags.is_empty() { left } else { None }, ..options };
+                match search_fd(slot, &fd_roots, &fd_query, &options, &mut out) {
                     Ok(hit_limit) => limited |= hit_limit,
                     Err(message) => {
                         out.flush();

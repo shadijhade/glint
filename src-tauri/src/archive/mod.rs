@@ -1081,13 +1081,25 @@ async fn in_lane<T: Send + 'static>(lane: String, work: impl FnOnce(&AtomicBool)
 /// or a failure leaves nothing behind; files that can't be read are left out and reported. The
 /// zip is `paths[0]` of what comes back.
 #[tauri::command]
-pub async fn archive_compress(paths: Vec<String>, folder: String, name: String, lane: String, on_progress: Channel<StageProgress>) -> Result<Staged, String> {
+pub async fn archive_compress(
+    paths: Vec<String>,
+    folder: String,
+    name: String,
+    lane: String,
+    format: Option<compress::Format>,
+    password: Option<String>,
+    on_progress: Channel<StageProgress>,
+) -> Result<Staged, String> {
     if is_read_only(&folder) || paths.iter().any(|p| is_inside(p)) {
         return Err(fsx::READ_ONLY.into());
     }
+    let format = format.unwrap_or(compress::Format::Zip);
+    if password.is_some() && format == compress::Format::TarZst {
+        return Err("A tar can't be password-protected: choose zip or 7z".into());
+    }
     in_lane(lane, move |cancel| {
         let zip = fsx::create_numbered(&folder, &name, false)?;
-        match compress::compress(&paths, Path::new(&zip), cancel, &mut |done, total| {
+        match compress::compress_as(&paths, Path::new(&zip), format, password.as_deref(), cancel, &mut |done, total| {
             let _ = on_progress.send(StageProgress { done, total });
         }) {
             Ok((bytes, skipped)) => Ok(Staged { folder, paths: vec![zip], skipped, bytes }),

@@ -45,12 +45,14 @@ pub fn installed() -> bool {
     folder().is_some_and(|dir| FILES.iter().all(|(name, _, size)| fs::metadata(dir.join(name)).is_ok_and(|m| m.len() == *size)))
 }
 
-/// The model in memory: its vocabulary (token → row) and a row of `dim` numbers per token.
+/// The model in memory: its vocabulary (token → row) and a row of `dim` numbers per token; or, with
+/// the 101-language model downloaded, that one (multilingual.rs).
 pub struct Model {
     vocab: HashMap<String, u32>,
     unknown: u32,
     dim: usize,
     vectors: Vec<f32>,
+    multi: Option<(crate::multilingual::Unigram, crate::multilingual::Quantized)>,
 }
 
 /// Loaded once, the first time a search wants it.
@@ -62,8 +64,16 @@ pub fn model() -> Result<Arc<Model>, String> {
     if let Some(model) = loaded.as_ref() {
         return Ok(model.clone());
     }
-    let dir = folder().filter(|_| installed()).ok_or("Meaning search needs its model: download it from the card above the results")?;
-    let model = Arc::new(Model::load(&dir)?);
+    // The 101-language model, when it's downloaded, else the English one.
+    let model = if crate::multilingual::installed() {
+        let dir = crate::multilingual::folder().ok_or("Glint's data folder isn't available")?;
+        let tokenizer = crate::multilingual::Unigram::load(&dir.join("tokenizer.json"))?;
+        let vectors = crate::multilingual::Quantized::load(&dir.join("model.safetensors"))?;
+        Arc::new(Model { vocab: HashMap::new(), unknown: 0, dim: vectors.dim, vectors: Vec::new(), multi: Some((tokenizer, vectors)) })
+    } else {
+        let dir = folder().filter(|_| installed()).ok_or("Meaning search needs its model: download it from the card above the results")?;
+        Arc::new(Model::load(&dir)?)
+    };
     *loaded = Some(model.clone());
     Ok(model)
 }
@@ -77,13 +87,16 @@ impl Model {
         if rows < vocab.len() {
             return Err("the model's vectors don't cover its vocabulary".into());
         }
-        Ok(Model { vocab, unknown, dim, vectors })
+        Ok(Model { vocab, unknown, dim, vectors, multi: None })
     }
 
     /// A text's tokens, as Model2Vec reads them: BERT's normalizer (control characters out, Chinese
     /// characters on their own, accents off, lowercase), words split at spaces and punctuation, then
     /// WordPiece; unknown tokens left out, at most `MAX_TOKENS`.
     pub fn tokens(&self, text: &str) -> Vec<u32> {
+        if let Some((tokenizer, _)) = &self.multi {
+            return tokenizer.tokens(text, MAX_TOKENS);
+        }
         let mut ids = Vec::new();
         let mut piece = String::new();
         for word in words(&normalize(text)) {
@@ -145,6 +158,12 @@ impl Model {
         }
         let mut sum = vec![0f32; self.dim];
         for id in ids {
+            if let Some((_, vectors)) = &self.multi {
+                if (id as usize) < vectors.rows {
+                    vectors.add(id as usize, &mut sum);
+                }
+                continue;
+            }
             let row = &self.vectors[id as usize * self.dim..(id as usize + 1) * self.dim];
             sum.iter_mut().zip(row).for_each(|(s, v)| *s += v);
         }
@@ -251,8 +270,59 @@ pub fn passages(lines: &[(String, String)]) -> Vec<Passage> {
 }
 
 #[tauri::command]
-pub async fn meaning_install(on_progress: Channel<Progress>, installs: State<'_, Installs>) -> Result<(), String> {
+pub async fn meaning_install(on_progress: Channel<Progress>, installs: State<'_, Installs>, variant: Option<String>) -> Result<(), String> {
+    if variant.as_deref() == Some("multilingual") {
+        return install_multilingual(&on_progress, &installs).await;
+    }
     install(&on_progress, &installs).await
+}
+
+/// The 101-language model (512 MB, from Hugging Face, each file checked against its pinned SHA-256),
+/// which meaning search uses from then on.
+async fn install_multilingual(on_progress: &Channel<Progress>, installs: &Installs) -> Result<(), String> {
+    let dir = crate::multilingual::folder().ok_or("Glint's data folder isn't available")?;
+    let fresh = dir.with_extension("new");
+    let _ = fs::remove_dir_all(&fresh);
+    fs::create_dir_all(&fresh).map_err(|e| e.to_string())?;
+    let stop = installs.begin("meaning");
+    let mut result = Ok(());
+    for (name, sha256, _) in crate::multilingual::FILES {
+        match tools::fetch(&crate::multilingual::source(name), sha256, &format!("meaning-ml-{name}"), "the 101-language meaning model", &stop, on_progress).await {
+            Ok(file) => {
+                let moved = fs::rename(&file, fresh.join(name)).or_else(|_| fs::copy(&file, fresh.join(name)).map(|_| ()));
+                let _ = fs::remove_file(&file);
+                if let Err(e) = moved {
+                    result = Err(e.to_string());
+                    break;
+                }
+            }
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        }
+    }
+    installs.end("meaning");
+    if let Err(e) = result {
+        let _ = fs::remove_dir_all(&fresh);
+        return Err(e);
+    }
+    let _ = fs::remove_dir_all(&dir);
+    fs::rename(&fresh, &dir).map_err(|e| e.to_string())?;
+    *LOADED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    Ok(())
+}
+
+/// Which meaning models are downloaded: the English one, and the 101-language one.
+#[derive(serde::Serialize)]
+pub struct Models {
+    pub english: bool,
+    pub multilingual: bool,
+}
+
+#[tauri::command]
+pub fn meaning_models() -> Models {
+    Models { english: installed(), multilingual: crate::multilingual::installed() }
 }
 
 /// Downloads the model (each file checked against its pinned SHA-256, from Hugging Face or else the copy
@@ -306,18 +376,19 @@ pub(crate) async fn install(on_progress: &Channel<Progress>, installs: &Installs
     Ok(())
 }
 
-/// Whether the model is downloaded.
+/// Whether a model is downloaded.
 #[tauri::command]
 pub fn meaning_status() -> bool {
-    installed()
+    installed() || crate::multilingual::installed()
 }
 
-/// Deletes the downloaded model.
+/// Deletes a downloaded model: the English one, or with `variant` "multilingual" the 101-language one.
 #[tauri::command]
-pub async fn meaning_remove() -> Result<(), String> {
-    crate::fsx::blocking(|| {
+pub async fn meaning_remove(variant: Option<String>) -> Result<(), String> {
+    crate::fsx::blocking(move || {
         *LOADED.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        match folder().map(fs::remove_dir_all) {
+        let dir = if variant.as_deref() == Some("multilingual") { crate::multilingual::folder() } else { folder() };
+        match dir.map(fs::remove_dir_all) {
             Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
             _ => Ok(()),
         }
@@ -338,6 +409,7 @@ mod tests {
             unknown: 1,
             dim: 2,
             vectors: vectors.iter().flatten().copied().collect(),
+            multi: None,
         }
     }
 

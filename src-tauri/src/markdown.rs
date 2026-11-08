@@ -17,6 +17,9 @@ pub fn render(text: &str) -> String {
     options.extension.autolink = true;
     options.extension.tasklist = true;
     options.extension.footnotes = true;
+    // Math as GitHub writes it: `$…$`, `$$…$$`, $`…`$ and ```math blocks (MathView draws them).
+    options.extension.math_dollars = true;
+    options.extension.math_code = true;
     // Headings get ids, as on GitHub, so links within the file go somewhere.
     options.extension.header_id_prefix = Some(String::new());
     options.render.tasklist_classes = true;
@@ -38,5 +41,12 @@ mod tests {
         let readme = render("<div align=\"center\">\n\n<img src=\"logo.svg\" width=\"96\">\n\n# Name\n\n</div>\n");
         assert!(readme.contains(r#"<div align="center">"#) && readme.contains(r#"<img src="logo.svg" width="96">"#), "{readme}");
         assert!(readme.contains(r#"<h1 id="name">"#), "{readme}");
+
+        let math = render("Euler: $e^{i\\pi} + 1 = 0$, and $`a^2`$\n\n$$\\int_0^1 x\\,dx$$\n\n```math\nx = 1\n```\n\n```mermaid\ngraph TD; A-->B\n```\n");
+        assert!(math.contains(r#"<span data-math-style="inline">e^{i\pi} + 1 = 0</span>"#), "{math}");
+        assert!(math.contains(r#"<code data-math-style="inline">a^2</code>"#), "{math}");
+        assert!(math.contains(r#"<span data-math-style="display">"#), "{math}");
+        assert!(math.contains(r#"class="language-math" data-math-style="display""#), "{math}");
+        assert!(math.contains(r#"<code class="language-mermaid">"#), "{math}");
     }
 }

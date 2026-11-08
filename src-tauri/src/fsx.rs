@@ -62,29 +62,55 @@ impl ListError {
 /// of its own (`encode_items`), and a remote connection's folder (`remote:<id>\…`) what's in it there.
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
+    listing_bytes(path).await.map(tauri::ipc::Response::new)
+}
+
+/// `list_dir`, a big listing handed over in shared memory (shared.rs) tagged `id`: then the answer here
+/// is empty, and the page takes the listing from its `sharedbufferreceived` event.
+#[tauri::command]
+pub async fn list_dir_shared(window: tauri::WebviewWindow, path: String, id: u64) -> Result<tauri::ipc::Response, ListError> {
+    let bytes = listing_bytes(path).await?;
+    if bytes.len() < crate::shared::MIN_SHARED {
+        return Ok(tauri::ipc::Response::new(bytes));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        // The copy the shared buffer fails over to, should WebView2 refuse it.
+        let fallback = bytes.clone();
+        if crate::shared::post(&window, id, bytes) {
+            Vec::new()
+        } else {
+            fallback
+        }
+    })
+    .await
+    .map(tauri::ipc::Response::new)
+    .map_err(|e| ListError::other("", e.to_string()))
+}
+
+async fn listing_bytes(path: String) -> Result<Vec<u8>, ListError> {
     let asked = path.clone();
     if crate::remote::is_remote(path.trim()) {
-        return crate::remote::listing(path.trim(), Instant::now()).await.map(tauri::ipc::Response::new).map_err(|e| ListError::other(path.trim(), e));
+        return crate::remote::listing(path.trim(), Instant::now()).await.map_err(|e| ListError::other(path.trim(), e));
     }
     tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
         if crate::recycle::is_place(path.trim()) {
-            return crate::recycle::listing(started).map(tauri::ipc::Response::new).map_err(|e| ListError::other(crate::recycle::PLACE, e));
+            return crate::recycle::listing(started).map_err(|e| ListError::other(crate::recycle::PLACE, e));
         }
         if crate::recent::is_place(path.trim()) {
-            return crate::recent::listing(started).map(tauri::ipc::Response::new).map_err(|e| ListError::other(crate::recent::PLACE, e));
+            return crate::recent::listing(started).map_err(|e| ListError::other(crate::recent::PLACE, e));
         }
         if crate::gallery::is_place(path.trim()) {
-            return crate::gallery::listing(started).map(tauri::ipc::Response::new).map_err(|e| ListError::other(crate::gallery::PLACE, e));
+            return crate::gallery::listing(started).map_err(|e| ListError::other(crate::gallery::PLACE, e));
         }
         let path = normalize(&path).map_err(|e| ListError::other(&path, e))?;
         if let Some(listing) = crate::archive::list(&path, started) {
-            return listing.map(tauri::ipc::Response::new).map_err(|e| ListError::other(&path, e));
+            return listing.map_err(|e| ListError::other(&path, e));
         }
         if let Some(server) = server_of(&path) {
             let mut entries = shares(server).map_err(|e| ListError { kind: "other", message: format!("Glint couldn't list the shares on {server}: {e}"), path: path.clone(), remote: true })?;
             sort_entries(&mut entries);
-            return Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started), None, false)));
+            return Ok(encode_listing(&path, &entries, ms_since(started), None, false));
         }
         let mut from_index = false;
         let (path, mut entries) = match read_dir(&path) {
@@ -103,15 +129,23 @@ pub async fn list_dir(path: String) -> Result<tauri::ipc::Response, ListError> {
             // A path into (or to) an archive not named like one: a renamed zip, or one opened with
             // "Open as archive". Its first bytes say so, and it's remembered from then on.
             Err(e) => match crate::archive::sniff(&path).then(|| crate::archive::list(&path, started)).flatten() {
-                Some(listing) => return listing.map(tauri::ipc::Response::new).map_err(|e| ListError::other(&path, e)),
+                Some(listing) => return listing.map_err(|e| ListError::other(&path, e)),
                 None => return Err(ListError::other(&path, describe(&e))),
             },
         };
         sort_entries(&mut entries);
-        Ok(tauri::ipc::Response::new(encode_listing(&path, &entries, ms_since(started), None, from_index)))
+        Ok(encode_listing(&path, &entries, ms_since(started), None, from_index))
     })
     .await
     .map_err(|e| ListError::other(&asked, e.to_string()))?
+}
+
+/// A folder's own last-write time, in ms: every add, delete and rename in it changes it. Prefetched
+/// listings are used only while it's as it was when they were read.
+#[tauri::command]
+pub fn folder_stamp(path: String) -> Result<f64, String> {
+    let modified = std::fs::metadata(normalize(&path)?).and_then(|m| m.modified()).map_err(|e| e.to_string())?;
+    Ok(modified.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1000.0))
 }
 
 /// A folder in the sidebar's tree: its name, and whether it has folders of its own (None: not looked at,
@@ -461,6 +495,10 @@ pub fn normalize(input: &str) -> Result<String, String> {
         if text.len() == 2 && text.ends_with(':') {
             text.push('\\');
         }
+    }
+    // A shadow copy's top (versions.rs) is a root like "C:\\", its closing backslash kept.
+    if crate::versions::is_shadow_root(&text) {
+        return Ok(format!("{}\\", text.trim_end_matches('\\')));
     }
     let mut path = std::path::absolute(&text).map_err(|e| e.to_string())?.to_string_lossy().into_owned();
     while path.len() > 1 && path.ends_with(['\\', '/']) && !is_drive_root(&path) {
@@ -1245,6 +1283,10 @@ mod tests {
         assert_eq!(normalize("C:\\Windows\\System32\\..").unwrap(), "C:\\Windows");
         assert_eq!(normalize("C:\\").unwrap(), "C:\\");
         assert!(normalize("  ").is_err());
+        let shadow = r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy3\";
+        assert_eq!(normalize(shadow).unwrap(), shadow);
+        assert_eq!(normalize(shadow.trim_end_matches('\\')).unwrap(), shadow);
+        assert_eq!(normalize(&format!("{shadow}Users\\")).unwrap(), format!("{shadow}Users"));
     }
 
     #[test]

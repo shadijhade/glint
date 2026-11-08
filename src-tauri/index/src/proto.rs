@@ -38,6 +38,16 @@ pub enum Request {
     /// Store's copy that installed it goes (store.rs). Answered with the status. A service from before
     /// closes the pipe on it.
     Claim,
+    /// A later build of the service to replace this one (update.rs): its signature (a .sig file's
+    /// text), and `size` bytes of the executable right after this request. Answered with Updating, then
+    /// the service restarts into it; a service from before closes the pipe on it.
+    Update { signature: String, size: u64 },
+    /// Every tag on the indexed drives with how many items have it (Tags). A service from before
+    /// closes the pipe on it.
+    Tags,
+    /// Windows' shadow copies of every volume, through VSS, which lists them only for an administrator
+    /// (shadow.rs): Snapshots. A service from before closes the pipe on it.
+    Snapshots,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -141,6 +151,12 @@ pub enum Message {
     /// Follows a disk-usage map's frame.
     Usage(UsageSummary),
     History(HistoryAnswer),
+    /// An update was taken: the service stops, and comes back as this version.
+    Updating { version: String },
+    /// Every tag, most used first, with how many items have it.
+    Tags { tags: Vec<(String, u64)> },
+    /// Windows' shadow copies, newest first.
+    Snapshots { snapshots: Vec<crate::shadow::Snapshot> },
     Error { message: String },
 }
 
@@ -419,6 +435,12 @@ mod tests {
         assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
         assert!(serde_json::to_string(&Request::Status).unwrap().contains(r#""op":"status""#));
         assert_eq!(serde_json::to_string(&Request::Claim).unwrap(), r#"{"op":"claim"}"#);
+        let update = Request::Update { signature: "c2ln".into(), size: 1_368_576 };
+        assert_eq!(serde_json::to_string(&update).unwrap(), r#"{"op":"update","signature":"c2ln","size":1368576}"#);
+        let mut wire = Vec::new();
+        write_request(&mut wire, &update).unwrap();
+        assert_eq!(read_request(&mut wire.as_slice()).unwrap(), update);
+        assert_eq!(serde_json::to_string(&Message::Updating { version: "0.10.0".into() }).unwrap(), r#"{"type":"updating","version":"0.10.0"}"#);
         // Without close matches asked for, a request is as a service from before them reads it; with
         // them, an older service reads it too (it ignores what it doesn't know).
         assert!(serde_json::to_string(&request).unwrap().ends_with(r#""maxResults":50000}"#));

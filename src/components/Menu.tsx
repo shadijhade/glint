@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { t } from "@/lib/i18n";
 import { flushSync } from "react-dom";
 import { ArrowLeft, Check, ChevronRight, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -46,7 +47,7 @@ export function visibleItems(items: MenuItem[]): Shown[] {
 }
 
 const itemClass =
-    "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors duration-75 hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4 [&_svg]:shrink-0";
+    "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-start text-sm transition-colors duration-75 hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4 [&_svg]:shrink-0";
 
 /** The item the keyboard starts on: the first one past the quick-action icons and Back. */
 const focusFirst = (menu: HTMLElement) =>
@@ -145,7 +146,7 @@ export function useMenu() {
                 <button
                     type="button"
                     onClick={leave}
-                    className="mb-1 flex w-full items-center gap-2 rounded-sm border-b border-border/60 px-2 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:outline-hidden [&_svg]:size-3.5"
+                    className="mb-1 flex w-full items-center gap-2 rounded-sm border-b border-border/60 px-2 py-1.5 text-start text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:outline-hidden [&_svg]:size-3.5"
                 >
                     <ArrowLeft />
                     <span className="truncate">{parent.label}</span>
@@ -203,8 +204,8 @@ export function useMenu() {
                         onClick={(e) => enter(item.label, item.items, e.currentTarget)}
                     >
                         {item.icon && <item.icon />}
-                        <span className="flex-1 truncate">{item.label}</span>
-                        <ChevronRight className="ml-6 opacity-70" />
+                        <span className="flex-1 truncate">{t(item.label)}</span>
+                        <ChevronRight className="ms-6 opacity-70" />
                     </button>
                 ) : (
                     item && (
@@ -227,8 +228,8 @@ export function useMenu() {
                             ) : (
                                 item.icon && <item.icon />
                             )}
-                            <span className="flex-1 truncate">{item.label}</span>
-                            {item.shortcut && <span className="ml-6 text-xs text-muted-foreground">{item.shortcut}</span>}
+                            <span className="flex-1 truncate">{t(item.label)}</span>
+                            {item.shortcut && <span className="ms-6 text-xs text-muted-foreground">{item.shortcut}</span>}
                         </button>
                     )
                 )

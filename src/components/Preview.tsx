@@ -66,12 +66,12 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
 
     return (
         <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-chrome pl-3 pr-1.5">
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-chrome ps-3 pe-1.5">
                 <span className="truncate text-sm" title={path}>
                     <span className="font-medium">{name}</span>
                     <span className="text-muted-foreground"> · {inDocument ? label : `line ${line}`}</span>
                 </span>
-                <div className="ml-auto flex shrink-0">
+                <div className="ms-auto flex shrink-0">
                     <Button variant="ghost" size="icon" className="size-7" onClick={() => onReveal(path)} title="Show in Files" aria-label="Show in Files">
                         <FolderInput />
                     </Button>
@@ -93,7 +93,7 @@ export function Preview({ match, onOpen, onReveal }: PreviewProps) {
                             showLineNumbers={showLineNumbers}
                             startingLineNumber={current.start}
                             wrapLines
-                            lineProps={(n: number) => ({ className: n === line ? "block pl-3 pr-4 hl-line" : "block pl-3 pr-4" })}
+                            lineProps={(n: number) => ({ className: n === line ? "block ps-3 pe-4 hl-line" : "block ps-3 pe-4" })}
                             className="min-w-max py-2 font-mono text-[0.8125rem] leading-5"
                         >
                             {current.text}
@@ -141,8 +141,8 @@ function DocumentLines({ path, line, count }: { path: string; line: number; coun
                 <p className="p-4 text-sm text-destructive">{error}</p>
             ) : (
                 current?.lines.map(([label, text], i) => (
-                    <div key={current.start + i} className={cn("flex gap-3 pl-3 pr-4", current.start + i >= line && current.start + i < line + count && "hl-line")}>
-                        <span className="w-20 shrink-0 truncate text-right text-xs leading-5 text-muted-foreground/70" title={label}>
+                    <div key={current.start + i} className={cn("flex gap-3 ps-3 pe-4", current.start + i >= line && current.start + i < line + count && "hl-line")}>
+                        <span className="w-20 shrink-0 truncate text-end text-xs leading-5 text-muted-foreground/70" title={label}>
                             {i === 0 || current.lines[i - 1][0] !== label ? label : ""}
                         </span>
                         <span className="min-w-0 whitespace-pre-wrap break-words">{text}</span>

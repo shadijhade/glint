@@ -125,6 +125,8 @@ pub struct RecordState {
     pub size: u64,
     /// Every name as (parent's file reference, name): one per hard link, DOS 8.3 aliases left out.
     pub names: Vec<(u64, String)>,
+    /// Glint's tags (one per line), from the file's `glint.tags` stream.
+    pub tags: Option<String>,
 }
 
 /// Splits a 64-bit file reference into the record number and its sequence number.
@@ -190,6 +192,8 @@ pub struct Tree {
     garbage: usize,
     /// Folders' sizes at daily marks, noted as they change.
     pub growth: Growth,
+    /// Glint's tags, by record: only the tagged ones (one tag per line).
+    pub tags: HashMap<u32, Box<str>>,
 }
 
 /// A name search over one volume.
@@ -484,6 +488,14 @@ impl Tree {
             }
         }
         // (A folder new to the index starts with whatever its contents added up to already.)
+        match state.tags.as_deref() {
+            Some(tags) => {
+                self.tags.insert(n, tags.into());
+            }
+            None => {
+                self.tags.remove(&n);
+            }
+        }
         let rec = &mut self.recs[n as usize];
         rec.set_seq(state.seq);
         rec.modified = state.modified;
@@ -523,6 +535,29 @@ impl Tree {
             self.remove_link(id);
         }
         self.recs[n as usize] = Rec::default();
+        self.tags.remove(&n);
+    }
+
+    /// Whether record `n` has, for each group, one of its tags (any case).
+    pub fn tagged(&self, n: u32, wanted: &[Vec<String>]) -> bool {
+        let Some(tags) = self.tags.get(&n) else { return false };
+        wanted.iter().all(|any| tags.lines().any(|t| any.iter().any(|w| t.eq_ignore_ascii_case(w))))
+    }
+
+    /// Every tag in the index, with how many items have it, most used first.
+    pub fn tag_counts(&self) -> Vec<(String, u64)> {
+        let mut counts: HashMap<String, (String, u64)> = HashMap::new();
+        for (&n, tags) in &self.tags {
+            if !self.recs.get(n as usize).is_some_and(Rec::used) {
+                continue;
+            }
+            for tag in tags.lines() {
+                counts.entry(tag.to_lowercase()).or_insert_with(|| (tag.to_string(), 0)).1 += 1;
+            }
+        }
+        let mut out: Vec<(String, u64)> = counts.into_values().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        out
     }
 
     /// Recounts every folder's total from scratch: after a full scan, and now and then to undo any
@@ -860,6 +895,9 @@ impl Tree {
                     if !search.filters.is_empty() {
                         let rec = &self.recs[link.rec as usize];
                         if !search.filters.accepts(name, folded, rec.dir(), rec.size(), (search.now - rec.modified) / 10_000_000) {
+                            continue;
+                        }
+                        if !search.filters.tags.is_empty() && !self.tagged(link.rec, &search.filters.tags) {
                             continue;
                         }
                     }
@@ -1213,6 +1251,13 @@ impl Builder {
         self.tree.recs.get_mut(n as usize)
     }
 
+    /// Record `n`'s tags.
+    pub fn tags(&mut self, n: u32, tags: String) {
+        if self.slot(n).is_some() {
+            self.tree.tags.insert(n, tags.into());
+        }
+    }
+
     /// A base record in use.
     pub fn record(&mut self, n: u32, seq: u16, dir: bool, attrs: u32, modified: i64) {
         if let Some(rec) = self.slot(n) {
@@ -1314,11 +1359,11 @@ mod tests {
     }
 
     fn dir(seq: u16, names: &[(u32, &str)]) -> RecordState {
-        RecordState { seq, dir: true, attrs: 0, modified: 1, size: 0, names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect() }
+        RecordState { seq, dir: true, attrs: 0, modified: 1, size: 0, names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect(), tags: None }
     }
 
     fn file(size: u64, names: &[(u32, &str)]) -> RecordState {
-        RecordState { seq: 1, dir: false, attrs: 0x20, modified: 2, size, names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect() }
+        RecordState { seq: 1, dir: false, attrs: 0x20, modified: 2, size, names: names.iter().map(|&(p, n)| (parent_ref(p), n.into())).collect(), tags: None }
     }
 
     /// C:\Users\me\{a.txt 1K, docs\{b.pdf 10K, .hidden\c.pdf 100K}}, C:\Data\big.bin 1M.

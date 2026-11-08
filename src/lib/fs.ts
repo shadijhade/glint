@@ -20,15 +20,78 @@ export interface ListFailure {
     remote: boolean;
 }
 
-/** One folder, read with a single Win32 enumeration pass and sorted folders-first in natural order. Rejects with a ListFailure. */
+interface SharedBufferEvent extends Event {
+    additionalData?: { glintId?: number };
+    getBuffer(): ArrayBuffer;
+}
+interface WebView2Host {
+    addEventListener(type: "sharedbufferreceived", listener: (e: SharedBufferEvent) => void): void;
+    releaseBuffer(buffer: ArrayBuffer): void;
+}
+const webview2 = (globalThis as { chrome?: { webview?: WebView2Host } }).chrome?.webview;
+/** Listings on their way in shared memory (shared.rs), by the id they were asked with. */
+const sharedWaiting = new Map<number, (buffer: ArrayBuffer) => void>();
+let sharedIds = 0;
+webview2?.addEventListener("sharedbufferreceived", (e) => {
+    const take = sharedWaiting.get(e.additionalData?.glintId ?? -1);
+    const buffer = e.getBuffer();
+    if (!take) return webview2.releaseBuffer(buffer);
+    sharedWaiting.delete(e.additionalData!.glintId!);
+    take(buffer);
+});
+
+/**
+ * One folder, read with a single Win32 enumeration pass and sorted folders-first in natural order. A big
+ * one comes in WebView2's shared memory, read in place and let go once decoded. Rejects with a ListFailure.
+ */
 export async function listDir(path: string): Promise<Listing> {
     try {
-        return decodeListing(await invoke<ArrayBuffer>("list_dir", { path }));
+        if (!webview2) return decodeListing(await invoke<ArrayBuffer>("list_dir", { path }));
+        const id = ++sharedIds;
+        const shared = new Promise<ArrayBuffer>((resolve) => sharedWaiting.set(id, resolve));
+        let direct: ArrayBuffer;
+        try {
+            direct = await invoke<ArrayBuffer>("list_dir_shared", { path, id });
+        } catch (e) {
+            sharedWaiting.delete(id);
+            throw e;
+        }
+        if (direct.byteLength) {
+            sharedWaiting.delete(id);
+            return decodeListing(direct);
+        }
+        const buffer = await shared;
+        try {
+            return decodeListing(buffer);
+        } finally {
+            webview2.releaseBuffer(buffer);
+        }
     } catch (e) {
         // An Error too, nameless, so String(e) says the message where errors are shown that way.
         throw typeof e === "object" && e ? Object.assign(new Error((e as ListFailure).message), e, { name: "" }) : e;
     }
 }
+
+/** What a picture's or video's Content Credentials (C2PA) say, read by c2patool. */
+export interface Credentials {
+    madeWith: string | null;
+    signedBy: string | null;
+    signedAt: string | null;
+    actions: string[];
+    ai: "made by AI" | "partly made by AI" | null;
+    ingredients: number;
+    valid: boolean;
+    trusted: boolean;
+}
+/** null: the file has none. Rejects with "tool" when c2patool isn't installed. */
+export const contentCredentials = (path: string) => invoke<Credentials | null>("content_credentials", { path });
+
+/** Opens a copy of a file in Windows Sandbox (network off unless `network`); rejects with "notInstalled" where it's not on. */
+export const sandboxRun = (path: string, network = false) => invoke<void>("sandbox_run", { path, network });
+export const sandboxAvailable = () => invoke<boolean>("sandbox_available");
+
+/** A folder's own last-write time (ms): it changes with every add, delete and rename in it. */
+export const folderStamp = (path: string) => invoke<number>("folder_stamp", { path });
 
 /**
  * Get access, as File Explorer's Continue button does: gives this account read access to a folder
@@ -502,9 +565,12 @@ function progressChannel(onProgress: Progress) {
 export const archiveStage = (paths: string[], purpose: "copy" | "out" | "open", lane: string, onProgress: Progress) =>
     invoke<Staged>("archive_stage", { paths, purpose, lane, onProgress: progressChannel(onProgress) });
 
-/** Compress to zip: the zip, numbered if `name` is taken in `folder`, is `paths[0]` of what comes back. */
-export const archiveCompress = (paths: string[], folder: string, name: string, lane: string, onProgress: Progress) =>
-    invoke<Staged>("archive_compress", { paths, folder, name, lane, onProgress: progressChannel(onProgress) });
+/** What Compress to writes: a zip (Deflate), a 7z (LZMA2) or a tar.zst (Zstandard). */
+export type CompressFormat = "zip" | "7z" | "tar.zst";
+
+/** Compress to: the archive, numbered if `name` is taken in `folder`, is `paths[0]` of what comes back. A zip or a 7z can have a password (AES-256; a 7z's file names too). */
+export const archiveCompress = (paths: string[], folder: string, name: string, lane: string, onProgress: Progress, format: CompressFormat = "zip", password?: string) =>
+    invoke<Staged>("archive_compress", { paths, folder, name, lane, format, password: password || null, onProgress: progressChannel(onProgress) });
 
 /** Extract here: into a new folder next to the archive, named after it; it's `folder` of what comes back. */
 export const archiveExtractHere = (path: string, lane: string, onProgress: Progress) =>
@@ -1249,8 +1315,10 @@ export interface IndexInfo {
 }
 
 export const indexStatus = () => invoke<IndexInfo>("index_status");
-/** Installs and starts the service after Windows asks for administrator approval; rejects with "cancelled" if declined. */
+/** Installs and starts the service after Windows asks for administrator approval (an update goes without, when the service can take it by itself); rejects with "cancelled" if declined. */
 export const indexEnable = () => invoke<IndexInfo>("index_enable");
+/** Updates an older service to the app's without administrator approval; rejects with why not, when only the approval route can. */
+export const indexUpdate = () => invoke<IndexInfo>("index_update");
 /** Stops and removes the service and its index files (administrator approval again). */
 export const indexDisable = () => invoke<IndexInfo>("index_disable");
 
@@ -1286,3 +1354,71 @@ export interface HistoryAnswer {
 
 /** What was renamed, moved and deleted, newest first; rejects with "tooOld" (a service from before it) or "off". */
 export const indexHistory = (query: string, since: number, max: number) => invoke<HistoryAnswer>("index_history", { query, since, max });
+
+/** One of Windows' shadow copies: a drive as it was (previous versions: versions.rs). */
+export interface ShadowCopy {
+    /** Its top, \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\. */
+    root: string;
+    /** "C:", or "" for a volume with no letter. */
+    drive: string;
+    /** When it was taken (ms), 0 when unknown. */
+    created: number;
+    /** VSS's own time (through the service), not the copy's newest entry. */
+    exact: boolean;
+}
+
+/** A file or folder as a shadow copy has it. */
+export interface PreviousVersion {
+    path: string;
+    root: string;
+    created: number;
+    exact: boolean;
+    dir: boolean;
+    size: number;
+    modified: number;
+    /** It's gone now. */
+    gone: boolean;
+}
+
+export const shadowCopies = () => invoke<ShadowCopy[]>("shadow_copies");
+/** A file's versions where it differs (and from now), a folder's in every copy; newest first. */
+export const previousVersions = (path: string) => invoke<PreviousVersion[]>("previous_versions", { path });
+/** Copies a version out to `to`: beside what's there, or in its place (that goes to the Recycle Bin). Where it went. */
+export const restoreVersion = (from: string, to: string, replace: boolean) => invoke<string>("restore_version", { from, to, replace });
+/** A read-only temp copy of a file in a shadow copy, for its app. */
+export const versionCopy = (path: string) => invoke<string>("version_copy", { path });
+
+/** Photo search and speech search (shows: and says:): what's on, and where each looks (media_ai.rs). */
+export interface MediaConfig {
+    photos: boolean;
+    photoFolders: string[];
+    speech: boolean;
+    speechFolders: string[];
+}
+
+/** How one side's background reading is going. */
+export interface MediaProgress {
+    known: number;
+    pending: number;
+    working: boolean;
+    error: string;
+}
+
+export interface MediaStatus {
+    config: MediaConfig;
+    photosInstalled: boolean;
+    speechInstalled: boolean;
+    photos: MediaProgress;
+    speech: MediaProgress;
+}
+
+export const mediaStatus = () => invoke<MediaStatus>("media_ai_status");
+export const mediaConfigure = (config: MediaConfig) => invoke<MediaStatus>("media_ai_configure", { config });
+
+/** What speech search heard in a recording: its parts (start in ms, text), and those saying `words`. */
+export interface Heard {
+    lang: string;
+    parts: [number, string][];
+    hits: number[];
+}
+export const speechTranscript = (path: string, words: string | null) => invoke<Heard | null>("speech_transcript", { path, words });

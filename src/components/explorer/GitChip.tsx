@@ -60,7 +60,7 @@ export function GitChip({ tab, path }: { tab: string; path: string }) {
                 popoverTarget={`git-${tab}`}
                 onClick={place}
                 title={`Git: ${view.branch ? `on ${view.branch}` : view.head ? `HEAD detached at ${view.head}` : "a repository with no commits yet"}${view.upstream ? `, tracking ${view.upstream}` : ""}`}
-                className="ml-1 flex h-6 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground @max-[26rem]:hidden"
+                className="ms-1 flex h-6 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground @max-[26rem]:hidden"
             >
                 <GitBranch className="size-3.5" />
                 <span className="max-w-32 truncate font-medium">{name}</span>
@@ -95,7 +95,7 @@ export function GitChip({ tab, path }: { tab: string; path: string }) {
                         <button
                             type="button"
                             onClick={() => copyText(view.head!, "sha")}
-                            className="ml-auto flex shrink-0 items-center gap-1 rounded-sm bg-muted/70 px-1.5 py-0.5 font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                            className="ms-auto flex shrink-0 items-center gap-1 rounded-sm bg-muted/70 px-1.5 py-0.5 font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                             title={`Click to copy commit SHA (${view.head})`}
                         >
                             {copiedWhat === "sha" ? <Check className="size-3 text-emerald-500" /> : null}

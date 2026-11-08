@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { t } from "@/lib/i18n";
 import {
     ArrowLeft,
     ArrowRight,
@@ -23,7 +24,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
-import { type FileEntry, isArchiveFile, isHidden, terms } from "@/lib/entries";
+import { asksModels, type FileEntry, isArchiveFile, isHidden, terms } from "@/lib/entries";
 import { clearFind, findsAsTyped, goBack, goForward, goTo, goUp, leaveFind, middleClickOpens, navigate, refresh, runFind, tabName, updateTab, useExplorer, useTab } from "@/lib/explorer";
 import { driveName, listDir, startDrag } from "@/lib/fs";
 import { useGit } from "@/lib/git";
@@ -42,11 +43,14 @@ export const FIND_BOX_ID = "find-box";
 /** The search box's filters, as it offers them when empty: what choosing one types, an example, and what it means. */
 const FILTERS: [string, string, string][] = [
     ["ext:", "ext:pdf", "of a type (ext:jpg,png for more)"],
+    ["tag:", "tag:work", "with that tag (tag:red;blue for either)"],
     ["path:", "path:src\\lib", "matching folder or file path (or type \\ or /)"],
     ["size:>", "size:>10mb", "bigger than (size:<1kb smaller)"],
     ["dm:", "dm:7d", "changed in the last 7 days (dm:>1y before)"],
     ["file:", "file:", "files only"],
     ["folder:", "folder:", "folders only"],
+    ["shows:", "shows:dog on a beach", "photos showing it (photo search, on in Settings)"],
+    ["says:", "says:budget meeting", "recordings and videos saying it (speech search, on in Settings)"],
 ];
 
 /** What photos, videos and songs say of themselves (media.rs reads it): as you type. */
@@ -269,13 +273,13 @@ function AddressInput({ path }: { path: string }) {
                                 onClick={() => void go(item.path)}
                                 onMouseEnter={() => setActiveIndex(idx)}
                                 className={cn(
-                                    "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors",
+                                    "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-start text-sm transition-colors",
                                     idx === activeIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
                                 )}
                             >
                                 <Icon className={cn("size-4 shrink-0 text-muted-foreground", item.iconClass)} />
                                 <span className="truncate font-medium">{item.name}</span>
-                                {item.detail && <span className="ml-auto truncate pl-3 font-mono text-xs text-muted-foreground">{item.detail}</span>}
+                                {item.detail && <span className="ms-auto truncate ps-3 font-mono text-xs text-muted-foreground">{item.detail}</span>}
                             </button>
                         );
                     })}
@@ -486,7 +490,7 @@ export function AddressBar() {
             .map((t) => (/\s/.test(t) ? `"${t}"` : t))
             .join(" ");
         // Subfolders as you type only where the index answers in milliseconds; an fd walk waits for Enter.
-        if (!readyQuery || !findsAsTyped(readyQuery, path)) return;
+        if (!readyQuery || asksModels(readyQuery) || !findsAsTyped(readyQuery, path)) return;
         findTimer.current = setTimeout(() => void runFind(readyQuery), 100);
     };
 
@@ -650,7 +654,7 @@ export function AddressBar() {
                             ref={flyoutFilterRef}
                             value={flyoutFilter}
                             onChange={(e) => setFlyoutFilter(e.target.value)}
-                            placeholder="Filter folders…"
+                            placeholder={t("Filter folders…")}
                             spellCheck={false}
                             className="h-7 w-full rounded-sm bg-muted/50 px-2 text-xs outline-hidden placeholder:text-muted-foreground"
                         />
@@ -681,7 +685,7 @@ export function AddressBar() {
                                         void navigate(item.path);
                                     }}
                                     className={cn(
-                                        "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden",
+                                        "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-start text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden",
                                         active && "bg-primary/10 font-medium text-primary"
                                     )}
                                 >
@@ -704,7 +708,7 @@ export function AddressBar() {
                     (filter || find) && "max-sm:w-[min(16rem,50vw)]"
                 )}
             >
-                <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <SearchIcon className="pointer-events-none absolute start-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <input
                     id={FIND_BOX_ID}
                     value={filter}
@@ -713,10 +717,10 @@ export function AddressBar() {
                     onFocus={() => setFindFocused(true)}
                     onBlur={() => setFindFocused(false)}
                     spellCheck={false}
-                    placeholder={`Search ${folderName}`}
+                    placeholder={t("Search {folder}", { folder: folderName })}
                     aria-label={`Search ${folderName} and its subfolders.`}
-                    title="Typing filters this folder · Enter searches its subfolders too, by name or path, with the instant search index or fd (* and ? work, words all must match); where the index covers them, they're searched as you type. Filters: ext:pdf, path:src\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
-                    className={cn("fluent-field h-8 w-full pl-8 text-sm outline-hidden placeholder:text-muted-foreground", filter || find ? "pr-8" : "pr-8 max-sm:pr-0 max-sm:focus:pr-2")}
+                    title="Typing filters this folder · Enter searches its subfolders too, by name or path, with the instant search index or fd (* and ? work, words all must match); where the index covers them, they're searched as you type. Filters: ext:pdf, path:src\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:; shows: (what photos show) and says: (what recordings say), with photo and speech search on in Settings"
+                    className={cn("fluent-field h-8 w-full ps-8 text-sm outline-hidden placeholder:text-muted-foreground", filter || find ? "pe-8" : "pe-8 max-sm:pe-0 max-sm:focus:pe-2")}
                 />
                 {(filter || find) && (
                     <button
@@ -724,7 +728,7 @@ export function AddressBar() {
                             clearTimeout(findTimer.current);
                             clearFind();
                         }}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground"
+                        className="absolute end-2 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground"
                         title="Clear (Esc)"
                         aria-label="Clear search"
                     >
@@ -733,8 +737,8 @@ export function AddressBar() {
                 )}
                 {plain && (
                     // Mouse down keeps the focus in the box; a click takes the filters, as Tab does.
-                    <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-1.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
-                        <button type="button" tabIndex={-1} onClick={() => onFilterChange(plain.query)} className="flex w-full flex-col items-start gap-1.5 rounded-sm px-1.5 py-1.5 text-left hover:bg-accent">
+                    <div data-overlay className="glint-pop absolute end-0 top-full z-50 mt-1 w-[max(100%,19rem)] rounded-md border bg-popover p-1.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
+                        <button type="button" tabIndex={-1} onClick={() => onFilterChange(plain.query)} className="flex w-full flex-col items-start gap-1.5 rounded-sm px-1.5 py-1.5 text-start hover:bg-accent">
                             <span className="flex flex-wrap gap-1">
                                 {plain.chips.map((chip) => (
                                     <span key={chip} className="rounded-[4px] bg-primary/12 px-1.5 py-0.5 font-medium text-primary">
@@ -752,7 +756,7 @@ export function AddressBar() {
                 {findFocused && !filter && !find && (
                     // Mouse down keeps the focus in the box, which each filter starts. Each meaning wraps
                     // rather than being cut off, and in a short window the list scrolls.
-                    <div data-overlay className="glint-pop absolute right-0 top-full z-50 mt-1 max-h-[calc(100vh-3.5rem)] w-[max(100%,19rem)] overflow-y-auto rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
+                    <div data-overlay className="glint-pop absolute end-0 top-full z-50 mt-1 max-h-[calc(100vh-3.5rem)] w-[max(100%,19rem)] overflow-y-auto rounded-md border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg" onMouseDown={(e) => e.preventDefault()}>
                         <p className="text-muted-foreground">Typing filters this folder. Enter searches its subfolders too, by name or path: as you type, where instant search covers them.</p>
                         {[
                             { title: "", filters: inRepository ? [...FILTERS, GIT_FILTER] : FILTERS },
@@ -761,7 +765,7 @@ export function AddressBar() {
                             <div key={title} className="mt-1.5 flex flex-col">
                                 {title && <p className="px-1.5 pb-0.5 pt-1 text-muted-foreground">{title}</p>}
                                 {filters.map(([start, example, meaning]) => (
-                                    <button key={start} type="button" tabIndex={-1} onClick={() => onFilterChange(start)} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-accent">
+                                    <button key={start} type="button" tabIndex={-1} onClick={() => onFilterChange(start)} className="flex items-baseline gap-2 rounded-sm px-1.5 py-1 text-start hover:bg-accent">
                                         <code className="shrink-0 font-mono text-[0.6875rem] text-primary">{example}</code>
                                         <span className="text-muted-foreground">{meaning}</span>
                                     </button>

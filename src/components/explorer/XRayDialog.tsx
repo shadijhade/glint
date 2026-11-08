@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
     Activity,
     AlertTriangle,
+    BadgeCheck,
     Check,
     CheckCircle2,
     Copy,
@@ -20,7 +21,7 @@ import {
 } from "lucide-react";
 import { scanWithDefender } from "@/lib/defender";
 import { formatCount, formatSize } from "@/lib/format";
-import { cancelXRay, fileRealType, type FileXRayReport, inspectFileXRay, type RealType, removeNtfsStream, signable } from "@/lib/fs";
+import { cancelXRay, contentCredentials, type Credentials, fileRealType, type FileXRayReport, inspectFileXRay, type RealType, removeNtfsStream, signable } from "@/lib/fs";
 import { baseName } from "@/lib/paths";
 import { useTool } from "@/lib/tools";
 import { cn } from "@/lib/utils";
@@ -116,12 +117,59 @@ function SignatureSection({ path }: { path: string }) {
                 )}
             </div>
             {described && described.details.length > 0 && (
-                <ul className="space-y-0.5 pl-5 text-muted-foreground">
+                <ul className="space-y-0.5 ps-5 text-muted-foreground">
                     {described.details.map((d) => (
                         <li key={d} className="list-disc">
                             {d}
                         </li>
                     ))}
+                </ul>
+            )}
+        </div>
+    );
+}
+
+/**
+ * Content Credentials (C2PA), for a picture or a video: who made it and with what, what was done to it,
+ * whether AI made it, and whether the signature holds, read by c2patool.
+ */
+export function CredentialsSection({ path, compact }: { path: string; compact?: boolean }) {
+    const [found, setFound] = useState<Credentials | null | undefined>(undefined);
+    const [failed, setFailed] = useState("");
+    const installed = useTool("c2patool")?.origin;
+    useEffect(() => {
+        let stale = false;
+        setFound(undefined);
+        setFailed("");
+        contentCredentials(path).then(
+            (c) => !stale && setFound(c),
+            (e) => !stale && (String(e) === "tool" ? setFound(undefined) : setFailed(String(e)))
+        );
+        return () => {
+            stale = true;
+        };
+    }, [path, installed]);
+    if (!installed) return compact ? null : <ToolNeeded id="c2patool" why="c2patool reads a picture's or video's Content Credentials: who made it, with what, and whether AI did." icon={BadgeCheck} />;
+    if (found === undefined && !failed) return null;
+    if (found === null) return compact ? null : <p className="text-xs text-muted-foreground">No Content Credentials: nothing in it says where it came from.</p>;
+    return (
+        <div className="space-y-1.5 rounded-lg border bg-card p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="flex items-center gap-1.5 font-semibold text-foreground">
+                    <BadgeCheck className={cn("size-3.5", found?.trusted ? "text-primary" : "text-muted-foreground")} />
+                    Content Credentials
+                </span>
+                {found?.ai && <span className="rounded bg-amber-500/15 px-1.5 py-px font-medium text-amber-800 dark:text-amber-400">{found.ai}</span>}
+                {found && !found.valid && <span className="rounded bg-destructive/10 px-1.5 py-px font-medium text-destructive">changed since it was signed</span>}
+                {found && found.valid && !found.trusted && <span className="text-muted-foreground">signed, by a signer c2patool doesn't know</span>}
+            </div>
+            {failed && <p className="text-muted-foreground">{failed}</p>}
+            {found && (
+                <ul className="space-y-0.5 text-muted-foreground">
+                    {found.madeWith && <li>Made with <span className="text-foreground">{found.madeWith}</span></li>}
+                    {found.actions.length > 0 && <li>{found.actions.join(" · ")}</li>}
+                    {found.ingredients > 0 && <li>From {found.ingredients === 1 ? "one file" : `${found.ingredients} files`}</li>}
+                    {found.signedBy && <li>Signed by <span className="text-foreground">{found.signedBy}</span>{found.signedAt ? `, ${new Date(found.signedAt).toLocaleString()}` : ""}</li>}
                 </ul>
             )}
         </div>
@@ -300,6 +348,7 @@ export function XRayDialog() {
 
                         {signable(path) && <SignatureSection path={path} />}
                         <RealTypeSection path={path} />
+                        {/\.(jpe?g|png|webp|avif|heic|heif|tiff?|dng|gif|mp4|mov|m4v|avi|webm|mp3|m4a|wav|pdf)$/i.test(path) && <CredentialsSection path={path} />}
 
                         {/* 1. Checksums, and comparing one with a published one */}
                         <div className="space-y-2.5 rounded-lg border bg-card p-3.5">
@@ -430,15 +479,15 @@ export function XRayDialog() {
                                 </div>
                                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[0.6875rem]">
                                     <dt className="text-muted-foreground">Logical size</dt>
-                                    <dd className="text-right font-mono tabular-nums">
+                                    <dd className="text-end font-mono tabular-nums">
                                         {formatSize(report.logicalSize)} ({formatCount(report.logicalSize)} B)
                                     </dd>
                                     <dt className="text-muted-foreground">Allocated on disk</dt>
-                                    <dd className="text-right font-mono tabular-nums">
+                                    <dd className="text-end font-mono tabular-nums">
                                         {formatSize(report.allocatedSize)} ({formatCount(report.allocatedSize)} B)
                                     </dd>
                                     <dt className="text-muted-foreground">NTFS hardlinks</dt>
-                                    <dd className="text-right font-mono tabular-nums">{report.hardlinkCount}</dd>
+                                    <dd className="text-end font-mono tabular-nums">{report.hardlinkCount}</dd>
                                 </dl>
                             </div>
 
@@ -449,11 +498,11 @@ export function XRayDialog() {
                                 </div>
                                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[0.6875rem]">
                                     <dt className="text-muted-foreground">MFT File ID</dt>
-                                    <dd className="text-right font-mono tabular-nums">{report.fileIndex}</dd>
+                                    <dd className="text-end font-mono tabular-nums">{report.fileIndex}</dd>
                                     <dt className="text-muted-foreground">Volume Serial</dt>
-                                    <dd className="text-right font-mono tabular-nums">{report.volumeSerial}</dd>
+                                    <dd className="text-end font-mono tabular-nums">{report.volumeSerial}</dd>
                                     <dt className="text-muted-foreground">Attributes</dt>
-                                    <dd className="text-right">
+                                    <dd className="text-end">
                                         {report.attributes.length ? report.attributes.join(", ") : "Normal"}
                                     </dd>
                                 </dl>
@@ -488,7 +537,7 @@ export function XRayDialog() {
                                                     size="sm"
                                                     disabled={removingStream !== null}
                                                     onClick={() => handleRemoveStream(s.cleanName)}
-                                                    className="ml-auto h-6 px-2 text-[0.6875rem] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                                    className="ms-auto h-6 px-2 text-[0.6875rem] text-destructive hover:bg-destructive/10 hover:text-destructive"
                                                     title={`Delete the stream :${s.cleanName}`}
                                                 >
                                                     {removingStream === s.cleanName ? (

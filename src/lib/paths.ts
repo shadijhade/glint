@@ -21,6 +21,19 @@ export const isRemotePath = (path: string) => path.slice(0, REMOTE.length).toLow
 /** The id of the connection a remote path is on ("" for any other path). */
 export const remoteIdOf = (path: string) => (isRemotePath(path) ? (path.slice(REMOTE.length).split(/[\\/]/)[0] ?? "") : "");
 
+/** A shadow copy (Windows' earlier state of a drive: previous versions, versions.rs) and what's in it, read-only. */
+const SHADOW = /^\\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy(\d+)(?=\\|$)/i;
+const SHADOW_ROOT = /^\\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy\d+\\?$/i;
+export const isShadowPath = (path: string) => SHADOW.test(path);
+/** A shadow copy's top, with its closing backslash ("" for any other path). */
+export const shadowRootOf = (path: string) => {
+    const match = SHADOW.exec(path);
+    return match ? `${match[0]}\\` : "";
+};
+/** What shadow copies' tops are called ("C: on 2 Nov 2026, 14:20"), as Glint learned them. */
+export const shadowNames = new Map<string, string>();
+export const shadowName = (path: string) => shadowNames.get(shadowRootOf(path).toLowerCase()) ?? `Shadow copy ${SHADOW.exec(path)?.[1] ?? ""}`.trim();
+
 /** A folder on this PC (on disk, or in an archive) rather than This PC, the Recycle Bin or a remote: what's in it has its path, for other tools too. */
 export const isFolderPath = (path: string) => path !== THIS_PC && !isRecycleBin(path) && !isRecent(path) && !isGallery(path) && !isRemotePath(path);
 
@@ -31,7 +44,7 @@ export const inArchivePath = (path: string) => ARCHIVE_IN_PATH.test(path);
 
 /** "C:\", "C:", "\\server\share", "\\server" (its shares) and "/" are roots, and so are the Recycle Bin, Recent and a remote's top (This PC is above them). */
 export function isRoot(path: string) {
-    return /^[A-Za-z]:[\\/]?$/.test(path) || /^\\\\[^\\]+(\\[^\\]+)?\\?$/.test(path) || path === "/" || isRecycleBin(path) || isRecent(path) || isGallery(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
+    return /^[A-Za-z]:[\\/]?$/.test(path) || SHADOW_ROOT.test(path) || /^\\\\[^\\]+(\\[^\\]+)?\\?$/.test(path) || path === "/" || isRecycleBin(path) || isRecent(path) || isGallery(path) || /^remote:[^\\/]+[\\/]?$/i.test(path);
 }
 
 export function joinPath(dir: string, name: string) {
@@ -53,7 +66,7 @@ export function parentPath(path: string) {
     const cut = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
     if (cut < 0) return THIS_PC;
     const parent = trimmed.slice(0, cut);
-    if (/^[A-Za-z]:$/.test(parent)) return parent + "\\";
+    if (/^[A-Za-z]:$/.test(parent) || SHADOW_ROOT.test(parent)) return parent + "\\";
     return parent || "/";
 }
 
@@ -63,7 +76,7 @@ export function samePath(a: string, b: string) {
 }
 
 /** The drive ("C:") or share ("\\server\share") a path is on. */
-export const volumeOf = (path: string) => /^(?:[a-z]:|\\\\[^\\]+\\[^\\]+)/i.exec(path)?.[0] ?? "";
+export const volumeOf = (path: string) => /^(?:[a-z]:|\\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy\d+|\\\\[^\\]+\\[^\\]+)/i.exec(path)?.[0] ?? "";
 
 /**
  * The file a link in a document names (a Markdown link or picture): its URL's path, relative to the
@@ -102,6 +115,13 @@ export function crumbs(path: string): { name: string; path: string }[] {
         const [id, ...rest] = path.slice(REMOTE.length).split(/[\\/]/).filter(Boolean);
         const trail = [{ name: id ?? "", path: REMOTE + (id ?? "") }];
         for (const part of rest) trail.push({ name: part, path: joinPath(trail[trail.length - 1].path, part) });
+        return trail;
+    }
+    // A shadow copy's top is named for its drive and when it was taken.
+    const shadow = shadowRootOf(path);
+    if (shadow) {
+        const trail = [{ name: shadowName(path), path: shadow }];
+        for (const part of path.slice(shadow.length).split(/[\\/]/).filter(Boolean)) trail.push({ name: part, path: joinPath(trail[trail.length - 1].path, part) });
         return trail;
     }
     // A share comes after its server, which lists its shares.

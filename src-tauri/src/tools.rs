@@ -165,6 +165,51 @@ pub static TOOLS: &[Tool] = &[
         used_for: "A file's real type in the File X-Ray, told by its content (a program named photo.jpg, say)",
     },
     Tool {
+        id: "c2patool",
+        name: "c2patool",
+        exe: "c2patool",
+        package: "c2patool",
+        bundled: false,
+        winget: "",
+        release: release(
+            "0.27.22",
+            "https://github.com/contentauth/c2pa-rs/releases/download/c2patool-v0.27.22/c2patool-v0.27.22-x86_64-pc-windows-msvc.zip",
+            "2e6808719b5610f9ab096857f600f16938fda3c7388de3829f0dea1c2a345011",
+            "c2patool/c2patool.exe",
+        ),
+        used_for: "A picture's or video's Content Credentials in its preview and the File X-Ray: who made it, with what, and whether AI did",
+    },
+    // Its CPU build: ggml picks the build of its CPU code that this PC's processor runs fastest.
+    Tool {
+        id: "whisper",
+        name: "whisper.cpp",
+        exe: "whisper-cli",
+        package: "whisper",
+        bundled: false,
+        winget: "",
+        release: Release {
+            version: "b5454",
+            url: "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip",
+            sha256: "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb",
+            member: "Release/whisper-cli.exe",
+            with: &[
+                "Release/whisper.dll",
+                "Release/ggml.dll",
+                "Release/ggml-base.dll",
+                "Release/ggml-cpu-x64.dll",
+                "Release/ggml-cpu-sse42.dll",
+                "Release/ggml-cpu-sandybridge.dll",
+                "Release/ggml-cpu-haswell.dll",
+                "Release/ggml-cpu-skylakex.dll",
+                "Release/ggml-cpu-cannonlake.dll",
+                "Release/ggml-cpu-cascadelake.dll",
+                "Release/ggml-cpu-icelake.dll",
+                "Release/ggml-cpu-alderlake.dll",
+            ],
+        },
+        used_for: "Speech search (says: in the search box): what's said in recordings and videos, heard on this PC",
+    },
+    Tool {
         id: "yara-x",
         name: "YARA-X",
         exe: "yr",
@@ -545,7 +590,7 @@ pub async fn tool_install(id: String, on_progress: Channel<Progress>, installs: 
     install(&id, on_progress, &installs).await
 }
 
-async fn install(id: &str, on_progress: Channel<Progress>, installs: &Installs) -> Result<ToolStatus, String> {
+pub(crate) async fn install(id: &str, on_progress: Channel<Progress>, installs: &Installs) -> Result<ToolStatus, String> {
     let tool = get(id).ok_or_else(|| format!("No tool is called {id}"))?;
     // The ways to get it, in order (None is its release): winget first, as what it installs goes on PATH,
     // where terminals find it too; but a tool that comes with Glint is put back from its release first, the
@@ -825,7 +870,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Takes only the files named, `(member, name)`, out of a checked release zip, into a fresh folder that
 /// then replaces the old one.
-fn unpack(zip: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), String> {
+pub(crate) fn unpack(zip: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(File::open(zip).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     fresh_folder(into, |fresh| {
         for (member, name) in files {
@@ -1097,7 +1142,7 @@ mod tests {
             assert!(program || release.url.ends_with(".zip") || release.url.ends_with(".tar.gz"), "{}'s download is a program, a zip or a tarball", tool.id);
             assert_eq!(release.member.is_empty(), program, "{}: an archive names its program, a program needs no name", tool.id);
             assert!(release.member.is_empty() || release.member.ends_with(".exe"), "{}'s member is a program", tool.id);
-            assert!(release.with.iter().all(|m| !program && m.ends_with(".exe")), "{}'s other files come from its archive", tool.id);
+            assert!(release.with.iter().all(|m| !program && (m.ends_with(".exe") || m.ends_with(".dll"))), "{}'s other files (programs, or the DLLs it loads) come from its archive", tool.id);
         }
     }
 

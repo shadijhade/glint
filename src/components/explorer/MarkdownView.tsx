@@ -80,6 +80,81 @@ function Picture({ src, alt, title, width, height, float, ctx }: { src: string; 
     return <img src={url} alt={alt} title={title || undefined} width={width} height={height} style={style} draggable={false} onError={() => setFailed(true)} />;
 }
 
+/** The MathML Temml writes, kept as such; anything else in its output shows only what's in it. */
+const MATH_TAGS = new Set(
+    "math semantics mrow mi mn mo ms mtext mspace msup msub msubsup munder mover munderover mfrac msqrt mroot mstyle mpadded mphantom menclose mtable mtr mtd mlabeledtr mmultiscripts mprescripts none merror".split(" ")
+);
+const MATH_ATTRS = new Set(
+    "display displaystyle scriptlevel mathvariant mathsize stretchy fence separator symmetric largeop movablelimits accent accentunder lspace rspace minsize maxsize width height depth voffset linethickness notation columnalign rowalign columnspacing rowspacing columnlines rowlines frame framespacing equalrows equalcolumns form".split(" ")
+);
+
+function mathNode(node: ChildNode, key: number): ReactNode {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeType !== Node.ELEMENT_NODE) return null;
+    const el = node as Element;
+    const tag = el.localName;
+    if (tag === "annotation" || tag === "annotation-xml") return null;
+    const kids = Array.from(el.childNodes, (child, i) => mathNode(child, i));
+    if (!MATH_TAGS.has(tag)) return <span key={key}>{kids}</span>;
+    const props: Record<string, string | number> = { key };
+    for (const { name, value } of Array.from(el.attributes)) if (MATH_ATTRS.has(name)) props[name] = value;
+    return createElement(tag, props, kids.length ? kids : undefined);
+}
+
+/**
+ * TeX as the page draws math (MathML, which WebView2 renders itself), made by Temml (loaded the first
+ * time a file has math) and built from an allowlist like the rest of the preview.
+ */
+function MathView({ tex, display }: { tex: string; display: boolean }) {
+    const [mathml, setMathml] = useState<string | null>(null);
+    useEffect(() => {
+        let stale = false;
+        import("temml").then(({ default: temml }) => {
+            if (!stale) setMathml(temml.renderToString(tex, { displayMode: display, throwOnError: false, trust: false }));
+        });
+        return () => {
+            stale = true;
+        };
+    }, [tex, display]);
+    const nodes = useMemo(() => (mathml === null ? null : Array.from(new DOMParser().parseFromString(mathml, "text/html").body.childNodes, (n, i) => mathNode(n, i))), [mathml]);
+    if (!nodes) return <code>{tex}</code>;
+    return display ? <div className="md-math">{nodes}</div> : <span className="md-math-inline">{nodes}</span>;
+}
+
+let mermaidLoaded: Promise<(typeof import("mermaid"))["default"]> | undefined;
+let mermaidRenders = 0;
+
+/**
+ * A ```mermaid block as the diagram it describes, drawn by Mermaid (loaded the first time one shows) in
+ * its strict mode and shown as a picture: an SVG in an <img> can't run anything.
+ */
+function MermaidView({ source }: { source: string }) {
+    const [svg, setSvg] = useState<string | { error: string } | null>(null);
+    useEffect(() => {
+        let stale = false;
+        const dark = document.documentElement.classList.contains("dark");
+        (mermaidLoaded ??= import("mermaid").then((m) => m.default))
+            .then(async (mermaid) => {
+                mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default", htmlLabels: false, flowchart: { htmlLabels: false } });
+                const drawn = await mermaid.render(`glint-mermaid-${++mermaidRenders}`, source);
+                if (!stale) setSvg(drawn.svg);
+            })
+            .catch((e) => !stale && setSvg({ error: String(e?.message ?? e) }));
+        return () => {
+            stale = true;
+        };
+    }, [source]);
+    if (typeof svg === "string") return <img className="md-mermaid" src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`} alt="A Mermaid diagram" draggable={false} />;
+    return (
+        <div>
+            <SyntaxHighlighter language="text" useInlineStyles={false} PreTag="pre" CodeTag="code">
+                {source}
+            </SyntaxHighlighter>
+            {svg && <p className="md-missing">Not a diagram Mermaid can draw: {svg.error}</p>}
+        </div>
+    );
+}
+
 /** One node of the HTML as an element, if it's an allowed tag, with only the allowed attributes. */
 function build(node: ChildNode, key: number, ctx: Ctx): ReactNode {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -99,6 +174,8 @@ function build(node: ChildNode, key: number, ctx: Ctx): ReactNode {
     const className = [...el.classList].filter((c) => CLASSES.has(c)).join(" ") || undefined;
     const align = /^(left|right|center|justify)$/i.exec(el.localName === "center" ? "center" : attr("align"))?.[0].toLowerCase();
     const title = attr("title") || undefined;
+    const math = el.getAttribute("data-math-style");
+    if (math && (tag === "span" || tag === "code")) return <MathView key={key} tex={el.textContent ?? ""} display={math === "display"} />;
     switch (tag) {
         case "a": {
             // A heading's own "link to here".
@@ -135,6 +212,9 @@ function build(node: ChildNode, key: number, ctx: Ctx): ReactNode {
         case "pre": {
             const code = el.querySelector("code");
             const language = /\blanguage-(\S+)/.exec(code?.className ?? "")?.[1];
+            const source = (code ?? el).textContent?.replace(/\n$/, "") ?? "";
+            if (language === "math") return <MathView key={key} tex={source} display />;
+            if (language === "mermaid") return <MermaidView key={key} source={source} />;
             return (
                 <SyntaxHighlighter key={key} language={language ? languageNamed(language) : "text"} useInlineStyles={false} PreTag="pre" CodeTag="code">
                     {(code ?? el).textContent?.replace(/\n$/, "") ?? ""}
