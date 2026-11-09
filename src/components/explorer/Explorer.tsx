@@ -43,6 +43,7 @@ import {
     Eye,
     EyeOff,
     FileArchive,
+    FileCheck2,
     FileClock,
     FileCog,
     FileDown,
@@ -105,6 +106,7 @@ import {
     Settings as SettingsIcon,
     Share2,
     ShieldCheck,
+    Shrink,
     Sigma,
     SlidersHorizontal,
     Smartphone,
@@ -276,13 +278,14 @@ import { convertData, isDataFile, queryTogether } from "./DataTools";
 import { canClean, canRedate, openMetadata } from "./MetadataDialog";
 import { canEncrypt, isAgeFile, openVault } from "./VaultDialog";
 import { backToJpeg, canShrink, isJxl, openShrink } from "./ShrinkDialog";
+import { canCompressInPlace, openCompressInPlace } from "./CompressInPlaceDialog";
 import { canConvertDoc, exportTypstPdf, isTypst, openDocConvert } from "./DocConvertDialog";
 import { isSong, openSongs } from "./SongDialog";
 import { canBackUp, openBackup } from "./BackupDialog";
 import { isMediaFile, isVideoFile } from "@/lib/studio";
 import { GROUP_BYS, type Grouped, groupRows } from "@/lib/groups";
 import { exportMarkdownPdf } from "@/lib/actions";
-import { isMarkdown } from "@/lib/fileTypes";
+import { isMarkdown, previewKind } from "@/lib/fileTypes";
 import { sendToDevice } from "@/lib/devices";
 import { openNearby } from "./NearbyDialog";
 import { NextColumn, ParentColumn } from "./ColumnsView";
@@ -290,7 +293,7 @@ import { DiskUsage } from "./DiskUsage";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { FileGrid } from "./FileGrid";
 import { FileList } from "./FileList";
-import { FilePreview } from "./FilePreview";
+import { convertToUtf8, FilePreview } from "./FilePreview";
 import { openHistory } from "./HistoryDialog";
 import { openVersions } from "./VersionsDialog";
 import { inspectLocks } from "./LocksDialog";
@@ -982,6 +985,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 ),
             !!oneArchive && !closedItems && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
             (chosenEntries.some(canShrink) || chosenEntries.some((e) => e.dir)) && action("shrink", "Make the selection smaller: videos that look the same, photos, PDFs, Office files", Minimize2, () => openShrink(chosenEntries)),
+            chosenEntries.length > 0 && chosenEntries.every(canCompressInPlace) && action("compress-in-place", "Compress in place: the selection takes less space and still opens normally", Shrink, () => openCompressInPlace(chosenEntries)),
+            chosenEntries.length > 0 && chosenEntries.every((e) => !e.dir && previewKind(e) === "text" && !isArchived(e)) && action("to-utf8", "Convert the selected text files to UTF-8 (old Arabic, Cyrillic and other encodings)", FileCheck2, () => void convertToUtf8(chosenEntries.map((e) => e.path))),
             chosenEntries.some(canConvertDoc) && action("convert-doc", "Convert the selected documents: Word, PDF, Markdown, HTML, EPUB, PowerPoint…", FileType, () => openDocConvert(chosenEntries)),
             chosenEntries.length === 1 && canBackUp(chosenEntries[0]) && action("backup", "Back up the selected folder: to a drive or a cloud, encrypted, daily or weekly", DatabaseBackup, () => openBackup(chosenEntries[0])),
             chosenEntries.some(isSong) && action("song-details", "Edit the selected songs' details: title, artist, album, track, cover", Music, () => openSongs(chosenEntries)),
@@ -2154,6 +2159,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     { label: "Zip file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Zip anyway", () => compressEntries(targets)) },
                     { label: "7z file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Compress anyway", () => compressEntries(targets, "7z")) },
                     { label: "tar.zst file", icon: FileArchive, onSelect: () => void secretsCheckFirst(paths, "Compress anyway", () => compressEntries(targets, "tar.zst")) },
+                    targets.every(canCompressInPlace) && { label: "In place (still opens normally)…", icon: Shrink, onSelect: () => openCompressInPlace(targets) },
                     "separator",
                     {
                         label: "With a password…",

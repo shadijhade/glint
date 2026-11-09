@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
-import { FileArchive, FileImage, FileText, Film, Minimize2 } from "lucide-react";
+import { FileArchive, FileImage, FileText, Film, Minimize2, Shrink } from "lucide-react";
 import { type FileEntry, isArchived, isClosed, isOnlineOnly, isRecycled } from "@/lib/entries";
 import { type ActionOutput, badOutput, offerActionUndo, runAction } from "@/lib/actions";
 import { compressEntries } from "@/lib/explorer";
@@ -10,6 +10,7 @@ import { formatCount, plural } from "@/lib/format";
 import { parentPath } from "@/lib/paths";
 import { useTool } from "@/lib/tools";
 import { ToolNeeded } from "../ToolNeeded";
+import { openCompressInPlace } from "./CompressInPlaceDialog";
 import { Button } from "../ui/button";
 import { Modal, ModalHeader } from "../Modal";
 import { Choices, RunFooter, RunProgress, RunResult, useActionRun, WhereChooser } from "./ActionParts";
@@ -206,7 +207,18 @@ function ShrinkModal({ files, folders }: { files: FileEntry[]; folders: FileEntr
                         {counts.office > 0 && <p className="text-xs text-muted-foreground">Word, PowerPoint and Excel files get their pictures made smaller (at most 3,000 pixels across); the rest of each file stays as it was.</p>}
                         {folders.length > 0 && (
                             <div className="flex items-center gap-3 rounded-md bg-muted/40 px-3 py-2">
-                                <span className="min-w-0 flex-1 text-xs text-muted-foreground">{folders.length === 1 ? `“${folders[0].name}” is a folder: compressing it makes one smaller file.` : `${formatCount(folders.length)} folders: compressing them makes smaller files.`}</span>
+                                <span className="min-w-0 flex-1 text-xs text-muted-foreground">{folders.length === 1 ? `“${folders[0].name}” is a folder: compress it in place (it still opens normally), or into one smaller file.` : `${formatCount(folders.length)} folders: compress them in place (they still open normally), or into smaller files.`}</span>
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    title="Windows stores them compressed; they open as before"
+                                    onClick={() => {
+                                        openCompressInPlace(folders);
+                                        if (!files.length) close();
+                                    }}
+                                >
+                                    <Shrink /> In place
+                                </Button>
                                 <Button
                                     size="sm"
                                     variant="outline"

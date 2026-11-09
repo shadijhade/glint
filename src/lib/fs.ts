@@ -197,8 +197,9 @@ export interface McpSetup {
 }
 export const mcpSetup = () => invoke<McpSetup>("mcp_setup");
 
-export const readTextPreview = (path: string, maxBytes: number) =>
-    invoke<{ text: string; truncated: boolean; binary: boolean }>("read_text_preview", { path, maxBytes });
+/** The start of a file as text: in its own encoding (`encoding` when one's chosen, else detected). */
+export const readTextPreview = (path: string, maxBytes: number, encoding?: string | null) =>
+    invoke<{ text: string; truncated: boolean; binary: boolean; encoding: string | null; guessed: boolean }>("read_text_preview", { path, maxBytes, encoding: encoding ?? null });
 
 /** Markdown as HTML (GitHub's flavor, by comrak), with its own HTML in it for the preview to keep what's allowed. */
 export const markdownHtml = (text: string) => invoke<string>("markdown_html", { text });

@@ -1131,54 +1131,52 @@ pub struct TextPreview {
     pub text: String,
     pub truncated: bool,
     pub binary: bool,
+    /// What the text was read as, when it isn't plain UTF-8 ("windows-1256", "UTF-16LE"…).
+    pub encoding: Option<String>,
+    /// Whether that was a guess (an older encoding, without a mark to say so).
+    pub guessed: bool,
 }
 
-/// The start of a file as text for the preview pane: BOM-aware, and binary files are detected, not decoded.
+/// The start of a file as text for the preview pane: in its own encoding (detected, or `encoding` when
+/// one's chosen), and binary files are detected, not decoded.
 #[tauri::command]
-pub async fn read_text_preview(path: String, max_bytes: usize) -> Result<TextPreview, String> {
+pub async fn read_text_preview(path: String, max_bytes: usize, encoding: Option<String>) -> Result<TextPreview, String> {
     // A remote's file: its first bytes, asked for as a range.
     if crate::remote::is_remote(&path) {
         let (bytes, truncated) = crate::remote::read_prefix(&path, max_bytes.clamp(1024, 4 << 20)).await?;
-        return Ok(decode_text(&bytes, truncated));
+        return Ok(decode_text_as(&bytes, truncated, encoding.as_deref()));
     }
     blocking(move || {
         let limit = max_bytes.clamp(1024, 4 << 20);
         if let Some(read) = crate::archive::read_prefix(&path, limit) {
             let (bytes, truncated) = read?;
-            return Ok(decode_text(&bytes, truncated));
+            return Ok(decode_text_as(&bytes, truncated, encoding.as_deref()));
         }
         let file = std::fs::File::open(&path).map_err(file_error)?;
         let mut bytes = Vec::new();
         file.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(file_error)?;
         let truncated = bytes.len() > limit;
         bytes.truncate(limit);
-        Ok(decode_text(&bytes, truncated))
+        Ok(decode_text_as(&bytes, truncated, encoding.as_deref()))
     })
     .await
 }
 
+#[cfg(test)]
 pub fn decode_text(bytes: &[u8], truncated: bool) -> TextPreview {
-    let utf16 = |big_endian: bool| {
-        let units: Vec<u16> = bytes[2..]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&pair| if big_endian { u16::from_be_bytes(pair) } else { u16::from_le_bytes(pair) })
-            .collect();
-        String::from_utf16_lossy(&units)
-    };
-    let text = match bytes {
-        [0xFF, 0xFE, ..] => utf16(false),
-        [0xFE, 0xFF, ..] => utf16(true),
-        _ => {
-            let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
-            if body.iter().take(8000).any(|&b| b == 0) {
-                return TextPreview { text: String::new(), truncated, binary: true };
-            }
-            String::from_utf8_lossy(body).into_owned()
+    decode_text_as(bytes, truncated, None)
+}
+
+/// [`decode_text`], read as `encoding` when one's given (and known).
+fn decode_text_as(bytes: &[u8], truncated: bool, encoding: Option<&str>) -> TextPreview {
+    if let Some(label) = encoding {
+        if let Some(text) = crate::textenc::decode_as(bytes, label) {
+            return TextPreview { text, truncated, binary: false, encoding: Some(label.to_string()), guessed: false };
         }
-    };
-    TextPreview { text, truncated, binary: false }
+    }
+    let decoded = crate::textenc::decode(bytes, truncated);
+    let shown = (decoded.encoding != "UTF-8" && !decoded.binary).then(|| decoded.encoding.to_string());
+    TextPreview { text: decoded.text, truncated, binary: decoded.binary, encoding: shown, guessed: decoded.guessed }
 }
 
 /// Creates a folder or an empty file in `parent`, numbering the name like Explorer ("New folder (2)") if it's taken.

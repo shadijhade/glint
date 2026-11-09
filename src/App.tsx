@@ -33,6 +33,8 @@ import { DataDialogs } from "./components/explorer/DataTools";
 import { MetadataDialog } from "./components/explorer/MetadataDialog";
 import { VaultDialog } from "./components/explorer/VaultDialog";
 import { ShrinkDialog } from "./components/explorer/ShrinkDialog";
+import { CompressInPlaceDialog } from "./components/explorer/CompressInPlaceDialog";
+import { DriveHealthDialog } from "./components/explorer/DriveHealth";
 import { DocConvertDialog } from "./components/explorer/DocConvertDialog";
 import { SongDialog } from "./components/explorer/SongDialog";
 import { BackupDialog } from "./components/explorer/BackupDialog";
@@ -573,6 +575,8 @@ function App() {
       <MetadataDialog />
       <VaultDialog />
       <ShrinkDialog />
+      <CompressInPlaceDialog />
+      <DriveHealthDialog />
       <DocConvertDialog />
       <SongDialog />
       <BackupDialog />

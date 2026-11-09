@@ -303,4 +303,7 @@ export const AR: Record<string, string> = {
     "Typeset": "منسّق",
     "Preview": "معاينة",
     "Even volume": "صوت متوازن",
+    "In place (still opens normally)…": "في مكانها (تُفتح كالمعتاد)…",
+    "Convert to UTF-8": "تحويل إلى UTF-8",
+    "Read as": "قراءة بترميز",
 };

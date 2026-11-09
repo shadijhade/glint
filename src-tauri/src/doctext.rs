@@ -103,7 +103,7 @@ pub fn read(path: &str) -> Result<Lines, String> {
             let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
             let mut bytes = Vec::new();
             (&mut file).take(MAX_TEXT as u64).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-            String::from_utf8_lossy(&bytes).lines().enumerate().filter(|(_, l)| !l.trim().is_empty()).map(|(i, l)| (format!("line {}", i + 1), l.trim().to_string())).collect()
+            crate::textenc::decode(&bytes, true).text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()).map(|(i, l)| (format!("line {}", i + 1), l.trim().to_string())).collect()
         }
         other => return Err(format!("not a document Glint reads: .{other}")),
     };
