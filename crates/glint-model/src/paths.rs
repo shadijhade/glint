@@ -416,7 +416,9 @@ pub fn linked_path(url: &str, folder: &str, root: &str) -> Option<String> {
 /// One step of the breadcrumb trail: what to show, and where it goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Crumb {
+    /// What the breadcrumb shows: a folder's name, or a place's own name (such as "Recycle Bin").
     pub name: String,
+    /// Where the breadcrumb goes when clicked: the folder's full path, or the place's own path.
     pub path: String,
 }
 

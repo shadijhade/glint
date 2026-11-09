@@ -19,20 +19,17 @@
 | `i18n` + `i18n_ar` | i18n.ts (49), i18n-ar.ts (309) | Haiku | done |
 | `markdown` + `small_kinds` | markdown.ts (36), smallKinds.ts (21) | Haiku | done |
 
+## In progress (2026-11-09)
+
+| Work | Who | Status |
+| :--- | :--- | :--- |
+| **glint-core**: src-tauri's engine without Tauri (host layer) | coordinator | done: builds, clippy clean, 300 tests pass, 17 ignored (commit 50f2db7) |
+| **Wave 2**: cleanups of wave 1 (format, store, js helpers, docs) + entries, fileTypes, columns, groups, usage, text | 5 cleanup + 6 port agents (Haiku/Sonnet) with reviewers | done: 24 agents, ~21 min, all reviews pass; glint-model at 229 tests, 13.5k lines, clippy clean |
+| **UI skeleton**: glint-ui + glint per UI-SKELETON.md, Drive health exemplar | 1 Sonnet (high) + reviewer | running |
+
 ## Coming waves (order follows the dependencies)
 
-1. **Wave 2: logic that builds on wave 1.**
-   - entries.ts (544): sorting, filtering, natural order, matching. Natural order needs Windows' `CompareStringEx` from the coordinator first.
-   - fileTypes.ts, columns.ts, groups.ts, usage.ts (treemap layout and hit-testing), text.ts.
-2. **Core (`crates/glint-core`).**
-   - The host shim (Tauri-shaped `AppHandle`, `State`, `Channel`, `Response`, `async_runtime`) comes from the coordinator.
-   - Then the non-window modules of src-tauri/src move in groups (archive, search and index, file operations, media, remote and devices, tools).
-3. **UI skeleton (`crates/glint-ui`, `crates/glint`), by the coordinator:**
-   - Window, title bar, theme from index.css, the kit layer, `t!`, the keymap.
-   - The vendored, patched GPUI.
-   - One exemplar dialog that sets the pattern.
-4. **Components, in groups:** shell and chrome, lists, search and Ctrl+K, previews (native), about 40 dialogs, Settings. See the plan's appendix for the full list with line counts.
-5. **Replacing the web previewers** (no WebView anywhere):
-   - EPUB (foliate), Word (docx-preview), 3D (three.js), Mermaid and Graphviz, math (temml), email HTML, the terminal (xterm, ghostty-web), video and audio.
-   - Each gets its own design note before it's ported.
-6. **Platform:** single instance, tray, updater, installer, MSIX, settings import from WebView2's storage (read directly, since there's no WebView left), and accessibility and right-to-left passes.
+1. **Platform services** (each its own agent, after the skeleton): single instance and argument forwarding (launch.rs), tray and global hotkey (quick.rs), Glint's own drop target and drag-out (dragdrop.rs), the shell menu's window plumbing, the preview host pop-up (native_preview.rs), the jump list, window placement and snapping.
+2. **Components, in groups:** shell and chrome, lists, search and Ctrl+K, previews (native), about 40 dialogs, Settings. See the plan's appendix for the full list with line counts.
+3. **Replacing the web previewers** (no WebView anywhere): EPUB (foliate), Word (docx-preview), 3D (three.js), Mermaid and Graphviz, math (temml), email HTML, the terminal (xterm/ghostty-web), video and audio, and Export as PDF (was WebView2's PrintToPdf). Each gets a design note before it's ported.
+4. **Platform last mile:** updater, installer (NSIS without Tauri's bundler), MSIX, settings import read directly from WebView2's localStorage LevelDB, and accessibility and right-to-left passes.

@@ -3,6 +3,11 @@
 //! No GPUI, no Tauri, no window: everything here is plain Rust that the UI and the core call, and
 //! each module carries the assertions its TypeScript had in `explorer.check.ts`.
 
+/// JavaScript semantics shared by the ports (white space, rounding, number text).
+pub mod js;
+/// Text compared in the user's language (Windows' CompareStringEx).
+pub mod collate;
+
 #[cfg(feature = "archives")]
 pub mod archives;
 #[cfg(feature = "paths")]
@@ -35,3 +40,15 @@ pub mod rank;
 pub mod small_kinds;
 #[cfg(feature = "store")]
 pub mod store;
+#[cfg(feature = "entries")]
+pub mod entries;
+#[cfg(feature = "file_types")]
+pub mod file_types;
+#[cfg(feature = "columns")]
+pub mod columns;
+#[cfg(feature = "groups")]
+pub mod groups;
+#[cfg(feature = "usage")]
+pub mod usage;
+#[cfg(feature = "text")]
+pub mod text;
