@@ -32,6 +32,10 @@ import { PdfDialog } from "./components/explorer/PdfDialog";
 import { DataDialogs } from "./components/explorer/DataTools";
 import { MetadataDialog } from "./components/explorer/MetadataDialog";
 import { VaultDialog } from "./components/explorer/VaultDialog";
+import { ShrinkDialog } from "./components/explorer/ShrinkDialog";
+import { DocConvertDialog } from "./components/explorer/DocConvertDialog";
+import { SongDialog } from "./components/explorer/SongDialog";
+import { BackupDialog } from "./components/explorer/BackupDialog";
 import { NearbyDialog } from "./components/explorer/NearbyDialog";
 import { ShareDialog, SharingButton } from "./components/explorer/ShareDialog";
 import { RemoteDialog } from "./components/explorer/RemoteDialog";
@@ -188,6 +192,15 @@ function App() {
       }
     );
   }, [quickShortcut, keepInTray]);
+  // A daily or weekly backup that ran while Glint was open (backup.rs): a notice when it didn't work, a quiet one when it did.
+  useEffect(() => {
+    const stop = listen<{ source: string; result: { ok: boolean; error: string | null; totalFiles: number } | null; error: string | null }>("backup-finished", ({ payload }) => {
+      const name = payload.source.split("\\").pop() || payload.source;
+      if (payload.result?.ok) toast.message(`Backed up “${name}”`, { description: payload.result.error ?? undefined });
+      else toast.error(`Couldn't back up “${name}”`, { description: payload.result?.error ?? payload.error ?? undefined });
+    });
+    return () => void stop.then((unlisten) => unlisten());
+  }, []);
   // Files a paired PC sends here (Send to…): a notice with Show.
   useEffect(() => {
     const stop = listenForDeviceFiles((path) => void revealInApp(path));
@@ -559,6 +572,10 @@ function App() {
       <DataDialogs />
       <MetadataDialog />
       <VaultDialog />
+      <ShrinkDialog />
+      <DocConvertDialog />
+      <SongDialog />
+      <BackupDialog />
       <NearbyDialog />
       <ShareDialog />
       <RemoteDialog />

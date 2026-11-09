@@ -5,10 +5,10 @@ Glint ships these programs unmodified, as separate executables next to the app. 
 | Program | Version | Used for | License |
 | :--- | :--- | :--- | :--- |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg.exe`) | 15.2.0 | Searching inside files | MIT (dual-licensed MIT or Unlicense) |
-| [fd](https://github.com/sharkdp/fd) (`fd.exe`) | 10.5.0 | Finding files by name | MIT (dual-licensed MIT or Apache-2.0) |
+| [fd](https://github.com/sharkdp/fd) (`fd.exe`) | 10.5.2 | Finding files by name | MIT (dual-licensed MIT or Apache-2.0) |
 | [pdu](https://github.com/KSXGitHub/parallel-disk-usage) (`pdu.exe`, parallel-disk-usage) | 0.24.0 | Folder sizes and disk-usage maps | Apache-2.0 |
 
-Every Rust crate compiled into the app is listed with its license's text in [THIRD_PARTY_CRATES.md](THIRD_PARTY_CRATES.md), which the installer carries too (made by [cargo-about](https://github.com/EmbarkStudios/cargo-about): `npm run licenses`). npm packages bundled into the UI keep their own licenses; see `package-lock.json`. The crates that read archives and compressed files are also listed under [Archive support](#archive-support-compiled-into-the-app), with the license texts their terms ask to be passed on.
+Every Rust crate compiled into the app is listed with its license's text in [THIRD_PARTY_CRATES.md](THIRD_PARTY_CRATES.md), which the installer carries too (made by [cargo-about](https://github.com/EmbarkStudios/cargo-about): `npm run licenses`). npm packages bundled into the UI keep their own licenses; see `package-lock.json`. [foliate-js](https://github.com/johnfactotum/foliate-js) (the e-book reader, MIT, Copyright (c) 2022 John Factotum) is copied into `src/vendor/foliate` at a pinned commit, with its license file beside it. The crates that read archives and compressed files are also listed under [Archive support](#archive-support-compiled-into-the-app), with the license texts their terms ask to be passed on.
 
 ## ripgrep
 

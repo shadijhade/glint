@@ -51,6 +51,7 @@ shadui-index = { path = "index" }
 # and crc32fast, both already in the build through Tauri and flate2, and BLAKE3, which the duplicate
 # finder hashes content with too (several times SHA-256's speed, with SIMD).
 sha2 = "0.10"
+rayon = "1.12"
 # Remote connections' URLs (remote/), as reqwest already has them.
 percent-encoding = "2"
 url = "2"

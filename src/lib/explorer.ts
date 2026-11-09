@@ -579,6 +579,7 @@ export async function navigate(target: string, { select, history = true, quiet =
     if (!same && state.find?.running) cancelFind(tab);
     // Timed from the click to the list on screen; a tab out of sight is timed when it's shown.
     r.navStarted = visibleTabs().includes(tab) ? started : 0;
+    performance.mark("list:apply");
     updateTab(
         {
             ready: true,
@@ -650,6 +651,7 @@ function archiveSizes(listing: Listing, tab: string) {
 export function markShown(tab: string) {
     const r = runtime.get(tab);
     if (!r?.navStarted) return;
+    performance.mark("list:shown");
     updateTab({ shownIn: performance.now() - r.navStarted }, tab);
     r.navStarted = 0;
 }

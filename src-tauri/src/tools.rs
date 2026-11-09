@@ -79,10 +79,10 @@ pub static TOOLS: &[Tool] = &[
         bundled: true,
         winget: "sharkdp.fd",
         release: release(
-            "10.5.0",
-            "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-pc-windows-msvc.zip",
-            "a227701b8551c35a9931d9f6da75503cf86d88e182d71fb849a70864c5d57cd7",
-            "fd-v10.5.0-x86_64-pc-windows-msvc/fd.exe",
+            "10.5.2",
+            "https://github.com/sharkdp/fd/releases/download/v10.5.2/fd-v10.5.2-x86_64-pc-windows-msvc.zip",
+            "7edac75ef96b7e9a01ebb251a21ee86ea365a09adcfb865f1ec3346a906153b6",
+            "fd-v10.5.2-x86_64-pc-windows-msvc/fd.exe",
         ),
         used_for: "Finding files by name where instant search doesn't",
     },
@@ -217,9 +217,9 @@ pub static TOOLS: &[Tool] = &[
         bundled: false,
         winget: "VirusTotal.YARA-X",
         release: release(
-            "1.22.1",
-            "https://github.com/VirusTotal/yara-x/releases/download/v1.22.1/yara-x-v1.22.1-x86_64-pc-windows-msvc.zip",
-            "dbe8c1ec5d59d8a81c777d949c518fb5e75f1026d3419bca7817727c5d47b327",
+            "1.23.0",
+            "https://github.com/VirusTotal/yara-x/releases/download/v1.23.0/yara-x-v1.23.0-x86_64-pc-windows-msvc.zip",
+            "b72fd2001c0902981afe9b86ffb152412d904db94e2da9fa626f622b8c5b6a79",
             "yr.exe",
         ),
         used_for: "Scanning files with YARA rules, from a rules folder chosen in Settings",
@@ -232,9 +232,9 @@ pub static TOOLS: &[Tool] = &[
         bundled: false,
         winget: "",
         release: release(
-            "2.14.0",
-            "https://github.com/mongodb/kingfisher/releases/download/v2.14.0/kingfisher-windows-x64.zip",
-            "9f188b6fa16cec210203cb71439d3d661ab371a03305b3ada865f8defe601ffb",
+            "2.17.0",
+            "https://github.com/mongodb/kingfisher/releases/download/v2.17.0/kingfisher-windows-x64.zip",
+            "541df38ed22f20b6c50ea8a7ec6ec714664d51ffb562f37bc73d770b88fc7456",
             "kingfisher.exe",
         ),
         used_for: "Finding passwords, keys and tokens left in files before they're shared (MongoDB's secret scanner; nothing is sent anywhere)",
@@ -247,9 +247,9 @@ pub static TOOLS: &[Tool] = &[
         bundled: false,
         winget: "ast-grep.ast-grep",
         release: release(
-            "0.51.0",
-            "https://github.com/ast-grep/ast-grep/releases/download/0.51.0/app-x86_64-pc-windows-msvc.zip",
-            "1a5b7824c5925ac34257f806488e54860817cefd855fd308d13df7550d068908",
+            "0.51.1",
+            "https://github.com/ast-grep/ast-grep/releases/download/0.51.1/app-x86_64-pc-windows-msvc.zip",
+            "12a0cefb77498820ef6fb302ed8758cbda39be87d4c15120dc74c1dea968a50d",
             "ast-grep.exe",
         ),
         used_for: "Code patterns in Text: code found (and rewritten) by its structure, console.log($MSG) or $X.unwrap()",
@@ -262,9 +262,9 @@ pub static TOOLS: &[Tool] = &[
         bundled: false,
         winget: "",
         release: release(
-            "3.1.1",
-            "https://github.com/01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-pc-windows-msvc.exe",
-            "7b2f5153d11118c3ccff01859743e09842cabc42ba08f8876489c1be30d1d08d",
+            "3.1.2",
+            "https://github.com/01mf02/jaq/releases/download/v3.1.2/jaq-x86_64-pc-windows-msvc.exe",
+            "8159fcd68008e0dbaeca5c48afcf89acbbf15ccec36d1de9b1bd8658d07143ed",
             "",
         ),
         used_for: "jq filters over JSON, YAML and TOML files, in their preview (jq, rewritten in Rust)",
@@ -307,9 +307,9 @@ pub static TOOLS: &[Tool] = &[
         bundled: false,
         winget: "",
         release: release(
-            "3.1.0",
-            "https://github.com/o2sh/onefetch/releases/download/3.1.0/onefetch-win.tar.gz",
-            "da8bbfb4566c2d4ef5303b9f126b08d5176060f508f94b75bba5d5320bc9bc76",
+            "3.2.0",
+            "https://github.com/o2sh/onefetch/releases/download/3.2.0/onefetch-win.tar.gz",
+            "adeabb2b1ee201dad52a084adee3449a489c652672c8ec4fc0c0008d2aa145a5",
             "onefetch.exe",
         ),
         used_for: "A Git repository's card in its preview: its languages, who works on it, its last change and license",
@@ -353,9 +353,9 @@ pub static TOOLS: &[Tool] = &[
         bundled: false,
         winget: "astral-sh.uv",
         release: release(
-            "0.13.6",
-            "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip",
-            "a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f",
+            "0.13.7",
+            "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-pc-windows-msvc.zip",
+            "0cdc5b38fe5a8168ed6a25814f5ba43c21d313dd3187314fccb37b7cec46e021",
             "uv.exe",
         ),
         used_for: "Python projects' scripts in the Run menu, and Python scripts in Scripts",
@@ -414,10 +414,10 @@ pub static TOOLS: &[Tool] = &[
         bundled: false,
         winget: "Rclone.Rclone",
         release: release(
-            "1.75.2",
-            "https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-windows-amd64.zip",
-            "8a9db2bad1dc79a65b3348fd857069598e2aab7cf4d118b77b1df23055aff818",
-            "rclone-v1.75.2-windows-amd64/rclone.exe",
+            "1.76.0",
+            "https://github.com/rclone/rclone/releases/download/v1.76.0/rclone-v1.76.0-windows-amd64.zip",
+            "8b4fd2737ade4e70c057ef4a49deb7cffe94b0fb9d7587c189d149823f21a1dc",
+            "rclone-v1.76.0-windows-amd64/rclone.exe",
         ),
         used_for: "Google Drive, OneDrive, Dropbox and 60 more clouds as folders, signed in to from Glint, and folders kept in sync with them by Folder rules",
     },
@@ -486,6 +486,101 @@ pub static TOOLS: &[Tool] = &[
             with: &["7z.dll"],
         },
         used_for: "Disk images and installers opened like folders: ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers, Debian and RPM packages",
+    },
+    // It finds the quality setting; the video itself is then encoded by Glint's FFmpeg run.
+    Tool {
+        id: "ab-av1",
+        name: "ab-av1",
+        exe: "ab-av1",
+        package: "ab-av1",
+        bundled: false,
+        winget: "",
+        release: release(
+            "0.11.7",
+            "https://github.com/alexheretic/ab-av1/releases/download/v0.11.7/ab-av1.exe",
+            "a3a9534d2adecabc4861acf632d0f64741f56e2050d52032a5307bebb4fbdcc9",
+            "",
+        ),
+        used_for: "Make smaller for videos: the smallest size that still looks the same, found from short samples scored by VMAF",
+    },
+    Tool {
+        id: "libjxl",
+        name: "libjxl",
+        exe: "cjxl",
+        package: "libjxl",
+        bundled: false,
+        winget: "",
+        release: Release {
+            version: "0.12.0",
+            url: "https://github.com/libjxl/libjxl/releases/download/v0.12.0/jxl-x64-windows-static.zip",
+            sha256: "3025d7e308390796d20492322e606bc92decaee7b6bc99d3f7547870ae5db7de",
+            member: "x64-windows-static/bin/cjxl.exe",
+            with: &["x64-windows-static/bin/djxl.exe"],
+        },
+        used_for: "Make smaller for photos: JPEGs repacked as JPEG XL without losing a bit, and Back to JPEG, which gives the very same file back",
+    },
+    // AGPL-3.0, run as a program of its own from Artifex's release. Its Windows release is only an NSIS
+    // installer: 7-Zip (installed first when it isn't) takes the program and its DLL out; nothing in it runs.
+    Tool {
+        id: "ghostscript",
+        name: "Ghostscript",
+        exe: "gswin64c",
+        package: "ghostscript",
+        bundled: false,
+        winget: "",
+        release: Release {
+            version: "10.08.0",
+            url: "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/gs10080w64.exe",
+            sha256: "52a91b8bf09298788d7a57b9206127026c23eacd75405f0a131e26dc381dce50",
+            member: "bin/gswin64c.exe",
+            with: &["bin/gsdll64.dll"],
+        },
+        used_for: "Make smaller for PDFs full of pictures: the pictures rewritten for screens and mail, or for print",
+    },
+    Tool {
+        id: "pandoc",
+        name: "pandoc",
+        exe: "pandoc",
+        package: "johnmacfarlane.pandoc",
+        bundled: false,
+        winget: "JohnMacFarlane.Pandoc",
+        release: release(
+            "3.13",
+            "https://github.com/jgm/pandoc/releases/download/3.13/pandoc-3.13-windows-x86_64.zip",
+            "23e1f2e978a3df80db8bf65c9c59534f41a23140480cfb4f783a882ab7dc6a4e",
+            "pandoc-3.13/pandoc.exe",
+        ),
+        used_for: "Convert document: Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF and more into one another, run sandboxed",
+    },
+    Tool {
+        id: "typst",
+        name: "Typst",
+        exe: "typst",
+        package: "typst.typst",
+        bundled: false,
+        winget: "Typst.Typst",
+        release: release(
+            "0.15.1",
+            "https://github.com/typst/typst/releases/download/v0.15.1/typst-x86_64-pc-windows-msvc.zip",
+            "19ce3551153c2fe7ee9fa2f95208310c8f4d3209fedb699e0333faf8913f6736",
+            "typst-x86_64-pc-windows-msvc/typst.exe",
+        ),
+        used_for: "PDFs from Convert document without LaTeX or Word, and .typ files' previews and Export as PDF",
+    },
+    Tool {
+        id: "restic",
+        name: "restic",
+        exe: "restic",
+        package: "restic.restic",
+        bundled: false,
+        winget: "restic.restic",
+        release: release(
+            "0.19.1",
+            "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_windows_amd64.zip",
+            "da948ad707ed690426473aaba2046cd61f8f90f6f0e7dab6be0d5796531de67d",
+            "restic_0.19.1_windows_amd64.exe",
+        ),
+        used_for: "Back up: folders copied to a drive, a network folder or a cloud, encrypted, each backup adding only what changed, browsed in Previous versions",
     },
     Tool {
         id: "nushell",
@@ -817,6 +912,12 @@ const MAX_DOWNLOAD: u64 = 512 << 20;
 /// name, and anything it needs beside it.
 async fn download(tool: &'static Tool, stop: &AtomicBool, progress: &Channel<Progress>) -> Result<(), String> {
     let release = &tool.release;
+    // Ghostscript's installer is opened by 7-Zip: that first, when it isn't on the PC.
+    let nsis = tool.id == "ghostscript";
+    if nsis && proc::locate("7z").is_none() {
+        let seven = get("7zip").ok_or("7-Zip isn't known")?;
+        Box::pin(download(seven, stop, progress)).await.map_err(|e| format!("Ghostscript needs 7-Zip to unpack it, which didn't install: {e}"))?;
+    }
     let temp = fetch(release.url, release.sha256, tool.id, tool.name, stop, progress).await?;
     let _ = progress.send(Progress { stage: "Unpacking".into(), done: 0, total: 0 });
     let into = DIR.get().ok_or("Glint's data folder isn't available")?.join(tool.id);
@@ -826,6 +927,8 @@ async fn download(tool: &'static Tool, stop: &AtomicBool, progress: &Channel<Pro
         let files: Vec<(&str, &str)> = std::iter::once((release.member, program.as_str())).chain(release.with.iter().map(|m| (*m, m.rsplit('/').next().unwrap_or(m)))).collect();
         if release.member.is_empty() {
             place(&file, &into, tool.exe)
+        } else if nsis {
+            unpack_nsis(&file, &files, &into)
         } else if release.url.ends_with(".tar.gz") {
             unpack_tarball(&file, &files, &into)
         } else if release.url.ends_with(".exe") {
@@ -1023,6 +1126,30 @@ fn unpack_sfx(exe: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), Str
             }
             fs::write(fresh.join(name), data).map_err(|e| e.to_string())?;
         }
+        Ok(())
+    })
+}
+
+/// The files named, `(member, name)`, out of a checked NSIS installer (Ghostscript's), by 7-Zip, which
+/// reads the installer's archive without running anything in it.
+fn unpack_nsis(installer: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), String> {
+    fresh_folder(into, |fresh| {
+        let raw = fresh.join(".raw");
+        let mut seven = command("7zip")?;
+        seven.arg("x").arg("-y").arg("-bd").arg("-bso0").arg(format!("-o{}", raw.display())).arg("--").arg(installer);
+        for (member, _) in files {
+            seven.arg(member.replace('/', "\\"));
+        }
+        let stop = AtomicBool::new(false);
+        crate::actions::run_tool(seven, "7-Zip", &stop, |_| {})?;
+        for (member, name) in files {
+            let from = raw.join(member.replace('/', "\\"));
+            if !from.is_file() {
+                return Err(format!("{member} isn't in the download"));
+            }
+            fs::rename(&from, fresh.join(name)).map_err(|e| e.to_string())?;
+        }
+        let _ = fs::remove_dir_all(&raw);
         Ok(())
     })
 }
@@ -1289,7 +1416,9 @@ mod tests {
             let github = release.url.starts_with("https://github.com/") && release.url.contains("/releases/download/");
             let sourceforge = tool.id == "exiftool" && release.url.starts_with("https://downloads.sourceforge.net/project/exiftool/");
             assert!(github || sourceforge, "{}'s release is on GitHub", tool.id);
-            assert!(release.url.contains(release.version), "{}'s address is its version's", tool.id);
+            // Ghostscript names its releases without the dots (gs10080 for 10.08.0).
+            let dotless = tool.id == "ghostscript" && release.url.contains(&release.version.replace('.', ""));
+            assert!(release.url.contains(release.version) || dotless, "{}'s address is its version's", tool.id);
             assert!(release.sha256.len() == 64 && release.sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{}'s SHA-256", tool.id);
             let exe = release.url.ends_with(".exe");
             // An .exe that names a member is a 7z self-extractor (7-Zip's installer), unpacked by Glint.
@@ -1396,8 +1525,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glint-releases-{}", std::process::id()));
         set_dir(dir.join("tools"));
         let quiet = Channel::new(|_| Ok(()));
+        let only = std::env::var("TOOLS").ok();
         let failed: Vec<String> = TOOLS
             .iter()
+            .filter(|tool| only.as_deref().is_none_or(|ids| ids.split(',').any(|id| id == tool.id)))
             .filter_map(|tool| {
                 let stop = AtomicBool::new(false);
                 let program = folder_of(tool.id).map(|folder| folder.join(format!("{}.exe", tool.exe)));

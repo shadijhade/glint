@@ -83,8 +83,16 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Group by** kind, date, size, type or Git status in the list (the header's menu, or Ctrl+K), each group with its count and size. A **Columns** view (`Ctrl+Shift+9`): the folder above, this one, and what's in the folder you're on, ← and → between them. Saved searches show how many they find, live.
 -   **Previews**: Jupyter notebooks with their outputs, 3D models (STL, OBJ, glTF, PLY, 3MF: Windows' 3D Viewer is gone), and **Export as PDF** for Markdown, as the preview draws it.
 -   **The text in pictures**: Search inside files instantly reads screenshots and scans with Windows' OCR, so their words are found.
+-   **Make smaller**, one action for anything chosen: videos that still look the same (short samples scored by VMAF with [ab-av1](https://github.com/alexheretic/ab-av1), then FFmpeg), photos as smaller JPEGs or as JPEG XL without losing a bit ([libjxl](https://github.com/libjxl/libjxl); **Back to JPEG** gives the very same file back), PNGs losslessly, BMPs as PNGs, PDFs full of pictures for screens or print ([Ghostscript](https://www.ghostscript.com)), and the pictures inside Word, PowerPoint and Excel files. Nothing that comes out bigger is kept, dates stay, and Ctrl+Z takes it back.
+-   **Convert document**, with [pandoc](https://pandoc.org): Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF and more into one another, Markdown into PowerPoint, and PDFs typeset by [Typst](https://typst.app) without Word or LaTeX. Arabic and Hebrew documents stay right to left. `.typ` files get a preview and Export as PDF.
+-   **Back up** a folder to a USB drive, a network folder or a cloud, with [restic](https://restic.net): encrypted, each backup adding only what changed, every day or week while Glint runs (7 daily, 4 weekly and 12 monthly kept). The backups show in Previous versions, to open, compare and restore.
+-   **Books and comics**: EPUB, Kindle (MOBI, AZW3), FB2 and CBZ read in the preview ([foliate-js](https://github.com/johnfactotum/foliate-js)), with their contents, text size, the page you stopped at, and Read aloud with Windows' own voices.
+-   **Songs**: edit title, artist, album, track, year, genre and cover for one song or many (titles and track numbers from file names too); **Even volume** in Media brings recordings to the same loudness; the audio preview has a waveform.
+-   **More previews**: contacts (.vcf), calendar invites (.ics), emails (.eml, and Outlook's .msg) with their attachments and nothing loaded from the internet, the pictures Krita, OpenRaster, Procreate and Sketch files keep, Graphviz and Mermaid files.
+-   **Scanned PDFs** become searchable: their pages are read by Windows' OCR into search inside files.
+-   **Drop on a PC**: files dropped on a paired PC in the sidebar are sent to it.
 -   **More for AI agents**: search inside files instantly, photos by what they show, recordings by what's said, code by its structure, SQL over a data file, and comparing two files.
--   **Faster**: searches with a typo (close matches) look at 3 million names about four times faster, ruling out most names before comparing any letters; the copy queue copies small files eight at a time (5,000 small files in half the time); `npm run bench` measures folders, search, copies and start-up on your PC.
+-   **Faster**: big folders sort up to about three times faster and show sooner (100,000 files no longer build a lookup of every path as they open), and searches with a typo (close matches) look at 3 million names about four times faster, ruling out most names before comparing any letters; the copy queue copies small files eight at a time (5,000 small files in half the time); `npm run bench` measures folders, search, copies and start-up on your PC.
 
 ### New in 0.9.5
 
@@ -457,7 +465,7 @@ Built with [Tauri 2](https://tauri.app/) and the [windows](https://github.com/mi
 | Tool | Version | Used for | License |
 | :--- | :--- | :--- | :--- |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | 15.2.0 | Searching inside files | MIT or Unlicense |
-| [fd](https://github.com/sharkdp/fd) | 10.5.0 | Finding files by name | MIT or Apache-2.0 |
+| [fd](https://github.com/sharkdp/fd) | 10.5.2 | Finding files by name | MIT or Apache-2.0 |
 | [pdu](https://github.com/KSXGitHub/parallel-disk-usage) | 0.24.0 | Folder sizes and disk-usage maps | Apache-2.0 |
 
 ## Build from source

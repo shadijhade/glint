@@ -34,6 +34,7 @@ import {
     Code,
     Columns2,
     Copy,
+    DatabaseBackup,
     CopyPlus,
     Disc3,
     Download,
@@ -50,6 +51,7 @@ import {
     Files,
     FileStack,
     FileText,
+    FileType,
     Film,
     Fingerprint,
     Folder,
@@ -77,6 +79,7 @@ import {
     Lock,
     LockOpen,
     Minimize2,
+    Music,
     Monitor,
     Moon,
     PanelRight,
@@ -114,6 +117,7 @@ import {
     TextSearch,
     Trash2,
     Undo2,
+    Volume2,
     Wallpaper,
     Wand2,
     Wifi,
@@ -271,6 +275,10 @@ import { isPdfFile, openPdfTools } from "./PdfDialog";
 import { convertData, isDataFile, queryTogether } from "./DataTools";
 import { canClean, canRedate, openMetadata } from "./MetadataDialog";
 import { canEncrypt, isAgeFile, openVault } from "./VaultDialog";
+import { backToJpeg, canShrink, isJxl, openShrink } from "./ShrinkDialog";
+import { canConvertDoc, exportTypstPdf, isTypst, openDocConvert } from "./DocConvertDialog";
+import { isSong, openSongs } from "./SongDialog";
+import { canBackUp, openBackup } from "./BackupDialog";
 import { isMediaFile, isVideoFile } from "@/lib/studio";
 import { GROUP_BYS, type Grouped, groupRows } from "@/lib/groups";
 import { exportMarkdownPdf } from "@/lib/actions";
@@ -785,7 +793,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
         const tell = (target: string | null) => {
             if (target === told) return;
             told = target;
-            void dragUnder(target ? { name: dropName(target), copy: t("Copy to %1"), move: t("Move to %1"), alwaysMove: isRecycleBin(target) } : null).catch(() => {});
+            const device = target?.startsWith("device:") ? useStore.getState().remotes.find((r) => `device:${r.id}` === target) : undefined;
+            void dragUnder(target ? (device ? { name: device.name, copy: t("Send to %1"), move: t("Send to %1"), alwaysMove: false } : { name: dropName(target), copy: t("Copy to %1"), move: t("Move to %1"), alwaysMove: isRecycleBin(target) }) : null).catch(() => {});
         };
         const targetAt = ({ x, y }: { x: number; y: number }) => {
             const under = document.elementFromPoint(x / devicePixelRatio, y / devicePixelRatio);
@@ -798,6 +807,8 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 // Nothing can be dropped into an archive (it's read-only), nor into a folder Windows keeps closed.
                 target = tab && tab.path !== THIS_PC && !tab.find && !tab.listing?.archive && !tab.noAccess ? tab.path : null;
             }
+            // A paired PC in the sidebar: anything can be sent to it.
+            if (target?.startsWith("device:")) return target;
             // Where they all are already, or into one of them: nothing to do there.
             return target && dragged.length && !isRecycleBin(target) && !droppable(dragged, target).length ? null : target;
         };
@@ -807,7 +818,9 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             if (!live || heard.type === "drop") hoverTab(null);
             const target = live ? targetAt(heard) : null;
             if (heard.type === "drop") {
-                if (target) void dropFiles(heard.paths, target, heard.move);
+                const device = target?.startsWith("device:") ? useStore.getState().remotes.find((r) => `device:${r.id}` === target) : undefined;
+                if (device) void sendToDevice(device, heard.paths);
+                else if (target) void dropFiles(heard.paths, target, heard.move);
                 dragged = [];
                 told = undefined;
             } else if (heard.type === "leave") {
@@ -968,6 +981,12 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                     )
                 ),
             !!oneArchive && !closedItems && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
+            (chosenEntries.some(canShrink) || chosenEntries.some((e) => e.dir)) && action("shrink", "Make the selection smaller: videos that look the same, photos, PDFs, Office files", Minimize2, () => openShrink(chosenEntries)),
+            chosenEntries.some(canConvertDoc) && action("convert-doc", "Convert the selected documents: Word, PDF, Markdown, HTML, EPUB, PowerPoint…", FileType, () => openDocConvert(chosenEntries)),
+            chosenEntries.length === 1 && canBackUp(chosenEntries[0]) && action("backup", "Back up the selected folder: to a drive or a cloud, encrypted, daily or weekly", DatabaseBackup, () => openBackup(chosenEntries[0])),
+            chosenEntries.some(isSong) && action("song-details", "Edit the selected songs' details: title, artist, album, track, cover", Music, () => openSongs(chosenEntries)),
+            chosenEntries.some(isMediaFile) && action("media-volume", "Even out the volume of the selected recordings and videos", Volume2, () => openMedia(chosenEntries, "volume")),
+            chosenEntries.some(isJxl) && action("jxl-to-jpeg", "Turn the selected JPEG XL files back into JPEGs", ImageDown, () => void backToJpeg(chosenEntries)),
             chosenEntries.some(canConvert) && action("convert", "Convert the selected pictures: JPEG, PNG, WebP or AVIF, smaller", ImageDown, () => convertPictures(chosenEntries)),
             chosenEntries.some(isVideoFile) && action("media-convert", "Convert or shrink the selected videos (MP4, HEVC, AV1, to fit a size)", Film, () => openMedia(chosenEntries, "convert")),
             chosenEntries.some(isMediaFile) && action("media-audio", "Take the sound out of the selected videos or recordings", AudioLines, () => openMedia(chosenEntries, "audio")),
@@ -1461,10 +1480,25 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         if (listing) firstFolderPainted();
     }, [listing]);
 
+    // Rows by path, worked out when asked: a few lookups scan the rows, and only more build a map. A new
+    // listing's paths are freshly joined strings that V8 must flatten to hash, so building the map up front
+    // cost 20–30 ms per 100,000 rows on every folder opened, for nothing when nothing's focused yet.
     const rowIndexByPath = useMemo(() => {
-        const map = new Map<string, number>();
-        for (let i = 0; i < rows.length; i++) map.set(rows[i].path, i);
-        return map;
+        let map: Map<string, number> | null = null;
+        let asked = 0;
+        return {
+            get(path: string): number | undefined {
+                if (!map && ++asked <= 4) {
+                    const at = rows.findIndex((e) => e.path === path);
+                    return at < 0 ? undefined : at;
+                }
+                if (!map) {
+                    map = new Map();
+                    for (let i = 0; i < rows.length; i++) map.set(rows[i].path, i);
+                }
+                return map.get(path);
+            },
+        };
     }, [rows]);
 
     const focusIndex = useMemo(() => (focus ? (rowIndexByPath.get(focus) ?? -1) : -1), [rowIndexByPath, focus]);
@@ -2131,6 +2165,9 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     },
                 ],
             },
+            !fixed && targets.some(canShrink) && { label: "Make smaller…", icon: Minimize2, onSelect: () => openShrink(targets) },
+            one && canBackUp(one) && { label: "Back up…", icon: DatabaseBackup, onSelect: () => openBackup(one) },
+            !fixed && targets.some(isJxl) && { label: "Back to JPEG", icon: ImageDown, onSelect: () => void backToJpeg(targets) },
             pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
             media.length > 0 && {
                 label: "Media",
@@ -2140,9 +2177,13 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     { label: "Take the sound out…", icon: AudioLines, onSelect: () => openMedia(media, "audio") },
                     videos.length > 0 && { label: "Make a GIF…", icon: Clapperboard, onSelect: () => openMedia(media, "gif") },
                     { label: "Make subtitles…", icon: Captions, onSelect: () => openMedia(media, "subtitles") },
+                    { label: "Even out the volume…", icon: Volume2, onSelect: () => openMedia(media, "volume") },
+                    targets.some(isSong) && { label: "Edit song details…", icon: Music, onSelect: () => openSongs(targets) },
                 ],
             },
             !fixed && targets.some(isMarkdown) && { label: "Export as PDF", icon: FileDown, onSelect: () => void pdfFromMarkdown(targets.filter(isMarkdown)) },
+            !fixed && targets.some(isTypst) && { label: "Export as PDF", icon: FileDown, onSelect: () => void exportTypstPdf(targets) },
+            !fixed && targets.some(canConvertDoc) && { label: "Convert document…", icon: FileType, onSelect: () => openDocConvert(targets) },
             dataFiles.length > 1 && { label: `Query ${dataFiles.length} files together…`, icon: Sigma, onSelect: () => queryTogether(dataFiles) },
             dataFiles.length > 0 && { label: "Convert data…", icon: FileCog, onSelect: () => convertData(dataFiles) },
             pdfs.length > 0 && {

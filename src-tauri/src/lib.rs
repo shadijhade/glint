@@ -3,6 +3,8 @@ mod actions;
 mod agents;
 mod appearance;
 mod archive;
+mod attachments;
+mod backup;
 mod bench;
 mod batch_rename;
 mod calc;
@@ -20,6 +22,7 @@ mod duck;
 mod defender;
 mod devices;
 mod dialogs;
+mod docconvert;
 mod dragdrop;
 mod doctext;
 mod filediff;
@@ -77,7 +80,9 @@ mod sql;
 mod snap;
 mod speech;
 mod startup;
+mod shrink;
 mod sizes;
+mod songtags;
 mod term;
 mod thumbs;
 mod timeline;
@@ -225,6 +230,8 @@ fn app_ready(window: tauri::WebviewWindow) {
             devices::start(window.app_handle());
             // Remotes shown in File Explorer answer it again.
             ondemand::start();
+            // Folders backed up daily or weekly, while Glint runs.
+            backup::start_scheduler(window.app_handle().clone());
         });
         // Ctrl+Alt+G puts the file dialog in front in the folder shown.
         static DIALOG_KEY: std::sync::Once = std::sync::Once::new();
@@ -1011,6 +1018,26 @@ pub fn run() {
             metadata::meta_run,
             vault::vault_cancel,
             vault::vault_run,
+            shrink::shrink_cancel,
+            shrink::shrink_engines,
+            shrink::shrink_run,
+            shrink::jxl_to_jpeg,
+            docconvert::doc_cancel,
+            docconvert::doc_convert,
+            docconvert::typst_preview,
+            songtags::song_tags,
+            songtags::song_write,
+            songtags::song_cancel,
+            attachments::attachment_save,
+            backup::backup_plans,
+            backup::backup_setup,
+            backup::backup_remove,
+            backup::backup_cancel,
+            backup::backup_schedule,
+            backup::backup_run,
+            backup::backup_versions,
+            backup::backup_open,
+            backup::backup_restore,
             devices::devices_send,
             localsend::nearby_scan,
             localsend::nearby_send,

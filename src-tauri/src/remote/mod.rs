@@ -844,7 +844,7 @@ pub fn init(app: &str) {
 }
 
 /// Connections' secrets, in Windows Credential Manager as generic credentials "<app>/remote/<id>".
-mod secrets {
+pub(crate) mod secrets {
     use windows::core::{HSTRING, PWSTR};
     use windows::Win32::Security::Credentials::{CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC};
 

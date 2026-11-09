@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { toast } from "sonner";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { AudioLines, Captions, Clapperboard, Download, Film, Loader2 } from "lucide-react";
+import { AudioLines, Captions, Clapperboard, Download, Film, Loader2, Volume2 } from "lucide-react";
 import type { FileEntry } from "@/lib/entries";
 import type { ActionOutput } from "@/lib/actions";
 import { badOutput } from "@/lib/actions";
@@ -16,7 +16,7 @@ import { Button } from "../ui/button";
 import { Modal, ModalHeader } from "../Modal";
 import { Choices, RunFooter, RunProgress, RunResult, useActionRun, WhereChooser } from "./ActionParts";
 
-export type MediaMode = "convert" | "audio" | "gif" | "subtitles";
+export type MediaMode = "convert" | "audio" | "gif" | "subtitles" | "volume";
 
 const useMedia = create<{ files: FileEntry[] | null; mode: MediaMode }>(() => ({ files: null, mode: "convert" }));
 
@@ -34,6 +34,7 @@ const MODES: { mode: MediaMode; label: string; icon: typeof Film }[] = [
     { mode: "audio", label: "Sound only", icon: AudioLines },
     { mode: "gif", label: "GIF", icon: Clapperboard },
     { mode: "subtitles", label: "Subtitles", icon: Captions },
+    { mode: "volume", label: "Even volume", icon: Volume2 },
 ];
 
 /** The choices made last time, for the next (while Glint runs). */
@@ -47,6 +48,7 @@ let last = {
     fps: 12,
     webp: false,
     translate: false,
+    music: false,
 };
 
 export function MediaDialog() {
@@ -121,8 +123,10 @@ function MediaModal({ files, initial }: { files: FileEntry[]; initial: MediaMode
                   ? ({ kind: "audio", format: choice.audio } as const)
                   : mode === "gif"
                     ? ({ kind: "gif", width: choice.gifWidth, fps: choice.fps, start: range.start, end: range.end, webp: choice.webp } as const)
-                    : ({ kind: "subtitles", translate: choice.translate } as const);
-        const verb = { convert: "conversion", audio: "sound taken out", gif: "GIF", subtitles: "subtitles" }[mode];
+                    : mode === "volume"
+                      ? ({ kind: "loudness", music: choice.music } as const)
+                      : ({ kind: "subtitles", translate: choice.translate } as const);
+        const verb = { convert: "conversion", audio: "sound taken out", gif: "GIF", subtitles: "subtitles", volume: "volume evened out" }[mode];
         void run.start(
             usable.length,
             (p) =>
@@ -302,6 +306,20 @@ function MediaModal({ files, initial }: { files: FileEntry[]; initial: MediaMode
                             </>
                         )}
 
+                        {mode === "volume" && (
+                            <section className="space-y-1.5">
+                                <Choices
+                                    label="Loud as"
+                                    value={choice.music ? "music" : "speech"}
+                                    onChange={(v) => choose({ music: v === "music" })}
+                                    options={[
+                                        { value: "speech", label: "Speech and podcasts", hint: "−16 LUFS, as podcast apps play" },
+                                        { value: "music", label: "Music", hint: "−14 LUFS, as streaming services play" },
+                                    ]}
+                                />
+                                <p className="text-xs text-muted-foreground">Measured first, then turned up or down in one even step (EBU R128), so recordings from different places sound as loud as each other without clipping. A video's picture is kept as it is.</p>
+                            </section>
+                        )}
                         {mode === "subtitles" && (
                             <>
                                 <Choices
@@ -328,7 +346,7 @@ function MediaModal({ files, initial }: { files: FileEntry[]; initial: MediaMode
 
                         {usable.length < files.length && <p className="text-xs text-amber-700 dark:text-amber-400">{plural(files.length - usable.length, "file")} without a video will be left out.</p>}
 
-                        <WhereChooser value={output} onChange={setOutput} replace={mode === "convert"} noun={mode === "convert" ? "video" : "file"} />
+                        <WhereChooser value={output} onChange={setOutput} replace={mode === "convert" || mode === "volume"} noun={mode === "convert" ? "video" : "file"} />
                     </>
                 )}
 
@@ -340,7 +358,7 @@ function MediaModal({ files, initial }: { files: FileEntry[]; initial: MediaMode
                 onClose={close}
                 onStart={start}
                 onStop={() => void mediaCancel()}
-                startLabel={{ convert: "Convert", audio: "Take the sound out", gif: "Make it", subtitles: "Make subtitles" }[mode]}
+                startLabel={{ convert: "Convert", audio: "Take the sound out", gif: "Make it", subtitles: "Make subtitles", volume: "Even it out" }[mode]}
                 startIcon={Icon}
                 disabled={!ready || !usable.length || badOutput(output) || (mode === "gif" && rangeBad) || speechMissing}
             />

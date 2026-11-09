@@ -58,6 +58,13 @@ impl Default for Config {
 
 /// The biggest picture OCR reads for the index.
 const MAX_PICTURE: u64 = 25 << 20;
+/// The biggest scanned PDF read by OCR for the index, and how many of its pages (a page takes about a second).
+const MAX_SCANNED_PDF: u64 = 200 << 20;
+const SCANNED_PAGES: u32 = 50;
+
+fn is_pdf(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+}
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -362,6 +369,20 @@ impl Content {
                 }
             },
             Some("document") => match crate::doctext::read_isolated(path) {
+                // A scanned PDF (pages that are only pictures): its pages read by Windows' OCR, when pictures are.
+                Ok(lines) if lines.iter().all(|(_, t)| t.trim().is_empty()) && is_pdf(path) && meta.len() <= MAX_SCANNED_PDF && self.config.read().unwrap().pictures => {
+                    match crate::ocr::pdf_pages(&path.to_string_lossy(), SCANNED_PAGES) {
+                        Ok(pages) if !pages.is_empty() => {
+                            let labels: Vec<&str> = pages.iter().map(|(l, _)| l.as_str()).collect();
+                            let texts: Vec<String> = pages.iter().map(|(_, t)| t.replace('\n', " ")).collect();
+                            (texts.join("\n"), labels.join("\n"))
+                        }
+                        _ => {
+                            self.known.lock().unwrap().insert(key, modified);
+                            return false;
+                        }
+                    }
+                }
                 Ok(lines) => {
                     let labels: Vec<&str> = lines.iter().map(|(l, _)| l.as_str()).collect();
                     let texts: Vec<String> = lines.iter().map(|(_, t)| t.replace('\n', " ")).collect();
