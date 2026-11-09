@@ -30,13 +30,14 @@ use gpui_kit::component::{h_flex, v_flex};
 pub mod prelude {
     pub use super::{
         align_row, back_icon, capacity_bar, col, drive_icon, forward_icon, free_of, icon, isolate, kind_icon,
-        known_icon, row, row_start, space, Logical, Placeholder,
+        known_icon, row, row_start, space, tooltip, Logical, Placeholder,
     };
     pub use super::{h_resizable, resizable_panel};
     pub use super::{
         Button, ButtonCustomVariant, ButtonVariants, Checkbox, Column, ContextMenuExt, DataTable, Dialog, DialogFooter,
         Disableable, Icon, IconName, Input, InputEvent, InputState, Kbd, Notification, PopupMenu, PopupMenuItem,
-        ResizableState, Selectable, Sizable, Spinner, Switch, TableDelegate, TableState, TitleBar, WindowExt,
+        ResizableState, ScrollableElement, Scrollbar, Selectable, Sizable, Spinner, Switch, TableDelegate, TableState,
+        TitleBar, WindowExt,
     };
     pub use gpui_kit::prelude::*;
     pub use gpui_kit::*;
@@ -47,6 +48,12 @@ pub mod prelude {
 }
 
 pub use gpui_kit::assets::IconName;
+
+/// A one-line tooltip for any element with an id: `.tooltip(move |window, cx| kit::tooltip(text.clone(), window, cx))`.
+/// Buttons take `.tooltip(text)` directly.
+pub fn tooltip(text: SharedString, window: &mut Window, cx: &mut App) -> gpui_kit::AnyView {
+    gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
+}
 
 /// A known folder's icon, as the sidebar, This PC and the address bar draw it (`KNOWN_ICONS`).
 pub fn known_icon(id: crate::explorer::KnownId) -> IconName {
@@ -143,6 +150,8 @@ pub fn kind_icon(icon: glint_model::file_types::Icon) -> IconName {
         K::SquareTerminal => IconName::SquareTerminal,
     }
 }
+/// A scrollable element's scrollbar (`.overflow_y_scrollbar()` and friends) and the base Scrollbar.
+pub use gpui_kit::base::Scrollbar;
 pub use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 pub use gpui_kit::component::checkbox::Checkbox;
 pub use gpui_kit::component::dialog::{Dialog, DialogFooter};
@@ -150,6 +159,7 @@ pub use gpui_kit::component::input::{Input, InputEvent, InputState};
 pub use gpui_kit::component::kbd::Kbd;
 pub use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 pub use gpui_kit::component::notification::Notification;
+pub use gpui_kit::component::scroll::ScrollableElement;
 pub use gpui_kit::component::spinner::Spinner;
 pub use gpui_kit::component::switch::Switch;
 pub use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
