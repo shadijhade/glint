@@ -27,3 +27,4 @@ release
 
 # npm run bench: runs on this PC
 bench-results/
+/target
