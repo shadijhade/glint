@@ -11,10 +11,14 @@ import { MODEL_EXTS } from "./modelExts";
 const ModelView = lazy(() => import("./ModelView"));
 const BookView = lazy(() => import("./BookView"));
 const SmallPreview = lazy(() => import("./SmallPreviews").then((m) => ({ default: m.SmallPreview })));
+const DocxView = lazy(() => import("./DocxView"));
+/** Word documents laid out without Office, up to a size. */
+const DOCX_EXTS = new Set(["docx", "docm", "dotx", "dotm"]);
+const DOCX_MAX = 40 * 1024 * 1024;
 /** E-books the reader opens (BookView.tsx, foliate-js): kept here so the reader loads only when one is shown. */
 const BOOKS = new Set(["epub", "mobi", "azw3", "azw", "fb2", "fbz", "cbz"]);
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Check, Clock, Cloud, Copy, ExternalLink, Images, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, Maximize2, Minimize2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, WrapText, X } from "lucide-react";
+import { Check, Clock, Cloud, Copy, ExternalLink, FileArchive, FileCheck2, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Images, Languages, Loader2, Maximize2, Minimize2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, WrapText, X } from "lucide-react";
 import { toast } from "sonner";
 import { useUnlocks } from "@/lib/archives";
 import { ATTR, type FileEntry, isArchived, isArchiveFile, isClosed, isListOnly, isLocked, isOnlineOnly, isRecycled, isRemote } from "@/lib/entries";
@@ -44,6 +48,8 @@ import { LockMark } from "./FileList";
 import { MarkdownView } from "./MarkdownView";
 import { RepoCard } from "./RepoCard";
 import { ShellPreview } from "./ShellPreview";
+import { type MenuItem, useMenu } from "../Menu";
+import { offerActionUndo, runAction } from "@/lib/actions";
 import { PasswordForm } from "./PasswordDialog";
 import { BigIcon, Centered, Waiting } from "./PreviewState";
 import { Thumbnail } from "./Thumbnail";
@@ -546,19 +552,19 @@ function ArchivePreview({ entry }: { entry: FileEntry }) {
     );
 }
 
-/** The start of a file as text, for its preview. */
-function useText(entry: FileEntry) {
-    const [state, setState] = useState<{ text: string; truncated: boolean; binary: boolean } | { error: string } | null>(null);
+/** The start of a file as text, for its preview: in its own encoding, or `encoding` when one's chosen; `again` reads it anew. */
+function useText(entry: FileEntry, encoding?: string | null, again = 0) {
+    const [state, setState] = useState<{ text: string; truncated: boolean; binary: boolean; encoding: string | null; guessed: boolean } | { error: string } | null>(null);
     useEffect(() => {
         let stale = false;
-        readTextPreview(entry.path, TEXT_BYTES).then(
+        readTextPreview(entry.path, TEXT_BYTES, encoding).then(
             (result) => !stale && setState(result),
             (e) => !stale && setState({ error: String(e) })
         );
         return () => {
             stale = true;
         };
-    }, [entry.path, entry.modified]);
+    }, [entry.path, entry.modified, encoding, again]);
     return state;
 }
 
@@ -566,9 +572,12 @@ const SHOWS_START = "Preview shows the beginning of the file. Open it to see the
 
 function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
     const showLineNumbers = useStore((s) => s.settings.showLineNumbers);
-    const state = useText(entry);
+    const [encoding, setEncoding] = useState<string | null>(null);
+    const [again, setAgain] = useState(0);
+    const state = useText(entry, encoding, again);
     const [wrap, setWrap] = useState(false);
     const [copied, setCopied] = useState(false);
+    const menu = useMenu();
 
     if (!state) return <Waiting />;
     if ("error" in state) return <BigIcon entry={entry} note={state.error} />;
@@ -606,6 +615,25 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
                 </div>
             )}
             <div className="sticky top-2 z-10 float-right me-3 flex items-center gap-0.5 rounded-md border bg-card/90 p-0.5 shadow-xs backdrop-blur-xs select-none">
+                {state.encoding && (
+                    <button
+                        type="button"
+                        title={`${state.guessed ? "Detected as" : "Read as"} ${encodingName(state.encoding)}: choose another, or convert it to UTF-8`}
+                        onClick={(e) => {
+                            const box = e.currentTarget.getBoundingClientRect();
+                            menu.open(
+                                { clientX: box.left, clientY: box.bottom + 4 },
+                                encodingMenu(entry, state.encoding!, setEncoding, () => {
+                                    setEncoding(null);
+                                    setAgain((n) => n + 1);
+                                })
+                            );
+                        }}
+                        className="flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-[0.6875rem] font-medium text-amber-700 transition-colors hover:bg-muted dark:text-amber-400"
+                    >
+                        <Languages className="size-3.5" /> {encodingName(state.encoding)}
+                    </button>
+                )}
                 <button
                     type="button"
                     aria-pressed={wrap}
@@ -638,8 +666,62 @@ function TextPreview({ entry, over }: { entry: FileEntry; over: boolean }) {
                 {cut ? lines.slice(0, TEXT_LINES).join("\n") : state.text}
             </SyntaxHighlighter>
             {(cut || state.truncated) && <p className="px-4 pb-3 text-xs text-muted-foreground">{SHOWS_START}</p>}
+            {menu.element}
         </div>
     );
+}
+
+/** Encodings to read a text file as (encoding_rs's names), with what people call them. */
+const ENCODINGS: [string, string][] = [
+    ["UTF-8", "Unicode (UTF-8)"],
+    ["windows-1256", "Arabic (Windows-1256)"],
+    ["ISO-8859-6", "Arabic (ISO-8859-6)"],
+    ["windows-1252", "Western (Windows-1252)"],
+    ["windows-1250", "Central European (Windows-1250)"],
+    ["windows-1251", "Cyrillic (Windows-1251)"],
+    ["KOI8-R", "Cyrillic (KOI8-R)"],
+    ["IBM866", "Cyrillic (DOS 866)"],
+    ["windows-1253", "Greek (Windows-1253)"],
+    ["windows-1254", "Turkish (Windows-1254)"],
+    ["windows-1255", "Hebrew (Windows-1255)"],
+    ["windows-1257", "Baltic (Windows-1257)"],
+    ["windows-1258", "Vietnamese (Windows-1258)"],
+    ["windows-874", "Thai (Windows-874)"],
+    ["Shift_JIS", "Japanese (Shift_JIS)"],
+    ["EUC-JP", "Japanese (EUC-JP)"],
+    ["gb18030", "Chinese, simplified (GB18030)"],
+    ["GBK", "Chinese, simplified (GBK)"],
+    ["Big5", "Chinese, traditional (Big5)"],
+    ["EUC-KR", "Korean (EUC-KR)"],
+    ["UTF-16LE", "Unicode (UTF-16)"],
+    ["UTF-16BE", "Unicode (UTF-16, big-endian)"],
+];
+
+const encodingName = (label: string) => ENCODINGS.find(([l]) => l.toLowerCase() === label.toLowerCase())?.[1] ?? label;
+
+/** Read as another encoding, or Convert to UTF-8 (in the file's place, the original recycled, so Ctrl+Z takes it back). */
+function encodingMenu(entry: FileEntry, current: string, choose: (label: string) => void, converted: () => void): MenuItem[] {
+    const local = !isArchived(entry) && !isRecycled(entry) && !isRemote(entry) && !isClosed(entry);
+    const utf8 = current.toLowerCase() === "utf-8";
+    return [
+        local && !utf8 && { label: "Convert to UTF-8", icon: FileCheck2, onSelect: () => void convertToUtf8([entry.path], current).then((ok) => ok && converted()) },
+        local && !utf8 && "separator",
+        { heading: "Read as" },
+        ...ENCODINGS.map(([label, name]) => ({ label: name, checked: label.toLowerCase() === current.toLowerCase(), onSelect: () => choose(label) })),
+    ];
+}
+
+/** Convert to UTF-8: `paths` rewritten as UTF-8 (read as `encoding`, or as detected), the originals recycled. */
+export async function convertToUtf8(paths: string[], encoding: string | null = null) {
+    try {
+        const report = await runAction("text_to_utf8", { files: paths, encoding, output: { kind: "replace" } }, () => {});
+        if (report.made.length) offerActionUndo(report, `converting ${report.made.length > 1 ? `${report.made.length} files` : "it"} to UTF-8`);
+        if (report.failed.length) toast.error(report.made.length ? `${report.failed.length} not converted` : "Couldn't convert it to UTF-8", { description: report.failed[0][1] });
+        return report.made.length > 0;
+    } catch (e) {
+        toast.error("Couldn't convert it to UTF-8", { description: String(e) });
+        return false;
+    }
 }
 
 /** Markdown as it reads, its pictures and links relative to its folder. */
@@ -800,6 +882,8 @@ export function EntryPreview({
     // Contacts, calendar invites, emails, design files' own pictures, Graphviz and Mermaid files (SmallPreviews.tsx).
     const small = readable && !archived ? smallKind(entry.ext) : undefined;
     const typst = readable && !archived && entry.ext === "typ";
+    // Word documents laid out without Office (DocxView.tsx).
+    const docx = readable && !archived && DOCX_EXTS.has(entry.ext) && entry.size <= DOCX_MAX;
     // JSON, YAML and TOML as a tree (up to the 64 MB the jq worker reads).
     const data = readable && entry.size <= 64 * 1024 * 1024 ? dataFormat(entry) : undefined;
     // Workbooks and Parquet files as tables, from disk; a workbook can show in Windows' previewer too (Excel's).
@@ -905,6 +989,19 @@ export function EntryPreview({
     else if (markdown) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <MarkdownPreview entry={entry} />;
     else if (data) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <DataTree entry={entry} format={data} />;
     else if (cast) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <CastPreview entry={entry} />;
+    else if (docx)
+        body = (
+            <Suspense fallback={<Waiting />}>
+                <DocxView
+                    entry={entry}
+                    fallback={
+                        <ShellPreview entry={entry} over={!!onClose}>
+                            <BigIcon entry={entry} />
+                        </ShellPreview>
+                    }
+                />
+            </Suspense>
+        );
     // Unknown extensions get a text preview attempt; the backend spots binary files.
     else if (kind === "text" || !isKnownType(entry)) body = <TextPreview entry={entry} over={!!onClose} />;
     else if (!archived && isPeCandidate(entry)) body = <BinaryPreview entry={entry} />;

@@ -6,9 +6,10 @@ import { toggleUsage, useUsage } from "@/lib/diskUsage";
 import { enableIndex, middleClickOpens, navigate, refreshDrives, useExplorer, useTab } from "@/lib/explorer";
 import { Button } from "../ui/button";
 import { formatSize } from "@/lib/format";
-import { driveName, ejectDrive } from "@/lib/fs";
+import { type Drive, driveName, ejectDrive } from "@/lib/fs";
 import { cn } from "@/lib/utils";
 import { inspectDuplicates } from "./DuplicatesDialog";
+import { DriveHealthBadge, DriveHealthBanner, useDriveHealth } from "./DriveHealth";
 import { CapacityBar, DRIVE_ICONS, freeOf, KNOWN_ICONS } from "./Sidebar";
 import { inspectTimeline } from "./TimelineDialog";
 
@@ -102,6 +103,7 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
             </div>
 
             <InstantSearchCard />
+            <DriveHealthBanner />
             <div className="mb-3 mt-8 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold">Devices and drives</h2>
                 {totalCapacity > 0 && (
@@ -120,126 +122,143 @@ export function ThisPC({ onContextMenu }: { onContextMenu: (e: React.MouseEvent,
             </div>
 
             <div className="grid grid-cols-[repeat(auto-fill,minmax(17.5rem,1fr))] gap-3">
-                {drives.map((d) => {
-                    const Icon = DRIVE_ICONS[d.kind];
-                    const usedPct = d.total > 0 ? Math.round(((d.total - d.free) / d.total) * 100) : 0;
-                    const nearlyFull = usedPct >= 90;
-                    return (
-                        <div
-                            key={d.path}
-                            role="button"
-                            tabIndex={0}
-                            data-drop={d.path}
-                            className={cn(tile, "items-start cursor-pointer", dropping(d.path))}
-                            onClick={() => navigate(d.path)}
-                            onKeyDown={(e) => {
-                                // Its own buttons (map, recent changes, duplicates) take their Enter and Space.
-                                if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
-                                e.preventDefault();
-                                navigate(d.path);
-                            }}
-                            onMouseDown={middleClickOpens(d.path)}
-                            onContextMenu={(e) => onContextMenu(e, d.path)}
-                        >
-                            <div
-                                className={cn(
-                                    "mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border bg-muted/40 text-muted-foreground transition-colors group-hover:text-foreground",
-                                    nearlyFull && "border-destructive/40 bg-destructive/10 text-destructive"
-                                )}
-                            >
-                                <Icon className="size-5" />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5">
-                                    <span className="truncate text-sm font-medium">{driveName(d)}</span>
-                                    {d.kind === "wsl" && (
-                                        <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.2 font-mono text-[0.625rem] font-semibold text-amber-600 dark:text-amber-400" title="Windows Subsystem for Linux distribution">
-                                            Linux
-                                        </span>
-                                    )}
-                                    {d.fs && d.kind !== "wsl" && (
-                                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.2 font-mono text-[0.625rem] font-medium text-muted-foreground">
-                                            {d.fs}
-                                        </span>
-                                    )}
-                                    {d.total > 0 && (
-                                        <span
-                                            className={cn(
-                                                "ms-auto shrink-0 font-mono text-[0.6875rem] font-semibold tabular-nums",
-                                                nearlyFull ? "text-destructive" : "text-muted-foreground"
-                                            )}
-                                        >
-                                            {usedPct}%
-                                        </span>
-                                    )}
-                                </div>
-                                <CapacityBar drive={d} className="my-2 h-1.5" />
-                                <div className="flex items-center justify-between gap-2">
-                                    <span className="truncate text-xs text-muted-foreground">
-                                        {d.kind === "wsl" ? d.path : freeOf(d) || (d.fs ? d.fs : "Not ready")}
-                                    </span>
-                                    {(d.total > 0 || d.kind === "removable" || d.kind === "cdrom") && (
-                                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-                                            {(d.kind === "removable" || d.kind === "cdrom") && (
-                                                <button
-                                                    type="button"
-                                                    title={`Safely eject ${driveName(d)}`}
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        ejectDrive(d.path)
-                                                            .then(() => {
-                                                                toast.success(`Safely ejected ${driveName(d)}`);
-                                                                void refreshDrives();
-                                                            })
-                                                            .catch((err) => toast.error(`Couldn't eject ${driveName(d)}`, { description: String(err) }));
-                                                    }}
-                                                    className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
-                                                >
-                                                    <Unplug className="size-3.5" />
-                                                </button>
-                                            )}
-                                            {d.total > 0 && (
-                                                <>
-                                                    <button
-                                                        type="button"
-                                                        title="Map disk usage"
-                                                        onClick={(e) => openDriveTreemap(e, d.path)}
-                                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
-                                                    >
-                                                        <LayoutDashboard className="size-3.5" />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        title="Recent changes"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            inspectTimeline(d.path);
-                                                        }}
-                                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
-                                                    >
-                                                        <FileClock className="size-3.5" />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        title="Find duplicate files"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            inspectDuplicates(d.path);
-                                                        }}
-                                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
-                                                    >
-                                                        <Files className="size-3.5" />
-                                                    </button>
-                                                </>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    );
-                })}
+                {drives.map((d) => (
+                    <DriveTile key={d.path} d={d} dropping={dropping} onContextMenu={onContextMenu} openDriveTreemap={openDriveTreemap} />
+                ))}
             </div>
         </div>
     );
 }
+
+/** A drive in This PC: its name, file system, health, free space and quick actions. */
+function DriveTile({
+    d,
+    dropping,
+    onContextMenu,
+    openDriveTreemap,
+}: {
+    d: Drive;
+    dropping: (path: string) => string | false;
+    onContextMenu: (e: React.MouseEvent, path: string) => void;
+    openDriveTreemap: (e: React.MouseEvent, drivePath: string) => void;
+}) {
+    const health = useDriveHealth(d.path);
+    const Icon = DRIVE_ICONS[d.kind];
+    const usedPct = d.total > 0 ? Math.round(((d.total - d.free) / d.total) * 100) : 0;
+    const nearlyFull = usedPct >= 90;
+    return (
+        <div
+            role="button"
+            tabIndex={0}
+            data-drop={d.path}
+            className={cn(tile, "items-start cursor-pointer", dropping(d.path))}
+            onClick={() => navigate(d.path)}
+            onKeyDown={(e) => {
+                // Its own buttons (map, recent changes, duplicates) take their Enter and Space.
+                if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                e.preventDefault();
+                navigate(d.path);
+            }}
+            onMouseDown={middleClickOpens(d.path)}
+            onContextMenu={(e) => onContextMenu(e, d.path)}
+        >
+            <div
+                className={cn(
+                    "mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border bg-muted/40 text-muted-foreground transition-colors group-hover:text-foreground",
+                    nearlyFull && "border-destructive/40 bg-destructive/10 text-destructive"
+                )}
+            >
+                <Icon className="size-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                    <span className="truncate text-sm font-medium">{driveName(d)}</span>
+                    {d.kind === "wsl" && (
+                        <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.2 font-mono text-[0.625rem] font-semibold text-amber-600 dark:text-amber-400" title="Windows Subsystem for Linux distribution">
+                            Linux
+                        </span>
+                    )}
+                    {d.fs && d.kind !== "wsl" && (
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.2 font-mono text-[0.625rem] font-medium text-muted-foreground">
+                            {d.fs}
+                        </span>
+                    )}
+                    {health && <DriveHealthBadge health={health} />}
+                    {d.total > 0 && (
+                        <span
+                            className={cn(
+                                "ms-auto shrink-0 font-mono text-[0.6875rem] font-semibold tabular-nums",
+                                nearlyFull ? "text-destructive" : "text-muted-foreground"
+                            )}
+                        >
+                            {usedPct}%
+                        </span>
+                    )}
+                </div>
+                <CapacityBar drive={d} className="my-2 h-1.5" />
+                <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-xs text-muted-foreground">
+                        {d.kind === "wsl" ? d.path : freeOf(d) || (d.fs ? d.fs : "Not ready")}
+                    </span>
+                    {(d.total > 0 || d.kind === "removable" || d.kind === "cdrom") && (
+                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+                            {(d.kind === "removable" || d.kind === "cdrom") && (
+                                <button
+                                    type="button"
+                                    title={`Safely eject ${driveName(d)}`}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        ejectDrive(d.path)
+                                            .then(() => {
+                                                toast.success(`Safely ejected ${driveName(d)}`);
+                                                void refreshDrives();
+                                            })
+                                            .catch((err) => toast.error(`Couldn't eject ${driveName(d)}`, { description: String(err) }));
+                                    }}
+                                    className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
+                                >
+                                    <Unplug className="size-3.5" />
+                                </button>
+                            )}
+                            {d.total > 0 && (
+                                <>
+                                    <button
+                                        type="button"
+                                        title="Map disk usage"
+                                        onClick={(e) => openDriveTreemap(e, d.path)}
+                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
+                                    >
+                                        <LayoutDashboard className="size-3.5" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        title="Recent changes"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            inspectTimeline(d.path);
+                                        }}
+                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
+                                    >
+                                        <FileClock className="size-3.5" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        title="Find duplicate files"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            inspectDuplicates(d.path);
+                                        }}
+                                        className="rounded p-1 text-muted-foreground hover:bg-background hover:text-primary"
+                                    >
+                                        <Files className="size-3.5" />
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+

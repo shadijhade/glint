@@ -1,6 +1,116 @@
 # Glint: next release plan
 
-*Part 1 (reviewed and built 2026-11-09) is on master as 373b14e, not released. Part 2 was planned the same day against 373b14e and each tool's current release, because the release should carry more features and fixes first.*
+*Part 1 (reviewed and built 2026-11-09) is on master as 373b14e, not released. Part 2 was planned and built the same day and is on master as cb203c0, not released either. Part 3 is a list of candidates to choose from, not a plan yet.*
+
+## Part 3: hidden gems to review (listed 2026-11-09)
+
+*Each item was checked against what Glint already has: the 34 tools in [tools.rs](src-tauri/src/tools.rs), the crates and npm packages, and parts 1 and 2 with their "if there's room" and "cut" tables. Nothing here repeats them. Versions and licenses were checked on 2026-11-09, and the seven rules still apply. Effort: **S** is about half a day, **M** a day or two, **L** more.*
+
+### Build status (part 3, started 2026-11-09)
+
+You picked H1, H2, H4, H9 and H19 on 2026-11-09. All five are built and tested in a release test copy; nothing is committed yet.
+
+- **H1 Compress in place** ([wof.rs](src-tauri/src/wof.rs), CompressInPlaceDialog.tsx): measure, compress a few files at a time, decompress, and Undo (by an id kept for the run). WOF hides its reparse point from folder listings, so each file that might be compressed is asked, in parallel. The estimate compresses a sample of at most 6 MB for real with each algorithm, in a hidden file on the same drive. Read-only files are compressed too, dates stay, and the user's own files need no admin rights. It's in the file menu (Compress to → In place), Ctrl+K, and Make smaller's row for folders. Measuring node_modules (24,000 files) takes 0.6 s, Program Files\Git 0.9 s. In the test copy, 7.1 MB of text took 284 KB with XPRESS 8K, and Undo put it back.
+- **H2 Drive health** ([drivehealth.rs](src-tauri/src/drivehealth.rs), DriveHealth.tsx): no admin rights and no change to the service after all. A disk opened with no access rights still answers `IOCTL_STORAGE_QUERY_PROPERTY` (the NVMe health log, the temperature), `IOCTL_STORAGE_GET_COUNTERS`, and `IOCTL_STORAGE_PREDICT_FAILURE` (a SATA drive's SMART table and its own prediction). This PC shows a badge on each drive (its temperature, or Check or Failing), a banner when a disk isn't healthy, and a details dialog. This PC's NVMe drive (5% of its life used, 47 TB written) and its SATA SSD both read.
+- **H4 Old text encodings** ([textenc.rs](src-tauri/src/textenc.rs)): byte order marks, UTF-16 without one, valid UTF-8, else chardetng's guess with this PC's code page as the region hint. Text previews get an encoding chip (Read as…, Convert to UTF-8); Search inside files instantly reads text files in their own encoding, and re-reads once the ones it indexed garbled; meaning search's notes too. Convert to UTF-8 runs through actions.rs: in the file's place, the original recycled, Ctrl+Z, a byte order mark for CSV and TSV (Excel reads UTF-8 by it), the date kept. Also in Ctrl+K for selected text files.
+- **H9 Word documents** (DocxView.tsx, docx-preview 0.4.1, Apache-2.0): in a shadow root, loaded only when needed (a 171 KB chunk). Pages are scaled to the pane, or the text flows to it when the pane is narrower than 520 px; a document that doesn't say its page size gets Word's A4. Links open in the browser and embedded HTML isn't shown. An Arabic document lays out right to left.
+- **H19 mimalloc**, in Glint.exe only (crate 0.1.52, mimalloc 3.3.2 by default). `Glint.exe bench`, release builds, two runs each: the 100,000-file folder 41.7 → 29.2 ms (its sort 11.8 → 4.7 ms), WinSxS 22.7 → 18.3 ms, System32 2.3 → 1.5 ms; searches (in the service) unchanged. The service keeps Windows' allocator: it can't be measured without installing it.
+- **Checks**: cargo test 315 pass, clippy `-D warnings` clean, tsc and vite build clean. In a release test copy, scratchpad e2e-h.mjs passed 20 of 20: encodings read and converted, compress, measure, Undo, drive health, Word documents in the pane (reflowed) and in Quick Look (pages), the encoding menu, the Compress in place dialog and This PC's badges and details on screen.
+
+### Top picks: small, with little or nothing to download
+
+| # | Feature | Engine | Why | Effort |
+| :--- | :--- | :--- | :--- | :--- |
+| H1 | **Compress in place**: folders take less space and still open normally (games, apps, SDKs, old projects). The saving is estimated first, and Undo decompresses | Windows' transparent compression (WOF: XPRESS 4K–16K or LZX), called directly through `WofSetFileDataLocation`. It's the engine behind `compact /exe` and [CompactGUI](https://github.com/IridiumIO/CompactGUI) | Nothing to download. On this PC, without admin, LZX stored a 5.6 MB text file in 20 KB. Photos, videos and archives are skipped because they don't shrink. A file an app rewrites is stored uncompressed again | S–M |
+| H2 | **Drive health** in This PC: temperature, wear, read and write errors, hours used, and a warning on a drive that's failing | Windows' storage reliability counters (`MSFT_StorageReliabilityCounter`), read by the index service | Reading them needs admin (refused here, unelevated), and the service runs as SYSTEM and updates itself. [smartmontools](https://www.smartmontools.org/) (`smartctl -j`, GPL-2.0) comes in only if full SMART attributes and self-tests are wanted later | M |
+| H3 | **Test drive speed** on a drive's menu: read and write speeds, for large and small blocks | [DiskSpd](https://github.com/microsoft/diskspd) 2.3 (Microsoft, MIT, 3.4 MB) | It's what CrystalDiskMark runs underneath. It writes a test file on that drive, then deletes it | S |
+| H4 | **Old text files read right**: legacy encodings (Arabic Windows-1256, Cyrillic, Chinese…) detected in previews, the content index and subtitles, plus **Convert to UTF-8** | [chardetng](https://docs.rs/crate/chardetng) 1.0 (Firefox's detector, pure Rust, Apache-2.0/MIT), over encoding_rs, which is already in the build | Old Arabic .txt and .srt files show as gibberish today, and search misses their words | S |
+| H5 | **Steady video**: shaky phone videos stabilized, in Media | FFmpeg's vid.stab filters, in two passes | Already in the essentials build Glint installs, so no new tool | S |
+| H6 | **Clean up a recording**: one click removes background noise, evens out the volume and trims long silences | FFmpeg's `afftdn` and `silenceremove`, plus the two-pass `loudnorm` Glint already has. Optionally [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) 0.5.6 (`deep-filter.exe`, Rust, MIT/Apache-2.0, 25.6 MB) | FFmpeg removes steady hiss and hum. DeepFilterNet also removes keyboards, traffic and other voices, but it's a second engine for one job (rule 6), so it's your call | S, or M with DeepFilterNet |
+| H7 | **Motion photos**: the short video inside Samsung and Google phone photos plays in Quick Look, with **Save the video** and **Keep only the photo**. iPhone Live Photos (a photo plus a .mov) show as one item | ExifTool, already installed (`MotionPhotoVideo`). Glint reads the offsets in Google's XMP container itself | Recent Android phones take these by default, and File Explorer shows only the still | S–M |
+| H8 | **360° photos and videos** open as a sphere you drag around, not a stretched picture | [Photo Sphere Viewer](https://photo-sphere-viewer.js.org/) 5.15.1 (MIT), on the three.js Glint already ships | They're found by the picture's `GPano` projection tag | S |
+| H9 | **Word documents without Office**: headings, tables and pictures laid out in the preview | [docx-preview](https://www.npmjs.com/package/docx-preview) 0.4.1 (Apache-2.0) | Without Office, Windows has no previewer for .docx (none is registered on this PC), so the pane shows an icon. Right-to-left needs testing | S |
+| H10 | **Fonts**: sample text in Latin and Arabic at several sizes, every glyph, and the font's names and license. **Install for me** works without admin | WebView2's `FontFace` and [opentype.js](https://www.npmjs.com/package/opentype.js) 2.0.0 (MIT), plus the per-user fonts folder | Windows has no previewer for fonts either, so the pane shows an icon | S |
+
+### More good ones: more work, or a narrower audience
+
+| # | Feature | Engine | Why | Effort |
+| :--- | :--- | :--- | :--- | :--- |
+| H11 | **Name songs automatically**: unknown songs get their title, artist, album and cover from their sound, in Song details | [Chromaprint](https://github.com/acoustid/chromaprint)'s fpcalc 1.6.2 (LGPL-2.1, 1.7 MB) makes the fingerprint on the PC. [AcoustID](https://acoustid.org/webservice) and MusicBrainz look it up | It goes online, so only on **Look up online** (rule 4), and it sends only the fingerprint and the length. AcoustID is free for non-commercial use, needs a key registered for Glint, and allows 3 requests a second | M |
+| H12 | **Make bigger**: 2× or 4× sharper photos and screenshots, the other half of Make smaller | [upscayl-bin](https://github.com/upscayl/upscayl-ncnn) (Upscayl's maintained Real-ESRGAN for Vulkan, 2025-12-07, 2.3 MB; AGPL-3.0, run as a separate program like Ghostscript) with [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)'s BSD-3 models | It runs on any Vulkan graphics card (NVIDIA, AMD, Intel) and is hidden where there's none. It isn't the ONNX path that E15 deferred | M |
+| H13 | **Old Outlook mailboxes**: a .pst opens like a folder of emails, previewed and searched like .eml files. Attachments are saved with the internet's mark | Microsoft's [outlook-pst](https://github.com/microsoft/outlook-pst-rs) 1.2.0 crate (MIT, pure Rust) | People keep PSTs for decades and need Outlook to open them. Read-only, in a worker process | M |
+| H14 | **Event logs as tables**: .evtx files show time, level, source, ID and message, filtered, searchable and exportable to CSV | The [evtx](https://github.com/omerbenamram/evtx) 0.15.1 crate (2026-11-01, MIT/Apache-2.0) | For troubleshooting and IT. Exported logs open as they are; Windows' live logs need admin | S–M |
+| H15 | **What made this program?** in the File X-Ray: the installer type (Inno Setup, NSIS…), packer (UPX…), compiler, .NET or Electron | [Detect It Easy](https://github.com/horsicq/DIE-engine) 4.0.0 (`diec`, MIT, 30 MB, released 2026-11-05) | It tells whether an installer opens as a folder and whether a program is packed. 3.21 fixed a path-traversal bug (CVE-2026-43616), so pin 4.0.0 or newer | S |
+| H16 | **Diagrams**: draw.io files (.drawio, .drawio.svg, .drawio.png) and Excalidraw files drawn in the preview | draw.io's viewer ([jgraph/drawio](https://github.com/jgraph/drawio) 32.6.10, Apache-2.0) and [@excalidraw/excalidraw](https://www.npmjs.com/package/@excalidraw/excalidraw) 0.18.1 (MIT) | Common in projects, and nothing else in Windows shows them. Each loads only when such a file is opened | S–M |
+| H17 | **SVGs in Make smaller**: editor leftovers stripped, paths merged | [oxvg](https://github.com/noahbald/oxvg) 0.0.9 (MIT, a Rust port of SVGO), in-process | It's early (0.0.x), so try it against SVGO's own test files first | S |
+| H18 | **MIDI files play in Quick Look** | [SpessaSynth](https://www.npmjs.com/package/spessasynth_lib) 4.4.7 (Apache-2.0) with a General MIDI SoundFont | WebView2 can't play .mid. The SoundFont is most of the size (about 30 MB, downloaded on first use) | S |
+| H19 | **Faster memory allocation** in Glint and the service | [mimalloc](https://github.com/microsoft/mimalloc) (Microsoft, MIT; upstream v3.6.1, 2026-10-30) through the `mimalloc` crate 0.1.52 | One line in each program, kept only if the bench harness shows a gain (rule 7) | S |
+
+### Bigger bets
+
+| # | Feature | Engine | Why it's big | Effort |
+| :--- | :--- | :--- | :--- | :--- |
+| H20 | **Map of photos and GPS tracks**: photos with a location on a map, grouped by place, and .gpx, .kml and .geojson previews. Later, **Add location from a GPX track** | [MapLibre GL JS](https://maplibre.org/) 6.17.0 and [PMTiles](https://docs.protomaps.com/) 4.5.0 (both BSD-3). A Protomaps world map to zoom 5 (about 17 MB, OpenStreetMap data, credited) works offline. ExifTool's `-geotag` for the GPX step | Glint already reads photos' GPS. Street-level detail needs map tiles from the internet or a downloaded region, so it's offered, never automatic (rule 4) | M–L |
+| H21 | **Recover deleted files** beyond the Recycle Bin: recently deleted files on NTFS drives are listed and copied to another drive. Formatted camera cards and USB sticks are recovered by file signatures | The index service already reads the MFT, where a deleted file's record stays until it's reused. [PhotoRec](https://www.cgsecurity.org/wiki/PhotoRec) (GPL-2.0; 7.2 stable, 7.3 beta, Windows builds, scriptable with `/cmd`) handles the cards | Raw reads need the service, and recovered files must go to another drive. On SSDs, TRIM usually erases deleted data quickly, and the screen must say so plainly | L |
+
+### Worth watching: not ready yet
+
+| Idea | What's missing |
+| :--- | :--- |
+| Windows AI APIs on Copilot+ PCs: Image Super Resolution (up to 8×), Image Description, Object Erase and Phi Silica summaries, free on the NPU | Copilot+ PCs only, and they need package identity: the Store build has it, the installer build doesn't. Object Erase is still experimental |
+| App Actions on Windows: list and run the actions other apps register (Photos' Remove background, for example) from a file's menu | The catalog API (`Windows.AI.Actions.Hosting`) is still marked prerelease |
+| Translate subtitles and text files offline, Arabic included, with Firefox's engine | Arabic is on Firefox Translations' list, but the standalone engine ([bergamot-translator](https://github.com/browsermt/bergamot-translator)) hasn't changed since 2024-05, and the models repository was archived in 2025-12. The local AI bet would cover this |
+| Smooth motion (60 fps from 30) | [rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan)'s last build is from 2022 |
+
+### Looked at and left out
+
+| Idea | Why |
+| :--- | :--- |
+| CompactGUI itself | A GPL-3.0 WPF app; H1 calls the same Windows API |
+| Real-ESRGAN's own Vulkan build | Its last binaries are from 2022; upscayl-bin is the maintained fork |
+| FFmpeg's `arnndn` noise models | Their repository has no license |
+| smartctl as H2's first engine | Windows' own counters need no download |
+| MarkItDown | doctext.rs and pandoc already turn documents into text and Markdown |
+| croc, magic-wormhole | sendme (iroh) already sends files by ticket |
+| xan, csvlens, tabiew | DuckDB covers them (rule 6) |
+| ouch | 7-Zip covers it |
+| dua, dust, kondo | pdu and Clean up cover them |
+| gifski | AGPL-3.0, and Media already makes GIFs with FFmpeg |
+| Writing disk images to USB sticks (Rufus-style) | One wrong drive gets erased, and caligula has no Windows build |
+| New Rust explorers for Windows from 2026 posts (MTT File Manager, PowerFolder) | Apps, not tools to integrate |
+
+### Decisions for you
+
+1. **Which items to build**: the top picks (H1–H10) as one batch, or your own list of numbers.
+2. **DeepFilterNet (H6)**: FFmpeg alone, or the stronger second engine?
+3. **Online look-ups** (H11's songs, H20's street maps): worth a consent step, or offline only?
+4. **The bigger bets (H20, H21)**: this release, or a later one? H2 and H21 change the index service, which then has to update itself on people's PCs (not yet tried on the real service).
+
+### Facts checked (2026-11-09)
+
+- On this PC: `compact /c /exe:lzx` worked unelevated (5.6 MB stored in 20 KB). `Get-StorageReliabilityCounter` unelevated was refused ("Access to a CIM resource was not available to the client"). No preview handler is registered for .docx, .ttf or .otf. encoding_rs 0.8.42 is already in Cargo.lock
+- [WofSetFileDataLocation](https://learn.microsoft.com/windows/win32/api/wofapi/nf-wofapi-wofsetfiledatalocation); [CompactGUI](https://github.com/IridiumIO/CompactGUI/releases) v4.0.0-beta.12, 2026-09-21, GPL-3.0
+- [DiskSpd 2.3](https://github.com/microsoft/diskspd/releases), 2026-09-04, MIT, `DiskSpd.ZIP`
+- [smartmontools 7.5](https://www.smartmontools.org/), 2025-04-30, GPL-2.0, a Windows setup program, winget `smartmontools.smartmontools`
+- [chardetng](https://docs.rs/crate/chardetng) 1.0.0 detects windows-1256 (Arabic, Persian, Urdu)
+- [Gyan's builds](https://www.gyan.dev/ffmpeg/builds/): libvidstab is in essentials, whisper only in full
+- [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet/releases) v0.5.6, 2023-08-31: `deep-filter-0.5.6-x86_64-pc-windows-msvc.exe`, 25.6 MB, MIT/Apache-2.0, repository still active (2026-11-06). [arnndn-models](https://github.com/richardpl/arnndn-models) has no license
+- ExifTool's [`MotionPhotoVideo`](https://exiftool.org/forum/index.php?msg=83607) for Samsung motion photos (JPEG and HEIC)
+- npm: Photo Sphere Viewer 5.15.1 (MIT), docx-preview 0.4.1 (Apache-2.0), opentype.js 2.0.0 (MIT), @excalidraw/excalidraw 0.18.1 (MIT), spessasynth_lib 4.4.7 (Apache-2.0), maplibre-gl 6.17.0 and pmtiles 4.5.0 (BSD-3-Clause)
+- [Chromaprint 1.6.2](https://github.com/acoustid/chromaprint/releases), 2026-10-15, `chromaprint-fpcalc-1.6.2-windows-x86_64.zip`. [AcoustID's web service](https://acoustid.org/webservice): free for non-commercial use, needs an application key, at most 3 requests a second, sends the fingerprint and duration
+- [upscayl-ncnn](https://github.com/upscayl/upscayl-ncnn/releases) 20251207, AGPL-3.0, Windows zip 2.3 MB. [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) is BSD-3-Clause; its own Vulkan build was last released in 2022
+- [outlook-pst](https://github.com/microsoft/outlook-pst-rs) 1.2.0, 2026-03-17, MIT
+- [evtx](https://github.com/omerbenamram/evtx/releases) v0.15.1, 2026-11-01
+- [Detect It Easy](https://github.com/horsicq/DIE-engine/releases) 4.0.0, 2026-11-05, MIT, `die_win64_4.0.0.zip` 29.9 MB. [CVE-2026-43616](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2026-43616) was fixed in 3.21
+- [draw.io](https://github.com/jgraph/drawio/releases) v32.6.10, 2026-11-04, Apache-2.0. [oxvg](https://github.com/noahbald/oxvg/releases) v0.0.9, 2026-10-05, MIT
+- [mimalloc](https://github.com/microsoft/mimalloc/releases) v3.6.1, 2026-10-30. The `mimalloc` crate 0.1.52 has a `v2` feature and no `v3` one, so v3 looks like its default (confirm when building)
+- [Protomaps downloads](https://docs.protomaps.com/basemaps/downloads). A zoom-5 world extract measured about 17 MB in an [older write-up](https://www.antoniogioia.com/protomaps-open-source-single-file-maps); v4 trimmed the low zooms further
+- [TestDisk & PhotoRec](https://www.cgsecurity.org/wiki/TestDisk_Download): 7.2 stable, 7.3 beta, Windows 64-bit builds
+- [Windows AI imaging APIs](https://learn.microsoft.com/windows/ai/apis/imaging): Copilot+ PCs, package identity required. [App Actions hosting](https://learn.microsoft.com/uwp/api/windows.ai.actions.hosting) is marked prerelease
+- [Firefox Translations](https://www.firefox.com/features/translate/) lists Arabic. mozilla/firefox-translations-models was archived on 2025-12-15, and browsermt/bergamot-translator was last pushed on 2024-05-12
+- [rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan/releases) was last released on 2022-10-29
+
+---
 
 ## Part 2 (planned 2026-11-09)
 
