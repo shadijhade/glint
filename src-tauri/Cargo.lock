@@ -7697,6 +7697,7 @@ dependencies = [
  "portable-pty",
  "qrcode",
  "quick-xml",
+ "rayon",
  "reflink-copy",
  "regex",
  "reqwest",

@@ -166,8 +166,14 @@ fn find(name: &str, package: &str, downloaded: Option<&std::path::Path>) -> Opti
     dirs.extend(winget.iter().map(|w| w.join("Links")));
     dirs.extend(env("USERPROFILE").into_iter().flat_map(|home| [home.join(r"scoop\shims"), home.join(r".cargo\bin")]));
     dirs.extend(env("ProgramData").map(|d| d.join(r"chocolatey\bin")));
-    // Programs whose own installers don't put them on PATH: 7-Zip's and ExifTool's (winget's OliverBetz.ExifTool).
+    // Programs whose own installers don't put them on PATH: 7-Zip's and ExifTool's (winget's OliverBetz.ExifTool),
+    // Ghostscript's (Program Files\gs\gs<version>\bin), and pandoc's per-user MSI before this session's PATH has it.
     dirs.extend(env("ProgramFiles").into_iter().flat_map(|d| [d.join("7-Zip"), d.join("ExifTool")]));
+    if file.eq_ignore_ascii_case("gswin64c.exe") {
+        let versions = env("ProgramFiles").and_then(|d| std::fs::read_dir(d.join("gs")).ok());
+        dirs.extend(versions.into_iter().flatten().flatten().map(|v| v.path().join("bin")));
+    }
+    dirs.extend(env("LOCALAPPDATA").map(|d| d.join("Pandoc")));
     if let Some(found) = dirs.iter().map(|d| d.join(&file)).find(|p| p.is_file()) {
         return Some((found, Origin::Installed));
     }

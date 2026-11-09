@@ -19,17 +19,17 @@ They're the official Windows x64 releases, unmodified, installed next to `Glint.
 | [Czkawka](https://github.com/qarmin/czkawka) CLI | Clean up's look-alike pictures, videos and music, broken files and wrong extensions | winget `qarmin.czkawka.cli`, else its release, 12.0.2 |
 | [FFmpeg](https://ffmpeg.org/) | **Media**: trim, convert and shrink (hardware encoders when the PC has them), the sound alone, GIFs; videos WebView2 can't play get a copy that plays; Clean up's look-alike videos | winget `Gyan.FFmpeg.Essentials`, else its release, 9.0.2 (with ffprobe) |
 | [Difftastic](https://github.com/Wilfred/difftastic) | Compare two files, and a changed file's **Changes**: code compared by its structure | winget `Wilfred.difftastic`, else its release, 0.72.0 |
-| [ast-grep](https://github.com/ast-grep/ast-grep) | Code patterns in Text mode (`Alt+A`), found and rewritten by their syntax | winget `ast-grep.ast-grep`, else its release, 0.51.0 |
-| [jaq](https://github.com/01mf02/jaq) | jq filters over JSON, YAML and TOML in their preview | its GitHub release, v3.1.1 |
+| [ast-grep](https://github.com/ast-grep/ast-grep) | Code patterns in Text mode (`Alt+A`), found and rewritten by their syntax | winget `ast-grep.ast-grep`, else its release, 0.51.1 |
+| [jaq](https://github.com/01mf02/jaq) | jq filters over JSON, YAML and TOML in their preview | its GitHub release, v3.1.2 |
 | [Magika](https://github.com/google/magika) | A file's real type in the File X-Ray, told by its content | winget `Google.Magika`, else its release, 1.1.0 |
-| [YARA-X](https://github.com/VirusTotal/yara-x) | **Check with YARA rules**, from a rules folder chosen in Settings → Check | winget `VirusTotal.YARA-X`, else its release, 1.22.1 |
-| [Kingfisher](https://github.com/mongodb/kingfisher) | **Look for passwords and keys**, and a look before **Compress to zip file** | its GitHub release, v2.14.0 |
+| [YARA-X](https://github.com/VirusTotal/yara-x) | **Check with YARA rules**, from a rules folder chosen in Settings → Check | winget `VirusTotal.YARA-X`, else its release, 1.23.0 |
+| [Kingfisher](https://github.com/mongodb/kingfisher) | **Look for passwords and keys**, and a look before **Compress to zip file** | its GitHub release, v2.17.0 |
 | [rimage](https://github.com/vlad-salone/rimage) | **Convert pictures** to JPEG, PNG, WebP or AVIF | its GitHub release, v0.14.0 |
-| [onefetch](https://github.com/o2sh/onefetch) | A Git repository's card in its preview | its GitHub release, 3.1.0 |
+| [onefetch](https://github.com/o2sh/onefetch) | A Git repository's card in its preview | its GitHub release, 3.2.0 |
 | [tokei](https://github.com/XAMPPRocky/tokei) | Lines of code by language on that card | winget `XAMPPRocky.Tokei`, else its release, 12.1.2 |
 | [zoxide](https://github.com/ajeetdsouza/zoxide) | Folder history shared with your terminals (Settings → History) | winget `ajeetdsouza.zoxide`, else its release, 0.10.0 |
 | [just](https://github.com/casey/just) | A justfile's recipes in the **Run** menu | winget `Casey.Just`, else its release, 1.59.0 |
-| [uv](https://github.com/astral-sh/uv) | pyproject.toml's scripts in **Run**, and Python scripts in **Scripts** | winget `astral-sh.uv`, else its release, 0.13.6 |
+| [uv](https://github.com/astral-sh/uv) | pyproject.toml's scripts in **Run**, and Python scripts in **Scripts** | winget `astral-sh.uv`, else its release, 0.13.7 |
 | [Bun](https://bun.sh/) | TypeScript and JavaScript scripts in **Scripts** (Node.js works too, for JavaScript) | winget `Oven-sh.Bun`, else its release, 1.4.4 (the baseline build, for any x64 processor) |
 | [Nushell](https://www.nushell.sh/) | A shell for the terminal, and Nushell scripts in **Scripts** | winget `Nushell.Nushell`, else its release, 0.116.1 |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | Speech search (`says:`) and **Make subtitles** (an .srt beside a video, in its language or in English) | its GitHub release, b5454, with Whisper's base model |
@@ -39,7 +39,13 @@ They're the official Windows x64 releases, unmodified, installed next to `Glint.
 | [DuckDB](https://duckdb.org) | **Query** over CSV, JSON and Parquet files of any size, read where they are; **Profile**; **Query together**; **Convert data**. Locked down first: no extensions downloaded or loaded, only the chosen files readable, one SELECT at a time | its GitHub release, v2.0.0 |
 | [ExifTool](https://exiftool.org) | **Remove personal info** from photos, videos and PDFs (Office files are cleaned by Glint itself), and **Change when it was taken** | its release from SourceForge (which keeps every version), 13.61, with its exiftool_files folder |
 | [7-Zip](https://7-zip.org) | Disk images, installers and packages opened like folders: ISO, IMG, VHD(X), VMDK, DMG, WIM, ext4/APFS images, NSIS installers, DEB, RPM | its release's installer, 26.06, whose 7z payload Glint unpacks itself (nothing in it runs); a 7-Zip installed in Program Files is used too |
-| [rclone](https://rclone.org) | Google Drive, OneDrive, Dropbox and 60 more clouds under **Remote**, signed in to from Glint, and folder rules that keep a folder in sync with one ([how](remote.md#clouds-through-rclone)) | winget `Rclone.Rclone`, else its release, 1.75.2 |
+| [ab-av1](https://github.com/alexheretic/ab-av1) | **Make smaller** for videos: short samples encoded and scored by VMAF find the smallest size that still looks the same; FFmpeg then encodes the video | its GitHub release, v0.11.7 |
+| [libjxl](https://github.com/libjxl/libjxl) | **Make smaller** for photos: JPEGs repacked as JPEG XL without losing a bit (`cjxl`), and **Back to JPEG** (`djxl`), which gives the very same file back | its GitHub release, v0.12.0 (cjxl and djxl) |
+| [Ghostscript](https://www.ghostscript.com) | **Make smaller** for PDFs full of pictures: the pictures rewritten for screens and mail (150 dpi) or for print (300 dpi). AGPL-3.0, run as a program of its own | its release's installer, 10.08.0, from which 7-Zip (installed first when it isn't here) takes `gswin64c.exe` and its DLL (nothing in it runs); a Ghostscript installed in Program Files is used too |
+| [pandoc](https://pandoc.org) | **Convert document**: Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF, reStructuredText, Org and notebooks into one another, and Markdown into PowerPoint. Run with `--sandbox`, so it reads only the document it's given | winget `JohnMacFarlane.Pandoc`, else its release, 3.13 |
+| [Typst](https://typst.app) | PDFs from **Convert document**, without LaTeX or Word, and `.typ` files' previews and **Export as PDF** | winget `Typst.Typst`, else its release, 0.15.1 |
+| [restic](https://restic.net) | **Back up**: folders backed up to a drive, a network folder or a cloud (through rclone), encrypted, each backup adding only what changed, and shown in **Previous versions** | winget `restic.restic`, else its release, 0.19.1 |
+| [rclone](https://rclone.org) | Google Drive, OneDrive, Dropbox and 60 more clouds under **Remote**, signed in to from Glint, and folder rules that keep a folder in sync with one ([how](remote.md#clouds-through-rclone)) | winget `Rclone.Rclone`, else its release, 1.76.0 |
 
 Meaning search's model isn't a program, but it's listed with them: Model2Vec's [potion-base-8M](https://huggingface.co/minishlab/potion-base-8M) (30 MB), downloaded from Hugging Face the first time it's asked for (or from [a copy on Glint's GitHub releases](https://github.com/shadijhade/glint/releases/tag/potion-base-8M-bf8b056) where Hugging Face can't be reached), at a pinned revision and checked against its SHA-256 checksums.
 

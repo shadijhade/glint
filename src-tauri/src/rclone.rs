@@ -52,6 +52,11 @@ impl Drop for Daemon {
 static DAEMON: Mutex<Option<Arc<Daemon>>> = Mutex::new(None);
 /// The configuration's password, when it's encrypted and was given (for this run of Glint only).
 static CONFIG_PASS: Mutex<Option<String>> = Mutex::new(None);
+
+/// The configuration's password, once given: for programs that run rclone themselves (restic's rclone backend, backup.rs).
+pub(crate) fn config_pass() -> Option<String> {
+    lock(&CONFIG_PASS).clone()
+}
 /// rclone's last words, for an error that needs them.
 static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// A browser sign-in waiting for its page (`rclone authorize`).

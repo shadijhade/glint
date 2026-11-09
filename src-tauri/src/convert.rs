@@ -190,7 +190,8 @@ fn convert_one(options: &ConvertOptions, picture: &Path, work: &Path) -> Result<
         return Err(said(&stderr, picture).unwrap_or_else(|| format!("rimage stopped with exit code {}", status.code().unwrap_or(-1))));
     }
     let stem = picture.file_stem().ok_or("The picture has no name")?;
-    let made = work.join(stem).with_extension(options.format.codec().1);
+    // rimage keeps every dot of the name ("10.15.32.png" makes "10.15.32.jpg"): with_extension would cut it.
+    let made = work.join(format!("{}.{}", stem.to_string_lossy(), options.format.codec().1));
     if made.is_file() {
         Ok(made)
     } else {

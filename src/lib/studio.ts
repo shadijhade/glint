@@ -41,7 +41,8 @@ export type MediaTask =
     | { kind: "convert"; format: VideoFormat; quality: Quality; height: number | null }
     | { kind: "audio"; format: AudioFormat }
     | { kind: "gif"; width: number; fps: number; start: number | null; end: number | null; webp: boolean }
-    | { kind: "subtitles"; translate: boolean };
+    | { kind: "subtitles"; translate: boolean }
+    | { kind: "loudness"; music: boolean };
 
 export const mediaProbe = (path: string) => invoke<Probe>("media_probe", { path });
 export const mediaEncoders = () => invoke<Encoders>("media_encoders");
