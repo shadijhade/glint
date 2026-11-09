@@ -1,4 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Glint's application manifest (a Glint change to the vendored GPUI). gpui-pre-platform always turns on
+  gpui-pre's "windows-manifest" feature, which links this file into every binary that uses GPUI: Glint.exe
+  and the test binaries alike, so tests run under the same manifest as the app. Glint.exe's own resources
+  (crates/glint/resources/glint.rc) carry only the icon and the version info; a second manifest there
+  would fail the link with CVT1100.
+  The old Tauri app asked only for Common Controls 6; the rest is what the GPUI app needs.
+-->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+    <!-- Runs as the user who started it: no UAC prompt. Updates and installs ask for elevation themselves. -->
     <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
         <security>
             <requestedPrivileges>
@@ -8,25 +18,31 @@
     </trustInfo>
     <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
         <application>
-            <!-- Windows 10 -->
+            <!-- Windows 10 and 11 share this identifier. -->
             <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
         </application>
     </compatibility>
     <application xmlns="urn:schemas-microsoft-com:asm.v3">
         <windowsSettings>
+            <!-- Per-monitor DPI awareness, so text and the window stay sharp when the monitors differ. -->
             <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
             <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+            <!-- Paths longer than MAX_PATH work for the Win32 calls Glint makes. -->
+            <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+            <!-- The same heap GPUI asks for. -->
             <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
         </windowsSettings>
     </application>
+    <!-- Common Controls 6: the task dialogs, the visual styles and the common controls. -->
     <dependency>
         <dependentAssembly>
             <assemblyIdentity
-                type='win32'
-                name='Microsoft.Windows.Common-Controls'
-                version='6.0.0.0'
-                processorArchitecture='*'
-                publicKeyToken='6595b64144ccf1df'
+                type="win32"
+                name="Microsoft.Windows.Common-Controls"
+                version="6.0.0.0"
+                processorArchitecture="*"
+                publicKeyToken="6595b64144ccf1df"
+                language="*"
             />
         </dependentAssembly>
     </dependency>

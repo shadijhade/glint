@@ -24,6 +24,7 @@
 //! - Core events: [`core_bridge::subscribe`] wires a view to them (the copy queue's, below).
 
 use crate::kit::prelude::*;
+use crate::platform::dragdrop;
 use crate::{actions, core_bridge, dialogs, t, theme};
 use std::ops::Range;
 
@@ -41,6 +42,9 @@ pub struct Workspace {
     search: Entity<InputState>,
     /// Core's copy-queue events seen so far: shows the event wiring (the real queue UI replaces this).
     queue_events: usize,
+    /// Files dragged over the window from File Explorer and other apps arrive here, as long as it lives
+    /// (dropping it takes the window's drop target away). None in tests, which have no Windows window.
+    _drop_target: Option<dragdrop::DropTarget>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -80,7 +84,46 @@ impl Workspace {
             address,
             search,
             queue_events: 0,
+            _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// Makes the window a drop target and hands what is dragged over it to [`Self::on_drop_event`].
+    fn take_drops(window: &mut Window, cx: &mut Context<Self>) -> Option<dragdrop::DropTarget> {
+        let hwnd = core_bridge::hwnd_of(window)?;
+        let target = match dragdrop::register(hwnd) {
+            Ok(target) => target,
+            Err(error) => {
+                eprintln!("glint: the window won't take dropped files: {error}");
+                return None;
+            }
+        };
+        let events = target.events.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = events.recv().await {
+                if this
+                    .update_in(cx, |this, window, cx| this.on_drop_event(event, window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        Some(target)
+    }
+
+    /// What was dragged over the window. The answers (what a drop would do where the pointer is) stay
+    /// Windows' default here, copy, until the views under the pointer give their own.
+    ///
+    /// PORT ME: the file list, the folder tree, the tab strip and the address bar answer for the place under
+    /// the pointer (`DropAnswers::set`) and act on the drop; until they do, a drop only says so.
+    fn on_drop_event(&mut self, event: dragdrop::DropEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let dragdrop::DropEvent::Drop { paths, effect, .. } = event {
+            if effect != dragdrop::DropEffect::None && !paths.is_empty() {
+                Self::not_yet(window, cx, t!("Dropping files"));
+            }
         }
     }
 
@@ -297,9 +340,10 @@ impl Render for Workspace {
     }
 }
 
-/// Opens the main window, as Glint's first run or a launch does. Mica material, minimum size, the title bar
-/// the kit draws. Window placement (the last session's size and place) comes with the placement port.
-pub fn open_main_window(cx: &mut App) -> gpui_kit::Result<()> {
+/// Opens the main window, hidden: start-up puts it where it was last time and then shows it (or leaves it in
+/// the tray), so it never flashes up somewhere else first. Mica material, minimum size, the title bar the kit
+/// draws. Returns the window and its workspace.
+pub fn open_main_window(cx: &mut App) -> gpui_kit::Result<(AnyWindowHandle, Entity<Workspace>)> {
     let bounds = Bounds::centered(None, size(px(1240.), px(780.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -309,9 +353,10 @@ pub fn open_main_window(cx: &mut App) -> gpui_kit::Result<()> {
         }),
         window_background: theme::window_background(cx),
         window_min_size: Some(size(px(520.), px(360.))),
+        show: false,
         ..TitleBar::window_options()
     };
-    gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Workspace::new(window, cx))).map(|_| ())
+    gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Workspace::new(window, cx)))
 }
 
 #[cfg(test)]

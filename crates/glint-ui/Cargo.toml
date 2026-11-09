@@ -9,23 +9,19 @@ publish.workspace = true
 [lib]
 name = "glint_ui"
 
-# One feature per module being built, so each agent builds the skeleton plus its own module while others
-# are mid-edit (`--no-default-features --features <yours>`). The app uses them all.
+# One feature per module being built in a wave, so each agent builds the skeleton plus its own module while
+# others are mid-edit (`--no-default-features --features <yours>`). Once the coordinator has integrated a
+# wave its features go and the modules are always built. (Wave 3's went with its integration.)
 [features]
-default = ["launch", "tray", "dragdrop", "preview-host", "window-state", "explorer", "persistence"]
-launch = []
-tray = []
-dragdrop = []
-preview-host = []
-window-state = []
-explorer = []
-persistence = []
+default = []
 
 [dependencies]
 gpui-kit = "=0.9.1"
 glint-model = { path = "../glint-model" }
 glint-core = { path = "../glint-core" }
 async-channel = "2"
+# The `implement` macro (dragdrop.rs) names this crate.
+windows-core = "0.62"
 raw-window-handle = "0.6"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -43,6 +39,19 @@ windows = { workspace = true, features = [
     "Win32_Globalization",
     "Wdk_System_SystemServices",
     "Win32_System_SystemInformation",
+    # Wave 3's platform modules (launch, tray, dragdrop, window_state), listed here rather than borrowed from
+    # glint-core through feature unification.
+    "Win32_System_Threading",
+    "Win32_System_DataExchange",
+    "Win32_System_Ole",
+    "Win32_System_Memory",
+    "Win32_System_SystemServices",
+    "Win32_System_Registry",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "ApplicationModel",
 ] }
 
 # Headless window tests (gpui-kit's test module) need gpui-kit's test-support feature. It is a dev-dependency
