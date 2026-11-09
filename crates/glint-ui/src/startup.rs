@@ -38,6 +38,8 @@ impl Global for MainWindow {}
 /// folders. `request` is what this copy was started with (folders, `--tray`, `--quick-search`).
 pub(crate) fn start(cx: &mut App, request: launch::Request) {
     preview_host::init();
+    // Instant search's state for the status bar (it polls core's index service in the background).
+    crate::components::status_bar::init(cx);
     start_explorer(cx);
     start_tray(cx, request.tray);
     keep_jump_list(cx);
