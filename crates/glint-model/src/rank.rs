@@ -11,12 +11,31 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 /// How often and how recently a folder was opened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Visit {
     /// How many times it was opened.
-    pub count: u32,
+    pub count: u64,
     /// When it was last opened, in Unix milliseconds.
     pub last: i64,
+}
+
+/// Reads a saved visit field by field: a value of the wrong type costs only that field, which keeps its
+/// default, and a missing field does too.
+impl<'de> serde::Deserialize<'de> for Visit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let mut out = Visit::default();
+        if let serde_json::Value::Object(mut map) = value {
+            if let Some(parsed) = map.remove("count").and_then(|v| serde_json::from_value(v).ok()) {
+                out.count = parsed;
+            }
+            if let Some(parsed) = map.remove("last").and_then(|v| serde_json::from_value(v).ok()) {
+                out.last = parsed;
+            }
+        }
+        Ok(out)
+    }
 }
 
 const HOUR: i64 = 3_600_000;
@@ -34,18 +53,12 @@ pub fn frecency(visit: &Visit, now: i64) -> f64 {
     } else {
         0.25
     };
-    f64::from(visit.count) * weight
+    visit.count as f64 * weight
 }
 
 /// The query as it is matched: lowercase, with every space removed.
 fn clean_query(query: &str) -> Vec<char> {
     query.to_lowercase().chars().filter(|c| !is_js_space(*c)).collect()
-}
-
-/// UTF-16 length, as JS `.length` (the TypeScript's scores use it).
-// TODO(coordinator): from js.rs, if it gains a UTF-16 length helper.
-fn js_len(s: &str) -> usize {
-    s.encode_utf16().count()
 }
 
 /// A text prepared for matching: its characters, the lowercase form to search in, and where each
@@ -178,7 +191,7 @@ pub fn fuzzy_score(query: &str, text: &str, tight: bool) -> Option<f64> {
         return Some(-1.0 - edits as f64);
     };
     // Among equal matches, the shorter text wins.
-    Some(best - 0.01 * js_len(text) as f64)
+    Some(best - 0.01 * crate::js::utf16_len(text) as f64)
 }
 
 /// Character positions in `text` that match `query`'s letters in order (preferring word boundaries

@@ -16,7 +16,8 @@ use crate::entries::{FileEntry, GitMark};
 use crate::file_types::{kind_of, type_label, TYPE_GROUPS};
 
 /// What a folder's (or a search's) items are grouped by, as File Explorer's Group by: headers over the rows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GroupBy {
     None,
     Kind,

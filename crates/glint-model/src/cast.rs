@@ -96,7 +96,8 @@ pub fn parse_cast(text: &str, idle: f64) -> Option<Cast> {
     let mut playback = 0.0_f64;
     let mut last = 0.0_f64;
     for line in lines {
-        if line.trim().is_empty() || line.starts_with('#') {
+        // The TypeScript trims JavaScript white space here, so a line of only U+FEFF counts as blank.
+        if js_trim(line).is_empty() || line.starts_with('#') {
             continue;
         }
         let Ok(event) = serde_json::from_str::<Value>(line) else {
@@ -272,6 +273,19 @@ mod tests {
         assert_eq!((clamped.cols, clamped.rows), (1000, 1));
         assert_eq!(clamped.events.len(), 1);
         assert_eq!(clamped.duration, 2.0);
+    }
+
+    #[test]
+    fn parse_cast_skips_a_line_of_only_a_byte_order_mark_as_blank() {
+        // U+FEFF is white space to JavaScript's trim(), so the TypeScript sees these lines as blank. Here the
+        // check and the JSON parse both skip them, so the test pins the result; it can't tell the two checks apart.
+        let cast = parse_cast(
+            "{\"version\": 2, \"width\": 40, \"height\": 10}\n\u{feff}\n[1.0, \"o\", \"hi\"]\n\u{feff}\u{a0}\n[2.0, \"o\", \"!\"]\n",
+            DEFAULT_IDLE_SECONDS,
+        )
+        .expect("a recording with blank lines of white space parses");
+        assert_eq!(cast.events.iter().map(|e| e.t).collect::<Vec<f64>>(), vec![1.0, 2.0]);
+        assert_eq!(cast.duration, 2.0);
     }
 
     #[test]
