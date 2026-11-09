@@ -293,16 +293,12 @@ fn kind(path: &Path) -> Option<&'static str> {
 /// A text file's lines; None when it's binary after all.
 fn text_lines(path: &Path) -> Option<Vec<String>> {
     let bytes = std::fs::read(path).ok()?;
-    let text = if bytes.starts_with(&[0xFF, 0xFE]) {
-        let units: Vec<u16> = bytes[2..].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
-        String::from_utf16_lossy(&units)
-    } else {
-        if bytes[..bytes.len().min(8192)].contains(&0) {
-            return None;
-        }
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
-    Some(text.lines().map(|l| l.chars().take(2000).collect()).collect())
+    // In its own encoding: an old Arabic or Cyrillic file's words are found too.
+    let decoded = crate::textenc::decode(&bytes, false);
+    if decoded.binary {
+        return None;
+    }
+    Some(decoded.text.lines().map(|l| l.chars().take(2000).collect()).collect())
 }
 
 impl Content {
@@ -319,7 +315,13 @@ impl Content {
                 let Ok(doc) = store.get::<TantivyDocument>(id) else { continue };
                 let path = doc.get_first(self.f.path).and_then(|v| v.as_str()).map(str::to_lowercase);
                 let modified = doc.get_first(self.f.modified).and_then(|v| v.as_u64()).unwrap_or(0);
+                // A text file read before Glint knew older encodings (its text has U+FFFD where letters
+                // couldn't be read) is read again.
+                let garbled = || doc.get_first(self.f.body).and_then(|v| v.as_str()).is_some_and(|b| b.contains('\u{FFFD}'));
                 if let Some(path) = path {
+                    if kind(Path::new(&path)) == Some("text") && garbled() {
+                        continue;
+                    }
                     known.insert(path, modified);
                 }
             }

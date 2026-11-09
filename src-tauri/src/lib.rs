@@ -24,6 +24,7 @@ mod devices;
 mod dialogs;
 mod docconvert;
 mod dragdrop;
+mod drivehealth;
 mod doctext;
 mod filediff;
 mod find;
@@ -84,11 +85,13 @@ mod shrink;
 mod sizes;
 mod songtags;
 mod term;
+mod textenc;
 mod thumbs;
 mod timeline;
 mod tools;
 mod usage;
 mod vault;
+mod wof;
 mod verbs;
 mod versions;
 mod watch;
@@ -1019,6 +1022,14 @@ pub fn run() {
             vault::vault_cancel,
             vault::vault_run,
             shrink::shrink_cancel,
+            drivehealth::drive_health,
+            textenc::text_cancel,
+            textenc::text_to_utf8,
+            wof::wof_cancel,
+            wof::wof_measure,
+            wof::wof_compress,
+            wof::wof_decompress,
+            wof::wof_undo,
             shrink::shrink_engines,
             shrink::shrink_run,
             shrink::jxl_to_jpeg,

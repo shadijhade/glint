@@ -27,6 +27,7 @@
     "@zip.js/zip.js": "2.24.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "docx-preview": "0.4.1",
     "ghostty-web": "0.4.0",
     "lucide-react": "^1.57.0",
     "mermaid": "^12.3.0",

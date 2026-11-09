@@ -103,6 +103,14 @@ unicode-properties = "0.1"
 pdf-extract = "0.12"
 quick-xml = "0.42"
 regex = "1"
+# Old text files in their own encodings (Arabic Windows-1256, Cyrillic, Chinese…): Firefox's detector
+# (chardetng, pure Rust) guesses which, encoding_rs (in the build already) decodes it.
+chardetng = "1.0"
+# Microsoft's allocator for Glint (the instant search service keeps Windows' own until it's measured in
+# place): listing and sorting make and free many small strings. Kept for what `npm run bench`
+# measured (NEXT_RELEASE.md, H19).
+mimalloc = { version = "0.1.52", default-features = false }
+encoding_rs = "0.8"
 # Zip and 7z archives, read like folders. Both pure Rust: zip-rs (the maintained successor of the
 # original zip crate, fuzzed) with every common method, and passwords (ZipCrypto, and AES through
 # RustCrypto's aes, hmac, pbkdf2 and sha1), and sevenz-rust2 (the maintained fork of sevenz-rust,
