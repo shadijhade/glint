@@ -19,6 +19,18 @@
 use crate::kit::prelude::*;
 
 pub mod drive_health;
+/// The keyboard shortcuts sheet (ShortcutsDialog.tsx). Wave 5 slot.
+#[cfg(feature = "dialog-shortcuts")]
+pub mod shortcuts;
+/// A file's history (HistoryDialog.tsx). Wave 5 slot.
+#[cfg(feature = "dialog-history")]
+pub mod history;
+/// What holds a file open, and stopping it (LocksDialog.tsx). Wave 5 slot.
+#[cfg(feature = "dialog-locks")]
+pub mod locks;
+/// Previous versions of a file or folder (VersionsDialog.tsx). Wave 5 slot.
+#[cfg(feature = "dialog-versions")]
+pub mod versions;
 
 /// Shows `view` in the window's dialog layer, titled `title`, `width` wide.
 ///
