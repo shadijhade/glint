@@ -643,3 +643,9 @@ pub fn store_copy() -> bool {
     packaged()
 }
 
+/// Glint started by itself as a helper: reading a JSON, YAML or TOML file for its tree (jq), the benchmark
+/// CLI, the document reader for Documents search, SFTP's password prompt, the MCP server an AI agent
+/// starts, or the installer's tool installs. Its exit code once it has answered; `None` for the app.
+pub fn worker() -> Option<i32> {
+    jq::worker().or_else(bench::cli).or_else(doctext::worker).or_else(remote::askpass).or_else(mcp::server).or_else(tools::cli)
+}

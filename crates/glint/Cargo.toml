@@ -13,3 +13,5 @@ path = "src/main.rs"
 [dependencies]
 glint-ui = { path = "../glint-ui" }
 glint-core = { path = "../glint-core" }
+# The same allocator and version as glint-core uses (Glint.exe sets it as the global allocator).
+mimalloc = { version = "0.1.52", default-features = false }
