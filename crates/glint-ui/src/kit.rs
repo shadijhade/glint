@@ -29,7 +29,7 @@ use gpui_kit::component::{h_flex, v_flex};
 /// Everything a view imports.
 pub mod prelude {
     pub use super::{
-        align_row, back_icon, col, forward_icon, icon, isolate, row, row_start, space, Logical, Placeholder,
+        align_row, back_icon, col, forward_icon, icon, isolate, kind_icon, row, row_start, space, Logical, Placeholder,
     };
     pub use super::{h_resizable, resizable_panel};
     pub use super::{
@@ -46,6 +46,34 @@ pub mod prelude {
 }
 
 pub use gpui_kit::assets::IconName;
+
+/// The icon a kind of file gets (`glint_model::file_types::kind_of(entry).icon`), as the web app drew it. Its
+/// colors come from `theme::kind_tone`.
+pub fn kind_icon(icon: glint_model::file_types::Icon) -> IconName {
+    use glint_model::file_types::Icon as K;
+    match icon {
+        K::AppWindow => IconName::AppWindow,
+        K::BookOpen => IconName::BookOpen,
+        K::Database => IconName::Database,
+        K::Disc => IconName::Disc,
+        K::File => IconName::File,
+        K::FileArchive => IconName::FileArchive,
+        K::FileAudio => IconName::FileHeadphone, // lucide renamed file-audio
+        K::FileCode => IconName::FileCode,
+        K::FileCog => IconName::FileCog,
+        K::FileImage => IconName::FileImage,
+        K::FileJson => IconName::FileBraces, // lucide renamed file-json
+        K::FileLock => IconName::FileLock,
+        K::FileSpreadsheet => IconName::FileSpreadsheet,
+        K::FileText => IconName::FileText,
+        K::FileType => IconName::FileType,
+        K::FileVideo => IconName::FilePlay, // lucide renamed file-video
+        K::Folder => IconName::Folder,
+        K::Link => IconName::Link,
+        K::Presentation => IconName::Presentation,
+        K::SquareTerminal => IconName::SquareTerminal,
+    }
+}
 pub use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 pub use gpui_kit::component::checkbox::Checkbox;
 pub use gpui_kit::component::dialog::{Dialog, DialogFooter};
@@ -271,6 +299,26 @@ mod tests {
         use gpui_kit::AssetSource as _;
         // A missing icon draws nothing and says nothing, so each one the views use is checked here: add yours.
         for name in [
+            IconName::AppWindow,
+            IconName::BookOpen,
+            IconName::Database,
+            IconName::Disc,
+            IconName::File,
+            IconName::FileArchive,
+            IconName::FileHeadphone,
+            IconName::FileCode,
+            IconName::FileCog,
+            IconName::FileImage,
+            IconName::FileBraces,
+            IconName::FileLock,
+            IconName::FileSpreadsheet,
+            IconName::FileText,
+            IconName::FileType,
+            IconName::FilePlay,
+            IconName::Folder,
+            IconName::Link,
+            IconName::Presentation,
+            IconName::SquareTerminal,
             IconName::ArrowLeft,
             IconName::ArrowRight,
             IconName::ArrowUp,

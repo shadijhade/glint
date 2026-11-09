@@ -539,6 +539,98 @@ fn map_colors(theme: &mut Theme, t: &Tokens, chrome: Hsla) {
     c.drop_target = t.primary.opacity(0.2);
 }
 
+// ---- Kinds of files: their icons' colors -------------------------------------------------------------------
+
+/// A kind of file's icon colors: the stroke, and the fill some get (the folder's).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KindTone {
+    pub color: Hsla,
+    pub fill: Option<Hsla>,
+}
+
+/// Tailwind's colors the kinds' tones name (`Kind::tone`), as sRGB: v3's values, which v4's OKLCH ones match
+/// closely on an sRGB screen.
+fn tailwind(name: &str) -> Option<Hsla> {
+    let hex: u32 = match name {
+        "sky-500" => 0x0ea5e9,
+        "violet-500" => 0x8b5cf6,
+        "pink-500" => 0xec4899,
+        "red-500" => 0xef4444,
+        "rose-500" => 0xf43f5e,
+        "orange-500" => 0xf97316,
+        "indigo-500" => 0x6366f1,
+        "emerald-400" => 0x34d399,
+        "emerald-500" => 0x10b981,
+        "emerald-600" => 0x059669,
+        "amber-400" => 0xfbbf24,
+        "amber-500" => 0xf59e0b,
+        "amber-600" => 0xd97706,
+        "amber-700" => 0xb45309,
+        "blue-400" => 0x60a5fa,
+        "blue-600" => 0x2563eb,
+        "green-500" => 0x22c55e,
+        "green-600" => 0x16a34a,
+        "teal-400" => 0x2dd4bf,
+        "teal-600" => 0x0d9488,
+        "slate-400" => 0x94a3b8,
+        "slate-500" => 0x64748b,
+        "yellow-500" => 0xeab308,
+        "yellow-600" => 0xca8a04,
+        "yellow-700" => 0xa16207,
+        "cyan-400" => 0x22d3ee,
+        "cyan-600" => 0x0891b2,
+        _ => return None,
+    };
+    Some(gpui_kit::rgb(hex).into())
+}
+
+/// One class's color: `muted-foreground` or a Tailwind color, with an optional `/opacity` in percent.
+fn tone_color(spec: &str, t: &Tokens) -> Option<Hsla> {
+    let (name, opacity) = match spec.split_once('/') {
+        Some((name, percent)) => (name, percent.parse::<f32>().ok()? / 100.),
+        None => (spec, 1.),
+    };
+    let color = if name == "muted-foreground" {
+        t.muted_foreground
+    } else {
+        tailwind(name)?
+    };
+    Some(color.opacity(opacity))
+}
+
+/// A kind of file's icon colors in the theme in use, from the Tailwind classes the TypeScript gave it:
+/// `text-…` is the stroke, `fill-…` the fill, and a `dark:` class wins in the dark theme.
+pub fn kind_tone(kind: &glint_model::file_types::Kind, cx: &App) -> KindTone {
+    let t = tokens(cx);
+    let mut tone = KindTone {
+        color: t.muted_foreground,
+        fill: None,
+    };
+    // The plain classes first, then the dark theme's over them.
+    for pass_dark in [false, true] {
+        if pass_dark && !t.dark {
+            break;
+        }
+        for class in kind.tone.split_whitespace() {
+            let (is_dark, class) = match class.strip_prefix("dark:") {
+                Some(rest) => (true, rest),
+                None => (false, class),
+            };
+            if is_dark != pass_dark {
+                continue;
+            }
+            if let Some(spec) = class.strip_prefix("text-") {
+                if let Some(color) = tone_color(spec, t) {
+                    tone.color = color;
+                }
+            } else if let Some(spec) = class.strip_prefix("fill-") {
+                tone.fill = tone_color(spec, t);
+            }
+        }
+    }
+    tone
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,9 +3,9 @@
 //! What kind a file is: which preview opens, how the Type column reads, which icon it gets and which color
 //! group it falls in on the disk-usage map.
 //!
-//! NOTE(port): the TypeScript `Kind` also carried a lucide icon component and Tailwind tone classes. Rust has
-//! neither: `Kind::icon` is an `Icon` name the UI layer maps to its own icon, and the tone classes are left to
-//! the UI's theme (the icon's color is a UI decision, keyed by `Icon` or by `Kind::group`).
+//! NOTE(port): the TypeScript `Kind` also carried a lucide icon component and Tailwind tone classes. `Kind::icon`
+//! is an `Icon` name the UI layer maps to its own icon (`kit::kind_icon`), and `Kind::tone` keeps the classes as
+//! text for the UI's theme to map (`theme::kind_tone`).
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -109,14 +109,24 @@ pub struct Kind {
     pub label: &'static str,
     pub preview: Option<PreviewKind>,
     pub group: &'static TypeGroup,
+    /// The icon's color as the TypeScript's Tailwind classes ("text-sky-500", "text-blue-600
+    /// dark:text-blue-400", the folder's fill): the UI maps them to its theme (`theme::kind_tone`).
+    pub tone: &'static str,
 }
 
-const fn kind(icon: Icon, label: &'static str, preview: Option<PreviewKind>, group: &'static TypeGroup) -> Kind {
+const fn kind(
+    icon: Icon,
+    label: &'static str,
+    preview: Option<PreviewKind>,
+    group: &'static TypeGroup,
+    tone: &'static str,
+) -> Kind {
     Kind {
         icon,
         label,
         preview,
         group,
+        tone,
     }
 }
 
@@ -128,96 +138,234 @@ const CODE_EXTS: &str = "js mjs cjs ts mts cts tsx jsx rs go py rb java kt kts c
 static KINDS: &[(&str, Kind)] = &[
     (
         "png jpg jpeg gif webp bmp ico svg avif",
-        kind(Icon::FileImage, "% image", Some(PreviewKind::Image), &G.images),
+        kind(
+            Icon::FileImage,
+            "% image",
+            Some(PreviewKind::Image),
+            &G.images,
+            "text-sky-500",
+        ),
     ),
     // Pictures the webview can't show: Windows' codecs and previewer do (JPEG XL's with its extension).
     (
         "tif tiff heic heif jxl psd raw cr2 nef arw dng",
-        kind(Icon::FileImage, "% image", None, &G.images),
+        kind(Icon::FileImage, "% image", None, &G.images, "text-sky-500"),
     ),
     (
         "mp4 webm m4v mov ogv",
-        kind(Icon::FileVideo, "% video", Some(PreviewKind::Video), &G.video),
+        kind(
+            Icon::FileVideo,
+            "% video",
+            Some(PreviewKind::Video),
+            &G.video,
+            "text-violet-500",
+        ),
     ),
     (
         "mkv avi wmv flv mpg mpeg 3gp m2ts",
-        kind(Icon::FileVideo, "% video", None, &G.video),
+        kind(Icon::FileVideo, "% video", None, &G.video, "text-violet-500"),
     ),
     (
         "mp3 wav ogg oga opus m4a aac flac",
-        kind(Icon::FileAudio, "% audio", Some(PreviewKind::Audio), &G.audio),
+        kind(
+            Icon::FileAudio,
+            "% audio",
+            Some(PreviewKind::Audio),
+            &G.audio,
+            "text-pink-500",
+        ),
     ),
     (
         "wma aiff aif mid midi",
-        kind(Icon::FileAudio, "% audio", None, &G.audio),
+        kind(Icon::FileAudio, "% audio", None, &G.audio, "text-pink-500"),
     ),
     (
         "zip rar 7z tar gz tgz txz tbz tbz2 tzst bz2 xz zst lz4 cab",
-        kind(Icon::FileArchive, "% archive", None, &G.archives),
+        kind(
+            Icon::FileArchive,
+            "% archive",
+            None,
+            &G.archives,
+            "text-amber-600 dark:text-amber-500",
+        ),
     ),
-    ("ncdu", kind(Icon::FileArchive, "ncdu export", None, &G.archives)),
+    (
+        "ncdu",
+        kind(
+            Icon::FileArchive,
+            "ncdu export",
+            None,
+            &G.archives,
+            "text-amber-600 dark:text-amber-500",
+        ),
+    ),
     (
         "pdf",
-        kind(Icon::FileText, "PDF document", Some(PreviewKind::Pdf), &G.documents),
+        kind(
+            Icon::FileText,
+            "PDF document",
+            Some(PreviewKind::Pdf),
+            &G.documents,
+            "text-red-500",
+        ),
     ),
     (
         "doc docx odt rtf pages",
-        kind(Icon::FileText, "Word document", None, &G.documents),
+        kind(
+            Icon::FileText,
+            "Word document",
+            None,
+            &G.documents,
+            "text-blue-600 dark:text-blue-400",
+        ),
     ),
     (
         "xls xlsx xlsm xlsb xltx ods numbers",
-        kind(Icon::FileSpreadsheet, "Spreadsheet", None, &G.documents),
+        kind(
+            Icon::FileSpreadsheet,
+            "Spreadsheet",
+            None,
+            &G.documents,
+            "text-green-600 dark:text-green-500",
+        ),
     ),
     (
         "csv tsv",
-        kind(Icon::FileSpreadsheet, "% file", Some(PreviewKind::Text), &G.documents),
+        kind(
+            Icon::FileSpreadsheet,
+            "% file",
+            Some(PreviewKind::Text),
+            &G.documents,
+            "text-green-600 dark:text-green-500",
+        ),
     ),
     (
         "ppt pptx odp key",
-        kind(Icon::Presentation, "Presentation", None, &G.documents),
+        kind(
+            Icon::Presentation,
+            "Presentation",
+            None,
+            &G.documents,
+            "text-orange-500",
+        ),
     ),
     (
         "json jsonc json5 geojson webmanifest har",
-        kind(Icon::FileJson, "JSON file", Some(PreviewKind::Text), &G.code),
+        kind(
+            Icon::FileJson,
+            "JSON file",
+            Some(PreviewKind::Text),
+            &G.code,
+            "text-yellow-600 dark:text-yellow-500",
+        ),
     ),
     (
         CODE_EXTS,
-        kind(Icon::FileCode, "% source file", Some(PreviewKind::Text), &G.code),
+        kind(
+            Icon::FileCode,
+            "% source file",
+            Some(PreviewKind::Text),
+            &G.code,
+            "text-emerald-500",
+        ),
     ),
     (
         "txt md markdown mdown mkd mkdn log nfo text env gitignore gitattributes editorconfig properties lock",
-        kind(Icon::FileText, "% file", Some(PreviewKind::Text), &G.code),
+        kind(
+            Icon::FileText,
+            "% file",
+            Some(PreviewKind::Text),
+            &G.code,
+            "text-muted-foreground",
+        ),
     ),
     (
         "exe msi com scr appx msix appinstaller",
-        kind(Icon::AppWindow, "Application", None, &G.programs),
+        kind(
+            Icon::AppWindow,
+            "Application",
+            None,
+            &G.programs,
+            "text-slate-500 dark:text-slate-400",
+        ),
     ),
     (
         "dll sys so dylib ocx drv cpl mui",
-        kind(Icon::FileCog, "% system file", None, &G.system),
+        kind(
+            Icon::FileCog,
+            "% system file",
+            None,
+            &G.system,
+            "text-slate-500 dark:text-slate-400",
+        ),
     ),
     (
         "ttf otf woff woff2 eot fon",
-        kind(Icon::FileType, "% font", None, &G.fonts),
+        kind(Icon::FileType, "% font", None, &G.fonts, "text-rose-500"),
     ),
     (
         "iso img vhd vhdx vmdk dmg",
-        kind(Icon::Disc, "Disk image", None, &G.disks),
+        kind(Icon::Disc, "Disk image", None, &G.disks, "text-indigo-500"),
     ),
-    ("cast", kind(Icon::SquareTerminal, "Terminal recording", None, &G.video)),
-    ("lnk url", kind(Icon::Link, "Shortcut", None, &G.other)),
+    (
+        "cast",
+        kind(
+            Icon::SquareTerminal,
+            "Terminal recording",
+            None,
+            &G.video,
+            "text-emerald-600 dark:text-emerald-400",
+        ),
+    ),
+    (
+        "lnk url",
+        kind(
+            Icon::Link,
+            "Shortcut",
+            None,
+            &G.other,
+            "text-cyan-600 dark:text-cyan-400",
+        ),
+    ),
     (
         "db sqlite sqlite3 mdb accdb",
-        kind(Icon::Database, "Database", None, &G.data),
+        kind(
+            Icon::Database,
+            "Database",
+            None,
+            &G.data,
+            "text-teal-600 dark:text-teal-400",
+        ),
     ),
-    ("parquet", kind(Icon::Database, "Parquet file", None, &G.data)),
+    (
+        "parquet",
+        kind(
+            Icon::Database,
+            "Parquet file",
+            None,
+            &G.data,
+            "text-teal-600 dark:text-teal-400",
+        ),
+    ),
     (
         "epub mobi azw3 cbz cbr",
-        kind(Icon::BookOpen, "E-book", None, &G.documents),
+        kind(
+            Icon::BookOpen,
+            "E-book",
+            None,
+            &G.documents,
+            "text-amber-700 dark:text-amber-400",
+        ),
     ),
     (
         "pem key crt cer pfx p12 gpg asc",
-        kind(Icon::FileLock, "Certificate or key", None, &G.other),
+        kind(
+            Icon::FileLock,
+            "Certificate or key",
+            None,
+            &G.other,
+            "text-yellow-700 dark:text-yellow-500",
+        ),
     ),
 ];
 
@@ -231,8 +379,14 @@ static BY_EXT: LazyLock<HashMap<&'static str, &'static Kind>> = LazyLock::new(||
     map
 });
 
-static FOLDER: Kind = kind(Icon::Folder, "File folder", None, &G.other);
-static GENERIC: Kind = kind(Icon::File, "% file", None, &G.other);
+static FOLDER: Kind = kind(
+    Icon::Folder,
+    "File folder",
+    None,
+    &G.other,
+    "fill-amber-400/80 text-amber-500 dark:fill-amber-400/70",
+);
+static GENERIC: Kind = kind(Icon::File, "% file", None, &G.other, "text-muted-foreground");
 
 /// Names without an extension that are still text, e.g. Dockerfile or LICENSE.
 const TEXT_NAMES: [&str; 8] = [
