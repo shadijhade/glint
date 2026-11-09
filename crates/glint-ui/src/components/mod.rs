@@ -16,3 +16,18 @@ pub mod status_bar;
 pub mod tab_strip;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
+/// The item, background and folder menus, and Windows' own menu (Explorer.tsx's menus, Menu.tsx, ActionParts.tsx). Wave 5 slot.
+#[cfg(feature = "menus")]
+pub mod menus;
+/// The copy queue: jobs, progress, pause, cancel, questions (CopyQueue.tsx). Wave 5 slot.
+#[cfg(feature = "copy-queue")]
+pub mod copy_queue;
+/// Ctrl+K: commands, folders by frecency, the calculator (CommandPalette.tsx, History.tsx). Wave 5 slot.
+#[cfg(feature = "palette")]
+pub mod palette;
+/// Settings (SettingsView.tsx). Wave 5 slot.
+#[cfg(feature = "settings")]
+pub mod settings;
+/// The Quick Search window: the shortcut's and the tray's search (QuickSearch.tsx). Wave 5 slot.
+#[cfg(feature = "quick-search")]
+pub mod quick_search;
