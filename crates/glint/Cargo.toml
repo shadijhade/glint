@@ -15,3 +15,7 @@ glint-ui = { path = "../glint-ui" }
 glint-core = { path = "../glint-core" }
 # The same allocator and version as glint-core uses (Glint.exe sets it as the global allocator).
 mimalloc = { version = "0.1.52", default-features = false }
+
+[build-dependencies]
+# Glint.exe's icon, version info and manifest (the same crate GPUI uses for its manifest).
+embed-resource = "3"

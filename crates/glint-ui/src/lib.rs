@@ -15,8 +15,13 @@
 pub mod actions;
 pub mod core_bridge;
 pub mod dialogs;
+#[cfg(feature = "explorer")]
+pub mod explorer;
 pub mod i18n;
 pub mod kit;
+#[cfg(feature = "persistence")]
+pub mod persistence;
+pub mod platform;
 pub mod state;
 pub mod theme;
 pub mod workspace;

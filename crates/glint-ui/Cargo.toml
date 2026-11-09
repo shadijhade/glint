@@ -9,6 +9,18 @@ publish.workspace = true
 [lib]
 name = "glint_ui"
 
+# One feature per module being built, so each agent builds the skeleton plus its own module while others
+# are mid-edit (`--no-default-features --features <yours>`). The app uses them all.
+[features]
+default = ["launch", "tray", "dragdrop", "preview-host", "window-state", "explorer", "persistence"]
+launch = []
+tray = []
+dragdrop = []
+preview-host = []
+window-state = []
+explorer = []
+persistence = []
+
 [dependencies]
 gpui-kit = "=0.9.1"
 glint-model = { path = "../glint-model" }
