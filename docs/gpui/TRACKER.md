@@ -39,6 +39,32 @@
 - **Left for the parts that own them:** `mayQuit` before closing (copy queue, Compare), the notices' buttons (Get access, Install 7-Zip) and the archive password question, the Quick Search window (the shortcut and the tray bring the main window forward and say it isn't built), the old WebView2 settings import, drop answers per view.
 - **Small follow-ups noted by reviewers, not done:** preview host pane colors from theme tokens (hard-coded dark and light now); `window_state` and `tray` keep private copies of glint-core's `launch_exe`, `in_sta` and `installed_exe` (make them pub in core); `on_screen` compares workspace coordinates with monitor work areas (only wrong at the edge with a top or left taskbar); `CompanyName` "Shadi Saadi" vs LICENSE's "Shadi Sadi" (the user's call).
 
+## Wave 4: the browsing views (`crates/glint-ui/src/components`): done 2026-11-10
+
+*14 agents, ~53 minutes, 3.6M tokens: 7 ports (5 Sonnet, 2 Haiku), 7 independent reviews, every one passed first time (no must-fix). Integrated by the coordinator: the workspace places the views and wires their events and the window's actions. 362 tests pass, clippy clean.*
+
+| View | From | Model | Status |
+| :--- | :--- | :--- | :--- |
+| `file_list` | FileList, VirtualList, ResizeHandle, Explorer.tsx's list keys | Sonnet | done: 52 tests, 100k rows |
+| `file_grid` (+ `thumbnail.rs`) | FileGrid, Thumbnail, thumbs.ts | Sonnet | done (partial: SVG tiles, marquee): 38 tests |
+| `tab_strip` | TabStrip | Sonnet | done: 9 tests |
+| `address_bar` | AddressBar | Sonnet | done: 45 tests |
+| `sidebar` | Sidebar, FolderTree | Sonnet | done: 26 tests |
+| `status_bar` | StatusBar | Haiku | done: 24 tests |
+| `this_pc` | ThisPC | Haiku | done (partial: instant search card): tests |
+
+**Tried for real (debug build):** restored tabs, breadcrumbs, sidebar with drives and capacity bars, the sorted list of C:\Windows ("110 items · 4 hidden", read in 0.4 ms, shown in 54 ms), the grid with real Windows thumbnails, This PC with live drive temperatures and totals, a second launch adding a tab, clean quit. Visible after ~0.5 s warm (1.1 s cold) in debug; 112–118 MB working set, 234–247 MB private in debug (release not measured yet).
+
+**Wired to "comes with its part" notices until their parts exist:** renaming (the list emits CommitRename/CancelRename), the item menu (ContextMenu events from the list, the grid and This PC), choosing columns (SetColumns/ResetFolderView: needs `Explorer::set_columns`), searching subfolders (the bar's RunFind/RerunFind, the list's SearchSubfolders), saved searches, remote connections and text search (the sidebar's events), recent changes, duplicates and the disk usage map (This PC's events), drops on the window, Rename/Delete/Quick Look/preview pane keys, Settings, the palette, the shortcuts sheet. Wired for real: tab and pane actions, Back/Forward/Up/Refresh, Ctrl+L/Ctrl+F, list/grid view, grid zoom, hidden items, drag-out from the grid (not from archives), Properties and "Open in File Explorer" on closed folders, opening many files (without the "Open N files?" question yet).
+
+**Explorer API the views asked for** (next wave): `set_focus(path, anchor)` (Ctrl+arrows, press on a multi-selection), `set_selection(paths, anchor, focus)` (marquee), `set_columns` and resetting a folder's view, `set_editing_address`, clearing `Tab::renaming`, index state shared by the status bar and This PC's instant search card, eject through the `Source`, thumbnail and sizes runs per tab for the status bar.
+
+**Kit and theme asks:** Tooltip and Scrollbar exports (three views carry private tooltips, two reach `gpui_kit::base::Scrollbar`), a programmatic PopupMenu (menu key, Shift+F10), `theme::mono_font`, a sky token for cloud marks, filled folder icons (GPUI's svg is single-colour: needs Glint's own assets), the icons the views use in the kit's asset test.
+
+**Polish seen in the real app:** the tab strip's + sits at the window's far end rather than after the last tab; a few literal px sizes in five views; keyboard gaps the reviewers flagged (the sidebar's menu and eject by keyboard, the status bar's breakdown segments); grid and This PC swap Left/Right in Arabic (arrows follow the screen, which the coordinator accepts as right for a mirrored UI).
+
+**Process lessons:** test binaries with full debug info (~1 GB PDB each, one per feature set and agent) filled drive C: mid-wave; dependencies are now built without debug info (`[profile.dev.package."*"]`), and the next waves give agents an absolute `CARGO_TARGET_DIR` (one agent built into `crates/target` from a relative path).
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).

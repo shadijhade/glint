@@ -1,3 +1,1001 @@
-//! The details view: columns, sorting, groups, selection, keyboard, type-ahead (FileList.tsx, VirtualList.tsx, parts of Explorer.tsx).
+//! The details view: columns, sorting, groups, selection, keyboard, type-ahead (FileList.tsx, VirtualList.tsx,
+//! ResizeHandle.tsx, and the list's keys and presses in Explorer.tsx).
 //!
-//! Wave 4 slot: its agent owns this folder.
+//! # What this is
+//!
+//! [`FileList`] is a GPUI entity that shows one pane's tab as a list of rows with a header of columns. It
+//! keeps no copy of what the explorer holds: the rows, the selection, the focus, the sort, the columns and the
+//! rename are read from [`crate::explorer`] every frame (`Rows` and `Selection` clone cheaply), and every
+//! change goes through an `Explorer` method. What it does keep is view state: the scroll, a column being
+//! dragged, the rename box, what was typed for type-ahead, the width the list was laid out for.
+//!
+//! # How it is built
+//!
+//! - **Virtualised with `uniform_list`**, not the kit's `DataTable`. A row here is not a table row: it has
+//!   group headers between rows, a rename box in the name cell, columns that come and go with the list's width
+//!   (index.css's container queries), a size bar, and the explorer's own selection and focus rather than a
+//!   table's. `uniform_list` draws only the lines on screen, measures one, and scrolls a million lines as
+//!   cheaply as ten, with the kit's scroll bar on its handle. Everything that could be computed once per set of
+//!   rows (the biggest size, the focused row's position) is computed when the rows change.
+//! - **Accessibility** as the web's: a `ListBox` named "Files" (or "Search results", or "Recycle Bin") whose
+//!   `ListBoxOption` rows have the file's name, its kind, size and date as description, their selected state,
+//!   their place in the set, and the focused one reports itself as the active descendant. The header's
+//!   buttons sort and are named; each column edge is a separator named "<column> column width".
+//! - **Right to left**: rows, header and cells are `row_start()`; widths and edges use start and end.
+//!
+//! # Events
+//!
+//! The view emits [`FileListEvent`] for what belongs to another part (renaming, menus, dialogs); the
+//! coordinator wires them. See each variant.
+
+mod cells;
+mod header;
+mod layout;
+mod rename;
+mod states;
+#[cfg(test)]
+mod tests;
+mod typeahead;
+
+pub use cells::{drop_path, lock_reason, size_of, ROW_HEIGHT};
+pub use layout::relative_to;
+pub use rename::{selection_end, INVALID_NAME_CHARS};
+
+use crate::actions;
+use crate::explorer::{
+    self, Explorer, ExplorerEvent, FindRun, LoadState, NavOptions, NoAccess, Rows, Selection, TabId, ViewMode,
+};
+use crate::kit::prelude::*;
+use crate::theme::{self, Tokens};
+use crate::{state, t};
+use glint_model::columns::{ColumnId, FolderKind, GridTrack};
+use glint_model::entries::{is_archive_file, is_recycled, FileEntry, Sort};
+use glint_model::grid::grid_move;
+use glint_model::groups::GroupBy;
+use glint_model::paths::{is_gallery, is_recent, same_path, THIS_PC};
+use glint_model::store::Column;
+use rename::RenameBox;
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::ops::Range;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use typeahead::TypeAhead;
+
+/// The icon of a kind of file (`kit::kind_icon`), for the cells.
+use crate::kit::kind_icon;
+
+/// How long the arrow keys resting on a folder wait before reading it ahead (`setTimeout(…, 120)`).
+const PREFETCH_AFTER: Duration = Duration::from_millis(120);
+/// More files than this asked to open at once need the person's say-so (`files.length > 10`).
+const OPEN_MANY_ASKS_ABOVE: usize = 10;
+/// The width assumed before the list has been laid out once: wide, so no column is left out of the first frame.
+const FIRST_WIDTH: f32 = 1200.;
+
+/// What the list tells the coordinator. Each is something another part of the app does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileListEvent {
+    /// Enter (or leaving the box) on the rename box: rename `path` to `name`. The explorer's rename part
+    /// validates it, renames, clears `Tab::renaming` and selects the result (`renameEntry`). The list keeps
+    /// showing the box until `Tab::renaming` is cleared.
+    CommitRename { path: String, name: String },
+    /// Escape in the rename box: clear `Tab::renaming` (`updateTab({ renaming: null })`).
+    CancelRename,
+    /// A right-click, or the menu key. `target` is the item pressed (already selected, as the web did), or
+    /// None on the empty part of the list (selection already cleared) and for the keyboard on a folder with
+    /// nothing focused. `at` is the pointer's position in the window, None for the keyboard (put the menu at
+    /// the focused row). `shift` was held: Windows' own menu at once, as in File Explorer.
+    ContextMenu {
+        target: Option<String>,
+        at: Option<Point<Pixels>>,
+        shift: bool,
+    },
+    /// Enter on more than ten files: ask "Open N files?" and, if yes, `Explorer::open_entry` each.
+    ConfirmOpenMany { paths: Vec<String> },
+    /// The header's menu chose these columns for the folder: `setColumns` (the folder's own view if folders
+    /// keep their own, else Settings' `listColumns`). The explorer has no method for it yet.
+    SetColumns { columns: Vec<ColumnId> },
+    /// The header's menu: this folder is "like other folders again" (`setFolderView(path, null)`).
+    ResetFolderView,
+    /// "Open in File Explorer" on a folder Windows keeps closed.
+    OpenInFileExplorer { path: String },
+    /// "Properties" on a folder Windows keeps closed.
+    ShowProperties { path: String },
+    /// "Search subfolders too" under a filter that matched nothing: `runFind(query)`.
+    SearchSubfolders { query: String },
+}
+
+impl EventEmitter<FileListEvent> for FileList {}
+
+/// A column being dragged by its edge.
+struct Resize {
+    name: Column,
+    /// Where the pointer was when it started.
+    from: Pixels,
+    /// The column's width then, in pixels.
+    start: f32,
+    /// Its width now, once the pointer has moved.
+    now: Option<f32>,
+}
+
+/// A press on a row of a selection of several: they stay selected until the button is released, so all of
+/// them can be dragged; released without a drag, the row alone is selected (`press` in Explorer.tsx).
+struct Press {
+    narrow_to: Option<String>,
+}
+
+/// Where a track of the row is and how wide.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Track {
+    Name,
+    Where,
+    Column { id: ColumnId, width: Pixels },
+}
+
+/// A search's run, as far as the list shows it.
+pub(crate) struct FindInfo {
+    pub query: String,
+    pub scope: String,
+    pub running: bool,
+    pub error: String,
+    pub skipped: Vec<String>,
+}
+
+/// What the list reads from its pane's tab each frame. Everything is a cheap clone (a few `Arc`s and short
+/// strings), never the entries.
+pub(crate) struct TabView {
+    pub id: TabId,
+    /// Where this list's scroll is kept: the folder or search, in the list (`placeKey`).
+    pub place: String,
+    pub path: String,
+    pub rows: Rows,
+    pub selection: Selection,
+    pub columns: Vec<ColumnId>,
+    pub sort: Sort,
+    pub group: GroupBy,
+    pub kind: FolderKind,
+    pub load: LoadState,
+    pub loading: bool,
+    pub renaming: Option<String>,
+    pub filter: String,
+    pub find: Option<FindInfo>,
+    /// Entries in the listing, before hidden ones and the filter take any out.
+    pub entries: usize,
+    pub has_listing: bool,
+    pub archive_root: bool,
+    pub in_archive: bool,
+    pub no_access: Option<NoAccess>,
+    /// Items from many folders: each says where it is.
+    pub located: bool,
+    pub recycled: bool,
+    pub gallery: bool,
+    pub recent: bool,
+    /// The folder searched (the folder shown, for a plain listing).
+    pub scope: String,
+    /// Dual-pane view, and the keyboard is in the other pane.
+    pub inactive: bool,
+    pub show_hidden: bool,
+    /// The folder has a view of its own (columns, sort) that "like other folders again" gives up.
+    pub own_view: bool,
+}
+
+/// Says where an item is, in a list of items from many folders.
+pub(crate) type WhereOf = Box<dyn Fn(&str) -> String>;
+
+/// What `uniform_list` draws a frame from, kept in an `Rc` because its callback outlives `render`.
+pub(crate) struct Frame {
+    pub rows: Rows,
+    pub selected: Selection,
+    pub focus_path: Option<String>,
+    pub renaming: Option<String>,
+    pub tracks: Vec<Track>,
+    pub inactive: bool,
+    pub located: bool,
+    pub recycled: bool,
+    pub where_of: Option<WhereOf>,
+    pub max_size: u64,
+    pub flashed: Arc<HashSet<String>>,
+    pub now: i64,
+}
+
+/// What was worked out when the rows (or the tab) last changed.
+#[derive(Default)]
+struct Shown {
+    tab: Option<TabId>,
+    place: String,
+    max_size: u64,
+    /// The focused row's position, found when the focus or the rows change (not each frame).
+    focus: Option<(String, Option<usize>)>,
+    /// The row last scrolled into view, so the list scrolls when the focus moves and not otherwise.
+    scrolled_to: Option<usize>,
+}
+
+/// The details view of one pane. Create it with [`FileList::new`].
+pub struct FileList {
+    pane: usize,
+    explorer: Entity<Explorer>,
+    focus: FocusHandle,
+    scroll: UniformListScrollHandle,
+    shown: Shown,
+    /// The rows (or the tab) changed since the derived values were worked out.
+    dirty: bool,
+    frame: Rc<Frame>,
+    /// The width the list was last laid out at, measured by the canvas under it.
+    width: Rc<Cell<f32>>,
+    resizing: Option<Resize>,
+    rename: Option<RenameBox>,
+    typeahead: TypeAhead,
+    press: Option<Press>,
+    /// Pixels scrolled when last saved to the explorer.
+    saved_top: f32,
+    /// The scroll was just restored: the focused row is not scrolled to (`restoring`).
+    restoring: bool,
+    prefetch: Option<Task<()>>,
+    /// Tests only: an item shown as being renamed, as the explorer's rename part will make `Tab::renaming` say.
+    #[cfg(test)]
+    pretend_renaming: Option<String>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl FileList {
+    /// A details view of the tab in pane `pane` (0, or 1 in dual-pane view). It follows the pane's tab as it
+    /// changes. The coordinator places the entity in the workspace, keyed by pane, and shows it while the
+    /// tab's view is the list (`ViewMode::List`, or `Columns` between its two side columns).
+    pub fn new(pane: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let explorer = explorer::explorer(cx);
+        let focus = cx.focus_handle();
+        let subscriptions = vec![
+            // Anything the explorer changes redraws; the kinds of change that make the rows different also say so.
+            cx.observe(&explorer, |_, _, cx| cx.notify()),
+            cx.subscribe(&explorer, |this, _, event: &ExplorerEvent, _| {
+                if matches!(
+                    event,
+                    ExplorerEvent::RowsChanged(_)
+                        | ExplorerEvent::ListingChanged { .. }
+                        | ExplorerEvent::TabsChanged
+                        | ExplorerEvent::ViewChanged(_)
+                ) {
+                    this.dirty = true;
+                }
+            }),
+            // Column widths and the text size are settings.
+            cx.observe_global::<state::UiState>(|_, cx| cx.notify()),
+            // A click or a key in this list makes its pane the one the toolbar and the keys act on.
+            cx.on_focus_in(&focus, window, |this, _, cx| {
+                let pane = this.pane;
+                this.explorer.update(cx, |explorer, cx| explorer.focus_pane(pane, cx));
+            }),
+        ];
+        Self {
+            pane,
+            explorer,
+            focus,
+            scroll: UniformListScrollHandle::new(),
+            shown: Shown::default(),
+            dirty: true,
+            frame: Rc::new(Frame {
+                rows: Rows::empty(),
+                selected: Selection::default(),
+                focus_path: None,
+                renaming: None,
+                tracks: Vec::new(),
+                inactive: false,
+                located: false,
+                recycled: false,
+                where_of: None,
+                max_size: 0,
+                flashed: Arc::new(HashSet::new()),
+                now: 0,
+            }),
+            width: Rc::new(Cell::new(0.)),
+            resizing: None,
+            rename: None,
+            typeahead: TypeAhead::default(),
+            press: None,
+            saved_top: 0.,
+            restoring: false,
+            prefetch: None,
+            #[cfg(test)]
+            pretend_renaming: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// Which pane this list shows.
+    pub fn pane(&self) -> usize {
+        self.pane
+    }
+
+    /// Gives the list the keyboard (F6 to this pane, a new folder opening).
+    pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        self.focus.focus(window, cx);
+    }
+
+    /// A press that may turn into a drag was started on a row; a drag from the list calls this so the release
+    /// that ends the drag doesn't also narrow the selection.
+    pub fn cancel_press(&mut self) {
+        self.press = None;
+    }
+
+    // ---- Reading the explorer ---------------------------------------------------------------------------
+
+    /// The pane's tab as the list shows it, or None when there is no such pane.
+    fn read_tab(&self, cx: &App) -> Option<TabView> {
+        let explorer = self.explorer.read(cx);
+        let tab = explorer.pane_tab(self.pane)?;
+        let find = tab.find.as_ref().map(|run: &FindRun| FindInfo {
+            query: run.query.clone(),
+            scope: run.scope.clone(),
+            running: run.running,
+            error: run.error.clone(),
+            skipped: run.skipped.clone(),
+        });
+        let plain = find.is_none();
+        let recycled = tab.is_recycle_bin() && plain;
+        let gallery = is_gallery(&tab.path) && plain;
+        let recent = is_recent(&tab.path) && plain;
+        let search = !plain || recent || gallery;
+        let scope = find.as_ref().map_or_else(|| tab.path.clone(), |run| run.scope.clone());
+        let renaming = tab.renaming.clone();
+        #[cfg(test)]
+        let renaming = renaming.or_else(|| self.pretend_renaming.clone());
+        let settings = state::settings(cx);
+        let own_view = settings.per_folder_views
+            && plain
+            && tab.path != THIS_PC
+            && explorer.memory().folder_view(&tab.path).is_some();
+        Some(TabView {
+            id: tab.id,
+            // The grid keeps its own place in the same folder, so the key says which view it is for.
+            place: format!("{}:list", tab.view_key()),
+            path: tab.path.clone(),
+            rows: tab.rows.clone(),
+            selection: tab.selection.clone(),
+            columns: tab.columns.clone(),
+            sort: tab.sort,
+            group: tab.group,
+            kind: tab.kind,
+            load: tab.load.clone(),
+            loading: tab.loading,
+            renaming,
+            filter: tab.filter.clone(),
+            find,
+            entries: tab.entries().len(),
+            has_listing: tab.listing.is_some(),
+            archive_root: tab.archive().is_some_and(|archive| same_path(&archive.path, &tab.path)),
+            in_archive: tab.archive().is_some(),
+            no_access: tab.no_access().copied(),
+            located: search || recycled,
+            recycled,
+            gallery,
+            recent,
+            scope,
+            inactive: explorer.is_dual() && explorer.active_pane() != self.pane,
+            show_hidden: settings.show_hidden,
+            own_view,
+        })
+    }
+
+    /// What changed since the last frame, worked out once: the scroll place of another folder, the rename
+    /// box, the biggest size, the focused row's position and the scroll that keeps it in view.
+    fn sync(&mut self, view: &TabView, window: &mut Window, cx: &mut Context<Self>) {
+        let moved = self.shown.tab != Some(view.id) || self.shown.place != view.place;
+        if moved {
+            // Another tab, folder or search: it has its own place in the list, and its own typing.
+            let top = self.explorer.read(cx).saved_scroll(view.id, &view.place);
+            self.scroll.0.borrow().base_handle.set_offset(point(px(0.), px(-top)));
+            self.saved_top = top;
+            self.restoring = top > 0.;
+            self.typeahead.clear();
+            self.press = None;
+            self.rename = None;
+            self.shown.tab = Some(view.id);
+            self.shown.place = view.place.clone();
+            self.shown.focus = None;
+            self.shown.scrolled_to = None;
+            self.dirty = true;
+        }
+        if self.dirty {
+            self.dirty = false;
+            self.shown.max_size = cells::biggest(&view.rows, view.located);
+            self.shown.focus = None;
+            if view.has_listing {
+                // Timed from the click to the list on screen, and the first folder of the run for the bench
+                // (`markShown`, `firstFolderPainted`): as soon as this frame is drawn.
+                let (id, explorer) = (view.id, self.explorer.clone());
+                cx.defer(move |cx| {
+                    explorer.update(cx, |explorer, cx| {
+                        explorer.mark_shown(id, cx);
+                        explorer.first_folder_painted();
+                    });
+                });
+            }
+        }
+        // The focused row's position, found again only when the focus (or the rows) changed.
+        let focus_path = view.selection.focus();
+        let cached = self.shown.focus.as_ref().map(|(path, _)| path.as_str());
+        if cached != focus_path || (focus_path.is_none() && self.shown.focus.is_some()) {
+            let index = focus_path.and_then(|path| view.rows.position_of(path));
+            self.shown.focus = focus_path.map(|path| (path.to_string(), index));
+        }
+        let focus_index = self.shown.focus.as_ref().and_then(|(_, index)| *index);
+
+        // Scrolls the focused row into view when it moves; on the frame the scroll was restored, it stays
+        // where it was left (the web's `restoring`, which only the first effect after mounting honoured).
+        let restoring = std::mem::take(&mut self.restoring);
+        if self.shown.scrolled_to != focus_index {
+            if !restoring {
+                if let Some(index) = focus_index {
+                    let line = match view.rows.groups() {
+                        Some(groups) => groups.line_of.get(index).map_or(index, |&line| line.max(0) as usize),
+                        None => index,
+                    };
+                    self.scroll.scroll_to_item(line, ScrollStrategy::Nearest);
+                }
+            }
+            self.shown.scrolled_to = focus_index;
+            // The arrow keys landing on a folder read it ahead: Enter is likely next.
+            self.prefetch = focus_index
+                .and_then(|index| view.rows.get(index))
+                .filter(|entry| entry.dir)
+                .map(|entry| entry.path.clone())
+                .map(|path| {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(PREFETCH_AFTER).await;
+                        this.update(cx, |this, cx| {
+                            this.explorer
+                                .update(cx, |explorer, cx| explorer.prefetch_folder(&path, cx));
+                        })
+                        .ok();
+                    })
+                });
+        }
+
+        // Where the list is scrolled is kept per tab and place, as the web did on every scroll event.
+        let top = -f32::from(self.scroll.0.borrow().base_handle.offset().y);
+        if (top - self.saved_top).abs() > 0.5 {
+            self.saved_top = top;
+            let (id, place) = (view.id, view.place.clone());
+            self.explorer
+                .update(cx, |explorer, _| explorer.save_scroll(id, &place, top));
+        }
+
+        // The rename box follows `Tab::renaming`.
+        match (&view.renaming, &self.rename) {
+            (Some(path), current) if current.as_ref().map(|r| r.path.as_str()) != Some(path.as_str()) => {
+                if let Some(entry) = view.rows.iter().find(|e| &e.path == path) {
+                    let (path, name, dir) = (entry.path.clone(), entry.name.clone(), entry.dir);
+                    self.start_rename(&path, &name, dir, window, cx);
+                }
+            }
+            (None, Some(_)) => self.rename = None,
+            _ => {}
+        }
+    }
+
+    /// The tracks of a row for the width the list has now, with their widths in pixels.
+    fn tracks(&self, view: &TabView, window: &Window, cx: &App) -> Vec<Track> {
+        let rem = f32::from(window.rem_size());
+        let width = self.width.get();
+        let rems_wide = if width > 0. { width / rem } else { FIRST_WIDTH / rem };
+        layout::tracks_for(&view.columns, view.located, rems_wide)
+            .into_iter()
+            .map(|track| match track {
+                GridTrack::Name => Track::Name,
+                GridTrack::Where => Track::Where,
+                GridTrack::Column(id) => Track::Column {
+                    id,
+                    width: self.column_width(id.def().width, window, cx),
+                },
+            })
+            .collect()
+    }
+
+    // ---- Keyboard ---------------------------------------------------------------------------------------
+
+    /// The pane's rows and where the keyboard is in them.
+    fn rows_and_focus(&self, cx: &App) -> Option<(Rows, Option<usize>)> {
+        let tab = self.explorer.read(cx).pane_tab(self.pane)?;
+        let at = tab.selection.focus().and_then(|path| tab.rows.position_of(path));
+        Some((tab.rows.clone(), at))
+    }
+
+    /// Rows that fit on screen, less one: how far PageUp and PageDown go.
+    fn page(&self, window: &Window) -> usize {
+        let viewport = self
+            .scroll
+            .0
+            .borrow()
+            .last_item_size
+            .map_or(px(400.), |size| size.item.height);
+        let row = ROW_HEIGHT.to_pixels(window.rem_size());
+        ((f32::from(viewport) / f32::from(row)).floor() as usize)
+            .saturating_sub(1)
+            .max(1)
+    }
+
+    /// The keys that move through the list and choose in it. Everything with a binding in `FileList`'s
+    /// context (Enter, Ctrl+A, F2…) is an action instead; Alt keys belong to the workspace.
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // The rename box has its keys.
+        if self.rename.is_some() {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        let modifiers = keystroke.modifiers;
+        if modifiers.alt {
+            return;
+        }
+        let ctrl = modifiers.control || modifiers.platform;
+        let key = keystroke.key.as_str();
+        let Some((rows, at)) = self.rows_and_focus(cx) else {
+            return;
+        };
+
+        // Arrows, Home, End, PageUp, PageDown: with Shift they extend from the anchor; with Ctrl they only
+        // move the cursor; alone they select the row they land on.
+        let dom_key = match key {
+            "up" => "ArrowUp",
+            "down" => "ArrowDown",
+            "left" => "ArrowLeft",
+            "right" => "ArrowRight",
+            "pageup" => "PageUp",
+            "pagedown" => "PageDown",
+            "home" => "Home",
+            "end" => "End",
+            _ => "",
+        };
+        if let Some(to) = grid_move(dom_key, at.map_or(-1, |i| i as i64), rows.len(), 1, self.page(window)) {
+            self.go(&rows, to, modifiers.shift, ctrl, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // The columns view: Left goes to the folder above (this one selected there), Right into the focused
+        // folder. The keys are the arrows themselves, whichever way the interface reads.
+        if matches!(key, "left" | "right") && !ctrl && !modifiers.shift {
+            let in_columns = self
+                .explorer
+                .read(cx)
+                .pane_tab(self.pane)
+                .is_some_and(|tab| tab.view == ViewMode::Columns);
+            if in_columns {
+                if key == "left" {
+                    self.explorer.update(cx, |explorer, cx| explorer.go_up(cx).detach());
+                } else if let Some(entry) = at.and_then(|i| rows.get(i)).filter(|entry| entry.dir) {
+                    let path = entry.path.clone();
+                    self.explorer
+                        .update(cx, |explorer, cx| explorer.navigate(path, NavOptions::default(), cx));
+                }
+                cx.stop_propagation();
+                return;
+            }
+        }
+        if ctrl {
+            // Ctrl+Space adds the focused item to the selection, or takes it out.
+            if key == "space" {
+                if let Some(path) = at.and_then(|i| rows.get(i)).map(|entry| entry.path.clone()) {
+                    self.explorer
+                        .update(cx, |explorer, cx| explorer.toggle_selected(&path, cx));
+                    cx.stop_propagation();
+                }
+            }
+            return;
+        }
+        if key == "escape" {
+            let (searching, filtering, selected) = {
+                let Some(tab) = self.explorer.read(cx).pane_tab(self.pane) else {
+                    return;
+                };
+                (tab.find.is_some(), !tab.filter.is_empty(), !tab.selection.is_empty())
+            };
+            if searching || filtering {
+                // PORT ME(search): a search's results are dropped too (clearFind).
+                self.explorer
+                    .update(cx, |explorer, cx| explorer.set_filter("", None, cx));
+            } else if selected {
+                self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
+            } else {
+                return;
+            }
+            cx.stop_propagation();
+            return;
+        }
+        // Type-ahead: a printable key (not Space, which previews) jumps to the next name starting with what
+        // was typed.
+        let typed = keystroke
+            .key_char
+            .as_deref()
+            .filter(|text| text.chars().count() == 1 && key != "space")
+            .map(str::to_lowercase);
+        if let Some(letter) = typed {
+            let jump = self.typeahead.press(&letter, Instant::now(), at, rows.len(), |i| {
+                rows.get(i).map(|e| e.lower.as_str())
+            });
+            if let Some(path) = jump.and_then(|i| rows.get(i)).map(|entry| entry.path.clone()) {
+                self.explorer
+                    .update(cx, |explorer, cx| explorer.select_only(Some(&path), cx));
+            }
+            cx.stop_propagation();
+        }
+    }
+
+    /// The cursor goes to row `to` (`go`).
+    fn go(&mut self, rows: &Rows, to: usize, shift: bool, ctrl: bool, cx: &mut Context<Self>) {
+        let Some(path) = rows.get(to).map(|entry| entry.path.clone()) else {
+            return;
+        };
+        self.explorer.update(cx, |explorer, cx| {
+            if shift {
+                explorer.select_range(rows, to, ctrl, cx);
+            } else if ctrl {
+                // PORT ME(coordinator): Explorer::set_focus(path): Ctrl+arrows move the cursor without
+                // selecting (`updateTab({ focus })`).
+            } else {
+                explorer.select_only(Some(&path), cx);
+            }
+        });
+    }
+
+    /// Enter: opens what is selected (`openSelected`). Several files open one by one; more than ten ask first.
+    fn open_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.explorer.read(cx).pane_tab(self.pane) else {
+            return;
+        };
+        let chosen: Vec<FileEntry> = tab
+            .rows
+            .iter()
+            .filter(|entry| tab.selection.contains(&entry.path))
+            .cloned()
+            .collect();
+        // Enter closes the preview that Space opened.
+        let many = chosen.len() > 1;
+        let files: Vec<FileEntry> = chosen.iter().filter(|e| !e.dir).cloned().collect();
+        self.explorer.update(cx, |explorer, _| explorer.quick_look = false);
+        if chosen.is_empty() {
+            return;
+        }
+        if !many || files.is_empty() {
+            let first = chosen[0].clone();
+            self.explorer
+                .update(cx, |explorer, cx| explorer.open_entry(&first, cx).detach());
+        } else if files.len() > OPEN_MANY_ASKS_ABOVE {
+            cx.emit(FileListEvent::ConfirmOpenMany {
+                paths: files.into_iter().map(|e| e.path).collect(),
+            });
+        } else {
+            self.explorer.update(cx, |explorer, cx| {
+                for file in &files {
+                    explorer.open_entry(file, cx).detach();
+                }
+            });
+        }
+    }
+
+    /// Ctrl+Enter: each selected folder (and archive) in a new tab (`openSelectedInTabs`).
+    fn open_in_tabs(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.explorer.read(cx).pane_tab(self.pane) else {
+            return;
+        };
+        let paths: Vec<String> = tab
+            .rows
+            .iter()
+            .filter(|e| tab.selection.contains(&e.path) && (e.dir || is_archive_file(e)) && !is_recycled(e))
+            .map(|e| e.path.clone())
+            .collect();
+        self.explorer.update(cx, |explorer, cx| {
+            for path in &paths {
+                explorer.open_in_new_tab(path, cx);
+            }
+        });
+    }
+
+    /// Ctrl+A.
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        let Some(rows) = self.explorer.read(cx).pane_tab(self.pane).map(|tab| tab.rows.clone()) else {
+            return;
+        };
+        self.explorer.update(cx, |explorer, cx| explorer.select_all(&rows, cx));
+    }
+
+    /// The menu key and Shift+F10: the menu of what is selected, at the focused item, else the folder's
+    /// (`keyboardMenu`). The coordinator puts it up.
+    fn keyboard_menu(&mut self, cx: &mut Context<Self>) {
+        let target = self.explorer.read(cx).pane_tab(self.pane).and_then(|tab| {
+            let focus = tab.selection.focus()?;
+            tab.rows
+                .get(tab.rows.position_of(focus)?)
+                .map(|entry| entry.path.clone())
+        });
+        cx.emit(FileListEvent::ContextMenu {
+            target,
+            at: None,
+            shift: false,
+        });
+    }
+
+    // ---- Mouse ------------------------------------------------------------------------------------------
+
+    /// This list takes the keyboard, and its pane becomes the one the keys and the toolbar act on.
+    fn take_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus.focus(window, cx);
+        let pane = self.pane;
+        self.explorer.update(cx, |explorer, cx| explorer.focus_pane(pane, cx));
+    }
+
+    /// A button pressed on row `i` (`onRowMouseDown`): Ctrl toggles, Shift selects from the anchor, a plain
+    /// press selects only it (but keeps a selection of several until release, so it can be dragged), a
+    /// double-click opens, the right button selects it if it isn't and asks for its menu, the middle button
+    /// opens a folder in a new tab.
+    fn row_down(&mut self, i: usize, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        self.take_focus(window, cx);
+        let Some((rows, selection)) = self
+            .explorer
+            .read(cx)
+            .pane_tab(self.pane)
+            .map(|tab| (tab.rows.clone(), tab.selection.clone()))
+        else {
+            return;
+        };
+        let Some(entry) = rows.get(i).cloned() else { return };
+        let additive = event.modifiers.control || event.modifiers.platform;
+        match event.button {
+            MouseButton::Middle => {
+                if (entry.dir || is_archive_file(&entry)) && !is_recycled(&entry) {
+                    self.explorer
+                        .update(cx, |explorer, cx| explorer.open_in_new_tab(&entry.path, cx));
+                }
+            }
+            MouseButton::Right => {
+                if !selection.contains(&entry.path) {
+                    self.explorer
+                        .update(cx, |explorer, cx| explorer.select_only(Some(&entry.path), cx));
+                }
+                cx.emit(FileListEvent::ContextMenu {
+                    target: Some(entry.path),
+                    at: Some(event.position),
+                    shift: event.modifiers.shift,
+                });
+            }
+            MouseButton::Left => {
+                // The first click of what may be a double-click reads a folder ahead.
+                if entry.dir {
+                    self.explorer
+                        .update(cx, |explorer, cx| explorer.prefetch_folder(&entry.path, cx));
+                }
+                let keep =
+                    !event.modifiers.shift && !additive && selection.contains(&entry.path) && selection.len() > 1;
+                self.explorer.update(cx, |explorer, cx| {
+                    if event.modifiers.shift {
+                        explorer.select_range(&rows, i, additive, cx);
+                    } else if additive {
+                        explorer.toggle_selected(&entry.path, cx);
+                    } else if keep {
+                        // PORT ME(coordinator): Explorer::set_focus(path, anchor: true): the pressed item takes
+                        // the focus and the anchor while the selection stays (`updateTab({ focus, anchor })`).
+                    } else {
+                        explorer.select_only(Some(&entry.path), cx);
+                    }
+                });
+                self.press = Some(Press {
+                    narrow_to: keep.then(|| entry.path.clone()),
+                });
+                if event.click_count >= 2 {
+                    self.press = None;
+                    self.explorer
+                        .update(cx, |explorer, cx| explorer.open_entry(&entry, cx).detach());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A press on the empty part of the list (`onBackgroundMouseDown`): without Ctrl or Shift it clears the
+    /// selection. PORT ME(marquee): dragging from here draws a rectangle that selects what it covers
+    /// (`startMarquee`); the explorer has no way to select an arbitrary set of paths yet.
+    fn background_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.take_focus(window, cx);
+        match event.button {
+            MouseButton::Left => {
+                if !event.modifiers.control && !event.modifiers.shift {
+                    self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
+                }
+            }
+            MouseButton::Right => {
+                self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
+                cx.emit(FileListEvent::ContextMenu {
+                    target: None,
+                    at: Some(event.position),
+                    shift: false,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The button is let go: a press kept on one item of a selection narrows to it.
+    fn release(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.press.take().and_then(|press| press.narrow_to) {
+            self.explorer
+                .update(cx, |explorer, cx| explorer.select_only(Some(&path), cx));
+        }
+    }
+
+    // ---- Drawing ----------------------------------------------------------------------------------------
+
+    /// The lines of the list that are on screen.
+    fn render_lines(&mut self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let frame = self.frame.clone();
+        let t = theme::tokens(cx).clone();
+        range.map(|line| self.line_element(&frame, &t, line, cx)).collect()
+    }
+
+    /// What the list is called for a screen reader (`aria-label`).
+    fn list_label(view: &TabView) -> SharedString {
+        if view.find.is_some() {
+            t!("Search results")
+        } else if view.recycled {
+            t!("Recycle Bin")
+        } else {
+            t!("Files")
+        }
+    }
+}
+
+impl Focusable for FileList {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for FileList {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t: Tokens = theme::tokens(cx).clone();
+        let root = col()
+            .id(("file-list", self.pane))
+            .size_full()
+            .min_h_0()
+            .relative()
+            .key_context("FileList");
+        let Some(view) = self.read_tab(cx) else {
+            return root.track_focus(&self.focus).into_any_element();
+        };
+        self.sync(&view, window, cx);
+
+        // What this frame's lines are drawn from.
+        let tracks = self.tracks(&view, window, cx);
+        let explorer = self.explorer.read(cx);
+        let frame = Rc::new(Frame {
+            rows: view.rows.clone(),
+            selected: view.selection.clone(),
+            focus_path: view.selection.focus().map(str::to_string),
+            renaming: view.renaming.clone(),
+            tracks,
+            inactive: view.inactive,
+            located: view.located,
+            recycled: view.recycled,
+            where_of: view
+                .located
+                .then(|| Box::new(layout::relative_to(&view.scope)) as WhereOf),
+            max_size: self.shown.max_size,
+            flashed: explorer.flashed().clone(),
+            now: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+        });
+        self.frame = frame.clone();
+
+        let lines = view.rows.groups().map_or(view.rows.len(), |groups| groups.lines.len());
+        let header = self.header_row(&frame, &view, &t, cx);
+        let state = self.state_view(&view, &t, cx);
+
+        // The width the list is laid out at decides which columns fit; a canvas under it measures that, and
+        // asks for another frame when it changes.
+        let measured = self.width.clone();
+        let this = cx.weak_entity();
+        let measure = canvas(
+            move |bounds, window, _| {
+                let width = f32::from(bounds.size.width);
+                if (measured.get() - width).abs() > 0.5 {
+                    measured.set(width);
+                    let this = this.clone();
+                    window.on_next_frame(move |_, cx| {
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    });
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+
+        let list = uniform_list("file-list-lines", lines, cx.processor(Self::render_lines))
+            .track_scroll(&self.scroll)
+            .size_full();
+        let area = div()
+            .id("file-list-area")
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(measure)
+            .child(
+                div()
+                    .id("file-list-box")
+                    .role(Role::ListBox)
+                    .aria_label(Self::list_label(&view))
+                    .size_full()
+                    .child(list)
+                    .test_support(),
+            )
+            // PORT ME(coordinator): a `kit::Scrollbar`; the kit doesn't export one, so this reaches gpui-kit's base layer.
+            .child(base::Scrollbar::vertical(&self.scroll).viewport_from_layout())
+            // The bar says the next folder is being read while this one stays on screen; with nothing to show
+            // yet the state says it.
+            .when(view.loading && view.has_listing, |this| {
+                this.child(
+                    div()
+                        .id("file-list-progress")
+                        .role(Role::ProgressIndicator)
+                        .aria_label(t!("Loading…"))
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .bg(t.primary)
+                        .test_support(),
+                )
+            })
+            .when_some(state, |this, state| this.child(div().absolute().inset_0().child(state)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| this.background_down(event, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| this.background_down(event, window, cx)),
+            )
+            .test_support();
+
+        root.track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &actions::OpenItem, _, cx| this.open_selected(cx)))
+            .on_action(cx.listener(|this, _: &actions::OpenInNewTab, _, cx| this.open_in_tabs(cx)))
+            .on_action(cx.listener(|this, _: &actions::SelectAll, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &actions::ShowItemMenu, _, cx| this.keyboard_menu(cx)))
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.release(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.release(cx)),
+            )
+            .child(header)
+            .child(area)
+            // While an edge is held, a layer over the whole list takes the pointer: the drag follows it
+            // wherever it goes in the list and ends when the button is let go.
+            .when(self.resizing.is_some(), |this| {
+                this.child(
+                    div()
+                        .id("file-list-resizing")
+                        .absolute()
+                        .inset_0()
+                        .cursor_col_resize()
+                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                            this.drag_resize(event.position.x, cx);
+                        }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, _, cx| this.end_resize(cx)),
+                        )
+                        .on_mouse_up_out(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, _, cx| this.end_resize(cx)),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+}

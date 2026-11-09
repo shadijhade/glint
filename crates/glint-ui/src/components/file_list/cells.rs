@@ -1,0 +1,465 @@
+//! One line of the list: a row of an item, or the header of a group (`renderRow` and `renderLine` in
+//! FileList.tsx). Built only for the lines on screen.
+
+use super::{FileList, Frame, Track};
+use crate::kit::prelude::*;
+use crate::theme::{self, Tokens};
+use crate::{i18n, t};
+use glint_model::columns::ColumnId;
+use glint_model::entries::{
+    attr, cloud_state, is_archived, is_closed, is_hidden, is_locked, is_recycled, CloudState, FileEntry,
+};
+use glint_model::file_types::{kind_of, type_label};
+use glint_model::format::{format_date, format_size};
+use glint_model::groups::GroupHeader;
+
+/// The height of a line, 1.75 rem (`rowHeight`: 28 px at the usual size).
+pub const ROW_HEIGHT: Rems = rems(1.75);
+/// An item modified within the last hour gets a dot in its date.
+const HOT_FOR_MS: i64 = 3_600_000;
+/// A size bar only shows where it says something: 40% of the biggest here or more.
+const BAR_FROM: f64 = 40.;
+/// How many rows the biggest size is looked for in (`Math.min(rows.length, 4000)`).
+pub const BIGGEST_OF: usize = 4000;
+
+/// A folder's size: the index's total for a search result (or the Recycle Bin's, with `located`), else its size
+/// measured here (`sizeOf`). PORT ME(sizes): folders sized as they open come from the sizes part; until then a
+/// folder in a plain listing has none.
+pub fn size_of(entry: &FileEntry, located: bool) -> Option<u64> {
+    if entry.dir {
+        (located && entry.size > 0).then_some(entry.size)
+    } else {
+        Some(entry.size)
+    }
+}
+
+/// A folder that files dragged in can be dropped on: not one in an archive (read-only), nor one Windows keeps
+/// closed, nor one in the Recycle Bin (`dropPath`). The drag part uses it to answer a drop over a row.
+pub fn drop_path(entry: &FileEntry) -> Option<&str> {
+    (entry.dir && !is_archived(entry) && !is_closed(entry) && !is_recycled(entry)).then_some(entry.path.as_str())
+}
+
+/// Why an item in an archive can't be opened, for its lock mark (`lockReason`).
+pub fn lock_reason(entry: &FileEntry) -> SharedString {
+    if entry.attrs & attr::ENCRYPTED != 0 {
+        t!("Password-protected")
+    } else {
+        t!("Compressed in a way Glint can't read")
+    }
+}
+
+/// The size bar's share: whole percent of the biggest, or 0 below 40% (`sizePct`).
+pub fn size_percent(size: Option<u64>, max: u64) -> u32 {
+    let Some(size) = size.filter(|&s| s > 0) else { return 0 };
+    if max == 0 {
+        return 0;
+    }
+    let share = size as f64 / max as f64 * 100.;
+    if share >= BAR_FROM {
+        // Math.round for positive values.
+        (share + 0.5).floor() as u32
+    } else {
+        0
+    }
+}
+
+/// The biggest size among the first rows, which the bars are shares of.
+pub fn biggest(rows: &crate::explorer::Rows, located: bool) -> u64 {
+    (0..rows.len().min(BIGGEST_OF))
+        .filter_map(|i| rows.get(i).and_then(|e| size_of(e, located)))
+        .max()
+        .unwrap_or(0)
+}
+
+/// File Explorer's words and marks for a cloud file's state.
+fn cloud_mark(state: CloudState, t: &Tokens) -> (IconName, SharedString, Hsla) {
+    match state {
+        // PORT ME(coordinator): a theme token for sky-500; `tk_number` is the nearest blue meanwhile.
+        CloudState::Online => (IconName::Cloud, t!("Available when online"), t.tk_number),
+        CloudState::Local => (IconName::CircleCheck, t!("Available on this device"), t.success),
+        CloudState::Kept => (IconName::CircleCheck, t!("Always available on this device"), t.success),
+        CloudState::Pending => (IconName::RefreshCw, t!("Sync pending"), t.tk_number),
+    }
+}
+
+impl FileList {
+    /// The line `line` of the list: an item's row, or a group's header.
+    pub(super) fn line_element(&self, frame: &Frame, t: &Tokens, line: usize, cx: &mut Context<Self>) -> AnyElement {
+        match frame.rows.groups() {
+            Some(groups) => match groups.lines.get(line).copied() {
+                Some(at) if at >= 0 => self.row_element(frame, t, at as usize, cx),
+                Some(at) => match groups.headers.get((-at - 1) as usize) {
+                    Some(header) => group_header(header, (-at - 1) as usize, t),
+                    None => div().h(ROW_HEIGHT).into_any_element(),
+                },
+                None => div().h(ROW_HEIGHT).into_any_element(),
+            },
+            None => self.row_element(frame, t, line, cx),
+        }
+    }
+
+    /// An item's row: its icon and name, then a cell for every column the list is wide enough for.
+    fn row_element(&self, frame: &Frame, t: &Tokens, i: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(entry) = frame.rows.get(i) else {
+            return div().h(ROW_HEIGHT).into_any_element();
+        };
+        let selected = frame.selected.contains(&entry.path);
+        let focused = frame.focus_path.as_deref() == Some(entry.path.as_str());
+        let flashed = frame.flashed.contains(&entry.path);
+        let size = size_of(entry, frame.located);
+        let percent = size_percent(size, frame.max_size);
+        let hot = !frame.recycled && entry.modified > 0 && (0..HOT_FOR_MS).contains(&(frame.now - entry.modified));
+        // PORT ME(clipboard): cut items are dimmed too. PORT ME(git): so are the ones .gitignore leaves out.
+        // PORT ME(drag): the item being dragged is dimmer still (45%), and a folder files are dragged over (see
+        // `drop_path`) is outlined and tinted.
+        let dim = is_hidden(entry);
+        let kind = kind_of(entry);
+        let tone = theme::kind_tone(kind, cx);
+        let type_text = type_label(entry);
+        let date_text = format_date(entry.modified, None, i18n::language());
+        let size_text = match size {
+            Some(size) => format_size(size),
+            None => String::new(),
+        };
+
+        // The name: its icon (PORT ME(thumbnails): a picture's or a video's own small image in its place),
+        // then the name, or the box it is renamed in.
+        let renaming = frame.renaming.as_deref() == Some(entry.path.as_str());
+        let mut name_cell = row_start().gap(space(2.)).flex_1().min_w_0().child(
+            icon(super::kind_icon(kind.icon))
+                .size(rems(1.))
+                .text_color(tone.color)
+                .flex_none(),
+        );
+        name_cell = match self.rename.as_ref().filter(|_| renaming) {
+            Some(rename) => name_cell.child(self.rename_input(rename, cx)),
+            None => name_cell.child(div().min_w_0().truncate().child(isolate(entry.name.clone()))),
+        };
+        // PORT ME(compare): the "Only here / Newer / Different / Older" badges. PORT ME(git): the Git badges.
+        // PORT ME(tags): the tag dots.
+        if let Some(state) = cloud_state(entry) {
+            let (name, label, color) = cloud_mark(state, t);
+            name_cell = name_cell.child(
+                div()
+                    .id(("file-list-cloud", i))
+                    .role(Role::Image)
+                    .aria_label(label)
+                    .flex_none()
+                    .child(icon(name).size(rems(0.875)).text_color(color))
+                    .test_support(),
+            );
+        }
+        if is_locked(entry) {
+            // A key for a password, a crossed-out file for what Glint can't read.
+            let mark = if entry.attrs & attr::ENCRYPTED != 0 {
+                IconName::KeyRound
+            } else {
+                IconName::FileX
+            };
+            let label = lock_reason(entry);
+            name_cell = name_cell.child(
+                div()
+                    .id(("file-list-lock", i))
+                    .role(Role::Image)
+                    .aria_label(label)
+                    .flex_none()
+                    .child(icon(mark).size(rems(0.875)).text_color(t.warning))
+                    .test_support(),
+            );
+        }
+
+        let mut line = row_start()
+            .id(("file-row", i))
+            .role(Role::ListBoxOption)
+            .aria_label(entry.name.clone())
+            .aria_description(describe(&type_text, &size_text, &date_text))
+            .aria_selected(selected)
+            .aria_position_in_set(i + 1)
+            .aria_size_of_set(frame.rows.len())
+            .w_full()
+            .h(ROW_HEIGHT)
+            .flex_none()
+            .px(space(3.))
+            .gap(space(3.))
+            .border_1()
+            .border_color(hsla(0., 0., 0., 0.))
+            .text_size(theme::size::SM)
+            .text_color(t.foreground)
+            .child(name_cell);
+        for track in &frame.tracks {
+            line = match *track {
+                Track::Name => line,
+                Track::Where => {
+                    let place = match (&frame.where_of, frame.recycled) {
+                        (_, true) => entry.origin.clone().unwrap_or_default(),
+                        (Some(relative), false) => relative(&entry.path),
+                        (None, false) => String::new(),
+                    };
+                    line.child(
+                        where_track(div())
+                            .truncate()
+                            .text_size(theme::size::XS)
+                            .text_color(t.muted_foreground)
+                            .child(isolate(place)),
+                    )
+                }
+                Track::Column { id, width } => line.child(match id {
+                    ColumnId::Modified => date_cell(width, date_text.clone(), hot, t),
+                    ColumnId::Type => text_cell(width, type_text.clone(), false, t),
+                    // PORT ME(media): what photos, videos and songs say about themselves (media.ts's facts):
+                    // the dates they were taken, their dimensions, durations, artists and albums. Empty until
+                    // the media part reads them, as the web's cells were before they were read.
+                    ColumnId::Taken | ColumnId::Dimensions | ColumnId::Artist | ColumnId::Album => {
+                        text_cell(width, String::new(), false, t)
+                    }
+                    ColumnId::Duration => text_cell(width, String::new(), true, t),
+                    ColumnId::Size => size_cell(width, size_text.clone(), percent, t),
+                }),
+            };
+        }
+
+        line = if selected {
+            let tint = if t.dark { 0.20 } else { 0.15 };
+            if frame.inactive {
+                // The pane the keyboard isn't in: muted, with a faint ring, as an unfocused window shows it.
+                line.bg(t.primary.opacity(if t.dark { 0.12 } else { 0.10 }))
+                    .border_color(t.primary.opacity(0.25))
+            } else {
+                line.bg(t.primary.opacity(tint))
+            }
+        } else {
+            line.hover(|style| style.bg(t.accent.opacity(0.6)))
+        };
+        if focused && !frame.inactive {
+            line = line.border_color(t.primary);
+        }
+        if flashed {
+            // PORT ME(coordinator): the web's `glint-flash` fades its ring out over 1.15 s; this holds it
+            // while the explorer says the item is flashed (1.2 s).
+            line = line.bg(t.primary.opacity(0.25)).border_color(t.primary.opacity(0.85));
+        }
+        if dim {
+            line = line.opacity(0.55);
+        }
+        if focused {
+            line = line.aria_active_descendant();
+        }
+
+        let folder = entry.dir.then(|| entry.path.clone());
+        let line = line
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| this.row_down(i, event, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| this.row_down(i, event, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| this.row_down(i, event, window, cx)),
+            );
+        let line = match folder {
+            // The pointer resting on a folder reads it ahead; leaving it stops that (`hoverFolder`).
+            Some(path) => line.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.explorer.update(cx, |explorer, cx| {
+                    if *hovered {
+                        explorer.hover_folder(&path, cx);
+                    } else {
+                        explorer.leave_folder();
+                    }
+                });
+            })),
+            None => line,
+        };
+        line.test_support().into_any_element()
+    }
+}
+
+/// Where an item is takes a little less of the free width than the name does (`minmax(0, 0.9fr)` against
+/// `minmax(0, 1fr)`).
+pub(super) fn where_track<E: Styled>(cell: E) -> E {
+    let mut cell = cell.flex_1().min_w_0();
+    cell.style().flex_grow = Some(0.9);
+    cell
+}
+
+/// "Document, 12 KB, Today 9:31 PM": what a row says besides its name, for a screen reader.
+fn describe(kind: &str, size: &str, date: &str) -> String {
+    [kind, size, date]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A group's header line: its name, how many items it has and their size.
+fn group_header(header: &GroupHeader, index: usize, t: &Tokens) -> AnyElement {
+    let count = if header.count == 1 {
+        t!("{n} item", n = header.count)
+    } else {
+        t!("{n} items", n = header.count)
+    };
+    let counted = if header.size > 0 {
+        format!("{count} · {}", format_size(header.size))
+    } else {
+        count.to_string()
+    };
+    // The web hid these from a screen reader (`role="presentation"`); a named group says which kind the rows
+    // after it belong to.
+    row_start()
+        .id(("file-group", index))
+        .role(Role::Group)
+        .aria_label(header.label.clone())
+        .aria_description(counted.clone())
+        .w_full()
+        .h(ROW_HEIGHT)
+        .flex_none()
+        .items_end()
+        .gap(space(2.))
+        .px(space(3.))
+        .pb(space(0.5))
+        .border_b_1()
+        .border_color(t.border.opacity(0.6))
+        .text_size(theme::size::XS)
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(t.foreground)
+                .child(isolate(header.label.clone())),
+        )
+        .child(div().text_color(t.muted_foreground).child(counted))
+        .test_support()
+        .into_any_element()
+}
+
+/// A plain column cell: a clipped line of small muted text; numbers that compare by their ends sit at the end.
+fn text_cell(width: Pixels, text: String, end: bool, t: &Tokens) -> AnyElement {
+    let cell = div()
+        .w(width)
+        .flex_none()
+        .truncate()
+        .text_size(theme::size::XS)
+        .text_color(t.muted_foreground);
+    let cell = if end { cell.text_end() } else { cell.text_start() };
+    cell.child(isolate(text)).into_any_element()
+}
+
+/// The date: small and muted, with a green dot when it changed in the last hour.
+fn date_cell(width: Pixels, text: String, hot: bool, t: &Tokens) -> AnyElement {
+    row_start()
+        .w(width)
+        .flex_none()
+        .gap(space(1.5))
+        .overflow_hidden()
+        .text_size(theme::size::XS)
+        .text_color(t.muted_foreground)
+        .when(hot, |this| {
+            this.child(
+                div()
+                    .id("file-list-hot")
+                    .role(Role::Image)
+                    .aria_label(t!("Modified within the last hour"))
+                    .size(rems(0.375))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(t.success),
+            )
+        })
+        .child(div().min_w_0().truncate().child(text))
+        .into_any_element()
+}
+
+/// The size: at the end of its cell, over a bar showing its share of the biggest here.
+fn size_cell(width: Pixels, text: String, percent: u32, t: &Tokens) -> AnyElement {
+    let bar = (percent > 0).then(|| {
+        let bar = div()
+            .absolute()
+            .top(space(0.5))
+            .bottom(space(0.5))
+            .w(relative(percent as f32 / 100.))
+            .rounded(px(3.))
+            .bg(t.primary.opacity(if t.dark { 0.18 } else { 0.12 }));
+        // The bar grows from the end edge.
+        if i18n::is_rtl() {
+            bar.left_0()
+        } else {
+            bar.right_0()
+        }
+    });
+    row_start()
+        .relative()
+        .w(width)
+        .flex_none()
+        .h(rems(1.25))
+        .justify_end()
+        .overflow_hidden()
+        .rounded(px(3.))
+        .px(space(1.))
+        .text_size(theme::size::XS)
+        .text_color(t.muted_foreground)
+        .children(bar)
+        .child(div().relative().truncate().child(text))
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::fake::{file, folder};
+
+    #[test]
+    fn a_folder_has_a_size_only_where_the_index_gave_one() {
+        let dir = folder("C:\\x", "docs");
+        assert_eq!(
+            size_of(&dir, false),
+            None,
+            "folders in a plain listing wait for the sizes part"
+        );
+        assert_eq!(size_of(&dir, true), None, "fd's results come without a size (0)");
+        let mut sized = folder("C:\\x", "docs");
+        sized.size = 4096;
+        assert_eq!(size_of(&sized, true), Some(4096));
+        assert_eq!(size_of(&file("C:\\x", "a.txt", 10, 0), false), Some(10));
+    }
+
+    #[test]
+    fn only_a_folder_that_can_take_files_is_a_drop_target() {
+        let plain = folder("C:\\x", "docs");
+        assert_eq!(drop_path(&plain), Some("C:\\x\\docs"));
+        let mut closed = folder("C:\\x", "locked");
+        closed.attrs |= attr::CLOSED;
+        let mut archived = folder("C:\\x", "inside");
+        archived.attrs |= attr::IN_ARCHIVE;
+        let mut recycled = folder("C:\\x", "gone");
+        recycled.attrs |= attr::RECYCLED;
+        for no in [closed, archived, recycled, file("C:\\x", "a.txt", 1, 0)] {
+            assert_eq!(drop_path(&no), None, "{}", no.name);
+        }
+    }
+
+    #[test]
+    fn a_bar_shows_only_from_forty_percent_of_the_biggest() {
+        assert_eq!(size_percent(Some(100), 100), 100);
+        assert_eq!(size_percent(Some(40), 100), 40);
+        assert_eq!(size_percent(Some(39), 100), 0);
+        assert_eq!(size_percent(Some(0), 100), 0);
+        assert_eq!(size_percent(None, 100), 0);
+        assert_eq!(size_percent(Some(5), 0), 0);
+        // Halves round up, as Math.round does.
+        assert_eq!(size_percent(Some(405), 1000), 41);
+    }
+
+    #[test]
+    fn a_row_is_described_by_what_it_has() {
+        assert_eq!(
+            describe("PDF file", "12 KB", "Today 9:31 PM"),
+            "PDF file, 12 KB, Today 9:31 PM"
+        );
+        assert_eq!(
+            describe("File folder", "", "Today 9:31 PM"),
+            "File folder, Today 9:31 PM"
+        );
+        assert_eq!(describe("", "", ""), "");
+    }
+}
