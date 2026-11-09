@@ -2,7 +2,7 @@
 # The old app (src-tauri) keeps its own workspace and isn't a member.
 [workspace]
 resolver = "2"
-members = ["crates/glint-model"]
+members = ["crates/glint-model", "crates/glint-core", "crates/glint-ui", "crates/glint"]
 exclude = ["src-tauri"]
 
 [workspace.package]
@@ -19,3 +19,9 @@ unicode-segmentation = "1"
 unicode-normalization = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Globalization"] }
+
+# GPUI with the right-to-left fix (docs/gpui/rtl-fix.patch), vendored from crates.io and patched.
+[patch.crates-io]
+gpui-pre = { path = "vendor/gpui-pre-0.3.12" }
+gpui-pre-windows = { path = "vendor/gpui-pre-windows-0.3.12" }
+gpui-base = { path = "vendor/gpui-base-0.9.1" }
