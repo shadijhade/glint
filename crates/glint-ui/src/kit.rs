@@ -29,7 +29,8 @@ use gpui_kit::component::{h_flex, v_flex};
 /// Everything a view imports.
 pub mod prelude {
     pub use super::{
-        align_row, back_icon, col, forward_icon, icon, isolate, kind_icon, row, row_start, space, Logical, Placeholder,
+        align_row, back_icon, capacity_bar, col, drive_icon, forward_icon, free_of, icon, isolate, kind_icon,
+        known_icon, row, row_start, space, Logical, Placeholder,
     };
     pub use super::{h_resizable, resizable_panel};
     pub use super::{
@@ -46,6 +47,74 @@ pub mod prelude {
 }
 
 pub use gpui_kit::assets::IconName;
+
+/// A known folder's icon, as the sidebar, This PC and the address bar draw it (`KNOWN_ICONS`).
+pub fn known_icon(id: crate::explorer::KnownId) -> IconName {
+    use crate::explorer::KnownId as K;
+    match id {
+        K::Home => IconName::House,
+        K::Desktop => IconName::Monitor,
+        K::Documents => IconName::FileText,
+        K::Downloads => IconName::Download,
+        K::Pictures => IconName::Image,
+        K::Music => IconName::Music,
+        K::Videos => IconName::Film,
+    }
+}
+
+/// A drive's icon by its kind, as the sidebar, This PC and the address bar draw it (`DRIVE_ICONS`).
+pub fn drive_icon(kind: crate::explorer::DriveKind) -> IconName {
+    use crate::explorer::DriveKind as K;
+    match kind {
+        K::Fixed | K::Ram | K::Unknown => IconName::HardDrive,
+        K::Removable => IconName::Usb,
+        K::Network => IconName::Server,
+        K::Cdrom => IconName::Disc,
+        K::Wsl => IconName::SquareTerminal,
+    }
+}
+
+/// The used-space bar of a drive (or a cloud), red when nearly full like Explorer's (`CapacityBar`): `height`
+/// tall, filling from the reading direction's start. None when the total isn't known.
+pub fn capacity_bar(total: u64, free: u64, height: Rems, cx: &App) -> Option<Div> {
+    if total == 0 {
+        return None;
+    }
+    let t = theme::tokens(cx);
+    let used = (total.saturating_sub(free) as f64 / total as f64).clamp(0., 1.);
+    let fill = if used > 0.9 {
+        t.destructive
+    } else {
+        t.primary.opacity(0.7)
+    };
+    Some(
+        row_start()
+            .h(height)
+            .w_full()
+            .overflow_hidden()
+            .rounded_full()
+            .bg(t.muted)
+            .child(
+                div()
+                    .h_full()
+                    .w(gpui_kit::relative(used as f32))
+                    .rounded_full()
+                    .bg(fill),
+            ),
+    )
+}
+
+/// "12 GB free of 476 GB" (`freeOf`), or nothing when the total isn't known.
+pub fn free_of(total: u64, free: u64) -> SharedString {
+    if total == 0 {
+        return SharedString::default();
+    }
+    crate::t!(
+        "{free} free of {total}",
+        free = glint_model::format::format_size(free),
+        total = glint_model::format::format_size(total)
+    )
+}
 
 /// The icon a kind of file gets (`glint_model::file_types::kind_of(entry).icon`), as the web app drew it. Its
 /// colors come from `theme::kind_tone`.
@@ -299,6 +368,14 @@ mod tests {
         use gpui_kit::AssetSource as _;
         // A missing icon draws nothing and says nothing, so each one the views use is checked here: add yours.
         for name in [
+            IconName::House,
+            IconName::Monitor,
+            IconName::Download,
+            IconName::Image,
+            IconName::Music,
+            IconName::Film,
+            IconName::Usb,
+            IconName::Server,
             IconName::AppWindow,
             IconName::BookOpen,
             IconName::Database,
