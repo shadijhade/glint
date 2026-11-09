@@ -3,9 +3,16 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { CantPlay, TrimBar } from "./MediaTools";
 import { DUCK_READS, ProfileView } from "./DataTools";
 import { NotebookView } from "./NotebookView";
+import { TypstView } from "./TypstView";
+import { Waveform } from "./Waveform";
+import { smallKind } from "@/lib/smallKinds";
 import { MODEL_EXTS } from "./modelExts";
 
 const ModelView = lazy(() => import("./ModelView"));
+const BookView = lazy(() => import("./BookView"));
+const SmallPreview = lazy(() => import("./SmallPreviews").then((m) => ({ default: m.SmallPreview })));
+/** E-books the reader opens (BookView.tsx, foliate-js): kept here so the reader loads only when one is shown. */
+const BOOKS = new Set(["epub", "mobi", "azw3", "azw", "fb2", "fbz", "cbz"]);
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Check, Clock, Cloud, Copy, ExternalLink, Images, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, Maximize2, Minimize2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, WrapText, X } from "lucide-react";
 import { toast } from "sonner";
@@ -383,6 +390,7 @@ function AudioPreview({ entry, src }: { entry: FileEntry; src: string }) {
         <Centered>
             {cover ? <img src={cover} alt="Cover" draggable={false} className="size-44 rounded-md object-cover shadow-md" /> : <BigIcon entry={entry} />}
             <audio ref={player} src={src} controls className="w-full max-w-sm" />
+            {!isArchived(entry) && !isRemote(entry) && <Waveform src={src} size={entry.size} player={player} />}
             {!isArchived(entry) && !isRemote(entry) && <TrimBar entry={entry} player={player} video={false} />}
             {!isArchived(entry) && !isRemote(entry) && <Transcript path={entry.path} player={player} />}
         </Centered>
@@ -787,6 +795,11 @@ export function EntryPreview({
     // Jupyter notebooks as they read, and 3D models drawn (both from disk).
     const notebook = readable && !archived && entry.ext === "ipynb";
     const model = readable && !archived && MODEL_EXTS.has(entry.ext);
+    // E-books and comics read (from disk), and Typst files typeset (by Typst).
+    const book = readable && !archived && BOOKS.has(entry.ext);
+    // Contacts, calendar invites, emails, design files' own pictures, Graphviz and Mermaid files (SmallPreviews.tsx).
+    const small = readable && !archived ? smallKind(entry.ext) : undefined;
+    const typst = readable && !archived && entry.ext === "typ";
     // JSON, YAML and TOML as a tree (up to the 64 MB the jq worker reads).
     const data = readable && entry.size <= 64 * 1024 * 1024 ? dataFormat(entry) : undefined;
     // Workbooks and Parquet files as tables, from disk; a workbook can show in Windows' previewer too (Excel's).
@@ -802,7 +815,13 @@ export function EntryPreview({
     const views: { view: View; label: string; title: string }[] = [
         notebook
             ? { view: "file", label: "Notebook", title: "The notebook as it reads, its outputs included" }
-            : model
+            : book
+              ? { view: "file", label: "Book", title: "The book, to read" }
+              : small
+              ? { view: "file", label: "Preview", title: "What it holds, as Glint reads it" }
+              : typst
+              ? { view: "file", label: "Typeset", title: "The document as Typst typesets it" }
+              : model
               ? { view: "file", label: "Model", title: "The model, drawn" }
               : markdown
             ? { view: "file", label: "Rendered", title: "The Markdown as it reads" }
@@ -813,7 +832,8 @@ export function EntryPreview({
                 : cast
                   ? { view: "file", label: "Play", title: "The recording, played" }
                   : { view: "file", label: "File", title: "The file as it is" },
-        ...(markdown || notebook ? [{ view: "source" as const, label: "Source", title: notebook ? "The notebook's JSON as written" : "The Markdown as written" }] : []),
+        ...(markdown || notebook || typst ? [{ view: "source" as const, label: "Source", title: notebook ? "The notebook's JSON as written" : typst ? "The Typst source as written" : "The Markdown as written" }] : []),
+        ...(small && small !== "outlook" && small !== "design" ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
         ...(data || cast ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
         ...(workbook ? [{ view: "source" as const, label: "Previewer", title: "As Windows' previewer for it shows it (Excel's, with Office installed)" }] : []),
         ...(changed ? [{ view: "changes" as const, label: "Changes", title: "What changed since the last commit (Git)" }] : []),
@@ -846,6 +866,18 @@ export function EntryPreview({
         );
     else if (isLocked(entry)) body = <LockedPreview entry={entry} />;
     else if (isListOnly(entry)) body = <BigIcon entry={entry} note="This file is listed in an ncdu export, with its size and date. What's in it isn't there." />;
+    else if (book)
+        body = (
+            <Suspense fallback={<Waiting />}>
+                <BookView entry={entry} />
+            </Suspense>
+        );
+    else if (small && view !== "source")
+        body = (
+            <Suspense fallback={<Waiting />}>
+                <SmallPreview entry={entry} kind={small} />
+            </Suspense>
+        );
     else if (isArchiveFile(entry)) body = <ArchivePreview entry={entry} />;
     // In an archive, pictures, video, sound and PDFs are shown from a temp copy; text is read straight out of it.
     else if (kind === "image" || kind === "video" || kind === "audio" || kind === "pdf")
@@ -863,6 +895,7 @@ export function EntryPreview({
                 <SheetPreview entry={entry} />
             );
     else if (notebook) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <NotebookView entry={entry} />;
+    else if (typst) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <TypstView entry={entry} render={(src) => <PdfPreview entry={entry} src={src} />} />;
     else if (model)
         body = (
             <Suspense fallback={<Waiting />}>

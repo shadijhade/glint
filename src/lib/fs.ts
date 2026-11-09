@@ -46,8 +46,11 @@ webview2?.addEventListener("sharedbufferreceived", (e) => {
  * one comes in WebView2's shared memory, read in place and let go once decoded. Rejects with a ListFailure.
  */
 export async function listDir(path: string): Promise<Listing> {
+    // Where a folder's time goes, for the bench (scripts/bench.mjs reads these marks).
+    performance.clearMarks();
+    performance.mark("list:start");
     try {
-        if (!webview2) return decodeListing(await invoke<ArrayBuffer>("list_dir", { path }));
+        if (!webview2) return decodeTimed(await invoke<ArrayBuffer>("list_dir", { path }));
         const id = ++sharedIds;
         const shared = new Promise<ArrayBuffer>((resolve) => sharedWaiting.set(id, resolve));
         let direct: ArrayBuffer;
@@ -59,11 +62,11 @@ export async function listDir(path: string): Promise<Listing> {
         }
         if (direct.byteLength) {
             sharedWaiting.delete(id);
-            return decodeListing(direct);
+            return decodeTimed(direct);
         }
         const buffer = await shared;
         try {
-            return decodeListing(buffer);
+            return decodeTimed(buffer);
         } finally {
             webview2.releaseBuffer(buffer);
         }
@@ -71,6 +74,14 @@ export async function listDir(path: string): Promise<Listing> {
         // An Error too, nameless, so String(e) says the message where errors are shown that way.
         throw typeof e === "object" && e ? Object.assign(new Error((e as ListFailure).message), e, { name: "" }) : e;
     }
+}
+
+/** decodeListing between two marks: the listing arrived, and decoded. */
+function decodeTimed(buffer: ArrayBuffer) {
+    performance.mark("list:arrived");
+    const listing = decodeListing(buffer);
+    performance.mark("list:decoded");
+    return listing;
 }
 
 /** What a picture's or video's Content Credentials (C2PA) say, read by c2patool. */

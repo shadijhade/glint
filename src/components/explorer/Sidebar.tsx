@@ -82,7 +82,8 @@ function RemotePlace({ remote, active, onContextMenu }: { remote: RemoteConnecti
     const icon = remote.kind === "rclone" ? serviceIcon(remote.service ?? "") : remote.kind === "s3" ? Database : remote.kind === "sftp" ? SquareTerminal : remote.kind === "device" ? Monitor : Server;
     const where = remoteWhere(remote);
     return (
-        <Place icon={icon} label={remote.name} path={remotePath(remote)} active={active} title={space ? `${where}\n${freeOf(space)}` : where} onContextMenu={onContextMenu}>
+        // A paired PC takes files dropped on it: they're sent to it (Send to…), into its Downloads.
+        <Place icon={icon} label={remote.name} path={remotePath(remote)} active={active} title={space ? `${where}\n${freeOf(space)}` : where} onContextMenu={onContextMenu} dropAs={remote.kind === "device" ? `device:${remote.id}` : undefined}>
             {space && <CapacityBar drive={space} className="mt-1" />}
         </Place>
     );
@@ -106,6 +107,8 @@ function Section({ title, onTitleClick, active, children }: { title: string; onT
 }
 
 interface PlaceProps {
+    /** What a drop on it does instead of copying into its path: "device:<id>" sends to a paired PC. */
+    dropAs?: string;
     icon: LucideIcon;
     iconClass?: string;
     label: string;
@@ -127,8 +130,8 @@ const PLACE = "relative flex w-full items-center justify-center gap-2.5 rounded-
 // Windows 11's navigation selection: a gray fill and a short accent pill at the left edge.
 const ACTIVE = "bg-accent text-foreground before:absolute before:start-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-primary";
 
-function Place({ icon: Icon, iconClass, label, path, active, title, onContextMenu, children, tree }: PlaceProps) {
-    const dropping = useExplorer((s) => s.dropTarget === path);
+function Place({ icon: Icon, iconClass, label, path, active, title, onContextMenu, children, tree, dropAs }: PlaceProps) {
+    const dropping = useExplorer((s) => s.dropTarget === (dropAs ?? path));
     const gutter = useStore((s) => s.settings.folderTree);
     const opensHere = tree !== undefined && opens(path);
     const button = (
@@ -136,7 +139,7 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
             data-nav-row
             data-nav-tree={opensHere ? path : undefined}
             // A pinned folder in an archive takes no drops, nor does a remote's: they're read-only.
-            data-drop={inArchivePath(path) || isRemotePath(path) ? undefined : path}
+            data-drop={dropAs ?? (inArchivePath(path) || isRemotePath(path) ? undefined : path)}
             onClick={() => navigate(path)}
             onMouseDown={middleClickOpens(path)}
             onContextMenu={(e) => onContextMenu(e, path)}

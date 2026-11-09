@@ -542,12 +542,72 @@ pub(crate) fn expand_vars(text: &str) -> String {
 }
 
 /// Folders first, then names in natural order ("file2" before "file10"), ignoring case like Explorer.
+///
+/// Every name's key goes into a buffer of its block of names, and the sort moves small records (the key's
+/// first 32 bytes as four numbers, which settle nearly every comparison even among names that share a long
+/// start, such as WinSxS's, and where the rest of it is), not whole entries. A big folder's keys are made
+/// and sorted on several threads (WinSxS's names are full of hex digits, each run a step of the key).
+/// Then each entry moves once, into its place.
 pub fn sort_entries(entries: &mut Vec<Entry>) {
-    // natural_key lowercases ASCII itself: only other names need a lowercase copy first.
-    let key = |name: &str| if name.is_ascii() { natural_key(name) } else { natural_key(&name.to_lowercase()) };
-    let mut keyed: Vec<(Vec<u8>, Entry)> = entries.drain(..).map(|e| (key(&e.name), e)).collect();
-    keyed.sort_unstable_by(|(ka, a), (kb, b)| b.dir.cmp(&a.dir).then_with(|| ka.cmp(kb)).then_with(|| a.name.cmp(&b.name)));
-    entries.extend(keyed.into_iter().map(|(_, e)| e));
+    use rayon::prelude::*;
+    struct Item {
+        head: [u64; 4],
+        block: u32,
+        start: u32,
+        end: u32,
+        index: u32,
+        dir: bool,
+    }
+    const BLOCK: usize = 4096;
+    const BIG: usize = 20_000;
+    let keyed = |block: usize, names: &[Entry]| -> (Vec<u8>, Vec<Item>) {
+        let mut keys: Vec<u8> = Vec::with_capacity(names.iter().map(|e| e.name.len() + 4).sum());
+        let mut items: Vec<Item> = Vec::with_capacity(names.len());
+        for (i, e) in names.iter().enumerate() {
+            let start = keys.len();
+            // natural_key lowercases ASCII itself: only other names need a lowercase copy first.
+            if e.name.is_ascii() {
+                natural_key_into(&e.name, &mut keys);
+            } else {
+                natural_key_into(&e.name.to_lowercase(), &mut keys);
+            }
+            let key = &keys[start..];
+            let mut bytes = [0u8; 32];
+            bytes[..key.len().min(32)].copy_from_slice(&key[..key.len().min(32)]);
+            let word = |n: usize| u64::from_be_bytes(bytes[n * 8..n * 8 + 8].try_into().unwrap_or_default());
+            let index = (block * BLOCK + i) as u32;
+            items.push(Item { head: [word(0), word(1), word(2), word(3)], block: block as u32, start: start as u32, end: keys.len() as u32, index, dir: e.dir });
+        }
+        (keys, items)
+    };
+    let blocks: Vec<(Vec<u8>, Vec<Item>)> = if entries.len() >= BIG {
+        entries.par_chunks(BLOCK).enumerate().map(|(n, names)| keyed(n, names)).collect()
+    } else {
+        entries.chunks(BLOCK).enumerate().map(|(n, names)| keyed(n, names)).collect()
+    };
+    let mut items: Vec<Item> = Vec::with_capacity(entries.len());
+    let mut keys: Vec<Vec<u8>> = Vec::with_capacity(blocks.len());
+    for (block_keys, block_items) in blocks {
+        keys.push(block_keys);
+        items.extend(block_items);
+    }
+    {
+        let key = |item: &Item| &keys[item.block as usize][item.start as usize..item.end as usize];
+        let order = |a: &Item, b: &Item| {
+            b.dir
+                .cmp(&a.dir)
+                .then(a.head.cmp(&b.head))
+                .then_with(|| key(a).cmp(key(b)))
+                .then_with(|| entries[a.index as usize].name.cmp(&entries[b.index as usize].name))
+        };
+        if items.len() >= BIG {
+            items.par_sort_unstable_by(order);
+        } else {
+            items.sort_unstable_by(order);
+        }
+    }
+    let mut slots: Vec<Option<Entry>> = entries.drain(..).map(Some).collect();
+    entries.extend(items.iter().filter_map(|item| slots[item.index as usize].take()));
 }
 
 /// A key whose plain byte order is natural order, so sorting compares keys with memcmp instead of
@@ -556,11 +616,21 @@ pub fn sort_entries(entries: &mut Vec<Entry>) {
 /// other characters exactly where a digit would. Same order as `natural_cmp`. `lower` is lowercase;
 /// ASCII letters are lowercased here too, so an ASCII name needn't be copied first.
 pub(crate) fn natural_key(lower: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(lower.len() + 4);
+    natural_key_into(lower, &mut key);
+    key
+}
+
+/// `natural_key`, added to the end of `key`: what's between digit runs lowercased in one go (a loop the
+/// compiler vectorizes), not a byte at a time.
+fn natural_key_into(lower: &str, key: &mut Vec<u8>) {
     let bytes = lower.as_bytes();
-    let mut key = Vec::with_capacity(bytes.len() + 4);
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i].is_ascii_digit() {
+        let run = bytes[i..].iter().position(u8::is_ascii_digit).map_or(bytes.len(), |p| i + p);
+        key.extend(bytes[i..run].iter().map(u8::to_ascii_lowercase));
+        i = run;
+        if i < bytes.len() {
             let start = i;
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
@@ -569,12 +639,8 @@ pub(crate) fn natural_key(lower: &str) -> Vec<u8> {
             key.push(b'0');
             key.push(digits.len().min(255) as u8);
             key.extend_from_slice(digits);
-        } else {
-            key.push(bytes[i].to_ascii_lowercase());
-            i += 1;
         }
     }
-    key
 }
 
 /// Compares strings with digit runs compared as numbers. Byte order elsewhere is code point order.
@@ -1189,6 +1255,76 @@ mod tests {
             names(&["file10.txt", "File2.txt", "b/", "file1.txt", "A/", "file02.txt", "zeta"]),
             ["A", "b", "file1.txt", "File2.txt", "file02.txt", "file10.txt", "zeta"]
         );
+    }
+
+    /// The sort as it was: whole entries moved, each with its own key.
+    fn sort_by_whole_keys(entries: &mut Vec<Entry>) {
+        let key = |name: &str| if name.is_ascii() { natural_key(name) } else { natural_key(&name.to_lowercase()) };
+        let mut keyed: Vec<(Vec<u8>, Entry)> = entries.drain(..).map(|e| (key(&e.name), e)).collect();
+        keyed.sort_unstable_by(|(ka, a), (kb, b)| b.dir.cmp(&a.dir).then_with(|| ka.cmp(kb)).then_with(|| a.name.cmp(&b.name)));
+        entries.extend(keyed.into_iter().map(|(_, e)| e));
+    }
+
+    fn entry(name: String, dir: bool) -> Entry {
+        Entry { name, path: None, dir, size: 0, modified: 0, attrs: 0 }
+    }
+
+    /// Small and big (several threads) lists of names that differ only late, by digits, case or
+    /// accents, sort exactly as before.
+    #[test]
+    fn sorts_as_the_whole_key_sort_did() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let parts = ["amd64_microsoft-windows-", "file", "File", "IMG_", "é", "z", "0", "007", "10", "9", ".", " ", "-", "a", "ß", "日本"];
+        for count in [0, 1, 7, 500, 25_000] {
+            let names: Vec<Entry> = (0..count)
+                .map(|_| {
+                    let name: String = (0..1 + next() % 6).map(|_| parts[(next() % parts.len() as u64) as usize]).collect();
+                    entry(name, next() % 5 == 0)
+                })
+                .collect();
+            let (mut new, mut old) = (names.clone(), names);
+            sort_entries(&mut new);
+            sort_by_whole_keys(&mut old);
+            let names = |list: &[Entry]| list.iter().map(|e| (e.dir, e.name.clone())).collect::<Vec<_>>();
+            assert_eq!(names(&new), names(&old), "{count} names");
+        }
+    }
+
+    /// The sort's time on real folders (FOLDERS=a;b), as it was and as it is.
+    #[test]
+    #[ignore]
+    fn sort_speed_on_real_folders() {
+        for folder in std::env::var("FOLDERS").expect("FOLDERS").split(';') {
+            let entries = read_dir(folder).unwrap();
+            let time = |sort: &dyn Fn(&mut Vec<Entry>)| {
+                let mut best = f64::MAX;
+                for _ in 0..7 {
+                    let mut copy = entries.clone();
+                    let started = Instant::now();
+                    sort(&mut copy);
+                    best = best.min(ms_since(started));
+                }
+                best
+            };
+            let keys = time(&|list: &mut Vec<Entry>| {
+                let mut buffer = Vec::new();
+                for e in list.iter() {
+                    natural_key_into(&e.name, &mut buffer);
+                }
+                std::hint::black_box(&buffer);
+            });
+            let moves = time(&|list: &mut Vec<Entry>| {
+                let mut slots: Vec<Option<Entry>> = list.drain(..).map(Some).collect();
+                list.extend(slots.iter_mut().rev().filter_map(Option::take));
+            });
+            println!("{folder} ({} items): as it was {:.2} ms, now {:.2} ms (keys {keys:.2} ms, moving entries {moves:.2} ms)", entries.len(), time(&sort_by_whole_keys), time(&sort_entries));
+        }
     }
 
     #[test]

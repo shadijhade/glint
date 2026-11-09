@@ -35,7 +35,7 @@ fn ffmpeg() -> Result<Command, String> {
 }
 
 /// ffprobe, from beside the FFmpeg that runs (every FFmpeg build has it), else any on the PC.
-fn ffprobe() -> Result<Command, String> {
+pub(crate) fn ffprobe() -> Result<Command, String> {
     let beside = crate::proc::locate("ffmpeg").map(|(exe, _)| exe.with_file_name("ffprobe.exe")).filter(|p| p.is_file());
     let exe = beside.or_else(|| crate::proc::locate("ffprobe").map(|(p, _)| p)).ok_or("FFmpeg isn't installed. Settings → Tools installs it.")?;
     let mut command = Command::new(exe);
@@ -223,6 +223,9 @@ pub enum Task {
     Gif { width: u32, fps: u32, start: Option<f64>, end: Option<f64>, webp: bool },
     /// What's said, as an .srt beside it, in its language or translated to English.
     Subtitles { translate: bool },
+    /// The volume evened out (EBU R128, measured then adjusted in one even step): speech and podcasts at
+    /// -16 LUFS, music at -14.
+    Loudness { music: bool },
 }
 
 impl Task {
@@ -233,6 +236,7 @@ impl Task {
             Task::Audio { .. } => "audio",
             Task::Gif { .. } => "gif",
             Task::Subtitles { .. } => "subtitles",
+            Task::Loudness { .. } => "loudness",
         }
     }
 }
@@ -250,7 +254,7 @@ pub async fn media_run(window: Window, files: Vec<String>, task: Task, output: O
         let jobs: Vec<Job> = files.iter().map(Job::one).collect();
         // Videos keep the CPU (or the GPU) busy on their own: one at a time; sounds, a few.
         let at_once = match task {
-            Task::Audio { .. } => 3,
+            Task::Audio { .. } | Task::Loudness { .. } => 3,
             Task::Trim { exact: false, .. } => 2,
             _ => 1,
         };
@@ -268,6 +272,7 @@ fn make(task: &Task, file: &Path, part: &(dyn Fn(f32) + Sync), work: &Path) -> R
         Task::Audio { format } => audio(file, &info, format, part, work).map(|f| vec![f]),
         Task::Gif { width, fps, start, end, webp } => gif(file, &info, width, fps, start, end, webp, part, work).map(|f| vec![f]),
         Task::Subtitles { translate } => subtitles(file, &info, translate, part, work).map(|f| vec![f]),
+        Task::Loudness { music } => loudness(file, &info, music, part, work).map(|f| vec![f]),
     }
 }
 
@@ -442,6 +447,58 @@ fn bitrates(mb: f64, seconds: f64) -> (u64, u64) {
     ((total - audio).max(60_000.0) as u64, audio as u64)
 }
 
+/// Two passes of FFmpeg's loudnorm: the first measures (its numbers come as JSON on its error output, at
+/// the info level), the second applies them as one even change of volume (`linear`), so nothing pumps.
+/// Video is copied as it is; the sound is written as the file had it where FFmpeg writes that, else AAC.
+fn loudness(file: &Path, info: &Probe, music: bool, part: &(dyn Fn(f32) + Sync), work: &Path) -> Result<PathBuf, String> {
+    if info.audio.is_empty() {
+        return Err("It has no sound in it".into());
+    }
+    let target = format!("loudnorm=I={}:TP=-1.5:LRA=11", if music { -14 } else { -16 });
+    let mut measure = ffmpeg()?;
+    measure.args(["-nostdin", "-hide_banner", "-loglevel", "info", "-progress", "pipe:1", "-nostats", "-i"]).arg(file);
+    measure.args(["-map", "0:a:0", "-af", &format!("{target}:print_format=json"), "-f", "null", "NUL"]);
+    let said = actions::run_tool(measure, "FFmpeg", &STOP, |line| {
+        if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+            if info.duration > 0.0 {
+                part((us / 1e6 / info.duration * 0.5) as f32);
+            }
+        }
+    })?;
+    let measured = loudness_measured(&said.stderr).ok_or("FFmpeg didn't say how loud it is")?;
+    let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let video = !info.video.is_empty();
+    let (out_ext, codec): (&str, &[&str]) = match ext.as_str() {
+        _ if video => (if matches!(ext.as_str(), "mkv" | "webm" | "mov") { ext.as_str() } else { "mp4" }, &["-c:a", "aac", "-b:a", "192k"]),
+        "mp3" => ("mp3", &["-c:a", "libmp3lame", "-q:a", "2"]),
+        "flac" => ("flac", &["-c:a", "flac"]),
+        "wav" => ("wav", &["-c:a", "pcm_s16le"]),
+        "ogg" | "oga" => ("ogg", &["-c:a", "libvorbis", "-q:a", "6"]),
+        "opus" => ("opus", &["-c:a", "libopus", "-b:a", "128k"]),
+        _ => ("m4a", &["-c:a", "aac", "-b:a", "192k"]),
+    };
+    let out = actions::renamed(work, file, out_ext);
+    let mut apply = base()?;
+    apply.arg("-i").arg(file).args(["-map", "0:v?", "-map", "0:a:0", "-map_metadata", "0", "-c:v", "copy", "-af"]).arg(format!("{target}:{measured}:linear=true:print_format=none"));
+    // loudnorm works at 192 kHz: back to the rate songs and videos use.
+    apply.args(codec).args(["-ar", "48000"]);
+    if out_ext == "mp4" || out_ext == "m4a" {
+        apply.args(["-movflags", "+faststart"]);
+    }
+    apply.arg(&out);
+    run(apply, info.duration, &|p| part(0.5 + p * 0.5))?;
+    Ok(out)
+}
+
+/// The first pass's numbers as loudnorm's second pass takes them, from the JSON at the end of its output.
+fn loudness_measured(stderr: &str) -> Option<String> {
+    let start = stderr.rfind('{')?;
+    let end = stderr[start..].find('}')? + start;
+    let value: serde_json::Value = serde_json::from_str(&stderr[start..=end]).ok()?;
+    let get = |key: &str| value[key].as_str().filter(|v| v.parse::<f64>().is_ok_and(f64::is_finite));
+    Some(format!("measured_I={}:measured_TP={}:measured_LRA={}:measured_thresh={}:offset={}", get("input_i")?, get("input_tp")?, get("input_lra")?, get("input_thresh")?, get("target_offset")?))
+}
+
 fn audio(file: &Path, info: &Probe, format: AudioFormat, part: &(dyn Fn(f32) + Sync), work: &Path) -> Result<PathBuf, String> {
     if info.audio.is_empty() {
         return Err("It has no sound in it".into());
@@ -609,7 +666,7 @@ fn playable(path: &Path, part: &(dyn Fn(f32) + Sync)) -> Result<String, String> 
 }
 
 /// A small, stable hash for cache names.
-fn seahash(text: &str) -> u64 {
+pub(crate) fn seahash(text: &str) -> u64 {
     // FNV-1a: enough to name cache files.
     text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
 }
@@ -617,6 +674,23 @@ fn seahash(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_loudnorms_numbers() {
+        let stderr = "[Parsed_loudnorm_0 @ 000001] 
+{
+	\"input_i\" : \"-27.61\",
+	\"input_tp\" : \"-4.47\",
+	\"input_lra\" : \"18.06\",
+	\"input_thresh\" : \"-39.20\",
+	\"output_i\" : \"-16.58\",
+	\"target_offset\" : \"0.58\"
+}
+";
+        assert_eq!(loudness_measured(stderr).as_deref(), Some("measured_I=-27.61:measured_TP=-4.47:measured_LRA=18.06:measured_thresh=-39.20:offset=0.58"));
+        // Silence measures as -inf: no second pass from that.
+        assert_eq!(loudness_measured("{\"input_i\" : \"-inf\", \"input_tp\" : \"-inf\", \"input_lra\" : \"0.00\", \"input_thresh\" : \"-70.00\", \"target_offset\" : \"inf\"}"), None);
+    }
 
     #[test]
     fn reads_what_ffprobe_says() {
