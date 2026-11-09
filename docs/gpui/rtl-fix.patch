@@ -1,0 +1,504 @@
+# Right-to-left text in GPUI on Windows: display, caret, clicks and selection.
+# Against crates.io gpui-pre-windows 0.3.12, gpui-pre 0.3.12 (Zed d2a4fb6) and gpui-base 0.9.1.
+# See docs/gpui/migration-plan.md, "Appendix: the right-to-left fix".
+--- a/gpui-pre-windows-0.3.12/src/direct_write.rs
++++ b/gpui-pre-windows-0.3.12/src/direct_write.rs
+@@ -1290,7 +1290,7 @@
+     fn DrawGlyphRun(
+         &self,
+         clientdrawingcontext: *const ::core::ffi::c_void,
+-        _baselineoriginx: f32,
++        baselineoriginx: f32,
+         _baselineoriginy: f32,
+         _measuringmode: DWRITE_MEASURING_MODE,
+         glyphrun: *const DWRITE_GLYPH_RUN,
+@@ -1420,6 +1420,10 @@
+                 )?
+             };
+ 
++            // Place glyphs where DirectWrite's layout put them. A run starts at its
++            // baseline origin; a right-to-left run (odd bidi level) advances leftward from it.
++            let rtl = glyphrun.bidiLevel & 1 == 1;
++            let mut pen = baselineoriginx;
+             let cluster_analyzer = ClusterAnalyzer::new(cluster_map, glyph_count);
+             let mut utf16_idx = desc.textPosition as usize;
+             let mut glyph_idx = 0;
+@@ -1436,19 +1440,30 @@
+                     let is_emoji =
+                         color_font && is_color_glyph(font_face, id, &context.components.factory);
+                     let this_glyph_idx = glyph_idx + cluster_glyph_idx;
++                    let advance = glyph_advances[this_glyph_idx];
++                    let offset = glyph_offsets[this_glyph_idx].advanceOffset;
++                    let x = if rtl {
++                        pen -= advance;
++                        pen - offset
++                    } else {
++                        let x = pen + offset;
++                        pen += advance;
++                        x
++                    };
+                     glyphs.push(ShapedGlyph {
+                         id,
+-                        position: point(
+-                            px(context.width + glyph_offsets[this_glyph_idx].advanceOffset),
+-                            px(-glyph_offsets[this_glyph_idx].ascenderOffset),
+-                        ),
++                        position: point(px(x), px(-glyph_offsets[this_glyph_idx].ascenderOffset)),
+                         index: context.index_converter.utf8_ix,
+                         is_emoji,
+                     });
+-                    context.width += glyph_advances[this_glyph_idx];
++                    context.width += advance;
+                 }
+                 glyph_idx += cluster_glyph_count;
+             }
++            // GPUI keeps a run's glyphs in visual order; a right-to-left run's indices then go down.
++            if rtl {
++                glyphs.reverse();
++            }
+             context.runs.push(ShapedRun { font_id, glyphs });
+         }
+         Ok(())
+--- a/gpui-pre-0.3.12/src/text_system/line_layout.rs
++++ b/gpui-pre-0.3.12/src/text_system/line_layout.rs
+@@ -57,11 +57,40 @@
+     pub is_emoji: bool,
+ }
+ 
++/// Glyphs that share a text index, as `LineLayout`'s right-to-left aware caret code sees them.
++#[derive(Clone, Copy, Debug)]
++struct Cluster {
++    /// The text it covers, in utf-8 bytes.
++    start: usize,
++    end: usize,
++    /// Where it is on the line.
++    left: Pixels,
++    right: Pixels,
++    rtl: bool,
++}
++
++impl Cluster {
++    /// Where a caret at `index` (within the cluster's text) goes; a ligature's characters share its
++    /// width.
++    fn x_at(&self, index: usize) -> Pixels {
++        let share = (index.saturating_sub(self.start)) as f32 / (self.end - self.start).max(1) as f32;
++        let offset = (self.right - self.left) * share.clamp(0., 1.);
++        if self.rtl {
++            self.right - offset
++        } else {
++            self.left + offset
++        }
++    }
++}
++
+ impl LineLayout {
+     /// The index for the character at the given x coordinate
+     pub fn index_for_x(&self, x: Pixels) -> Option<usize> {
+         if x >= self.width {
+             None
++        } else if self.has_rtl() {
++            let clusters = self.clusters();
++            Some(clusters.iter().find(|c| c.left <= x && x < c.right).map_or(0, |c| c.start))
+         } else {
+             for run in self.runs.iter().rev() {
+                 for glyph in run.glyphs.iter().rev() {
+@@ -77,6 +106,9 @@
+     /// closest_index_for_x returns the character boundary closest to the given x coordinate
+     /// (e.g. to handle aligning up/down arrow keys)
+     pub fn closest_index_for_x(&self, x: Pixels) -> usize {
++        if self.has_rtl() {
++            return self.bidi_closest_index_for_x(x);
++        }
+         let mut prev_index = 0;
+         let mut prev_x = px(0.);
+ 
+@@ -106,7 +138,13 @@
+     }
+ 
+     /// The x position of the character at the given index
++    ///
++    /// That is where a caret before it goes: a left-to-right character's left edge, a right-to-left
++    /// character's right edge. At the end of the line, the last character's trailing edge.
+     pub fn x_for_index(&self, index: usize) -> Pixels {
++        if self.has_rtl() {
++            return self.bidi_x_for_index(index);
++        }
+         for run in &self.runs {
+             for glyph in &run.glyphs {
+                 if glyph.index >= index {
+@@ -117,6 +155,139 @@
+         self.width
+     }
+ 
++    /// The stretches of the line, left to right, that show the text in `range` (a selection, say).
++    ///
++    /// Left-to-right text gives one stretch, from caret to caret. Where right-to-left text is
++    /// involved a range can show in several places, so each run of adjacent glyphs is a stretch.
++    pub fn x_ranges_for_index_range(&self, range: Range<usize>) -> SmallVec<[Range<Pixels>; 2]> {
++        let mut stretches = SmallVec::new();
++        if range.start >= range.end {
++            return stretches;
++        }
++        if !self.has_rtl() {
++            stretches.push(self.x_for_index(range.start)..self.x_for_index(range.end));
++            return stretches;
++        }
++        for cluster in self.clusters() {
++            let start = range.start.max(cluster.start);
++            let end = range.end.min(cluster.end);
++            if start >= end {
++                continue;
++            }
++            let (left, right) = (cluster.x_at(start), cluster.x_at(end));
++            let (left, right) = (left.min(right), left.max(right));
++            match stretches.last_mut() {
++                Some(last) if (last.end - left).abs() < px(0.5) => last.end = right,
++                _ => stretches.push(left..right),
++            }
++        }
++        stretches
++    }
++
++    /// Whether some run lays its text out right to left: its glyphs, left to right, go down in index.
++    fn has_rtl(&self) -> bool {
++        self.runs
++            .iter()
++            .any(|run| run.glyphs.windows(2).any(|pair| pair[1].index < pair[0].index))
++    }
++
++    /// The line's clusters (glyphs that share a text index: a character, a ligature, a base with its
++    /// marks) in visual order, each with the text it covers, where it is, and its run's direction.
++    fn clusters(&self) -> Vec<Cluster> {
++        let mut clusters: Vec<Cluster> = Vec::new();
++        for run in &self.runs {
++            let rtl = match (run.glyphs.first(), run.glyphs.last()) {
++                (Some(first), Some(last)) => last.index < first.index,
++                _ => false,
++            };
++            let run_start = clusters.len();
++            for glyph in &run.glyphs {
++                match clusters[run_start..].last_mut() {
++                    Some(cluster) if cluster.start == glyph.index => {
++                        cluster.left = cluster.left.min(glyph.position.x)
++                    }
++                    _ => clusters.push(Cluster {
++                        start: glyph.index,
++                        end: glyph.index,
++                        left: glyph.position.x,
++                        right: glyph.position.x,
++                        rtl,
++                    }),
++                }
++            }
++        }
++        // A cluster's text runs to the next cluster's, in text order.
++        let mut starts: Vec<usize> = clusters.iter().map(|c| c.start).collect();
++        starts.sort_unstable();
++        starts.dedup();
++        for cluster in &mut clusters {
++            let next = starts.partition_point(|&start| start <= cluster.start);
++            cluster.end = starts.get(next).copied().unwrap_or(self.len).max(cluster.start);
++        }
++        // On screen, a cluster reaches the next one to its right.
++        clusters.sort_by_key(|c| (c.left, c.start));
++        for ix in 0..clusters.len() {
++            let next_left = clusters.get(ix + 1).map_or(self.width, |c| c.left);
++            clusters[ix].right = next_left.max(clusters[ix].left);
++        }
++        clusters
++    }
++
++    fn bidi_x_for_index(&self, index: usize) -> Pixels {
++        let clusters = self.clusters();
++        let by_start: FxHashMap<usize, &Cluster> = clusters.iter().map(|c| (c.start, c)).collect();
++        let by_end: FxHashMap<usize, &Cluster> =
++            clusters.iter().filter(|c| c.end > c.start).map(|c| (c.end, c)).collect();
++        self.bidi_caret_x(&clusters, &by_start, &by_end, index)
++    }
++
++    /// Where a caret at `index` goes. After a right-to-left character, on its trailing (left) edge,
++    /// where typing goes on; otherwise on the leading edge of the character at `index`. Every edge
++    /// between glyphs then belongs to exactly one index.
++    fn bidi_caret_x(
++        &self,
++        clusters: &[Cluster],
++        by_start: &FxHashMap<usize, &Cluster>,
++        by_end: &FxHashMap<usize, &Cluster>,
++        index: usize,
++    ) -> Pixels {
++        let index = index.min(self.len);
++        if let Some(inside) = clusters.iter().find(|c| c.start < index && index < c.end) {
++            return inside.x_at(index);
++        }
++        match (by_end.get(&index), by_start.get(&index)) {
++            (Some(prev), _) if prev.rtl => prev.x_at(prev.end),
++            (_, Some(next)) => next.x_at(next.start),
++            (Some(prev), None) => prev.x_at(prev.end),
++            (None, None) => clusters
++                .iter()
++                .filter(|c| c.start >= index)
++                .min_by_key(|c| c.start)
++                .map_or(self.width, |c| c.x_at(c.start)),
++        }
++    }
++
++    fn bidi_closest_index_for_x(&self, x: Pixels) -> usize {
++        let clusters = self.clusters();
++        let by_start: FxHashMap<usize, &Cluster> = clusters.iter().map(|c| (c.start, c)).collect();
++        let by_end: FxHashMap<usize, &Cluster> =
++            clusters.iter().filter(|c| c.end > c.start).map(|c| (c.end, c)).collect();
++        // The boundary whose caret is nearest the point: a click lands where the caret then shows.
++        // Where two carets share a spot (the edge between "1" and ".pdf" after Arabic text, say), the
++        // one belonging to the glyph under the point wins.
++        let under = clusters.iter().find(|c| c.left <= x && x < c.right);
++        clusters
++            .iter()
++            .map(|c| c.start)
++            .chain([self.len])
++            .min_by_key(|&ix| {
++                let distance = (self.bidi_caret_x(&clusters, &by_start, &by_end, ix) - x).abs();
++                let own = under.is_some_and(|c| ix == c.start || ix == c.end);
++                (distance.round(), !own)
++            })
++            .unwrap_or(0)
++    }
++
+     /// The corresponding Font at the given index
+     pub fn font_id_for_index(&self, index: usize) -> Option<FontId> {
+         for run in &self.runs {
+@@ -883,6 +1054,88 @@
+         }
+     }
+ 
++    /// "abc " then three right-to-left characters (2 bytes each, as Arabic is in utf-8) then " 1",
++    /// shaped the way DirectWrite and CoreText lay it out: the Arabic run's glyphs in visual order with
++    /// their indices going down. Each glyph is 10 px wide.
++    fn mixed_layout() -> LineLayout {
++        // text bytes: a0 b1 c2 ' '3 | ARA1 4..6, ARA2 6..8, ARA3 8..10 | ' '10 '1'11 -> len 12
++        LineLayout {
++            font_size: px(16.),
++            width: px(100.),
++            ascent: px(12.),
++            descent: px(4.),
++            runs: vec![
++                ShapedRun { font_id: FontId(0), glyphs: vec![glyph_at(0., 0), glyph_at(10., 1), glyph_at(20., 2), glyph_at(30., 3)] },
++                // Visual order: ARA3 at 40, ARA2 at 50, ARA1 at 60.
++                ShapedRun { font_id: FontId(0), glyphs: vec![glyph_at(40., 8), glyph_at(50., 6), glyph_at(60., 4)] },
++                ShapedRun { font_id: FontId(0), glyphs: vec![glyph_at(70., 10), glyph_at(80., 11)] },
++            ],
++            len: 12,
++        }
++        .with_width(90.)
++    }
++
++    impl LineLayout {
++        fn with_width(mut self, width: f32) -> Self {
++            self.width = px(width);
++            self
++        }
++    }
++
++    #[test]
++    fn test_rtl_caret_positions() {
++        let layout = mixed_layout();
++        // Left-to-right characters: their left edges.
++        assert_eq!(layout.x_for_index(0), px(0.));
++        assert_eq!(layout.x_for_index(3), px(30.));
++        // The first right-to-left character (index 4) sits at 60..70: a caret before it is on its right.
++        assert_eq!(layout.x_for_index(4), px(70.));
++        assert_eq!(layout.x_for_index(6), px(60.));
++        assert_eq!(layout.x_for_index(8), px(50.));
++        // Inside a 2-byte character, halfway.
++        assert_eq!(layout.x_for_index(5), px(65.));
++        // After the last right-to-left character, on its trailing (left) edge, where typing goes on.
++        assert_eq!(layout.x_for_index(10), px(40.));
++        assert_eq!(layout.x_for_index(11), px(80.));
++        // The end of the line: after "1", on its right.
++        assert_eq!(layout.x_for_index(12), px(90.));
++    }
++
++    #[test]
++    fn test_rtl_hit_testing() {
++        let layout = mixed_layout();
++        // The character under a point.
++        assert_eq!(layout.index_for_x(px(5.)), Some(0));
++        assert_eq!(layout.index_for_x(px(45.)), Some(8));
++        assert_eq!(layout.index_for_x(px(65.)), Some(4));
++        assert_eq!(layout.index_for_x(px(95.)), None);
++        // The closest caret: every glyph edge belongs to one index, and a click takes the nearest.
++        assert_eq!(layout.closest_index_for_x(px(68.)), 4);
++        assert_eq!(layout.closest_index_for_x(px(62.)), 6);
++        assert_eq!(layout.closest_index_for_x(px(47.)), 8);
++        assert_eq!(layout.closest_index_for_x(px(42.)), 10);
++        assert_eq!(layout.closest_index_for_x(px(12.)), 1);
++        assert_eq!(layout.closest_index_for_x(px(-5.)), 0);
++        assert_eq!(layout.closest_index_for_x(px(200.)), 12);
++        // Every boundary a click can give maps back near the click.
++        for x in [3., 17., 44., 56., 66., 74., 86.] {
++            let ix = layout.closest_index_for_x(px(x));
++            assert!((layout.x_for_index(ix) - px(x)).abs() <= px(5.), "x {x} -> index {ix} -> {:?}", layout.x_for_index(ix));
++        }
++    }
++
++    #[test]
++    fn test_rtl_selection_stretches() {
++        let layout = mixed_layout();
++        // The first two Arabic characters (bytes 4..8) show at 50..70.
++        assert_eq!(layout.x_ranges_for_index_range(4..8).to_vec(), vec![px(50.)..px(70.)]);
++        // "c" and the first Arabic character are logically adjacent but apart on screen.
++        assert_eq!(layout.x_ranges_for_index_range(2..6).to_vec(), vec![px(20.)..px(40.), px(60.)..px(70.)]);
++        // A left-to-right line keeps the old caret-to-caret stretch.
++        let ltr = make_layout(vec![glyph_at(0., 0), glyph_at(10., 1), glyph_at(20., 2)]).with_width(30.);
++        assert_eq!(ltr.x_ranges_for_index_range(1..2).to_vec(), vec![px(10.)..px(20.)]);
++    }
++
+     fn glyph_x_positions(layout: &LineLayout) -> Vec<f32> {
+         layout.runs[0]
+             .glyphs
+--- a/gpui-base-0.9.1/src/input/base/element.rs
++++ b/gpui-base-0.9.1/src/input/base/element.rs
+@@ -1090,14 +1090,15 @@
+         bounds: &Bounds<Pixels>,
+     ) -> Option<Path<Pixels>> {
+         let corners = Self::layout_range_corners(&range, last_layout)?;
+-        let points = frame_outline_points(&corners);
+         let origin = bounds.origin + point(last_layout.line_number_width, px(0.));
+         let mut builder = gpui::PathBuilder::fill();
+-        builder.move_to(origin + *points.first()?);
+-        for point in points.iter().skip(1) {
+-            builder.line_to(origin + *point);
++        for points in frame_outlines(&corners) {
++            builder.move_to(origin + *points.first()?);
++            for point in points.iter().skip(1) {
++                builder.line_to(origin + *point);
++            }
++            builder.close();
+         }
+-        builder.close();
+         builder.build().ok()
+     }
+ 
+@@ -1133,20 +1134,29 @@
+                 let newline = is_last && range.start <= end && range.end > end;
+                 if start_ix < end_ix || newline {
+                     let indent = if row == 0 { px(0.) } else { line.wrap_indent };
+-                    let left = alignment + indent + shaped.x_for_index(start_ix.min(end) - offset);
+-                    let right = alignment
+-                        + indent
+-                        + if newline {
+-                            shaped.width + last_layout.space_width
+-                        } else {
+-                            shaped.x_for_index(end_ix - offset)
+-                        };
+-                    corners.push(Corners {
+-                        top_left: point(left, y),
+-                        top_right: point(right, y),
+-                        bottom_left: point(left, y + last_layout.line_height),
+-                        bottom_right: point(right, y + last_layout.line_height),
+-                    });
++                    let base = alignment + indent;
++                    // Where the range shows on this row: one stretch for left-to-right text, maybe
++                    // several where right-to-left text is involved.
++                    let mut stretches: Vec<(Pixels, Pixels)> = shaped
++                        .x_ranges_for_index_range((start_ix.min(end) - offset)..(end_ix - offset))
++                        .into_iter()
++                        .map(|stretch| (stretch.start, stretch.end))
++                        .collect();
++                    if newline {
++                        let cell = (shaped.width, shaped.width + last_layout.space_width);
++                        match stretches.last_mut() {
++                            Some(last) if last.1 >= shaped.width - px(0.5) => last.1 = cell.1,
++                            _ => stretches.push(cell),
++                        }
++                    }
++                    for (left, right) in stretches {
++                        corners.push(Corners {
++                            top_left: point(base + left, y),
++                            top_right: point(base + right, y),
++                            bottom_left: point(base + left, y + last_layout.line_height),
++                            bottom_right: point(base + right, y + last_layout.line_height),
++                        });
++                    }
+                 }
+                 offset = end;
+                 y += last_layout.line_height;
+@@ -1201,24 +1211,23 @@
+                     };
+                     let origin = bounds.origin + point(last_layout.line_number_width, px(0.));
+                     let corners = pad_frame_corners(&corners, px(1.));
+-                    let points = frame_outline_points(&corners)
+-                        .into_iter()
+-                        .map(|point| origin + point)
+-                        .collect::<Vec<_>>();
+-                    let (stroke_width, points) =
+-                        snap_frame_outline(&points, px(1.), window.scale_factor());
+-                    let points = clamp_frame_to_content_mask(points, stroke_width, content_mask);
+-                    let Some(first) = points.first().copied() else {
+-                        continue;
+-                    };
+-                    let mut builder = gpui::PathBuilder::stroke(stroke_width);
+-                    builder.move_to(first);
+-                    for point in points.iter().skip(1) {
+-                        builder.line_to(*point);
+-                    }
+-                    builder.close();
+-                    if let Ok(path) = builder.build() {
+-                        frames.push((path, color));
++                    for outline in frame_outlines(&corners) {
++                        let points = outline.into_iter().map(|point| origin + point).collect::<Vec<_>>();
++                        let (stroke_width, points) =
++                            snap_frame_outline(&points, px(1.), window.scale_factor());
++                        let points = clamp_frame_to_content_mask(points, stroke_width, content_mask);
++                        let Some(first) = points.first().copied() else {
++                            continue;
++                        };
++                        let mut builder = gpui::PathBuilder::stroke(stroke_width);
++                        builder.move_to(first);
++                        for point in points.iter().skip(1) {
++                            builder.line_to(*point);
++                        }
++                        builder.close();
++                        if let Ok(path) = builder.build() {
++                            frames.push((path, color));
++                        }
+                     }
+                 }
+             }
+@@ -3002,6 +3011,17 @@
+     }
+ }
+ 
++/// One outline for rows of one rectangle each (the usual case), or one per rectangle when a row has
++/// several: a range across right-to-left text can show in several places on a row.
++fn frame_outlines(corners: &[Corners<Point<Pixels>>]) -> Vec<Vec<Point<Pixels>>> {
++    let several_on_a_row = corners.windows(2).any(|pair| pair[0].top_left.y == pair[1].top_left.y);
++    if several_on_a_row {
++        corners.iter().map(|rect| frame_outline_points(std::slice::from_ref(rect))).collect()
++    } else {
++        vec![frame_outline_points(corners)]
++    }
++}
++
+ fn frame_outline_points(corners: &[Corners<Point<Pixels>>]) -> Vec<Point<Pixels>> {
+     let rects = corners
+         .iter()
+--- a/gpui-base-0.9.1/src/input/editor/display_map/inline_line.rs
++++ b/gpui-base-0.9.1/src/input/editor/display_map/inline_line.rs
+@@ -59,6 +59,17 @@
+             }
+         }
+     }
++    /// Where `range` shows on this row, left to right: one stretch for left-to-right text, several
++    /// where right-to-left text is involved.
++    pub(crate) fn x_ranges_for_index_range(&self, range: Range<usize>) -> Vec<Range<Pixels>> {
++        match &self.content {
++            Content::Text(line) => line.x_ranges_for_index_range(range).into_vec(),
++            Content::Inline(_) if range.start < range.end => {
++                vec![self.x_for_index(range.start)..self.x_for_index(range.end)]
++            }
++            Content::Inline(_) => Vec::new(),
++        }
++    }
+     pub(crate) fn closest_index_for_x(&self, x: Pixels) -> usize {
+         match &self.content {
+             Content::Text(line) => line.closest_index_for_x(x),

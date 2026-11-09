@@ -1,0 +1,35 @@
+[package]
+name = "glint-model"
+description = "Glint's pure logic, ported from the TypeScript in src/lib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# One feature per module, so each can be built and tested alone while others are being ported.
+[features]
+default = ["archives", "paths", "cast", "cd", "color", "format", "grid", "hex", "i18n", "json_tree", "markdown", "plain", "rank", "small_kinds", "store"]
+archives = []
+paths = ["archives"]
+cast = []
+cd = []
+color = []
+format = []
+grid = []
+hex = []
+i18n = []
+json_tree = []
+markdown = []
+plain = []
+rank = []
+small_kinds = []
+store = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+unicode-segmentation.workspace = true
+unicode-normalization.workspace = true
+chrono.workspace = true
+windows.workspace = true
