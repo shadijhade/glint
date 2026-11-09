@@ -2,20 +2,22 @@
 
 *Kept by the coordinator. "Model" is the agent tier used: Sonnet for logic with judgement or subtle semantics, Haiku for mechanical or table work. Status: planned, in progress, review, done, or blocked (with why).*
 
-## Wave 1: pure logic, leaf modules (`crates/glint-model`)
+## Wave 1: pure logic, leaf modules (`crates/glint-model`): done 2026-11-09
+
+*20 agents, ~7 minutes: 10 ports, 10 independent reviews, no must-fix problems. 123 tests pass with every module together; clippy is clean. Open coordinator decisions are in the cleanup pass below.*
 
 | Module | From | Model | Status |
 | :--- | :--- | :--- | :--- |
-| `archives` + `paths` | archives.ts (49), paths.ts (148) | Sonnet | planned |
-| `rank` | rank.ts (169) | Sonnet | planned |
-| `plain` | plain.ts (223) | Sonnet | planned |
-| `store` | store.ts (461) | Sonnet | planned |
-| `grid` | grid.ts (161) | Sonnet | planned |
-| `json_tree` | jsonTree.ts (124) | Sonnet | planned |
-| `format` + `color` + `hex` | format.ts (88), color.ts (17), hex.ts (37) | Haiku | planned |
-| `cast` + `cd` | cast.ts (59), cd.ts (52) | Haiku | planned |
-| `i18n` + `i18n_ar` | i18n.ts (49), i18n-ar.ts (309) | Haiku | planned |
-| `markdown` + `small_kinds` | markdown.ts (36), smallKinds.ts (21) | Haiku | planned |
+| `archives` + `paths` | archives.ts (49), paths.ts (148) | Sonnet | done |
+| `rank` | rank.ts (169) | Sonnet | done |
+| `plain` | plain.ts (223) | Sonnet | done |
+| `store` | store.ts (461) | Sonnet | done |
+| `grid` | grid.ts (161) | Sonnet | done |
+| `json_tree` | jsonTree.ts (124) | Sonnet | done |
+| `format` + `color` + `hex` | format.ts (88), color.ts (17), hex.ts (37) | Haiku | done |
+| `cast` + `cd` | cast.ts (59), cd.ts (52) | Haiku | done |
+| `i18n` + `i18n_ar` | i18n.ts (49), i18n-ar.ts (309) | Haiku | done |
+| `markdown` + `small_kinds` | markdown.ts (36), smallKinds.ts (21) | Haiku | done |
 
 ## Coming waves (order follows the dependencies)
 

@@ -5,7 +5,11 @@
 ## In short
 
 - **Goal:** Glint's own UI (the explorer, its dialogs, Settings, Quick Search, Ctrl+K) is drawn by GPUI in the same process as Glint's Rust code. That means no WebView2 at startup, no IPC, and no TypeScript. Today's 41,000 lines of TS/TSX/CSS become Rust.
-- **End state:** WebView2 stays only as an **on-demand document viewer** (the "island"). It's a child window, created the first time it's needed, that shows formats which are web content themselves: EPUB, Word, 3D models, Markdown with Mermaid or math, email HTML, Export as PDF. It's never loaded at startup. File Explorer hosts preview handlers the same way. Replacing those viewers too is an optional last phase.
+- **End state (your decision, 2026-11-09): no WebView at all.**
+  - No WebView2 island, no wry, no HTML or JS engine.
+  - Every preview that used a web library gets a native replacement (see "Previews" below, where island rows are now work to do).
+- **Where the work lives:** on the local branch `gpui-migration` (worktree `.claude/worktrees/gpui-migration`). Nothing is pushed until Glint runs fully on GPUI.
+- **Who does it:** Haiku and Sonnet agents port code in waves under [STANDARDS.md](STANDARDS.md). Each wave is checked by an independent reviewer, then reviewed and committed by the coordinator. [TRACKER.md](TRACKER.md) shows where each piece stands.
 - **Order:**
   1. A measured spike with go/no-go gates.
   2. Glint's Rust taken out of Tauri, and the app's state moved into Rust. This happens while the current app keeps shipping.
