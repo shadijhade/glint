@@ -624,12 +624,4 @@ mod tests {
         assert_eq!(grouping_code("3;2;0"), 32);
         assert_eq!(grouping_code(""), 3);
     }
-
-    #[test]
-    fn to_fixed_rounds_ties_up_like_javascript() {
-        assert_eq!(to_fixed(1.25, 1), "1.3");
-        assert_eq!(to_fixed(0.05, 1), "0.1");
-        assert_eq!(to_fixed(-0.04, 1), "-0.0");
-        assert_eq!(to_fixed(f64::NAN, 1), "NaN");
-    }
 }

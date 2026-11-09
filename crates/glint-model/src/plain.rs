@@ -212,18 +212,6 @@ fn is_year(word: &str) -> bool {
     b.len() == 4 && (word.starts_with("19") || word.starts_with("20")) && b[2].is_ascii_digit() && b[3].is_ascii_digit()
 }
 
-/// `Math.round` for a size or an age the words gave. A whole number comes back as it is: above 2^52 the
-/// `+ 0.5` inside `js_round` rounds to even, so 9007199254740991 would come out one higher, where JavaScript
-/// keeps it.
-// TODO(coordinator): the same guard belongs in js.rs's js_round, which would then fix every caller at once.
-fn math_round(x: f64) -> f64 {
-    if x.fract() == 0.0 {
-        x
-    } else {
-        js_round(x)
-    }
-}
-
 /// `"5"`, `"1.5"` or `"5mb"`: the number and what's stuck to it (`/^(\d+(?:\.\d+)?)([a-z]*)$/`).
 fn number_at(word: Option<&str>) -> Option<(&str, &str)> {
     let w = word?;
@@ -372,7 +360,7 @@ pub fn plain_query(text: &str) -> Option<Plain> {
             let count = number_at(next);
             if matches!(w, "last" | "past") {
                 if let (Some((num, "")), Some((unit, times, span))) = (count, after.and_then(age_unit)) {
-                    let n = math_round(num.parse::<f64>().unwrap_or(0.0) * times);
+                    let n = js_round(num.parse::<f64>().unwrap_or(0.0) * times);
                     found.add(
                         &format!("dm:{}{unit}", number_to_string(n)),
                         &format!("changed in the last {num} {span}"),
@@ -388,7 +376,7 @@ pub fn plain_query(text: &str) -> Option<Plain> {
                     _ => at(i + 3),
                 };
                 if let (Some((num, stuck)), Some((unit, times, span))) = (n, unit_word.and_then(age_unit)) {
-                    let v = math_round(num.parse::<f64>().unwrap_or(0.0) * times);
+                    let v = js_round(num.parse::<f64>().unwrap_or(0.0) * times);
                     found.add(
                         &format!("dm:>{}{unit}", number_to_string(v)),
                         &format!("older than {num} {span}"),
@@ -449,7 +437,7 @@ pub fn plain_query(text: &str) -> Option<Plain> {
                                 }
                             }
                             found.add(
-                                &format!("size:{op}{}{unit}", number_to_string(math_round(value))),
+                                &format!("size:{op}{}{unit}", number_to_string(js_round(value))),
                                 &format!("{said} {num} {name}"),
                             );
                             break 'step used;
