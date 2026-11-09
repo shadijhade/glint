@@ -548,11 +548,13 @@ pub struct KindTone {
     pub fill: Option<Hsla>,
 }
 
-/// Tailwind's colors the kinds' tones name (`Kind::tone`), as sRGB: v3's values, which v4's OKLCH ones match
-/// closely on an sRGB screen.
-fn tailwind(name: &str) -> Option<Hsla> {
+/// Tailwind's colors by name ("sky-500"), the ones the web UI used outside its tokens (the kinds' tones, cloud
+/// marks): sRGB, v3's values, which v4's OKLCH ones match closely on an sRGB screen. None for a name not here.
+pub fn tailwind(name: &str) -> Option<Hsla> {
     let hex: u32 = match name {
+        "sky-400" => 0x38bdf8,
         "sky-500" => 0x0ea5e9,
+        "sky-600" => 0x0284c7,
         "violet-500" => 0x8b5cf6,
         "pink-500" => 0xec4899,
         "red-500" => 0xef4444,
@@ -629,6 +631,12 @@ pub fn kind_tone(kind: &glint_model::file_types::Kind, cx: &App) -> KindTone {
         }
     }
     tone
+}
+
+/// The monospace family for paths, code and hex (index.css's `--font-mono`: Cascadia Mono), as the kit's theme
+/// holds it.
+pub fn mono_font(cx: &App) -> SharedString {
+    gpui_kit::component::Theme::global(cx).mono_font_family.clone()
 }
 
 #[cfg(test)]
