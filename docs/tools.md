@@ -17,7 +17,7 @@ They're the official Windows x64 releases, unmodified, installed next to `Glint.
 | Tool | In Glint | From (in that order) |
 | :--- | :--- | :--- |
 | [Czkawka](https://github.com/qarmin/czkawka) CLI | Clean up's look-alike pictures, videos and music, broken files and wrong extensions | winget `qarmin.czkawka.cli`, else its release, 12.0.2 |
-| [FFmpeg](https://ffmpeg.org/) | Reading videos for Clean up's look-alike videos | winget `Gyan.FFmpeg.Essentials`, else its release, 9.0.2 (with ffprobe) |
+| [FFmpeg](https://ffmpeg.org/) | **Media**: trim, convert and shrink (hardware encoders when the PC has them), the sound alone, GIFs; videos WebView2 can't play get a copy that plays; Clean up's look-alike videos | winget `Gyan.FFmpeg.Essentials`, else its release, 9.0.2 (with ffprobe) |
 | [Difftastic](https://github.com/Wilfred/difftastic) | Compare two files, and a changed file's **Changes**: code compared by its structure | winget `Wilfred.difftastic`, else its release, 0.72.0 |
 | [ast-grep](https://github.com/ast-grep/ast-grep) | Code patterns in Text mode (`Alt+A`), found and rewritten by their syntax | winget `ast-grep.ast-grep`, else its release, 0.51.0 |
 | [jaq](https://github.com/01mf02/jaq) | jq filters over JSON, YAML and TOML in their preview | its GitHub release, v3.1.1 |
@@ -32,8 +32,13 @@ They're the official Windows x64 releases, unmodified, installed next to `Glint.
 | [uv](https://github.com/astral-sh/uv) | pyproject.toml's scripts in **Run**, and Python scripts in **Scripts** | winget `astral-sh.uv`, else its release, 0.13.6 |
 | [Bun](https://bun.sh/) | TypeScript and JavaScript scripts in **Scripts** (Node.js works too, for JavaScript) | winget `Oven-sh.Bun`, else its release, 1.4.4 (the baseline build, for any x64 processor) |
 | [Nushell](https://www.nushell.sh/) | A shell for the terminal, and Nushell scripts in **Scripts** | winget `Nushell.Nushell`, else its release, 0.116.1 |
+| [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | Speech search (`says:`) and **Make subtitles** (an .srt beside a video, in its language or in English) | its GitHub release, b5454, with Whisper's base model |
 | [sendme](https://github.com/n0-computer/sendme) | **Send to another PC** and **Receive from another PC** | winget `n0-computer.sendme`, else its release, 0.37.1 |
 | [dufs](https://github.com/sigoden/dufs) | **Share on this network** | winget `sigoden.Dufs`, else its release, 0.47.0 |
+| [pdfcpu](https://github.com/pdfcpu/pdfcpu) | **PDF tools**: merge, split, keep or take out pages, turn pages, make smaller, save its pictures, passwords (AES-256), stamps. Run offline (`--offline`), its settings folder off | its GitHub release, v0.16.4 |
+| [DuckDB](https://duckdb.org) | **Query** over CSV, JSON and Parquet files of any size, read where they are; **Profile**; **Query together**; **Convert data**. Locked down first: no extensions downloaded or loaded, only the chosen files readable, one SELECT at a time | its GitHub release, v2.0.0 |
+| [ExifTool](https://exiftool.org) | **Remove personal info** from photos, videos and PDFs (Office files are cleaned by Glint itself), and **Change when it was taken** | its release from SourceForge (which keeps every version), 13.61, with its exiftool_files folder |
+| [7-Zip](https://7-zip.org) | Disk images, installers and packages opened like folders: ISO, IMG, VHD(X), VMDK, DMG, WIM, ext4/APFS images, NSIS installers, DEB, RPM | its release's installer, 26.06, whose 7z payload Glint unpacks itself (nothing in it runs); a 7-Zip installed in Program Files is used too |
 | [rclone](https://rclone.org) | Google Drive, OneDrive, Dropbox and 60 more clouds under **Remote**, signed in to from Glint, and folder rules that keep a folder in sync with one ([how](remote.md#clouds-through-rclone)) | winget `Rclone.Rclone`, else its release, 1.75.2 |
 
 Meaning search's model isn't a program, but it's listed with them: Model2Vec's [potion-base-8M](https://huggingface.co/minishlab/potion-base-8M) (30 MB), downloaded from Hugging Face the first time it's asked for (or from [a copy on Glint's GitHub releases](https://github.com/shadijhade/glint/releases/tag/potion-base-8M-bf8b056) where Hugging Face can't be reached), at a pinned revision and checked against its SHA-256 checksums.

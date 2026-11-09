@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { Clock, Database, Disc, Download, Images, FileText, Film, Folder, HardDrive, House, Image, type LucideIcon, Monitor, Music, Plus, Search, Server, SquareTerminal, Trash2, Unplug, Usb, X } from "lucide-react";
 import { t } from "@/lib/i18n";
 import { toast } from "sonner";
@@ -168,9 +169,41 @@ function Place({ icon: Icon, iconClass, label, path, active, title, onContextMen
     );
 }
 
+/** Filters the index can't answer by itself (they read the files, or photo and speech search's indexes). */
+const READS_FILES = /(width|height|taken|camera|duration|artist|album|shows|says|tag):/i;
+
+/**
+ * How many items a saved search finds now, from instant search (in milliseconds), refreshed when the window
+ * comes back to the front: "1,000+" past a thousand; null where the index can't say (not running, a folder
+ * it doesn't cover, or filters that read the files).
+ */
+function useSavedCount(search: SavedSearch) {
+    const drives = useExplorer((s) => s.drives);
+    const [count, setCount] = useState<string | null>(null);
+    useEffect(() => {
+        if (READS_FILES.test(search.query)) return;
+        const roots = search.folder === THIS_PC ? drives.map((d) => d.path) : [search.folder];
+        if (!roots.length) return;
+        let stale = false;
+        const ask = () =>
+            void invoke<[number, boolean] | null>("index_count", { query: search.query, roots, max: 1000 }).then(
+                (found) => !stale && setCount(found ? `${found[0].toLocaleString()}${found[1] ? "+" : ""}` : null),
+                () => {}
+            );
+        ask();
+        window.addEventListener("focus", ask);
+        return () => {
+            stale = true;
+            window.removeEventListener("focus", ask);
+        };
+    }, [search.query, search.folder, drives]);
+    return count;
+}
+
 /** A saved search: one click runs it again; the cross takes it out of the sidebar. */
 function SavedSearchItem({ search }: { search: SavedSearch }) {
     const toggle = useStore((s) => s.toggleSavedSearch);
+    const count = useSavedCount(search);
     return (
         <div className="group relative">
             <button onClick={() => void runSavedSearch(search)} title={`Search for “${search.query}” in ${search.folder || "every drive"}`} className={cn(PLACE, "md:pe-7")}>
@@ -179,6 +212,7 @@ function SavedSearchItem({ search }: { search: SavedSearch }) {
                     <div className="truncate">{search.query}</div>
                     <div className="truncate text-xs text-muted-foreground">{search.folder === THIS_PC ? "All drives" : baseName(search.folder)}</div>
                 </div>
+                {count && <span className="hidden text-xs tabular-nums text-muted-foreground group-hover:invisible md:block" title="Found now, by instant search">{count}</span>}
             </button>
             <button
                 onClick={() => toggle(search)}

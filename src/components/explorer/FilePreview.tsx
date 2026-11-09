@@ -1,5 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { CantPlay, TrimBar } from "./MediaTools";
+import { DUCK_READS, ProfileView } from "./DataTools";
+import { NotebookView } from "./NotebookView";
+import { MODEL_EXTS } from "./modelExts";
+
+const ModelView = lazy(() => import("./ModelView"));
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Check, Clock, Cloud, Copy, ExternalLink, Images, FileArchive, Fingerprint, FolderLock, FolderOpen, FolderSearch, GitCompareArrows, HardDrive, Loader2, Maximize2, Minimize2, PenLine, Pipette, RotateCcw, RotateCwSquare, ScanText, Trash2, Wallpaper, WrapText, X } from "lucide-react";
 import { toast } from "sonner";
@@ -347,17 +353,26 @@ type MediaKind = "image" | "video" | "audio" | "pdf";
 
 /** A picture, video, sound or PDF, from a file on disk. */
 function Media({ entry, kind, src }: { entry: FileEntry; kind: MediaKind; src: string }) {
-    const player = useRef<HTMLVideoElement>(null);
     if (kind === "image") return <ImagePreview entry={entry} src={src} />;
-    if (kind === "video")
-        return (
-            <Centered className="p-3">
-                <video ref={player} src={src} controls className="max-h-full max-w-full rounded-sm" />
-                {!isArchived(entry) && !isRemote(entry) && <Transcript path={entry.path} player={player} />}
-            </Centered>
-        );
+    if (kind === "video") return <VideoPreview key={entry.path} entry={entry} src={src} />;
     if (kind === "audio") return <AudioPreview entry={entry} src={src} />;
     return <PdfPreview entry={entry} src={src} />;
+}
+
+/** A video in its player, with Trim; one WebView2 can't play gets a copy that it can (MediaTools.tsx). */
+function VideoPreview({ entry, src }: { entry: FileEntry; src: string }) {
+    const player = useRef<HTMLVideoElement>(null);
+    const local = !isArchived(entry) && !isRemote(entry);
+    const [copy, setCopy] = useState<string | null>(null);
+    const [failed, setFailed] = useState(false);
+    if (failed && local && !copy) return <Centered className="p-3"><CantPlay entry={entry} onReady={setCopy} /></Centered>;
+    return (
+        <Centered className="p-3">
+            <video ref={player} src={copy ?? src} controls className="max-h-full max-w-full rounded-sm" onError={() => setFailed(true)} />
+            {local && <TrimBar entry={entry} player={player} video />}
+            {local && <Transcript path={entry.path} player={player} />}
+        </Centered>
+    );
 }
 
 /** A song with its cover, when it has one, over its player. */
@@ -368,6 +383,7 @@ function AudioPreview({ entry, src }: { entry: FileEntry; src: string }) {
         <Centered>
             {cover ? <img src={cover} alt="Cover" draggable={false} className="size-44 rounded-md object-cover shadow-md" /> : <BigIcon entry={entry} />}
             <audio ref={player} src={src} controls className="w-full max-w-sm" />
+            {!isArchived(entry) && !isRemote(entry) && <TrimBar entry={entry} player={player} video={false} />}
             {!isArchived(entry) && !isRemote(entry) && <Transcript path={entry.path} player={player} />}
         </Centered>
     );
@@ -768,6 +784,9 @@ export function EntryPreview({
     const archive = archived ? archiveOf() : undefined;
     const readable = !entry.dir && !isOnlineOnly(entry) && !isClosed(entry) && !isLocked(entry) && !isListOnly(entry);
     const markdown = readable && isMarkdown(entry);
+    // Jupyter notebooks as they read, and 3D models drawn (both from disk).
+    const notebook = readable && !archived && entry.ext === "ipynb";
+    const model = readable && !archived && MODEL_EXTS.has(entry.ext);
     // JSON, YAML and TOML as a tree (up to the 64 MB the jq worker reads).
     const data = readable && entry.size <= 64 * 1024 * 1024 ? dataFormat(entry) : undefined;
     // Workbooks and Parquet files as tables, from disk; a workbook can show in Windows' previewer too (Excel's).
@@ -781,7 +800,11 @@ export function EntryPreview({
     const mark = useGitMark(entry.path);
     const changed = !entry.dir && !archived && !!mark && mark !== "ignored";
     const views: { view: View; label: string; title: string }[] = [
-        markdown
+        notebook
+            ? { view: "file", label: "Notebook", title: "The notebook as it reads, its outputs included" }
+            : model
+              ? { view: "file", label: "Model", title: "The model, drawn" }
+              : markdown
             ? { view: "file", label: "Rendered", title: "The Markdown as it reads" }
             : data
               ? { view: "file", label: "Tree", title: "Its values as a tree, with a jq filter" }
@@ -790,11 +813,12 @@ export function EntryPreview({
                 : cast
                   ? { view: "file", label: "Play", title: "The recording, played" }
                   : { view: "file", label: "File", title: "The file as it is" },
-        ...(markdown ? [{ view: "source" as const, label: "Source", title: "The Markdown as written" }] : []),
+        ...(markdown || notebook ? [{ view: "source" as const, label: "Source", title: notebook ? "The notebook's JSON as written" : "The Markdown as written" }] : []),
         ...(data || cast ? [{ view: "source" as const, label: "Text", title: "The file as written" }] : []),
         ...(workbook ? [{ view: "source" as const, label: "Previewer", title: "As Windows' previewer for it shows it (Excel's, with Office installed)" }] : []),
         ...(changed ? [{ view: "changes" as const, label: "Changes", title: "What changed since the last commit (Git)" }] : []),
         ...(queryable ? [{ view: "query" as const, label: "Query", title: "SQL over it, reading only" }] : []),
+        ...(readable && !archived && DUCK_READS.has(entry.ext) && entry.ext !== "txt" ? [{ view: "profile" as const, label: "Profile", title: "Each column described from all its rows (DuckDB)" }] : []),
         ...(readable ? [{ view: "hex" as const, label: "Hex", title: "Its bytes, in hexadecimal" }] : []),
     ];
     const chosen = usePreviewView((s) => s.view);
@@ -804,6 +828,7 @@ export function EntryPreview({
     if (view === "changes") body = <ChangesView entry={entry} />;
     else if (view === "hex") body = <HexView entry={entry} />;
     else if (view === "query") body = <QueryView entry={entry} />;
+    else if (view === "profile") body = <ProfileView entry={entry} />;
     else if (entry.dir) body = <FolderPreview entry={entry} />;
     else if (isOnlineOnly(entry))
         body = (
@@ -837,6 +862,13 @@ export function EntryPreview({
             ) : (
                 <SheetPreview entry={entry} />
             );
+    else if (notebook) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <NotebookView entry={entry} />;
+    else if (model)
+        body = (
+            <Suspense fallback={<Waiting />}>
+                <ModelView entry={entry} />
+            </Suspense>
+        );
     else if (markdown) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <MarkdownPreview entry={entry} />;
     else if (data) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <DataTree entry={entry} format={data} />;
     else if (cast) body = view === "source" ? <TextPreview entry={entry} over={!!onClose} /> : <CastPreview entry={entry} />;

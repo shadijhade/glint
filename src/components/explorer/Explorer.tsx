@@ -10,15 +10,21 @@ import {
     AppWindow,
     ArchiveRestore,
     ArrowLeft,
-    ArrowRight,
     ArrowLeftRight,
+    ArrowRight,
     ArrowRightLeft,
     ArrowUp,
+    AudioLines,
     Bookmark,
     BookmarkCheck,
+    Box,
     BrushCleaning,
+    CalendarClock,
+    Captions,
     ChevronLeft,
     ChevronRight,
+    Circle,
+    Clapperboard,
     ClipboardCopy,
     ClipboardPaste,
     Clock,
@@ -37,9 +43,14 @@ import {
     EyeOff,
     FileArchive,
     FileClock,
+    FileCog,
+    FileDown,
     FileJson,
     FilePlus,
     Files,
+    FileStack,
+    FileText,
+    Film,
     Fingerprint,
     Folder,
     FolderCog,
@@ -61,8 +72,11 @@ import {
     LayoutGrid,
     List,
     ListChecks,
+    ListTree,
     Loader2,
     Lock,
+    LockOpen,
+    Minimize2,
     Monitor,
     Moon,
     PanelRight,
@@ -73,6 +87,7 @@ import {
     Play,
     PlugZap,
     Plus,
+    Radar,
     RotateCcw,
     RotateCcwSquare,
     RotateCw,
@@ -87,11 +102,15 @@ import {
     Settings as SettingsIcon,
     Share2,
     ShieldCheck,
+    Sigma,
     SlidersHorizontal,
+    Smartphone,
     Square,
     SquarePlus,
     SquareTerminal,
+    Stamp,
     Sun,
+    Tag,
     TextSearch,
     Trash2,
     Undo2,
@@ -101,9 +120,6 @@ import {
     X,
     ZoomIn,
     ZoomOut,
-    Box,
-    Circle,
-    Tag,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { SINGLE_FILE, useCompressAsk } from "@/lib/archives";
@@ -208,6 +224,7 @@ import {
     useTab,
     viewKey,
     zoomGrid,
+    firstFolderPainted,
 } from "@/lib/explorer";
 import { formatCount, plural } from "@/lib/format";
 import { newKinds } from "@/lib/newKinds";
@@ -249,6 +266,18 @@ import { openRules } from "./RulesDialog";
 import { openCleanup } from "./CleanupDialog";
 import { compareFiles } from "./CompareFilesDialog";
 import { canConvert, convertPictures } from "./ConvertDialog";
+import { openMedia } from "./MediaDialog";
+import { isPdfFile, openPdfTools } from "./PdfDialog";
+import { convertData, isDataFile, queryTogether } from "./DataTools";
+import { canClean, canRedate, openMetadata } from "./MetadataDialog";
+import { canEncrypt, isAgeFile, openVault } from "./VaultDialog";
+import { isMediaFile, isVideoFile } from "@/lib/studio";
+import { GROUP_BYS, type Grouped, groupRows } from "@/lib/groups";
+import { exportMarkdownPdf } from "@/lib/actions";
+import { isMarkdown } from "@/lib/fileTypes";
+import { sendToDevice } from "@/lib/devices";
+import { openNearby } from "./NearbyDialog";
+import { NextColumn, ParentColumn } from "./ColumnsView";
 import { DiskUsage } from "./DiskUsage";
 import { inspectDuplicates } from "./DuplicatesDialog";
 import { FileGrid } from "./FileGrid";
@@ -279,6 +308,21 @@ const copyText = (text: string, what: string) =>
     );
 
 const report = (what: string) => (e: unknown) => toast.error(what, { description: String(e) });
+/** The PCs paired with this one (Settings → Devices), which files can be sent to. */
+const pairedDevices = () => useStore.getState().remotes.filter((r) => r.kind === "device" && !!r.host);
+/** Export as PDF: Markdown drawn as the preview draws it, a PDF beside each (print.rs). */
+const pdfFromMarkdown = (entries: FileEntry[]) =>
+    toast.promise(
+        exportMarkdownPdf(
+            entries.map((e) => e.path),
+            () => {}
+        ),
+        {
+            loading: entries.length > 1 ? `Exporting ${entries.length} files as PDF…` : `Exporting “${entries[0].name}” as PDF…`,
+            success: (r) => (r.made.length ? { message: `Made ${r.made.length === 1 ? baseName(r.made[0]) : `${r.made.length} PDFs`}`, action: { label: "Show", onClick: () => void revealInApp(r.made[0]) } } : { message: r.failed[0]?.[1] ?? "Nothing was made" }),
+            error: (e) => `Couldn't export it: ${e}`,
+        }
+    );
 const properties = (path: string) => showProperties(path).catch(report("Couldn't show the properties"));
 /** File Explorer, with the archive file selected: what's inside it isn't a place File Explorer can show here. */
 const revealArchive = (archive: InArchive) => revealItemInDir(archive.outer).catch(report("Couldn't open File Explorer"));
@@ -903,7 +947,9 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
             canReopenTab() && action("reopen-tab", "Reopen closed tab", RotateCcw, reopenClosedTab, "Ctrl+Shift+T"),
             tabs > 1 && action("next-tab", "Next tab", ChevronRight, () => cycleTab(1), "Ctrl+Tab"),
             tabs > 1 && action("previous-tab", "Previous tab", ChevronLeft, () => cycleTab(-1), "Ctrl+Shift+Tab"),
+            action("nearby", chosenEntries.length ? "Send the selection to a phone nearby (LocalSend)" : "Phones and computers nearby (LocalSend): send or receive", Radar, () => openNearby(chosenEntries.map((e) => e.path))),
             action("dual", s.dual ? "Close the second pane" : "Dual pane: two folders side by side", Columns2, toggleDual, "Ctrl+Shift+D"),
+            ...GROUP_BYS.map(({ by, label }) => action(`group-${by}`, by === "none" ? "Group by: nothing (no headers in the list)" : `Group by ${label.toLowerCase()}: headers in the list`, ListTree, () => setSettings({ groupBy: by }))),
             action("compare-panes", s.dual && s.comparePanes ? "Stop comparing panes" : "Compare panes: highlight differences between both panes", GitCompareArrows, toggleComparePanes, "Ctrl+Shift+M"),
             s.dual && action("switch-pane", "Switch to the other pane", ArrowRightLeft, switchPane, "F6"),
             s.dual && action("swap-panes", "Swap panes", ArrowLeftRight, swapPanes, "Ctrl+Shift+U"),
@@ -923,6 +969,18 @@ export function Explorer({ active, onSearchText, onOpenSettings }: ExplorerProps
                 ),
             !!oneArchive && !closedItems && action("extract", `Extract “${oneArchive.name}” here`, ArchiveRestore, () => extractHere(oneArchive.path)),
             chosenEntries.some(canConvert) && action("convert", "Convert the selected pictures: JPEG, PNG, WebP or AVIF, smaller", ImageDown, () => convertPictures(chosenEntries)),
+            chosenEntries.some(isVideoFile) && action("media-convert", "Convert or shrink the selected videos (MP4, HEVC, AV1, to fit a size)", Film, () => openMedia(chosenEntries, "convert")),
+            chosenEntries.some(isMediaFile) && action("media-audio", "Take the sound out of the selected videos or recordings", AudioLines, () => openMedia(chosenEntries, "audio")),
+            chosenEntries.some(isVideoFile) && action("media-gif", "Make a GIF of the selected video", Clapperboard, () => openMedia(chosenEntries, "gif")),
+            chosenEntries.some(canEncrypt) && action("encrypt", "Encrypt the selection with a passphrase (age)", Lock, () => openVault(chosenEntries, "encrypt")),
+            chosenEntries.some(isAgeFile) && action("decrypt", "Decrypt the selected .age files", LockOpen, () => openVault(chosenEntries, "decrypt")),
+            chosenEntries.some(canClean) && action("remove-personal-info", "Remove personal info: where, who and with what, before sharing", EyeOff, () => openMetadata(chosenEntries, "scrub")),
+            chosenEntries.some(canRedate) && action("date-taken", "Change when the selected photos or videos were taken", CalendarClock, () => openMetadata(chosenEntries, "date")),
+            chosenEntries.filter(isDataFile).length > 1 && action("query-together", "Query the selected data files together with SQL (DuckDB)", Sigma, () => queryTogether(chosenEntries)),
+            chosenEntries.some(isDataFile) && action("convert-data", "Convert the selected data files: CSV, Parquet or JSON lines", FileCog, () => convertData(chosenEntries)),
+            chosenEntries.filter(isPdfFile).length > 1 && action("pdf-merge", "Merge the selected PDFs into one", FileStack, () => openPdfTools(chosenEntries, "merge")),
+            chosenEntries.some(isPdfFile) && action("pdf-tools", "PDF tools: split, pages, smaller, pictures, passwords, stamp", FileText, () => openPdfTools(chosenEntries, "optimize")),
+            chosenEntries.some(isMediaFile) && action("media-subtitles", "Make subtitles for the selected videos (heard on this PC)", Captions, () => openMedia(chosenEntries, "subtitles")),
             !!archive &&
                 samePath(t.path, archive.path) &&
                 samePath(archive.path, archive.outer) &&
@@ -1388,7 +1446,20 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         () => (settings.showReadme && !find && !mapRows && isFolderPath(path) && listing && !listing.fromIndex ? readmeOf(listing.entries) : undefined),
         [settings.showReadme, find, mapRows, path, listing]
     );
-    const rows = mapRows ?? listRows;
+    const groupedRef = useRef<Grouped | null>(null);
+    // Group by (the list only): rows ordered group by group, with a header line over each.
+    const groupBy = settings.groupBy ?? "none";
+    const grouped = useMemo(() => {
+        if (groupBy === "none" || mapRows || view === "grid") return null;
+        const sizeOf = sizeRun ? (e: FileEntry) => sizeRun.sizes.get(e.name) ?? -1 : undefined;
+        return groupRows(listRows, groupBy, Date.now(), sizeOf, gitMarks);
+    }, [groupBy, mapRows, view, listRows, sizeRun, gitMarks]);
+    groupedRef.current = grouped;
+    const rows = mapRows ?? grouped?.rows ?? listRows;
+    // The first folder on screen since Glint started (the bench harness's cold start).
+    useEffect(() => {
+        if (listing) firstFolderPainted();
+    }, [listing]);
 
     const rowIndexByPath = useMemo(() => {
         const map = new Map<string, number>();
@@ -1455,6 +1526,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     useLayoutEffect(() => {
         if (current) useActiveView.setState({ selected, comparePair, items: rows.length, folder, total, noAccess: shut, repo });
     }, [current, selected, comparePair, rows.length, folder, total, shut, repo]);
+
 
     const rowsRef = useRef(rows);
     rowsRef.current = rows;
@@ -1606,12 +1678,21 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 else if (key === "d") useExplorer.setState({ editingAddress: true });
                 else if (key === "p") setSettings({ showPreviewPane: !useStore.getState().settings.showPreviewPane });
                 else return;
+            } else if (s.view === "columns" && !ctrl && !e.altKey && !e.shiftKey && (key === "ArrowLeft" || key === "ArrowRight")) {
+                // Columns: ← to the folder above (this one selected there), → into the focused folder.
+                if (key === "ArrowLeft") goUp();
+                else {
+                    const at = s.focus ? (rowIndexByPathRef.current.get(s.focus) ?? -1) : -1;
+                    const focused = at >= 0 ? rowsRef.current[at] : undefined;
+                    if (focused?.dir) void navigate(focused.path);
+                }
             } else if (to !== null && !e.altKey) {
                 go(to);
             } else if (ctrl) {
                 const paths = selectedNow().map((r) => r.path);
                 // As in Explorer: Ctrl+Shift+2 for large icons, Ctrl+Shift+6 for details.
-                if (e.shiftKey && (e.code === "Digit2" || e.code === "Digit6") && (s.path !== THIS_PC || s.find)) chooseView(e.code === "Digit2" ? "grid" : "list", tab);
+                // Ctrl+Shift+9 for columns (unused in File Explorer).
+                if (e.shiftKey && (e.code === "Digit2" || e.code === "Digit6" || e.code === "Digit9") && (s.path !== THIS_PC || s.find)) chooseView(e.code === "Digit2" ? "grid" : e.code === "Digit9" ? "columns" : "list", tab);
                 // In the grid, as a browser zooms: Ctrl+= (or +) bigger tiles, Ctrl+- smaller, Ctrl+0 medium again.
                 else if (grid && !e.altKey && ["=", "+", "-", "_", "0"].includes(key)) zoomGrid(key === "0" ? 0 : key === "-" || key === "_" ? -1 : 1);
                 else if (key === "Tab") cycleTab(e.shiftKey ? -1 : 1);
@@ -1717,7 +1798,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
             if (!mark) return;
             const end = at(pointer.x, pointer.y);
             const rows = rowsRef.current;
-            const hits = marqueeHits(start, end, rows.length, rowHeight, cols, list.clientWidth, pad);
+            // Grouped, the list's lines are headers and rows: what's covered is the rows among them.
+            const lines = groupedRef.current?.lines;
+            const covered = marqueeHits(start, end, lines ? lines.length : rows.length, rowHeight, cols, list.clientWidth, pad);
+            const hits = lines ? covered.map((l) => lines[l]).filter((r) => r >= 0) : covered;
             const first = hits.length ? hits[0] : -1;
             const last = hits.length ? hits[hits.length - 1] : -1;
             if (hits.length === lastLen && first === lastFirst && last === lastLast) return;
@@ -1893,6 +1977,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
         const fixed = !!archived || closed || remote;
         const browses = !!one && (one.dir || isArchiveFile(one));
         const pictures = targets.filter(canConvert);
+        const media = fixed ? [] : targets.filter(isMediaFile);
+        const videos = media.filter(isVideoFile);
+        const pdfs = fixed ? [] : targets.filter(isPdfFile);
+        const dataFiles = fixed ? [] : targets.filter(isDataFile);
         const rotatable = fixed ? [] : targets.filter(canRotate);
         // OneDrive and other cloud-synced items: always kept on this device (or not), or freed up.
         const cloud = !fixed && targets.every((t) => onDisk(t) && isCloudFile(t));
@@ -2023,6 +2111,8 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     { label: "Edit tags…", icon: Tag, onSelect: () => useTagsEdit.setState({ paths }) },
                 ],
             },
+            !fixed && targets.every(isAgeFile) && { label: targets.length > 1 ? `Decrypt ${targets.length} files…` : "Decrypt…", icon: LockOpen, onSelect: () => openVault(targets, "decrypt") },
+            !fixed && targets.some(canEncrypt) && { label: "Encrypt…", icon: Lock, onSelect: () => openVault(targets, "encrypt") },
             !fixed && {
                 label: "Compress to",
                 icon: FileArchive,
@@ -2042,6 +2132,35 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 ],
             },
             pictures.length > 0 && { label: pictures.length > 1 ? `Convert ${pictures.length} pictures…` : "Convert picture…", icon: ImageDown, onSelect: () => convertPictures(pictures) },
+            media.length > 0 && {
+                label: "Media",
+                icon: Film,
+                items: [
+                    videos.length > 0 && { label: videos.length > 1 ? `Convert or shrink ${videos.length} videos…` : "Convert or shrink…", icon: Film, onSelect: () => openMedia(media, "convert") },
+                    { label: "Take the sound out…", icon: AudioLines, onSelect: () => openMedia(media, "audio") },
+                    videos.length > 0 && { label: "Make a GIF…", icon: Clapperboard, onSelect: () => openMedia(media, "gif") },
+                    { label: "Make subtitles…", icon: Captions, onSelect: () => openMedia(media, "subtitles") },
+                ],
+            },
+            !fixed && targets.some(isMarkdown) && { label: "Export as PDF", icon: FileDown, onSelect: () => void pdfFromMarkdown(targets.filter(isMarkdown)) },
+            dataFiles.length > 1 && { label: `Query ${dataFiles.length} files together…`, icon: Sigma, onSelect: () => queryTogether(dataFiles) },
+            dataFiles.length > 0 && { label: "Convert data…", icon: FileCog, onSelect: () => convertData(dataFiles) },
+            pdfs.length > 0 && {
+                label: "PDF tools",
+                icon: FileText,
+                items: [
+                    pdfs.length > 1 && { label: `Merge ${pdfs.length} PDFs…`, icon: FileStack, onSelect: () => openPdfTools(pdfs, "merge") },
+                    { label: "Split…", icon: Scissors, onSelect: () => openPdfTools(pdfs, "split") },
+                    { label: "Keep or take out pages…", icon: FileText, onSelect: () => openPdfTools(pdfs, "keep") },
+                    { label: "Turn pages…", icon: RotateCw, onSelect: () => openPdfTools(pdfs, "rotate") },
+                    { label: "Make smaller", icon: Minimize2, onSelect: () => openPdfTools(pdfs, "optimize") },
+                    { label: "Save its pictures…", icon: Images, onSelect: () => openPdfTools(pdfs, "images") },
+                    "separator" as const,
+                    { label: "Add a password…", icon: KeyRound, onSelect: () => openPdfTools(pdfs, "encrypt") },
+                    { label: "Take the password off…", icon: LockOpen, onSelect: () => openPdfTools(pdfs, "decrypt") },
+                    { label: "Stamp…", icon: Stamp, onSelect: () => openPdfTools(pdfs, "stamp") },
+                ],
+            },
             one && canWallpaper(one) && { label: "Set as desktop background", icon: Wallpaper, onSelect: () => void setWallpaper(one.path) },
             rotatable.length > 0 && { label: "Rotate right", icon: RotateCwSquare, onSelect: () => void rotatePictures(rotatable.map((t) => t.path), true, tabRef.current) },
             rotatable.length > 0 && { label: "Rotate left", icon: RotateCcwSquare, onSelect: () => void rotatePictures(rotatable.map((t) => t.path), false, tabRef.current) },
@@ -2070,7 +2189,15 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                     one?.dir && !fixed && { label: "Find duplicate files", icon: Files, onSelect: () => inspectDuplicates(one.path) },
                     one?.dir && !fixed && { label: "Clean up…", icon: BrushCleaning, onSelect: () => openCleanup(one.path) },
                     one?.dir && !fixed && { label: "Export as ncdu JSON…", icon: FileJson, onSelect: () => void exportAsNcdu(one.path) },
+                    !fixed && targets.some(canClean) && { label: "Remove personal info…", icon: EyeOff, onSelect: () => openMetadata(targets, "scrub") },
+                    !fixed && targets.some(canRedate) && { label: "Change when it was taken…", icon: CalendarClock, onSelect: () => openMetadata(targets, "date") },
                     "separator",
+                    !fixed && pairedDevices().length > 0 && {
+                        label: "Send to my PC",
+                        icon: Monitor,
+                        items: pairedDevices().map((d) => ({ label: d.name, icon: Monitor, onSelect: () => void sendToDevice(d, paths) })),
+                    },
+                    !fixed && { label: "Send to a phone nearby…", icon: Smartphone, onSelect: () => openNearby(paths) },
                     one && !fixed && { label: "Send to another PC…", icon: Send, onSelect: () => offerToPC(one.path) },
                     one && !fixed && { label: "Share on this network…", icon: Wifi, onSelect: () => offerOnNetwork(one.path) },
                     !fixed && { label: "Share with Windows…", icon: Share2, onSelect: () => void shareWithWindows(paths) },
@@ -2152,6 +2279,10 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                       onSelect: () => setColumns(shown.has(id) ? columns.filter((c) => c !== id) : inOrder([...columns, id])),
                   }))),
             ownsView && !!ownView && { label: `Like other ${kind === "general" ? "folders" : `${KINDS[kind].label} folders`} again`, icon: RotateCcw, onSelect: () => setFolderView(path, null) },
+            !mapRows && view !== "grid" && { heading: "Group by" },
+            ...(!mapRows && view !== "grid"
+                ? GROUP_BYS.map(({ by, label }) => ({ label, checked: groupBy === by, onSelect: () => setSettings({ groupBy: by }) }))
+                : []),
             { heading: "Sort by" },
             ...([["name", "Name"], ...COLUMN_ORDER.filter((id) => fixed ? shown.has(id) : true).map((id) => [COLUMNS[id].sort, COLUMNS[id].label])] as [SortKey, string][]).map(([key, label]) => ({
                 label,
@@ -2301,6 +2432,7 @@ function PaneView({ index, active, menuContext }: PaneProps) {
     const navAnim = navRef.current.anim;
     const viewProps = {
         rows,
+        grouped,
         search: !!find || recentHere || galleryHere,
         dateLabel: galleryHere ? "Date" : undefined,
         recycled: bin,
@@ -2565,6 +2697,14 @@ function PaneView({ index, active, menuContext }: PaneProps) {
                 ) : view === "grid" ? (
                     <div className="h-full min-w-0 flex-1">
                         <FileGrid key={`${tabId}:${placeKey}`} {...viewProps} pane={index} tile={tile} onZoom={zoomGrid} />
+                    </div>
+                ) : view === "columns" ? (
+                    <div className="flex h-full min-w-0 flex-1">
+                        <ParentColumn path={path} showHidden={showHidden} />
+                        <div className="h-full min-w-0 flex-1">
+                            <FileList key={`${tabId}:${placeKey}`} {...viewProps} rowHeight={height} thumbnails={settings.listThumbnails} iconBox={remPx(settings.fontSize)} />
+                        </div>
+                        <NextColumn entry={focusIndex >= 0 ? rows[focusIndex] : null} showHidden={showHidden} />
                     </div>
                 ) : (
                     <div className="h-full min-w-0 flex-1">
