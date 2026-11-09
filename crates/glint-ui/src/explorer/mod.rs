@@ -83,8 +83,9 @@ mod tab;
 mod tabs;
 mod types;
 
+/// A fake disk for tests: views' tests use it too (`crate::explorer::fake::{FakeDisk, file, folder}`).
 #[cfg(test)]
-mod fake;
+pub(crate) mod fake;
 #[cfg(test)]
 mod tests;
 
