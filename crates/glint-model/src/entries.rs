@@ -571,6 +571,7 @@ pub enum SortKey {
 
 /// A sort: by what, and which way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Sort {
     pub key: SortKey,
     pub desc: bool,

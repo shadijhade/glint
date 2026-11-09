@@ -403,6 +403,15 @@ mod tests {
     }
 
     #[test]
+    fn kind_of_treats_a_dot_env_file_as_text() {
+        // ".env" has no extension of its own, so it takes the text kind by name, as ".gitignore" does.
+        assert_eq!(kind_of(&entry(".env")).icon, Icon::FileText);
+        assert_eq!(kind_of(&entry(".env")).preview, Some(PreviewKind::Text));
+        assert_eq!(kind_of(&entry(".ENV")).preview, Some(PreviewKind::Text));
+        assert_eq!(kind_of(&entry("prod.env")).preview, Some(PreviewKind::Text));
+    }
+
+    #[test]
     fn type_label_fills_in_the_extension() {
         assert_eq!(type_label(&entry("a.png")), "PNG image");
         assert_eq!(type_label(&entry("a.rs")), "RS source file");

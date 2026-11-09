@@ -13,7 +13,8 @@ use crate::js::{js_round, number_to_string};
 use crate::store::{Column, ViewMode};
 
 /// The list's columns besides the name (and, in a list of items from many folders, where each is).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ColumnId {
     Modified,
     Taken,

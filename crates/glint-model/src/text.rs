@@ -61,6 +61,51 @@ pub fn escape_regex(s: &str) -> String {
     out
 }
 
+/// The text JavaScript's `.` matches, without its `s` flag: every character but `\n`, `\r`, U+2028 and U+2029.
+const JS_DOT: &str = "[^\\n\\r\\u{2028}\\u{2029}]";
+
+/// Rewrites the unescaped `.` outside a character class to [`JS_DOT`], so a single-line regex search matches
+/// what the TypeScript's `.` matches. An escaped `\.` and a `.` inside `[...]` are left as they are.
+fn js_dot(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() + 16);
+    let mut chars = pattern.chars();
+    // How many character classes are open: a `.` counts only outside every class.
+    let mut depth = 0usize;
+    while let Some(c) = chars.next() {
+        match c {
+            // An escape is copied with the character it escapes, so `\.` and `\\` keep their meaning.
+            '\\' => {
+                out.push(c);
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '[' => {
+                depth += 1;
+                out.push(c);
+                // A `^` negates the class, and a `]` right after the `[` or `[^` is a literal, not the end.
+                let mut rest = chars.clone();
+                if rest.clone().next() == Some('^') {
+                    rest.next();
+                    out.push('^');
+                }
+                if rest.clone().next() == Some(']') {
+                    rest.next();
+                    out.push(']');
+                }
+                chars = rest;
+            }
+            ']' if depth > 0 => {
+                depth -= 1;
+                out.push(c);
+            }
+            '.' if depth == 0 => out.push_str(JS_DOT),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// JS RegExp for the search, built with the regex crate. The same semantics where that crate can express
 /// them: smart case (rg's `--smart-case`), whole words, literal or pattern queries, and `^`, `$` and `.`
 /// reading line by line when the query spans lines.
@@ -68,11 +113,19 @@ pub fn escape_regex(s: &str) -> String {
 /// Errors: an invalid pattern, and JS syntax the regex crate does not support (lookaround, backreferences).
 /// The caller shows the error instead of replacing anything.
 ///
-/// Differences from JS: `\b`, `\w`, `\d` and `\s` are Unicode-aware (as rg's default is), and `.` in a
-/// single-line query does not match `\r`, ` ` or ` `, which JS excludes too.
+/// Differences from JS: `\b`, `\w`, `\d` and `\s` are Unicode-aware (as rg's default is). A `.` in a
+/// single-line pattern matches what JS's `.` matches: any character but `\n`, `\r`, U+2028 and U+2029. Over
+/// several lines the `.` matches every character, as the TypeScript's `s` flag does.
 pub fn to_reg_exp(query: &str, options: &SearchOptions) -> Result<Regex, regex::Error> {
+    // Over several lines, ^ and $ still mean a line's start and end, as they do in rg.
+    let multi_line = query.contains('\n');
     let mut source = if options.regex {
-        query.to_string()
+        // The regex crate's `.` skips only `\n`, so a single-line pattern gets JavaScript's exclusions.
+        if multi_line {
+            query.to_string()
+        } else {
+            js_dot(query)
+        }
     } else {
         // A multi-line literal also matches CRLF files, as rg does.
         escape_regex(query).replace('\n', "\\r?\\n")
@@ -82,8 +135,6 @@ pub fn to_reg_exp(query: &str, options: &SearchOptions) -> Result<Regex, regex::
     }
     // Smart case: a query with no capitals ignores case; any capital makes the match exact.
     let ignore_case = !options.case_sensitive && query == query.to_lowercase();
-    // Over several lines, ^ and $ still mean a line's start and end, as they do in rg.
-    let multi_line = query.contains('\n');
     RegexBuilder::new(&source)
         .case_insensitive(ignore_case)
         .multi_line(multi_line)
@@ -428,6 +479,39 @@ mod tests {
         assert!(to_reg_exp("foo(?=bar)", &re).is_err());
         assert!(to_reg_exp("(a)\\1", &re).is_err());
         assert!(replace_text("x", "(?<!a)x", &re, "y").is_err());
+    }
+
+    #[test]
+    fn a_single_line_dot_does_not_cross_a_carriage_return_or_a_line_separator() {
+        // JavaScript's `.` skips \r, U+2028 and U+2029 as well as \n, so the match stops at them.
+        let re = with(|o| o.regex = true);
+        assert_eq!(replace("a\rb axb", "a.b", &re), "a\rb X");
+        assert_eq!(replace("a\u{2028}b axb", "a.b", &re), "a\u{2028}b X");
+        assert_eq!(replace("a\u{2029}b axb", "a.b", &re), "a\u{2029}b X");
+        // An ordinary character still matches the dot.
+        assert_eq!(replace("a.b axb", "a.b", &re), "X X");
+        // The escaped dot and a dot inside a class keep their literal meaning.
+        assert_eq!(replace("a.b axb", "a\\.b", &re), "X axb");
+        assert_eq!(replace("a.b a\rb", "a[.]b", &re), "X a\rb");
+    }
+
+    #[test]
+    fn a_multi_line_dot_matches_every_character_as_the_s_flag_does() {
+        // Over several lines the TypeScript sets the s flag, so the dot crosses \r, U+2028 and \n.
+        let re = with(|o| o.regex = true);
+        assert_eq!(replace("a\rb\nz", "a.b\n", &re), "Xz");
+        assert_eq!(replace("a\u{2028}b\n", "a.b\n", &re), "X");
+    }
+
+    #[test]
+    fn js_dot_rewrites_only_the_dots_outside_classes_and_escapes() {
+        assert_eq!(js_dot("a.b\\.c[.]"), "a[^\\n\\r\\u{2028}\\u{2029}]b\\.c[.]");
+        // A `]` right after `[` or `[^` is a literal, so the class runs on to the next `]`.
+        assert_eq!(
+            js_dot("[]a.]x.[^]y.]z."),
+            "[]a.]x[^\\n\\r\\u{2028}\\u{2029}][^]y.]z[^\\n\\r\\u{2028}\\u{2029}]"
+        );
+        assert_eq!(js_dot("\\\\."), "\\\\[^\\n\\r\\u{2028}\\u{2029}]");
     }
 
     #[test]

@@ -473,6 +473,8 @@ pub struct TreeRow<'a> {
     pub key: Option<RowKey<'a>>,
     /// The value this row shows, borrowed from the parsed document.
     pub value: &'a JsonValue,
+    /// Whether its children show below it. Only an object or array can be open; it shows as many children as
+    /// the `open` map says, a page at a time.
     pub open: bool,
     /// A row standing for the rest of a big object or array, under `id`'s parent: how many more there are.
     pub more: Option<usize>,

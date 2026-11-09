@@ -36,98 +36,11 @@ pub const MAX_FOLDER_VIEWS: usize = 500;
 /// The most folders whose visits are kept.
 pub const MAX_VISITS: usize = 300;
 
-// TODO(coordinator): from groups (GroupBy), entries (Sort, SortKey), columns (ColumnId). They are small and
-// private copies here keep this module building alone.
-//
-// TODO(coordinator): TileSize, Visit and frecency also stay private for now. grid::TileSize has no serde
-// (only `as_str`), and rank::Visit has no serde and a `u32` count where the saved file may hold more (here
-// `u64`). Once both derive Serialize/Deserialize with the same names ("small".."huge"; `count`, `last` in
-// camelCase) and the count is `u64`, this file can use them.
-
-/// How big the grid's tiles are, smallest first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TileSize {
-    Small,
-    Medium,
-    Large,
-    XLarge,
-    Huge,
-}
-
-/// What the list's rows are grouped under ("none" for no groups).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum GroupBy {
-    None,
-    Kind,
-    Date,
-    Size,
-    Type,
-    Git,
-}
-
-/// What a list can be sorted by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SortKey {
-    Name,
-    Modified,
-    Taken,
-    Type,
-    Size,
-    Dimensions,
-    Duration,
-    Artist,
-    Album,
-}
-
-/// A list's sort: the key and whether it runs from the end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Sort {
-    pub key: SortKey,
-    pub desc: bool,
-}
-
-/// The columns the list can show.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ColumnId {
-    Modified,
-    Taken,
-    Type,
-    Size,
-    Dimensions,
-    Duration,
-    Artist,
-    Album,
-}
-
-/// A folder visited: how many times, and when last (Unix milliseconds).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Visit {
-    pub count: u64,
-    pub last: i64,
-}
-
-const HOUR: i64 = 3_600_000;
-
-/// zoxide-style rank: the number of visits, weighted by how recent the last one was.
-fn frecency(visit: &Visit, now: i64) -> f64 {
-    let age = now.saturating_sub(visit.last);
-    let weight = if age < HOUR {
-        4.0
-    } else if age < 24 * HOUR {
-        2.0
-    } else if age < 7 * 24 * HOUR {
-        0.5
-    } else {
-        0.25
-    };
-    visit.count as f64 * weight
-}
+use crate::columns::ColumnId;
+use crate::entries::{Sort, SortKey};
+use crate::grid::TileSize;
+use crate::groups::GroupBy;
+use crate::rank::{frecency, Visit};
 
 /// A map from text to values that keeps the order keys were first added in, as a JS object does (for the
 /// keys this state uses). The order shows in the saved JSON and decides which entries are forgotten first
@@ -828,7 +741,6 @@ macro_rules! lenient_deserialize {
     };
 }
 
-lenient_deserialize!(Visit { "count" => count, "last" => last });
 lenient_deserialize!(HistoryItem { "query" => query, "path" => path, "timestamp" => timestamp });
 lenient_deserialize!(SearchOptions {
     "caseSensitive" => case_sensitive,
@@ -1158,6 +1070,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const HOUR: i64 = 3_600_000;
 
     const DEFAULT_EXCLUSIONS: &str = concat!(
         r#"["node_modules",".git","dist","build","bin","obj",".vs",".idea","#,

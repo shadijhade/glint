@@ -29,9 +29,19 @@ pub fn js_trim(text: &str) -> &str {
     text.trim_matches(is_js_space)
 }
 
-/// `Math.round`: halves go toward +infinity, so 2.5 is 3 and -2.5 is -2 (Rust's `round` gives -3).
+/// `Math.round`: halves go toward +infinity, so 2.5 is 3 and -2.5 is -2 (Rust's `round` gives -3). A
+/// whole number comes back as it is: adding 0.5 would round 2^53 - 1 up to 2^53.
 pub fn js_round(x: f64) -> f64 {
-    (x + 0.5).floor()
+    if x.fract() == 0.0 {
+        x
+    } else {
+        (x + 0.5).floor()
+    }
+}
+
+/// `text.length`: the length in UTF-16 code units, as JavaScript counts it.
+pub fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
 }
 
 /// `Math.round` for pixels.
@@ -163,6 +173,8 @@ mod tests {
         assert_eq!(js_round(-2.5), -2.0);
         assert!(js_min(1.0, f64::NAN).is_nan() && js_max(f64::NAN, 1.0).is_nan());
         assert_eq!(js_max(1.0, 2.0), 2.0);
+        assert_eq!(js_round(9007199254740991.0), 9007199254740991.0);
+        assert_eq!(utf16_len("a😀"), 3);
     }
 
     #[test]

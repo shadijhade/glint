@@ -13,7 +13,8 @@
 use crate::js::js_round_f32;
 
 /// One of the grid's tile sizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TileSize {
     /// The smallest tiles: a 4 rem thumbnail.
     Small,

@@ -38,7 +38,7 @@ pub mod plain;
 pub mod rank;
 #[cfg(feature = "small_kinds")]
 pub mod small_kinds;
-#[cfg(feature = "store")]
+#[cfg(any(feature = "store", feature = "columns"))]
 pub mod store;
 #[cfg(feature = "entries")]
 pub mod entries;
