@@ -8,8 +8,9 @@
 //! the global yourself: `update` re-applies everything that follows from a setting (the theme and its
 //! accent, the language and its direction) and refreshes every window.
 //!
-//! PORT ME: the skeleton starts from `Settings::default()`. Loading the saved state from disk
-//! (`glint_model::store::load_persisted`) and saving it back belong to the settings wave.
+//! [`init`] puts the defaults in place; `persistence::init`, right after it, loads the saved settings
+//! through [`update`], and every later [`update`] is saved soon. Code that wants to react to a setting
+//! observes this global (`cx.observe_global::<UiState>`): every [`update`] notifies its observers.
 
 use glint_model::store::Settings;
 use gpui_kit::{App, Global};
@@ -53,6 +54,8 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
     change(&mut cx.global_mut::<UiState>().settings);
     crate::i18n::apply_setting(cx);
     crate::theme::apply(cx);
+    // Saved soon (nothing before `persistence::init`, which loads the saved settings through here).
+    crate::persistence::sync(cx);
     cx.refresh_windows();
 }
 

@@ -1,0 +1,38 @@
+// Glint.exe's resources: the icon (id 1, which Explorer, the taskbar and Alt+Tab show) and the version info.
+// build.rs writes glint-version.h from the workspace version, so the numbers here never go stale.
+// The application manifest is not here: the vendored GPUI links Glint's manifest into every GPUI binary
+// (vendor/gpui-pre-0.3.12/resources/windows/gpui.manifest.xml), and a second one would fail the link.
+
+#include <winver.h>
+#include "glint-version.h"
+
+1 ICON "icon.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION GLINT_FILE_VERSION
+PRODUCTVERSION GLINT_FILE_VERSION
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Shadi Saadi"
+            VALUE "FileDescription", "Glint"
+            VALUE "FileVersion", GLINT_VERSION_TEXT
+            VALUE "InternalName", "Glint"
+            VALUE "LegalCopyright", "Copyright (c) 2025-2026 Shadi Sadi"
+            VALUE "OriginalFilename", "Glint.exe"
+            VALUE "ProductName", "Glint"
+            VALUE "ProductVersion", GLINT_VERSION_TEXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

@@ -1,0 +1,693 @@
+//! The `Explorer` entity: panes, tabs, drives, known folders and the derived getters.
+//! Ported from the state, the "Tabs" helpers and the derived getters of src/lib/explorer.ts
+//! (`visibleTabs`, `activeTabId`, `tabState`, `currentPath`, `archiveOf`, `remoteOf`, `closedOf`,
+//! `recycleBinOf`, `viewKey`, `setView`, `zoomGrid`, `tabName`, `savedScroll`/`saveScroll`, `flashPaths`).
+//!
+//! The behaviour (navigating, tabs, selection, opening…) is in the sibling files as more `impl Explorer`
+//! blocks; this file is the data and the plumbing they share: the settings snapshot, the rows rebuild, the
+//! central `changed` hook and the handling of core's events.
+
+use super::memory::Memory;
+use super::rows::{build_rows, RowSpec, Rows};
+use super::source::Source;
+use super::tab::Tab;
+use super::types::*;
+use crate::core_bridge::{self, CoreEvent};
+use crate::state::UiState;
+use glint_model::columns::{folder_kind, in_order, ColumnId, FolderKind, FolderPlace};
+use glint_model::entries::{FileEntry, Sort};
+use glint_model::grid::{zoom_tiles, TileSize};
+use glint_model::groups::GroupBy;
+use glint_model::paths::{is_gallery, is_recent, is_recycle_bin, same_path, THIS_PC};
+use glint_model::store::{FolderViewPatch, Settings, StartFolder};
+use gpui_kit::{App, AppContext as _, Context, EventEmitter, Subscription, Task};
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Listings with more entries than this are sorted on a background thread rather than on the UI thread.
+const ROWS_IN_BACKGROUND: usize = 20_000;
+/// How long a flashed path stays highlighted (the TypeScript's 1200 ms).
+const FLASH_FOR: Duration = Duration::from_millis(1200);
+
+/// A tab Ctrl+Shift+T can bring back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ClosedTab {
+    pub path: String,
+    pub view: ViewMode,
+    pub pane: usize,
+    pub index: usize,
+}
+
+/// The few settings the explorer reads, taken in one go (so no code path reads a global that a test or an
+/// early start hasn't made: without `UiState` the defaults apply).
+#[derive(Clone, Debug)]
+pub(super) struct Prefs {
+    pub folders_first: bool,
+    pub show_hidden: bool,
+    pub group_by: GroupBy,
+    pub per_folder_views: bool,
+    pub sort: Sort,
+    pub list_columns: Vec<ColumnId>,
+    pub restore_tabs: bool,
+    pub start_folder: StartFolder,
+    pub zoxide: bool,
+    pub tile_size: TileSize,
+}
+
+impl Prefs {
+    fn of(settings: &Settings) -> Prefs {
+        Prefs {
+            folders_first: settings.folders_first,
+            show_hidden: settings.show_hidden,
+            group_by: settings.group_by,
+            per_folder_views: settings.per_folder_views,
+            sort: settings.sort,
+            list_columns: settings.list_columns.clone(),
+            restore_tabs: settings.restore_tabs,
+            start_folder: settings.start_folder,
+            zoxide: settings.zoxide,
+            tile_size: settings.tile_size,
+        }
+    }
+
+    pub fn read(cx: &App) -> Prefs {
+        match cx.try_global::<UiState>() {
+            Some(ui) => Prefs::of(&ui.settings),
+            None => Prefs::of(&Settings::default()),
+        }
+    }
+}
+
+/// Everything about what Glint is showing: one or two panes of tabs, the drives and the well-known folders.
+///
+/// **How views use it.** Keep the `Entity<Explorer>` (from [`super::explorer`]) and
+/// - read with `explorer.read(cx)` (all getters are `&self`),
+/// - change with `explorer.update(cx, |explorer, cx| explorer.go_back(cx).detach())`,
+/// - redraw on any change with `cx.observe(&explorer, ...)`, or on a particular kind of change with
+///   `cx.subscribe(&explorer, |this, _, event: &ExplorerEvent, cx| ...)`.
+///
+/// Functions that read the disk return a `Task` (the TypeScript's promise): `.detach()` it to let it run,
+/// or `.await` it to know whether it worked. **Dropping a task cancels it.**
+pub struct Explorer {
+    pub(super) source: Rc<dyn Source>,
+    pub(super) tabs: HashMap<TabId, Tab>,
+    /// One pane, or two (the right one keeps its tabs while hidden). Never empty.
+    pub(super) panes: Vec<Pane>,
+    pub(super) active_pane: usize,
+    pub(super) dual: bool,
+    /// Highlights unique, newer, older and size-different items across the two dual panes (compare part).
+    pub compare_panes: bool,
+    /// When comparing panes, hides identical items (compare part).
+    pub diff_only: bool,
+    pub(super) drives: Arc<[Drive]>,
+    pub(super) known: Arc<[KnownFolder]>,
+    /// Remote connections' names by lower-case id, for [`tab_name`] (the remotes part sets them).
+    pub(super) remote_names: HashMap<String, String>,
+    /// The address bar is being typed in (reset by anything that changes the folder shown).
+    pub editing_address: bool,
+    /// The Space-bar preview is open (closed by anything that changes the focused item's tab).
+    pub quick_look: bool,
+    pub(super) flashed: Arc<HashSet<String>>,
+    pub(super) flash_task: Option<Task<()>>,
+    pub(super) closed_tabs: Vec<ClosedTab>,
+    /// Background tabs opened from one tab go after each other, as in a browser: (from, last opened).
+    pub(super) opened_from: Option<(TabId, TabId)>,
+    pub(super) tab_seq: u32,
+    pub(super) memory: Memory,
+    /// The session is saved only once start-up has restored it, so starting can't overwrite it.
+    pub(super) restored: bool,
+    pub(super) watching: String,
+    pub(super) hinted: String,
+    pub(super) hint_task: Option<Task<()>>,
+    pub(super) reported_folder: String,
+    pub(super) first_painted: bool,
+    pub(super) prefetched: HashMap<String, super::nav::PrefetchEntry>,
+    pub(super) hover_task: Option<Task<()>>,
+    /// Tabs refreshed with F5, until what waits for it (Git status in a very big repository) has run.
+    pub refreshed_by_hand: HashSet<TabId>,
+    /// `init_explorer` has been called (it runs once).
+    pub(super) initialized: bool,
+    pub(super) _subscriptions: Vec<Subscription>,
+}
+
+impl EventEmitter<ExplorerEvent> for Explorer {}
+
+impl Explorer {
+    /// An explorer reading folders from `source`, with one tab on This PC (not yet opened: call
+    /// [`Explorer::init_explorer`]). Follows the live settings and core's "dir-changed" events.
+    pub fn new(source: Rc<dyn Source>, cx: &mut Context<Self>) -> Explorer {
+        let first = TabId(1);
+        let mut subscriptions = Vec::new();
+        subscriptions.push(cx.observe_global::<UiState>(|this, cx| this.on_settings_changed(cx)));
+        subscriptions.extend(core_bridge::subscribe(cx, |this: &mut Self, event, cx| {
+            this.on_core_event(event, cx)
+        }));
+        let mut tabs = HashMap::new();
+        tabs.insert(first, Tab::blank(first, THIS_PC, ViewMode::List, None));
+        Explorer {
+            source,
+            tabs,
+            panes: vec![Pane {
+                tabs: vec![first],
+                active: first,
+            }],
+            active_pane: 0,
+            dual: false,
+            compare_panes: false,
+            diff_only: false,
+            drives: Arc::from(Vec::new()),
+            known: Arc::from(Vec::new()),
+            remote_names: HashMap::new(),
+            editing_address: false,
+            quick_look: false,
+            flashed: Arc::new(HashSet::new()),
+            flash_task: None,
+            closed_tabs: Vec::new(),
+            opened_from: None,
+            tab_seq: 1,
+            memory: Memory::new(),
+            restored: false,
+            watching: String::new(),
+            hinted: String::new(),
+            hint_task: None,
+            reported_folder: String::new(),
+            first_painted: false,
+            prefetched: HashMap::new(),
+            hover_task: None,
+            refreshed_by_hand: HashSet::new(),
+            initialized: false,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    // ---- Reading ---------------------------------------------------------------------------------------
+
+    /// A tab's state; `None` once it's closed (`tabState`).
+    pub fn tab(&self, id: TabId) -> Option<&Tab> {
+        self.tabs.get(&id)
+    }
+
+    /// The tab the keyboard, toolbar and palette act on: the active pane's (`tabState()`).
+    pub fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.get(&self.active_tab_id())
+    }
+
+    /// The active pane's tab id (`activeTabId`).
+    pub fn active_tab_id(&self) -> TabId {
+        self.pane_tab_id(self.active_pane)
+    }
+
+    /// The tab on screen in `pane` (the active pane's, or the first pane's, when there is no such pane).
+    pub fn pane_tab_id(&self, pane: usize) -> TabId {
+        self.panes
+            .get(pane)
+            .or_else(|| self.panes.first())
+            .map_or(TabId(0), |p| p.active)
+    }
+
+    /// The tab on screen in `pane` (`useTab` in a `PaneProvider`).
+    pub fn pane_tab(&self, pane: usize) -> Option<&Tab> {
+        self.tabs.get(&self.pane_tab_id(pane))
+    }
+
+    /// The panes on screen: the left one, and the right one in dual-pane view (`shownPanes`).
+    pub fn shown_panes(&self) -> &[Pane] {
+        if self.dual {
+            &self.panes
+        } else {
+            self.panes.get(..1).unwrap_or(&[])
+        }
+    }
+
+    /// All panes, including the right one while hidden.
+    pub fn panes(&self) -> &[Pane] {
+        &self.panes
+    }
+
+    /// The tabs on screen, one per visible pane (`visibleTabs`).
+    pub fn visible_tabs(&self) -> Vec<TabId> {
+        self.shown_panes().iter().map(|p| p.active).collect()
+    }
+
+    /// Which pane a tab is in (`paneOf`).
+    pub fn pane_of(&self, id: TabId) -> Option<usize> {
+        self.panes.iter().position(|p| p.tabs.contains(&id))
+    }
+
+    /// The pane the keyboard, toolbar and address bar act on.
+    pub fn active_pane(&self) -> usize {
+        self.active_pane
+    }
+
+    /// Dual-pane view is on.
+    pub fn is_dual(&self) -> bool {
+        self.dual
+    }
+
+    /// The active tab's folder, or This PC (`currentPath`).
+    pub fn current_path(&self) -> &str {
+        self.active_tab().map_or(THIS_PC, |t| t.path.as_str())
+    }
+
+    /// The archive a tab's folder is in (the active tab's by default), from its listing; `None` for a folder
+    /// on disk (`archiveOf`).
+    pub fn archive_of(&self, tab: Option<TabId>) -> Option<&glint_model::entries::InArchive> {
+        self.tab_or_active(tab)?.archive()
+    }
+
+    /// Whether a tab (the active tab by default) shows a remote connection's folder (`remoteOf`).
+    pub fn remote_of(&self, tab: Option<TabId>) -> bool {
+        self.tab_or_active(tab).is_some_and(|t| t.is_remote())
+    }
+
+    /// Whether Windows keeps a tab's folder closed to this account (`closedOf`).
+    pub fn closed_of(&self, tab: Option<TabId>) -> bool {
+        self.tab_or_active(tab).is_some_and(|t| t.is_closed())
+    }
+
+    /// Whether a tab shows the Recycle Bin (`recycleBinOf`).
+    pub fn recycle_bin_of(&self, tab: Option<TabId>) -> bool {
+        self.tab_or_active(tab).is_some_and(|t| t.is_recycle_bin())
+    }
+
+    /// What a tab shows: a folder, or a search's results (`viewKey`).
+    pub fn view_key(&self, tab: Option<TabId>) -> String {
+        self.tab_or_active(tab).map(Tab::view_key).unwrap_or_default()
+    }
+
+    fn tab_or_active(&self, tab: Option<TabId>) -> Option<&Tab> {
+        self.tabs.get(&tab.unwrap_or_else(|| self.active_tab_id()))
+    }
+
+    /// The drives, as last read ([`Explorer::refresh_drives`]).
+    pub fn drives(&self) -> &Arc<[Drive]> {
+        &self.drives
+    }
+
+    /// Home, Desktop… as found at start.
+    pub fn known_folders(&self) -> &Arc<[KnownFolder]> {
+        &self.known
+    }
+
+    /// The path of a known folder, if this PC has it.
+    pub fn known_path(&self, id: KnownId) -> Option<&str> {
+        self.known.iter().find(|k| k.id == id).map(|k| k.path.as_str())
+    }
+
+    /// Home, or This PC when it isn't known (`homeFolder`).
+    pub fn home_folder(&self) -> &str {
+        self.known_path(KnownId::Home).unwrap_or(THIS_PC)
+    }
+
+    /// Paths briefly highlighted because they just arrived (`flashed`).
+    pub fn flashed(&self) -> &Arc<HashSet<String>> {
+        &self.flashed
+    }
+
+    /// Whether Ctrl+Shift+T has a tab to bring back (`canReopenTab`).
+    pub fn can_reopen_tab(&self) -> bool {
+        !self.closed_tabs.is_empty()
+    }
+
+    /// What a path is called in a tab or crumb: "This PC", the folder's name, a drive's name… (`tabName`).
+    /// English; translate the fixed names.
+    pub fn tab_name(&self, path: &str) -> String {
+        tab_name(path, &self.drives, &|p| {
+            let id = remote_id(p);
+            self.remote_names.get(&id.to_lowercase()).cloned().unwrap_or(id)
+        })
+    }
+
+    /// Teaches the explorer what remote connections are called, by id (`remoteName`). The remotes part calls
+    /// this when connections load or change; tabs on remote folders redraw.
+    pub fn set_remote_names(&mut self, names: impl IntoIterator<Item = (String, String)>, cx: &mut Context<Self>) {
+        self.remote_names = names.into_iter().map(|(id, name)| (id.to_lowercase(), name)).collect();
+        cx.notify();
+    }
+
+    /// What the explorer keeps between runs (see [`Memory`]).
+    pub fn memory(&self) -> &Memory {
+        &self.memory
+    }
+
+    /// Gives the explorer what the app saved. Call once after loading it, before [`Explorer::init_explorer`].
+    pub fn set_memory(&mut self, memory: Memory, cx: &mut Context<Self>) {
+        self.memory = memory;
+        self.on_settings_changed(cx);
+    }
+
+    // ---- Changing a tab ---------------------------------------------------------------------------------
+
+    /// Changes a tab's state (`updateTab`). Does not notify: the caller says what changed.
+    pub(super) fn update_tab(&mut self, id: TabId, change: impl FnOnce(&mut Tab)) -> bool {
+        match self.tabs.get_mut(&id) {
+            Some(tab) => {
+                change(tab);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Makes a new tab id.
+    pub(super) fn new_tab_id(&mut self) -> TabId {
+        self.tab_seq += 1;
+        TabId(self.tab_seq)
+    }
+
+    /// Tells everyone a tab changed, and saves what should be saved. Every mutation ends here.
+    pub(super) fn changed(&mut self, cx: &mut Context<Self>) {
+        self.save_session(cx);
+        self.hint_startup(cx);
+        self.report_folder();
+        cx.notify();
+    }
+
+    /// Tells everyone one tab changed.
+    pub(super) fn tab_changed(&mut self, id: TabId, cx: &mut Context<Self>) {
+        cx.emit(ExplorerEvent::TabChanged(id));
+        self.changed(cx);
+    }
+
+    /// Shows a tab's items (the active tab's by default) as a list, or as a grid (`setView`).
+    pub fn set_view(&mut self, view: ViewMode, tab: Option<TabId>, cx: &mut Context<Self>) {
+        let id = tab.unwrap_or_else(|| self.active_tab_id());
+        if self.tabs.get(&id).is_none_or(|t| t.view == view) {
+            return;
+        }
+        self.update_tab(id, |t| t.view = view);
+        // Only the list has group headers: the rows change with the view.
+        self.rebuild_rows(id, cx);
+        cx.emit(ExplorerEvent::ViewChanged(id));
+        self.tab_changed(id, cx);
+    }
+
+    /// Ctrl+wheel, Ctrl+= and Ctrl+- in a grid: bigger tiles (`steps` up) or smaller ones, in every grid; 0 for
+    /// medium again (`zoomGrid`).
+    pub fn zoom_grid(&mut self, steps: i64, cx: &mut Context<Self>) {
+        let current = Prefs::read(cx).tile_size;
+        let wanted = if steps != 0 {
+            zoom_tiles(current.as_str(), steps)
+        } else {
+            Settings::default().tile_size
+        };
+        if wanted != current {
+            crate::state::update(cx, |settings| settings.tile_size = wanted);
+        }
+    }
+
+    /// Sorts the active tab's list by `sort` (a click on a column header). With Settings → "Each folder keeps
+    /// its own view" the folder remembers it; otherwise every folder sorts so.
+    pub fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
+        let id = self.active_tab_id();
+        let prefs = Prefs::read(cx);
+        let own = self
+            .tabs
+            .get(&id)
+            .filter(|t| prefs.per_folder_views && t.find.is_none() && t.path != THIS_PC);
+        if let Some(tab) = own {
+            let path = tab.path.clone();
+            self.memory.set_folder_view(
+                &path,
+                Some(FolderViewPatch {
+                    sort: Some(sort),
+                    ..Default::default()
+                }),
+                now_ms(),
+            );
+            cx.emit(ExplorerEvent::MemoryChanged);
+            self.refresh_views(cx);
+        } else {
+            crate::state::update(cx, |settings| settings.sort = sort);
+            self.refresh_views(cx);
+        }
+    }
+
+    /// Group by in the list (Settings → Files → Group by).
+    pub fn set_group(&mut self, group: GroupBy, cx: &mut Context<Self>) {
+        crate::state::update(cx, |settings| settings.group_by = group);
+        self.refresh_views(cx);
+    }
+
+    /// The text in a tab's search box, which narrows what the list shows (the tab's by default).
+    pub fn set_filter(&mut self, text: &str, tab: Option<TabId>, cx: &mut Context<Self>) {
+        let id = tab.unwrap_or_else(|| self.active_tab_id());
+        if self.tabs.get(&id).is_none_or(|t| t.filter == text) {
+            return;
+        }
+        self.update_tab(id, |t| t.filter = text.to_string());
+        self.rebuild_rows(id, cx);
+        self.tab_changed(id, cx);
+    }
+
+    // ---- Flash, scroll, timing --------------------------------------------------------------------------
+
+    /// Briefly highlights items that just arrived: created, pasted, dropped, renamed or revealed
+    /// (`flashPaths`). Passing none clears it at once.
+    pub fn flash_paths(&mut self, paths: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
+        let next: HashSet<String> = paths.into_iter().collect();
+        let any = !next.is_empty();
+        self.flashed = Arc::new(next);
+        // Replacing the task cancels the older timer, as clearTimeout did.
+        self.flash_task = any.then(|| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(FLASH_FOR).await;
+                this.update(cx, |this, cx| {
+                    this.flashed = Arc::new(HashSet::new());
+                    cx.emit(ExplorerEvent::FlashChanged);
+                    cx.notify();
+                })
+                .ok();
+            })
+        });
+        cx.emit(ExplorerEvent::FlashChanged);
+        cx.notify();
+    }
+
+    /// Remembers where a tab's list was scrolled for the folder or search `key` ([`Tab::view_key`]), to come
+    /// back to it (`saveScroll`). Does not redraw anything.
+    pub fn save_scroll(&mut self, tab: TabId, key: &str, top: f32) {
+        self.update_tab(tab, |t| {
+            t.scroll = Some(super::tab::ScrollMemo {
+                key: key.to_string(),
+                top,
+            })
+        });
+    }
+
+    /// Where a tab's list was scrolled for `key` (`savedScroll`); 0 for any other view.
+    pub fn saved_scroll(&self, tab: TabId, key: &str) -> f32 {
+        self.tabs.get(&tab).map_or(0.0, |t| t.saved_scroll(key))
+    }
+
+    /// Called once a tab's new list is on screen, to time the whole navigation: from the click to the list
+    /// painted (`markShown`). Sets [`Tab::shown_in`].
+    pub fn mark_shown(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let Some(started) = self.tabs.get_mut(&tab).and_then(|t| t.nav_started.take()) else {
+            return;
+        };
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        self.update_tab(tab, |t| t.shown_in = ms);
+        self.tab_changed(tab, cx);
+    }
+
+    // ---- Settings and rows ------------------------------------------------------------------------------
+
+    /// The settings (or the folders' own views) changed: sort, group, columns and rows follow.
+    pub(super) fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
+        self.refresh_views(cx);
+        cx.notify();
+    }
+
+    /// Resolves every tab's sort, group and columns from the settings and the folders' own views, and rebuilds
+    /// the rows of those whose inputs changed.
+    pub(super) fn refresh_views(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<TabId> = self.tabs.keys().copied().collect();
+        for id in ids {
+            if self.resolve_view(id, cx) {
+                cx.emit(ExplorerEvent::ViewChanged(id));
+            }
+            self.rebuild_rows(id, cx);
+        }
+    }
+
+    /// Works out a tab's effective sort, group and columns (the folder's own view, else its kind's, else
+    /// Settings'), as `Explorer.tsx` did on every render. Returns whether anything changed.
+    pub(super) fn resolve_view(&mut self, id: TabId, cx: &App) -> bool {
+        let prefs = Prefs::read(cx);
+        let Some(tab) = self.tabs.get(&id) else {
+            return false;
+        };
+        let find = tab.find.is_some();
+        let per_folder = prefs.per_folder_views;
+        // The folder's own columns and sort (and list or grid), or, until it has its own, its kind's.
+        let own = (per_folder && !find && tab.path != THIS_PC)
+            .then(|| self.memory.folder_view(&tab.path))
+            .flatten();
+        let bin = is_recycle_bin(&tab.path) && !find;
+        let columns = if find || bin {
+            vec![ColumnId::Modified, ColumnId::Size]
+        } else {
+            let chosen: Vec<&str> = match own.and_then(|v| v.columns.as_ref()) {
+                Some(own) => own.iter().map(|c| c.as_str()).collect(),
+                None if per_folder => tab.kind.def().columns.iter().map(|c| c.as_str()).collect(),
+                None => prefs.list_columns.iter().map(|c| c.as_str()).collect(),
+            };
+            in_order(&chosen)
+        };
+        let sort = (!find && per_folder)
+            .then(|| own.and_then(|v| v.sort).or(tab.kind.def().sort))
+            .flatten()
+            .unwrap_or(prefs.sort);
+        let group = prefs.group_by;
+        let changed = tab.sort != sort || tab.group != group || tab.columns != columns;
+        self.update_tab(id, |t| {
+            t.sort = sort;
+            t.group = group;
+            t.columns = columns;
+        });
+        changed
+    }
+
+    /// What kind of folder a tab shows, which decides its default columns: Recent, Gallery and Downloads by
+    /// where they are, else by what's in it (`folderKind`).
+    pub(super) fn kind_of(&self, id: TabId) -> FolderKind {
+        let Some(tab) = self.tabs.get(&id) else {
+            return FolderKind::General;
+        };
+        let find = tab.find.is_some();
+        let downloads = !find
+            && self
+                .known
+                .iter()
+                .any(|k| k.id == KnownId::Downloads && same_path(&k.path, &tab.path));
+        let place = if is_recent(&tab.path) && !find {
+            Some(FolderPlace::Recent)
+        } else if is_gallery(&tab.path) && !find {
+            Some(FolderPlace::Gallery)
+        } else if downloads {
+            Some(FolderPlace::Downloads)
+        } else {
+            None
+        };
+        folder_kind(tab.entries(), place)
+    }
+
+    /// The row spec for a tab under the current settings.
+    fn row_spec(&self, id: TabId, prefs: &Prefs) -> Option<RowSpec> {
+        let tab = self.tabs.get(&id)?;
+        Some(RowSpec {
+            sort: tab.sort,
+            folders_first: prefs.folders_first,
+            show_hidden: prefs.show_hidden,
+            filter: tab.filter.clone(),
+            // Only the list has headers: the grid and the columns view show items plain.
+            group: if tab.view == ViewMode::List {
+                tab.group
+            } else {
+                GroupBy::None
+            },
+            // A listing arrives sorted; a search's results are sorted here.
+            presorted: tab.find.is_none(),
+        })
+    }
+
+    /// Rebuilds a tab's rows if their inputs changed (the listing, the sort, a setting, the filter). A
+    /// listing of more than 20,000 entries that needs real sorting is sorted on a background thread: until it
+    /// is done the tab shows the listing in the engine's order.
+    pub(super) fn rebuild_rows(&mut self, id: TabId, cx: &mut Context<Self>) {
+        let prefs = Prefs::read(cx);
+        let Some(spec) = self.row_spec(id, &prefs) else {
+            return;
+        };
+        let Some(tab) = self.tabs.get_mut(&id) else {
+            return;
+        };
+        let source: Arc<[FileEntry]> = match &tab.find {
+            Some(find) => find.entries.clone(),
+            None => tab.shared_entries().unwrap_or_else(|| Arc::from(Vec::new())),
+        };
+        if tab.rows_spec.as_ref() == Some(&spec) && tab.rows_source_is(&source) {
+            return;
+        }
+        tab.rows_seq += 1;
+        let seq = tab.rows_seq;
+        tab.rows_spec = Some(spec.clone());
+        let now = now_ms();
+        let heavy = source.len() > ROWS_IN_BACKGROUND && !is_plain(&spec);
+        if !heavy {
+            tab.rows = build_rows(&source, &spec, now);
+            tab.set_rows_source(&source);
+            cx.emit(ExplorerEvent::RowsChanged(id));
+            return;
+        }
+        if !tab.rows_source_is(&source) {
+            // A different listing: the old rows no longer fit it. Show it as the engine sent it meanwhile.
+            tab.rows = Rows::identity(source.clone());
+            tab.set_rows_source(&source);
+            cx.emit(ExplorerEvent::RowsChanged(id));
+        }
+        cx.spawn(async move |this, cx| {
+            let rows = cx
+                .background_spawn(async move { build_rows(&source, &spec, now) })
+                .await;
+            this.update(cx, |this, cx| {
+                // A newer rebuild (or a closed tab) makes this result stale.
+                if let Some(tab) = this.tabs.get_mut(&id).filter(|t| t.rows_seq == seq) {
+                    tab.rows = rows;
+                    cx.emit(ExplorerEvent::RowsChanged(id));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    // ---- Core's events ----------------------------------------------------------------------------------
+
+    /// A folder on screen changed on disk ("dir-changed", with the folder's path), or the Gallery's dates were
+    /// read ("gallery-dated").
+    fn on_core_event(&mut self, event: &CoreEvent, cx: &mut Context<Self>) {
+        match event.name.as_str() {
+            "dir-changed" => {
+                if let Some(folder) = event.payload.as_str() {
+                    self.reload_folder(folder, cx);
+                }
+            }
+            "gallery-dated" => {
+                let galleries: Vec<TabId> = self
+                    .tabs
+                    .values()
+                    .filter(|t| is_gallery(&t.path) && t.find.is_none())
+                    .map(|t| t.id)
+                    .collect();
+                for id in galleries {
+                    self.reload(Some(id), cx).detach();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A spec the engine's own order already satisfies and that cuts nothing out: building it is O(n) at most,
+/// and so never worth a background thread.
+fn is_plain(spec: &RowSpec) -> bool {
+    use glint_model::entries::SortKey;
+    spec.presorted
+        && spec.folders_first
+        && spec.sort.key == SortKey::Name
+        && !spec.sort.desc
+        && spec.filter.trim().is_empty()
+        && spec.group == GroupBy::None
+}
+
+/// Now, in milliseconds since the Unix epoch.
+pub(super) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}

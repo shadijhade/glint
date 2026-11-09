@@ -118,6 +118,7 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
   - File system, index service, process work and hashing go to `cx.background_spawn`, with results coming back to the entity.
   - Streams arrive through `Sink`s and update the view at most once per frame.
 - **Modal Win32 loops never run inside a GPUI callback:** the shell context menu, drag-out, and anything that pumps messages. Post a message and run it from the window subclass (see phase 0's `phase0.rs`).
+- **Nor do Win32 calls that send a GPUI window messages at once:** ShowWindow, SetWindowPos, SetWindowPlacement, SetForegroundWindow, SetFocus, DestroyWindow on a GPUI window. GPUI's window procedure handles them by taking the app, which every GPUI callback and entity update already holds, so they panic. Post them with `core_bridge::post_to_ui`, or call them in a task between updates (outside `cx.update`). GetWindowPlacement and the other getters are safe.
 - **Native windows:**
   - No WebView, ever.
   - GDI-drawn preview handlers (Office) live in an owned, never-activated pop-up over the pane.
@@ -186,6 +187,15 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
 **Windows:**
 - `TitleBar::window_options()` is the base for a window with the kit title bar.
 - Keep the `Subscription` that `observe_window_appearance` returns.
+
+**The app's services** (wave 3, always built; `startup.rs` is the only place they are wired to each other):
+- **Folders, tabs, selection:** `explorer::explorer(cx)` is the `Entity<Explorer>`. Read with `.read(cx)` (`active_tab()`, `panes()`, `drives()`…), act with `.update(cx, |e, cx| e.navigate(..))`; Task-returning calls are `#[must_use]` (`.detach()` or await). Observe it to redraw; subscribe to `ExplorerEvent` for specifics. Views never keep their own copy of what the explorer holds.
+- **Telling the person something** from model code: emit `ExplorerEvent::Notice` (startup.rs words it, as the web app did). From a view: `window.push_notification(..)`.
+- **Settings:** read `state::settings(cx)`, change with `state::update` (saved soon by itself). React to a setting by observing `state::UiState`.
+- **The rest of the saved state** (pinned, history, saved searches, remotes, rules): `persistence::app(cx)` to read, `persistence::update_app(cx, |app| ..)` to change (saved soon). Observing `persistence::Persistence` hears every change.
+- **Drops** onto the window arrive at the workspace (`Workspace::on_drop_event`); the views under the pointer answer with `DropAnswers::set` and act on the drop. Drag-out: `platform::dragdrop::drag_out`.
+- **Native previews:** `platform::preview_host::{show, set_rect, hide, reveal, unload}`; overlays (menus, dialogs, the palette, Quick Look) call `hide`/`reveal` while they cover the pane.
+- **Taskbar progress:** `platform::window_state::taskbar_progress`.
 
 **Editing files with scripts:** open and write with `encoding='utf-8'`. The default on this PC (cp1252) mangles the sources' non-ASCII characters.
 
