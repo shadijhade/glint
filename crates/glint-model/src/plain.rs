@@ -7,6 +7,8 @@
 //! Nothing here depends on today's date: ages come out as relative filters (`dm:7d`), so no `now` is needed.
 //! The output strings are byte-identical to the TypeScript, because the rest of Glint parses them.
 
+use crate::js::{is_js_space, js_round, number_to_string};
+
 /// What the box would search for, and what each part means, in words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plain {
@@ -210,35 +212,15 @@ fn is_year(word: &str) -> bool {
     b.len() == 4 && (word.starts_with("19") || word.starts_with("20")) && b[2].is_ascii_digit() && b[3].is_ascii_digit()
 }
 
-/// JS `\s`: white space as JavaScript counts it (not Rust's, which adds U+0085 and misses U+FEFF).
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}'
-    )
-}
-
-/// `Math.round`: halves round toward +infinity.
-fn js_round(x: f64) -> f64 {
-    if !x.is_finite() || x.fract() == 0.0 {
+/// `Math.round` for a size or an age the words gave. A whole number comes back as it is: above 2^52 the
+/// `+ 0.5` inside `js_round` rounds to even, so 9007199254740991 would come out one higher, where JavaScript
+/// keeps it.
+// TODO(coordinator): the same guard belongs in js.rs's js_round, which would then fix every caller at once.
+fn math_round(x: f64) -> f64 {
+    if x.fract() == 0.0 {
         x
     } else {
-        (x + 0.5).floor()
-    }
-}
-
-/// A whole-number f64 the way JavaScript writes it in a template string.
-fn js_whole(x: f64) -> String {
-    if x.is_nan() {
-        "NaN".to_string()
-    } else if x.is_infinite() {
-        if x > 0.0 { "Infinity" } else { "-Infinity" }.to_string()
-    } else if x.abs() >= 1e21 {
-        // JS writes big numbers as 1e+21; Rust writes 1e21.
-        format!("{x:e}").replacen('e', "e+", 1)
-    } else {
-        format!("{x}")
+        js_round(x)
     }
 }
 
@@ -390,9 +372,9 @@ pub fn plain_query(text: &str) -> Option<Plain> {
             let count = number_at(next);
             if matches!(w, "last" | "past") {
                 if let (Some((num, "")), Some((unit, times, span))) = (count, after.and_then(age_unit)) {
-                    let n = js_round(num.parse::<f64>().unwrap_or(0.0) * times);
+                    let n = math_round(num.parse::<f64>().unwrap_or(0.0) * times);
                     found.add(
-                        &format!("dm:{}{unit}", js_whole(n)),
+                        &format!("dm:{}{unit}", number_to_string(n)),
                         &format!("changed in the last {num} {span}"),
                     );
                     break 'step 2;
@@ -406,9 +388,9 @@ pub fn plain_query(text: &str) -> Option<Plain> {
                     _ => at(i + 3),
                 };
                 if let (Some((num, stuck)), Some((unit, times, span))) = (n, unit_word.and_then(age_unit)) {
-                    let v = js_round(num.parse::<f64>().unwrap_or(0.0) * times);
+                    let v = math_round(num.parse::<f64>().unwrap_or(0.0) * times);
                     found.add(
-                        &format!("dm:>{}{unit}", js_whole(v)),
+                        &format!("dm:>{}{unit}", number_to_string(v)),
                         &format!("older than {num} {span}"),
                     );
                     break 'step if stuck.is_empty() { 3 } else { 2 };
@@ -467,7 +449,7 @@ pub fn plain_query(text: &str) -> Option<Plain> {
                                 }
                             }
                             found.add(
-                                &format!("size:{op}{}{unit}", js_whole(js_round(value))),
+                                &format!("size:{op}{}{unit}", number_to_string(math_round(value))),
                                 &format!("{said} {num} {name}"),
                             );
                             break 'step used;
@@ -635,5 +617,36 @@ mod tests {
         assert_eq!(plain("PDFS, أحمد"), Some("أحمد ext:pdf".to_string()));
         assert_eq!(plain("pdfs over 1.5b").as_deref(), Some("ext:pdf size:>2b"));
         assert_eq!(plain("constructor pdfs"), Some("constructor ext:pdf".to_string()));
+    }
+
+    #[test]
+    fn huge_sizes_are_written_the_way_javascript_writes_them() {
+        // String(1e23) is "1e+23" in JavaScript, so the filter carries that text.
+        assert_eq!(
+            plain("over 100000000000000000000000 b").as_deref(),
+            Some("size:>1e+23b")
+        );
+        assert_eq!(plain("over 5 bytes").as_deref(), Some("size:>5b"));
+    }
+
+    #[test]
+    fn whole_numbers_at_the_top_of_the_safe_range_are_not_rounded_up() {
+        // Math.round(9007199254740991) is 9007199254740991 in JavaScript; the +0.5 trick alone would give ...992.
+        assert_eq!(
+            plain("over 9007199254740991 b").as_deref(),
+            Some("size:>9007199254740991b")
+        );
+        assert_eq!(
+            plain("last 9007199254740991 days").as_deref(),
+            Some("dm:9007199254740991d")
+        );
+    }
+
+    #[test]
+    fn fractional_sizes_still_round_half_up() {
+        // 2.5 kb is 2560 bytes, a whole number, so it passes through unchanged.
+        assert_eq!(plain("over 2.5 kb").as_deref(), Some("size:>2560b"));
+        // 1.5 b is not whole, so it rounds half up like Math.round: 2.
+        assert_eq!(plain("over 1.5 b").as_deref(), Some("size:>2b"));
     }
 }

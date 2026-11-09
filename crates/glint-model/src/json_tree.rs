@@ -11,6 +11,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::js::number_to_string;
+
 /// How deep the parser follows arrays and objects before giving up with an error (not a crash).
 pub const MAX_DEPTH: usize = 512;
 
@@ -43,13 +45,17 @@ impl fmt::Display for JsonNumber {
 /// keys first, ascending, then the others as they were written.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonValue {
+    /// `null`.
     Null,
+    /// `true` or `false`.
     Bool(bool),
     /// A number JavaScript shows unchanged.
     Number(f64),
+    /// A string, with its escapes already decoded.
     String(String),
     /// A number kept as written because a JavaScript number would differ.
     Big(JsonNumber),
+    /// An array's items, in order.
     Array(Vec<JsonValue>),
     /// Key and value pairs, already in `Object.keys` order, each key once.
     Object(Vec<(String, JsonValue)>),
@@ -71,47 +77,6 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
-
-/// JavaScript's `String(number)`, so we can tell whether a JS number would show the source unchanged.
-fn js_number_to_string(x: f64) -> String {
-    if x.is_nan() {
-        return "NaN".to_string();
-    }
-    if x == 0.0 {
-        return "0".to_string();
-    }
-    if x.is_infinite() {
-        return if x < 0.0 { "-Infinity" } else { "Infinity" }.to_string();
-    }
-    let sign = if x < 0.0 { "-" } else { "" };
-    // `{:e}` gives the shortest digits that round-trip, like JS: "1.2345e21", "5e-7".
-    let sci = format!("{:e}", x.abs());
-    let (mantissa, exp) = match sci.split_once('e') {
-        Some((m, e)) => (m, e.parse::<i32>().unwrap_or(0)),
-        None => (sci.as_str(), 0),
-    };
-    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
-    let k = digits.len() as i32;
-    let n = exp + 1;
-    let body = if k <= n && n <= 21 {
-        format!("{digits}{}", "0".repeat((n - k) as usize))
-    } else if 0 < n && n <= 21 {
-        let (a, b) = digits.split_at(n as usize);
-        format!("{a}.{b}")
-    } else if -6 < n && n <= 0 {
-        format!("0.{}{digits}", "0".repeat((-n) as usize))
-    } else {
-        let e = n - 1;
-        let e_text = format!("{}{}", if e < 0 { '-' } else { '+' }, e.abs());
-        if k == 1 {
-            format!("{digits}e{e_text}")
-        } else {
-            let (a, b) = digits.split_at(1);
-            format!("{a}.{b}e{e_text}")
-        }
-    };
-    format!("{sign}{body}")
-}
 
 /// The array index a key stands for in JavaScript (canonical whole number below 2^32 - 1), if it does.
 fn array_index(key: &str) -> Option<u32> {
@@ -395,7 +360,7 @@ impl<'a> Parser<'a> {
             return self.fail("bad number");
         };
         // A JavaScript number only stands in if printing it gives the source back.
-        if js_number_to_string(n) == source {
+        if number_to_string(n) == source {
             Ok(JsonValue::Number(n))
         } else {
             Ok(JsonValue::Big(JsonNumber::new(source)))
@@ -502,9 +467,11 @@ pub struct TreeRow<'a> {
     pub path: String,
     /// Which value it's in (a filter can give several).
     pub root: usize,
+    /// How far it's indented: 0 for a value itself, one more for each level inside it.
     pub depth: usize,
     /// Its key or index; `None` for a value itself.
     pub key: Option<RowKey<'a>>,
+    /// The value this row shows, borrowed from the parsed document.
     pub value: &'a JsonValue,
     pub open: bool,
     /// A row standing for the rest of a big object or array, under `id`'s parent: how many more there are.
@@ -632,7 +599,7 @@ pub fn preview(value: &JsonValue, room: usize) -> String {
     match value {
         JsonValue::Null => "null".to_string(),
         JsonValue::Bool(b) => b.to_string(),
-        JsonValue::Number(n) => js_number_to_string(*n),
+        JsonValue::Number(n) => number_to_string(*n),
         JsonValue::Big(n) => n.text.clone(),
         JsonValue::String(s) => {
             if utf16_len(s) > room {
@@ -806,12 +773,12 @@ mod tests {
 
     #[test]
     fn javascript_number_text() {
-        assert_eq!(js_number_to_string(3.0), "3");
-        assert_eq!(js_number_to_string(1.5), "1.5");
-        assert_eq!(js_number_to_string(1e21), "1e+21");
-        assert_eq!(js_number_to_string(1e-7), "1e-7");
-        assert_eq!(js_number_to_string(0.000001), "0.000001");
-        assert_eq!(js_number_to_string(123456789012345680000.0), "123456789012345680000");
+        assert_eq!(number_to_string(3.0), "3");
+        assert_eq!(number_to_string(1.5), "1.5");
+        assert_eq!(number_to_string(1e21), "1e+21");
+        assert_eq!(number_to_string(1e-7), "1e-7");
+        assert_eq!(number_to_string(0.000001), "0.000001");
+        assert_eq!(number_to_string(123456789012345680000.0), "123456789012345680000");
         assert_eq!(big_text(parse_json("1e400").ok().as_ref()), Some("1e400"));
         assert_eq!(big_text(parse_json("-0").ok().as_ref()), Some("-0"));
     }
