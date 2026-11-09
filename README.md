@@ -71,6 +71,21 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 <img src="screenshots/folder-sizes.png" alt="C:\Windows sorted by size, with the size of every folder" width="100%">
 
+### Coming in the next version
+
+-   **Media.** A video or recording's preview has **Trim**: two handles, **Save trim**, copied as stored in a moment (or **Exact**, re-encoded to start on the very frame). Right-click → **Media** converts and shrinks videos (MP4 with H.264, HEVC or AV1, "fit under 10/25/50 MB" for mail and chats, with the PC's NVIDIA, Intel or AMD encoder when it has one), takes the sound out (as stored, or MP3, M4A, Opus, FLAC, WAV), makes GIFs and animated WebPs, and writes **subtitles** from what's said (whisper.cpp, on this PC, in its language or in English). A video WebView2 can't play (AVI, WMV, MKV and the like) gets a copy that plays, made by FFmpeg in seconds and kept for next time.
+-   **PDF tools**, with [pdfcpu](https://github.com/pdfcpu/pdfcpu): merge, split, keep or take out pages, turn them, make a PDF smaller, save its pictures, add or take off a password (AES-256), stamp DRAFT across it. Offline, beside the originals, and Ctrl+Z takes it back.
+-   **Data files of any size**, with [DuckDB](https://duckdb.org): once it's installed, **Query** reads CSV, JSON and Parquet where they are, however big; **Profile** describes every column (type, missing values, distinct values, range, quartiles); **Query together** joins several files; **Convert data** writes Parquet, CSV or JSON lines.
+-   **Remove personal info** before sharing: where a photo was taken, the camera's serial number, names, the apps used and editing history, out of photos, videos, PDFs (ExifTool) and Word, Excel and PowerPoint files (Glint itself). **Change when it was taken** moves or sets photos' dates.
+-   **Disk images and installers open like folders**, with 7-Zip: ISO, VHD(X), VMDK, DMG, WIM, ext4 and APFS images, installers, Debian and RPM packages. See what an installer holds without running it.
+-   **Encrypt** files and folders with a passphrase or someone's age key: [age](https://age-encryption.org)'s format, in Glint itself, readable with age or rage anywhere.
+-   **Phones nearby.** **Send to a phone nearby** finds the LocalSend apps on your network (Android, iPhone, Mac, Linux) and sends to them; while Nearby is open, they can send to this PC too. **Send to my PC** pushes files to a paired PC's Downloads.
+-   **Group by** kind, date, size, type or Git status in the list (the header's menu, or Ctrl+K), each group with its count and size. A **Columns** view (`Ctrl+Shift+9`): the folder above, this one, and what's in the folder you're on, ← and → between them. Saved searches show how many they find, live.
+-   **Previews**: Jupyter notebooks with their outputs, 3D models (STL, OBJ, glTF, PLY, 3MF: Windows' 3D Viewer is gone), and **Export as PDF** for Markdown, as the preview draws it.
+-   **The text in pictures**: Search inside files instantly reads screenshots and scans with Windows' OCR, so their words are found.
+-   **More for AI agents**: search inside files instantly, photos by what they show, recordings by what's said, code by its structure, SQL over a data file, and comparing two files.
+-   **Faster**: searches with a typo (close matches) look at 3 million names about four times faster, ruling out most names before comparing any letters; the copy queue copies small files eight at a time (5,000 small files in half the time); `npm run bench` measures folders, search, copies and start-up on your PC.
+
 ### New in 0.9.5
 
 -   **Photo search: `shows:`.** Type `shows:dog on a beach`, `shows:receipt` or `shows:whiteboard` in the search box: pictures are found by what's in them. OpenAI's CLIP (MIT) runs on this PC with ONNX Runtime, both downloaded when you turn it on in **Settings → Photos and recordings** (about 240 MB), and reads the folders you choose in the background, at low priority, with Windows' own codecs (so HEIC, AVIF and camera RAW too, with their extensions). What it learns of a picture is kept under the file's ID, so a move or rename keeps it.

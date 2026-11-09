@@ -6,12 +6,17 @@ import { create } from "zustand";
  */
 export const ARCHIVE_FORMATS = [
     "zip", "7z", "tar", "tar.gz", "tar.xz", "tar.bz2", "tar.zst", "tar.lz4", "gz", "xz", "bz2", "zst", "lz4", "cab", "msi", "rar",
-    "ncdu", "ncdu.gz", "ncdu.xz", "ncdu.bz2", "ncdu.zst", "ncdu.lz4",
+    "ncdu", "ncdu.gz", "ncdu.xz", "ncdu.bz2", "ncdu.zst", "ncdu.lz4", "disk image",
 ] as const;
 export type ArchiveFormat = (typeof ARCHIVE_FORMATS)[number];
 
+/** Disk images, installers and packages 7-Zip reads (archive/image.rs): Enter browses these… */
+export const IMAGES_BROWSED = ["dmg", "wim", "esd", "swm", "vmdk", "qcow2", "qcow", "vdi", "squashfs", "sfs", "deb", "rpm", "cpio", "chm", "xar", "apfs", "hfs", "hfsx", "ext2", "ext3", "ext4", "lzh", "lha", "arj", "cramfs"];
+/** …and these it looks inside on request (Windows mounts discs and disks, and runs programs). */
+export const IMAGES_ON_REQUEST = ["iso", "img", "vhd", "vhdx", "exe"];
+
 /** Extensions Enter opens like a folder: archives, tars (.tar.gz ends in "gz" like a lone .gz), single compressed files, and ncdu exports. */
-export const BROWSED = ["zip", "7z", "rar", "tar", "tgz", "txz", "tbz", "tbz2", "tzst", "gz", "xz", "bz2", "zst", "lz4", "cab", "ncdu"];
+export const BROWSED = ["zip", "7z", "rar", "tar", "tgz", "txz", "tbz", "tbz2", "tzst", "gz", "xz", "bz2", "zst", "lz4", "cab", "ncdu", ...IMAGES_BROWSED];
 
 /** Formats that hold one compressed file (shown as a folder of one): Extract here writes the file itself next to them. */
 export const SINGLE_FILE: readonly ArchiveFormat[] = ["gz", "xz", "bz2", "zst", "lz4"];
@@ -22,7 +27,7 @@ export const SINGLE_FILE: readonly ArchiveFormat[] = ["gz", "xz", "bz2", "zst", 
  */
 export const ON_REQUEST = [
     "docx", "docm", "dotx", "dotm", "xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "potx", "potm", "odt", "ods", "odp", "odg", "ott", "ots", "otp", "jar", "war", "ear", "apk", "aab", "nupkg", "vsix",
-    "whl", "epub", "msix", "msixbundle", "appx", "appxbundle", "xpi", "kmz", "3mf", "ipa", "msi", "msm",
+    "whl", "epub", "msix", "msixbundle", "appx", "appxbundle", "xpi", "kmz", "3mf", "ipa", "msi", "msm", ...IMAGES_ON_REQUEST,
 ];
 
 /** A path into an archive, by its names (one opened by its bytes says so in its listing instead). */

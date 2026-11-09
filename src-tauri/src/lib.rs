@@ -1,7 +1,9 @@
 mod access;
+mod actions;
 mod agents;
 mod appearance;
 mod archive;
+mod bench;
 mod batch_rename;
 mod calc;
 mod check;
@@ -14,6 +16,7 @@ mod credentials;
 mod crash;
 mod data_lens;
 mod dedup;
+mod duck;
 mod defender;
 mod devices;
 mod dialogs;
@@ -33,15 +36,19 @@ mod locks;
 mod markdown;
 mod mcp;
 mod meaning;
+mod metadata;
 mod multilingual;
 mod media;
 mod media_ai;
+mod media_tools;
 mod newmenu;
 mod native_preview;
 mod ocr;
 mod ondemand;
 mod openers;
+mod pdf_tools;
 mod pe;
+mod print;
 mod photos;
 mod placement;
 mod proc;
@@ -58,6 +65,7 @@ mod remote;
 mod repo;
 mod scripts;
 mod lan;
+mod localsend;
 mod share;
 mod shared;
 mod tags;
@@ -68,12 +76,14 @@ mod sign;
 mod sql;
 mod snap;
 mod speech;
+mod startup;
 mod sizes;
 mod term;
 mod thumbs;
 mod timeline;
 mod tools;
 mod usage;
+mod vault;
 mod verbs;
 mod versions;
 mod watch;
@@ -212,7 +222,7 @@ fn app_ready(window: tauri::WebviewWindow) {
             // Photo and speech search read their folders in the background, when they're on.
             media_ai::start();
             // Sharing with your other PCs: they find this one from the start.
-            devices::start();
+            devices::start(window.app_handle());
             // Remotes shown in File Explorer answer it again.
             ondemand::start();
         });
@@ -755,10 +765,12 @@ fn store_copy() -> bool {
 /// agent starts (mcp.rs), or the installer's tool installs (tools.rs). Its exit code, once it has
 /// answered; None for the app.
 pub fn worker() -> Option<i32> {
-    jq::worker().or_else(doctext::worker).or_else(remote::askpass).or_else(mcp::server).or_else(tools::cli)
+    jq::worker().or_else(bench::cli).or_else(doctext::worker).or_else(remote::askpass).or_else(mcp::server).or_else(tools::cli)
 }
 
 pub fn run() {
+    // The last session's folders are read now, while WebView2 starts (startup.rs).
+    startup::begin();
     // Folders from File Explorer, a double-click or a terminal. What the app can't open goes to File
     // Explorer before any window shows, and a launch with nothing left to open here ends there.
     let request = launch::Request::from_env();
@@ -923,6 +935,7 @@ pub fn run() {
             usage::disk_usage,
             usage::cancel_disk_usage,
             index::index_status,
+            index::index_count,
             index::index_history,
             index::index_enable,
             index::index_update,
@@ -980,6 +993,33 @@ pub fn run() {
             dedup::clone_duplicates,
             convert::convert_images,
             convert::convert_cancel,
+            media_tools::media_cancel,
+            media_tools::media_probe,
+            media_tools::media_encoders,
+            media_tools::media_run,
+            media_tools::media_playable,
+            pdf_tools::pdf_cancel,
+            pdf_tools::pdf_info,
+            pdf_tools::pdf_run,
+            duck::duck_tables,
+            duck::duck_run,
+            duck::duck_profile,
+            duck::duck_cancel,
+            duck::duck_convert,
+            metadata::meta_cancel,
+            metadata::meta_read,
+            metadata::meta_run,
+            vault::vault_cancel,
+            vault::vault_run,
+            devices::devices_send,
+            localsend::nearby_scan,
+            localsend::nearby_send,
+            localsend::nearby_cancel,
+            localsend::nearby_receive,
+            startup::startup_hint,
+            startup::bench_first_folder,
+            print::print_ready,
+            print::markdown_pdf,
             openers::openers,
             openers::open_in,
             repo::repo_card,

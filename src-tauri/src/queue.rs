@@ -383,15 +383,17 @@ fn run(job: &Job) {
     // What each item made there: a folder that wasn't there is Undo's to take back whole; a file, or
     // what went into a folder that was there already, is taken back file by file (never what was there).
     let fresh: Vec<bool> = sources.iter().map(|s| !item_root(&dest, s).exists()).collect();
-    let mut created: Vec<Vec<(PathBuf, PathBuf)>> = vec![Vec::new(); sources.len()];
+    let created: Vec<Vec<(PathBuf, PathBuf)>> = vec![Vec::new(); sources.len()];
     // The originals copied (and checked) whole: a move's to delete.
-    let mut copied_from: Vec<Vec<PathBuf>> = vec![Vec::new(); sources.len()];
+    let copied_from: Vec<Vec<PathBuf>> = vec![Vec::new(); sources.len()];
     for folder in &folders {
         let _ = std::fs::create_dir_all(folder);
     }
     let done = Arc::new(AtomicU64::new(0));
-    let mut window = (Instant::now(), 0u64);
-    for step in &steps {
+    // Names that are taken are asked about first, in order (Replace, Skip, Keep both; for the rest too),
+    // so the copying after can go several files at a time.
+    let mut todo: Vec<(usize, PathBuf)> = Vec::with_capacity(steps.len());
+    for (index, step) in steps.iter().enumerate() {
         if !job.hold() {
             return finish(job, "cancelled");
         }
@@ -410,6 +412,78 @@ fn run(job: &Job) {
                 Some(Answer::Both) => to = free_name(&to),
                 Some(Answer::Replace) => clear_read_only(&to),
             }
+        }
+        todo.push((index, to));
+    }
+    // Small files go several at a time (where Windows' own copy goes one by one, a folder of thousands of
+    // small files is mostly waiting on each file's opening and closing); big ones one at a time after, at
+    // the drive's full speed, with progress inside each.
+    type Todo = Vec<(usize, PathBuf)>;
+    let (small, large): (Todo, Todo) = todo.into_iter().partition(|(i, _)| steps[*i].size < SMALL_FILE);
+    let made = Mutex::new((created, copied_from));
+    let stopped = AtomicBool::new(false);
+    let started = Instant::now();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = if small.len() >= 16 { std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, SMALL_WORKERS) } else { 1 };
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, Ordering::Relaxed);
+                let Some((index, to)) = small.get(at) else { break };
+                if stopped.load(Ordering::SeqCst) || !job.hold() {
+                    stopped.store(true, Ordering::SeqCst);
+                    break;
+                }
+                let step = &steps[*index];
+                match copy_plain(&step.from, to) {
+                    Ok(()) => {
+                        let good = !verify || match same(&step.from, to, job) {
+                            Ok(true) => {
+                                job.set(|v| v.verified += 1);
+                                true
+                            }
+                            Ok(false) => {
+                                job.set(|v| v.errors.push(Failure { path: to.to_string_lossy().into_owned(), error: "It differs from its original after copying: the copy is kept, to look at".into() }));
+                                false
+                            }
+                            Err(e) if e == "cancelled" => {
+                                stopped.store(true, Ordering::SeqCst);
+                                break;
+                            }
+                            Err(e) => {
+                                job.set(|v| v.errors.push(Failure { path: to.to_string_lossy().into_owned(), error: format!("Couldn't check it: {e}") }));
+                                false
+                            }
+                        };
+                        let mut lists = made.lock().unwrap_or_else(|e| e.into_inner());
+                        lists.0[step.item].push((step.from.clone(), to.clone()));
+                        if good {
+                            lists.1[step.item].push(step.from.clone());
+                        }
+                    }
+                    Err(e) => job.set(|v| v.errors.push(Failure { path: step.from.to_string_lossy().into_owned(), error: e })),
+                }
+                let now = done.fetch_add(step.size, Ordering::Relaxed) + step.size;
+                let speed = now as f64 / started.elapsed().as_secs_f64().max(0.001);
+                job.set(|v| {
+                    v.files_done += 1;
+                    v.bytes_done = now;
+                    v.speed = speed;
+                    v.current = Some(step.from.to_string_lossy().into_owned());
+                });
+            });
+        }
+    });
+    if stopped.load(Ordering::SeqCst) {
+        return finish(job, "cancelled");
+    }
+    let (mut created, mut copied_from) = made.into_inner().unwrap_or_else(|e| e.into_inner());
+    let mut window = (Instant::now(), done.load(Ordering::Relaxed));
+    for (index, to) in &large {
+        let step = &steps[*index];
+        let to = to.clone();
+        if !job.hold() {
+            return finish(job, "cancelled");
         }
         job.set(|v| v.current = Some(step.from.to_string_lossy().into_owned()));
         let base = done.load(Ordering::Relaxed);
@@ -594,6 +668,29 @@ fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(not(windows))]
 fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
+}
+
+/// Files under this size are copied several at a time.
+const SMALL_FILE: u64 = 1 << 20;
+/// The most small files copied at once.
+const SMALL_WORKERS: usize = 8;
+
+/// Copies one small file with Windows' CopyFileEx, without progress (its streams, attributes and dates
+/// go too; a link is copied as the link).
+#[cfg(windows)]
+fn copy_plain(from: &Path, to: &Path) -> Result<(), String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{CopyFileExW, COPY_FILE_COPY_SYMLINK};
+    if let Some(parent) = to.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let (a, b) = (crate::fsx::wide(from), crate::fsx::wide(to));
+    unsafe { CopyFileExW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr()), None, None, None, COPY_FILE_COPY_SYMLINK) }.map_err(|e| crate::fsx::file_error(crate::fsx::io_error(e)))
+}
+
+#[cfg(not(windows))]
+fn copy_plain(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::copy(from, to).map(drop).map_err(|e| e.to_string())
 }
 
 /// What a copy's progress routine is given: the job, and the bytes done before this file.

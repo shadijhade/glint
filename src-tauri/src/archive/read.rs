@@ -38,6 +38,8 @@ pub enum Format {
     Rar,
     /// An ncdu export (JSON, plain or compressed): names and sizes only.
     Ncdu(Codec),
+    /// A disk image, an installer or another format 7-Zip reads (image.rs, through 7z.exe).
+    Image,
 }
 
 /// What a file's name says about it: Enter opens it like a folder (`Browse`), or opens it in its app
@@ -96,6 +98,11 @@ impl Format {
         } else if is("msi") || is("msm") {
             // Enter runs the installer; "Open as archive" shows what it installs.
             return Some((Format::Msi, Claim::OnRequest));
+        } else if super::image::BROWSED.iter().any(|e| is(e)) {
+            Format::Image
+        } else if super::image::ON_REQUEST.iter().any(|e| is(e)) {
+            // Windows mounts discs and disks, and runs programs: "Open as archive" looks inside with 7-Zip.
+            return Some((Format::Image, Claim::OnRequest));
         } else {
             return None;
         };
@@ -139,6 +146,7 @@ impl Format {
             Format::Msi => 14,
             Format::Rar => 15,
             Format::Ncdu(codec) => 16 + codec.index(),
+            Format::Image => 22,
         }
     }
 
@@ -162,6 +170,7 @@ impl Format {
             Format::Ncdu(Codec::Bz2) => "ncdu.bz2",
             Format::Ncdu(Codec::Zst) => "ncdu.zst",
             Format::Ncdu(Codec::Lz4) => "ncdu.lz4",
+            Format::Image => "disk image",
         }
     }
 }
@@ -184,6 +193,7 @@ pub enum Source {
     Rar(Box<RarSource>),
     /// An ncdu export's listing: nothing in it has data.
     Ncdu,
+    Image(Box<super::image::ImageSource>),
 }
 
 pub struct ZipSource {
@@ -230,9 +240,12 @@ impl Source {
             f.take(4096).read_to_end(&mut head).map(|_| head)
         }) {
             Ok(head) => match Format::detect(&head) {
+                Some(found @ (Format::Zip | Format::SevenZ | Format::Cab | Format::Rar)) if format == Format::Image => found,
+                // What 7-Zip was asked to read stays its own: a disc's or a program's first bytes say little.
+                _ if format == Format::Image => format,
                 Some(found @ (Format::Zip | Format::SevenZ | Format::Cab | Format::Msi | Format::Rar | Format::Ncdu(_))) => found,
                 Some(Format::Single(_) | Format::Tar(_)) => Format::Tar(Codec::Plain),
-                None => format,
+                Some(Format::Image) | None => format,
             },
             Err(e) => return Err(Failure::from(e)),
         };
@@ -242,6 +255,7 @@ impl Source {
             Format::Cab => open_cab(path).map(|(s, items)| (s, items, format)),
             Format::Msi => msi::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Msi(Box::new(s)), items, format)),
             Format::Rar => rar::open(path, MAX_ENTRIES, password).map(|(s, items)| (Source::Rar(Box::new(s)), items, format)),
+            Format::Image => super::image::open(path, MAX_ENTRIES).map(|(s, items)| (Source::Image(Box::new(s)), items, format)),
             Format::Ncdu(codec) => open_ncdu(path, codec, scan),
             Format::Tar(_) | Format::Single(_) => {
                 let kind = stream::kind_of(path).ok_or_else(|| Failure::Damaged("it isn't a tar archive or a compressed file Glint reads".into()))?;
@@ -273,6 +287,7 @@ impl Source {
             Source::Cab(c) => c.cabinet.files.get(item).map_or(size, |f| f.offset.saturating_add(size)),
             Source::Msi(m) => m.cost(item, size),
             Source::Rar(r) => r.cost(item, size),
+            Source::Image(i) => i.cost(item, size),
             Source::Ncdu => size,
         }
     }
@@ -287,6 +302,7 @@ impl Source {
             Source::Cab(c) => c.cabinet.files.get(item).map(|f| f.folder),
             Source::Msi(m) => m.block_of(item),
             Source::Rar(r) => r.block_of(item),
+            Source::Image(_) => None,
             Source::Ncdu => None,
         }
     }
@@ -304,6 +320,7 @@ impl Source {
             Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| c.cabinet.folders.get(f.folder)).map_or(1, |f| f.unpacked / f.packed.max(1)),
             Source::Msi(m) => m.ratio(item),
             Source::Rar(r) => r.ratio(),
+            Source::Image(_) => 1,
             Source::Ncdu => 1,
         }
     }
@@ -328,6 +345,7 @@ impl Source {
             Source::Cab(c) => c.cabinet.files.get(item).and_then(|f| f.problem.clone()),
             Source::Msi(m) => m.problem(item),
             Source::Rar(r) => r.problem(item),
+            Source::Image(i) => i.problem(item),
             Source::Ncdu => Some(ncdu_has_no_data()),
         }
     }
@@ -345,6 +363,7 @@ impl Source {
             Source::Cab(c) => c.read_each(file, items, each, skipped),
             Source::Msi(m) => m.read_each(file, items, each, skipped),
             Source::Rar(r) => r.read_each(items, each, skipped),
+            Source::Image(i) => i.read_each(items, each, skipped),
             Source::Ncdu => items.iter().map(|&i| (i, ncdu_has_no_data())).collect(),
         }
     }

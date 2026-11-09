@@ -40,3 +40,53 @@ export async function pairDevice(code: string) {
     saveRemote(remote);
     return remote;
 }
+
+/** How a send to a paired PC is going (devices.rs). */
+export interface SendProgress {
+    files: number;
+    totalFiles: number;
+    bytes: number;
+    totalBytes: number;
+    current: string;
+}
+
+/** Sends files and folders to a paired PC: they land in its Downloads, in a folder named after this PC. */
+export async function sendToDevice(device: RemoteConnection, paths: string[]) {
+    const { Channel } = await import("@tauri-apps/api/core");
+    const { toast } = await import("sonner");
+    const { formatSize } = await import("./format");
+    const id = toast.loading(`Sending to ${device.name}…`);
+    const channel = new Channel<SendProgress>();
+    channel.onmessage = (p) =>
+        toast.loading(`Sending to ${device.name}: ${p.files} of ${p.totalFiles}`, { id, description: `${formatSize(p.bytes)} of ${formatSize(p.totalBytes)}${p.current ? ` · ${p.current}` : ""}` });
+    try {
+        const landed = await invoke<string[]>("devices_send", { id: device.host, paths, onProgress: channel });
+        toast.success(`Sent ${landed.length === 1 ? "it" : `${landed.length} files`} to ${device.name}`, { id, description: `In its Downloads folder` });
+    } catch (e) {
+        toast.error(`Couldn't send to ${device.name}`, { id, description: String(e) });
+    }
+}
+
+/** Files arriving from paired PCs: one notice a burst, with Show for the last. */
+export function listenForDeviceFiles(reveal: (path: string) => void) {
+    let timer = 0;
+    let batch: { from: string; path: string }[] = [];
+    const flush = async () => {
+        const { toast } = await import("sonner");
+        const last = batch[batch.length - 1];
+        const from = [...new Set(batch.map((b) => b.from))].join(", ");
+        toast.success(batch.length === 1 ? `${from} sent you “${last.path.split("\\").pop()}”` : `${from} sent you ${batch.length} files`, {
+            description: "In Downloads",
+            duration: 10000,
+            action: { label: "Show", onClick: () => reveal(last.path) },
+        });
+        batch = [];
+    };
+    return import("@tauri-apps/api/event").then(({ listen }) =>
+        listen<{ from: string; path: string }>("device-received", (e) => {
+            batch.push(e.payload);
+            clearTimeout(timer);
+            timer = window.setTimeout(() => void flush(), 800);
+        })
+    );
+}

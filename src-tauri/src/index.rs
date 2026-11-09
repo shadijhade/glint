@@ -74,6 +74,39 @@ pub async fn index_status() -> Result<IndexInfo, String> {
     blocking(|| Ok(info())).await
 }
 
+/// How many items a saved search finds below `roots`, from the index (the sidebar's counts): up to
+/// `max`, and whether there are more. None when the index doesn't cover them or doesn't run.
+#[tauri::command]
+pub async fn index_count(query: String, roots: Vec<String>, max: usize) -> Result<Option<(u64, bool)>, String> {
+    #[cfg(windows)]
+    {
+        blocking(move || {
+            use shadui_index::client::{self, Event};
+            let request = shadui_index::proto::SearchRequest { query, roots, hidden: false, exclude: Vec::new(), max_results: Some(max.clamp(1, 100_000)), fuzzy: false, rank: false };
+            let mut answer = None;
+            let mut covered = false;
+            let _ = client::search(&request, |event| {
+                match event {
+                    Event::Plan { indexed, skipped } => {
+                        covered = !indexed.is_empty() && skipped.is_empty();
+                        return covered;
+                    }
+                    Event::Done { count, limited, .. } => answer = Some((count, limited)),
+                    Event::Hits(_) => {}
+                }
+                true
+            });
+            Ok(answer.filter(|_| covered))
+        })
+        .await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (query, roots, max);
+        Ok(None)
+    }
+}
+
 /// What was renamed, moved and deleted on the drives instant search covers, newest first: since
 /// `since` (ms), with `query` in a path, at most `max`. Rejects with "tooOld" for a service from
 /// before it kept history, and "off" when instant search doesn't run.

@@ -108,9 +108,15 @@ pub async fn endpoint() -> Result<&'static iroh::Endpoint, String> {
         .await
 }
 
-/// With sharing on, the endpoint starts with Glint, so paired PCs find it.
-pub fn start() {
-    if saved().sharing {
+/// Where files sent here are announced (the app's windows).
+static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// With sharing on, or a PC paired (it may send files here), the endpoint starts with Glint, so paired
+/// PCs find it.
+pub fn start(app: &tauri::AppHandle) {
+    let _ = APP.set(app.clone());
+    let now = saved();
+    if now.sharing || !now.allowed.is_empty() {
         tauri::async_runtime::spawn(async {
             let _ = endpoint().await;
         });
@@ -127,6 +133,9 @@ pub enum Request {
     Stat { path: String },
     /// A file's bytes from `offset`, after the answer.
     Read { path: String, offset: u64 },
+    /// A file sent to this PC (Send to…): its path in what's sent ("Trip/day 1.jpg"), and its size; its
+    /// bytes follow the request. It lands in Downloads, in a folder named after the PC it came from.
+    Push { path: String, size: u64 },
 }
 
 /// An item as it goes between PCs.
@@ -218,6 +227,21 @@ async fn answer(peer: &str, mut send: iroh::endpoint::SendStream, mut recv: iroh
             };
             write_frame(&mut send, &reply).await?;
         }
+        Request::Push { path, size } => {
+            let now = saved();
+            let from = now.allowed.iter().find(|p| p.id == peer).map(|p| p.name.clone());
+            let reply = match from {
+                None => Answer::error("That PC isn't paired with this one any more: pair them again in Settings → Devices"),
+                Some(from) => match receive(&from, &path, size, &mut recv).await {
+                    Ok(to) => {
+                        announce(&from, &to);
+                        Answer { name: to.to_string_lossy().into_owned(), ..Default::default() }
+                    }
+                    Err(e) => Answer::error(e),
+                },
+            };
+            write_frame(&mut send, &reply).await?;
+        }
         request => {
             let now = saved();
             if !now.allowed.iter().any(|p| p.id == peer) {
@@ -275,7 +299,146 @@ async fn handle(request: Request, shares: &[Share], send: &mut iroh::endpoint::S
             }
             Ok(())
         }
-        Request::Pair { .. } => Ok(()),
+        Request::Pair { .. } | Request::Push { .. } => Ok(()),
+    }
+}
+
+/// Where files from `from` land: Downloads\From <PC>.
+fn inbox(from: &str) -> Result<PathBuf, String> {
+    let downloads = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).ok_or("This PC's Downloads folder isn't known")?;
+    let clean: String = from.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) || c.is_control() { '_' } else { c }).collect();
+    Ok(downloads.join(format!("From {}", clean.trim().trim_end_matches('.'))))
+}
+
+/// A sent path made safe as a path below the inbox: its parts, each a name Windows takes, none leading up.
+fn safe_parts(path: &str) -> Result<Vec<String>, String> {
+    let parts: Vec<String> = path
+        .split(['\\', '/'])
+        .filter(|p| !p.is_empty() && *p != ".")
+        .map(|p| p.chars().map(|c| if r#":*?"<>|"#.contains(c) || c.is_control() { '_' } else { c }).collect::<String>().trim_end_matches(['.', ' ']).to_string())
+        .collect();
+    if parts.is_empty() || parts.iter().any(|p| p == ".." || p.is_empty()) {
+        return Err("That name isn't one this PC takes".into());
+    }
+    Ok(parts)
+}
+
+/// Takes a file's `size` bytes off `recv` into the inbox (a free name: " (2)" and so on): where it went.
+async fn receive(from: &str, path: &str, size: u64, recv: &mut iroh::endpoint::RecvStream) -> Result<PathBuf, String> {
+    use tokio::io::AsyncWriteExt;
+    let parts = safe_parts(path)?;
+    let mut folder = inbox(from)?;
+    for part in &parts[..parts.len() - 1] {
+        folder.push(part);
+    }
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let target = crate::fsx::create_numbered(&folder.to_string_lossy(), &parts[parts.len() - 1], false)?;
+    let partial = PathBuf::from(format!("{target}.part"));
+    let mut file = tokio::fs::File::create(&partial).await.map_err(|e| e.to_string())?;
+    let mut left = size;
+    let mut buffer = vec![0u8; 256 << 10];
+    while left > 0 {
+        let want = buffer.len().min(left as usize);
+        let n = match recv.read(&mut buffer[..want]).await {
+            Ok(Some(n)) if n > 0 => n,
+            _ => {
+                drop(file);
+                let _ = fs::remove_file(&partial);
+                let _ = fs::remove_file(&target);
+                return Err("The other PC stopped sending".into());
+            }
+        };
+        file.write_all(&buffer[..n]).await.map_err(|e| e.to_string())?;
+        left -= n as u64;
+    }
+    file.flush().await.map_err(|e| e.to_string())?;
+    drop(file);
+    let _ = fs::remove_file(&target);
+    fs::rename(&partial, &target).map_err(|e| e.to_string())?;
+    Ok(PathBuf::from(target))
+}
+
+/// Tells the app's windows a file came (they show it, with Show).
+fn announce(from: &str, to: &Path) {
+    use tauri::Emitter;
+    if let Some(app) = APP.get() {
+        let _ = app.emit("device-received", serde_json::json!({ "from": from, "path": to.to_string_lossy() }));
+    }
+}
+
+/// How a send is going: files and bytes sent of all, and the one under way.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SendProgress {
+    pub files: usize,
+    pub total_files: usize,
+    pub bytes: u64,
+    pub total_bytes: u64,
+    pub current: String,
+}
+
+/// Sends `paths` (files, and folders with everything in them) to the paired PC `id`: what it says each landed as.
+#[tauri::command]
+pub async fn devices_send(id: String, paths: Vec<String>, on_progress: tauri::ipc::Channel<SendProgress>) -> Result<Vec<String>, String> {
+    let id: iroh::EndpointId = id.parse().map_err(|_| "That isn't a paired PC")?;
+    // Every file to send, with its path in what's sent.
+    let files = crate::fsx::blocking(move || Ok(gather(&paths))).await?;
+    let total_bytes: u64 = files.iter().map(|(_, _, size)| size).sum();
+    let mut progress = SendProgress { files: 0, total_files: files.len(), bytes: 0, total_bytes, current: String::new() };
+    let connection = connect(id).await?;
+    let mut landed = Vec::new();
+    for (full, relative, size) in files {
+        use tokio::io::AsyncReadExt;
+        progress.current = relative.clone();
+        let _ = on_progress.send(progress.clone());
+        let (mut send, mut recv) = connection.open_bi().await.map_err(|e| e.to_string())?;
+        write_frame(&mut send, &Request::Push { path: relative.clone(), size }).await?;
+        let mut file = tokio::fs::File::open(&full).await.map_err(|e| format!("{}: {e}", full.display()))?;
+        let mut buffer = vec![0u8; 256 << 10];
+        let mut left = size;
+        while left > 0 {
+            let cap = buffer.len().min(left as usize);
+            let n = file.read(&mut buffer[..cap]).await.map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            send.write_all(&buffer[..n]).await.map_err(|e| e.to_string())?;
+            left -= n as u64;
+            progress.bytes += n as u64;
+            let _ = on_progress.send(progress.clone());
+        }
+        let _ = send.finish();
+        let answer: Answer = read_frame(&mut recv, MAX_REQUEST).await.map_err(|_| "That PC didn't take it: update Glint there to receive files".to_string())?;
+        if !answer.error.is_empty() {
+            return Err(answer.error);
+        }
+        landed.push(answer.name);
+        progress.files += 1;
+    }
+    let _ = on_progress.send(progress);
+    Ok(landed)
+}
+
+/// Each file in `paths`, folders walked: (where it is, its path as sent, its size). Links aren't followed.
+fn gather(paths: &[String]) -> Vec<(PathBuf, String, u64)> {
+    let mut out = Vec::new();
+    for path in paths {
+        let path = Path::new(path);
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        walk(path, &name, &mut out);
+    }
+    out
+}
+
+fn walk(path: &Path, relative: &str, out: &mut Vec<(PathBuf, String, u64)>) {
+    let Ok(meta) = fs::symlink_metadata(path) else { return };
+    if meta.is_dir() {
+        let Ok(items) = fs::read_dir(path) else { return };
+        for item in items.flatten() {
+            walk(&item.path(), &format!("{relative}/{}", item.file_name().to_string_lossy()), out);
+        }
+    } else if meta.is_file() {
+        out.push((path.to_path_buf(), relative.to_string(), meta.len()));
     }
 }
 
@@ -416,6 +579,15 @@ mod tests {
         assert!(local("Pictures/C:/Windows", &shares).is_err());
         assert!(local("Other", &shares).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keeps_sent_files_inside_the_inbox() {
+        assert_eq!(safe_parts("Trip/day 1.jpg").unwrap(), ["Trip", "day 1.jpg"]);
+        assert_eq!(safe_parts("a\\b:c.txt").unwrap(), ["a", "b_c.txt"]);
+        assert!(safe_parts("../x.txt").is_err());
+        assert!(safe_parts("").is_err());
+        assert!(inbox("Desk/PC").unwrap().ends_with("From Desk_PC"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createContext, useContext } from "react";
 import { create } from "zustand";
+import { installTool } from "./tools";
 import { toast } from "sonner";
 import { audioDir, desktopDir, documentDir, downloadDir, homeDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
@@ -533,6 +534,12 @@ export async function navigate(target: string, { select, history = true, quiet =
                     // Stopped reading an archive: nothing to report. One whose list of files is encrypted asks for its password.
                     if (!silent && message !== "cancelled") {
                         if (needsPassword(message)) askArchivePassword(target, () => void navigate(target, { select, history, tab }));
+                        // A disk image or installer before 7-Zip is installed: install it, then open it.
+                        else if (/7-Zip isn't installed/.test(message))
+                            toast.message(`“${baseName(target)}” opens with 7-Zip`, {
+                                description: "7-Zip reads disc and disk images, installers and packages. Glint installs it in a few seconds.",
+                                action: { label: "Install 7-Zip", onClick: () => void installTool("7zip").then((ok) => ok && navigate(target, { select, history, tab })) },
+                            });
                         else toast.error(`Can't open “${baseName(target)}”`, { description: message });
                     }
                 }
@@ -921,7 +928,7 @@ function restoreSession(session: Session) {
         .map((p) => {
             const ids = p.paths.map((path, i) => {
                 const id = newTabId();
-                tabs[id] = blankTab(id, path, p.views?.[i] === "grid" ? "grid" : "list");
+                tabs[id] = blankTab(id, path, p.views?.[i] === "grid" || p.views?.[i] === "columns" ? p.views[i] : "list");
                 return id;
             });
             return { tabs: ids, active: ids[Math.min(Math.max(0, p.active), ids.length - 1)] };
@@ -2496,4 +2503,25 @@ export async function newItem(dir: boolean) {
     } catch (e) {
         toast.error(`Couldn't create a ${dir ? "folder" : "file"}`, { description: String(e) });
     }
+}
+
+/** The folders shown in the panes now, for the next start to read ahead (startup.rs), as they change. */
+let hinted = "";
+let hintTimer = 0;
+useExplorer.subscribe((s) => {
+    const panes = s.dual ? s.panes : s.panes.slice(0, 1);
+    const paths = panes.map((p) => s.tabs[p.active]?.path).filter((p): p is string => !!p && isFolderPath(p) && !inArchivePath(p));
+    const key = paths.join("\n");
+    if (key === hinted) return;
+    hinted = key;
+    clearTimeout(hintTimer);
+    hintTimer = window.setTimeout(() => void invoke("startup_hint", { paths }).catch(() => {}), 1500);
+});
+
+/** The first folder painted after Glint started: the bench harness's cold start (startup.rs; a no-op otherwise). */
+let firstPainted = false;
+export function firstFolderPainted() {
+    if (firstPainted) return;
+    firstPainted = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => void invoke("bench_first_folder").catch(() => {})));
 }

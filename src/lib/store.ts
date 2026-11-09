@@ -1,3 +1,4 @@
+import type { GroupBy } from './groups';
 import { create } from 'zustand'
 import { persist, type PersistStorage } from 'zustand/middleware'
 import { toast } from 'sonner'
@@ -29,7 +30,7 @@ export interface SearchOptions {
 export type Mode = 'files' | 'text';
 
 /** How a tab shows a folder: a list with columns, or a grid of thumbnails. */
-export type ViewMode = 'list' | 'grid';
+export type ViewMode = 'list' | 'grid' | 'columns';
 
 /** The tabs open in each pane when the app closed, to reopen them. */
 export interface Session {
@@ -62,6 +63,8 @@ export interface Settings {
     restoreTabs: boolean; // reopen last time's tabs and panes; startFolder when there are none
     showHidden: boolean;
     foldersFirst: boolean;
+    // Group by in the list: headers over each kind, date, size, type or Git status ("none" for none)
+    groupBy: GroupBy;
     showPreviewPane: boolean;
     // The sidebar's folder tree: drives, Quick access and pinned folders open to show their folders, and
     // (if asked) it opens down to the folder shown, as File Explorer's "Expand to open folder"
@@ -153,6 +156,7 @@ export const DEFAULT_SETTINGS: Settings = {
     restoreTabs: true,
     showHidden: false,
     foldersFirst: true,
+    groupBy: 'none',
     showPreviewPane: true,
     folderTree: true,
     treeFollows: false,

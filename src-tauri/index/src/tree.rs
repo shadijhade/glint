@@ -1908,6 +1908,56 @@ mod tests {
         }
     }
 
+    /// Real names (NAMES: a file of one name a line, such as fd's `--format {/}` over C:\), searched as
+    /// typed and for close matches, timed (best of 5); and every name's answer checked against the
+    /// matcher without its character bits. Run with --ignored --nocapture, in release.
+    #[test]
+    #[ignore]
+    fn real_names_close_matches() {
+        let Ok(file) = std::env::var("NAMES") else { return };
+        let text = std::fs::read_to_string(file).unwrap();
+        let names: Vec<&str> = text.lines().filter(|l| !l.is_empty() && l.len() < 250).collect();
+        let mut builder = Builder::new(names.len() + 32);
+        builder.record(ROOT, 5, true, 0, 0);
+        builder.record(20, 1, true, 0, 0);
+        builder.name(20, make_ref(ROOT, 5), "Folder");
+        for (i, name) in names.iter().enumerate() {
+            let n = 21 + i as u32;
+            builder.record(n, 1, false, 0x20, 0);
+            builder.name(n, make_ref(20, 1), name);
+        }
+        let tree = builder.finish();
+        println!("{} names", names.len());
+        let best = |matcher: &NameMatcher| {
+            let mut ms = f64::MAX;
+            let mut found = 0;
+            for _ in 0..5 {
+                let started = std::time::Instant::now();
+                found = tree.search(&Search { matcher, filters: &Default::default(), now: 0, scope: ROOT, hidden: true, excludes: &Excludes::default() }).len();
+                ms = ms.min(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            (found, ms)
+        };
+        for query in ["reprot", "downlaod", "kernal32", "invoise", "documnets", "screenshto", "photgraphs", "summray meeting", "zzzzzz"] {
+            let terms = crate::query::terms(query);
+            let (exact, exact_ms) = best(&NameMatcher::from_terms(terms.clone()));
+            let near = NameMatcher::near(terms).unwrap();
+            let (close, close_ms) = best(&near);
+            // The same answer for every name, with and without the bits.
+            let (mut kept, mut differ, mut past) = (0usize, 0usize, 0usize);
+            for name in &names {
+                let folded = crate::query::fold(name);
+                let folded = (!name.is_ascii()).then_some(folded.as_bytes());
+                let (with, without) = (near.distance(name.as_bytes(), folded), near.distance_unfiltered(name.as_bytes(), folded));
+                kept += usize::from(with.is_some());
+                differ += usize::from(with != without);
+                past += usize::from(near.passes_checks(name.as_bytes(), folded));
+            }
+            println!("{query:>16}: as typed {exact} in {exact_ms:.1} ms, close {close} in {close_ms:.1} ms ({kept} kept, {differ} differ, {past} past the checks)");
+            assert_eq!(differ, 0);
+        }
+    }
+
     #[test]
     fn folder_lists_follow_every_change() {
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;

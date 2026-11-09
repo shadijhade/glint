@@ -21,6 +21,7 @@ mod cab;
 mod codec;
 mod compress;
 pub(crate) mod extract;
+mod image;
 mod msi;
 mod ncdu;
 mod rar;
@@ -1074,6 +1075,12 @@ async fn in_lane<T: Send + 'static>(lane: String, work: impl FnOnce(&AtomicBool)
         guard.stages.remove(&lane);
     }
     result
+}
+
+/// `folder` packed into a tar.zst at `dest` (vault.rs packs a folder this way before encrypting it).
+pub(crate) fn pack_tar_zst(folder: &Path, dest: &Path, cancel: &AtomicBool) -> Result<(), String> {
+    std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    compress::compress_as(&[folder.to_string_lossy().into_owned()], dest, compress::Format::TarZst, None, cancel, &mut |_, _| {}).map(drop)
 }
 
 /// Compress to zip: `paths` (files and folders on disk) into a new zip in `folder` named `name`,

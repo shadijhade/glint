@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Play } from "lucide-react";
 import type { FileEntry } from "@/lib/entries";
+import { invoke } from "@tauri-apps/api/core";
+import { Database } from "lucide-react";
 import { type SqlAnswer, sqlRun, type SqlTables, sqlTables } from "@/lib/fs";
+import { ToolNeeded } from "../ToolNeeded";
 import { sqlName, useQueryDraft } from "@/lib/preview";
 import { samePath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
@@ -16,7 +19,11 @@ const firstRows = (table: string) => `SELECT * FROM ${sqlName(table)} LIMIT 100`
  * is the table `data`, a workbook's sheets are tables by their names. Ctrl+Enter runs; the first 1,000
  * rows of the answer show in the table view.
  */
-export function QueryView({ entry }: { entry: FileEntry }) {
+export function QueryView({ entry, paths }: { entry: FileEntry; paths?: string[] }) {
+    // Several files (Query together) are DuckDB's, each a table named after it.
+    const together = !!paths && paths.length > 1;
+    const askTables = () => (together ? invoke<SqlTables>("duck_tables", { paths }) : sqlTables(entry.path));
+    const askRun = (text: string) => (together ? invoke<SqlAnswer>("duck_run", { paths, sql: text }) : sqlRun(entry.path, text));
     const draft = useQueryDraft((s) => (s.draft && samePath(s.draft.path, entry.path) ? s.draft.sql : null));
     const [tables, setTables] = useState<SqlTables | { error: string } | null>(null);
     const [sql, setSql] = useState("");
@@ -27,7 +34,7 @@ export function QueryView({ entry }: { entry: FileEntry }) {
     const run = (text: string) => {
         const mine = ++runs.current;
         setRunning(true);
-        sqlRun(entry.path, text).then(
+        askRun(text).then(
             (result) => mine === runs.current && setAnswer({ ...result, at: mine }),
             (e) => mine === runs.current && setAnswer({ error: String(e) })
         ).finally(() => mine === runs.current && setRunning(false));
@@ -38,7 +45,7 @@ export function QueryView({ entry }: { entry: FileEntry }) {
         let stale = false;
         setTables(null);
         setAnswer(null);
-        sqlTables(entry.path).then(
+        askTables().then(
             (found) => {
                 if (stale) return;
                 setTables(found);
@@ -55,7 +62,15 @@ export function QueryView({ entry }: { entry: FileEntry }) {
     }, [entry.path, entry.modified, draft]);
 
     if (!tables) return <Waiting what="Loading it for SQL…" />;
-    if ("error" in tables) return <BigIcon entry={entry} note={tables.error} />;
+    if ("error" in tables)
+        return /too big to load/.test(tables.error) ? (
+            <div className="space-y-3 p-4">
+                <BigIcon entry={entry} note={tables.error} />
+                <ToolNeeded id="duckdb" why="DuckDB queries data files of any size where they are, without loading them. Install it and SQL works on this one." icon={Database} />
+            </div>
+        ) : (
+            <BigIcon entry={entry} note={tables.error} />
+        );
 
     return (
         <div className="flex h-full flex-col">
@@ -97,6 +112,9 @@ export function QueryView({ entry }: { entry: FileEntry }) {
                         ))}
                     </div>
                     {tables.loadMs >= 1 && <span className="shrink-0 tabular-nums">loaded in {Math.round(tables.loadMs)} ms</span>}
+                    <span className="shrink-0" title={tables.engine === "DuckDB" ? "DuckDB reads the file where it is, however big" : "Loaded into SQLite in memory"}>
+                        {tables.engine}
+                    </span>
                 </div>
             </div>
             {answer && "error" in answer ? (

@@ -24,3 +24,6 @@ release
 *.njsproj
 *.sln
 *.sw?
+
+# npm run bench: runs on this PC
+bench-results/

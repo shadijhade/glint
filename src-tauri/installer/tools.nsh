@@ -80,6 +80,10 @@
   !insertmacro ${ROW} 22 whisper "whisper.cpp" 1 tool whisper-cli whisper \
     "Speech search: what's said in recordings and videos" \
     "whisper.cpp runs OpenAI's Whisper on this PC. Speech search (says: in the search box) then finds recordings and videos by what's said in them, in any language; its model downloads when speech search is turned on in Settings."
+  !insertmacro ${ROW} 23 pdfcpu "pdfcpu" 6 tool pdfcpu pdfcpu     "PDF tools: merge, split, pages, smaller, passwords"     "pdfcpu works on PDFs on this PC: merging and splitting them, keeping, taking out and turning pages, making them smaller, saving their pictures, adding or taking off a password and stamping them. Nothing is uploaded."
+  !insertmacro ${ROW} 24 duckdb "DuckDB" 6 tool duckdb duckdb.cli     "SQL over data files of any size"     "DuckDB reads CSV, JSON and Parquet files where they are, however big: Query, Profile (every column described), Query together and Convert data use it, reading only."
+  !insertmacro ${ROW} 25 exiftool "ExifTool" 6 tool exiftool oliverbetz.exiftool     "Remove personal info from photos, videos and PDFs"     "ExifTool reads and changes what files say about themselves. Remove personal info takes out where a photo was taken, the camera's serial number, names and editing history before you share; it also changes when photos were taken."
+  !insertmacro ${ROW} 26 7zip "7-Zip" 6 tool 7z 7zip.7zip     "Disk images and installers opened like folders"     "7-Zip reads ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers and Linux packages. Glint opens them like folders, so you see what an installer holds without running it."
 !macroend
 
 !macro GLINT_TOOL_GROUPS GROUP
@@ -88,6 +92,7 @@
   !insertmacro ${GROUP} 3 "Code and projects"
   !insertmacro ${GROUP} 4 "Scripts and terminal"
   !insertmacro ${GROUP} 5 "Sharing and clouds"
+  !insertmacro ${GROUP} 6 "Documents, data and media"
 !macroend
 
 ; The list view's messages and flags NSIS doesn't define, as numbers (System::Call takes no expressions).

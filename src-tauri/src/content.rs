@@ -36,18 +36,35 @@ const SKIP_DIRS: &[&str] = &["node_modules", ".git", ".hg", ".svn", "target", ".
 /// Matches shown at most from one file.
 const PER_FILE: usize = 50;
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     pub enabled: bool,
     pub folders: Vec<String>,
+    /// The text in pictures too (screenshots, scans, photos of whiteboards), read by Windows' OCR.
+    #[serde(default = "on")]
+    pub pictures: bool,
 }
+
+fn on() -> bool {
+    true
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config { enabled: false, folders: Vec::new(), pictures: true }
+    }
+}
+
+/// The biggest picture OCR reads for the index.
+const MAX_PICTURE: u64 = 25 << 20;
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub enabled: bool,
     pub folders: Vec<String>,
+    pub pictures: bool,
     /// Files in the index.
     pub files: u64,
     /// Reading the folders: how many files looked at, and how many (re)indexed.
@@ -87,7 +104,27 @@ static CONTENT: OnceLock<Arc<Content>> = OnceLock::new();
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
 fn data_dir() -> Option<PathBuf> {
-    APP.get()?.path().app_local_data_dir().ok().map(|d| d.join("content"))
+    match APP.get() {
+        Some(app) => app.path().app_local_data_dir().ok().map(|d| d.join("content")),
+        // The MCP server, a process of its own: the same folder.
+        None => crate::tools::data_dir().map(|d| d.join("content")),
+    }
+}
+
+/// A file and its lines that matched (number, text).
+pub type FileLines = (String, Vec<(usize, String)>);
+
+/// For the MCP server (a process of its own, while the app keeps the index's writer): files below `folder`
+/// holding every word of `query`, best first, each with its first lines holding them all (number, text).
+pub fn search_read_only(query: &str, folder: &str, max: usize) -> Result<Vec<FileLines>, String> {
+    if !load_config().enabled {
+        return Err("Search inside files instantly is off: Settings → Search inside files instantly turns it on".into());
+    }
+    let dir = data_dir().ok_or("Glint's data folder isn't known")?;
+    let index = Index::open_in_dir(&dir).map_err(|_| "The index of what's in your files isn't made yet".to_string())?;
+    let reader: IndexReader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into().map_err(|e| e.to_string())?;
+    let (_, f) = schema();
+    Ok(search_with(&reader, &f, query, folder, max).into_iter().map(|(path, lines)| (path, lines.into_iter().map(|(_, n, text, _)| (n, text)).collect())).collect())
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -166,6 +203,69 @@ fn ancestors(path: &Path) -> Vec<String> {
     out
 }
 
+/// `Content::search`, over any reader of the index (the app's own, or the MCP server's read-only one).
+fn search_with(reader: &IndexReader, f: &Fields, query: &str, folder: &str, max: usize) -> Vec<(String, Vec<Line>)> {
+    let words: Vec<String> = words_of(query);
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+    for word in &words {
+        let either: Vec<(Occur, Box<dyn Query>)> = vec![
+            (Occur::Should, Box::new(TermQuery::new(Term::from_field_text(f.body, word), IndexRecordOption::WithFreqs))),
+            (Occur::Should, Box::new(TermQuery::new(Term::from_field_text(f.name, word), IndexRecordOption::Basic))),
+        ];
+        clauses.push((Occur::Must, Box::new(BooleanQuery::new(either))));
+    }
+    let folder = folder.trim_end_matches('\\').to_lowercase();
+    clauses.push((Occur::Must, Box::new(TermQuery::new(Term::from_field_text(f.under, &folder), IndexRecordOption::Basic))));
+    let searcher = reader.searcher();
+    let Ok(top) = searcher.search(&BooleanQuery::new(clauses), &TopDocs::with_limit(2000).order_by_score()) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut matches = 0;
+    for (_, address) in top {
+        let Ok(doc) = searcher.doc::<TantivyDocument>(address) else { continue };
+        let path = doc.get_first(f.path).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let body = doc.get_first(f.body).and_then(|v| v.as_str()).unwrap_or_default();
+        let labels: Vec<&str> = doc.get_first(f.labels).and_then(|v| v.as_str()).map(|l| l.split('\n').collect()).unwrap_or_default();
+        let mut lines = Vec::new();
+        for (i, line) in body.split('\n').enumerate() {
+            let lower = line.to_lowercase();
+            if !words.iter().all(|w| lower.contains(w.as_str())) {
+                continue;
+            }
+            let mut spans: Vec<(usize, usize)> = Vec::new();
+            for word in &words {
+                let mut at = 0;
+                while let Some(found) = lower[at..].find(word.as_str()) {
+                    let start = at + found;
+                    // Byte offsets in the line as written (lowercasing keeps them for almost all text).
+                    if line.is_char_boundary(start) && line.is_char_boundary((start + word.len()).min(line.len())) {
+                        spans.push((start, (start + word.len()).min(line.len())));
+                    }
+                    at = start + word.len().max(1);
+                }
+            }
+            spans.sort_unstable();
+            let label = labels.get(i).map(|l| l.to_string()).unwrap_or_default();
+            lines.push((label, i + 1, line.to_string(), spans));
+            matches += 1;
+            if lines.len() >= PER_FILE || matches >= max {
+                break;
+            }
+        }
+        // A match in the name alone: the file, with its first line.
+        if lines.is_empty() {
+            continue;
+        }
+        out.push((path, lines));
+        if matches >= max {
+            break;
+        }
+    }
+    out
+}
+
 fn modified_ms(meta: &std::fs::Metadata) -> u64 {
     meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64)
 }
@@ -176,6 +276,8 @@ fn kind(path: &Path) -> Option<&'static str> {
         Some("text")
     } else if crate::doctext::DOCUMENTS.contains(&ext.as_str()) {
         Some("document")
+    } else if crate::ocr::PICTURES.contains(&ext.as_str()) {
+        Some("picture")
     } else {
         None
     }
@@ -250,6 +352,14 @@ impl Content {
             Some("text") if meta.len() <= MAX_TEXT => match text_lines(path) {
                 Some(lines) => (lines.join("\n"), String::new()),
                 None => return false,
+            },
+            // A picture's text, read by Windows' OCR (nothing in a picture without text is kept).
+            Some("picture") if meta.len() <= MAX_PICTURE && self.config.read().unwrap().pictures => match crate::ocr::lines(&path.to_string_lossy()) {
+                Ok(lines) if !lines.is_empty() => (lines.join("\n"), String::new()),
+                _ => {
+                    self.known.lock().unwrap().insert(key, modified);
+                    return false;
+                }
             },
             Some("document") => match crate::doctext::read_isolated(path) {
                 Ok(lines) => {
@@ -388,65 +498,7 @@ impl Content {
 
     /// Files below `folder` holding every word of `query`, best first, each with its lines holding them all.
     fn search(&self, query: &str, folder: &str, max: usize) -> Vec<(String, Vec<Line>)> {
-        let words: Vec<String> = words_of(query);
-        if words.is_empty() {
-            return Vec::new();
-        }
-        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-        for word in &words {
-            let either: Vec<(Occur, Box<dyn Query>)> = vec![
-                (Occur::Should, Box::new(TermQuery::new(Term::from_field_text(self.f.body, word), IndexRecordOption::WithFreqs))),
-                (Occur::Should, Box::new(TermQuery::new(Term::from_field_text(self.f.name, word), IndexRecordOption::Basic))),
-            ];
-            clauses.push((Occur::Must, Box::new(BooleanQuery::new(either))));
-        }
-        let folder = folder.trim_end_matches('\\').to_lowercase();
-        clauses.push((Occur::Must, Box::new(TermQuery::new(Term::from_field_text(self.f.under, &folder), IndexRecordOption::Basic))));
-        let searcher = self.reader.searcher();
-        let Ok(top) = searcher.search(&BooleanQuery::new(clauses), &TopDocs::with_limit(2000).order_by_score()) else { return Vec::new() };
-        let mut out = Vec::new();
-        let mut matches = 0;
-        for (_, address) in top {
-            let Ok(doc) = searcher.doc::<TantivyDocument>(address) else { continue };
-            let path = doc.get_first(self.f.path).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let body = doc.get_first(self.f.body).and_then(|v| v.as_str()).unwrap_or_default();
-            let labels: Vec<&str> = doc.get_first(self.f.labels).and_then(|v| v.as_str()).map(|l| l.split('\n').collect()).unwrap_or_default();
-            let mut lines = Vec::new();
-            for (i, line) in body.split('\n').enumerate() {
-                let lower = line.to_lowercase();
-                if !words.iter().all(|w| lower.contains(w.as_str())) {
-                    continue;
-                }
-                let mut spans: Vec<(usize, usize)> = Vec::new();
-                for word in &words {
-                    let mut at = 0;
-                    while let Some(found) = lower[at..].find(word.as_str()) {
-                        let start = at + found;
-                        // Byte offsets in the line as written (lowercasing keeps them for almost all text).
-                        if line.is_char_boundary(start) && line.is_char_boundary((start + word.len()).min(line.len())) {
-                            spans.push((start, (start + word.len()).min(line.len())));
-                        }
-                        at = start + word.len().max(1);
-                    }
-                }
-                spans.sort_unstable();
-                let label = labels.get(i).map(|l| l.to_string()).unwrap_or_default();
-                lines.push((label, i + 1, line.to_string(), spans));
-                matches += 1;
-                if lines.len() >= PER_FILE || matches >= max {
-                    break;
-                }
-            }
-            // A match in the name alone: the file, with its first line.
-            if lines.is_empty() {
-                continue;
-            }
-            out.push((path, lines));
-            if matches >= max {
-                break;
-            }
-        }
-        out
+        search_with(&self.reader, &self.f, query, folder, max)
     }
 }
 
@@ -484,6 +536,7 @@ pub async fn content_status() -> Result<Status, String> {
         let mut status = CONTENT.get().map(|c| c.status.lock().unwrap().clone()).unwrap_or_default();
         status.enabled = config.enabled;
         status.folders = config.folders;
+        status.pictures = config.pictures;
         Ok(status)
     })
     .await
@@ -491,9 +544,10 @@ pub async fn content_status() -> Result<Status, String> {
 
 /// Turns content indexing on (for `folders`) or off (the index is deleted).
 #[tauri::command]
-pub async fn content_configure(enabled: bool, folders: Vec<String>) -> Result<Status, String> {
+pub async fn content_configure(enabled: bool, folders: Vec<String>, pictures: Option<bool>) -> Result<Status, String> {
     blocking(move || {
-        let config = Config { enabled, folders: folders.into_iter().filter(|f| !f.trim().is_empty()).collect() };
+        let pictures = pictures.unwrap_or_else(|| load_config().pictures);
+        let config = Config { enabled, folders: folders.into_iter().filter(|f| !f.trim().is_empty()).collect(), pictures };
         let path = config_path().ok_or("Glint's data folder isn't known yet")?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -510,7 +564,7 @@ pub async fn content_configure(enabled: bool, folders: Vec<String>) -> Result<St
                 let mut status = content.status.lock().unwrap();
                 *status = Status::default();
             }
-            return Ok(Status { enabled: false, folders: config.folders, ..Default::default() });
+            return Ok(Status { enabled: false, folders: config.folders, pictures: config.pictures, ..Default::default() });
         }
         let content = open()?;
         *content.config.write().unwrap() = config.clone();

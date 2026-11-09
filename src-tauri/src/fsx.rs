@@ -88,6 +88,10 @@ pub async fn list_dir_shared(window: tauri::WebviewWindow, path: String, id: u64
 }
 
 async fn listing_bytes(path: String) -> Result<Vec<u8>, ListError> {
+    // Read already, as Glint started (startup.rs), and the folder is as it was then.
+    if let Some(warm) = crate::startup::take(path.trim()) {
+        return Ok(warm);
+    }
     let asked = path.clone();
     if crate::remote::is_remote(path.trim()) {
         return crate::remote::listing(path.trim(), Instant::now()).await.map_err(|e| ListError::other(path.trim(), e));

@@ -40,6 +40,8 @@ static RUNNING: Mutex<Option<InterruptHandle>> = Mutex::new(None);
 #[serde(rename_all = "camelCase")]
 pub struct SqlTables {
     pub tables: Vec<String>,
+    /// Who answers: "DuckDB" for data files once it's installed (duck.rs), else "SQLite".
+    pub engine: &'static str,
     /// Loading the file took this long (0 when it was loaded already, or is a database).
     pub load_ms: f64,
 }
@@ -47,6 +49,7 @@ pub struct SqlTables {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SqlAnswer {
+    pub engine: &'static str,
     pub columns: Vec<TableColumn>,
     pub rows: Vec<Vec<String>>,
     /// There were more rows than came back.
@@ -79,9 +82,13 @@ fn session<'a>(slot: &'a mut Option<Session>, path: &str) -> Result<(&'a Session
 #[tauri::command]
 pub async fn sql_tables(path: String) -> Result<SqlTables, String> {
     blocking(move || {
+        // A data file DuckDB reads where it is, however big.
+        if crate::duck::takes(&path) {
+            return Ok(crate::duck::tables(std::slice::from_ref(&path)));
+        }
         let mut slot = SESSION.lock().unwrap_or_else(|e| e.into_inner());
         let (session, load_ms) = session(&mut slot, &path)?;
-        Ok(SqlTables { tables: session.tables.clone(), load_ms })
+        Ok(SqlTables { tables: session.tables.clone(), engine: "SQLite", load_ms })
     })
     .await
 }
@@ -94,6 +101,9 @@ pub async fn sql_run(path: String, sql: String) -> Result<SqlAnswer, String> {
         running.interrupt();
     }
     blocking(move || {
+        if crate::duck::takes(&path) {
+            return crate::duck::query(std::slice::from_ref(&path), &sql);
+        }
         let mut slot = SESSION.lock().unwrap_or_else(|e| e.into_inner());
         let (session, load_ms) = session(&mut slot, &path)?;
         *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = Some(session.conn.get_interrupt_handle());
@@ -102,6 +112,17 @@ pub async fn sql_run(path: String, sql: String) -> Result<SqlAnswer, String> {
         answer.map(|answer| SqlAnswer { load_ms, ..answer })
     })
     .await
+}
+
+/// One query over a file, outside the preview's session (the MCP server's query_data): DuckDB's for data
+/// files once it's installed, else loaded into SQLite as the preview loads it.
+pub(crate) fn query_file(path: &str, sql: &str) -> Result<SqlAnswer, String> {
+    if crate::duck::takes(path) {
+        return crate::duck::query(&[path.to_string()], sql);
+    }
+    let (conn, _) = open(path)?;
+    guard(&conn)?;
+    run(&conn, sql)
 }
 
 /// A database file's URI, read-only and immutable: `file:///C:/a%20b/x.db?mode=ro&immutable=1`.
@@ -427,6 +448,7 @@ fn run(conn: &Connection, sql: &str) -> Result<SqlAnswer, String> {
     let _ = conn.progress_handler(0, None::<fn() -> bool>);
     read.map_err(explain)?;
     Ok(SqlAnswer {
+        engine: "SQLite",
         columns: names.into_iter().zip(&kinds).map(|(name, k)| TableColumn { name, kind: sheet::kind_name(*k).into() }).collect(),
         rows,
         truncated,

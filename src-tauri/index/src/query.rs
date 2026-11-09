@@ -208,6 +208,103 @@ impl Words {
 struct Near {
     word: Vec<char>,
     k: u8,
+    /// The word's characters, as `char_bit` has them.
+    bits: u64,
+    /// Its first two characters' bits: a name's word must start with one of them (`distance`).
+    first: u64,
+}
+
+/// Bits for the characters names are matched in (lowercase): a letter or a digit has one of its own,
+/// other ASCII shares one of 12 and every other character one of 16 by its value.
+fn char_bit(c: char) -> u64 {
+    let n = c as u32;
+    1 << match c {
+        'a'..='z' => n - 'a' as u32,
+        '0'..='9' => 26 + n - '0' as u32,
+        _ if c.is_ascii() => 36 + n % 12,
+        _ => 48 + n % 16,
+    }
+}
+
+/// Every bit a name's non-ASCII characters could have (they aren't decoded to tell which).
+const OTHER_CHARACTERS: u64 = 0xFFFF << 48;
+
+/// What `name_bits` needs of each byte, taken as the character it is when a name has no folded copy
+/// (as `Words::of` takes it): its bit, and its class as Words tells word starts by.
+struct ByteTable {
+    bit: [u64; 256],
+    class: [u8; 256],
+}
+
+const ALNUM: u8 = 1;
+const ALPHA: u8 = 2;
+const NUMERIC: u8 = 4;
+const LOWER: u8 = 8;
+const UPPER: u8 = 16;
+
+static BYTES: std::sync::LazyLock<ByteTable> = std::sync::LazyLock::new(|| {
+    let mut table = ByteTable { bit: [0; 256], class: [0; 256] };
+    for b in 0..=255u8 {
+        let c = b as char;
+        table.bit[b as usize] = if b.is_ascii() { char_bit(b.to_ascii_lowercase() as char) } else { OTHER_CHARACTERS };
+        let flag = |yes: bool, flag: u8| if yes { flag } else { 0 };
+        table.class[b as usize] = flag(c.is_alphanumeric(), ALNUM) | flag(c.is_alphabetic(), ALPHA) | flag(c.is_numeric(), NUMERIC) | flag(c.is_lowercase(), LOWER) | flag(c.is_uppercase(), UPPER);
+    }
+    table
+});
+
+/// The characters a name has, as bits (by `char_bit`, case ignored): a byte past ASCII sets every one of
+/// `OTHER_CHARACTERS`, so a bit can be wrongly set but never wrongly clear. No branches: it's done for
+/// every name a search for close matches looks at.
+fn name_bits(name: &[u8], folded: Option<&[u8]>) -> u64 {
+    let table = &BYTES.bit;
+    folded.unwrap_or(name).iter().fold(0, |bits, &b| bits | table[b as usize])
+}
+
+/// The characters a name's words start with, as bits, as `Words::of` tells its starts (after anything but
+/// a letter or digit, between letters and digits, and at a capital after a small letter), each byte taken
+/// as the character it is there. A name with a folded copy (Words lays out its characters, not its
+/// bytes) counts every character as a start.
+fn start_bits(name: &[u8], folded: Option<&[u8]>) -> u64 {
+    if folded.is_some() {
+        return !0;
+    }
+    let table = &*BYTES;
+    let mut starts = 0;
+    let mut previous: Option<u8> = None;
+    for &b in name {
+        let class = table.class[b as usize];
+        let start = match previous {
+            None => true,
+            Some(p) => p & ALNUM == 0 || (p & ALPHA != 0 && class & NUMERIC != 0) || (p & NUMERIC != 0 && class & ALPHA != 0) || (p & LOWER != 0 && class & UPPER != 0),
+        };
+        if start {
+            starts |= table.bit[b as usize];
+        }
+        previous = Some(class);
+    }
+    starts
+}
+
+impl Near {
+    fn new(word: Vec<char>, k: u8) -> Self {
+        let bits = word.iter().fold(0, |bits, &c| bits | char_bit(c));
+        let first = char_bit(word[0]) | word.get(1).map_or(0, |&c| char_bit(c));
+        Near { word, k, bits, first }
+    }
+
+    /// Whether a name with these characters (`name_bits`) can't be within `k` edits: each of the word's
+    /// characters a name lacks takes an edit at least (a change or a drop; added letters and swaps take
+    /// none away), so lacking more than `k` of them rules it out before any table is filled.
+    fn lacks(&self, bits: u64) -> bool {
+        (self.bits & !bits).count_ones() > u32::from(self.k)
+    }
+
+    /// Whether no word of a name with these word starts (`start_bits`) starts with the word's first or
+    /// second character, the only words `distance` looks at.
+    fn no_start(&self, starts: u64) -> bool {
+        starts & self.first == 0
+    }
 }
 
 impl Near {
@@ -382,7 +479,7 @@ impl NameMatcher {
                 continue;
             }
             near = true;
-            terms.push(Term::Near(Near { word, k }));
+            terms.push(Term::Near(Near::new(word, k)));
         }
         near.then_some(NameMatcher { terms, paths })
     }
@@ -425,6 +522,33 @@ impl NameMatcher {
 
     /// How many edits away the name is, when it matches (0 for terms matched as typed).
     pub fn distance(&self, name: &[u8], folded: Option<&[u8]>) -> Option<u32> {
+        // Close matches: a name lacking too many of a word's characters, or with no word starting as the word
+        // does, is ruled out from a pass over its bytes, before its words are laid out and any edit table
+        // is filled (most names, on a real drive).
+        if self.is_near() && !self.passes_checks(name, folded) {
+            return None;
+        }
+        self.distance_unfiltered(name, folded)
+    }
+
+    /// Whether a name gets past the cheap checks `distance` makes for close matches before laying out its
+    /// words and filling any edit table: its characters first (one pass without branches), then the
+    /// characters its words start with.
+    pub(crate) fn passes_checks(&self, name: &[u8], folded: Option<&[u8]>) -> bool {
+        let nears = || self.terms.iter().filter_map(|t| match t {
+            Term::Near(near) => Some(near),
+            _ => None,
+        });
+        let bits = name_bits(name, folded);
+        if nears().any(|near| near.lacks(bits)) {
+            return false;
+        }
+        let starts = start_bits(name, folded);
+        !nears().any(|near| near.no_start(starts))
+    }
+
+    /// `distance` without ruling names out by their characters first: what it must always agree with.
+    pub(crate) fn distance_unfiltered(&self, name: &[u8], folded: Option<&[u8]>) -> Option<u32> {
         let mut words: Option<Words> = None;
         let mut total = 0;
         for term in &self.terms {
@@ -1033,6 +1157,37 @@ mod tests {
                 assert_eq!(prefix_distance(&word, &text, k), (expected <= k).then_some(expected), "{word:?} in {text:?}");
             }
         }
+    }
+
+    /// Ruling names out by their characters never loses a close match: over random words and names
+    /// (a few letters, a digit, a space, capitals and non-ASCII characters, where it's most likely to go
+    /// wrong), the answer is the same with and without it.
+    #[test]
+    fn character_bits_never_rule_out_a_match() {
+        let mut seed = 0x51AF_D7ED_558C_CD3Fu64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        const ALPHABET: [&str; 10] = ["a", "b", "c", "R", "e", "1", " ", "é", "Ä", "ß"];
+        let mut checked = 0;
+        for _ in 0..200_000 {
+            let word: String = (0..4 + next() % 6).map(|_| ALPHABET[(next() % 8) as usize]).collect::<String>().replace(' ', "");
+            let name: String = (0..next() % 16).map(|_| ALPHABET[(next() % 10) as usize]).collect();
+            let Some(matcher) = NameMatcher::near(vec![word.clone()]) else { continue };
+            let folded = fold(&name);
+            let folded = (!name.is_ascii()).then_some(folded.as_bytes());
+            assert_eq!(matcher.distance(name.as_bytes(), folded), matcher.distance_unfiltered(name.as_bytes(), folded), "{word:?} in {name:?}");
+            checked += 1;
+        }
+        assert!(checked > 100_000);
+        // And it does rule out what lacks the word's characters.
+        let near = NameMatcher::near(vec!["report".into()]).unwrap();
+        assert_eq!(near.distance(b"zzzzzz.txt", None), None);
+        assert_eq!(near.distance(b"Q3 Reprot.pdf", None), Some(1));
+        assert_eq!(near.distance(b"Rport.pdf", None), Some(1), "a dropped letter lacks one");
     }
 
     #[test]

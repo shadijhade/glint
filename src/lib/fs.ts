@@ -1155,11 +1155,14 @@ export interface SheetPreview {
 
 export interface SqlTables {
     tables: string[];
+    /** Who answers: "DuckDB" for data files once it's installed, else "SQLite". */
+    engine: string;
     /** Loading the file took this long (0 when it was loaded already, or is a database). */
     loadMs: number;
 }
 
 export interface SqlAnswer {
+    engine: string;
     columns: TableColumn[];
     rows: string[][];
     /** There were more rows than came back (1,000). */

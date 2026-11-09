@@ -35,6 +35,11 @@ fn model() -> Option<PathBuf> {
     tools::data_dir().map(|d| d.join("models").join(MODEL).join(MODEL_FILE))
 }
 
+/// The model's file, when it's there (Media studio's subtitles use it too).
+pub fn model_path() -> Option<PathBuf> {
+    model().filter(|m| fs::metadata(m).is_ok_and(|m| m.len() == MODEL_SIZE))
+}
+
 /// Whether whisper.cpp and its model are there.
 pub fn installed() -> bool {
     model().is_some_and(|m| fs::metadata(m).is_ok_and(|m| m.len() == MODEL_SIZE)) && tools::command("whisper").is_ok()

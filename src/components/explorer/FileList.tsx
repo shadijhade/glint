@@ -10,6 +10,7 @@ import type { GitMark } from "@/lib/fs";
 import { parentPath } from "@/lib/paths";
 import { clockTime, type ColumnId, COLUMNS, dropClass, gridTemplates } from "@/lib/columns";
 import { canBeTaken, type MediaFacts } from "@/lib/media";
+import type { Grouped } from "@/lib/groups";
 import { type Column, useStore } from "@/lib/store";
 import { timeThumbnails } from "@/lib/thumbs";
 import { cn } from "@/lib/utils";
@@ -42,6 +43,8 @@ export function gitOf(entry: FileEntry, git?: Readonly<Record<string, GitMark>>)
 /** What the list and the grid both show, and how they report what's done to them. */
 export interface FileViewProps {
     rows: FileEntry[];
+    /** Group by: the rows' groups, a header line over each (the list only). */
+    grouped?: Grouped | null;
     /** Search results: each one shows where it is, relative to `scope`. */
     search: boolean;
     /** The Recycle Bin: each item shows the folder it was deleted from, and when (its date). */
@@ -267,6 +270,22 @@ export function FileList(props: FileListProps) {
         if (thumbnails) timeThumbnails(lane, thumbScope);
     }, [thumbnails, lane, thumbScope]);
 
+    /** A line of a grouped list: a group's header, or a row. */
+    const renderLine = (grouped: Grouped, line: number) => {
+        const at = grouped.lines[line];
+        if (at >= 0) return renderRow(at);
+        const header = grouped.headers[-at - 1];
+        return (
+            <div className="flex h-full items-end gap-2 border-b border-border/60 px-3 pb-0.5 text-xs" role="presentation">
+                <span className="font-semibold text-foreground">{header.label}</span>
+                <span className="text-muted-foreground tabular-nums">
+                    {header.count} {header.count === 1 ? "item" : "items"}
+                    {header.size > 0 && ` · ${formatSize(header.size)}`}
+                </span>
+            </div>
+        );
+    };
+
     const renderRow = (i: number) => {
         const entry = rows[i];
         // Folders found by the index come with their total; fd's come without one (0).
@@ -436,16 +455,16 @@ export function FileList(props: FileListProps) {
                     aria-label={search ? "Search results" : recycled ? "Recycle Bin" : "Files"}
                     aria-activedescendant={focusIndex >= 0 ? `${lane}-row-${focusIndex}` : undefined}
                     tabIndex={0}
-                    count={rows.length}
+                    count={props.grouped ? props.grouped.lines.length : rows.length}
                     rowHeight={rowHeight}
-                    scrollToIndex={focusIndex}
+                    scrollToIndex={props.grouped && focusIndex >= 0 ? props.grouped.lineOf[focusIndex] : focusIndex}
                     initialScrollTop={props.scrollTop}
                     onScrollTop={props.onScrollTop}
                     className="outline-hidden [scrollbar-gutter:stable]"
                     onMouseDown={(e) => !(e.target as Element).closest("[data-row]") && props.onBackgroundMouseDown(e)}
                     onContextMenu={(e) => !(e.target as Element).closest("[data-row]") && props.onBackgroundContextMenu(e)}
                 >
-                    {renderRow}
+                    {props.grouped ? (line: number) => renderLine(props.grouped!, line) : renderRow}
                 </VirtualList>
                 {!rows.length && <div className="pointer-events-none absolute inset-0">{props.empty}</div>}
             </div>
