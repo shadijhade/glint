@@ -10,6 +10,7 @@ import { cdCommand, isTyping, runLine } from "./cd.ts";
 import { formatDate, formatDuration, formatSize } from "./format.ts";
 import { hslOf, textOn } from "./color.ts";
 import { plainQuery } from "./plain.ts";
+import { groupOf, groupRows } from "./groups.ts";
 import { decodeThumb, gridColumns, gridMove, keepPlace, marqueeHits, placeOf, thumbStep, tileLayout, topOf, zoomTiles } from "./grid.ts";
 import { editsAllowed, frecency, fuzzyIndices, fuzzyScore, typoDistance } from "./rank.ts";
 import { groupFilter, typeGroup } from "./fileTypes.ts";
@@ -789,5 +790,21 @@ assert.deepEqual(droppable(["C:\\a"], "C:\\a"), []);
 assert.deepEqual(droppable(["C:\\a"], "C:\\a\\sub"), []);
 assert.deepEqual(droppable(["C:\\ab"], "C:\\a\\sub"), ["C:\\ab"]);
 assert.deepEqual(droppable(["D:\\photos"], "C:\\"), ["D:\\photos"]);
+
+// Group by: rows ordered group by group (each keeping its order), a header line over each.
+{
+    const day = 86_400_000;
+    const now = new Date(2026, 10, 11, 15, 0).getTime(); // a Wednesday
+    const rows = [entry("old.txt", { modified: now - 400 * day }), entry("today.png", { modified: now - 3_600_000 }), entry("docs", { dir: true, modified: now - day }), entry("b.png", { modified: now - 2 * 3_600_000 })];
+    const byDate = groupRows(rows, "date", now);
+    assert.deepEqual(byDate.headers.map((h) => [h.label, h.count]), [["Today", 2], ["Yesterday", 1], ["2025", 1]]);
+    assert.deepEqual(byDate.rows.map((r) => r.name), ["today.png", "b.png", "docs", "old.txt"]);
+    // Lines: header, row, row, header, row, header, row; each row knows its line.
+    assert.deepEqual(Array.from(byDate.lines), [-1, 0, 1, -2, 2, -3, 3]);
+    assert.deepEqual(Array.from(byDate.lineOf), [1, 2, 4, 6]);
+    const byKind = groupRows(rows, "kind", now);
+    assert.equal(byKind.headers[0].label, "Folders");
+    assert.equal(groupOf(entry("big.iso", { size: 2 ** 31 }), "size", now).label, "Huge (over 1 GB)");
+}
 
 console.log("explorer.check: all assertions passed");

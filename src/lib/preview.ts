@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 /** A file's other views: as written (Markdown's source, a tree's text), what Git says changed, its bytes, or SQL over it. */
-export type View = "file" | "source" | "changes" | "hex" | "query";
+export type View = "file" | "source" | "changes" | "hex" | "query" | "profile";
 
 /** Which view the preview shows, kept while moving from file to file (where a file has no such view, it's shown as it is). */
 export const usePreviewView = create<{ view: View }>(() => ({ view: "file" }));

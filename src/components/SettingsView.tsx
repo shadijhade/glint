@@ -481,6 +481,7 @@ function MultilingualRow() {
 interface ContentStatus {
     enabled: boolean;
     folders: string[];
+    pictures: boolean;
     files: number;
     indexing: boolean;
     seen: number;
@@ -501,9 +502,9 @@ function ContentIndexSection() {
         const timer = setInterval(refresh, 1500);
         return () => clearInterval(timer);
     }, []);
-    const configure = async (enabled: boolean, folders: string[]) => {
+    const configure = async (enabled: boolean, folders: string[], pictures?: boolean) => {
         try {
-            setStatus(await invoke<ContentStatus>("content_configure", { enabled, folders }));
+            setStatus(await invoke<ContentStatus>("content_configure", { enabled, folders, pictures: pictures ?? null }));
         } catch (e) {
             toast.error("Couldn't change content indexing", { description: String(e) });
         }
@@ -531,6 +532,14 @@ function ContentIndexSection() {
                 checked={status.enabled}
                 onChange={(on) => void (on ? start() : configure(false, status.folders))}
             />
+            {status.enabled && (
+                <SwitchRow
+                    label="The text in pictures too"
+                    hint="Screenshots, scans and photos of whiteboards are found by the words in them, read by Windows' own OCR in the background (in the languages Windows has for it)."
+                    checked={status.pictures}
+                    onChange={(on) => void configure(true, status.folders, on)}
+                />
+            )}
             {status.enabled && (
                 <div className="space-y-1 px-4 pb-3">
                     {status.folders.map((folder) => (
@@ -1363,7 +1372,7 @@ export function SettingsView({ onClose, quickTaken, section }: SettingsViewProps
                     <GalleryFolders />
                     <SwitchRow
                         label="Copy and move with Glint's queue"
-                        hint="Paste, drops and the other pane's copies wait their turn in the copy queue, with Pause and Resume, instead of Windows' copy dialog. Paste with the copy queue is in the folder's menu either way"
+                        hint="Paste, drops and the other pane's copies wait their turn in the copy queue, with Pause and Resume, instead of Windows' copy dialog. It copies small files several at a time, so folders of thousands of them go much faster. Paste with the copy queue is in the folder's menu either way"
                         checked={settings.copyQueue}
                         onChange={(copyQueue) => set({ copyQueue })}
                     />

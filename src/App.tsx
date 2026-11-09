@@ -26,6 +26,13 @@ import { AddressBar } from "./components/explorer/AddressBar";
 import { BatchRenameDialog } from "./components/explorer/BatchRenameDialog";
 import { CheckDialog } from "./components/explorer/CheckDialog";
 import { ConvertDialog } from "./components/explorer/ConvertDialog";
+import { MediaDialog } from "./components/explorer/MediaDialog";
+import { listenForDeviceFiles } from "./lib/devices";
+import { PdfDialog } from "./components/explorer/PdfDialog";
+import { DataDialogs } from "./components/explorer/DataTools";
+import { MetadataDialog } from "./components/explorer/MetadataDialog";
+import { VaultDialog } from "./components/explorer/VaultDialog";
+import { NearbyDialog } from "./components/explorer/NearbyDialog";
 import { ShareDialog, SharingButton } from "./components/explorer/ShareDialog";
 import { RemoteDialog } from "./components/explorer/RemoteDialog";
 import { RulesDialog } from "./components/explorer/RulesDialog";
@@ -181,6 +188,11 @@ function App() {
       }
     );
   }, [quickShortcut, keepInTray]);
+  // Files a paired PC sends here (Send to…): a notice with Show.
+  useEffect(() => {
+    const stop = listenForDeviceFiles((path) => void revealInApp(path));
+    return () => void stop.then((unlisten) => unlisten());
+  }, []);
   useEffect(() => {
     // Not without the tray: Glint would start where nothing shows it.
     setStartWithWindows(startWithWindows && keepInTray).catch(() => {});
@@ -542,6 +554,12 @@ function App() {
       <VersionsDialog />
       <CheckDialog />
       <ConvertDialog />
+      <MediaDialog />
+      <PdfDialog />
+      <DataDialogs />
+      <MetadataDialog />
+      <VaultDialog />
+      <NearbyDialog />
       <ShareDialog />
       <RemoteDialog />
       <RulesDialog />

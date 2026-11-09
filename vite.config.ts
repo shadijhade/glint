@@ -46,6 +46,8 @@ export default defineConfig(async () => ({
       input: {
         main: path.resolve(import.meta.dirname, "index.html"),
         quick: path.resolve(import.meta.dirname, "quick.html"),
+        // Export as PDF draws a Markdown file in a hidden window of its own (print.rs).
+        print: path.resolve(import.meta.dirname, "print.html"),
       },
       output: {
         codeSplitting: {

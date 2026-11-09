@@ -703,3 +703,9 @@
         opacity: 0;
     }
 }
+
+/* Trim's two handles share one track (MediaTools.tsx): only their thumbs take the pointer. */
+.trim-handle::-webkit-slider-thumb {
+    pointer-events: auto;
+    cursor: ew-resize;
+}

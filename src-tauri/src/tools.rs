@@ -422,6 +422,72 @@ pub static TOOLS: &[Tool] = &[
         used_for: "Google Drive, OneDrive, Dropbox and 60 more clouds as folders, signed in to from Glint, and folders kept in sync with them by Folder rules",
     },
     Tool {
+        id: "pdfcpu",
+        name: "pdfcpu",
+        exe: "pdfcpu",
+        package: "pdfcpu",
+        bundled: false,
+        winget: "",
+        release: release(
+            "0.16.4",
+            "https://github.com/pdfcpu/pdfcpu/releases/download/v0.16.4/pdfcpu_0.16.4_Windows_x86_64.zip",
+            "faf6c51d6f54d96a8c1ad5beee02143460b8ae97bd9630cbab1a253adaa43558",
+            "pdfcpu_0.16.4_Windows_x86_64/pdfcpu.exe",
+        ),
+        used_for: "PDF tools: merging, splitting, turning and taking out pages, making PDFs smaller, their pictures, passwords and stamps",
+    },
+    Tool {
+        id: "duckdb",
+        name: "DuckDB",
+        exe: "duckdb",
+        package: "duckdb.cli",
+        bundled: false,
+        winget: "",
+        release: release(
+            "2.0.0",
+            "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-windows-amd64.tar.gz",
+            "91663c2f36c2a334b0e5e639006d8c29c29e013af0c477d80bb931df68870312",
+            "duckdb.exe",
+        ),
+        used_for: "SQL over CSV, JSON and Parquet files of any size, read where they are, data files queried together, their columns' profile, and converting them",
+    },
+    // The Windows build is Perl with ExifTool beside it: the program and its exiftool_files folder.
+    // exiftool.org keeps only the newest version, so the pin points at SourceForge, which keeps them all.
+    Tool {
+        id: "exiftool",
+        name: "ExifTool",
+        exe: "exiftool",
+        package: "oliverbetz.exiftool",
+        bundled: false,
+        winget: "",
+        release: Release {
+            version: "13.61",
+            url: "https://downloads.sourceforge.net/project/exiftool/exiftool-13.61_64.zip",
+            sha256: "ab75b37515385a753aa60a58f68ffffe1ff81e43b319df9540978fb19e0580e5",
+            member: "exiftool-13.61_64/exiftool(-k).exe",
+            with: &["exiftool-13.61_64/exiftool_files/"],
+        },
+        used_for: "Taking the place, the camera, names and history out of photos, videos, PDFs and Office files before they're shared, and editing when a photo was taken",
+    },
+    // winget's installs it for every user (UAC); the release's installer is a 7z self-extractor whose
+    // payload Glint unpacks itself: 7z.exe and the 7z.dll that reads every format.
+    Tool {
+        id: "7zip",
+        name: "7-Zip",
+        exe: "7z",
+        package: "7zip.7zip",
+        bundled: false,
+        winget: "",
+        release: Release {
+            version: "26.06",
+            url: "https://github.com/ip7z/7zip/releases/download/26.06/7z2606-x64.exe",
+            sha256: "9b697f65ecc2d9b0152f5ee96d72dde522a7827690349d9307935dacf40f42ec",
+            member: "7z.exe",
+            with: &["7z.dll"],
+        },
+        used_for: "Disk images and installers opened like folders: ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers, Debian and RPM packages",
+    },
+    Tool {
         id: "nushell",
         name: "Nushell",
         exe: "nu",
@@ -451,6 +517,16 @@ static DIR: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn set_dir(dir: PathBuf) {
     let _ = DIR.set(dir);
+}
+
+/// Glint's data folder for a process of its own that isn't the app (the MCP server), as the app's is:
+/// so its downloaded tools, models and indexes are found there too.
+pub fn init_outside_app() {
+    if DIR.get().is_none() {
+        if let Some(data) = std::env::var_os("LOCALAPPDATA").and_then(|d| Some(PathBuf::from(d).join(identifier()?))) {
+            set_dir(data.join("tools"));
+        }
+    }
 }
 
 /// Where Glint keeps a tool it downloaded itself: `tools\<id>`.
@@ -752,6 +828,8 @@ async fn download(tool: &'static Tool, stop: &AtomicBool, progress: &Channel<Pro
             place(&file, &into, tool.exe)
         } else if release.url.ends_with(".tar.gz") {
             unpack_tarball(&file, &files, &into)
+        } else if release.url.ends_with(".exe") {
+            unpack_sfx(&file, &files, &into)
         } else {
             unpack(&file, &files, &into)
         }
@@ -874,6 +952,11 @@ pub(crate) fn unpack(zip: &Path, files: &[(&str, &str)], into: &Path) -> Result<
     let mut archive = zip::ZipArchive::new(File::open(zip).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     fresh_folder(into, |fresh| {
         for (member, name) in files {
+            // A folder (named with a "/" at its end): all of it, as it is below its name.
+            if let Some(folder) = member.strip_suffix('/') {
+                unpack_folder(&mut archive, folder, fresh)?;
+                continue;
+            }
             let wanted = member.replace('\\', "/");
             let index = (0..archive.len())
                 .find(|&i| archive.name_for_index(i).and_then(Result::ok).is_some_and(|n| n.eq_ignore_ascii_case(&wanted)))
@@ -881,6 +964,64 @@ pub(crate) fn unpack(zip: &Path, files: &[(&str, &str)], into: &Path) -> Result<
             let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
             let mut out = File::create(fresh.join(name)).map_err(|e| e.to_string())?;
             std::io::copy(&mut (&mut entry).take(MAX_DOWNLOAD), &mut out).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+}
+
+/// Everything below `folder` in a zip, into `fresh\<folder's name>`, kept inside it (names that would
+/// leave it are refused).
+fn unpack_folder<R: Read + std::io::Seek>(archive: &mut zip::ZipArchive<R>, folder: &str, fresh: &Path) -> Result<(), String> {
+    let prefix = format!("{}/", folder.replace('\\', "/").trim_end_matches('/'));
+    let leaf = prefix.trim_end_matches('/').rsplit('/').next().unwrap_or("files").to_string();
+    let depth = prefix.matches('/').count();
+    let mut found = 0;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let Ok(name) = entry.name().map(|n| n.replace('\\', "/")) else { continue };
+        let Some(rest) = name.strip_prefix(&prefix) else { continue };
+        if rest.is_empty() {
+            continue;
+        }
+        let Some(inside) = entry.enclosed_name() else { continue };
+        let relative: PathBuf = inside.components().skip(depth).collect();
+        let target = fresh.join(&leaf).join(relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut out = File::create(&target).map_err(|e| e.to_string())?;
+        std::io::copy(&mut (&mut entry).take(MAX_DOWNLOAD), &mut out).map_err(|e| e.to_string())?;
+        found += 1;
+    }
+    if found == 0 {
+        return Err(format!("{folder} isn't in the download"));
+    }
+    Ok(())
+}
+
+/// The files named, `(member, name)`, out of a checked 7z self-extractor (7-Zip's own installer): the 7z
+/// archive after its program, read with Glint's own 7z reader. Nothing in it runs.
+fn unpack_sfx(exe: &Path, files: &[(&str, &str)], into: &Path) -> Result<(), String> {
+    let bytes = fs::read(exe).map_err(|e| e.to_string())?;
+    // The signature's bytes also appear in the self-extractor's own code (it looks for them): the
+    // archive is at the first place they start one that opens.
+    let mut reader = bytes
+        .windows(6)
+        .enumerate()
+        .filter(|(_, w)| *w == b"7z\xBC\xAF\x27\x1C")
+        .find_map(|(start, _)| sevenz_rust2::ArchiveReader::new(std::io::Cursor::new(bytes[start..].to_vec()), sevenz_rust2::Password::empty()).ok())
+        .ok_or("The download holds no 7z archive Glint can open")?;
+    fresh_folder(into, |fresh| {
+        for (member, name) in files {
+            let data = reader.read_file(member).map_err(|_| format!("{member} isn't in the download"))?;
+            if data.len() as u64 > MAX_DOWNLOAD {
+                return Err(format!("{member} is too big"));
+            }
+            fs::write(fresh.join(name), data).map_err(|e| e.to_string())?;
         }
         Ok(())
     })
@@ -986,8 +1127,17 @@ pub fn cli() -> Option<i32> {
     Some(i32::from(failed > 0))
 }
 
+/// Glint's local data folder (LOCALAPPDATA\<identifier>), known before the app is (startup.rs).
+pub(crate) fn local_data_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join(identifier()?))
+}
+
 /// The app's identifier, as its local data folder is named.
 fn identifier() -> Option<String> {
+    // A build with a config overlay (`tauri build --config`, a test copy's own identifier) has it here.
+    if let Some(id) = option_env!("TAURI_CONFIG").and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok()).and_then(|c| c["identifier"].as_str().map(str::to_string)) {
+        return Some(id);
+    }
     let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).ok()?;
     config["identifier"].as_str().map(str::to_string)
 }
@@ -1135,14 +1285,20 @@ mod tests {
     fn every_tool_installs_without_winget() {
         for tool in TOOLS {
             let release = &tool.release;
-            assert!(release.url.starts_with("https://github.com/") && release.url.contains("/releases/download/"), "{}'s release is on GitHub", tool.id);
+            // GitHub releases; ExifTool's own site keeps only its newest version, SourceForge keeps them all.
+            let github = release.url.starts_with("https://github.com/") && release.url.contains("/releases/download/");
+            let sourceforge = tool.id == "exiftool" && release.url.starts_with("https://downloads.sourceforge.net/project/exiftool/");
+            assert!(github || sourceforge, "{}'s release is on GitHub", tool.id);
             assert!(release.url.contains(release.version), "{}'s address is its version's", tool.id);
             assert!(release.sha256.len() == 64 && release.sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{}'s SHA-256", tool.id);
-            let program = release.url.ends_with(".exe");
-            assert!(program || release.url.ends_with(".zip") || release.url.ends_with(".tar.gz"), "{}'s download is a program, a zip or a tarball", tool.id);
+            let exe = release.url.ends_with(".exe");
+            // An .exe that names a member is a 7z self-extractor (7-Zip's installer), unpacked by Glint.
+            let self_extractor = exe && !release.member.is_empty();
+            let program = exe && !self_extractor;
+            assert!(exe || release.url.ends_with(".zip") || release.url.ends_with(".tar.gz"), "{}'s download is a program, a zip or a tarball", tool.id);
             assert_eq!(release.member.is_empty(), program, "{}: an archive names its program, a program needs no name", tool.id);
             assert!(release.member.is_empty() || release.member.ends_with(".exe"), "{}'s member is a program", tool.id);
-            assert!(release.with.iter().all(|m| !program && (m.ends_with(".exe") || m.ends_with(".dll"))), "{}'s other files (programs, or the DLLs it loads) come from its archive", tool.id);
+            assert!(release.with.iter().all(|m| !program && (m.ends_with(".exe") || m.ends_with(".dll") || m.ends_with('/'))), "{}'s other files (programs, the DLLs it loads, a folder it needs) come from its archive", tool.id);
         }
     }
 
@@ -1254,5 +1410,22 @@ mod tests {
             .collect();
         let _ = fs::remove_dir_all(&dir);
         assert!(failed.is_empty(), "{failed:#?}");
+    }
+}
+
+#[cfg(test)]
+mod sfx_probe {
+    /// 7-Zip's installer (SFX names it) unpacked as Settings → Tools does: 7z.exe and 7z.dll out of it.
+    #[test]
+    #[ignore]
+    fn unpacks_seven_zips_installer() {
+        let path = std::path::PathBuf::from(std::env::var("SFX").unwrap());
+        let into = std::env::temp_dir().join(format!("glint-sfx-{}", std::process::id()));
+        super::unpack_sfx(&path, &[("7z.exe", "7z.exe"), ("7z.dll", "7z.dll")], &into).unwrap();
+        let dll = std::fs::metadata(into.join("7z.dll")).unwrap().len();
+        let exe = std::fs::metadata(into.join("7z.exe")).unwrap().len();
+        println!("7z.exe {exe} bytes, 7z.dll {dll} bytes");
+        assert!(exe > 100_000 && dll > 1_000_000);
+        let _ = std::fs::remove_dir_all(&into);
     }
 }

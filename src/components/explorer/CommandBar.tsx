@@ -6,6 +6,7 @@ import {
     ChevronDown,
     ClipboardPaste,
     Columns2,
+    Columns3,
     Command,
     Copy,
     CopyPlus,
@@ -16,8 +17,8 @@ import {
     FileClock,
     Files,
     Fingerprint,
-    FolderOutput,
     FolderLock,
+    FolderOutput,
     FolderPlus,
     GitCompareArrows,
     HardDrive,
@@ -31,8 +32,8 @@ import {
     Lock,
     type LucideIcon,
     PanelRight,
-    PenLine,
     PencilOff,
+    PenLine,
     Play,
     RotateCcw,
     ScanSearch,
@@ -119,6 +120,7 @@ const Divider = () => <span className="mx-1 h-5 w-px shrink-0 bg-border" />;
 const VIEWS: { view: ViewMode; icon: LucideIcon; label: string }[] = [
     { view: "list", icon: List, label: "List (Ctrl+Shift+6)" },
     { view: "grid", icon: LayoutGrid, label: "Grid, with thumbnails (Ctrl+Shift+2)" },
+    { view: "columns", icon: Columns3, label: "Columns: the folder above, this one, and what's in the focused one (Ctrl+Shift+9)" },
 ];
 
 /**
@@ -135,6 +137,7 @@ function ViewSwitch({ view, mapped, disabled, tileSize, onChange, onSizes }: { v
                     className={cn(
                         "pointer-events-none absolute bottom-0.5 start-0.5 top-0.5 w-8 rounded-[5px] bg-background shadow-xs transition-transform duration-150 ease-out dark:bg-foreground/[0.12]",
                         view === "grid" && "translate-x-full",
+                        view === "columns" && "translate-x-[200%]",
                         disabled && "opacity-40"
                     )}
                 />
@@ -374,6 +377,7 @@ export function CommandBar({ selected, comparePair, onRename, onDelete, onSearch
                 ? [
                       { label: "List", checked: !mapped && view === "list", disabled: !canView, shortcut: "Ctrl+Shift+6", onSelect: () => chooseView("list", tab) },
                       { label: "Grid, with thumbnails", checked: !mapped && view === "grid", disabled: !canView, shortcut: "Ctrl+Shift+2", onSelect: () => chooseView("grid", tab) },
+                      { label: "Columns", checked: !mapped && view === "columns", disabled: !canView, shortcut: "Ctrl+Shift+9", onSelect: () => chooseView("columns", tab) },
                       "separator" as const,
                   ]
                 : []),
