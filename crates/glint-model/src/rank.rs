@@ -6,8 +6,9 @@
 //! Strings are walked as `char`s, never by JS-style UTF-16 indices. The highlight positions
 //! `fuzzy_indices` returns are UTF-8 byte offsets into the text, ready for GPUI text runs.
 
+use crate::js::is_js_space;
 use regex::Regex;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 /// How often and how recently a folder was opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -36,21 +37,13 @@ pub fn frecency(visit: &Visit, now: i64) -> f64 {
     f64::from(visit.count) * weight
 }
 
-/// JavaScript's `\s`: this is not the same set as Rust's `char::is_whitespace`.
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}'
-    )
-}
-
 /// The query as it is matched: lowercase, with every space removed.
 fn clean_query(query: &str) -> Vec<char> {
     query.to_lowercase().chars().filter(|c| !is_js_space(*c)).collect()
 }
 
 /// UTF-16 length, as JS `.length` (the TypeScript's scores use it).
+// TODO(coordinator): from js.rs, if it gains a UTF-16 length helper.
 fn js_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
@@ -236,14 +229,10 @@ enum Kind {
     Other,
 }
 
-fn unicode_regexes() -> &'static (Regex, Regex, Regex) {
-    static RE: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
-    RE.get_or_init(|| {
-        // The patterns are constants that are known to be valid.
-        let make = |p: &str| Regex::new(p).unwrap_or_else(|_| unreachable!("constant pattern {p}"));
-        (make(r"^\p{Lu}$"), make(r"^\p{L}$"), make(r"^\p{N}$"))
-    })
-}
+// Compiled once, on the first non-ASCII character. The patterns are constants, so they always compile.
+static UPPER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\p{Lu}$").expect("constant pattern"));
+static LETTER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\p{L}$").expect("constant pattern"));
+static DIGIT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\p{N}$").expect("constant pattern"));
 
 fn char_kind(c: char) -> Kind {
     if c.is_ascii() {
@@ -254,14 +243,13 @@ fn char_kind(c: char) -> Kind {
             _ => Kind::Other,
         };
     }
-    let (upper, letter, number) = unicode_regexes();
     let mut buf = [0_u8; 4];
     let s: &str = c.encode_utf8(&mut buf);
-    if upper.is_match(s) {
+    if UPPER_RE.is_match(s) {
         Kind::Upper
-    } else if letter.is_match(s) {
+    } else if LETTER_RE.is_match(s) {
         Kind::Letter
-    } else if number.is_match(s) {
+    } else if DIGIT_RE.is_match(s) {
         Kind::Digit
     } else {
         Kind::Other

@@ -5,6 +5,8 @@
 //! Offsets are `u64` byte positions. A file offset is never negative, and parse_offset returns one only when
 //! the text reads as a whole number that fits.
 
+use crate::js::is_js_space;
+
 /// hexyl's classes of bytes, which the hex view colors: zero, ASCII text, whitespace, other ASCII, and the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteClass {
@@ -90,16 +92,6 @@ fn strip_0x(value: &str) -> Option<&str> {
 /// One or more ASCII hex digits, in either case.
 fn is_hex_digits(text: &str) -> bool {
     !text.is_empty() && text.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// JavaScript's white space, which is what trim() and \s match. Rust's own is_whitespace differs at the ends.
-// TODO(coordinator): from color.rs, which keeps its own copy.
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
-    )
 }
 
 #[cfg(test)]

@@ -5,8 +5,9 @@
 //! JavaScript's meaning of `\s`, `.` and `trim` written out where Rust's differ. No function here returns
 //! an index, so the UTF-8 versus UTF-16 question does not arise: everything takes and returns whole strings.
 
+use crate::js::js_trim;
 use regex::Regex;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 /// JavaScript's `\s`, as a regex class body: tab, line feed, vertical tab, form feed, carriage return,
 /// the space characters (no-break and the Unicode space separators), U+FEFF and the two line separators.
@@ -17,23 +18,11 @@ const JS_SPACE: &str =
 /// JavaScript's `.` (without the `s` flag): any character except the line terminators.
 const JS_DOT: &str = r"[^\n\r\x{2028}\x{2029}]";
 
-/// Compiles a pattern once and keeps it. The patterns are constants written in this file, so a failure
-/// to compile would be a bug here, not something the input can cause.
-fn pattern(cell: &'static OnceLock<Regex>, source: &str) -> &'static Regex {
-    cell.get_or_init(|| Regex::new(source).expect("markdown.rs patterns are constants and always compile"))
-}
-
-/// JavaScript's `trim()`: the same set as `\s`.
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}'
-    )
-}
-
-fn js_trim(s: &str) -> &str {
-    s.trim_matches(is_js_space)
+/// Compiles one of this file's patterns. The patterns are constants written in this file, so a failure
+/// to compile would be a bug here, not something the input can cause. Each one is compiled once, on
+/// first use, and kept in a `static`.
+fn compile(source: &str) -> Regex {
+    Regex::new(source).expect("markdown.rs patterns are constants and always compile")
 }
 
 /// Whether `s` starts with `prefix`, ignoring ASCII case (the TS regexes with the `i` flag are ASCII here).
@@ -87,17 +76,17 @@ pub fn safe_href(href: &str) -> Option<&str> {
 /// A line of Markdown as plain text: links as their text, without pictures, emphasis, code marks or HTML
 /// tags. Mirrors the TS `plain()` pass by pass, in the same order.
 fn plain(line: &str) -> String {
-    static IMAGE: OnceLock<Regex> = OnceLock::new();
-    static LINK: OnceLock<Regex> = OnceLock::new();
-    static TAG: OnceLock<Regex> = OnceLock::new();
-    static EMPHASIS: OnceLock<Regex> = OnceLock::new();
-    static CLOSING_HASHES: OnceLock<Regex> = OnceLock::new();
+    static IMAGE: LazyLock<Regex> = LazyLock::new(|| compile(r"!\[[^\]]*\]\([^)]*\)"));
+    static LINK: LazyLock<Regex> = LazyLock::new(|| compile(r"\[([^\]]*)\]\([^)]*\)"));
+    static TAG: LazyLock<Regex> = LazyLock::new(|| compile(r"<[^>]*>"));
+    static EMPHASIS: LazyLock<Regex> = LazyLock::new(|| compile(r"[*_`~]+"));
+    static CLOSING_HASHES: LazyLock<Regex> = LazyLock::new(|| compile(&format!("[{JS_SPACE}]+#+[{JS_SPACE}]*$")));
 
-    let s = pattern(&IMAGE, r"!\[[^\]]*\]\([^)]*\)").replace_all(line, "");
-    let s = pattern(&LINK, r"\[([^\]]*)\]\([^)]*\)").replace_all(&s, "${1}");
-    let s = pattern(&TAG, r"<[^>]*>").replace_all(&s, "");
-    let s = pattern(&EMPHASIS, r"[*_`~]+").replace_all(&s, "");
-    let s = pattern(&CLOSING_HASHES, &format!("[{JS_SPACE}]+#+[{JS_SPACE}]*$")).replace(&s, "");
+    let s = IMAGE.replace_all(line, "");
+    let s = LINK.replace_all(&s, "${1}");
+    let s = TAG.replace_all(&s, "");
+    let s = EMPHASIS.replace_all(&s, "");
+    let s = CLOSING_HASHES.replace(&s, "");
     let s: String = s.replace("&nbsp;", " ");
     js_trim(&s).to_string()
 }
@@ -105,42 +94,37 @@ fn plain(line: &str) -> String {
 /// An ATX heading of level one, `# Title`, with up to three spaces before the mark (`^ {0,3}#\s+(.*)$`).
 /// Returns the text after the mark, untrimmed.
 fn atx_h1(line: &str) -> Option<&str> {
-    static ATX_H1: OnceLock<Regex> = OnceLock::new();
-    let re = pattern(&ATX_H1, &format!("^ {{0,3}}#[{JS_SPACE}]+({JS_DOT}*)$"));
-    re.captures(line)?.get(1).map(|m| m.as_str())
+    static ATX_H1: LazyLock<Regex> = LazyLock::new(|| compile(&format!("^ {{0,3}}#[{JS_SPACE}]+({JS_DOT}*)$")));
+    ATX_H1.captures(line)?.get(1).map(|m| m.as_str())
 }
 
 /// A level-one heading written as HTML: `<h1 ...>Title</h1>`. The close tag may be missing at the end of
 /// the line, and the `\b` after `h1` keeps `<h10>` from matching. Returns the text inside the tags.
 fn html_h1(line: &str) -> Option<&str> {
-    static HTML_H1: OnceLock<Regex> = OnceLock::new();
-    let re = pattern(&HTML_H1, &format!(r"(?i)<h1(?-u:\b)[^>]*>({JS_DOT}*?)(?:</h1>|$)"));
-    re.captures(line)?.get(1).map(|m| m.as_str())
+    static HTML_H1: LazyLock<Regex> =
+        LazyLock::new(|| compile(&format!(r"(?i)<h1(?-u:\b)[^>]*>({JS_DOT}*?)(?:</h1>|$)")));
+    HTML_H1.captures(line)?.get(1).map(|m| m.as_str())
 }
 
 /// A setext underline under a title: up to three spaces, then one or more `=` (`^ {0,3}=+\s*$`).
 fn is_setext_underline(line: &str) -> bool {
-    static SETEXT: OnceLock<Regex> = OnceLock::new();
-    pattern(&SETEXT, &format!("^ {{0,3}}=+[{JS_SPACE}]*$")).is_match(line)
+    static SETEXT: LazyLock<Regex> = LazyLock::new(|| compile(&format!("^ {{0,3}}=+[{JS_SPACE}]*$")));
+    SETEXT.is_match(line)
 }
 
 /// Removes a leading block marker (a heading mark, `>`, a bullet or a number) and the space after it,
 /// so the text of a list item or quote can be a title too.
 fn strip_block_marker(line: &str) -> String {
-    static BLOCK_MARKER: OnceLock<Regex> = OnceLock::new();
-    pattern(
-        &BLOCK_MARKER,
-        &format!("^ {{0,3}}(?:#{{1,6}}|>|[-*+]|[0-9]+[.)])[{JS_SPACE}]+"),
-    )
-    .replace(line, "")
-    .into_owned()
+    static BLOCK_MARKER: LazyLock<Regex> =
+        LazyLock::new(|| compile(&format!("^ {{0,3}}(?:#{{1,6}}|>|[-*+]|[0-9]+[.)])[{JS_SPACE}]+")));
+    BLOCK_MARKER.replace(line, "").into_owned()
 }
 
 /// A Markdown document's title: its first top heading (`# Title`, `Title` over `===`, or `<h1>`), else the
 /// first line of text that has a letter in it. Only the first 300 lines are read, as the TS did.
 pub fn markdown_title(text: &str) -> String {
-    static LETTER: OnceLock<Regex> = OnceLock::new();
-    static ONLY_SEPARATORS: OnceLock<Regex> = OnceLock::new();
+    static LETTER: LazyLock<Regex> = LazyLock::new(|| compile(r"\p{L}"));
+    static ONLY_SEPARATORS: LazyLock<Regex> = LazyLock::new(|| compile(&format!("^[-=|:{JS_SPACE}]+$")));
 
     // The TS split on /\r?\n/ with a limit of 300 pieces. A carriage return is only dropped when a line
     // feed follows it, so a lone trailing "\r" stays, as it did in the TS.
@@ -174,8 +158,8 @@ pub fn markdown_title(text: &str) -> String {
 
     for line in &lines {
         let title = plain(&strip_block_marker(line));
-        let has_letter = pattern(&LETTER, r"\p{L}").is_match(&title);
-        let only_separators = pattern(&ONLY_SEPARATORS, &format!("^[-=|:{JS_SPACE}]+$")).is_match(&title);
+        let has_letter = LETTER.is_match(&title);
+        let only_separators = ONLY_SEPARATORS.is_match(&title);
         if has_letter && !only_separators {
             return title;
         }
@@ -255,5 +239,24 @@ mod tests {
     #[test]
     fn markdown_title_is_empty_without_any_text() {
         assert_eq!(markdown_title("\n\n"), "");
+    }
+
+    #[test]
+    fn markdown_title_reads_only_the_first_300_lines() {
+        // The TS split the text into at most 300 pieces, so a heading after line 300 is never seen.
+        let late = format!("{}# Late", "\n".repeat(300));
+        assert_eq!(markdown_title(&late), "");
+        let just_in = format!("{}# Late", "\n".repeat(299));
+        assert_eq!(markdown_title(&just_in), "Late");
+    }
+
+    #[test]
+    fn repeated_calls_give_the_same_answers() {
+        // The patterns are compiled on first use and reused; a second call must not see different text.
+        let text = "# Glint\n\nText";
+        assert_eq!(markdown_title(text), "Glint");
+        assert_eq!(markdown_title(text), "Glint");
+        assert_eq!(markdown_title("<h1>Glint</h1>"), "Glint");
+        assert_eq!(safe_href(" https://a.example "), Some("https://a.example"));
     }
 }

@@ -3,7 +3,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/glint-model", "crates/glint-core", "crates/glint-ui", "crates/glint"]
-exclude = ["src-tauri"]
+exclude = ["src-tauri", "vendor"]
 
 [workspace.package]
 version = "0.10.0"

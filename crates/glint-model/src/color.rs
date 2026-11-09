@@ -6,6 +6,8 @@
 //! UTF-16 code units, as JavaScript counts them, so a name with odd characters cannot make the slices panic.
 //! Malformed input gives NaN parts (and so "NaN" text), as the TypeScript did, rather than a panic.
 
+use crate::js::{is_js_space, js_max, js_min, js_round, number_to_string};
+
 /// "333 71% 51%", as the color tokens in index.css are written, for #rrggbb.
 pub fn hsl_of(hex: &str) -> String {
     let units: Vec<u16> = hex.encode_utf16().collect();
@@ -30,9 +32,9 @@ pub fn hsl_of(hex: &str) -> String {
     };
     format!(
         "{} {}% {}%",
-        js_number(js_round(h * 60.0)),
-        js_number(js_round(s * 100.0)),
-        js_number(js_round(l * 100.0))
+        number_to_string(js_round(h * 60.0)),
+        number_to_string(js_round(s * 100.0)),
+        number_to_string(js_round(l * 100.0))
     )
 }
 
@@ -92,43 +94,6 @@ fn parse_int_hex(text: &str) -> f64 {
     } else {
         f64::NAN
     }
-}
-
-/// JavaScript's white space, which is what trim() and \s match. Rust's own is_whitespace differs at the ends.
-// TODO(coordinator): from hex.rs, which keeps its own copy.
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
-    )
-}
-
-/// JavaScript's Math.round: halves go toward +infinity.
-fn js_round(x: f64) -> f64 {
-    (x + 0.5).floor()
-}
-
-/// JavaScript's Math.max and Math.min: any NaN makes the result NaN, where f64::max would ignore it.
-fn js_max(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else {
-        a.max(b)
-    }
-}
-
-fn js_min(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else {
-        a.min(b)
-    }
-}
-
-/// A JS number as text: NaN as "NaN", and -0 as "0", as a template string writes them.
-fn js_number(x: f64) -> String {
-    format!("{}", x + 0.0)
 }
 
 #[cfg(test)]

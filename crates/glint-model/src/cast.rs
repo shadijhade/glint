@@ -7,6 +7,7 @@
 //! is played. A pause longer than the file's idle limit is cut to that limit, so a recording left running
 //! for an hour plays in seconds. Times are seconds as `f64`, and nothing here indexes text.
 
+use crate::js::{js_max, js_min, js_trim, number_to_string};
 use serde_json::Value;
 
 /// The idle limit, in seconds, for a recording that doesn't set its own.
@@ -15,7 +16,9 @@ pub const DEFAULT_IDLE_SECONDS: f64 = 3.0;
 /// One piece of output, at `t` seconds from the start of the playback (after the long pauses are cut).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CastEvent {
+    /// When this output is printed, in seconds from the start of the playback.
     pub t: f64,
+    /// The output text, exactly as the recording holds it (escape codes and all).
     pub data: String,
 }
 
@@ -26,6 +29,7 @@ pub struct Cast {
     pub cols: usize,
     /// Terminal rows, from 1 to 500.
     pub rows: usize,
+    /// The recording's title from the header, or "" when it has none.
     pub title: String,
     /// Output, at seconds from the start (long pauses cut short).
     pub events: Vec<CastEvent>,
@@ -36,7 +40,9 @@ pub struct Cast {
 /// The output up to a moment, all joined, and how many events that is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Output {
+    /// The output text of every event up to the moment, joined in order.
     pub data: String,
+    /// How many events the text came from.
     pub count: usize,
 }
 
@@ -139,10 +145,11 @@ pub fn output_until(cast: &Cast, seconds: f64) -> Output {
 /// 1:05
 ///
 /// Minutes are not padded, seconds are two digits. Like the TypeScript, a negative or NaN input gives the
-/// text JavaScript would (`-1:-1`, `NaN:NaN`), so the caller can see the bad value.
+/// text JavaScript would (`-1:-1`, `NaN:NaN`), so the caller can see the bad value. Minutes past 1e21 print in
+/// exponent form, as JavaScript's `String` does.
 pub fn clock(seconds: f64) -> String {
-    let minutes = js_whole((seconds / 60.0).floor());
-    let secs = js_whole((seconds % 60.0).floor());
+    let minutes = number_to_string((seconds / 60.0).floor());
+    let secs = number_to_string((seconds % 60.0).floor());
     format!("{minutes}:{secs:0>2}")
 }
 
@@ -185,7 +192,8 @@ fn js_number(value: &Value) -> f64 {
 }
 
 fn js_string_number(text: &str) -> f64 {
-    let trimmed = text.trim();
+    // Number() trims JavaScript's white space, which Rust's trim() does not match (it has U+0085, and not U+FEFF).
+    let trimmed = js_trim(text);
     if trimmed.is_empty() {
         return 0.0;
     }
@@ -193,42 +201,6 @@ fn js_string_number(text: &str) -> f64 {
         return f64::NAN;
     }
     trimmed.parse::<f64>().unwrap_or(f64::NAN)
-}
-
-// TODO(coordinator): from a shared numbers module, if one is exported. Math.min and Math.max return NaN
-// when either side is NaN, where Rust's f64::min and f64::max ignore the NaN.
-fn js_min(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else {
-        a.min(b)
-    }
-}
-
-// TODO(coordinator): from a shared numbers module, if one is exported. See js_min.
-fn js_max(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else {
-        a.max(b)
-    }
-}
-
-/// A whole number the way JavaScript writes it: `NaN`, `Infinity`, `-Infinity`, and no sign on zero.
-///
-/// NOTE(port): JavaScript switches to exponent form at 1e21; Rust prints every digit. Clock values never get
-/// that large.
-fn js_whole(x: f64) -> String {
-    if x.is_nan() {
-        "NaN".to_string()
-    } else if x == f64::INFINITY {
-        "Infinity".to_string()
-    } else if x == f64::NEG_INFINITY {
-        "-Infinity".to_string()
-    } else {
-        // Adding 0.0 turns -0.0 into 0.0, which JavaScript prints without a sign.
-        format!("{:.0}", x + 0.0)
-    }
 }
 
 #[cfg(test)]
@@ -307,5 +279,23 @@ mod tests {
         assert_eq!(clock(65.4), "1:05");
         assert_eq!(clock(0.0), "0:00");
         assert_eq!(clock(600.0), "10:00");
+    }
+
+    #[test]
+    fn clock_writes_huge_and_bad_values_as_javascript_does() {
+        // 6e22 seconds is 1e21 minutes; JavaScript's String gives exponent form there, not every digit.
+        assert_eq!(clock(6e22), "1e+21:00");
+        assert_eq!(clock(-1.0), "-1:-1");
+        assert_eq!(clock(f64::NAN), "NaN:NaN");
+        assert_eq!(clock(-0.0), "0:00");
+    }
+
+    #[test]
+    fn a_string_number_trims_javascript_white_space_only() {
+        // Number("﻿50") is 50, and Number("\u0085") is NaN: U+FEFF is white space to JavaScript, U+0085 is not.
+        assert_eq!(js_string_number("\u{feff}50"), 50.0);
+        assert_eq!(js_string_number("\u{a0}7\u{3000}"), 7.0);
+        assert!(js_string_number("\u{85}").is_nan());
+        assert_eq!(js_string_number("  "), 0.0);
     }
 }

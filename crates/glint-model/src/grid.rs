@@ -10,13 +10,20 @@
 //! Tauri IPC `thumbnail` command, which the GPUI app does not have: it calls the thumbnail service
 //! in-process.
 
+use crate::js::js_round_f32;
+
 /// One of the grid's tile sizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TileSize {
+    /// The smallest tiles: a 4 rem thumbnail.
     Small,
+    /// A 6 rem thumbnail, the size an unknown setting falls back to.
     Medium,
+    /// An 8 rem thumbnail.
     Large,
+    /// A 12 rem thumbnail.
     XLarge,
+    /// The biggest tiles: a 16 rem thumbnail.
     Huge,
 }
 
@@ -36,7 +43,9 @@ impl TileSize {
 /// A row of `TILE_SIZES`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TileSpec {
+    /// Which size this row is.
     pub size: TileSize,
+    /// The name shown to the user for this size, in English (the UI translates it).
     pub label: &'static str,
     /// The square each thumbnail fits in, in rem. Multiply by the pixel size of one rem (the `rem`
     /// argument of `tile_layout`) to get pixels; at the usual 16 px text, 1 rem is 16 px.
@@ -98,19 +107,14 @@ pub struct GridTile {
     pub pad: f32,
 }
 
-/// JS `Math.round`: halves round up, toward +infinity.
-fn js_round(x: f32) -> f32 {
-    (x + 0.5).floor()
-}
-
 /// A grid tile at `size`, in pixels for a rem of `rem` pixels: the narrowest it gets (tiles widen to
 /// fill the row), its height, the square its thumbnail or icon fits in, and the grid's side padding.
 /// Its name, size and margins take the same room at every size.
 pub fn tile_layout(rem: f32, size: &str) -> GridTile {
     let thumb = rem * TILE_SIZES[tile_index(size)].rem;
     GridTile {
-        width: js_round(thumb + rem * 1.5),
-        height: js_round(thumb + rem * 4.25),
+        width: js_round_f32(thumb + rem * 1.5),
+        height: js_round_f32(thumb + rem * 4.25),
         thumb,
         pad: rem * 0.5,
     }
@@ -119,7 +123,9 @@ pub fn tile_layout(rem: f32, size: &str) -> GridTile {
 /// A point in the list's content pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
+    /// Pixels from the left edge of the list's content.
     pub x: f32,
+    /// Pixels from the top edge of the list's content, scrolled part included.
     pub y: f32,
 }
 
@@ -180,7 +186,9 @@ pub fn marquee_hits(
 /// How a grid is laid out: tiles to a row, and each row's height.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GridLayout {
+    /// How many tiles fit across a row (1 for a list).
     pub cols: usize,
+    /// The height of one row of tiles in pixels, gaps included.
     pub row_height: f32,
 }
 

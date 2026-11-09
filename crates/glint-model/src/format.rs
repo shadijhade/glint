@@ -8,17 +8,22 @@
 //! the tests do not depend on this PC's settings.
 //!
 //! Dates are local time, as in the TypeScript: "Today" and "Yesterday" are judged against the local midnight.
+//! Those two words go through the i18n catalog for the given `Language`; the Arabic catalog has no entry for them
+//! yet, so they stay English there until it does.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::i18n::{translate, Language};
+use crate::js::{js_round, number_to_string, to_fixed};
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike};
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::SYSTEMTIME;
 use windows::Win32::Globalization::{
     GetDateFormatEx, GetLocaleInfoEx, GetNumberFormatEx, GetTimeFormatEx, DATE_LONGDATE, ENUM_DATE_FORMATS_FLAGS,
-    LOCALE_SDECIMAL, LOCALE_SGROUPING, LOCALE_STHOUSAND, NUMBERFMTW, TIME_FORMAT_FLAGS, TIME_NOSECONDS,
+    LOCALE_SDECIMAL, LOCALE_SGROUPING, LOCALE_SLONGDATE, LOCALE_STHOUSAND, NUMBERFMTW, TIME_FORMAT_FLAGS,
+    TIME_NOSECONDS,
 };
 
 const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -75,7 +80,7 @@ pub fn format_duration(ms: f64) -> String {
     if ms < 10.0 {
         format!("{} ms", to_fixed(ms, 1))
     } else if ms < 1000.0 {
-        format!("{} ms", js_number(js_round(ms)))
+        format!("{} ms", number_to_string(js_round(ms)))
     } else {
         format!("{} s", to_fixed(ms / 1000.0, 2))
     }
@@ -84,29 +89,30 @@ pub fn format_duration(ms: f64) -> String {
 /// "Today 9:31 PM", "Yesterday 8:02 AM", otherwise "Oct 3, 2026 4:15 PM".
 ///
 /// `ms` is Unix milliseconds, and 0 means no date at all, which gives an empty string. `now` is the time to
-/// judge "today" against; `None` means the clock, and then the labels are cached as the TypeScript cached them.
-pub fn format_date(ms: i64, now: Option<i64>) -> String {
-    format_date_in(ms, now, None)
+/// judge "today" against; `None` means the clock, and then the labels are cached as the TypeScript cached them
+/// (per language, since "Today" is a word). `language` is the interface language for "Today" and "Yesterday".
+pub fn format_date(ms: i64, now: Option<i64>, language: Language) -> String {
+    format_date_in(ms, now, None, language)
 }
 
-fn format_date_in(ms: i64, now: Option<i64>, locale: Option<&str>) -> String {
+fn format_date_in(ms: i64, now: Option<i64>, locale: Option<&str>, language: Language) -> String {
     if ms == 0 {
         return String::new();
     }
     match now {
         None => with_cache(|cache| {
             let today = today_start_cached(cache, now_millis());
-            if let Some(hit) = cache.short.get(&ms) {
+            if let Some(hit) = cache.short.get(&(ms, language)) {
                 return hit.clone();
             }
-            let formatted = format_date_with_today(ms, today, locale);
+            let formatted = format_date_with_today(ms, today, locale, language);
             if cache.short.len() >= MAX_CACHE_SIZE {
                 cache.short.clear();
             }
-            cache.short.insert(ms, formatted.clone());
+            cache.short.insert((ms, language), formatted.clone());
             formatted
         }),
-        Some(now) => format_date_with_today(ms, local_midnight(now), locale),
+        Some(now) => format_date_with_today(ms, local_midnight(now), locale, language),
     }
 }
 
@@ -137,7 +143,7 @@ fn format_full_date_in(ms: i64, locale: Option<&str>) -> String {
 struct DateCache {
     today_start: i64,
     today_end: i64,
-    short: HashMap<i64, String>,
+    short: HashMap<(i64, Language), String>,
     full: HashMap<i64, String>,
 }
 
@@ -163,17 +169,15 @@ fn today_start_cached(cache: &mut DateCache, now: i64) -> i64 {
     start
 }
 
-fn format_date_with_today(ms: i64, today: i64, locale: Option<&str>) -> String {
+fn format_date_with_today(ms: i64, today: i64, locale: Option<&str>, language: Language) -> String {
     let Some(date) = local_datetime(ms) else {
         return String::new();
     };
     let time = format_time(&date, locale, TIME_NOSECONDS);
     if ms >= today && ms < today + DAY {
-        // NOTE(port): "Today" and "Yesterday" are English here, as in the TypeScript. They move to t!() with the
-        // i18n module.
-        format!("Today {time}")
+        format!("{} {time}", translate(language, "Today"))
     } else if ms >= today - DAY && ms < today {
-        format!("Yesterday {time}")
+        format!("{} {time}", translate(language, "Yesterday"))
     } else {
         format!("{} {time}", format_short_date(&date, locale))
     }
@@ -225,36 +229,6 @@ fn now_millis() -> i64 {
         .ok()
         .and_then(|d| i64::try_from(d.as_millis()).ok())
         .unwrap_or(0)
-}
-
-/// JavaScript's Number.prototype.toFixed: the nearest multiple of 10^-digits, and on a tie the larger one
-/// (so 1.25 becomes "1.3", where Rust's own rounding would give "1.2"). NaN and Infinity print as JS does.
-fn to_fixed(x: f64, digits: usize) -> String {
-    if x.is_nan() {
-        return "NaN".to_owned();
-    }
-    if x.is_infinite() {
-        return if x > 0.0 {
-            "Infinity".to_owned()
-        } else {
-            "-Infinity".to_owned()
-        };
-    }
-    let scale = 10f64.powi(i32::try_from(digits).unwrap_or(0));
-    // Ties go up for the absolute value, and a negative number keeps its sign, as toFixed does.
-    let rounded = ((x.abs() * scale) + 0.5).floor() / scale;
-    let sign = if x < 0.0 { "-" } else { "" };
-    format!("{sign}{rounded:.digits$}")
-}
-
-/// JavaScript's Math.round: halves go toward +infinity, so -2.5 becomes -2.
-fn js_round(x: f64) -> f64 {
-    (x + 0.5).floor()
-}
-
-/// A JS number as text, with NaN spelled "NaN" and -0 spelled "0".
-fn js_number(x: f64) -> String {
-    format!("{}", x + 0.0)
 }
 
 /// A wide NUL-terminated copy of `text`, for the Win32 calls.
@@ -370,14 +344,16 @@ fn system_time(date: &DateTime<Local>) -> SYSTEMTIME {
     }
 }
 
-/// Oct 3, 2026: the short month name, the day and the year.
+/// The locale's own short date: its long-date picture without the weekday and with the month name shortened,
+/// so en-US gives "Oct 3, 2026" and en-GB "3 Oct 2026". If Windows has no long-date picture, "MMM d, yyyy".
 fn format_short_date(date: &DateTime<Local>, locale: Option<&str>) -> String {
     let name = LocaleName::new(locale);
     let st = system_time(date);
-    // NOTE(port): Intl's en-US order (month, day, year) is kept as a picture, so the month name comes from
-    // Windows in the user's language but the order is fixed. A locale that writes the day first will see the
-    // English order. Using the locale's own pattern would need a picture rearranged from LOCALE_SSHORTDATE.
-    let picture = nul_terminated("MMM d, yyyy");
+    let picture = locale_string(&name, LOCALE_SLONGDATE)
+        .map(|long| short_picture(&long))
+        .filter(|picture| !picture.is_empty())
+        .unwrap_or_else(|| "MMM d, yyyy".to_owned());
+    let picture = nul_terminated(&picture);
     read_wide(|buf| {
         // SAFETY: `st` lives across the call, and `picture` is a NUL-terminated picture (flags 0 are required with
         // a picture). The calendar is NULL for the default one. `buf` is as in `read_wide`.
@@ -393,6 +369,73 @@ fn format_short_date(date: &DateTime<Local>, locale: Option<&str>) -> String {
         }
     })
     .unwrap_or_else(|| format!("{}-{:02}-{:02}", date.year(), date.month(), date.day()))
+}
+
+/// Turns a long-date picture ("dddd, MMMM d, yyyy") into the short one ("MMM d, yyyy"): the weekday (a run of
+/// three or more `d`) goes with the separator that belongs to it, and a full month name (`MMMM`) becomes `MMM`.
+/// Text in single quotes is literal and left alone.
+fn short_picture(long: &str) -> String {
+    let mut chars: Vec<char> = long.chars().collect();
+    // A pattern letter stands for something; anything else (and quotes) is a separator or literal text.
+    let is_separator = |c: char| !c.is_alphabetic() && c != '\'';
+    // Weekday: find the first run of d's outside quotes that is three or longer.
+    let mut in_quote = false;
+    let mut weekday = None;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            in_quote = !in_quote;
+        } else if !in_quote && chars[i] == 'd' {
+            let mut end = i;
+            while end < chars.len() && chars[end] == 'd' {
+                end += 1;
+            }
+            if end - i >= 3 {
+                weekday = Some((i, end));
+                break;
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    if let Some((start, end)) = weekday {
+        let mut after = end;
+        while after < chars.len() && is_separator(chars[after]) {
+            after += 1;
+        }
+        if after < chars.len() {
+            chars.drain(start..after);
+        } else {
+            // The weekday ends the picture: drop the separator before it instead.
+            let mut before = start;
+            while before > 0 && is_separator(chars[before - 1]) {
+                before -= 1;
+            }
+            chars.truncate(before);
+        }
+    }
+    // Month: a run of four or more M's outside quotes becomes MMM.
+    let mut out = String::new();
+    let mut in_quote = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' {
+            in_quote = !in_quote;
+        } else if !in_quote && c == 'M' {
+            let mut end = i;
+            while end < chars.len() && chars[end] == 'M' {
+                end += 1;
+            }
+            out.push_str(&"M".repeat((end - i).min(3)));
+            i = end;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 /// Saturday, October 3, 2026: the long date, as Windows writes it.
@@ -486,22 +529,84 @@ mod tests {
     #[test]
     fn dates_say_today_and_yesterday_against_the_given_now() {
         let noon = noon_oct_14_2026();
-        assert!(format_date_in(noon - 3_600_000, Some(noon), Some("en-US")).starts_with("Today "));
-        assert!(format_date_in(noon - 86_400_000, Some(noon), Some("en-US")).starts_with("Yesterday "));
+        assert!(format_date_in(noon - 3_600_000, Some(noon), Some("en-US"), Language::En).starts_with("Today "));
+        assert!(format_date_in(noon - 86_400_000, Some(noon), Some("en-US"), Language::En).starts_with("Yesterday "));
     }
 
     #[test]
     fn older_dates_show_the_day_and_the_year() {
         let noon = noon_oct_14_2026();
         let january = local_ms(2026, 1, 2, 9, 5);
-        let text = format_date_in(january, Some(noon), Some("en-US"));
+        let text = format_date_in(january, Some(noon), Some("en-US"), Language::En);
         assert!(text.contains("2026"), "got {text:?}");
         assert!(text.starts_with("Jan 2, 2026 "), "got {text:?}");
     }
 
     #[test]
+    fn sizes_decide_on_the_exact_value_not_a_false_tie() {
+        // This many bytes is a hair under 2.05 PB. Its value times ten lands on exactly 20.5 in floating point, so
+        // rounding by "times ten, add a half, floor" gave "2.1 PB"; JavaScript's toFixed gives "2.0".
+        assert_eq!(format_size_in(2_308_094_809_027_379, Some("en-US")), "2.0 PB");
+        assert_eq!(format_size_in(2_871_044_762_448_691, Some("en-US")), "2.5 PB");
+        // The same goes for durations: 0.15 is stored below 0.15, so it prints "0.1 ms".
+        assert_eq!(format_duration(0.15), "0.1 ms");
+    }
+
+    #[test]
+    fn short_pictures_drop_the_weekday_and_shorten_the_month() {
+        assert_eq!(short_picture("dddd, MMMM d, yyyy"), "MMM d, yyyy");
+        assert_eq!(short_picture("dddd, d MMMM yyyy"), "d MMM yyyy");
+        assert_eq!(short_picture("dddd, d. MMMM yyyy"), "d. MMM yyyy");
+        assert_eq!(short_picture("dddd d 'de' MMMM 'de' yyyy"), "d 'de' MMM 'de' yyyy");
+        // The weekday at the end takes the separator before it.
+        assert_eq!(short_picture("d MMMM yyyy, dddd"), "d MMM yyyy");
+        // Quoted text is literal: a quoted "dddd" and "MMMM" stay.
+        assert_eq!(short_picture("'dddd' MMMM d"), "'dddd' MMM d");
+        assert_eq!(short_picture("yyyy MMM d"), "yyyy MMM d");
+        assert_eq!(short_picture(""), "");
+    }
+
+    #[test]
+    fn short_dates_follow_the_locales_order() {
+        let noon = noon_oct_14_2026();
+        let january = local_ms(2026, 1, 2, 9, 5);
+        let us = format_date_in(january, Some(noon), Some("en-US"), Language::En);
+        assert!(us.starts_with("Jan 2, 2026 "), "got {us:?}");
+        let gb = format_date_in(january, Some(noon), Some("en-GB"), Language::En);
+        // Windows writes the day as "02" here, older data as "2"; either way the day comes first.
+        assert!(
+            gb.starts_with("02 Jan 2026 ") || gb.starts_with("2 Jan 2026 "),
+            "got {gb:?}"
+        );
+        // German writes the day first, with a dot after it.
+        let de = format_date_in(january, Some(noon), Some("de-DE"), Language::En);
+        assert!(de.starts_with("2. "), "got {de:?}");
+        assert!(de.contains("Jan") && de.contains("2026"), "got {de:?}");
+        // Arabic (Saudi Arabia) may use another calendar and other digits; it must give a date and not panic.
+        let ar = format_date_in(january, Some(noon), Some("ar-SA"), Language::Ar);
+        assert!(ar.chars().count() > 6, "got {ar:?}");
+        assert!(!ar.starts_with("Today"), "got {ar:?}");
+    }
+
+    #[test]
+    fn today_and_yesterday_go_through_the_catalog() {
+        let noon = noon_oct_14_2026();
+        for language in [Language::En, Language::Ar] {
+            let today = translate(language, "Today").to_owned();
+            let yesterday = translate(language, "Yesterday").to_owned();
+            let a = format_date_in(noon - 3_600_000, Some(noon), Some("en-US"), language);
+            let b = format_date_in(noon - 86_400_000, Some(noon), Some("en-US"), language);
+            assert!(a.starts_with(&format!("{today} ")), "got {a:?}");
+            assert!(b.starts_with(&format!("{yesterday} ")), "got {b:?}");
+        }
+        // The Arabic catalog has no entry for these words yet, so they stay English.
+        assert_eq!(translate(Language::Ar, "Today"), "Today");
+        assert_eq!(translate(Language::Ar, "Yesterday"), "Yesterday");
+    }
+
+    #[test]
     fn a_zero_date_is_empty() {
-        assert_eq!(format_date(0, None), "");
+        assert_eq!(format_date(0, None, Language::En), "");
         assert_eq!(format_full_date(0), "");
     }
 

@@ -14,6 +14,10 @@
 //!   (functions are dropped by `JSON.stringify`), and the merge that gives fields missing from an older
 //!   file their defaults ([`load_persisted`], [`persisted_json`]);
 //! - the store's update rules as pure functions on [`AppState`].
+//!
+//! Loading is tolerant: a file from an older or a newer Glint always loads. A value this version does not
+//! understand (an unknown enum value, a field of the wrong type) costs only that field, which gets its
+//! default; every other field is kept.
 
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -32,8 +36,13 @@ pub const MAX_FOLDER_VIEWS: usize = 500;
 /// The most folders whose visits are kept.
 pub const MAX_VISITS: usize = 300;
 
-// TODO(coordinator): from grid (TileSize), groups (GroupBy), entries (Sort, SortKey), columns (ColumnId),
-// rank (Visit, frecency). They are small and private copies here keep this module building alone.
+// TODO(coordinator): from groups (GroupBy), entries (Sort, SortKey), columns (ColumnId). They are small and
+// private copies here keep this module building alone.
+//
+// TODO(coordinator): TileSize, Visit and frecency also stay private for now. grid::TileSize has no serde
+// (only `as_str`), and rank::Visit has no serde and a `u32` count where the saved file may hold more (here
+// `u64`). Once both derive Serialize/Deserialize with the same names ("small".."huge"; `count`, `last` in
+// camelCase) and the count is `u64`, this file can use them.
 
 /// How big the grid's tiles are, smallest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +105,7 @@ pub enum ColumnId {
 }
 
 /// A folder visited: how many times, and when last (Unix milliseconds).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Visit {
     pub count: u64,
@@ -216,8 +225,8 @@ impl<'de, V: Deserialize<'de>> Deserialize<'de> for OrderedMap<V> {
 }
 
 /// A search made, kept for Home.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
     pub query: String,
     pub path: String,
@@ -226,8 +235,8 @@ pub struct HistoryItem {
 }
 
 /// The switches of a text search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchOptions {
     pub case_sensitive: bool,
     pub whole_word: bool,
@@ -273,8 +282,8 @@ pub enum ViewMode {
 }
 
 /// One pane of the session: its tabs' folders, the active one, and each tab's view.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionPane {
     pub paths: Vec<String>,
     pub active: usize,
@@ -284,8 +293,8 @@ pub struct SessionPane {
 }
 
 /// The tabs open in each pane when the app closed, to reopen them.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Session {
     pub dual: bool,
     pub active_pane: usize,
@@ -360,8 +369,7 @@ pub enum Column {
 }
 
 /// Widths dragged in the list's header, in pixels; unset: the default (`Partial<Record<Column, number>>`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ColumnWidths {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<f64>,
@@ -382,8 +390,8 @@ pub struct ColumnWidths {
 }
 
 /// Glint's settings. Fields are in the order `DEFAULT_SETTINGS` lists them, which is the order they are saved.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub theme: Theme,
     pub language: Language,
@@ -591,8 +599,8 @@ pub enum RemoteKind {
 
 /// A remote connection (remote/), as its folders are reached at `remote:<id>`: no secret, which Windows
 /// Credential Manager keeps. `id` is made from the first name it's given, and kept through renames.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteConnection {
     pub id: String,
     pub name: String,
@@ -672,8 +680,8 @@ pub enum SyncMode {
 
 /// A folder rule (rules.rs): what it looks at (a folder, its subfolders if asked), what it takes (names,
 /// sizes, age), and what it does. Off until it's turned on, after a look at what it would do.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderRule {
     pub id: String,
     pub name: String,
@@ -723,8 +731,8 @@ impl Default for FolderRule {
 
 /// A folder's own view, as last set there: its columns, its sort, list or grid, and when (the least lately
 /// set are forgotten first).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<ColumnId>>,
@@ -745,16 +753,16 @@ pub struct FolderViewPatch {
 }
 
 /// A name search kept in the sidebar: what was typed, and the folder it searches (THIS_PC: every drive).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SavedSearch {
     pub query: String,
     pub folder: String,
 }
 
 /// Everything the app keeps between runs: the store's data fields, in the order the store declares them.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppState {
     pub query: String,
     pub path: String,
@@ -794,6 +802,158 @@ impl Default for AppState {
         }
     }
 }
+
+/// Reads a saved object field by field, so one value this version does not understand (an unknown enum
+/// value from a newer Glint, a field of the wrong type) costs only that field, which keeps its default,
+/// and not the whole file. Missing fields keep their defaults too, and anything that isn't an object gives
+/// the type's default. Each line is the JSON name and the Rust field it is read into.
+macro_rules! lenient_deserialize {
+    ($ty:ty { $($json:literal => $field:ident),* $(,)? }) => {
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = serde_json::Value::deserialize(deserializer)?;
+                let mut out = <$ty>::default();
+                if let serde_json::Value::Object(mut map) = value {
+                    $(
+                        if let Some(raw) = map.remove($json) {
+                            if let Ok(parsed) = serde_json::from_value(raw) {
+                                out.$field = parsed;
+                            }
+                        }
+                    )*
+                }
+                Ok(out)
+            }
+        }
+    };
+}
+
+lenient_deserialize!(Visit { "count" => count, "last" => last });
+lenient_deserialize!(HistoryItem { "query" => query, "path" => path, "timestamp" => timestamp });
+lenient_deserialize!(SearchOptions {
+    "caseSensitive" => case_sensitive,
+    "wholeWord" => whole_word,
+    "regex" => regex,
+    "code" => code,
+    "documents" => documents,
+    "ocr" => ocr,
+    "meaning" => meaning,
+});
+lenient_deserialize!(SessionPane { "paths" => paths, "active" => active, "views" => views });
+lenient_deserialize!(Session { "dual" => dual, "activePane" => active_pane, "panes" => panes });
+lenient_deserialize!(ColumnWidths {
+    "date" => date,
+    "type" => r#type,
+    "size" => size,
+    "taken" => taken,
+    "dimensions" => dimensions,
+    "duration" => duration,
+    "artist" => artist,
+    "album" => album,
+});
+lenient_deserialize!(Settings {
+    "theme" => theme,
+    "language" => language,
+    "backdrop" => backdrop,
+    "accent" => accent,
+    "fontSize" => font_size,
+    "showLineNumbers" => show_line_numbers,
+    "defaultSearchPath" => default_search_path,
+    "maxResults" => max_results,
+    "autoOpenPreview" => auto_open_preview,
+    "confirmBeforeReplace" => confirm_before_replace,
+    "editorPath" => editor_path,
+    "exclusions" => exclusions,
+    "saveSearchHistory" => save_search_history,
+    "maxHistoryItems" => max_history_items,
+    "startFolder" => start_folder,
+    "restoreTabs" => restore_tabs,
+    "showHidden" => show_hidden,
+    "foldersFirst" => folders_first,
+    "groupBy" => group_by,
+    "showPreviewPane" => show_preview_pane,
+    "folderTree" => folder_tree,
+    "treeFollows" => tree_follows,
+    "perFolderViews" => per_folder_views,
+    "listColumns" => list_columns,
+    "galleryFolders" => gallery_folders,
+    "copyQueue" => copy_queue,
+    "verifyCopies" => verify_copies,
+    "listThumbnails" => list_thumbnails,
+    "tileSize" => tile_size,
+    "confirmDelete" => confirm_delete,
+    "sort" => sort,
+    "findRespectIgnore" => find_respect_ignore,
+    "findMaxResults" => find_max_results,
+    "findExclusions" => find_exclusions,
+    "quickShortcut" => quick_shortcut,
+    "keepInTray" => keep_in_tray,
+    "startWithWindows" => start_with_windows,
+    "compareSubfolders" => compare_subfolders,
+    "compareContents" => compare_contents,
+    "columns" => columns,
+    "previewWidth" => preview_width,
+    "dualSplit" => dual_split,
+    "gitTrusted" => git_trusted,
+    "terminalShell" => terminal_shell,
+    "terminalHeight" => terminal_height,
+    "terminalFollow" => terminal_follow,
+    "growthDays" => growth_days,
+    "yaraRules" => yara_rules,
+    "showReadme" => show_readme,
+    "readmeOpen" => readme_open,
+    "zoxide" => zoxide,
+});
+lenient_deserialize!(RemoteConnection {
+    "id" => id,
+    "name" => name,
+    "kind" => kind,
+    "endpoint" => endpoint,
+    "region" => region,
+    "bucket" => bucket,
+    "user" => user,
+    "host" => host,
+    "port" => port,
+    "key" => key,
+    "root" => root,
+    "thumbnails" => thumbnails,
+    "rclone" => rclone,
+    "service" => service,
+});
+lenient_deserialize!(FolderRule {
+    "id" => id,
+    "name" => name,
+    "on" => on,
+    "folder" => folder,
+    "subfolders" => subfolders,
+    "names" => names,
+    "minSize" => min_size,
+    "maxSize" => max_size,
+    "olderThanDays" => older_than_days,
+    "action" => action,
+    "target" => target,
+    "pattern" => pattern,
+    "sync" => sync,
+    "every" => every,
+});
+lenient_deserialize!(FolderView { "columns" => columns, "sort" => sort, "view" => view, "at" => at });
+lenient_deserialize!(SavedSearch { "query" => query, "folder" => folder });
+lenient_deserialize!(AppState {
+    "query" => query,
+    "path" => path,
+    "history" => history,
+    "options" => options,
+    "settings" => settings,
+    "mode" => mode,
+    "pinned" => pinned,
+    "savedSearches" => saved_searches,
+    "remotes" => remotes,
+    "rules" => rules,
+    "lastFolder" => last_folder,
+    "session" => session,
+    "visits" => visits,
+    "folderViews" => folder_views,
+});
 
 /// zustand's saved wrapper around the state.
 #[derive(Serialize)]
@@ -1307,6 +1467,51 @@ mod tests {
         assert_eq!(frecency(&v, HOUR), 4.0);
         assert_eq!(frecency(&v, 24 * HOUR), 1.0);
         assert_eq!(frecency(&v, 7 * 24 * HOUR), 0.5);
+    }
+
+    #[test]
+    fn unknown_enum_values_and_wrong_types_cost_only_their_field() {
+        let text = r#"{"state":{"query":"keep","pinned":["C:/a"],
+            "settings":{"tileSize":"gigantic","theme":"dark","language":"fr","maxHistoryItems":"many",
+                "listColumns":["modified","bogus"],"showHidden":true,"sort":{"key":"name","desc":true}},
+            "mode":"video",
+            "visits":{"C:/a":{"count":3},"C:/b":{"last":9},"C:/c":{"count":2,"last":7}}},"version":0}"#;
+        let s = load_persisted(text);
+        let d = Settings::default();
+        assert_eq!(s.query, "keep");
+        assert_eq!(s.pinned, vec!["C:/a".to_string()]);
+        assert_eq!(s.settings.tile_size, TileSize::Medium);
+        assert_eq!(s.settings.language, Language::System);
+        assert_eq!(s.settings.max_history_items, d.max_history_items);
+        assert_eq!(s.settings.list_columns, d.list_columns);
+        assert_eq!(s.settings.theme, Theme::Dark);
+        assert!(s.settings.show_hidden);
+        assert!(s.settings.sort.desc);
+        assert_eq!(s.mode, Mode::Files);
+        // A visit missing 'last' (or 'count') loads, and the entries around it are untouched.
+        assert_eq!(s.visits.get("C:/a"), Some(&Visit { count: 3, last: 0 }));
+        assert_eq!(s.visits.get("C:/b"), Some(&Visit { count: 0, last: 9 }));
+        assert_eq!(s.visits.get("C:/c"), Some(&Visit { count: 2, last: 7 }));
+        assert_eq!(s.visits.keys().collect::<Vec<_>>(), vec!["C:/a", "C:/b", "C:/c"]);
+    }
+
+    #[test]
+    fn wrong_shaped_parts_load_as_defaults() {
+        let text = r#"{"state":{"settings":"oops","options":[1],"history":[{"query":"q","timestamp":"x"}],
+            "session":{"dual":true,"panes":[{"paths":["C:\\"],"views":["list","tiles"]}]},
+            "remotes":[{"id":"r","kind":"ftp","port":"22"}]},"version":0}"#;
+        let s = load_persisted(text);
+        assert_eq!(s.settings, Settings::default());
+        assert_eq!(s.options, SearchOptions::default());
+        assert_eq!(s.history.len(), 1);
+        assert_eq!((s.history[0].query.as_str(), s.history[0].timestamp), ("q", 0));
+        let session = s.session.unwrap();
+        assert!(session.dual);
+        assert_eq!(session.panes[0].paths, vec!["C:\\".to_string()]);
+        assert_eq!(session.panes[0].views, None);
+        assert_eq!(s.remotes[0].id, "r");
+        assert_eq!(s.remotes[0].kind, RemoteKind::S3);
+        assert_eq!(s.remotes[0].port, None);
     }
 
     #[test]
