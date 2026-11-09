@@ -16,6 +16,7 @@
 //! services meet.
 
 pub mod actions;
+pub mod components;
 pub mod core_bridge;
 pub mod dialogs;
 pub mod explorer;
