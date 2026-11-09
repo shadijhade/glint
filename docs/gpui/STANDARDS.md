@@ -125,6 +125,70 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
 - **Big lists are virtualized** (`uniform_list`, `list`, `DataTable`). Nothing allocates per row per frame that could be cached. Thumbnails and icons are `RenderImage`s in an LRU, never PNG round-trips.
 - **Port behavior and feel, not markup:** same shortcuts, same menus, same wording, same states (empty, loading, error). Tailwind classes map to the theme's spacing and type scale, not to pixel copies.
 
+### 5.1 How the skeleton does it (copy these exactly)
+
+*Learned building the skeleton (crates/glint-ui). `dialogs/drive_health.rs` is the reference port.*
+
+**Imports.** Use `use crate::kit::prelude::*; use crate::{t, theme};` and never `gpui_component`. The prelude re-exports the std `test` macro on purpose: GPUI's own `test` would otherwise shadow `#[test]` once test-support is on.
+
+**Icons:**
+- The app embeds `gpui_kit::assets::AllAssets`, the full Lucide set. A missing icon draws nothing and raises no error.
+- Add every `IconName` your view uses to the test list in kit.rs (`every_icon_the_skeleton_draws_is_in_the_embedded_assets`).
+
+**Accessibility:**
+- `.role(..)`, `.aria_label(..)` and `.aria_description(..)` exist only after `.id(..)`.
+- Icon-only buttons need `.accessibility_label(t!(..))`. Inputs take `.aria_label(..)`.
+- gpui-component's Dialog host has no name: put `.role(Role::Group).aria_label(t!(title))` on your content root.
+
+**Calling core:**
+- Use `core_bridge::run(glint_core::x::y(args)).await` inside `cx.spawn(async move |this, cx| ...)`. It returns `Result<T, String>` for the join; flatten with `.and_then(|r| r)` when core's function returns `Result` itself.
+- `WeakEntity::update` returns a `Result`.
+- Streams: `core_bridge::stream::<T>()` gives a `host::ipc::Channel<T>` for core plus a receiver for a GPUI task.
+- Core events: `core_bridge::subscribe(cx, ...)`.
+
+**Modal Win32 loops** start through `core_bridge::post_to_ui(job)`. Get the owner HWND with `core_bridge::hwnd_of(window)` while you have the `Window`.
+
+**Models:**
+- A dialog's data lives in a model entity with `State { Idle, Loading, Failed(msg), Ready }` and a throttled `refresh(force)`. The view observes it.
+- Give the model a `Source` (a boxed async fn), so tests inject fake data and never touch the real core.
+
+**Dialogs:**
+- `dialogs::show(window, cx, t!("Title"), px(width), view)`.
+- Create entities **before** opening the dialog: its builder re-runs, and entities made inside it lose their state.
+- Set `.text_start()` on the content root, because the dialog layer sits outside the workspace tree.
+
+**Right to left:**
+- `row_start()` for rows whose order matters.
+- `align_start/end`, `text_start/end` and `ps/pe/ms/me` instead of left and right.
+- `back_icon()` and `forward_icon()` mirror.
+- `isolate(text)` (RLI…PDI) is for display only, never in paths, inputs or aria labels.
+- A column child that should fill needs `.min_w_0()`, or long text won't wrap.
+- Debug builds take `GLINT_LANGUAGE=ar` and `GLINT_THEME=light|dark`, so you can look at both.
+
+**Style:**
+- `let t = theme::tokens(cx).clone();` at the top of render; colors come only from `t`.
+- Sizes are rems, so the text-size setting scales them: `theme::size::{XXS, XS, SM, BASE}` and `space(n)` (takes f32: `space(3.)`).
+- Chrome (title bar, toolbar, sidebar, status bar) uses `theme::chrome_fill(cx)` so Mica shows through.
+- Tinted buttons use `Button::custom(ButtonCustomVariant::new(cx)...)`.
+
+**Keys:**
+- Add a row to `actions::BINDINGS` (keys, context, action, English description from ShortcutsDialog.tsx) and the action to the `actions!` list.
+- Contexts: Workspace, FileList, TextSearch, QuickLook, Compare.
+- Never bind Ctrl+A/C/X/V/Z, Backspace or Delete outside FileList (a test enforces it).
+- Use `KeyBinding::load` for strings built at runtime; `KeyBinding::new` panics on bad text.
+
+**Tests:**
+- `testing::init(cx)`, then `testing::open_window(cx, |window, cx| ...)` gives a window with the dialog layer.
+- Hold `let _guard = testing::lock();` in every test that renders, because language and direction are process-wide.
+- Call `window.render_frame(cx)` before querying.
+- Tests that await core poll: `cx.run_until_parked()`, check, sleep 5 ms, repeat. `testing::open_window` allows parking for core's threads.
+
+**Windows:**
+- `TitleBar::window_options()` is the base for a window with the kit title bar.
+- Keep the `Subscription` that `observe_window_appearance` returns.
+
+**Editing files with scripts:** open and write with `encoding='utf-8'`. The default on this PC (cp1252) mangles the sources' non-ASCII characters.
+
 ## 6. Core rules (src-tauri to glint-core)
 
 - **Module code moves nearly unchanged:**

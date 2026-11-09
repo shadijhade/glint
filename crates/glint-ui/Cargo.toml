@@ -27,4 +27,13 @@ windows = { workspace = true, features = [
     "UI",
     "UI_ViewManagement",
     "Foundation",
+    "Win32_UI_HiDpi",
+    "Win32_Globalization",
+    "Wdk_System_SystemServices",
+    "Win32_System_SystemInformation",
 ] }
+
+# Headless window tests (gpui-kit's test module) need gpui-kit's test-support feature. It is a dev-dependency
+# only: the app itself is built without it. NOTE(coordinator): the one Cargo.toml change beyond windows features.
+[dev-dependencies]
+gpui-kit = { version = "=0.9.1", features = ["test-support"] }
