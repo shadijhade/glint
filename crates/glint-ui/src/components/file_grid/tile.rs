@@ -1,0 +1,446 @@
+//! One tile and one row of tiles: what the grid draws for the rows on screen (the `renderTile` and `renderRow` of
+//! FileGrid.tsx). Everything a tile needs for a frame is gathered once in a [`Frame`] when the grid renders, so the
+//! list callback that draws the visible rows only reads it.
+
+use super::thumbnail::{thumbnail_square, Thumbnails, Want};
+use crate::kit::prelude::*;
+use crate::{i18n, t, theme};
+use glint_model::entries::{cloud_state, is_hidden, is_locked, is_recycled, CloudState, FileEntry};
+use glint_model::file_types::{kind_of, type_label};
+use glint_model::format::{format_full_date, format_size};
+use glint_model::grid::GridTile;
+use glint_model::paths::parent_path;
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::ops::Range;
+use std::rc::Rc;
+use std::sync::Arc;
+
+/// A listener made by the grid for its tiles' elements: they get the tile's index with the event.
+pub(super) type Handler<E> = Rc<dyn Fn(&E, &mut Window, &mut App)>;
+
+/// Rows of tiles asked for above and below the visible ones, so their thumbnails are in before they scroll in
+/// (`overscan={2}` in the TypeScript).
+const OVERSCAN_ROWS: usize = 2;
+
+/// Everything the visible tiles need, gathered when the grid renders.
+pub(super) struct Frame {
+    pub rows: crate::explorer::Rows,
+    pub selection: crate::explorer::Selection,
+    /// The item the keyboard is on.
+    pub focus: Option<String>,
+    /// In the pane the keyboard isn't acting on: the selection shows muted, as in an unfocused window.
+    pub inactive: bool,
+    pub flashed: Arc<HashSet<String>>,
+    pub tile: GridTile,
+    pub cols: usize,
+    /// How many rows of tiles there are.
+    pub lines: usize,
+    /// One column's width, pixels.
+    pub col_w: f32,
+    /// Items from many folders (search results, the Recycle Bin's) say where each is, under its name.
+    pub located: bool,
+    pub recycled: bool,
+    /// The Gallery's tiles are its photos alone: where each is shows in the list, and in its preview.
+    pub gallery: bool,
+    /// The folder that was searched: a result says where it is below it.
+    pub scope: String,
+    pub lane: String,
+    pub scale: f32,
+    pub tokens: theme::Tokens,
+    pub thumbs: Entity<Thumbnails>,
+    pub viewer: EntityId,
+    /// A fingerprint of the thumbnails last asked for, so the service is told only when the set changes.
+    pub shown: Rc<Cell<u64>>,
+    pub on_down: Handler<(usize, MouseDownEvent)>,
+    pub on_right_up: Handler<(usize, MouseUpEvent)>,
+    pub on_hover: Handler<(usize, bool)>,
+}
+
+/// Where a search result is, below the folder that was searched ("" when right in it) (`relativeTo`).
+pub(super) fn relative_to(scope: &str, path: &str) -> String {
+    let folder = parent_path(path);
+    if scope.is_empty() {
+        return folder;
+    }
+    let base = scope.trim_end_matches(['\\', '/']).to_lowercase();
+    let lower = folder.trim_end_matches(['\\', '/']).to_lowercase();
+    if lower == base {
+        return String::new();
+    }
+    for sep in ['\\', '/'] {
+        let prefix = format!("{base}{sep}");
+        if lower.starts_with(&prefix) {
+            // `base` is lowercase and so is the prefix test, but the slice is from the original: same lengths for
+            // every character that lowercases to one of its own length, which is all that a folder name has.
+            return folder.chars().skip(base.chars().count() + 1).collect();
+        }
+    }
+    folder
+}
+
+/// Where an item is, in a list of items from many folders: a search result's folder (below `scope`), or the folder
+/// a recycled one was deleted from (`whereOf`).
+pub(super) fn where_of(scope: &str, entry: &FileEntry) -> String {
+    if is_recycled(entry) {
+        entry.origin.clone().unwrap_or_default()
+    } else {
+        relative_to(scope, &entry.path)
+    }
+}
+
+/// The size line under a tile: a file's size, a folder's only where the listing has it (search results, the
+/// Recycle Bin: `sizeOf` with `located`).
+fn size_text(entry: &FileEntry, located: bool) -> String {
+    if entry.dir {
+        // PORT ME(sizes): a folder's size measured as it opens (`sizes?.sizes.get(entry.name)`), and "…" while
+        // that runs.
+        if located && entry.size > 0 {
+            return format_size(entry.size);
+        }
+        return String::new();
+    }
+    format_size(entry.size)
+}
+
+/// The text of a tile's tooltip (the `title` of the TypeScript's tile), built when it is asked for.
+fn tooltip_text(frame: &Frame, entry: &FileEntry) -> SharedString {
+    let mut lines = vec![entry.name.clone()];
+    if frame.located && !frame.gallery {
+        let place = where_of(&frame.scope, entry);
+        if !place.is_empty() {
+            lines.push(if frame.recycled {
+                t!("deleted from {place}", place = place).to_string()
+            } else {
+                t!("in {place}", place = place).to_string()
+            });
+        }
+    }
+    if !entry.dir {
+        lines.push(format!("{} · {}", type_label(entry), format_size(entry.size)));
+    }
+    let date = format_full_date(entry.modified);
+    lines.push(if frame.recycled {
+        t!("Deleted {date}", date = date).to_string()
+    } else {
+        date
+    });
+    // PORT ME(git): the Git line ("Git: left out by .gitignore", or the mark's title).
+    lines.join("\n").into()
+}
+
+/// The rows of tiles `range` (row numbers), as the list callback draws them. Also tells the thumbnail service what
+/// is on screen, and frees what it let go of from the GPU's atlas.
+pub(super) fn rows_in(frame: &Rc<Frame>, range: Range<usize>, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+    let cols = frame.cols.max(1);
+    let len = frame.rows.len();
+    let first = range.start.saturating_mul(cols).min(len);
+    let end = range.end.saturating_mul(cols).min(len);
+    // The list also asks for its first row alone, to measure it: that is no view of the grid, and telling the
+    // service about it would make it drop the real ones and ask for them again every frame.
+    let measuring = range == (0..1) && frame.lines > 1;
+    if !measuring {
+        show_thumbnails(
+            frame,
+            range.start.saturating_sub(OVERSCAN_ROWS).saturating_mul(cols).min(len)
+                ..range.end.saturating_add(OVERSCAN_ROWS).saturating_mul(cols).min(len),
+            cx,
+        );
+        for freed in frame.thumbs.update(cx, |thumbs, _| thumbs.take_evicted()) {
+            window.drop_image(freed).ok();
+        }
+    }
+    range
+        .map(|r| {
+            let mut tiles = Vec::with_capacity(cols);
+            for i in (r * cols).max(first)..((r + 1) * cols).min(end) {
+                if let Some(entry) = frame.rows.get(i) {
+                    tiles.push(tile(frame, i, entry, cx));
+                }
+            }
+            row_start()
+                .id(("file-grid-row", r))
+                .w_full()
+                .h(px(frame.tile.height))
+                .px(px(frame.tile.pad))
+                .items_start()
+                .children(tiles)
+                .into_any_element()
+        })
+        .collect()
+}
+
+/// Tells the thumbnail service which thumbnails the rows in `items` need, if that changed since the last frame.
+fn show_thumbnails(frame: &Frame, items: Range<usize>, cx: &mut App) {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    frame.lane.hash(&mut hasher);
+    frame.tile.thumb.to_bits().hash(&mut hasher);
+    frame.scale.to_bits().hash(&mut hasher);
+    for i in items.clone() {
+        if let Some(entry) = frame.rows.get(i) {
+            (&entry.path, entry.modified, entry.size).hash(&mut hasher);
+        }
+    }
+    let fingerprint = hasher.finish();
+    if frame.shown.get() == fingerprint {
+        return;
+    }
+    frame.shown.set(fingerprint);
+    let wants: Vec<Want> = items
+        .filter_map(|i| frame.rows.get(i))
+        .filter_map(|entry| Want::for_entry(entry, frame.tile.thumb, frame.scale))
+        .collect();
+    let (viewer, lane) = (frame.viewer, frame.lane.clone());
+    frame
+        .thumbs
+        .update(cx, |thumbs, cx| thumbs.show(viewer, &lane, wants, cx));
+}
+
+/// One tile (`renderTile`).
+fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoElement {
+    let t = &frame.tokens;
+    let selected = frame.selection.contains(&entry.path);
+    let focused = frame.focus.as_deref() == Some(entry.path.as_str());
+    let shown_focus = focused && !frame.inactive;
+    let thumb = frame.tile.thumb;
+
+    let background = if selected {
+        // `bg-primary/15 dark:bg-primary/20`; muted in the pane the keyboard isn't in.
+        t.primary.opacity(match (frame.inactive, t.dark) {
+            (true, _) => 0.10,
+            (false, true) => 0.20,
+            (false, false) => 0.15,
+        })
+    } else if frame.flashed.contains(&entry.path) {
+        // `glint-flash`: just arrived (created, pasted, dropped, renamed).
+        t.primary.opacity(0.25)
+    } else {
+        hsla(0., 0., 0., 0.)
+    };
+    let border = if shown_focus {
+        t.primary
+    } else if selected && frame.inactive {
+        t.primary.opacity(0.25)
+    } else {
+        hsla(0., 0., 0., 0.)
+    };
+
+    let look = frame.thumbs.read(cx).look(entry, thumb, frame.scale);
+    let kind = kind_of(entry);
+    let icon_px = thumb * if entry.dir { 2. / 3. } else { 7. / 12. };
+    let mut square = thumbnail_square(&look, kind, thumb, icon_px, true, cx);
+    // PORT ME(compare, git): the diff badge (top end) and Git's mark (top start) over the thumbnail.
+    if let Some(state) = cloud_state(entry) {
+        square = square.child(corner_mark(i, "cloud", cloud_mark(state, t), cx));
+    }
+    if is_locked(entry) {
+        square = square.child(corner_mark(i, "lock", lock_mark(entry, t), cx));
+    }
+
+    let location = if frame.located && !frame.gallery {
+        where_of(&frame.scope, entry)
+    } else {
+        String::new()
+    };
+    let size = size_text(entry, frame.located);
+    let line = if location.is_empty() { size } else { location };
+
+    let on_down = frame.on_down.clone();
+    let on_down_right = frame.on_down.clone();
+    let on_down_middle = frame.on_down.clone();
+    let on_up = frame.on_right_up.clone();
+    let on_hover = frame.on_hover.clone();
+    let tip_frame = frame.clone();
+    let hidden = is_hidden(entry);
+    let name = entry.name.clone();
+
+    div()
+        // A cell of the row's grid; the tile inside is inset by 2 px (`m-0.5`).
+        .w(px(frame.col_w))
+        .h_full()
+        .flex_none()
+        .p(px(2.))
+        .child(
+            div()
+                .id(("file-grid-tile", i))
+                .role(Role::ListBoxOption)
+                .aria_label(name.clone())
+                .aria_description(line.clone())
+                .aria_selected(selected)
+                .aria_position_in_set(i + 1)
+                .aria_size_of_set(frame.rows.len())
+                .when(shown_focus, |tile| tile.aria_active_descendant())
+                .test_support()
+                .size_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .px(space(1.5))
+                .pt(space(2.))
+                .rounded(theme::size::RADIUS)
+                .border_1()
+                .border_color(border)
+                .bg(background)
+                .text_center()
+                .when(!selected, |tile| tile.hover(|hover| hover.bg(t.accent.opacity(0.6))))
+                // Hidden items are drawn dim, as Explorer does.
+                .when(hidden, |tile| tile.opacity(0.55))
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                    cx.stop_propagation();
+                    on_down(&(i, event.clone()), window, cx)
+                })
+                .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                    cx.stop_propagation();
+                    on_down_right(&(i, event.clone()), window, cx)
+                })
+                .on_mouse_down(MouseButton::Middle, move |event, window, cx| {
+                    cx.stop_propagation();
+                    on_down_middle(&(i, event.clone()), window, cx)
+                })
+                .on_mouse_up(MouseButton::Right, move |event, window, cx| {
+                    cx.stop_propagation();
+                    on_up(&(i, event.clone()), window, cx)
+                })
+                // Hovering a folder reads it ahead (`hoverFolder` and `leaveFolder`).
+                .when(entry.dir, |tile| {
+                    tile.on_hover(move |hovered, window, cx| on_hover(&(i, *hovered), window, cx))
+                })
+                .tooltip(move |window, cx| {
+                    let text = tip_frame
+                        .rows
+                        .get(i)
+                        .map(|entry| tooltip_text(&tip_frame, entry))
+                        .unwrap_or_default();
+                    crate::components::file_grid::compat::tooltip(text, window, cx)
+                })
+                .child(square)
+                .child(
+                    div()
+                        .mt(space(1.5))
+                        .w_full()
+                        .text_size(theme::size::XS)
+                        .line_height(rems(1.))
+                        .line_clamp(2)
+                        .overflow_hidden()
+                        // PORT ME(rename): the rename box in place of the name when this is the tab's `renaming`.
+                        .child(isolate(name)),
+                )
+                .child(
+                    div()
+                        .h(space(4.))
+                        .w_full()
+                        .flex_none()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(theme::size::XXS)
+                        .text_color(t.muted_foreground)
+                        .child(line),
+                ),
+        )
+}
+
+/// What a corner mark shows: its icon, color and the words a screen reader says.
+struct Mark {
+    glyph: IconName,
+    color: Hsla,
+    label: SharedString,
+}
+
+/// File Explorer's marks for cloud files' states (`CLOUD_MARKS`).
+fn cloud_mark(state: CloudState, t: &theme::Tokens) -> Mark {
+    match state {
+        CloudState::Online => Mark {
+            glyph: IconName::Cloud,
+            color: t.primary,
+            label: t!("Available when online"),
+        },
+        CloudState::Local => Mark {
+            glyph: IconName::CircleCheck,
+            color: t.success,
+            label: t!("Available on this device"),
+        },
+        CloudState::Kept => Mark {
+            glyph: IconName::CircleCheck,
+            color: t.success,
+            label: t!("Always available on this device"),
+        },
+        CloudState::Pending => Mark {
+            glyph: IconName::RefreshCw,
+            color: t.primary,
+            label: t!("Sync pending"),
+        },
+    }
+}
+
+/// A key for a password, or a crossed-out file for what Glint can't read (`LockMark`, `lockReason`).
+fn lock_mark(entry: &FileEntry, t: &theme::Tokens) -> Mark {
+    let password = entry.attrs & glint_model::entries::attr::ENCRYPTED != 0;
+    Mark {
+        glyph: if password { IconName::KeyRound } else { IconName::FileX },
+        color: t.warning,
+        label: if password {
+            t!("Password-protected")
+        } else {
+            t!("Compressed in a way Glint can't read")
+        },
+    }
+}
+
+/// A small mark on the thumbnail's bottom corner at the reading direction's end (`absolute bottom-0.5 end-0.5 size-4`).
+fn corner_mark(i: usize, what: &'static str, mark: Mark, _cx: &App) -> impl IntoElement {
+    let corner = div()
+        .id((SharedString::from(format!("file-grid-{what}")), i))
+        .role(Role::Image)
+        .aria_label(mark.label)
+        .test_support()
+        .absolute()
+        .bottom(px(2.))
+        .size(rems(1.))
+        .child(icon(mark.glyph).size(rems(1.)).text_color(mark.color));
+    if i18n::is_rtl() {
+        corner.left(px(2.))
+    } else {
+        corner.right(px(2.))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::fake::{file, folder};
+
+    #[test]
+    fn results_say_where_they_are_below_the_folder_searched() {
+        assert_eq!(relative_to("C:\\Users\\me", "C:\\Users\\me\\a.txt"), "");
+        assert_eq!(relative_to("C:\\Users\\me", "C:\\Users\\me\\docs\\a.txt"), "docs");
+        assert_eq!(
+            relative_to("C:\\Users\\me\\", "C:\\USERS\\me\\docs\\old\\a.txt"),
+            "docs\\old"
+        );
+        assert_eq!(relative_to("C:\\Users\\me", "D:\\other\\a.txt"), "D:\\other");
+        // Searching everything has no scope: the whole folder.
+        assert_eq!(relative_to("", "D:\\other\\a.txt"), "D:\\other");
+    }
+
+    #[test]
+    fn a_recycled_item_says_where_it_was_deleted_from() {
+        let mut entry = file("C:\\bin", "a.txt", 1, 1);
+        entry.attrs |= glint_model::entries::attr::RECYCLED;
+        entry.origin = Some("C:\\Users\\me\\docs".into());
+        assert_eq!(where_of("", &entry), "C:\\Users\\me\\docs");
+    }
+
+    #[test]
+    fn a_folders_size_shows_only_where_the_listing_has_it() {
+        let mut dir = folder("C:\\x", "d");
+        assert_eq!(size_text(&dir, false), "");
+        assert_eq!(size_text(&dir, true), "");
+        dir.size = 2048;
+        assert_eq!(size_text(&dir, false), "");
+        assert_eq!(size_text(&dir, true), "2.0 KB");
+        assert_eq!(size_text(&file("C:\\x", "a", 1024, 1), false), "1.0 KB");
+    }
+}
