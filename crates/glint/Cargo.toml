@@ -1,0 +1,15 @@
+[package]
+name = "glint"
+description = "Glint.exe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "Glint"
+path = "src/main.rs"
+
+[dependencies]
+glint-ui = { path = "../glint-ui" }
+glint-core = { path = "../glint-core" }

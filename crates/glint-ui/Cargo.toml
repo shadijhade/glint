@@ -1,0 +1,30 @@
+[package]
+name = "glint-ui"
+description = "Glint's interface on GPUI (see docs/gpui/UI-SKELETON.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "glint_ui"
+
+[dependencies]
+gpui-kit = "=0.9.1"
+glint-model = { path = "../glint-model" }
+glint-core = { path = "../glint-core" }
+async-channel = "2"
+raw-window-handle = "0.6"
+serde = { workspace = true }
+serde_json = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_System_Com",
+    "UI",
+    "UI_ViewManagement",
+    "Foundation",
+] }
