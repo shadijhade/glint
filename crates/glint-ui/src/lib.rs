@@ -9,19 +9,21 @@
 //! 5. [`dialogs::drive_health`]: the exemplar, a whole dialog with model, view, states, accessibility and test.
 //! 6. [`workspace`]: the main window the components plug into.
 //!
-//! **Start-up order** (in [`run`]): `gpui_kit::init`, `state::init`, `theme::init`, `i18n::init`,
-//! `actions::init`, `core_bridge::init`, the shared models, then the main window.
+//! **Start-up order** (in [`run`]): one copy per session (`platform::launch::begin`), then `gpui_kit::init`,
+//! `state::init`, `persistence::init`, `theme::init`, `i18n::init`, `actions::init`, `core_bridge::init`;
+//! then `startup::start`: the preview host, the explorer and its saved share, the tray, the Jump List, the
+//! main window (hidden, placed, shown), the first folders and later launches. startup.rs is where the
+//! services meet.
 
 pub mod actions;
 pub mod core_bridge;
 pub mod dialogs;
-#[cfg(feature = "explorer")]
 pub mod explorer;
 pub mod i18n;
 pub mod kit;
-#[cfg(feature = "persistence")]
 pub mod persistence;
 pub mod platform;
+mod startup;
 pub mod state;
 pub mod theme;
 pub mod workspace;
@@ -32,21 +34,30 @@ pub(crate) mod testing;
 /// Starts the app and runs until it quits. Returns the exit code core asked for (0 normally); the caller
 /// (`Glint.exe`) passes it to the process.
 pub fn run() -> i32 {
+    // One Glint per session: a later launch hands its folders to the running copy and ends here, before any
+    // window or GPUI. (Glint.exe has already answered as a worker if it was started as one.)
+    let request = match platform::launch::begin() {
+        platform::launch::Startup::Exit => return 0,
+        platform::launch::Startup::Run(request) => request,
+    };
     // The assets are the icons: without them every icon, the title bar's buttons included, is invisible.
     // `AllAssets`, not `Assets`: the default set embeds only gpui-component's own 101 icons, and any other
     // Lucide icon (HeartPulse, ShieldAlert, file types…) would silently draw nothing. All of them add about
     // 1 MiB to the binary and nothing to memory until an icon is drawn.
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
-    app.run(|cx| {
+    app.run(move |cx| {
         gpui_kit::init(cx);
         state::init(cx);
+        // The saved state, its settings first: the theme and the language read them.
+        persistence::init(cx);
         theme::init(cx);
         i18n::init(cx);
         actions::init(cx);
         core_bridge::init(cx);
         dialogs::drive_health::init(cx);
 
-        // One window for now: closing it quits. The tray (Settings → Quick search) changes this later.
+        // Closing the last window quits. With the tray keeping Glint running, closing only hides the window
+        // (startup.rs), so this doesn't come.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -54,12 +65,10 @@ pub fn run() -> i32 {
         })
         .detach();
 
-        if let Err(error) = workspace::open_main_window(cx) {
-            eprintln!("glint: couldn't open the main window: {error:#}");
-            cx.quit();
-            return;
-        }
+        startup::start(cx, request);
         cx.activate(true);
     });
+    // The tray icon and the shortcut go with the app.
+    platform::tray::shutdown();
     core_bridge::exit_code()
 }

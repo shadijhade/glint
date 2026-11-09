@@ -370,6 +370,11 @@ impl WindowsWindowInner {
         let Some(open_status) = self.state.initial_placement.take() else {
             return Ok(());
         };
+        // Glint: a window opened hidden that the app has since shown itself, in its saved place, keeps that
+        // place; the placement asked for at open is only for a window still hidden (docs/gpui/VENDOR.md).
+        if unsafe { IsWindowVisible(self.hwnd) }.as_bool() {
+            return Ok(());
+        }
         match open_status.state {
             WindowOpenState::Maximized => unsafe {
                 SetWindowPlacement(self.hwnd, &open_status.placement)
