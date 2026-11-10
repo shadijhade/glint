@@ -117,6 +117,15 @@ pub struct GoToTab {
     pub index: usize,
 }
 
+/// "Moved and deleted here": the history dialog for `query` (a folder's path, or empty for everywhere). Not a unit
+/// action, so not in the macro above; menus and the palette dispatch it.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = glint, no_json)]
+pub struct ShowHistory {
+    /// The folder to show the history of, or "" for every drive.
+    pub query: String,
+}
+
 /// One key binding: the keystroke, the context it applies in, the action it runs and what it means to a person.
 pub struct Binding {
     /// GPUI keystroke syntax: `ctrl-shift-r`, `alt-left`, `f2`.
@@ -148,6 +157,13 @@ pub static BINDINGS: &[Binding] = &[
     bind!("space", "FileList", QuickLook, "Quick Look"),
     bind!(
         "ctrl-k",
+        "Workspace",
+        CommandPalette,
+        "Command palette: folders and commands (= and a sum works it out)"
+    ),
+    // The web app opened the palette on Ctrl+P too.
+    bind!(
+        "ctrl-p",
         "Workspace",
         CommandPalette,
         "Command palette: folders and commands (= and a sum works it out)"

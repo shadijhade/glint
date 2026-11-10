@@ -8,6 +8,7 @@
 //! central `changed` hook and the handling of core's events.
 
 use super::memory::Memory;
+use super::ops_state::OpsState;
 use super::rows::{build_rows, RowSpec, Rows};
 use super::source::Source;
 use super::tab::Tab;
@@ -54,6 +55,12 @@ pub(super) struct Prefs {
     pub start_folder: StartFolder,
     pub zoxide: bool,
     pub tile_size: TileSize,
+    /// Copies and moves go to Glint's copy queue rather than Windows' dialog.
+    pub copy_queue: bool,
+    /// The queue reads copies back and compares them with their originals.
+    pub verify_copies: bool,
+    /// Windows asks before it deletes.
+    pub confirm_delete: bool,
 }
 
 impl Prefs {
@@ -69,6 +76,9 @@ impl Prefs {
             start_folder: settings.start_folder,
             zoxide: settings.zoxide,
             tile_size: settings.tile_size,
+            copy_queue: settings.copy_queue,
+            verify_copies: settings.verify_copies,
+            confirm_delete: settings.confirm_delete,
         }
     }
 
@@ -129,6 +139,8 @@ pub struct Explorer {
     pub refreshed_by_hand: HashSet<TabId>,
     /// `init_explorer` has been called (it runs once).
     pub(super) initialized: bool,
+    /// The file operations' state: cut items, Undo, slow work, the copy queue, the New menu.
+    pub(super) ops: OpsState,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -178,6 +190,7 @@ impl Explorer {
             hover_task: None,
             refreshed_by_hand: HashSet::new(),
             initialized: false,
+            ops: OpsState::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -668,6 +681,7 @@ impl Explorer {
                     self.reload(Some(id), cx).detach();
                 }
             }
+            "copy-queue" => self.on_queue_event(&event.payload, cx),
             _ => {}
         }
     }

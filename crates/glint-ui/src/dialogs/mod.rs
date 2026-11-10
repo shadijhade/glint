@@ -19,17 +19,13 @@
 use crate::kit::prelude::*;
 
 pub mod drive_health;
-/// The keyboard shortcuts sheet (ShortcutsDialog.tsx). Wave 5 slot.
-#[cfg(feature = "dialog-shortcuts")]
-pub mod shortcuts;
-/// A file's history (HistoryDialog.tsx). Wave 5 slot.
-#[cfg(feature = "dialog-history")]
+/// A file's history (HistoryDialog.tsx).
 pub mod history;
-/// What holds a file open, and stopping it (LocksDialog.tsx). Wave 5 slot.
-#[cfg(feature = "dialog-locks")]
+/// What holds a file open, and stopping it (LocksDialog.tsx).
 pub mod locks;
-/// Previous versions of a file or folder (VersionsDialog.tsx). Wave 5 slot.
-#[cfg(feature = "dialog-versions")]
+/// The keyboard shortcuts sheet (ShortcutsDialog.tsx).
+pub mod shortcuts;
+/// Previous versions of a file or folder (VersionsDialog.tsx).
 pub mod versions;
 
 /// Shows `view` in the window's dialog layer, titled `title`, `width` wide.
@@ -39,5 +35,53 @@ pub mod versions;
 pub fn show<V: Render>(window: &mut Window, cx: &mut App, title: SharedString, width: Pixels, view: Entity<V>) {
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog.title(title.clone()).w(width).child(view.clone())
+    });
+}
+
+/// Asks before something that can't be taken back (deleting for good, emptying the Recycle Bin): `title`,
+/// `message`, Cancel and `ok` (drawn as a danger button when `danger`). `on_ok` runs after the dialog closes.
+pub fn confirm(
+    window: &mut Window,
+    cx: &mut App,
+    title: SharedString,
+    message: SharedString,
+    ok: SharedString,
+    danger: bool,
+    on_ok: impl Fn(&mut Window, &mut App) + 'static,
+) {
+    let on_ok = std::rc::Rc::new(on_ok);
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        let on_ok = on_ok.clone();
+        let ok_button = Button::new("confirm-ok").label(ok.clone());
+        let ok_button = if danger {
+            ok_button.danger()
+        } else {
+            ok_button.primary()
+        };
+        dialog
+            .title(title.clone())
+            .w(px(440.))
+            .child(
+                div()
+                    .id("confirm")
+                    .role(Role::Group)
+                    .aria_label(title.clone())
+                    .aria_description(message.clone())
+                    .test_support()
+                    .text_start()
+                    .child(message.clone()),
+            )
+            .footer(
+                DialogFooter::new()
+                    .child(
+                        Button::new("confirm-cancel")
+                            .label(crate::t!("Cancel"))
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(ok_button.on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        on_ok(window, cx);
+                    })),
+            )
     });
 }

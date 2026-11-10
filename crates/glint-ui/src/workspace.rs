@@ -10,6 +10,7 @@
 //! | Sidebar                 | the [`Sidebar`]: places and the folder tree                          |
 //! | Each pane               | [`ThisPc`], or the [`FileGrid`] or the [`FileList`] by the tab's view |
 //! | Status bar              | the [`StatusBar`]                                                    |
+//! | Over everything         | the [`CopyQueue`] panel and the [`MenuHost`]'s menus                 |
 //!
 //! **Patterns here:**
 //! - The root has `key_context("Workspace")` and tracks focus, so the key bindings in [`crate::actions`] are
@@ -20,16 +21,20 @@
 //! - The window's background material (Mica) follows the theme: while it is on, chrome is see-through.
 
 use crate::components::address_bar::{AddressBar, AddressBarEvent};
+use crate::components::copy_queue::{CopyQueue, CopyQueueEvent};
 use crate::components::file_grid::{FileGrid, FileGridEvent};
 use crate::components::file_list::{FileList, FileListEvent};
+use crate::components::menus::{MenuEvent, MenuHost};
+use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent};
 use crate::components::status_bar::StatusBar;
 use crate::components::tab_strip::{PaneDropZone, TabStrip};
 use crate::components::this_pc::{ThisPc, ThisPcEvent};
+use crate::components::{palette, settings};
 use crate::explorer::{self, ExplorerEvent};
 use crate::kit::prelude::*;
 use crate::platform::dragdrop;
-use crate::{actions, core_bridge, dialogs, state, t, theme};
+use crate::{actions, core_bridge, dialogs, notices, state, t, theme};
 use glint_core::host::Manager as _;
 use glint_model::store::ViewMode;
 use std::ops::Range;
@@ -63,6 +68,12 @@ pub struct Workspace {
     address: Entity<AddressBar>,
     sidebar: Entity<Sidebar>,
     status: Entity<StatusBar>,
+    /// The copy queue's panel (or its pill), over the bottom end of the window.
+    queue: Entity<CopyQueue>,
+    /// The item, background and folder menus, drawn over everything when one is open.
+    menus: Entity<MenuHost>,
+    /// The open Settings view's events, while it is open.
+    settings_events: Option<Subscription>,
     /// The first pane and, in dual-pane view, the second.
     panes: [PaneViews; 2],
     /// What each pane showed at the last look, so a grid going out of sight lets its thumbnails go.
@@ -93,6 +104,8 @@ impl Workspace {
         let address = cx.new(|cx| AddressBar::new(window, cx));
         let sidebar = cx.new(|cx| Sidebar::new(window, cx));
         let status = cx.new(|cx| StatusBar::new(window, cx));
+        let queue = cx.new(|cx| CopyQueue::new(window, cx));
+        let menus = cx.new(MenuHost::new);
         let panes = [0, 1].map(|pane| PaneViews {
             list: cx.new(|cx| FileList::new(pane, window, cx)),
             grid: cx.new(|cx| FileGrid::new(pane, window, cx)),
@@ -101,19 +114,37 @@ impl Workspace {
 
         subscriptions.push(cx.subscribe_in(&address, window, Self::on_address_event));
         subscriptions.push(cx.subscribe_in(&sidebar, window, Self::on_sidebar_event));
-        for views in &panes {
-            subscriptions.push(cx.subscribe_in(&views.list, window, Self::on_list_event));
-            subscriptions.push(cx.subscribe_in(&views.grid, window, Self::on_grid_event));
-            subscriptions.push(cx.subscribe_in(&views.this_pc, window, Self::on_this_pc_event));
+        subscriptions.push(cx.subscribe_in(&menus, window, Self::on_menu_event));
+        subscriptions.push(cx.subscribe_in(&queue, window, Self::on_queue_event));
+        for (pane, views) in panes.iter().enumerate() {
+            subscriptions.push(cx.subscribe_in(&views.list, window, move |this, _, event, window, cx| {
+                this.on_list_event(pane, event, window, cx)
+            }));
+            subscriptions.push(cx.subscribe_in(&views.grid, window, move |this, _, event, window, cx| {
+                this.on_grid_event(pane, event, window, cx)
+            }));
+            subscriptions.push(
+                cx.subscribe_in(&views.this_pc, window, move |this, _, event, window, cx| {
+                    this.on_this_pc_event(event, window, cx)
+                }),
+            );
         }
         // The explorer decides what each pane shows; the keyboard follows the active pane when it moves.
         let explorer = explorer::explorer(cx);
         subscriptions.push(cx.observe(&explorer, |this, _, cx| this.follow_panes(cx)));
-        subscriptions.push(cx.subscribe_in(&explorer, window, |this, _, event, window, cx| {
-            if matches!(event, ExplorerEvent::PaneFocused) {
-                this.focus_files(window, cx);
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe_in(&explorer, window, |this, _, event, window, cx| match event {
+                ExplorerEvent::PaneFocused => this.focus_files(window, cx),
+                // What the file operations tell the person, and ask first.
+                ExplorerEvent::Operation(notice) => notices::show(notice, window, cx),
+                ExplorerEvent::Busy(busy) => notices::busy(busy, window, cx),
+                ExplorerEvent::Ask(question) => notices::ask(question, window, cx),
+                ExplorerEvent::QueueOpened => this.queue.update(cx, |queue, cx| queue.show(cx)),
+                ExplorerEvent::BatchRename(_) => Self::not_yet(window, cx, t!("Batch rename")),
+                ExplorerEvent::FromArchive(_) => Self::not_yet(window, cx, t!("Copying out of archives")),
+                _ => {}
+            }),
+        );
         // The file view has the keyboard from the start, so the arrows work at once.
         cx.defer_in(window, |this, window, cx| this.focus_files(window, cx));
 
@@ -123,6 +154,9 @@ impl Workspace {
             address,
             sidebar,
             status,
+            queue,
+            menus,
+            settings_events: None,
             panes,
             shown: [None, None],
             _drop_target: Self::take_drops(window, cx),
@@ -276,39 +310,38 @@ impl Workspace {
         Self::not_yet(window, cx, what);
     }
 
-    fn on_list_event(
-        &mut self,
-        _: &Entity<FileList>,
-        event: &FileListEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_list_event(&mut self, pane: usize, event: &FileListEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = explorer::explorer(cx).read(cx).pane_tab_id(pane);
         match event {
-            FileListEvent::OpenInFileExplorer { path } => crate::platform::launch::hand_to_explorer(std::slice::from_ref(path)),
+            FileListEvent::OpenInFileExplorer { path } => {
+                crate::platform::launch::hand_to_explorer(std::slice::from_ref(path))
+            }
             FileListEvent::ShowProperties { path } => Self::show_properties(path.clone(), cx),
-            FileListEvent::CommitRename { .. } | FileListEvent::CancelRename => {
-                Self::not_yet(window, cx, t!("Renaming"))
+            FileListEvent::CommitRename { name, .. } => {
+                Self::explorer(cx, |e, cx| e.commit_rename_in(tab, name, cx).detach())
             }
-            FileListEvent::ContextMenu { .. } => Self::not_yet(window, cx, t!("The item menu")),
+            FileListEvent::CancelRename => Self::explorer(cx, |e, cx| e.cancel_rename_in(tab, cx)),
+            FileListEvent::ContextMenu { target, at, shift } => self.menus.update(cx, |menus, cx| {
+                menus.open_list_menu(pane, target.as_deref(), *at, *shift, window, cx)
+            }),
             FileListEvent::ConfirmOpenMany { paths } => Self::open_many(paths.clone(), window, cx),
-            FileListEvent::SetColumns { .. } | FileListEvent::ResetFolderView => {
-                Self::not_yet(window, cx, t!("Choosing columns"))
-            }
+            FileListEvent::SetColumns { columns } => Self::explorer(cx, |e, cx| e.set_columns(columns.clone(), cx)),
+            FileListEvent::ResetFolderView => Self::explorer(cx, |e, cx| {
+                let path = e.tab(tab).map(|t| t.path.clone()).unwrap_or_default();
+                e.reset_folder_view(&path, cx)
+            }),
             FileListEvent::SearchSubfolders { .. } => Self::not_yet(window, cx, t!("Searching subfolders")),
         }
     }
 
-    fn on_grid_event(
-        &mut self,
-        _: &Entity<FileGrid>,
-        event: &FileGridEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_grid_event(&mut self, pane: usize, event: &FileGridEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            FileGridEvent::ContextMenu { .. } | FileGridEvent::BackgroundContextMenu { .. } => {
-                Self::not_yet(window, cx, t!("The item menu"))
-            }
+            FileGridEvent::ContextMenu { path, position } => self.menus.update(cx, |menus, cx| {
+                menus.open_list_menu(pane, Some(path), Some(*position), false, window, cx)
+            }),
+            FileGridEvent::BackgroundContextMenu { position } => self.menus.update(cx, |menus, cx| {
+                menus.open_background_menu(pane, Some(*position), window, cx)
+            }),
             FileGridEvent::DragStart { paths, from_archive } => {
                 if *from_archive {
                     // They're extracted first, then dragged as copies: the archive part does that.
@@ -327,20 +360,221 @@ impl Workspace {
         }
     }
 
-    fn on_this_pc_event(
+    fn on_this_pc_event(&mut self, event: &ThisPcEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            ThisPcEvent::ContextMenu { path, position } => self
+                .menus
+                .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
+            ThisPcEvent::RecentChanges { .. } => Self::not_yet(window, cx, t!("Recent changes")),
+            ThisPcEvent::FindDuplicates { .. } => Self::not_yet(window, cx, t!("Finding duplicates")),
+            ThisPcEvent::DiskUsage { .. } => Self::not_yet(window, cx, t!("The disk usage map")),
+        }
+    }
+
+    /// What a menu asked for that the menus don't do themselves.
+    fn on_menu_event(&mut self, _: &Entity<MenuHost>, event: &MenuEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            // PORT ME(preview pane): hide the native preview while a menu covers it (preview_host::hide/reveal).
+            MenuEvent::Shown | MenuEvent::Closed => {}
+            MenuEvent::Restore { paths } => Self::explorer(cx, |e, cx| {
+                let entries: Vec<_> = e
+                    .active_tab()
+                    .map(|tab| {
+                        tab.rows
+                            .iter()
+                            .filter(|entry| paths.contains(&entry.path))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                e.restore_recycled(&entries, cx).detach()
+            }),
+            MenuEvent::EmptyRecycleBin => dialogs::confirm(
+                window,
+                cx,
+                t!("Empty the Recycle Bin"),
+                t!("Delete everything in the Recycle Bin for good? It can't be restored afterwards."),
+                t!("Empty"),
+                true,
+                |_, cx| Self::explorer(cx, |e, cx| e.empty_recycle_bin(cx).detach()),
+            ),
+            MenuEvent::PasteInto { folder } => Self::explorer(cx, |e, cx| e.paste(Some(folder), cx).detach()),
+            MenuEvent::PasteQueued { folder } => Self::explorer(cx, |e, cx| e.paste_queued(Some(folder), cx).detach()),
+            MenuEvent::CopyToOtherPane { paths, moving } => Self::explorer(cx, |e, cx| {
+                e.copy_to_other_pane(*moving, Some(paths.clone()), cx).detach()
+            }),
+            MenuEvent::NewTextDocument => Self::new_of_kind(".txt", cx),
+            MenuEvent::NewOfKind { ext } => Self::new_of_kind(ext, cx),
+            MenuEvent::PreviousVersions { path } => Self::previous_versions(path.clone(), window, cx),
+            MenuEvent::History { folder } => dialogs::history::open(window, cx, folder),
+            MenuEvent::Locks { paths } => {
+                dialogs::locks::open(window, cx, paths.clone(), |exe, _, cx| Self::reveal(&exe, cx))
+            }
+            other => {
+                // The parts not built yet: named by the menu's own word for them until they are.
+                let name = format!("{other:?}");
+                let what = name.split([' ', '{', '(']).next().unwrap_or("That").to_string();
+                Self::not_yet(window, cx, what.into());
+            }
+        }
+    }
+
+    fn on_queue_event(
         &mut self,
-        _: &Entity<ThisPc>,
-        event: &ThisPcEvent,
+        _: &Entity<CopyQueue>,
+        event: &CopyQueueEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let what = match event {
-            ThisPcEvent::ContextMenu { .. } => t!("The item menu"),
-            ThisPcEvent::RecentChanges { .. } => t!("Recent changes"),
-            ThisPcEvent::FindDuplicates { .. } => t!("Finding duplicates"),
-            ThisPcEvent::DiskUsage { .. } => t!("The disk usage map"),
+        match event {
+            // The explorer hears the queue's events itself: it offers Undo, words what didn't go, reads folders again.
+            CopyQueueEvent::Finished(_) => {}
+            CopyQueueEvent::NotQueued { reason, .. } => window.push_notification(
+                Notification::error(reason.clone()).title(t!("Couldn't queue the copy")),
+                cx,
+            ),
+        }
+    }
+
+    /// A kind of the New menu by its extension (".txt"), or a plain new file when Windows doesn't list it.
+    fn new_of_kind(ext: &str, cx: &mut App) {
+        Self::explorer(cx, |e, cx| {
+            let wanted = if ext.starts_with('.') {
+                ext.to_string()
+            } else {
+                format!(".{ext}")
+            };
+            match e
+                .new_kinds(cx)
+                .iter()
+                .find(|kind| kind.ext.eq_ignore_ascii_case(&wanted))
+                .cloned()
+            {
+                Some(kind) => e.new_of_kind(kind, cx).detach(),
+                None => e.new_item(false, cx).detach(),
+            }
+        });
+    }
+
+    /// Previous versions of `path`, with what the dialog hands back done here.
+    fn previous_versions(path: String, window: &mut Window, cx: &mut App) {
+        dialogs::versions::open(window, cx, path, |request, window, cx| match request {
+            dialogs::versions::Request::OpenFolderInNewTab(folder) => {
+                Self::explorer(cx, |e, cx| e.open_in_new_tab(&folder, cx))
+            }
+            dialogs::versions::Request::Show { folder, select } => Self::explorer(cx, |e, cx| {
+                let options = explorer::NavOptions {
+                    select: Some(vec![select]),
+                    ..Default::default()
+                };
+                e.navigate(folder, options, cx)
+            }),
+            dialogs::versions::Request::CompareFolders { .. } | dialogs::versions::Request::CompareFiles { .. } => {
+                Self::not_yet(window, cx, t!("Comparing"))
+            }
+        });
+    }
+
+    /// Shows `path` in the active tab: its folder, with it selected (`revealInApp`).
+    fn reveal(path: &str, cx: &mut App) {
+        let folder = glint_model::paths::parent_path(path);
+        let target = explorer::LaunchTarget {
+            path: folder,
+            select: Some(path.to_string()),
         };
-        Self::not_yet(window, cx, what);
+        Self::explorer(cx, |e, cx| {
+            e.open_requested(vec![target], cx);
+        });
+    }
+
+    /// The active tab's selection, in the order the rows show it.
+    fn selection(cx: &App) -> Vec<String> {
+        let explorer = explorer::explorer(cx);
+        let explorer = explorer.read(cx);
+        let Some(tab) = explorer.active_tab() else {
+            return Vec::new();
+        };
+        tab.rows
+            .iter()
+            .filter(|entry| tab.selection.contains(&entry.path))
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
+    /// What to select once the selection is deleted, as Explorer does: the row after it, or else before it.
+    fn after_deleting(cx: &App) -> Option<String> {
+        let explorer = explorer::explorer(cx);
+        let explorer = explorer.read(cx);
+        let tab = explorer.active_tab()?;
+        let rows: Vec<&glint_model::entries::FileEntry> = tab.rows.iter().collect();
+        let last = rows.iter().rposition(|entry| tab.selection.contains(&entry.path))?;
+        let first = rows.iter().position(|entry| tab.selection.contains(&entry.path))?;
+        rows[last + 1..]
+            .iter()
+            .find(|entry| !tab.selection.contains(&entry.path))
+            .or_else(|| {
+                rows[..first]
+                    .iter()
+                    .rev()
+                    .find(|entry| !tab.selection.contains(&entry.path))
+            })
+            .map(|entry| entry.path.clone())
+    }
+
+    /// Delete (or Shift+Delete): to the Recycle Bin, or for good; in the Recycle Bin itself, for good after asking.
+    fn delete_selection(permanent: bool, cx: &mut App) {
+        let paths = Self::selection(cx);
+        if paths.is_empty() {
+            return;
+        }
+        let next = Self::after_deleting(cx);
+        Self::explorer(cx, |e, cx| {
+            if e.active_tab().is_some_and(|tab| tab.is_recycle_bin()) {
+                let entries: Vec<_> = e
+                    .active_tab()
+                    .map(|tab| {
+                        tab.rows
+                            .iter()
+                            .filter(|entry| paths.contains(&entry.path))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                e.purge_recycled(&entries, next.as_deref(), cx);
+            } else {
+                e.delete_paths(paths, permanent, next, cx).detach();
+            }
+        });
+    }
+
+    /// Ctrl+Shift+C: the selection's paths as text, one per line (the folder shown when nothing is selected).
+    fn copy_paths(window: &mut Window, cx: &mut App) {
+        let mut paths = Self::selection(cx);
+        if paths.is_empty() {
+            paths.push(explorer::explorer(cx).read(cx).current_path().to_string());
+        }
+        let count = paths.len();
+        cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\r\n")));
+        let message = if count == 1 {
+            t!("Copied the path")
+        } else {
+            t!("Copied {n} paths", n = count)
+        };
+        window.push_notification(Notification::success(message), cx);
+    }
+
+    /// Settings, with what it hands back (connecting a cloud, folder rules) answered here.
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = settings::open(window, cx);
+        self.settings_events = Some(
+            cx.subscribe_in(&view, window, |_, _, event: &SettingsEvent, window, cx| {
+                let what = match event {
+                    SettingsEvent::ConnectCloud => t!("Remote connections"),
+                    SettingsEvent::FolderRules => t!("Folder rules"),
+                };
+                Self::not_yet(window, cx, what);
+            }),
+        );
     }
 
     /// "Properties" on an item: Windows' own dialog, which runs beside the window.
@@ -475,6 +709,7 @@ impl Render for Workspace {
             .id("workspace")
             .key_context("Workspace")
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .bg(fill)
             .text_color(t.foreground)
@@ -536,17 +771,46 @@ impl Render for Workspace {
                     dialogs::drive_health::open(window, cx, None)
                 }),
             )
-            .on_action(cx.listener(|_, _: &actions::ShowShortcuts, window, cx| {
-                Self::not_yet(window, cx, t!("Keyboard shortcuts"))
+            .on_action(cx.listener(|_, _: &actions::ShowShortcuts, window, cx| dialogs::shortcuts::open(window, cx)))
+            .on_action(cx.listener(|_, action: &actions::ShowHistory, window, cx| {
+                dialogs::history::open(window, cx, &action.query)
+            }))
+            .on_action(cx.listener(|this, _: &actions::OpenSettings, window, cx| this.open_settings(window, cx)))
+            .on_action(cx.listener(|_, _: &actions::CommandPalette, window, cx| palette::toggle(window, cx)))
+            // File operations, on the active tab's selection.
+            .on_action(cx.listener(|_, _: &actions::Copy, _, cx| {
+                let paths = Self::selection(cx);
+                Self::explorer(cx, |e, cx| e.copy_to_clipboard(paths, false, cx).detach())
+            }))
+            .on_action(cx.listener(|_, _: &actions::Cut, _, cx| {
+                let paths = Self::selection(cx);
+                Self::explorer(cx, |e, cx| e.copy_to_clipboard(paths, true, cx).detach())
             }))
             .on_action(
-                cx.listener(|_, _: &actions::OpenSettings, window, cx| Self::not_yet(window, cx, t!("Settings"))),
+                cx.listener(|_, _: &actions::Paste, _, cx| Self::explorer(cx, |e, cx| e.paste(None, cx).detach())),
             )
-            .on_action(cx.listener(|_, _: &actions::CommandPalette, window, cx| {
-                Self::not_yet(window, cx, t!("The command palette"))
+            .on_action(cx.listener(|_, _: &actions::CopyPath, window, cx| Self::copy_paths(window, cx)))
+            .on_action(cx.listener(|_, _: &actions::Delete, _, cx| Self::delete_selection(false, cx)))
+            .on_action(cx.listener(|_, _: &actions::DeletePermanently, _, cx| Self::delete_selection(true, cx)))
+            .on_action(
+                cx.listener(|_, _: &actions::Rename, _, cx| Self::explorer(cx, |e, cx| e.begin_rename(None, cx))),
+            )
+            .on_action(
+                cx.listener(|_, _: &actions::BatchRename, window, cx| Self::not_yet(window, cx, t!("Batch rename"))),
+            )
+            .on_action(cx.listener(|_, _: &actions::Undo, _, cx| Self::explorer(cx, |e, cx| e.undo(None, cx).detach())))
+            .on_action(
+                cx.listener(|_, _: &actions::NewFolder, _, cx| {
+                    Self::explorer(cx, |e, cx| e.new_item(true, cx).detach())
+                }),
+            )
+            .on_action(cx.listener(|_, _: &actions::Properties, _, cx| {
+                let path = Self::selection(cx)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| explorer::explorer(cx).read(cx).current_path().to_string());
+                Self::show_properties(path, cx)
             }))
-            .on_action(cx.listener(|_, _: &actions::Rename, window, cx| Self::not_yet(window, cx, t!("Renaming"))))
-            .on_action(cx.listener(|_, _: &actions::Delete, window, cx| Self::not_yet(window, cx, t!("Deleting"))))
             .on_action(cx.listener(|_, _: &actions::QuickLook, window, cx| Self::not_yet(window, cx, t!("Quick Look"))))
             .on_action(cx.listener(|_, _: &actions::TogglePreview, window, cx| {
                 Self::not_yet(window, cx, t!("The preview pane"))
@@ -555,6 +819,9 @@ impl Render for Workspace {
             .child(self.toolbar(&t, cx))
             .child(div().flex_1().min_h_0().child(self.body(&t, cx)))
             .child(self.status.clone())
+            // Over everything: the copy queue, then any open menu above it.
+            .child(self.queue.clone())
+            .child(self.menus.clone())
     }
 }
 
@@ -637,7 +904,13 @@ mod tests {
         assert_eq!(role_of(&mut visual, "Places"), Some(Role::Navigation));
         assert_eq!(role_of(&mut visual, "Files"), Some(Role::ListBox));
         assert_eq!(role_of(&mut visual, "Status bar"), Some(Role::Status));
-        for icon_only in ["Back (Alt+Left)", "Forward (Alt+Right)", "Up (Alt+Up)", "New tab", "Drive health"] {
+        for icon_only in [
+            "Back (Alt+Left)",
+            "Forward (Alt+Right)",
+            "Up (Alt+Up)",
+            "New tab",
+            "Drive health",
+        ] {
             assert_eq!(role_of(&mut visual, icon_only), Some(Role::Button), "{icon_only}");
         }
         // The folder opened at start is in the list.

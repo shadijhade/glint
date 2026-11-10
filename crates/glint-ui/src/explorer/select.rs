@@ -12,8 +12,8 @@ use gpui_kit::Context;
 use std::sync::Arc;
 
 impl Explorer {
-    /// Replaces the active tab's selection with `selection`, if it differs, and tells everyone.
-    fn set_selection(&mut self, id: TabId, selection: Selection, cx: &mut Context<Self>) {
+    /// Replaces a tab's selection with `selection` and tells everyone.
+    pub(super) fn apply_selection(&mut self, id: TabId, selection: Selection, cx: &mut Context<Self>) {
         if !self.update_tab(id, |t| t.selection = selection) {
             return;
         }
@@ -30,7 +30,7 @@ impl Explorer {
             anchor: path.map(str::to_string),
             focus: path.map(str::to_string),
         };
-        self.set_selection(id, selection, cx);
+        self.apply_selection(id, selection, cx);
     }
 
     /// Ctrl-click: adds the item to the selection, or takes it out; the focus and the anchor go to it
@@ -49,7 +49,7 @@ impl Explorer {
             anchor: Some(path.to_string()),
             focus: Some(path.to_string()),
         };
-        self.set_selection(id, selection, cx);
+        self.apply_selection(id, selection, cx);
     }
 
     /// Shift-selection from the anchor to row `to`; with `add` (Ctrl+Shift) it extends the selection instead
@@ -82,7 +82,7 @@ impl Explorer {
             anchor: Some(origin.path.clone()),
             focus: Some(target.path.clone()),
         };
-        self.set_selection(id, selection, cx);
+        self.apply_selection(id, selection, cx);
     }
 
     /// Ctrl+A: every row (`selectAll`). The focus and anchor stay where they were.
@@ -96,7 +96,7 @@ impl Explorer {
             anchor: tab.selection.anchor.clone(),
             focus: tab.selection.focus.clone(),
         };
-        self.set_selection(id, selection, cx);
+        self.apply_selection(id, selection, cx);
     }
 
     /// What isn't selected, and only that, of `rows` (File Explorer's Invert selection) (`invertSelection`).
@@ -115,6 +115,6 @@ impl Explorer {
             anchor: tab.selection.anchor.clone(),
             focus: tab.selection.focus.clone(),
         };
-        self.set_selection(id, selection, cx);
+        self.apply_selection(id, selection, cx);
     }
 }

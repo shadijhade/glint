@@ -589,6 +589,11 @@ impl WindowsWindow {
             }
             unsafe { SetWindowPlacement(hwnd, &placement)? };
         } else {
+            // Glint: a window made hidden already has the size and place it was asked for, so it appears there
+            // whoever shows it (Glint shows its windows with ShowWindow, not only through `activate`).
+            let mut hidden = placement;
+            hidden.showCmd = SW_HIDE.0 as u32;
+            unsafe { SetWindowPlacement(hwnd, &hidden)? };
             this.state.initial_placement.set(Some(WindowOpenStatus {
                 placement,
                 state: WindowOpenState::Windowed,

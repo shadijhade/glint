@@ -65,6 +65,29 @@
 
 **Process lessons:** test binaries with full debug info (~1 GB PDB each, one per feature set and agent) filled drive C: mid-wave; dependencies are now built without debug info (`[profile.dev.package."*"]`), and the next waves give agents an absolute `CARGO_TARGET_DIR` (one agent built into `crates/target` from a relative path).
 
+## Wave 5: acting on files, and the first windows of their own: done 2026-11-10
+
+*18 agents, ~56 minutes, 4.0M tokens: 8 ports (7 Sonnet, 1 Haiku), 8 reviews, one fix round (the Haiku dialogs). Integrated by the coordinator: notices.rs words the operations (Undo buttons, the slow-work notice, the taskbar), dialogs::confirm asks before deleting for good, the workspace wires the menus, the copy queue, Settings, Ctrl+K, the dialogs and the file-operation actions, start-up wires Quick Search. 600 tests pass, clippy clean.*
+
+| Part | From | Model | Status |
+| :--- | :--- | :--- | :--- |
+| explorer part B (`ops.rs`, `undo.rs`, `clipboard.rs`, `queue.rs`, `recycle.rs`, `rename.rs`, `create.rs`, `view.rs`) | explorer.ts's file operations, undo, clipboard, recycle bin, new items; the views' asks | Sonnet | done: 30 new tests |
+| `menus` | Explorer.tsx's item, background and folder menus, Menu.tsx, Windows' own menu | Sonnet | done |
+| `copy_queue` | CopyQueue.tsx | Sonnet | done |
+| `palette` | CommandPalette.tsx | Sonnet | done |
+| `settings` | SettingsView.tsx (1,595 lines) | Sonnet | done (updater and logo pending) |
+| `quick_search` | QuickSearch.tsx, quick.rs | Sonnet | done |
+| dialogs `shortcuts`, `history` | ShortcutsDialog, HistoryDialog | Haiku | done after a fix round (partial: day grouping in UTC) |
+| dialogs `locks`, `versions` | LocksDialog, VersionsDialog | Sonnet | done |
+
+**Tried for real (debug build):** `GLINT_SELFTEST=ops:<folder>` (debug builds only, selftest.rs) drives the real app in a scratch folder without synthetic input: open, copy to the clipboard, paste (Windows names the copies "a - Copy.txt"), the rename box, rename, Undo of the rename. All pass; the clipboard and the test state are put back. Quick Search summoned by a second launch shows in 61 ms with the folders used most. The main window still restores its saved place. A first self-test run pressed Undo before the rename's step was recorded (a race in the test, not the app) and sent two test copies to the Recycle Bin; they were removed.
+
+**Vendored GPUI:** a window opened hidden now gets its requested size at once (Quick Search came up 1920 x 1010 before): VENDOR.md.
+
+**Wired to notices until their parts exist:** batch rename, copying out of archives, the many tool and sharing items of the menus (named by the menu's own word), comparing, connecting a cloud, folder rules, the "Open N files?" question (they open), the keyboard menu placed at the focused row (it opens a third of the way down).
+
+**Next for these parts:** the views use the explorer's new APIs (cut items dimmed, set_focus for Ctrl+arrows, set_selection for the marquee, set_editing_address, eject through the explorer, the focused row's bounds for the keyboard menu); Settings' "shortcut taken" hint (set_quick_taken from the tray's error); local dates in the history and versions dialogs (glint-model needs day, time and date formats); the quit path waiting for `busy_count()`; `reload_recycle_bins` when the window regains focus.
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).

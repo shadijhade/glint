@@ -493,4 +493,24 @@ pub enum ExplorerEvent {
     /// Something the app keeps between runs changed: the last folder, the session, the visits or a folder's
     /// own view. The persistence module saves [`Explorer::memory`](super::Explorer::memory).
     MemoryChanged,
+
+    // ---- File operations (ops_types.rs says what each carries) ----
+    /// What a file operation has to tell the person: done (with Undo offered), failed, nothing to do.
+    Operation(super::OpNotice),
+    /// Slow work started showing or ended: the "Copying 3 items…" toast and the taskbar button.
+    Busy(super::BusyEvent),
+    /// A question to ask before acting; the answer calls a method (see [`Ask`](super::Ask)).
+    Ask(super::Ask),
+    /// Work on files in an archive or on a remote connection, for the archive part.
+    FromArchive(super::ArchiveJob),
+    /// F2 on several items: the batch rename dialog opens with these paths (batch rename part).
+    BatchRename(Vec<String>),
+    /// The items cut to the clipboard changed (they show dimmed until pasted): [`Explorer::cut_paths`](super::Explorer::cut_paths).
+    CutChanged,
+    /// What Ctrl+Z would take back changed: [`Explorer::next_undo`](super::Explorer::next_undo).
+    UndoChanged,
+    /// A copy or move went to the copy queue: show its panel.
+    QueueOpened,
+    /// The New menu's kinds were read: [`Explorer::new_kinds`](super::Explorer::new_kinds).
+    NewKindsChanged,
 }
