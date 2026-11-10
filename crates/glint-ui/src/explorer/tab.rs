@@ -7,7 +7,7 @@
 use super::rows::{RowSpec, Rows};
 use super::types::*;
 use glint_model::columns::{ColumnId, FolderKind};
-use glint_model::entries::{FileEntry, Sort, SortKey};
+use glint_model::entries::{FileEntry, GitMarks, Sort, SortKey};
 use glint_model::groups::GroupBy;
 use glint_model::paths::THIS_PC;
 use std::collections::HashSet;
@@ -170,6 +170,11 @@ pub struct Tab {
     /// The listing sorted, narrowed and grouped: what the file list draws.
     pub rows: Rows,
 
+    /// What Git says of the folder's items, by lowercase name (`Explorer::set_git_marks`): the `git:` filter and
+    /// Group by Git read it. `None` outside a repository.
+    pub(super) git: Option<Arc<GitMarks>>,
+    /// The folder those marks were given for: once the tab is in another folder they are not its marks.
+    pub(super) git_for: String,
     pub(super) rows_spec: Option<RowSpec>,
     /// The entries `rows` were built from, to tell a new listing from a new sort.
     pub(super) rows_for: Option<Arc<[FileEntry]>>,
@@ -213,6 +218,8 @@ impl Tab {
             columns: Vec::new(),
             kind: FolderKind::General,
             rows: Rows::empty(),
+            git: None,
+            git_for: String::new(),
             rows_spec: None,
             rows_for: None,
             rows_seq: 0,
@@ -221,6 +228,11 @@ impl Tab {
             nav_started: None,
             rereading: None,
         }
+    }
+
+    /// What Git says of the folder's items (lowercase name to mark), as the window last told the explorer.
+    pub fn git_marks(&self) -> Option<&Arc<GitMarks>> {
+        self.git.as_ref()
     }
 
     /// Whether `rows` were built from exactly these entries.

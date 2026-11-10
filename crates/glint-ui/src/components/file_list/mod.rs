@@ -36,6 +36,8 @@
 //! in the icon cell.
 
 mod cells;
+#[cfg(test)]
+pub(crate) mod fake_git;
 mod header;
 mod incoming;
 mod layout;
@@ -53,6 +55,7 @@ pub use rename::{selection_end, INVALID_NAME_CHARS};
 
 use crate::actions;
 use crate::components::file_grid::thumbnail::{self, Thumbnails};
+use crate::components::git;
 use crate::explorer::{
     self, Explorer, ExplorerEvent, FindRun, LoadState, NavOptions, NoAccess, Rows, Selection, TabId, ViewMode,
 };
@@ -60,7 +63,7 @@ use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
 use crate::{state, t};
 use glint_model::columns::{ColumnId, FolderKind, GridTrack};
-use glint_model::entries::{is_archive_file, is_recycled, FileEntry, Sort};
+use glint_model::entries::{is_archive_file, is_recycled, FileEntry, GitMarks, Sort};
 use glint_model::grid::grid_move;
 use glint_model::groups::GroupBy;
 use glint_model::paths::{is_gallery, is_recent, same_path, THIS_PC};
@@ -69,7 +72,7 @@ use incoming::DropAt;
 use pointer::{layout_rows, Marquee};
 use rename::RenameBox;
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -210,6 +213,12 @@ pub(crate) struct TabView {
     pub show_hidden: bool,
     /// The folder has a view of its own (columns, sort) that "like other folders again" gives up.
     pub own_view: bool,
+    /// The folder's subfolders measured by "Folder sizes" (none for search results), and whether that is still
+    /// running.
+    pub sizes: Option<Arc<HashMap<String, u64>>>,
+    pub measuring: bool,
+    /// What Git says of the folder's items (none outside a repository, and for search results).
+    pub git: Option<Arc<GitMarks>>,
 }
 
 /// Says where an item is, in a list of items from many folders.
@@ -227,6 +236,12 @@ pub(crate) struct Frame {
     pub recycled: bool,
     pub where_of: Option<WhereOf>,
     pub max_size: u64,
+    /// The open folder's subfolders measured by "Folder sizes", by name (`sizes`); none for search results.
+    pub sizes: Option<Arc<HashMap<String, u64>>>,
+    /// The folder's sizes are being measured now: a folder with none yet says "…".
+    pub measuring: bool,
+    /// What Git says of the folder's items (lowercase name to mark): a pill after the name, ignored ones dimmed.
+    pub git: Option<Arc<GitMarks>>,
     pub flashed: Arc<HashSet<String>>,
     pub now: i64,
     /// Items cut to the clipboard: dimmed until pasted (`cut`).
@@ -321,6 +336,7 @@ impl FileList {
                         | ExplorerEvent::ListingChanged { .. }
                         | ExplorerEvent::TabsChanged
                         | ExplorerEvent::ViewChanged(_)
+                        | ExplorerEvent::SizesChanged { .. }
                 ) {
                     this.dirty = true;
                 }
@@ -339,6 +355,10 @@ impl FileList {
                 this.explorer.update(cx, |explorer, cx| explorer.focus_pane(pane, cx));
             }),
         ];
+        // Git's marks arrived or changed: the pills after the names, and the faded ignored items, are drawn again.
+        if let Some(model) = git::try_shared(cx) {
+            subscriptions.push(cx.observe(&model, |_, _, cx| cx.notify()));
+        }
         // The thumbnails shown are let go of when the list goes.
         let service = thumbs.clone();
         subscriptions.push(cx.on_release(move |_, cx| {
@@ -362,6 +382,9 @@ impl FileList {
                 recycled: false,
                 where_of: None,
                 max_size: 0,
+                sizes: None,
+                measuring: false,
+                git: None,
                 flashed: Arc::new(HashSet::new()),
                 now: 0,
                 cut: Arc::new(HashSet::new()),
@@ -435,6 +458,8 @@ impl FileList {
         #[cfg(test)]
         let renaming = renaming.or_else(|| self.pretend_renaming.clone());
         let settings = state::settings(cx);
+        // The sizes "Folder sizes" measured for this folder; a search's results come from many.
+        let sizes = explorer.size_run(&tab.path).filter(|_| plain);
         let own_view = settings.per_folder_views
             && plain
             && tab.path != THIS_PC
@@ -468,6 +493,9 @@ impl FileList {
             inactive: explorer.is_dual() && explorer.active_pane() != self.pane,
             show_hidden: settings.show_hidden,
             own_view,
+            sizes: sizes.map(|run| run.sizes.clone()),
+            measuring: sizes.is_some_and(|run| run.running),
+            git: marks_in(cx, tab.id, &tab.path).filter(|_| plain),
         })
     }
 
@@ -503,7 +531,7 @@ impl FileList {
         }
         if self.dirty {
             self.dirty = false;
-            self.shown.max_size = cells::biggest(&view.rows, view.located);
+            self.shown.max_size = cells::biggest(&view.rows, view.located, view.sizes.as_deref());
             self.shown.focus = None;
             if view.has_listing {
                 // Timed from the click to the list on screen, and the first folder of the run for the bench
@@ -980,6 +1008,16 @@ impl FileList {
     }
 }
 
+/// What Git says of the items of `tab`'s folder `path`: not the marks it still holds of the folder the tab was in
+/// before, while the new one is being looked at.
+fn marks_in(cx: &App, tab: TabId, path: &str) -> Option<Arc<GitMarks>> {
+    let run = git::try_shared(cx)?.read(cx).run(tab)?;
+    if !same_path(&run.folder, path) {
+        return None;
+    }
+    run.view.as_ref().map(|view| view.marks.clone())
+}
+
 impl Focusable for FileList {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -1022,6 +1060,9 @@ impl Render for FileList {
                 .located
                 .then(|| Box::new(layout::relative_to(&view.scope)) as WhereOf),
             max_size: self.shown.max_size,
+            sizes: view.sizes.clone(),
+            measuring: view.measuring,
+            git: view.git.clone(),
             flashed,
             now: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

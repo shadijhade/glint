@@ -7,7 +7,7 @@
 //! here touches GPUI, so the text and the numbers are tested on their own.
 
 use crate::components::file_grid::thumbnail::ThumbRun;
-use crate::explorer::{Engine, Tab, TabId};
+use crate::explorer::{Engine, SizeRun, Tab, TabId};
 use crate::t;
 use glint_model::entries::FileEntry;
 use glint_model::file_types::{group_filter, type_group, TypeGroup, TYPE_GROUPS};
@@ -33,7 +33,7 @@ pub struct Category {
     pub group: TypeGroup,
     /// Items of this kind in the sample.
     pub count: usize,
-    /// Bytes of the files of this kind (folders count nothing until the folder sizes part is ported).
+    /// Bytes of the files of this kind (a folder counts the size "Folder sizes" measured for it, else nothing).
     pub bytes: u64,
     /// The search box text that shows only this kind; empty when there is none (other files).
     pub query: String,
@@ -41,11 +41,22 @@ pub struct Category {
 
 /// The breakdown of a folder's first [`SAMPLE`] entries, most common kind first. Ties keep the order the kinds
 /// first appeared in, as the TypeScript's sort (stable) did.
+#[cfg(test)]
 pub fn spectrum(entries: &[FileEntry]) -> Vec<Category> {
+    spectrum_sized(entries, None)
+}
+
+/// [`spectrum`], with the folder sizes measured for the folder: a folder weighs what was measured for it, or nothing
+/// (`sizes?.sizes.get(e.name) ?? 0`).
+pub fn spectrum_sized(entries: &[FileEntry], sizes: Option<&SizeRun>) -> Vec<Category> {
     let mut out: Vec<Category> = Vec::new();
     for entry in entries.iter().take(SAMPLE) {
         let group = if entry.dir { FOLDERS } else { *type_group(entry) };
-        let bytes = if entry.dir { 0 } else { entry.size };
+        let bytes = if entry.dir {
+            sizes.and_then(|run| run.size_of(&entry.name)).unwrap_or(0)
+        } else {
+            entry.size
+        };
         match out.iter_mut().find(|c| c.group.name == group.name) {
             Some(category) => {
                 category.count += 1;
@@ -95,6 +106,28 @@ pub struct ArchiveInfo {
     pub read_ms: f64,
 }
 
+/// How a measuring of the folder's sizes went, once it is done (`sizes && !sizes.running`): who measured, how much
+/// there was in the folder, and how long it took.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Sized {
+    /// "index" or "pdu", or an archive's format: never translated.
+    pub engine: String,
+    pub total: u64,
+    pub elapsed: f64,
+}
+
+impl Sized {
+    /// `{engine} sized {size} in {time}`, as the bar says it (`sized`).
+    pub fn words(&self) -> SharedString {
+        t!(
+            "{engine} sized {size} in {time}",
+            engine = self.engine.clone(),
+            size = format_size(self.total),
+            time = format_duration(self.elapsed)
+        )
+    }
+}
+
 /// What the bar shows about the active tab. Built by [`Summary::of`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Summary {
@@ -132,6 +165,8 @@ pub struct Summary {
     pub filter: String,
     /// The folder's breakdown by kind (empty without a listing).
     pub spectrum: Vec<Category>,
+    /// The folder's sizes, measured and done; `None` while they are being measured or when they never were.
+    pub sized: Option<Sized>,
     /// The tab's lane in the thumbnail service (`tab3`): the bar reads that tab's burst of thumbnails by it.
     pub lane: String,
     /// The scope the grid times its thumbnails under (`dir:C:\a:grid`) while the tab shows the grid; empty in
@@ -141,7 +176,13 @@ pub struct Summary {
 
 impl Summary {
     /// The summary of `tab` (`None` when there is no tab), with this PC's `drives`.
+    #[cfg(test)]
     pub fn of(tab: Option<&Tab>, drives: usize) -> Summary {
+        Summary::of_sized(tab, drives, None)
+    }
+
+    /// [`Summary::of`] with the folder sizes measured for the tab's folder (`Explorer::size_run`).
+    pub fn of_sized(tab: Option<&Tab>, drives: usize, sizes: Option<&SizeRun>) -> Summary {
         let Some(tab) = tab else {
             return Summary {
                 drives,
@@ -178,6 +219,11 @@ impl Summary {
             find,
             filter: tab.filter.clone(),
             spectrum: Vec::new(),
+            sized: sizes.and_then(|run| run.sized()).map(|line| Sized {
+                engine: line.engine.to_string(),
+                total: line.total,
+                elapsed: line.elapsed,
+            }),
             lane: tab.id.to_string(),
             thumbs_scope: if matches!(tab.view, ViewMode::Grid) {
                 format!("{}:grid", tab.view_key())
@@ -195,7 +241,7 @@ impl Summary {
                 entries: archive.entries as usize,
                 read_ms: archive.read_ms,
             });
-            summary.spectrum = spectrum(&listing.entries);
+            summary.spectrum = spectrum_sized(&listing.entries, sizes);
         }
         summary
     }
@@ -307,8 +353,8 @@ pub struct Stage {
     pub ms: f64,
 }
 
-/// The stages of showing the folder: reading it, and getting it on screen (`telemetryStages`). The folder sizes
-/// and Git status stages come with their parts; the thumbnails' stage is [`thumbs_stage`].
+/// The stages of showing the folder: reading it, getting it on screen, and measuring its folders (`telemetryStages`).
+/// The Git status stage is `git::stage` and the thumbnails' [`thumbs_stage`]; the bar adds them after these.
 pub fn stages(s: &Summary) -> Vec<Stage> {
     let mut out = Vec::new();
     if let (Some(ms), Some(engine)) = (s.read_ms, s.engine) {
@@ -328,6 +374,13 @@ pub fn stages(s: &Summary) -> Vec<Stage> {
             label: t!("On screen"),
             detail: items(s.shown),
             ms: s.shown_in,
+        });
+    }
+    if let Some(sized) = &s.sized {
+        out.push(Stage {
+            label: t!("Folder sizes ({engine})", engine = sized.engine.clone()),
+            detail: format_size(sized.total).into(),
+            ms: sized.elapsed,
         });
     }
     out
@@ -461,6 +514,8 @@ pub enum Work {
     Disk {
         lead: SharedString,
         shown: SharedString,
+        /// "index sized 1.2 GB in 3 ms" once the folder sizes are measured (the bar shows it from the xl width).
+        sized: Option<SharedString>,
         title: SharedString,
     },
 }
@@ -534,15 +589,25 @@ impl Work {
                     shown = shown_in
                 ),
             },
-            _ => Work::Disk {
-                lead: t!("read in {time} ·", time = read.clone()),
-                shown,
-                title: t!(
-                    "Glint read this folder in {time}; it was on screen {shown} after the click. Click for what's in it.",
-                    time = read,
-                    shown = shown_in
-                ),
-            },
+            _ => {
+                let sized = s.sized.as_ref().map(Sized::words);
+                // A narrow bar keeps the time to screen and says the rest on hover, the sizes too.
+                let and_sized = sized
+                    .as_ref()
+                    .map(|sized| t!(" The {sized}.", sized = sized.clone()).to_string())
+                    .unwrap_or_default();
+                Work::Disk {
+                    lead: t!("read in {time} ·", time = read.clone()),
+                    shown,
+                    sized,
+                    title: t!(
+                        "Glint read this folder in {time}; it was on screen {shown} after the click.{sized} Click for what's in it.",
+                        time = read,
+                        shown = shown_in,
+                        sized = and_sized
+                    ),
+                }
+            }
         }
     }
 }
@@ -621,7 +686,7 @@ mod tests {
         assert_eq!(parts[0].query, group_filter(&parts[0].group));
         let folders = parts.iter().find(|c| c.group == FOLDERS).expect("folders are a kind");
         assert_eq!(folders.query, "folder:");
-        assert_eq!(folders.bytes, 0, "folder sizes are not counted yet");
+        assert_eq!(folders.bytes, 0, "a folder nobody measured weighs nothing here");
         let images = parts.iter().find(|c| c.group == TYPE_GROUPS.images).expect("pictures");
         assert_eq!(images.count, 1);
         assert!(images.query.starts_with("ext:"));
@@ -706,10 +771,53 @@ mod tests {
         assert_eq!(stages(&s)[0].label, "Folder read");
         assert_eq!(stages(&s)[0].detail, "from the drive");
         match Work::of(&s) {
-            Work::Disk { lead, shown, title } => {
+            Work::Disk { lead, shown, title, .. } => {
                 assert_eq!(lead, "read in 1.5 ms ·");
                 assert_eq!(shown, "shown in 0.0 ms");
                 assert!(title.starts_with("Glint read this folder in 1.5 ms;"), "{title}");
+            }
+            other => panic!("expected a disk line, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn measured_folders_weigh_what_was_measured_in_the_breakdown() {
+        let _guard = testing::lock();
+        let tab = tab_with(vec![folder("C:\\a", "sub"), file("C:\\a", "a.txt", 100, 1)]);
+        let mut s = Summary::of(Some(&tab), 0);
+        assert_eq!(s.sized, None, "never measured");
+        let sized = Sized {
+            engine: "index".into(),
+            total: 1_288_490_188,
+            elapsed: 3.0,
+        };
+        s.sized = Some(sized.clone());
+        assert_eq!(sized.words(), "index sized 1.2 GB in 3.0 ms");
+        let labels: Vec<_> = stages(&s)
+            .iter()
+            .map(|stage| (stage.label.to_string(), stage.detail.to_string()))
+            .collect();
+        assert_eq!(
+            labels.last(),
+            Some(&("Folder sizes (index)".to_string(), "1.2 GB".to_string())),
+            "{labels:?}"
+        );
+        match Work::of(&s) {
+            Work::Disk { sized, title, .. } => {
+                assert_eq!(sized.as_deref(), Some("index sized 1.2 GB in 3.0 ms"));
+                assert!(
+                    title.contains("after the click. The index sized 1.2 GB in 3.0 ms. Click for what's in it."),
+                    "{title}"
+                );
+            }
+            other => panic!("expected a disk line, got {other:?}"),
+        }
+        // Not measured: no stage, no words, and the hover text as it was.
+        s.sized = None;
+        assert_eq!(stages(&s).len(), 1);
+        match Work::of(&s) {
+            Work::Disk { sized: None, title, .. } => {
+                assert!(title.ends_with("after the click. Click for what's in it."), "{title}")
             }
             other => panic!("expected a disk line, got {other:?}"),
         }

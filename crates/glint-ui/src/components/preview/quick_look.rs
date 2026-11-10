@@ -162,9 +162,9 @@ impl QuickLook {
             .update(cx, |explorer, cx| explorer.select_only(Some(&next.path), cx));
     }
 
-    // PORT ME(previewers): Page Down and Page Up scroll what the frame scrolls itself (cards, a tall body). The
-    // text, Markdown, hex and data views scroll inside themselves; they need a `page(down)` the frame can call
-    // (the TypeScript scrolled the deepest scroller in the overlay).
+    // Page Down and Page Up: the frame scrolls what it scrolls itself (cards, a tall body), and hands the page to
+    // the previewers that scroll inside themselves (hex, data, tables, notebooks, program headers). The text and
+    // Markdown previewers and the small previews take the keys when they have the focus.
     fn scroll(&mut self, down: bool, cx: &mut Context<Self>) {
         self.view.update(cx, |view, cx| {
             view.page(down, cx);

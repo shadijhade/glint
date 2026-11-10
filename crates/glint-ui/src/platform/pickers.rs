@@ -43,8 +43,9 @@ use windows::Win32::UI::Shell::{
     FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
 };
 
-/// A future the caller awaits on the UI thread (so it needn't be `Send`).
-pub type Fut<T> = Pin<Box<dyn Future<Output = T>>>;
+/// A future of the choice. It holds only the channel the posted picker answers on, so it is `Send`: callers
+/// whose futures must be (Settings' backend) take it as it is.
+pub type Fut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 // ---- What to ask for -------------------------------------------------------------------------------------------
 
