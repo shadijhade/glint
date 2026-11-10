@@ -235,6 +235,17 @@ Its brief is in commit 86c5c9b (`docs/gpui/ANTIGRAVITY.md`). Those tasks come ba
 - **AG-1, the parity audit:** done here instead, by scripts first. They list the strings and commands the TypeScript app has that the GPUI app lacks.
 - **Arabic:** still waits on the user.
 
+**Parity, first pass by script (2026-11-10):** of the 271 Tauri commands the TypeScript app invokes, glint-ui names all but 29.
+
+- **Replaced on purpose (16):** the native preview's placing, `drag_under`, `app_ready`, `print_ready`, `snap_place`, `accent_colors`, `take_launch_targets`, `list_dir_shared`, `open_main_settings`, `clipboard_text`, `markdown_html`, and the queue commands (the copy queue calls `queue::` by other names).
+- **Still to wire:**
+  - Compare folders: `compare_folders` and `cancel_compare`, from Previous versions and the dual pane.
+  - `index_update`: the service's update button.
+  - `tags_all`: the tag suggestions.
+  - `cancel_archive_read`.
+  - `gallery_set_folders`: check what find-buttons does.
+- **Not settled by this pass:** the ~99 `PORT ME` notes in glint-ui. Each needs a look to tell stale from open; that's a wave 14 task.
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).
