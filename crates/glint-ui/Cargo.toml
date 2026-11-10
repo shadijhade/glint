@@ -14,6 +14,24 @@ name = "glint_ui"
 # wave its features go and the modules are always built. (Wave 3's went with its integration.)
 [features]
 default = []
+# Wave 8.
+text-search = []
+disk-usage = []
+dialog-compare-files = []
+dialog-media = []
+dialog-media-tools = []
+dialog-song = []
+dialog-metadata = []
+dialog-convert = []
+dialog-doc-convert = []
+dialog-shrink = []
+dialog-pdf = []
+dialog-data-tools = []
+dialog-share = []
+dialog-nearby = []
+dialog-remote = []
+dialog-cloud-setup = []
+dialog-backup = []
 
 [dependencies]
 # syntect: syntax highlighting for the text and code previews (pure Rust: fancy-regex, two-face's grammars).
