@@ -28,6 +28,8 @@ pub mod git;
 pub mod menus;
 /// Ctrl+K: commands, folders by frecency, the calculator (CommandPalette.tsx, History.tsx).
 pub mod palette;
+/// The search bar and the closed-folder bar over each pane (wave 15).
+pub mod pane_bars;
 /// The preview pane and Quick Look.
 pub mod preview;
 /// The Quick Search window: the shortcut's and the tray's search (QuickSearch.tsx).
