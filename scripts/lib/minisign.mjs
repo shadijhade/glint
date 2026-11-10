@@ -10,7 +10,7 @@
 //     signature and that comment. The trusted comment binds `timestamp`, `file` and `version`, which is how
 //     the app's updater (requireSignedVersion) and the instant search service know what a signature is for.
 //
-// scripts/lib/minisign-compare.test.mjs proves the result is what `tauri signer sign` writes. The signature
+// scripts/lib/minisign-compare.test.mjs proves the result is what `tauri signer sign` wrote, against vectors stored in scripts/lib/test-vectors/ (no Tauri CLI needed). The signature
 // bytes themselves differ from run to run in Tauri's (its Rust signer adds random noise to Ed25519's nonce);
 // ours uses the plain RFC 8032 nonce, the same every time, and any verifier accepts both alike.
 //
@@ -114,7 +114,7 @@ export function parsePublicKey(text) {
     return bytes.length === 42 && bytes.subarray(0, 2).toString() === "Ed" ? { keyId: bytes.subarray(2, 10), key: bytes.subarray(10) } : null;
 }
 
-/** The public key of an unlocked key, in the form tauri.conf.json's plugins.updater.pubkey (and update-pubkey.txt) holds it. */
+/** The public key of an unlocked key, in the form update-pubkey.txt holds it (and the old Tauri app's tauri.conf.json plugins.updater.pubkey did). */
 export function publicKeyText(unlocked) {
     const bytes = Buffer.concat([Buffer.from("Ed"), unlocked.keyId, unlocked.publicKey]);
     const id = Buffer.from(unlocked.keyId).reverse().toString("hex").toUpperCase();
