@@ -37,8 +37,9 @@ async function download(url) {
 }
 
 // winget: what `wingetcreate new` writes, as a version, an installer and a default-locale manifest.
-// The installer is Tauri's NSIS setup (per user, /S for silent); AppsAndFeaturesEntries match what it
-// registers (the uninstall key is named after productName, the publisher comes from the identifier).
+// The installer is Glint's NSIS setup (crates/glint/installer: per user, the Tauri build's keys and names, so
+// it updates those installs in place). Its own switches: /S is silent, /P passive (no pages, a progress bar);
+// AppsAndFeaturesEntries match what it registers (the Uninstall key is named Glint, the publisher is shado).
 const SCHEMA = "1.10.0";
 const header = (type) => `# yaml-language-server: $schema=https://aka.ms/winget-manifest.${type}.${SCHEMA}.schema.json\n\nPackageIdentifier: ${ID}\nPackageVersion: ${version}\n`;
 const footer = (type) => `ManifestType: ${type}\nManifestVersion: ${SCHEMA}\n`;
@@ -50,6 +51,9 @@ InstallModes:
 - interactive
 - silent
 - silentWithProgress
+InstallerSwitches:
+  Silent: /S
+  SilentWithProgress: /P
 UpgradeBehavior: install
 AppsAndFeaturesEntries:
 - DisplayName: Glint
@@ -91,14 +95,14 @@ ${footer("defaultLocale")}`,
 };
 
 // Scoop: extracts the NSIS setup with 7-Zip instead of running it, which also lays out the installer's own
-// files ($PLUGINSDIR, and WebView2's bootstrapper under $TEMP), so they're deleted. Without the setup's
-// uninstall.exe the app knows it didn't come from the installer and leaves updating to `scoop update` (see
-// lib.rs).
+// files ($PLUGINSDIR, NSIS's plug-in folder, and the 0.9 setups' $TEMP, WebView2's bootstrapper), so they're deleted. Without the setup's
+// uninstall.exe the app knows it didn't come from the installer and leaves updating to `scoop update`
+// (installed_by_setup in crates/glint-core/src/lib.rs).
 // Uninstalling it (not updating: Scoop's $cmd tells them apart) does what the setup's uninstaller does.
 //
 // File Explorer's entries: a Scoop copy adds them running Glint through the app's `current` link, which
-// updates keep (src-tauri/src/verbs.rs). Uninstalling takes them out as GLINT_REMOVE_EXPLORER_VERBS does
-// for the setup's copies (src-tauri/installer/hooks.nsh); verbs.rs tests it against what turning the
+// updates keep (crates/glint-core/src/verbs.rs). Uninstalling takes them out as GLINT_REMOVE_EXPLORER_VERBS does
+// for the setup's copies (crates/glint/installer/hooks.nsh); verbs.rs tests it against what turning the
 // options on adds.
 const removeExplorerVerbs = String.raw`
 # File Explorer's 'Open in Glint', opening folders in Glint by default and Win+E (Settings > Files) run Glint through 'current'.

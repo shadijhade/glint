@@ -2080,7 +2080,6 @@ mod tests {
     fn every_icon_the_dialog_draws_is_in_the_embedded_assets() {
         use gpui_kit::assets::AllAssets;
         use gpui_kit::AssetSource as _;
-        // PORT ME(coordinator): add these to kit.rs' list too.
         for name in [
             IconName::Regex,
             IconName::RotateCcw,

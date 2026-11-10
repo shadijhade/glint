@@ -17,17 +17,45 @@ const HOME: &str = "C:\\Users\\me";
 const DOCS: &str = "C:\\Users\\me\\Documents";
 
 /// What the fake sources know, and what they were asked.
-#[derive(Default)]
 struct Fakes {
     folders: Mutex<HashMap<String, Vec<Subfolder>>>,
     asked: Mutex<Vec<(String, bool)>>,
     cloud: Mutex<Option<Space>>,
     count: Mutex<Option<String>>,
+    /// The tags instant search lists (an error where it is off), and how many times it was asked.
+    tags: Mutex<Result<Vec<(String, u64)>, String>>,
+    tags_asked: Mutex<usize>,
+}
+
+impl Default for Fakes {
+    fn default() -> Self {
+        Fakes {
+            folders: Mutex::default(),
+            asked: Mutex::default(),
+            cloud: Mutex::default(),
+            count: Mutex::default(),
+            tags: Mutex::new(Err("Instant search is off".to_string())),
+            tags_asked: Mutex::default(),
+        }
+    }
+}
+
+/// glint-core's tags, as the tests need them: nothing has any tags, and setting them works.
+struct NoTags;
+
+impl tags::Backend for NoTags {
+    fn read(&self, paths: Vec<String>) -> tags::Fut<Vec<Vec<String>>> {
+        Box::pin(async move { Ok(paths.iter().map(|_| Vec::new()).collect()) })
+    }
+
+    fn set(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> tags::Fut<Vec<(String, String)>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 
 impl Fakes {
     fn sources(self: &Arc<Self>) -> Sources {
-        let (a, b, c) = (self.clone(), self.clone(), self.clone());
+        let (a, b, c, d) = (self.clone(), self.clone(), self.clone(), self.clone());
         Sources {
             subfolders: Arc::new(move |path, hidden| {
                 let a = a.clone();
@@ -46,6 +74,13 @@ impl Fakes {
             saved_count: Arc::new(move |_, _| {
                 let c = c.clone();
                 Box::pin(async move { Ok(c.count.lock().unwrap().clone()) })
+            }),
+            tags: Arc::new(move || {
+                let d = d.clone();
+                Box::pin(async move {
+                    *d.tags_asked.lock().unwrap() += 1;
+                    d.tags.lock().unwrap().clone()
+                })
             }),
         }
     }
@@ -143,6 +178,7 @@ fn world(cx: &mut TestAppContext, name: &str) -> World {
     cx.update(|cx| {
         init_with(cx, disk.source());
         persistence::init_at(cx, state_file(name));
+        tags::init_with(cx, Arc::new(NoTags));
     });
     let fakes = Arc::new(Fakes::default());
     fakes.set(HOME, &[("Documents", Some(true)), ("Pictures", Some(false))]);
@@ -224,6 +260,7 @@ impl World {
                 Row::Folder(f) => format!("{}> {}", " ".repeat(f.depth), f.name),
                 Row::Note { .. } => "!".to_string(),
                 Row::Search(s) => format!("? {}", s.query),
+                Row::Tag(t) => format!("# {}", t.name),
                 Row::AddConnection => "+ add".to_string(),
             })
             .collect()
@@ -616,6 +653,117 @@ fn a_folder_that_cannot_be_read_says_so_and_a_search_reports_its_count(cx: &mut 
     assert!(w
         .cx
         .update(|_, cx| persistence::app(cx).unwrap().saved_searches.is_empty()));
+}
+
+impl World {
+    /// The tag rows, in order, with their counts.
+    fn tag_rows(&mut self) -> Vec<(String, Option<u64>)> {
+        self.rows()
+            .iter()
+            .filter_map(|r| match r {
+                Row::Tag(t) => Some((t.name.clone(), t.count)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[gpui_kit::test]
+fn the_tags_instant_search_lists_show_with_their_counts_and_a_click_finds_what_has_one(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "tags-indexed");
+    // 15 tags in the index, most used first: the sidebar shows twelve, with how many items have each.
+    let all: Vec<(String, u64)> = (0..15).map(|n| (format!("tag{n:02}"), 100 - n)).collect();
+    *w.fakes.tags.lock().unwrap() = Ok(all);
+    w.sidebar.update(&mut w.cx, |s, cx| s.read_tags(cx));
+    w.settle(|w| w.tag_rows().len() == 12);
+    assert_eq!(w.tag_rows()[0], ("tag00".to_string(), Some(100)));
+    assert_eq!(w.tag_rows()[11], ("tag11".to_string(), Some(89)));
+    // They sit between Pinned and Searches' place: after Quick access's places and before This PC.
+    let names = w.names();
+    let tags_at = names.iter().position(|n| n == "# Tags").expect("a Tags title");
+    assert_eq!(names[tags_at + 1], "# tag00");
+    assert!(names.iter().position(|n| n == "# This PC").unwrap() > tags_at);
+    // Named for a screen reader: the tag, and what a click does with how many have it.
+    assert_eq!(w.role_of("Tags"), Some(Role::Heading));
+    assert_eq!(w.role_of("tag00"), Some(Role::Button));
+    // A click finds what has it, on every drive: a saved search of `tag:"name"` at This PC.
+    w.click("tag03");
+    assert_eq!(
+        w.events.borrow().last(),
+        Some(&SidebarEvent::RunSavedSearch(SavedSearch {
+            query: "tag:\"tag03\"".into(),
+            folder: THIS_PC.into(),
+        }))
+    );
+    // The keyboard does the same: Enter on the row it is on.
+    w.focus();
+    let at = w
+        .rows()
+        .iter()
+        .position(|r| matches!(r, Row::Tag(t) if t.name == "tag05"))
+        .unwrap();
+    w.sidebar.update(&mut w.cx, |s, cx| s.set_cursor(Some(at), cx));
+    w.press("enter");
+    assert_eq!(
+        w.events.borrow().last(),
+        Some(&SidebarEvent::RunSavedSearch(tag_search("tag05")))
+    );
+}
+
+#[gpui_kit::test]
+fn with_no_tags_from_instant_search_the_recent_ones_show_and_setting_a_tag_adds_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "tags-recent");
+    // Instant search is off (its answer is an error) and nothing was tagged yet: no section at all.
+    w.cx.run_until_parked();
+    assert!(w.tag_rows().is_empty());
+    assert!(!w.names().contains(&"# Tags".to_string()));
+    // Tagging something makes the tag recent, and the sidebar lists it without a count.
+    w.cx.update(|window, cx| {
+        tags::set_tags(
+            window,
+            cx,
+            vec![format!("{HOME}\\readme.txt")],
+            vec!["Work".to_string()],
+            Vec::new(),
+        )
+    });
+    w.settle(|w| w.tag_rows() == [("Work".to_string(), None)]);
+    assert!(w.has("Work"));
+    // Asked again when the recent tags changed.
+    assert!(*w.fakes.tags_asked.lock().unwrap() >= 2);
+    // Instant search answers now: its list wins, with counts.
+    *w.fakes.tags.lock().unwrap() = Ok(vec![("Work".to_string(), 7), ("Home".to_string(), 2)]);
+    w.cx.update(|window, cx| {
+        tags::set_tags(
+            window,
+            cx,
+            vec![format!("{HOME}\\readme.txt")],
+            vec!["Later".to_string()],
+            Vec::new(),
+        )
+    });
+    w.settle(|w| w.tag_rows() == [("Work".to_string(), Some(7)), ("Home".to_string(), Some(2))]);
+}
+
+#[gpui_kit::test]
+fn an_arabic_tag_draws_with_its_name_and_the_mirrored_row_still_fills_the_sidebar(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "tags-arabic");
+    *w.fakes.tags.lock().unwrap() = Ok(vec![("ضريبة".to_string(), 4)]);
+    w.sidebar.update(&mut w.cx, |s, cx| s.read_tags(cx));
+    w.settle(|w| w.tag_rows().len() == 1);
+    assert_eq!(w.role_of("ضريبة"), Some(Role::Button));
+    let ix = w.rows().iter().position(|r| matches!(r, Row::Tag(_))).unwrap();
+    let english = w.bounds_of(("tag", ix));
+    testing::set_rtl(true);
+    w.frame();
+    let mirrored = w.bounds_of(("tag", ix));
+    // Mirroring changes what is at which end, not how wide the row is.
+    assert_eq!(english.size.width, mirrored.size.width);
+    assert_eq!(w.role_of("ضريبة"), Some(Role::Button));
+    testing::set_rtl(false);
 }
 
 #[gpui_kit::test]

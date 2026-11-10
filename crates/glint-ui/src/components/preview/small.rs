@@ -14,8 +14,7 @@
 //!
 //! # Where this goes (for the coordinator)
 //!
-//! - `choose.rs`: the `PORT ME(small previews)` arm becomes its own `Body::Small(SmallKind)` (a variant the
-//!   coordinator adds), `Choice::of(..)` with no `later` for the kinds this module draws; [`small_kind`] is the
+//! - `choose.rs`: the arm is its own `Body::Small(SmallKind)`, `Choice::of(..)` with no `later` for the kinds this module draws; [`small_kind`] is the
 //!   test (`glint_model::small_kinds::small_kind_of(&entry.ext)`, readable and not archived, as now).
 //! - `frame.rs`'s `build`: `Body::Small(kind) => cx.new(|cx| SmallPreview::new(entry.clone(), kind, window, cx)).into()`.
 //!   The view needs no other event.

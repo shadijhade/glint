@@ -4,8 +4,10 @@
 //! what archive work says ([`ArchiveNotice`]): its progress with a Stop button, what it skipped, what it made;
 //! what the menus' other actions say ([`ActionNotice`]) and an export's progress ([`ExportNotice`]).
 //!
-//! The workspace calls these from its subscription to the explorer, with the main window at hand.
+//! The workspace calls these from its subscription to the explorer, with the main window at hand. The one
+//! exception is [`service_update`]: start-up calls it once, after the first folders are open.
 
+use crate::components::settings::{Backend as _, CoreBackend, Fut as SettingsFut, IndexInfo};
 use crate::explorer::{
     self, ActionFailure, ActionNotice, ArchiveFailure, ArchiveNotice, Ask, BusyEvent, Doing, ExportNotice,
     ExportProgress, Failing, FindNotice, OpNotice, OtherPane, PinState, QueueKind, SkippedVerb, Subject, UndoId,
@@ -16,6 +18,7 @@ use crate::platform::window_state::{self, ProgressState};
 use crate::{dialogs, t};
 use glint_model::format::{format_count, plural};
 use glint_model::paths::base_name;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The notification that offers Undo (the web app's toast id "undo"), keyed by its step.
@@ -299,6 +302,167 @@ pub fn turn_on_instant_search(window: &mut Window, cx: &mut App) {
         });
     })
     .detach();
+}
+
+// ---- After the app updates, the service follows ----------------------------------------------------------------
+
+/// "Updating instant search…", while the service takes its new build.
+struct ServiceToast;
+/// The offer to update the service with administrator approval.
+struct ServiceOfferToast;
+
+/// How long the update offer stays, as the web app's 15 s toast.
+const SERVICE_OFFER_FOR: Duration = Duration::from_secs(15);
+
+/// What the service's update asks of glint-core: where it stands, the quiet update, and the update with
+/// administrator approval. The app uses [`ServiceSource::core`]; tests put their own in a global
+/// ([`init_service_with`]).
+#[derive(Clone)]
+pub struct ServiceSource {
+    /// How the service does (`index_status`).
+    pub status: Arc<dyn Fn() -> SettingsFut<IndexInfo> + Send + Sync>,
+    /// Updates it without administrator approval (`index_update`); fails with why not.
+    pub update: Arc<dyn Fn() -> SettingsFut<IndexInfo> + Send + Sync>,
+    /// Updates it after Windows asks for administrator approval (`index_enable`).
+    pub enable: Arc<dyn Fn() -> SettingsFut<IndexInfo> + Send + Sync>,
+}
+
+impl ServiceSource {
+    /// glint-core's, through the app's handle (Settings' own calls).
+    pub fn core(app: glint_core::host::AppHandle) -> ServiceSource {
+        let backend = Arc::new(CoreBackend::new(app));
+        let (a, b, c) = (backend.clone(), backend.clone(), backend);
+        ServiceSource {
+            status: Arc::new(move || a.index_status()),
+            update: Arc::new(move || b.index_update()),
+            enable: Arc::new(move || c.index_enable()),
+        }
+    }
+}
+
+struct SharedService(ServiceSource);
+
+impl Global for SharedService {}
+
+/// The update has been looked at in this run.
+struct ServiceChecked;
+
+impl Global for ServiceChecked {}
+
+/// Makes the service update read from `source` instead of glint-core (tests).
+pub fn init_service_with(cx: &mut App, source: ServiceSource) {
+    cx.set_global(SharedService(source));
+}
+
+fn service_source(cx: &App) -> Option<ServiceSource> {
+    if let Some(shared) = cx.try_global::<SharedService>() {
+        return Some(shared.0.clone());
+    }
+    let core = cx.try_global::<crate::core_bridge::Core>()?;
+    Some(ServiceSource::core(core.app.clone()))
+}
+
+fn updating_service() -> Notification {
+    Notification::info(t!("Updating instant search…"))
+        .id::<ServiceToast>()
+        .autohide(false)
+}
+
+/// After the app updates, its service follows (`noticeServiceUpdate`): once per run, if the service runs an older
+/// build than the app, it takes the one that ships with the app by itself when it can (from after 0.9, and when
+/// the build has the release's signature for it), with "Updating instant search…" while it does and "Instant
+/// search is updated" after. Otherwise it keeps running the version it had, and a notice offers the update with
+/// administrator approval. Nothing waits on the UI thread. NOTE(port): the web app offered it once per app
+/// version, remembered on disk; here it is once per run, since the saved state has no place for that yet.
+pub fn service_update(window: &mut Window, cx: &mut App) {
+    if cx.has_global::<ServiceChecked>() {
+        return;
+    }
+    let Some(source) = service_source(cx) else {
+        return;
+    };
+    cx.set_global(ServiceChecked);
+    window
+        .spawn(cx, async move |cx| {
+            let Ok(info) = (source.status)().await else {
+                return;
+            };
+            if !info.outdated() {
+                return;
+            }
+            if cx
+                .update(|window, cx| window.push_notification(updating_service(), cx))
+                .is_err()
+            {
+                return;
+            }
+            let quiet = (source.update)().await;
+            let _ = cx.update(|window, cx| {
+                window.remove_notification::<ServiceToast>(cx);
+                match quiet {
+                    Ok(now) => {
+                        let version = now.version.clone().unwrap_or_else(|| now.app_version.clone());
+                        window.push_notification(service_updated(&version), cx);
+                    }
+                    Err(_) => offer_service_update(info.version.as_deref().unwrap_or_default(), window, cx),
+                }
+            });
+        })
+        .detach();
+}
+
+fn service_updated(version: &str) -> Notification {
+    Notification::success(t!(
+        "Its service now runs version {version}.",
+        version = version.to_string()
+    ))
+    .title(t!("Instant search is updated"))
+}
+
+/// "Instant search has an update", with the button that asks Windows for administrator approval.
+fn offer_service_update(version: &str, window: &mut Window, cx: &mut App) {
+    let offer = Notification::info(t!(
+        "Its service is still version {version}. Updating it asks for administrator approval this time.",
+        version = version.to_string()
+    ))
+    .title(t!("Instant search has an update"))
+    .id::<ServiceOfferToast>()
+    .autohide(false)
+    .action(|_, _, _| {
+        Button::new("update-instant-search")
+            .label(t!("Update"))
+            .on_click(|_, window, cx| {
+                window.remove_notification::<ServiceOfferToast>(cx);
+                update_instant_search(window, cx);
+            })
+    });
+    window.push_notification(offer, cx);
+    remove_after::<ServiceOfferToast>(SERVICE_OFFER_FOR, window, cx);
+}
+
+/// Updates the service after Windows asks for administrator approval (the offer's Update button), and says how it
+/// went; declining the prompt says nothing (`turnOnIndex` when updating).
+pub fn update_instant_search(window: &mut Window, cx: &mut App) {
+    let Some(source) = service_source(cx) else {
+        return;
+    };
+    window.push_notification(updating_service(), cx);
+    window
+        .spawn(cx, async move |cx| {
+            let result = (source.enable)().await;
+            let _ = cx.update(|window, cx| {
+                window.remove_notification::<ServiceToast>(cx);
+                match result {
+                    Ok(now) => window.push_notification(service_updated(&now.app_version), cx),
+                    Err(reason) if reason == "cancelled" => {}
+                    Err(reason) => window.push_notification(
+                        Notification::error(reason).title(t!("Couldn't update instant search")),
+                        cx,
+                    ),
+                }
+            });
+        })
+        .detach();
 }
 
 /// Archive work's notice, keyed by the job (the web app's loading toast with its id).
@@ -697,5 +861,234 @@ pub fn export(notice: &ExportNotice, window: &mut Window, cx: &mut App) {
             });
             window.push_notification(note, cx);
         }
+    }
+}
+
+/// The service's update after the app's: when it is tried, what it says, and the offer when it can't go quietly.
+#[cfg(test)]
+mod service_tests {
+    use super::*;
+    use crate::components::settings::IndexState;
+    use crate::testing;
+    use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
+    use gpui_kit::{TestAppContext, VisualTestContext};
+    use std::sync::Mutex;
+
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    fn info(state: IndexState, version: &str, app: &str) -> IndexInfo {
+        IndexInfo {
+            state,
+            version: Some(version.to_string()),
+            app_version: app.to_string(),
+            volumes: Vec::new(),
+            error: None,
+        }
+    }
+
+    /// What the fake service was asked, in order: "status", "update", "enable".
+    struct Rig {
+        window: VisualTestContext,
+        asked: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    fn rig(
+        cx: &mut TestAppContext,
+        status: Result<IndexInfo, String>,
+        update: Result<IndexInfo, String>,
+        enable: Result<IndexInfo, String>,
+    ) -> Rig {
+        cx.update(testing::init);
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let answer = |what: &'static str,
+                      answer: Result<IndexInfo, String>|
+         -> Arc<dyn Fn() -> SettingsFut<IndexInfo> + Send + Sync> {
+            let asked = asked.clone();
+            Arc::new(move || {
+                if let Ok(mut asked) = asked.lock() {
+                    asked.push(what);
+                }
+                let answer = answer.clone();
+                Box::pin(async move { answer })
+            })
+        };
+        let source = ServiceSource {
+            status: answer("status", status),
+            update: answer("update", update),
+            enable: answer("enable", enable),
+        };
+        cx.update(|cx| init_service_with(cx, source));
+        let (window, _) = testing::open_window(cx, |_, cx| cx.new(|_| Blank));
+        Rig { window, asked }
+    }
+
+    impl Rig {
+        fn start(&mut self) {
+            self.window.update(service_update);
+            self.settle();
+        }
+
+        fn settle(&mut self) {
+            for _ in 0..40 {
+                self.window.run_until_parked();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            self.window.executor().advance_clock(Duration::from_millis(500));
+            self.window.run_until_parked();
+        }
+
+        fn asked(&self) -> Vec<&'static str> {
+            self.asked.lock().map(|asked| asked.clone()).unwrap_or_default()
+        }
+
+        fn notifications(&mut self) -> usize {
+            self.window.update(|window, cx| window.notifications(cx).len())
+        }
+
+        fn has(&mut self, label: &str) -> bool {
+            self.window.update(|window, cx| {
+                window.render_frame(cx);
+                window.try_find_by_label(label).is_some()
+            })
+        }
+
+        fn press(&mut self, label: &str) {
+            self.window.update(|window, cx| {
+                window.render_frame(cx);
+                let id = window
+                    .find_by_label(label)
+                    .path()
+                    .last()
+                    .cloned()
+                    .expect("a button with an id");
+                window.click(id, cx);
+            });
+            self.settle();
+        }
+    }
+
+    #[gpui_kit::test]
+    fn an_older_service_is_updated_quietly_once_and_says_so(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut rig = rig(
+            cx,
+            Ok(info(IndexState::On, "0.9.5", "0.10.0")),
+            Ok(info(IndexState::On, "0.10.0", "0.10.0")),
+            Err("never asked".into()),
+        );
+        rig.start();
+        assert_eq!(
+            rig.asked(),
+            ["status", "update"],
+            "no administrator approval when it can go without"
+        );
+        assert_eq!(
+            rig.notifications(),
+            1,
+            "'Instant search is updated'; the busy notice is gone"
+        );
+        // Once per start: a second look asks nothing.
+        rig.start();
+        assert_eq!(rig.asked(), ["status", "update"]);
+    }
+
+    /// A service that needs nothing: only asked how it does, and nothing said.
+    fn left_alone(cx: &mut TestAppContext, status: Result<IndexInfo, String>) {
+        let _guard = testing::lock();
+        let mut rig = rig(cx, status, Err("never asked".into()), Err("never asked".into()));
+        rig.start();
+        assert_eq!(rig.asked(), ["status"]);
+        assert_eq!(rig.notifications(), 0);
+    }
+
+    #[gpui_kit::test]
+    fn a_service_that_runs_the_apps_version_is_left_alone(cx: &mut TestAppContext) {
+        left_alone(cx, Ok(info(IndexState::On, "0.10.0", "0.10.0")));
+    }
+
+    #[gpui_kit::test]
+    fn a_newer_service_from_another_accounts_glint_serves_this_one_as_it_is(cx: &mut TestAppContext) {
+        left_alone(cx, Ok(info(IndexState::On, "0.11.0", "0.10.0")));
+    }
+
+    #[gpui_kit::test]
+    fn a_service_that_is_not_running_is_left_alone(cx: &mut TestAppContext) {
+        left_alone(cx, Ok(info(IndexState::Stopped, "0.9.5", "0.10.0")));
+    }
+
+    #[gpui_kit::test]
+    fn a_service_that_cannot_be_asked_is_left_alone(cx: &mut TestAppContext) {
+        left_alone(cx, Err("no pipe".into()));
+    }
+
+    #[gpui_kit::test]
+    fn when_it_cannot_go_quietly_a_notice_offers_the_update_with_administrator_approval(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut rig = rig(
+            cx,
+            Ok(info(IndexState::On, "0.9.0", "0.10.0")),
+            Err("the service (0.9.0) is from before it could update itself".into()),
+            Ok(info(IndexState::On, "0.10.0", "0.10.0")),
+        );
+        rig.start();
+        assert_eq!(rig.asked(), ["status", "update"]);
+        assert_eq!(rig.notifications(), 1, "the offer");
+        assert!(rig.has("Update"));
+        // Its button asks Windows (the approval route); the offer goes and the result is told.
+        rig.press("Update");
+        assert_eq!(rig.asked(), ["status", "update", "enable"]);
+        assert_eq!(rig.notifications(), 1, "'Instant search is updated'");
+        assert!(!rig.has("Update"));
+    }
+
+    /// The approval route ends with `answer`, after the offer's Update is pressed; how many notifications are left.
+    fn after_update_pressed(cx: &mut TestAppContext, answer: &str) -> usize {
+        let _guard = testing::lock();
+        let mut rig = rig(
+            cx,
+            Ok(info(IndexState::On, "0.9.0", "0.10.0")),
+            Err("not quietly".into()),
+            Err(answer.into()),
+        );
+        rig.start();
+        rig.press("Update");
+        assert_eq!(rig.asked(), ["status", "update", "enable"]);
+        rig.notifications()
+    }
+
+    #[gpui_kit::test]
+    fn declining_the_approval_says_nothing(cx: &mut TestAppContext) {
+        assert_eq!(after_update_pressed(cx, "cancelled"), 0);
+    }
+
+    #[gpui_kit::test]
+    fn a_failure_after_the_approval_says_why(cx: &mut TestAppContext) {
+        assert_eq!(
+            after_update_pressed(cx, "The service didn't start"),
+            1,
+            "'Couldn't update instant search'"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_offer_goes_by_itself_after_fifteen_seconds(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut rig = rig(
+            cx,
+            Ok(info(IndexState::On, "0.9.0", "0.10.0")),
+            Err("not quietly".into()),
+            Err("never asked".into()),
+        );
+        rig.start();
+        assert_eq!(rig.notifications(), 1);
+        rig.window.executor().advance_clock(Duration::from_secs(16));
+        rig.settle();
+        assert_eq!(rig.notifications(), 0);
     }
 }

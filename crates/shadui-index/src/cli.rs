@@ -141,7 +141,7 @@ fn verify_update(args: &[String]) -> i32 {
         (Err(e), _) => return fail(&format!("{}: {e}", args[0])),
         (_, Err(e)) => return fail(&format!("{signature_path}: {e}")),
     };
-    let Some(key) = update::update_key() else { return fail("This build has no update key (plugins.updater.pubkey in tauri.conf.json)") };
+    let Some(key) = update::update_key() else { return fail("This build has no update key (update-pubkey.txt)") };
     match update::check(&exe, &signature, &key) {
         Ok(signed) if signed.file == crate::SERVICE_EXE && signed.version.as_deref() == Some(crate::VERSION) => {
             println!("{} {} is signed with the update key: an older installed service takes it as its update.", signed.file, crate::VERSION);

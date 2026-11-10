@@ -1,7 +1,9 @@
 # cargo-deny's checks of the crates Glint is built from (docs/releasing.md):
-#   cargo deny --manifest-path src-tauri/Cargo.toml check
+#   cargo deny check
+# (from the repository root: the workspace of Glint.exe and the instant search service, vendor/ aside)
 # known vulnerabilities and unmaintained crates (RustSec's advisory database), licenses that can ship
-# in an MIT-licensed app, and crates only from crates.io.
+# in an MIT-licensed app, and crates only from crates.io. (Fonts, icons and data a crate embeds under licenses of
+# its own, which cargo-deny can't see, are in scripts/lib/embedded-notices.mjs.)
 
 [graph]
 # The one build that ships.

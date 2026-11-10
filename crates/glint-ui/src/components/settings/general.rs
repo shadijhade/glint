@@ -972,8 +972,8 @@ impl SettingsView {
                 s.zoxide,
                 zoxide.is_none() && !s.zoxide,
                 |on, _, cx| {
-                    // PORT ME(palette): `refreshZoxide` (lib/zoxide.ts) reloads the folders zoxide knows for Ctrl+K
-                    // and quick search; the palette owns that list and refreshes it when this setting changes.
+                    // `refreshZoxide` needs no call: the palette and quick search ask for zoxide's folders each
+                    // time they open, while this setting is on.
                     state::update(cx, |s| s.zoxide = on)
                 },
                 t,

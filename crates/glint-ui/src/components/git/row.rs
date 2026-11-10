@@ -1,6 +1,6 @@
 //! What a row draws for a Git mark: the pill after the name (`data-git` in FileList.tsx).
 //!
-//! The list and the grid call [`badge_element`] where their rows have a `PORT ME(git)`; [`super::words::row_git`]
+//! The list and the grid call [`badge_element`] in their rows; [`super::words::row_git`]
 //! says whether there is a pill and whether the row is faded.
 
 use super::words::Badge;

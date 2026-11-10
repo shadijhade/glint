@@ -248,6 +248,54 @@ Full suite: 2,075 + 300 + 233 passed; clippy clean.
 
 **Build folder:** since 2026-11-10, `target/ui` is a junction to `E:\glint-gpui-target\ui`. E: is on the same NVMe drive and has 104 GB free, so C: keeps its room. Paths didn't change, so nothing was rebuilt.
 
+## Wave 14: the service crate, the release pipeline, compare bar, last commands: done 2026-11-10
+
+*5 tasks and a sweep (Sonnet; 15 agents, ~2 h, 2.6M tokens), all passed review (compare-bar and palette-rest after a fix round).*
+
+- **service-crate:** the instant search service is now `crates/shadui-index`, moved with `git mv`.
+  - The package and exe names are unchanged; the version follows the workspace (0.10.0).
+  - The update key it trusts is now in `crates/shadui-index/update-pubkey.txt`. It is identical to the key in Tauri's config.
+  - Profile: src-tauri built the service with fat LTO and one codegen unit; the root profile has neither. The service now gets `codegen-units = 1`; LTO is still open (below).
+- **release:** `npm run release` builds the GPUI app:
+  - `cargo build --release -p glint -p shadui-index`, then signing of the service, then the NSIS setup.
+  - `scripts/lib/minisign.mjs` signs without the Tauri CLI. Its signatures were byte-identical to `tauri signer`'s with a throwaway key.
+  - The version comes from the workspace.
+  - MSIX, the binaries, `deny.toml` and the cargo-about files moved out of src-tauri. The notices gained the embedded fonts, icons and grammars.
+  - `docs/releasing.md` and `release.yml` are rewritten.
+  - The dry run on D: passed `verify-update.mjs`. No setup was run and nothing was published.
+- **compare-bar:** the bar over each pane while comparing:
+  - the only-here, newer, different and older badges;
+  - the options: Subfolders too, File contents, Only the differences;
+  - Select differences, Sync with the deeper `compare_folders` and `cancel_compare`, and Stop;
+  - the bar for two files selected across the panes.
+- **palette-rest:** Ctrl+K has the TS palette's remaining commands, except Convert to UTF-8 and the Ctrl+N hint, which need workspace hooks.
+- **notices-sidebar:**
+  - The archive password question and the notices' Install 7-Zip and Get access buttons.
+  - A big archive read whole shows its progress, with Stop (`cancel_archive_read`).
+  - The service updates itself quietly after the app does (`index_update`), else offers the admin route.
+  - The sidebar's Tags section (`tags_all`).
+- **port-me sweep:** 87 notes: 34 stale (22 removed; the diff is comment lines only), 47 open, 6 partial. The list is in the wave 15 plan below.
+
+**Integration:**
+- Release builds compiled the self-test's call to a debug-only palette helper. The helper is no longer debug-only.
+- The compare bar is wired over each pane.
+- **The Store copy gets its own data folder:** under MSIX it uses `com.shado.glint.store`, as Tauri's MSIX build did. Before, it shared `com.shado.shadui-ripgrep` with a setup copy.
+- glint-core's tools test reads `crates/glint/installer/tools.nsh`. The updater's key test compares with the service's key file. `bench.mjs` uses `target/ui`.
+- `package-lock.json` is at 0.10.0.
+- Previous versions' Compare folders opens the two folders in compare panes (f3858a3).
+
+**Parity list re-checked:**
+- Snap layouts, the accent colour, launch handoff, shared-memory listings, the clipboard and Markdown-to-HTML are all replaced.
+- `open_main_settings` waits on second windows.
+
+**Left:**
+- **Needs the user:**
+  - cargo-about and cargo-deny aren't installed. `THIRD_PARTY_CRATES.md`'s crate list is still the Tauri build's, and the root workspace was never checked by cargo-deny.
+  - `D:\glint-w14-temp` (throwaway key and dry-run output) couldn't be deleted from here.
+  - The setup and the MSIX were never run.
+- **Release profile:** no LTO for either exe; the Tauri builds had fat LTO. Decide before the first GPUI release.
+- **Missing pane bars:** the search bar while searching (Results for…, Stopped at N, Show all, Save, Stop) and the ClosedBar (listing from the index, Get access).
+
 ## Antigravity (2026-11-10): closed before it started
 
 The user offered Antigravity to share the work. It hit its rate limit before doing anything; it left only an empty report. Its lane is closed and its worktree and branch are removed.

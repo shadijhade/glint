@@ -799,7 +799,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
     }
     m.push(separator());
 
-    // PORT ME(find): "Search text" and "Open file location" are MenuEvents; the search part does them.
     if let Some(e) = one.filter(|e| e.dir && !fixed) {
         m.push(
             Entry::ask(
@@ -864,8 +863,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
         ],
     )));
     let folder_one = one.filter(|e| e.dir && !fixed);
-    // PORT ME(sharing): "Send to my PC", "Send to a phone nearby…", "Send to another PC…", "Share on this
-    // network…" and "Share with Windows…" are MenuEvents; the sharing part does them.
     m.push(Some(Node::menu(
         t!("Clean up & share"),
         IconName::BrushCleaning,

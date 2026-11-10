@@ -26,9 +26,8 @@
 //! | the other sections                           | `general.rs`, methods of [`SettingsView`]          |
 //! | `invoke(..)` and Tauri's dialogs             | [`backend::Backend`] (a fake in the tests)         |
 //!
-//! **What waits for other parts** (each has a `PORT ME` where it is): the updater (About), `refreshZoxide`,
-//! the logo, and the connect-a-cloud and folder-rules dialogs, which Settings asks for with a
-//! [`SettingsEvent`] after closing itself. Which shortcut another app holds is told to the view with
+//! **What waits for other parts** (it has a `PORT ME` where it is): the logo. The connect-a-cloud and
+//! folder-rules dialogs are asked for with a [`SettingsEvent`] after Settings closes itself. Which shortcut another app holds is told to the view with
 //! [`SettingsView::set_quick_taken`] by whoever registers the hotkey.
 
 pub mod about;

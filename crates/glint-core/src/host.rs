@@ -16,6 +16,18 @@ use std::sync::{Arc, RwLock};
 
 /// Tauri's bundle identifier, kept so settings, caches and indexes stay where users already have them.
 pub const IDENTIFIER: &str = "com.shado.shadui-ripgrep";
+/// The Microsoft Store copy's identifier (the MSIX build's own in Tauri, `tauri.msix.conf.json`), so its folders
+/// stay where the Store copy already has them and are never shared with a copy the setup installed on the same PC.
+pub const STORE_IDENTIFIER: &str = "com.shado.glint.store";
+
+/// The identifier this copy's folders are named after: the Store copy's when it runs from an MSIX package.
+pub fn identifier() -> &'static str {
+    if crate::packaged() {
+        STORE_IDENTIFIER
+    } else {
+        IDENTIFIER
+    }
+}
 
 /// What went wrong, as text (Tauri's errors were only ever shown or logged).
 #[derive(Debug, Clone)]
@@ -130,7 +142,7 @@ impl<T: Send + Sync + 'static> Clone for State<'_, T> {
     }
 }
 
-/// Where Tauri put an app's folders on Windows, for [`IDENTIFIER`].
+/// Where Tauri put an app's folders on Windows, for [`identifier`] (`IDENTIFIER`, or the Store copy's).
 pub struct PathResolver;
 
 impl PathResolver {
@@ -139,7 +151,7 @@ impl PathResolver {
     }
     /// %APPDATA%\com.shado.shadui-ripgrep
     pub fn app_data_dir(&self) -> Result<PathBuf> {
-        Ok(Self::known("APPDATA")?.join(IDENTIFIER))
+        Ok(Self::known("APPDATA")?.join(identifier()))
     }
     /// %APPDATA%\com.shado.shadui-ripgrep
     pub fn app_config_dir(&self) -> Result<PathBuf> {
@@ -147,7 +159,7 @@ impl PathResolver {
     }
     /// %LOCALAPPDATA%\com.shado.shadui-ripgrep
     pub fn app_local_data_dir(&self) -> Result<PathBuf> {
-        Ok(Self::known("LOCALAPPDATA")?.join(IDENTIFIER))
+        Ok(Self::known("LOCALAPPDATA")?.join(identifier()))
     }
     /// %LOCALAPPDATA%\com.shado.shadui-ripgrep
     pub fn app_cache_dir(&self) -> Result<PathBuf> {

@@ -1,23 +1,22 @@
-// Drafts the notes for the release of package.json's version: what's new by area, what's faster and
-// what's fixed since the release before it, from the commits' subjects by git-cliff (cliff.toml), into
-// release/v<version>/notes.md, which `npm run release` hands to `gh release create`. It's a draft:
-// read it and edit it (docs/releasing.md).
+// Drafts the notes for the release of the workspace's version (the root Cargo.toml's, which package.json
+// follows): what's new by area, what's faster and what's fixed since the release before it, from the commits'
+// subjects by git-cliff (cliff.toml), into release/v<version>/notes.md, which `npm run release` hands to
+// `gh release create`. It's a draft: read it and edit it (docs/releasing.md).
 //
 // Usage: npm run notes    (needs git-cliff: winget install orhun.git-cliff)
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { REPO, root, workspaceVersion } from "./lib/project.mjs";
 
-const REPO = "https://github.com/shadijhade/glint";
-const root = resolve(import.meta.dirname, "..");
 const fail = (message) => {
     console.error(`✗ ${message}`);
     process.exit(1);
 };
 const git = (...args) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
 
-const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const version = workspaceVersion();
 const tag = `v${version}`;
 // A version already released behind HEAD hasn't been bumped for the next one yet.
 const tagged = git("rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`).stdout.trim();

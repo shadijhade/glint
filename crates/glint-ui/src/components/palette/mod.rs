@@ -25,9 +25,10 @@
 //! The commands that do things to files and the tools do what their menu items do: [`commands::Run::Menu`] hands
 //! the same [`MenuEvent`](crate::components::menus::MenuEvent) to the main window
 //! ([`crate::workspace::run_menu_command`]); "Run <task>" types the task into the terminal pane
-//! ([`crate::workspace::run_task`]). What is not here: "Convert to UTF-8", "Get access", Restore and Delete for
-//! good in the Recycle Bin, "Even out the panes", "Invert selection", "Extract all", "Archive properties",
-//! "New <kind>", and the Sending / Shared rows.
+//! ([`crate::workspace::run_task`]); the commands that only change the explorer or a setting (Even out the panes,
+//! Invert selection, Get access, Move the tab) are [`commands::Change`]s. What is not here: "Convert the selected
+//! text files to UTF-8", which waits for the workspace to offer it (nothing the palette can call runs
+//! `text_to_utf8` and offers its Undo yet), and the "Ctrl+N" shown beside "New window" (no key is bound to it).
 
 pub mod commands;
 mod keys;
@@ -104,9 +105,7 @@ impl Sources {
                             .map(|found| found.scripts)
                             .unwrap_or_default(),
                         openers: glint_core::openers::openers().await.unwrap_or_default(),
-                        tasks: glint_core::projects::project_tasks(folder)
-                            .await
-                            .unwrap_or_default(),
+                        tasks: glint_core::projects::project_tasks(folder).await.unwrap_or_default(),
                     }
                 })
             }),
@@ -580,7 +579,9 @@ fn carry_out(run: Run, window: &mut Window, cx: &mut App) {
         Run::Change(change) => apply(change, cx),
         // What a menu item does, once the palette's layer is gone (a dialog opens over the window).
         Run::Menu(event) => {
-            window.defer(cx, move |window, cx| crate::workspace::run_menu_command(event, window, cx));
+            window.defer(cx, move |window, cx| {
+                crate::workspace::run_menu_command(event, window, cx)
+            });
         }
         Run::Saved(saved) => {
             explorer(cx).update(cx, |e, cx| e.run_saved_search(saved, cx).detach());
@@ -588,7 +589,9 @@ fn carry_out(run: Run, window: &mut Window, cx: &mut App) {
         // PORT ME(coordinator): nothing the palette can call runs a task in the terminal pane yet, so the palette
         // is not given any (`Sources::core`); this is what it will do.
         Run::Task { folder, command } => {
-            window.defer(cx, move |window, cx| crate::workspace::run_task(folder, command, window, cx));
+            window.defer(cx, move |window, cx| {
+                crate::workspace::run_task(folder, command, window, cx)
+            });
         }
         Run::OpenIn { opener, name, path } => report(
             t!("Couldn't open it in {name}", name = name),
@@ -607,6 +610,14 @@ fn carry_out(run: Run, window: &mut Window, cx: &mut App) {
             cx.background_spawn(async move { crate::platform::launch::hand_to_explorer(&[folder]) })
                 .detach();
         }
+        Run::Properties(path) => show_properties(path, cx),
+        Run::Share(view) => window.defer(cx, move |window, cx| {
+            let view = match view {
+                commands::ShareView::Send => crate::dialogs::share::View::Send,
+                commands::ShareView::Network => crate::dialogs::share::View::Network,
+            };
+            crate::dialogs::share::open_view(window, cx, view);
+        }),
         Run::AddRemote => window.defer(cx, crate::dialogs::remote::open_add),
         Run::Rules(folder) => window.defer(cx, move |window, cx| crate::dialogs::rules::open(window, cx, folder)),
     }
@@ -652,14 +663,56 @@ fn apply(change: commands::Change, cx: &mut App) {
             explorer(cx).update(cx, |e, cx| e.set_view(glint_model::store::ViewMode::Grid, None, cx));
         }
         C::Theme(theme) => state::update(cx, |settings| settings.theme = theme),
+        C::EvenPanes => state::update(cx, |settings| settings.dual_split = None),
+        C::InvertSelection => {
+            explorer(cx).update(cx, |e, cx| {
+                if let Some(rows) = e.active_tab().map(|tab| tab.rows.clone()) {
+                    e.invert_selection(&rows, cx);
+                }
+            });
+        }
+        C::GetAccess(tab) => {
+            explorer(cx).update(cx, |e, cx| e.get_access(Some(tab), cx).detach());
+        }
+        C::MoveTab(tab) => {
+            explorer(cx).update(cx, |e, cx| e.move_tab_to_other_pane(tab, cx));
+        }
     }
+}
+
+/// Windows' own Properties dialog for `path`, which runs beside the window (`properties`).
+fn show_properties(path: String, cx: &mut App) {
+    use glint_core::host::Manager as _;
+    let Some(main) = cx
+        .try_global::<core_bridge::Core>()
+        .and_then(|core| core.app.get_webview_window(crate::workspace::MAIN))
+    else {
+        return;
+    };
+    let shown = core_bridge::run(glint_core::shell::show_properties(main, path));
+    cx.spawn(async move |_| {
+        if let Ok(Err(error)) = shown.await {
+            eprintln!("glint: couldn't show the properties: {error}");
+        }
+    })
+    .detach();
 }
 
 // ---- What is on offer ---------------------------------------------------------------------------------
 
 /// Reads what the list is built from: the active tab, the pinned folders, the folders used, the settings.
-pub fn read_inputs(cx: &App) -> Inputs {
+///
+/// Takes the app for writing because two of the lists are asked for (File Explorer's New menu kinds start to be read
+/// in the background; the Send, receive or share model is made if it wasn't): a kind that has not been read yet
+/// shows from the next time the palette opens.
+pub fn read_inputs(cx: &mut App) -> Inputs {
     let explorer = explorer(cx);
+    let kinds = explorer.update(cx, |e, cx| e.new_kinds(cx));
+    let sharing = crate::dialogs::share::shared(cx);
+    let (sending, serving) = {
+        let sharing = sharing.read(cx);
+        (!sharing.sends().is_empty(), !sharing.serving().is_empty())
+    };
     let e = explorer.read(cx);
     let tab = e.active_tab();
     let app = persistence::app(cx);
@@ -721,6 +774,20 @@ pub fn read_inputs(cx: &App) -> Inputs {
         scripts: Vec::new(),
         openers: Vec::new(),
         tasks: Vec::new(),
+        unlisted: tab.is_some_and(|t| t.no_access().is_some() && t.shared_entries().is_none()),
+        can_get_access: tab.is_some_and(|t| t.no_access().is_some_and(|n| !n.remote && !n.refused)),
+        uneven: settings.dual_split.is_some(),
+        archive_top: tab.and_then(|t| {
+            let archive = t.archive()?;
+            let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+            (same(&t.path, &archive.path) && same(&archive.path, &archive.outer)).then(|| commands::ArchiveTop {
+                outer: archive.outer.clone(),
+                single_file: glint_model::archives::SINGLE_FILE.contains(&archive.format),
+            })
+        }),
+        new_kinds: kinds.iter().map(|kind| (kind.ext.clone(), kind.name.clone())).collect(),
+        sending,
+        serving,
     }
 }
 
@@ -745,7 +812,6 @@ pub fn open(window: &mut Window, cx: &mut App) {
 }
 
 /// Debug builds' self-test: types `text` into the open palette's box, as a person would.
-#[cfg(debug_assertions)]
 pub(crate) fn type_query(text: &str, window: &mut Window, cx: &mut App) {
     let Some(palette) = cx.try_global::<Current>().and_then(|current| current.0.upgrade()) else {
         return;

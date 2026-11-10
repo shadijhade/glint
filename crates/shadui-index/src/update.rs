@@ -5,7 +5,7 @@
 //! signed with (`tauri signer sign --app-version`, scripts/sign-service.mjs). The signature names the
 //! file and the version in its trusted comment, which it covers too. The app hands the running service
 //! the executable it ships with, and that signature, over the pipe. The service takes it only when the
-//! signature holds with the key built into it (tauri.conf.json's), is for `shadui-index.exe`, and names
+//! signature holds with the key built into it (update-pubkey.txt), is for `shadui-index.exe`, and names
 //! a version later than its own. Anything less, and anyone allowed on the pipe could have a LocalSystem
 //! service run a program of their choosing, or an older one with a flaw fixed since. (The release's
 //! installer is signed with the same key, under its own file name.)
@@ -26,14 +26,13 @@ pub const SIGNATURE_FILE: &str = "shadui-index.exe.sig";
 /// The largest executable the service reads from the pipe (a real one is under 2 MB).
 pub const MAX_SIZE: u64 = 16 << 20;
 
-/// The app's configuration, for its update key.
-const TAURI_CONF: &str = include_str!("../../tauri.conf.json");
+/// The public half of the update key (base64 of minisign's public key), the one Glint's releases are signed
+/// with; it moved here from tauri.conf.json (plugins.updater.pubkey), which goes away with src-tauri.
+const UPDATE_PUBKEY: &str = include_str!("../update-pubkey.txt");
 
-/// The public half of the update key, as tauri.conf.json has it (base64 of minisign's public key);
-/// None in a build without one, which never updates itself.
+/// The public half of the update key; None in a build without one, which never updates itself.
 pub fn update_key() -> Option<String> {
-    let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).ok()?;
-    let key = conf.pointer("/plugins/updater/pubkey")?.as_str()?.trim();
+    let key = UPDATE_PUBKEY.trim();
     (!key.is_empty()).then(|| key.to_string())
 }
 

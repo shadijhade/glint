@@ -12,7 +12,10 @@
 //! job runs from the message pump, outside them. (The tray's callbacks already run there.)
 
 use crate::components::quick_search;
+use crate::components::settings::tools::describe_progress;
+use crate::components::settings::{Backend as _, CoreBackend, Fetch, Fut as SettingsFut};
 use crate::kit::prelude::*;
+use crate::platform::window_state::ProgressState;
 use crate::platform::{launch, preview_host, tray, window_state};
 use crate::{core_bridge, explorer, persistence, state, t, workspace};
 use glint_model::paths::{base_name, THIS_PC};
@@ -119,6 +122,10 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
             quick_search::warm(cx);
             // Debug builds: GLINT_SELFTEST drives the real app through file operations (selftest.rs).
             crate::selftest::start(cx);
+            // After the app updated, instant search's service follows (once per start, quietly if it can).
+            if let Some(main) = main_window(cx) {
+                let _ = main.update(cx, |_, window, cx| crate::notices::service_update(window, cx));
+            }
         });
     })
     .detach();
@@ -494,16 +501,7 @@ fn start_explorer(cx: &mut App) {
                 app.folder_views = folder_views;
             });
         }
-        // An archive whose list of files is encrypted: its password, then the folder again.
-        explorer::ExplorerEvent::Notice(explorer::Notice::ArchivePassword { path, tab, select, .. }) => {
-            let (path, tab, select) = (path.clone(), *tab, select.clone());
-            if let Some(main) = main_window(cx) {
-                let _ = main.update(cx, |_, window, cx| {
-                    crate::dialogs::password::ask_for_notice(window, cx, path, tab, select)
-                });
-            }
-        }
-        explorer::ExplorerEvent::Notice(notice) => notify(cx, notice_for(notice)),
+        explorer::ExplorerEvent::Notice(notice) => show_notice(cx, notice),
         // A previous version, a disk image, a file inside an archive: copied out, mounted or extracted, then opened.
         explorer::ExplorerEvent::Handoff(handoff) => {
             let handoff = handoff.clone();
@@ -522,33 +520,67 @@ fn name_of(path: &str) -> String {
     }
 }
 
-/// The explorer's notices as the web app worded them.
-///
-/// PORT ME: their buttons (Get access, Install 7-Zip) and the archive password question come with the
-/// parts that own them (access, tools, archives).
-fn notice_for(notice: &explorer::Notice) -> Notification {
+/// Says what the explorer has to say in the main window: a notification, or for an archive whose list of files
+/// is encrypted the password question, then the folder again (`askArchivePassword`).
+fn show_notice(cx: &mut App, notice: &explorer::Notice) {
+    let Some(main) = main_window(cx) else {
+        return;
+    };
+    let _ = main.update(cx, |_, window, cx| match notice {
+        explorer::Notice::ArchivePassword { path, tab, select, .. } => {
+            crate::dialogs::password::ask_for_notice(window, cx, path.clone(), *tab, select.clone())
+        }
+        other => {
+            if let Some(note) = notice_for(other) {
+                window.push_notification(note, cx);
+            }
+        }
+    });
+}
+
+/// "Windows keeps it closed" (the web app's toast id "closed"): one at a time.
+struct ClosedToast;
+/// "It opens with 7-Zip": the offer to install it.
+struct SevenZipToast;
+/// 7-Zip being installed: how far it has come.
+struct InstallToast;
+/// An archive being read whole, keyed by the folder asked for.
+struct ReadingToast;
+
+/// The explorer's notices as the web app worded them, with their buttons (Get access, Install 7-Zip). `None`
+/// for the one that is a question, not a notice: an archive's password is asked in a dialog ([`show_notice`]).
+fn notice_for(notice: &explorer::Notice) -> Option<Notification> {
     use explorer::Notice;
-    match notice {
+    Some(match notice {
         Notice::CannotOpen { path, message } => {
             Notification::error(message.clone()).title(t!("Can't open “{name}”", name = name_of(path)))
         }
-        Notice::ArchivePassword { path, .. } => Notification::info(t!(
-            "{what} comes with its part of the port.",
-            what = t!("Opening protected archives")
-        ))
-        .title(t!("“{name}” has a password", name = name_of(path))),
-        Notice::NeedsSevenZip { path, .. } => Notification::info(t!(
-            "7-Zip reads disc and disk images, installers and packages. Glint installs it in a few seconds."
-        ))
-        .title(t!("“{name}” opens with 7-Zip", name = name_of(path))),
+        Notice::ArchivePassword { .. } => return None,
+        Notice::NeedsSevenZip { path, tab, select } => {
+            let (path, tab, select) = (path.clone(), *tab, select.clone());
+            Notification::info(t!(
+                "7-Zip reads disc and disk images, installers and packages. Glint installs it in a few seconds."
+            ))
+            .title(t!("“{name}” opens with 7-Zip", name = name_of(&path)))
+            .id::<SevenZipToast>()
+            .action(move |_, _, _| {
+                let (path, select) = (path.clone(), select.clone());
+                Button::new("install-7zip")
+                    .label(t!("Install 7-Zip"))
+                    .on_click(move |_, window, cx| {
+                        window.remove_notification::<SevenZipToast>(cx);
+                        install_seven_zip(window, cx, path.clone(), tab, select.clone());
+                    })
+            })
+        }
         Notice::NoLongerAvailable { path } => {
             Notification::info(t!("“{name}” is no longer available", name = name_of(path)))
         }
         Notice::Closed {
             path,
+            tab,
             from_index,
             can_get_access,
-            ..
         } => {
             let mut said = if *from_index {
                 t!("Glint shows what's in it from instant search, but your account may not open or change anything there.")
@@ -560,7 +592,23 @@ fn notice_for(notice: &explorer::Notice) -> Notification {
                 said.push(' ');
                 said.push_str(&t!("Get access to open it."));
             }
-            Notification::info(said).title(t!("Windows keeps “{name}” closed", name = name_of(path)))
+            let note = Notification::info(said)
+                .title(t!("Windows keeps “{name}” closed", name = name_of(path)))
+                .id::<ClosedToast>();
+            if !*can_get_access {
+                return Some(note);
+            }
+            let tab = *tab;
+            note.action(move |_, _, _| {
+                Button::new("get-access")
+                    .label(t!("Get access"))
+                    .on_click(move |_, window, cx| {
+                        window.remove_notification::<ClosedToast>(cx);
+                        if let Some(explorer) = explorer::try_explorer(cx) {
+                            explorer.update(cx, |e, cx| e.get_access(Some(tab), cx).detach());
+                        }
+                    })
+            })
         }
         Notice::InRecycleBin => Notification::info(t!(
             "Restore an item to use it again: it goes back to the folder it was deleted from."
@@ -581,7 +629,227 @@ fn notice_for(notice: &explorer::Notice) -> Notification {
             Notification::error(message.clone()).title(t!("Couldn't get access to “{name}”", name = name_of(path)))
         }
         Notice::Message(text) => Notification::info(text.clone()),
+    })
+}
+
+// ---- Installing 7-Zip -----------------------------------------------------------------------------------------
+
+/// How a tool is installed: glint-core's in the app (Settings → Tools' own call), a fake in tests. It gets the
+/// tool's id and where to tell how far it has come.
+type ToolInstaller = Arc<dyn Fn(String, async_channel::Sender<Fetch>) -> SettingsFut<()> + Send + Sync>;
+
+/// A [`ToolInstaller`] of the tests' own.
+#[cfg(test)]
+struct ToolInstall(ToolInstaller);
+
+#[cfg(test)]
+impl Global for ToolInstall {}
+
+fn tool_installer(cx: &App) -> Option<ToolInstaller> {
+    #[cfg(test)]
+    if let Some(fake) = cx.try_global::<ToolInstall>() {
+        return Some(fake.0.clone());
     }
+    let core = cx.try_global::<core_bridge::Core>()?;
+    let backend = CoreBackend::new(core.app.clone());
+    Some(Arc::new(move |id, progress| backend.tool_install(id, progress)))
+}
+
+/// The installing notice, with what the install is doing.
+fn installing(fetch: &Fetch) -> Notification {
+    Notification::info(describe_progress(fetch))
+        .title(t!("Installing {name}", name = t!("7-Zip")))
+        .id::<InstallToast>()
+        .autohide(false)
+}
+
+/// The Install 7-Zip button (`installTool("7zip")`): installs it, with its progress in a notice, and opens `path`
+/// again in `tab` once it is there. Failing says why (stopping it says nothing).
+fn install_seven_zip(
+    window: &mut Window,
+    cx: &mut App,
+    path: String,
+    tab: explorer::TabId,
+    select: Option<Vec<String>>,
+) {
+    let Some(installer) = tool_installer(cx) else {
+        return;
+    };
+    let (progress, heard) = async_channel::unbounded();
+    let install = installer("7zip".to_string(), progress);
+    window.push_notification(
+        installing(&Fetch {
+            stage: t!("Starting").to_string(),
+            done: 0,
+            total: 0,
+        }),
+        cx,
+    );
+    // The install's own words arrive until it ends; the ending takes the notice down for good.
+    let over = Rc::new(std::cell::Cell::new(false));
+    let ended = over.clone();
+    window
+        .spawn(cx, async move |cx| {
+            while let Ok(fetch) = heard.recv().await {
+                if over.get() {
+                    return;
+                }
+                if cx
+                    .update(|window, cx| window.push_notification(installing(&fetch), cx))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .detach();
+    window
+        .spawn(cx, async move |cx| {
+            let result = install.await;
+            ended.set(true);
+            let _ = cx.update(|window, cx| {
+                window.remove_notification::<InstallToast>(cx);
+                match result {
+                    Ok(()) => {
+                        window.push_notification(
+                            Notification::success("").title(t!("{name} is installed", name = t!("7-Zip"))),
+                            cx,
+                        );
+                        if let Some(explorer) = explorer::try_explorer(cx) {
+                            let options = explorer::NavOptions {
+                                select,
+                                tab: Some(tab),
+                                ..Default::default()
+                            };
+                            explorer.update(cx, |e, cx| e.navigate(path, options, cx));
+                        }
+                    }
+                    Err(reason) if reason == "cancelled" => {}
+                    Err(reason) => window.push_notification(
+                        Notification::error(reason).title(t!("Couldn't install {name}", name = t!("7-Zip"))),
+                        cx,
+                    ),
+                }
+            });
+        })
+        .detach();
+}
+
+// ---- A big archive read whole ---------------------------------------------------------------------------------
+
+/// What the archive-reading notice is told (the explorer's navigation tells it while a folder takes a moment).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ReadingNote {
+    /// The first read of `archive` (what `target` is in) has come this far: `done` of `total` compressed bytes.
+    Progress {
+        target: String,
+        archive: String,
+        done: u64,
+        total: u64,
+    },
+    /// The folder opened, failed or was stopped: the notice goes, and the taskbar button with it if it was shown.
+    Ended { target: String, shown: bool },
+}
+
+/// A test's stand-in for the main window: gets every [`ReadingNote`].
+#[cfg(test)]
+pub(crate) struct ReadingSink(pub(crate) Rc<dyn Fn(&ReadingNote)>);
+
+#[cfg(test)]
+impl Global for ReadingSink {}
+
+/// Where the notice's percent stands: whole percent of the file read, at most 99 until it ends, and 0 while the
+/// size isn't known (`showArchiveReading`).
+pub(crate) fn reading_percent(done: u64, total: u64) -> u8 {
+    if total == 0 {
+        return 0;
+    }
+    let percent = u128::from(done) * 100 / u128::from(total);
+    u8::try_from(percent.min(99)).unwrap_or(99)
+}
+
+/// The notice's identity: the folder asked for, in any case.
+fn reading_key(target: &str) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    target.to_lowercase().hash(&mut hasher);
+    // Only the notice's key: the hash's low bits are as good as the rest.
+    hasher.finish() as usize
+}
+
+/// "Reading name… 40%", with what it means and Stop.
+fn reading_notice(target: &str, archive: &str, done: u64, total: u64) -> Notification {
+    let key = reading_key(target);
+    let target = target.to_string();
+    Notification::info(t!(
+        "It keeps no list of what's in it, so it's read from start to end once."
+    ))
+    .title(t!(
+        "Reading {name}… {percent}%",
+        name = name_of(archive),
+        percent = reading_percent(done, total)
+    ))
+    .id1::<ReadingToast>(key)
+    .autohide(false)
+    .action(move |_, _, _| {
+        let target = target.clone();
+        Button::new(("stop-reading", key))
+            .label(t!("Stop"))
+            .on_click(move |_, window, cx| stop_reading(window, cx, &target))
+    })
+}
+
+/// Stop on the archive-reading notice: the read is stopped (its folder then says "cancelled", which says nothing),
+/// and the notice goes. Called from the button, so inside an update of the window.
+fn stop_reading(window: &mut Window, cx: &mut App, target: &str) {
+    if let Some(explorer) = explorer::try_explorer(cx) {
+        explorer.update(cx, |e, cx| e.stop_archive_reading(target, cx));
+    }
+    let idle = !copying(cx);
+    end_reading(window, cx, target, idle);
+}
+
+/// Takes the notice for `target` down, and the taskbar button with it when nothing else is running.
+fn end_reading(window: &mut Window, cx: &mut App, target: &str, idle: bool) {
+    window.remove_notification1::<ReadingToast>(reading_key(target), cx);
+    if idle {
+        window_state::taskbar_progress(window, ProgressState::None, None, None);
+    }
+}
+
+/// Shows how far a big archive's first read has come, with Stop, and the taskbar button with it; takes them away
+/// when it ends (`showArchiveReading`). Never from inside an update of the explorer or of the window.
+pub(crate) fn archive_reading(cx: &mut App, note: ReadingNote) {
+    #[cfg(test)]
+    if let Some(sink) = cx.try_global::<ReadingSink>().map(|sink| sink.0.clone()) {
+        sink(&note);
+        return;
+    }
+    let Some(main) = main_window(cx) else {
+        return;
+    };
+    // Nothing else running: the taskbar button goes with the notice.
+    let idle = !copying(cx);
+    let _ = main.update(cx, move |_, window, cx| match note {
+        ReadingNote::Progress {
+            target,
+            archive,
+            done,
+            total,
+        } => {
+            window.push_notification(reading_notice(&target, &archive, done, total), cx);
+            if total > 0 {
+                window_state::taskbar_progress(window, ProgressState::Normal, Some(done), Some(total));
+            } else {
+                window_state::taskbar_progress(window, ProgressState::Indeterminate, None, None);
+            }
+        }
+        ReadingNote::Ended { target, shown } => {
+            if shown {
+                end_reading(window, cx, &target, idle);
+            }
+        }
+    });
 }
 
 // ---- The taskbar ---------------------------------------------------------------------------------------------
@@ -656,4 +924,300 @@ fn update_jump_list(cx: &mut App) {
     }
     cx.set_global(JumpListShown(key));
     window_state::sync_jump_list_in_background(pinned, frequent);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::fake::{file, FakeDisk};
+    use crate::explorer::{init_with, Notice};
+    use crate::testing;
+    use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
+    use gpui_kit::{TestAppContext, VisualTestContext};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// A window with nothing in it but the notification and dialog layers, standing in for the main window.
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// The explorer on a fake disk (a closed folder, a folder with a disc image), the stand-in main window, and
+    /// what the fake tool installer was asked to install.
+    struct World {
+        cx: TestAppContext,
+        window: VisualTestContext,
+        installs: Arc<Mutex<Vec<String>>>,
+    }
+
+    fn world(cx: &mut TestAppContext) -> World {
+        cx.update(testing::init);
+        let disk = FakeDisk::new();
+        disk.folder("C:\\", vec![]);
+        disk.folder("C:\\secret", vec![file("C:\\secret", "plans.txt", 5, 5)]);
+        disk.deny("C:\\secret");
+        disk.folder("C:\\images", vec![file("C:\\images", "a.iso", 5, 5)]);
+        cx.update(|cx| init_with(cx, disk.source()));
+        let (mut window, _) = testing::open_window(cx, |_, cx| cx.new(|_| Blank));
+        window.update(|window, cx| cx.set_global(MainWindow(window.window_handle())));
+        let opened = cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.init_explorer(Vec::new(), cx)));
+        window.foreground_executor().block_test(opened);
+        World {
+            cx: cx.clone(),
+            window,
+            installs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    impl World {
+        fn path(&mut self) -> String {
+            self.cx
+                .update(|cx| explorer::explorer(cx).read(cx).current_path().to_string())
+        }
+
+        fn tab(&mut self) -> explorer::TabId {
+            self.cx.update(|cx| explorer::explorer(cx).read(cx).active_tab_id())
+        }
+
+        fn closed_tab(&mut self) -> bool {
+            self.cx.update(|cx| {
+                explorer::explorer(cx)
+                    .read(cx)
+                    .active_tab()
+                    .is_some_and(|t| t.no_access().is_some())
+            })
+        }
+
+        fn go(&mut self, path: &str) {
+            let task = self.cx.update(|cx| {
+                explorer::explorer(cx).update(cx, |e, cx| e.navigate_task(path, explorer::NavOptions::default(), cx))
+            });
+            self.window.foreground_executor().block_test(task);
+        }
+
+        fn say(&mut self, notice: Notice) {
+            self.cx.update(|cx| show_notice(cx, &notice));
+            self.settle();
+        }
+
+        fn notifications(&mut self) -> usize {
+            self.window.update(|window, cx| window.notifications(cx).len())
+        }
+
+        fn dialog(&mut self) -> bool {
+            self.window.update(|window, cx| window.has_active_dialog(cx))
+        }
+
+        /// Whether a control of that name is on screen (the notifications' buttons are).
+        fn has(&mut self, label: &str) -> bool {
+            self.window.update(|window, cx| {
+                window.render_frame(cx);
+                window.try_find_by_label(label).is_some()
+            })
+        }
+
+        fn press(&mut self, label: &str) {
+            self.window.update(|window, cx| {
+                window.render_frame(cx);
+                let id = window
+                    .find_by_label(label)
+                    .path()
+                    .last()
+                    .cloned()
+                    .expect("a button with an id");
+                window.click(id, cx);
+            });
+            self.settle();
+        }
+
+        /// Lets what is under way finish, and the notifications that were taken down leave.
+        fn settle(&mut self) {
+            for _ in 0..40 {
+                self.window.run_until_parked();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            self.window.executor().advance_clock(Duration::from_millis(500));
+            self.window.run_until_parked();
+        }
+
+        /// Installs end with `answer`, and are recorded.
+        fn install_with(&mut self, answer: Result<(), String>) {
+            let seen = self.installs.clone();
+            let installer: ToolInstaller = Arc::new(move |id, progress| {
+                if let Ok(mut seen) = seen.lock() {
+                    seen.push(id);
+                }
+                let _ = progress.try_send(Fetch {
+                    stage: "Downloading".into(),
+                    done: 1,
+                    total: 2,
+                });
+                let answer = answer.clone();
+                Box::pin(async move { answer })
+            });
+            self.cx.update(|cx| cx.set_global(ToolInstall(installer)));
+        }
+
+        fn installed(&self) -> Vec<String> {
+            self.installs.lock().map(|seen| seen.clone()).unwrap_or_default()
+        }
+    }
+
+    fn closed(tab: explorer::TabId, can_get_access: bool) -> Notice {
+        Notice::Closed {
+            path: "C:\\secret".into(),
+            tab,
+            from_index: false,
+            can_get_access,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_closed_folders_notice_offers_get_access_and_the_button_opens_it(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut w = world(cx);
+        w.go("C:\\secret");
+        assert!(w.closed_tab());
+        let tab = w.tab();
+        // Where Get access can't help (a remote, or Windows already refused) there is no button.
+        w.say(closed(tab, false));
+        assert_eq!(w.notifications(), 1);
+        assert!(!w.has("Get access"));
+        // Where it can, the notice replaces that one (one at a time) and its button asks Windows.
+        w.say(closed(tab, true));
+        assert_eq!(w.notifications(), 1);
+        assert!(w.has("Get access"));
+        w.press("Get access");
+        assert!(!w.closed_tab(), "the folder opens in place");
+        assert_eq!(w.path(), "C:\\secret");
+        assert_eq!(w.notifications(), 0, "the notice goes with the click");
+    }
+
+    #[gpui_kit::test]
+    fn a_disc_image_before_7zip_offers_to_install_it_and_opens_again_once_it_is_there(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut w = world(cx);
+        w.go("C:\\");
+        let tab = w.tab();
+        let offer = || Notice::NeedsSevenZip {
+            path: "C:\\images".into(),
+            tab,
+            select: Some(vec!["C:\\images\\a.iso".into()]),
+        };
+        w.say(offer());
+        assert_eq!(w.notifications(), 1);
+        assert!(w.has("Install 7-Zip"));
+        w.install_with(Ok(()));
+        w.press("Install 7-Zip");
+        assert_eq!(w.installed(), ["7zip"]);
+        assert_eq!(w.path(), "C:\\images", "opened again once it was installed");
+        assert_eq!(
+            w.notifications(),
+            1,
+            "'7-Zip is installed', and the offer and the progress are gone"
+        );
+
+        // Failing says why and leaves the folder where it was.
+        w.go("C:\\");
+        w.say(offer());
+        w.install_with(Err("No network".into()));
+        w.press("Install 7-Zip");
+        assert_eq!(w.installed(), ["7zip", "7zip"]);
+        assert_eq!(w.path(), "C:\\");
+        assert_eq!(w.notifications(), 2, "the earlier 'installed' and the failure");
+
+        // Stopping it says nothing.
+        let before = w.notifications();
+        w.say(offer());
+        w.install_with(Err("cancelled".into()));
+        w.press("Install 7-Zip");
+        assert_eq!(w.path(), "C:\\");
+        assert_eq!(w.notifications(), before);
+    }
+
+    #[gpui_kit::test]
+    fn an_archive_with_a_password_is_asked_for_in_a_dialog_not_told_in_a_notice(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut w = world(cx);
+        let tab = w.tab();
+        let notice = Notice::ArchivePassword {
+            path: "C:\\secret.7z".into(),
+            tab,
+            select: None,
+            message: "needs a password".into(),
+        };
+        assert!(notice_for(&notice).is_none());
+        w.say(notice);
+        assert!(w.dialog(), "the password question");
+        assert_eq!(w.notifications(), 0);
+    }
+
+    #[gpui_kit::test]
+    fn the_other_notices_are_plain_notifications(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut w = world(cx);
+        w.say(Notice::InRecycleBin);
+        w.say(Notice::ReadOnly { remote: false });
+        w.say(Notice::Message("Can't find “x”.".into()));
+        assert_eq!(w.notifications(), 3);
+        assert!(!w.dialog());
+    }
+
+    #[gpui_kit::test]
+    fn the_archive_reading_notice_comes_with_stop_follows_the_read_and_goes_when_it_ends(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut w = world(cx);
+        let progress = |done| ReadingNote::Progress {
+            target: "C:\\big.tar.gz".into(),
+            archive: "C:\\big.tar.gz".into(),
+            done,
+            total: 100,
+        };
+        w.cx.update(|cx| archive_reading(cx, progress(10)));
+        w.settle();
+        assert_eq!(w.notifications(), 1);
+        assert!(w.has("Stop"));
+        // Asked again as it goes: the same notice, not another.
+        w.cx.update(|cx| archive_reading(cx, progress(60)));
+        w.settle();
+        assert_eq!(w.notifications(), 1);
+        // The read ends: it goes.
+        w.cx.update(|cx| {
+            archive_reading(
+                cx,
+                ReadingNote::Ended {
+                    target: "C:\\BIG.tar.gz".into(),
+                    shown: true,
+                },
+            )
+        });
+        w.settle();
+        assert_eq!(w.notifications(), 0, "found by the folder in any case");
+        // Stop takes the notice down by itself.
+        w.cx.update(|cx| archive_reading(cx, progress(30)));
+        w.settle();
+        w.press("Stop");
+        assert_eq!(w.notifications(), 0);
+    }
+
+    #[test]
+    fn the_percent_is_whole_stays_below_a_hundred_until_the_end_and_is_nothing_without_a_size() {
+        assert_eq!(reading_percent(0, 100), 0);
+        assert_eq!(reading_percent(25, 100), 25);
+        assert_eq!(reading_percent(2, 3), 66);
+        assert_eq!(reading_percent(100, 100), 99);
+        assert_eq!(reading_percent(200, 100), 99);
+        assert_eq!(reading_percent(5, 0), 0);
+        assert_eq!(reading_percent(u64::MAX, u64::MAX), 99);
+    }
+
+    #[test]
+    fn a_notices_key_is_the_same_in_any_case_and_differs_between_folders() {
+        assert_eq!(reading_key("C:\\Big.tar.gz"), reading_key("c:\\big.TAR.gz"));
+        assert_ne!(reading_key("C:\\a.tar.gz"), reading_key("C:\\b.tar.gz"));
+    }
 }
