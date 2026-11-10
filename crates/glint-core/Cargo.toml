@@ -12,7 +12,9 @@ name = "glint_core"
 [dependencies]
 
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# JSON objects keep their keys' order (a package.json's scripts as written, ExifTool's tags as it lists them), as
+# in the app: GPUI turns this on in Glint.exe, and the Tauri build had it too, so tests see what ships.
+serde_json = { version = "1.0", features = ["preserve_order"] }
 notify = "8"
 shadui-index = { path = "../../src-tauri/index" }
 # The File X-Ray's checksums: RustCrypto's SHA-256 (with the CPU's SHA instructions where it has them)

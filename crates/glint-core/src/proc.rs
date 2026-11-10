@@ -160,8 +160,18 @@ fn find(name: &str, package: &str, downloaded: Option<&std::path::Path>) -> Opti
         return Some((own, Origin::Downloaded));
     }
     let env = |var: &str| std::env::var_os(var).map(PathBuf::from);
-    // Relative PATH entries would resolve against wherever the app was started from.
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).filter(|d| d.is_absolute()).collect()).unwrap_or_default();
+    // Relative PATH entries would resolve against wherever the app was started from. A Store package's folder
+    // (Program Files\WindowsApps\<package>) is skipped: Windows puts the Store Glint's there for any Glint.exe the
+    // shell starts (its App Paths entry), and other processes may not run what is inside it (Access is denied).
+    let packaged = env("ProgramFiles").map(|d| d.join("WindowsApps").to_string_lossy().to_lowercase());
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| {
+            std::env::split_paths(&p)
+                .filter(|d| d.is_absolute())
+                .filter(|d| packaged.as_ref().is_none_or(|apps| !d.to_string_lossy().to_lowercase().starts_with(apps.as_str())))
+                .collect()
+        })
+        .unwrap_or_default();
     let winget = env("LOCALAPPDATA").map(|d| d.join(r"Microsoft\WinGet"));
     dirs.extend(winget.iter().map(|w| w.join("Links")));
     dirs.extend(env("USERPROFILE").into_iter().flat_map(|home| [home.join(r"scoop\shims"), home.join(r".cargo\bin")]));

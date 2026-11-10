@@ -67,6 +67,7 @@ pub use data::{Device, MenuData, Sources};
 pub use event::{CloudPin, CompressFormat, MediaTool, MenuEvent, PdfTool};
 pub use folder::{folder_menu, undo_label, Connection, FolderCtx, FolderView};
 pub use item::{item_menu, open_in_menu, scripts_menu, shell_menu_fits, ItemCtx};
+pub use kinds::on_disk;
 pub use spec::{key_text, visible_items, Command, Entry, Node, Run, Task};
 pub use view::{MenuView, MenuViewEvent};
 
@@ -234,6 +235,24 @@ impl MenuHost {
         }
         let ctx = self.item_ctx(pane, cx);
         let nodes = item_menu(&chosen, &ctx);
+        self.show(nodes, at, pane, t!("Item menu"), window, cx);
+    }
+
+    /// The item menu for `entries` as they are, at `at`: items the tab's rows don't hold, such as the disk usage
+    /// map's items deeper than its folder. With none, the folder's own menu.
+    pub fn open_entries_menu(
+        &mut self,
+        pane: usize,
+        entries: Vec<FileEntry>,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if entries.is_empty() {
+            return self.open_background_menu(pane, Some(at), window, cx);
+        }
+        let ctx = self.item_ctx(pane, cx);
+        let nodes = item_menu(&entries, &ctx);
         self.show(nodes, at, pane, t!("Item menu"), window, cx);
     }
 

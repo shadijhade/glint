@@ -8,6 +8,11 @@
 //!
 //! `GLINT_SELFTEST=show:<file>` opens the file's folder with it selected and the preview pane on, and stays
 //! open for a look (a capture). Release builds ignore the variable.
+//!
+//! `GLINT_SELFTEST=wave8:<folder>` (a scratch folder holding `a.txt` with the word "needle" in it, and `b.txt`):
+//! text search finds the needle (Ctrl+Shift+F, then a search as a recent one runs) and goes back to the files;
+//! the disk usage map comes up and goes again; Compare opens on the two files; the two are compressed into
+//! `a.zip` and that is extracted beside it. Nothing is recycled. The log is `<folder>\selftest.log`.
 
 use crate::explorer;
 use crate::kit::prelude::*;
@@ -34,12 +39,60 @@ pub(crate) fn start(cx: &mut App) {
         crate::state::update(cx, |settings| settings.show_preview_pane = true);
         return;
     }
-    let Some(folder) = script.strip_prefix("ops:").map(PathBuf::from) else {
-        eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
+    // `map:<folder>`: the folder's disk usage map, left open for a look.
+    if let Some(folder) = script.strip_prefix("map:") {
+        let folder = folder.to_string();
+        explorer::explorer(cx).update(cx, |e, cx| e.navigate(folder, Default::default(), cx));
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_millis(800)).await;
+            dispatch(cx, Box::new(actions::DiskUsage));
+        })
+        .detach();
         return;
+    }
+    // `text:<folder>|<query>`: text search in the folder for the query, left open for a look.
+    if let Some(rest) = script.strip_prefix("text:") {
+        let (folder, query) = rest.split_once('|').unwrap_or((rest, "needle"));
+        let item = glint_model::store::HistoryItem {
+            query: query.to_string(),
+            path: folder.to_string(),
+            timestamp: 0,
+        };
+        // In the folder first: Ctrl+Shift+F searches the open folder (and refuses one Windows keeps closed).
+        let target = folder.to_string();
+        explorer::explorer(cx).update(cx, |e, cx| e.navigate(target, Default::default(), cx));
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_millis(800)).await;
+            dispatch(cx, Box::new(actions::TextSearch));
+            cx.background_executor().timer(Duration::from_millis(500)).await;
+            cx.update(|cx| {
+                let Some(text) = startup::main_workspace(cx).and_then(|w| w.read(cx).text_search().0) else {
+                    return;
+                };
+                if let Some(main) = startup::main_window(cx) {
+                    let _ = main.update(cx, |_, window, cx| {
+                        text.update(cx, |text, cx| text.pick_history(&item, window, cx))
+                    });
+                }
+            });
+        })
+        .detach();
+        return;
+    }
+    let (folder, wave8) = match (script.strip_prefix("ops:"), script.strip_prefix("wave8:")) {
+        (Some(folder), _) => (PathBuf::from(folder), false),
+        (_, Some(folder)) => (PathBuf::from(folder), true),
+        _ => {
+            eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
+            return;
+        }
     };
     cx.spawn(async move |cx| {
-        let log = ops(&folder, cx).await;
+        let log = if wave8 {
+            wave8_checks(&folder, cx).await
+        } else {
+            ops(&folder, cx).await
+        };
         let _ = std::fs::write(folder.join("selftest.log"), log.join("\r\n"));
         cx.update(|cx| cx.quit());
     })
@@ -192,5 +245,186 @@ async fn ops(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
             .unwrap_or_default()
     });
     check(&mut log, &format!("search: {how}"), found, folder);
+    log
+}
+
+/// Runs `act` in the main window.
+fn in_main(cx: &mut AsyncApp, act: impl FnOnce(&mut Window, &mut App)) {
+    cx.update(|cx| {
+        if let Some(main) = startup::main_window(cx) {
+            let _ = main.update(cx, |_, window, cx| act(window, cx));
+        }
+    });
+}
+
+/// Whether text search is on screen, and its search's state: (on screen, searching, matches).
+fn text_state(cx: &mut AsyncApp) -> (bool, bool, usize) {
+    cx.update(|cx| {
+        let Some(workspace) = startup::main_workspace(cx) else {
+            return (false, false, 0);
+        };
+        let (text, shown) = workspace.read(cx).text_search();
+        let Some(text) = text else {
+            return (shown, false, 0);
+        };
+        let search = text.read(cx).search().read(cx);
+        let ran = search.run().is_some();
+        (shown, search.searching() || !ran, search.matches().len())
+    })
+}
+
+async fn wave8_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
+    use crate::components::disk_usage;
+    let mut log = Vec::new();
+    let dir = folder.to_string_lossy().into_owned();
+    let check = |log: &mut Vec<String>, step: &str, ok: bool| {
+        log.push(format!("{} {step}", if ok { "OK  " } else { "FAIL" }));
+        ok
+    };
+
+    // 1. The folder is open in the active tab.
+    let target = dir.clone();
+    cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.navigate(target, Default::default(), cx)));
+    let opened = wait_for(cx, Duration::from_secs(10), |cx| {
+        cx.update(|cx| {
+            let e = explorer::explorer(cx).read(cx);
+            e.active_tab()
+                .is_some_and(|t| t.path.eq_ignore_ascii_case(&dir) && t.rows.len() >= 2)
+        })
+    })
+    .await;
+    if !check(&mut log, &format!("open the folder: {:?}", names(folder)), opened) {
+        return log;
+    }
+
+    log.push(format!("     ripgrep: {:?}", glint_core::proc::locate("rg")));
+    // 2. Text search (Ctrl+Shift+F), the needle searched for as a recent search runs, then back to the files.
+    dispatch(cx, Box::new(actions::TextSearch));
+    let shown = wait_for(cx, Duration::from_secs(5), |cx| text_state(cx).0).await;
+    check(&mut log, "text search comes on screen", shown);
+    let item = glint_model::store::HistoryItem {
+        query: "needle".into(),
+        path: dir.clone(),
+        timestamp: 0,
+    };
+    cx.update(|cx| {
+        let Some(workspace) = startup::main_workspace(cx) else {
+            return;
+        };
+        let Some(text) = workspace.read(cx).text_search().0 else {
+            return;
+        };
+        if let Some(main) = startup::main_window(cx) {
+            let _ = main.update(cx, |_, window, cx| {
+                text.update(cx, |text, cx| text.pick_history(&item, window, cx))
+            });
+        }
+    });
+    let searched = wait_for(cx, Duration::from_secs(20), |cx| {
+        let (_, searching, _) = text_state(cx);
+        !searching
+    })
+    .await;
+    let (_, _, matches) = text_state(cx);
+    let said = cx.update(|cx| {
+        let workspace = startup::main_workspace(cx)?;
+        let text = workspace.read(cx).text_search().0?;
+        let search = text.read(cx).search().read(cx);
+        Some(format!(
+            "ran: {:?}, searching: {}, error: {:?}, took {} ms",
+            search.run().map(|run| run.path.clone()),
+            search.searching(),
+            search.error(),
+            search.duration()
+        ))
+    });
+    check(
+        &mut log,
+        &format!(
+            "text search: {matches} match(es) for “needle” ({})",
+            said.unwrap_or_default()
+        ),
+        searched && matches == 1,
+    );
+    dispatch(cx, Box::new(actions::BackToFiles));
+    let back = wait_for(cx, Duration::from_secs(5), |cx| !text_state(cx).0).await;
+    check(&mut log, "back to the files", back);
+
+    // 3. The disk usage map of the folder, then the list again. The files' keys come back with the next frame.
+    cx.background_executor().timer(Duration::from_millis(500)).await;
+    dispatch(cx, Box::new(actions::DiskUsage));
+    let shows = wait_for(cx, Duration::from_secs(5), |cx| {
+        cx.update(|cx| {
+            let tab = explorer::explorer(cx).read(cx).active_tab_id();
+            disk_usage::shows(cx, tab)
+        })
+    })
+    .await;
+    check(&mut log, "the tab shows its map", shows);
+    let mapped = wait_for(cx, Duration::from_secs(30), |cx| {
+        cx.update(|cx| {
+            let tab = explorer::explorer(cx).read(cx).active_tab_id();
+            disk_usage::status(cx, tab).is_some_and(|line| !line.busy)
+        })
+    })
+    .await;
+    let line = cx.update(|cx| {
+        let tab = explorer::explorer(cx).read(cx).active_tab_id();
+        disk_usage::status(cx, tab)
+            .map(|line| line.text.to_string())
+            .unwrap_or_default()
+    });
+    check(&mut log, &format!("disk usage map: {line}"), mapped);
+    dispatch(cx, Box::new(actions::DiskUsage));
+    let unmapped = wait_for(cx, Duration::from_secs(5), |cx| {
+        cx.update(|cx| {
+            let tab = explorer::explorer(cx).read(cx).active_tab_id();
+            !disk_usage::shows(cx, tab)
+        })
+    })
+    .await;
+    check(&mut log, "back to the file list", unmapped);
+
+    // 4. Compare on the two files, then closed.
+    let (a, b) = (
+        folder.join("a.txt").to_string_lossy().into_owned(),
+        folder.join("b.txt").to_string_lossy().into_owned(),
+    );
+    in_main(cx, |window, cx| {
+        crate::dialogs::compare_files::open(window, cx, a.clone(), b.clone())
+    });
+    let comparing = wait_for(cx, Duration::from_secs(5), |cx| {
+        let mut open = false;
+        in_main(cx, |window, cx| open = window.has_active_dialog(cx));
+        open
+    })
+    .await;
+    check(&mut log, "compare opens", comparing);
+    in_main(cx, |window, cx| window.close_dialog(cx));
+
+    // 5. The two compressed into a.zip, and that extracted beside it.
+    let paths = vec![a.clone(), b.clone()];
+    cx.update(|cx| {
+        explorer::explorer(cx).update(cx, |e, cx| {
+            e.compress(paths, explorer::CompressFormat::Zip, None, cx).detach()
+        })
+    });
+    let zip = folder.join("a.zip");
+    let zipped = wait_for(cx, Duration::from_secs(30), |_| zip.exists()).await;
+    check(&mut log, &format!("compress: {:?}", names(folder)), zipped);
+    if zipped {
+        let zip_path = zip.to_string_lossy().into_owned();
+        cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.extract_here(&zip_path, cx).detach()));
+        let out = folder.join("a");
+        let extracted = wait_for(cx, Duration::from_secs(30), |_| {
+            out.join("a.txt").exists() && out.join("b.txt").exists()
+        })
+        .await;
+        check(
+            &mut log,
+            &format!("extract: {:?} in a: {:?}", names(folder), names(&out)),
+            extracted,
+        );
+    }
     log
 }

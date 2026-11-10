@@ -152,6 +152,8 @@ pub struct Explorer {
     pub(super) ops: OpsState,
     /// The searches by name: running ones, their numbering and where instant search stands.
     pub(super) searching: super::find::Searching,
+    /// Archive work in progress (compressing, extracting, staging copy-outs) and the drag that is ready.
+    pub(super) archives: super::archive::ArchiveState,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -203,6 +205,7 @@ impl Explorer {
             initialized: false,
             ops: OpsState::new(),
             searching: Default::default(),
+            archives: Default::default(),
             _subscriptions: subscriptions,
         }
     }

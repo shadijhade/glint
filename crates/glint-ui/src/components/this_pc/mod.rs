@@ -225,6 +225,11 @@ impl ThisPc {
     }
 
     /// Every tile's focus handle, folders first.
+    /// Whether one of the tiles has the keyboard (the workspace moves it on when This PC gives way to a folder).
+    pub fn has_focus(&self, window: &Window) -> bool {
+        self.focus_handles().any(|focus| focus.is_focused(window))
+    }
+
     fn focus_handles(&self) -> impl Iterator<Item = &FocusHandle> {
         self.known
             .iter()

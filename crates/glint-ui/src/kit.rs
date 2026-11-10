@@ -421,6 +421,10 @@ mod tests {
             IconName::ShieldAlert,
             IconName::Thermometer,
             IconName::TriangleAlert,
+            IconName::FolderOpen,
+            IconName::TextSearch,
+            IconName::LayoutDashboard,
+            IconName::Share2,
         ] {
             let path = name.path();
             assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");

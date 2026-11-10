@@ -175,8 +175,9 @@ mod tests {
         // The lock file above the package names its runner.
         let web = npm_scripts(&dir.join("web"), &dir).unwrap();
         assert_eq!(web.source, "pnpm");
-        assert_eq!(web.tasks.iter().map(|t| t.command.as_str()).collect::<Vec<_>>(), ["pnpm build:all", "pnpm dev", "pnpm \"my task\""]);
-        assert_eq!(web.tasks[0].detail, "tsc && vite build");
+        // In the order package.json lists them.
+        assert_eq!(web.tasks.iter().map(|t| t.command.as_str()).collect::<Vec<_>>(), ["pnpm dev", "pnpm build:all", "pnpm \"my task\""]);
+        assert_eq!(web.tasks[1].detail, "tsc && vite build");
         assert_eq!(cargo_tasks(&dir).unwrap().tasks[0].command, "cargo build");
         assert!(cargo_tasks(&dir.join("web")).is_none());
         let uv = uv_tasks(&dir).unwrap();

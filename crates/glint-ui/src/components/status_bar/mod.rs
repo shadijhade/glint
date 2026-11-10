@@ -89,12 +89,15 @@ impl StatusBar {
         let model = cx.new(move |_| IndexModel::new(source));
         model.update(cx, |model, cx| model.refresh(cx));
         let thumbs = thumbnail::thumbnails(cx);
+        let usage = crate::components::disk_usage::shared(cx);
         let subscriptions = vec![
             // Any change to the explorer may change what the bar says; the summary is made on the next frame.
             cx.observe(&explorer, |this: &mut Self, _, cx| {
                 this.dirty = true;
                 cx.notify();
             }),
+            // The map's measuring and its time, for the work line while a tab shows it.
+            cx.observe(&usage, |_, _, cx| cx.notify()),
             cx.observe(&model, |this: &mut Self, model, cx| {
                 this.index_info = model.read(cx).info().cloned();
                 cx.notify();
@@ -388,6 +391,9 @@ impl StatusBar {
                 .children(thumbs.and_then(|th| thumbs_piece(th, wide, t)))
                 .children((fd_offer && wide.large).then(|| self.turn_on_button(t, cx)))
                 .into_any_element()
+        } else if let Some(line) = self.usage_line(cx) {
+            // The tab shows its disk usage map: how it was mapped, instead of how the folder was read.
+            line.element(cx)
         } else if s.has_listing {
             // The folder's work, with its details one click away (the popover).
             let work = Work::of(s);
@@ -411,6 +417,15 @@ impl StatusBar {
                 .child(content)
                 .into_any_element(),
         )
+    }
+
+    /// How the active tab's disk usage map was made ("index · mapped 12 GB in 3.2 ms"), while the tab shows it.
+    fn usage_line(&self, cx: &App) -> Option<crate::components::disk_usage::StatusLine> {
+        let tab = self.explorer.read(cx).active_tab_id();
+        if !crate::components::disk_usage::shows(cx, tab) {
+            return None;
+        }
+        crate::components::disk_usage::status(cx, tab)
     }
 
     /// The button that opens the folder's details, holding the index's progress and the work line.

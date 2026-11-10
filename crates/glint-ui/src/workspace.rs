@@ -5,11 +5,12 @@
 //! | Area                    | View                                                                 |
 //! |-------------------------|----------------------------------------------------------------------|
 //! | Title bar               | gpui-component's `TitleBar` (snap layouts), holding the [`TabStrip`] |
-//! | Toolbar                 | the [`AddressBar`] (back, forward, up, refresh, crumbs, search)      |
+//! | Toolbar                 | the mode switch (Files, Text), the [`AddressBar`], Sharing, Disk usage |
 //! | Drive health button     | **temporary** (This PC's tiles and banner open it too)               |
 //! | Sidebar                 | the [`Sidebar`]: places and the folder tree                          |
-//! | Each pane               | [`ThisPc`], or the [`FileGrid`] or the [`FileList`] by the tab's view |
+//! | Each pane               | [`ThisPc`], the [`DiskUsage`] map, or the [`FileGrid`] or the [`FileList`] |
 //! | Status bar              | the [`StatusBar`]                                                    |
+//! | Text mode (Ctrl+Shift+F) | [`TextSearch`] instead of the sidebar, the panes and the status bar |
 //! | Over everything         | the [`CopyQueue`] panel and the [`MenuHost`]'s menus                 |
 //!
 //! **Patterns here:**
@@ -22,15 +23,17 @@
 
 use crate::components::address_bar::{AddressBar, AddressBarEvent};
 use crate::components::copy_queue::{CopyQueue, CopyQueueEvent};
+use crate::components::disk_usage::{self, DiskUsage, DiskUsageEvent};
 use crate::components::file_grid::{FileGrid, FileGridEvent};
 use crate::components::file_list::DragFromArchive;
 use crate::components::file_list::{FileList, FileListEvent};
-use crate::components::menus::{MenuEvent, MenuHost};
+use crate::components::menus::{self, MenuEvent, MenuHost};
 use crate::components::preview::{self, PreviewPane};
 use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
 use crate::components::status_bar::StatusBar;
 use crate::components::tab_strip::{PaneDropZone, TabStrip};
+use crate::components::text_search::{TextSearch, TextSearchEvent};
 use crate::components::this_pc::{ThisPc, ThisPcEvent};
 use crate::components::{palette, settings};
 use crate::explorer::{self, ExplorerEvent};
@@ -38,6 +41,9 @@ use crate::kit::prelude::*;
 use crate::platform::dragdrop;
 use crate::{actions, core_bridge, dialogs, notices, state, t, theme};
 use glint_core::host::Manager as _;
+use glint_model::entries::FileEntry;
+use glint_model::format::plural;
+use glint_model::paths::{base_name, same_path};
 use glint_model::store::ViewMode;
 use std::ops::Range;
 
@@ -53,12 +59,15 @@ struct PaneViews {
     list: Entity<FileList>,
     grid: Entity<FileGrid>,
     this_pc: Entity<ThisPc>,
+    /// The map of what fills the tab's folder, while the tab shows it (`disk_usage::visible`).
+    usage: Entity<DiskUsage>,
 }
 
 /// Which of a pane's views is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shown {
     ThisPc,
+    DiskUsage,
     Grid,
     List,
 }
@@ -81,6 +90,13 @@ pub struct Workspace {
     preview: Option<Entity<PreviewPane>>,
     /// The first pane and, in dual-pane view, the second.
     panes: [PaneViews; 2],
+    /// Searching inside files: made the first time it is asked for (its install cards look at every tool once),
+    /// then kept for the window's life, so its results keep their place while the files are shown.
+    text: Option<Entity<TextSearch>>,
+    /// Text search is on screen instead of the files (the web app's `mode === "text"`).
+    text_mode: bool,
+    /// What is shared or being sent, for the toolbar's Sharing button (None without core, as in tests).
+    sharing: Option<Entity<dialogs::share::Sharing>>,
     /// What each pane showed at the last look, so a grid going out of sight lets its thumbnails go.
     shown: [Option<Shown>; 2],
     /// Files dragged over the window from File Explorer and other apps arrive here, as long as it lives
@@ -115,6 +131,7 @@ impl Workspace {
             list: cx.new(|cx| FileList::new(pane, window, cx)),
             grid: cx.new(|cx| FileGrid::new(pane, window, cx)),
             this_pc: cx.new(|cx| ThisPc::new(pane, window, cx)),
+            usage: cx.new(|cx| DiskUsage::new(pane, window, cx)),
         });
 
         subscriptions.push(cx.subscribe_in(&address, window, Self::on_address_event));
@@ -126,10 +143,10 @@ impl Workspace {
             subscriptions.push(cx.subscribe_in(&views.list, window, move |this, _, event, window, cx| {
                 this.on_list_event(pane, event, window, cx)
             }));
-            // Items inside an archive are extracted first, then dragged as copies: the archive part does that.
+            // Items inside an archive are extracted first, then dragged as copies.
             subscriptions.push(
-                cx.subscribe_in(&views.list, window, |_, _, _: &DragFromArchive, window, cx| {
-                    Self::not_yet(window, cx, t!("Dragging out of archives"))
+                cx.subscribe_in(&views.list, window, |_, _, event: &DragFromArchive, _, cx| {
+                    Self::drag_from_archive(event.paths.clone(), None, cx)
                 }),
             );
             subscriptions.push(cx.subscribe_in(&views.grid, window, move |this, _, event, window, cx| {
@@ -140,6 +157,26 @@ impl Workspace {
                     this.on_this_pc_event(event, window, cx)
                 }),
             );
+            subscriptions.push(
+                cx.subscribe_in(&views.usage, window, move |this, _, event, window, cx| {
+                    this.on_usage_event(pane, event, window, cx)
+                }),
+            );
+        }
+        // A tab's map turned on or off changes what its pane shows.
+        let usage = disk_usage::shared(cx);
+        subscriptions.push(cx.observe_in(&usage, window, |this, _, window, cx| this.follow_panes(window, cx)));
+        // The Sharing button follows what is shared; back in front, what keeps other devices out is read again.
+        let sharing = cx.has_global::<core_bridge::Core>().then(|| dialogs::share::shared(cx));
+        if let Some(sharing) = &sharing {
+            subscriptions.push(cx.observe(sharing, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    if let Some(sharing) = this.sharing.clone() {
+                        sharing.update(cx, |sharing, cx| sharing.recheck(cx));
+                    }
+                }
+            }));
         }
         // The explorer decides what each pane shows; the keyboard follows the active pane when it moves.
         let explorer = explorer::explorer(cx);
@@ -157,7 +194,12 @@ impl Workspace {
                 ExplorerEvent::QueueOpened => this.queue.update(cx, |queue, cx| queue.show(cx)),
                 ExplorerEvent::BatchRename(paths) => dialogs::batch_rename::open(window, cx, paths.clone()),
                 ExplorerEvent::Find(notice) => notices::find(notice, window, cx),
-                ExplorerEvent::FromArchive(_) => Self::not_yet(window, cx, t!("Copying out of archives")),
+                // Out of an archive to the other pane or the clipboard: extracted first, then copied.
+                ExplorerEvent::FromArchive(job) => {
+                    let job = job.clone();
+                    Self::explorer(cx, |e, cx| e.run_archive_job(job, cx).detach())
+                }
+                ExplorerEvent::Archive(notice) => notices::archive(notice, window, cx),
                 // Opening an item in the Recycle Bin asks for Quick Look through the explorer's flag.
                 ExplorerEvent::TabChanged(_) | ExplorerEvent::SelectionChanged(_) | ExplorerEvent::TabsChanged => {
                     preview::quick_look::sync(window, cx)
@@ -179,10 +221,23 @@ impl Workspace {
             settings_events: None,
             preview: None,
             panes,
+            text: None,
+            text_mode: false,
+            sharing,
             shown: [None, None],
             _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Text search, once it has been asked for, and whether it is on screen (the self-test reads them).
+    pub fn text_search(&self) -> (Option<Entity<TextSearch>>, bool) {
+        (self.text.clone(), self.text_mode)
+    }
+
+    /// Whether the copy queue still has a copy or move going (quitting asks first).
+    pub fn copy_queue_running(&self, cx: &App) -> bool {
+        self.queue.read(cx).running()
     }
 
     /// What pane `pane` shows now, or None when it isn't on screen.
@@ -195,6 +250,8 @@ impl Workspace {
         let tab = explorer.pane_tab(pane)?;
         Some(if tab.is_this_pc() {
             Shown::ThisPc
+        } else if disk_usage::visible(cx, tab.id) {
+            Shown::DiskUsage
         } else if tab.view == ViewMode::Grid {
             Shown::Grid
         } else {
@@ -204,8 +261,14 @@ impl Workspace {
 
     /// The explorer changed: a grid that went out of sight lets its thumbnails go, and the window redraws.
     fn follow_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = explorer::explorer(cx).read(cx).active_pane().min(1);
         for pane in 0..2 {
             let now = Self::shown_in(pane, cx);
+            // The view with the keyboard gave way to another (the list to its map, This PC to a folder): the new
+            // one takes it, or the keys would go nowhere until a click.
+            if pane == active && now != self.shown[pane] && self.view_focused(pane, self.shown[pane], window, cx) {
+                cx.defer_in(window, |this, window, cx| this.focus_files(window, cx));
+            }
             if self.shown[pane] == Some(Shown::Grid) && now != Some(Shown::Grid) {
                 self.panes[pane].grid.update(cx, |grid, cx| grid.pause(cx));
             }
@@ -216,6 +279,18 @@ impl Workspace {
         }
         self.sync_preview(window, cx);
         cx.notify();
+    }
+
+    /// Whether pane `pane`'s view `shown` has the keyboard (This PC's: the window keeps it, see `focus_files`).
+    fn view_focused(&self, pane: usize, shown: Option<Shown>, window: &Window, cx: &App) -> bool {
+        let views = &self.panes[pane];
+        match shown {
+            Some(Shown::List) => views.list.focus_handle(cx).contains_focused(window, cx),
+            Some(Shown::Grid) => views.grid.read(cx).focus_handle().contains_focused(window, cx),
+            Some(Shown::DiskUsage) => views.usage.read(cx).focus_handle().contains_focused(window, cx),
+            Some(Shown::ThisPc) => self.focus.is_focused(window) || views.this_pc.read(cx).has_focus(window),
+            None => false,
+        }
     }
 
     /// Makes or drops the preview pane as its setting and the folder shown say (`preview::should_show`).
@@ -233,10 +308,18 @@ impl Workspace {
         }
     }
 
-    /// Gives the keyboard to the active pane's file view (the list, the grid, or This PC's first tile).
+    /// Gives the keyboard to the active pane's file view (the list, the grid, the map, or This PC's first tile).
+    /// Text search keeps it while it is on screen.
     fn focus_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.text_mode {
+            return;
+        }
         let pane = explorer::explorer(cx).read(cx).active_pane().min(1);
         match Self::shown_in(pane, cx) {
+            Some(Shown::DiskUsage) => {
+                let handle = self.panes[pane].usage.read(cx).focus_handle().clone();
+                window.focus(&handle, cx);
+            }
             Some(Shown::Grid) => {
                 let handle = self.panes[pane].grid.read(cx).focus_handle().clone();
                 window.focus(&handle, cx);
@@ -288,6 +371,266 @@ impl Workspace {
         explorer::explorer(cx).update(cx, act);
     }
 
+    // ---- Text mode ------------------------------------------------------------------------------------------
+
+    /// Text search in `folder` (the open folder when None): Ctrl+Shift+F, the mode switch, the folder menu's
+    /// and the sidebar's "Search text here" (`searchText`). The files stay when the view says why it can't
+    /// search there (inside an archive, a folder Windows keeps closed).
+    fn enter_text(&mut self, folder: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        let text = match &self.text {
+            Some(text) => text.clone(),
+            None => {
+                let text = cx.new(|cx| TextSearch::new(window, cx));
+                self._subscriptions
+                    .push(cx.subscribe_in(&text, window, Self::on_text_event));
+                self.text = Some(text.clone());
+                text
+            }
+        };
+        if text.update(cx, |text, cx| text.enter(folder, window, cx)) {
+            self.text_mode = true;
+            cx.notify();
+        }
+    }
+
+    /// Back to the files (Ctrl+Shift+E, the mode switch's Files); text search keeps its query and results.
+    fn leave_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.text_mode {
+            return;
+        }
+        self.text_mode = false;
+        cx.notify();
+        self.focus_files(window, cx);
+    }
+
+    fn on_text_event(
+        &mut self,
+        _: &Entity<TextSearch>,
+        event: &TextSearchEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            // "Show in Files": the file's folder, with the file selected (`revealInApp`).
+            TextSearchEvent::Reveal { path } => {
+                self.leave_text(window, cx);
+                let folder = glint_model::paths::parent_path(path);
+                let options = explorer::NavOptions {
+                    select: Some(vec![path.clone()]),
+                    ..Default::default()
+                };
+                Self::explorer(cx, |e, cx| e.navigate(folder, options, cx));
+            }
+        }
+    }
+
+    /// Files or Text, as the web app's mode switch: browsing, or searching inside the files with ripgrep.
+    fn mode_switch(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        let text = self.text_mode;
+        row_start()
+            .id("mode-switch")
+            .role(Role::TabList)
+            .aria_label(t!("Mode"))
+            .test_support()
+            .flex_none()
+            .gap(px(2.))
+            .p(px(2.))
+            .rounded_md()
+            .bg(t.foreground.opacity(0.05))
+            .child(
+                Button::new("mode-files")
+                    .ghost()
+                    .small()
+                    .selected(!text)
+                    .icon(IconName::FolderOpen)
+                    .label(t!("Files"))
+                    // The file list is "Files" to a screen reader already; the name keeps the word it shows.
+                    .accessibility_label(t!("Files mode"))
+                    .tooltip(t!("Browse files (Ctrl+Shift+E)"))
+                    .on_click(cx.listener(|this, _, window, cx| this.leave_text(window, cx))),
+            )
+            .child(
+                Button::new("mode-text")
+                    .ghost()
+                    .small()
+                    .selected(text)
+                    .icon(IconName::TextSearch)
+                    .label(t!("Text"))
+                    .accessibility_label(t!("Text mode"))
+                    .tooltip(t!("Search inside files with ripgrep (Ctrl+Shift+F)"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if !this.text_mode {
+                            this.enter_text(None, window, cx)
+                        }
+                    })),
+            )
+    }
+
+    // ---- Archives, comparing, compressing ---------------------------------------------------------------------
+
+    /// Items inside an archive dragged out: extracted first, then dragged as copies (the same items dragged again
+    /// go at once). `grid` is the grid they were dragged from, whose tiles stop looking lifted afterwards.
+    fn drag_from_archive(paths: Vec<String>, grid: Option<Entity<FileGrid>>, cx: &mut App) {
+        let explorer = explorer::explorer(cx);
+        let extracting = explorer.update(cx, |e, cx| e.drag_from_archive(paths.clone(), cx));
+        cx.spawn(async move |cx| {
+            // A failure was told already (and a cancel says nothing).
+            let copies = extracting.await;
+            let effect = match &copies {
+                Ok(copies) => Some(cx.update(|cx| dragdrop::drag_out(cx, MAIN, copies.clone(), true)).await),
+                Err(_) => None,
+            };
+            cx.update(|cx| {
+                if let Some(grid) = grid {
+                    grid.update(cx, |grid, cx| grid.end_drag(cx));
+                }
+                match (copies, effect) {
+                    (Ok(copies), Some(Ok(effect))) if effect == "released" => {
+                        explorer.update(cx, |e, cx| e.drag_released(&paths, copies, cx))
+                    }
+                    (_, Some(Err(message))) => explorer.update(cx, |e, cx| e.drag_failed(message, cx)),
+                    _ => {}
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The file the menu names, as the active tab lists it (an archive's items open from their entries).
+    fn entry_of(path: &str, cx: &App) -> Option<FileEntry> {
+        let explorer = explorer::explorer(cx);
+        let explorer = explorer.read(cx);
+        explorer
+            .active_tab()?
+            .rows
+            .iter()
+            .find(|entry| entry.path == path)
+            .cloned()
+    }
+
+    /// A file inside an archive, extracted first, then opened `how`.
+    fn open_archived(path: &str, how: explorer::OpenHow, cx: &mut App) {
+        if let Some(entry) = Self::entry_of(path, cx) {
+            Self::explorer(cx, |e, cx| e.open_archived_with(&entry, how, cx).detach());
+        }
+    }
+
+    /// The two files Ctrl+M compares (`comparePair`): the two selected here, the one selected here against the one
+    /// selected in the other pane, or its namesake in the other pane's folder. The first pane's is on the left.
+    fn compare_pair(cx: &App) -> Option<(String, String)> {
+        let explorer = explorer::explorer(cx);
+        let explorer = explorer.read(cx);
+        let here = explorer.active_pane().min(1);
+        let files_chosen = |tab: &explorer::Tab| -> Vec<FileEntry> {
+            tab.rows
+                .iter()
+                .filter(|e| tab.selection.contains(&e.path) && !e.dir && menus::on_disk(e))
+                .cloned()
+                .collect()
+        };
+        let tab = explorer.active_tab()?;
+        let own = files_chosen(tab);
+        if own.len() == 2 && tab.selection.len() == 2 {
+            return Some((own[0].path.clone(), own[1].path.clone()));
+        }
+        let [one] = own.as_slice() else { return None };
+        if !explorer.is_dual() {
+            return None;
+        }
+        let other = explorer.pane_tab(1 - here)?;
+        let ordered = |a: &FileEntry, b: &FileEntry| {
+            if here == 0 {
+                (a.path.clone(), b.path.clone())
+            } else {
+                (b.path.clone(), a.path.clone())
+            }
+        };
+        if let [theirs] = files_chosen(other).as_slice() {
+            if !same_path(&one.path, &theirs.path) {
+                return Some(ordered(one, theirs));
+            }
+        }
+        if other.archive().is_some() || same_path(&tab.path, &other.path) {
+            return None;
+        }
+        let namesake = other
+            .entries()
+            .iter()
+            .find(|e| !e.dir && e.lower == one.lower && menus::on_disk(e))?;
+        Some(ordered(one, namesake))
+    }
+
+    /// Ctrl+M: compares the pair, or says how to choose one.
+    fn compare_selected(window: &mut Window, cx: &mut App) {
+        match Self::compare_pair(cx) {
+            Some((left, right)) => dialogs::compare_files::open(window, cx, left, right),
+            None => window.push_notification(
+                Notification::info(t!("Or one in each pane, side by side (Ctrl+Shift+D)."))
+                    .title(t!("Select two files to compare")),
+                cx,
+            ),
+        }
+    }
+
+    /// Compress to: a .zip, .7z or .tar.zst beside the items, after looking for secrets in them.
+    fn compress(paths: Vec<String>, format: explorer::CompressFormat, window: &mut Window, cx: &mut App) {
+        dialogs::check::secrets_check_first(window, cx, paths.clone(), t!("Compress anyway"), move |_, cx| {
+            let paths = paths.clone();
+            Self::explorer(cx, |e, cx| e.compress(paths, format, None, cx).detach())
+        });
+    }
+
+    /// Compress with a password: after looking for secrets, the password (a .7z by default; a .zip keeps its
+    /// names readable), then the archive beside the items.
+    fn compress_with_password(paths: Vec<String>, window: &mut Window, cx: &mut App) {
+        let what = match paths.as_slice() {
+            [one] => format!("“{}”", base_name(one)),
+            _ => plural(paths.len(), "item"),
+        };
+        dialogs::check::secrets_check_first(window, cx, paths.clone(), t!("Compress anyway"), move |window, cx| {
+            let paths = paths.clone();
+            dialogs::password::ask_compress_password(
+                window,
+                cx,
+                what.clone(),
+                dialogs::password::Format::SevenZ,
+                move |format, password, _, cx| {
+                    let format = match format {
+                        dialogs::password::Format::Zip => explorer::CompressFormat::Zip,
+                        dialogs::password::Format::SevenZ => explorer::CompressFormat::SevenZ,
+                    };
+                    let password = (!password.is_empty()).then_some(password);
+                    let paths = paths.clone();
+                    Self::explorer(cx, |e, cx| e.compress(paths, format, password, cx).detach())
+                },
+            )
+        });
+    }
+
+    /// The list or the grid for the active tab (`chooseView`): a map it showed goes first.
+    fn choose_view(view: ViewMode, cx: &mut App) {
+        let tab = explorer::explorer(cx).read(cx).active_tab_id();
+        disk_usage::set(cx, tab, false);
+        Self::explorer(cx, |e, cx| e.set_view(view, None, cx));
+    }
+
+    /// Disk usage, or back to the file list, for the active tab (`toggleUsage`): only in a folder, not a search.
+    fn toggle_disk_usage(cx: &mut App) {
+        let tab = explorer::explorer(cx).read(cx).active_tab_id();
+        if Self::can_map(cx) {
+            disk_usage::toggle(cx, tab);
+        }
+    }
+
+    /// Whether the active tab can show a map: a folder on a drive, no search running in it.
+    fn can_map(cx: &App) -> bool {
+        let explorer = explorer::explorer(cx);
+        let explorer = explorer.read(cx);
+        explorer
+            .active_tab()
+            .is_some_and(|tab| tab.find.is_none() && glint_model::paths::is_folder_path(&tab.path))
+    }
+
     // ---- The views' events ----------------------------------------------------------------------------------
 
     fn on_address_event(
@@ -336,10 +679,10 @@ impl Workspace {
                 let saved = saved.clone();
                 Self::explorer(cx, |e, cx| e.run_saved_search(saved, cx).detach())
             }
-            SidebarEvent::AddConnection | SidebarEvent::EditRemote(_) | SidebarEvent::RemoveRemote(_) => {
-                Self::not_yet(window, cx, t!("Remote connections"))
-            }
-            SidebarEvent::SearchText(_) => Self::not_yet(window, cx, t!("Text search")),
+            SidebarEvent::AddConnection => dialogs::remote::open_add(window, cx),
+            SidebarEvent::EditRemote(id) => dialogs::remote::open_edit(window, cx, id.clone()),
+            SidebarEvent::RemoveRemote(id) => dialogs::remote::remove_remote(window, cx, id.clone()),
+            SidebarEvent::SearchText(folder) => self.enter_text(Some(folder), window, cx),
         }
     }
 
@@ -355,7 +698,9 @@ impl Workspace {
             SidebarRequest::ContextMenu { path, position } => self
                 .menus
                 .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
-            SidebarRequest::SendToDevice { .. } => Self::not_yet(window, cx, t!("Sending to a paired PC")),
+            SidebarRequest::SendToDevice { id, paths } => {
+                dialogs::nearby::send_to_device(window, cx, id.clone(), paths.clone())
+            }
         }
     }
 
@@ -395,8 +740,8 @@ impl Workspace {
             }),
             FileGridEvent::DragStart { paths, from_archive } => {
                 if *from_archive {
-                    // They're extracted first, then dragged as copies: the archive part does that.
-                    Self::not_yet(window, cx, t!("Dragging out of archives"));
+                    // They're extracted first, then dragged as copies.
+                    Self::drag_from_archive(paths.clone(), Some(self.panes[pane].grid.clone()), cx);
                 } else {
                     let drag = dragdrop::drag_out(cx, MAIN, paths.clone(), false);
                     let grid = self.panes[pane].grid.clone();
@@ -427,7 +772,26 @@ impl Workspace {
                 .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
             ThisPcEvent::RecentChanges { path } => dialogs::timeline::open(window, cx, path.clone()),
             ThisPcEvent::FindDuplicates { path } => dialogs::duplicates::open(window, cx, path.clone()),
-            ThisPcEvent::DiskUsage { .. } => Self::not_yet(window, cx, t!("The disk usage map")),
+            // The drive's tile: This PC already opened the drive in the tab; its map comes up (`openDriveTreemap`).
+            ThisPcEvent::DiskUsage { tab, .. } => {
+                if !disk_usage::shows(cx, *tab) {
+                    disk_usage::toggle(cx, *tab)
+                }
+            }
+        }
+    }
+
+    fn on_usage_event(&mut self, pane: usize, event: &DiskUsageEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            // The map's items can sit deeper than the folder's own rows: the menu takes them as they are.
+            DiskUsageEvent::ItemMenu { entries, position } => self.menus.update(cx, |menus, cx| {
+                menus.open_entries_menu(pane, entries.clone(), *position, window, cx)
+            }),
+            DiskUsageEvent::FolderMenu { folder, position } => self
+                .menus
+                .update(cx, |menus, cx| menus.open_folder_menu(folder, *position, window, cx)),
+            DiskUsageEvent::FreeUpSpace { folder } => dialogs::cleanup::open(window, cx, folder),
+            DiskUsageEvent::EnableInstantSearch => notices::turn_on_instant_search(window, cx),
         }
     }
 
@@ -492,10 +856,66 @@ impl Workspace {
                 dialogs::tags::set_tags(window, cx, paths.clone(), add.clone(), remove.clone())
             }
             MenuEvent::Vault { paths, decrypt } => dialogs::vault::open(window, cx, paths.clone(), *decrypt),
-            MenuEvent::EditConnection { .. } | MenuEvent::RemoveConnection { .. } => {
-                Self::not_yet(window, cx, t!("Remote connections"))
+            MenuEvent::EditConnection { id } => dialogs::remote::open_edit(window, cx, id.clone()),
+            MenuEvent::RemoveConnection { id } => dialogs::remote::remove_remote(window, cx, id.clone()),
+            MenuEvent::SearchText { folder } => self.enter_text(Some(folder), window, cx),
+            MenuEvent::Compare { left, right } => dialogs::compare_files::open(window, cx, left.clone(), right.clone()),
+            // Archives and disk images.
+            MenuEvent::ExtractHere { path } => Self::explorer(cx, |e, cx| e.extract_here(path, cx).detach()),
+            MenuEvent::Mount { path } => Self::explorer(cx, |e, cx| e.mount_image(path, None, cx).detach()),
+            MenuEvent::OpenWithItsApp {
+                path,
+                extract_first: true,
+            } => Self::open_archived(path, explorer::OpenHow::Default, cx),
+            MenuEvent::OpenWithEditor {
+                path,
+                editor,
+                extract_first: true,
+            } => Self::open_archived(path, explorer::OpenHow::Editor(editor.clone()), cx),
+            MenuEvent::Compress { paths, format } => {
+                let format = match format {
+                    menus::CompressFormat::Zip => explorer::CompressFormat::Zip,
+                    menus::CompressFormat::SevenZ => explorer::CompressFormat::SevenZ,
+                    menus::CompressFormat::TarZst => explorer::CompressFormat::TarZst,
+                };
+                Self::compress(paths.clone(), format, window, cx)
             }
-            MenuEvent::SearchText { .. } => Self::not_yet(window, cx, t!("Text search")),
+            MenuEvent::CompressWithPassword { paths } => Self::compress_with_password(paths.clone(), window, cx),
+            // Doing things to files.
+            MenuEvent::MakeSmaller { paths } => {
+                dialogs::shrink::open(window, cx, paths.clone(), |window, cx, folders| {
+                    Self::compress(folders, explorer::CompressFormat::SevenZ, window, cx)
+                })
+            }
+            MenuEvent::BackToJpeg { paths } => dialogs::shrink::back_to_jpeg(window, cx, paths.clone()),
+            MenuEvent::ConvertPictures { paths } => dialogs::convert::open(window, cx, paths.clone()),
+            MenuEvent::Media { paths, tool } => dialogs::media::open(window, cx, paths.clone(), *tool),
+            MenuEvent::EditSongs { paths } => dialogs::song::open(window, cx, paths.clone()),
+            MenuEvent::ExportPdf { paths, typst } => {
+                dialogs::doc_convert::export_pdf(window, cx, paths.clone(), *typst)
+            }
+            MenuEvent::ConvertDocument { paths } => dialogs::doc_convert::open(window, cx, paths.clone(), None),
+            MenuEvent::QueryTogether { paths } => dialogs::data_tools::query_together(window, cx, paths.clone()),
+            MenuEvent::ConvertData { paths } => dialogs::data_tools::convert_data(window, cx, paths.clone()),
+            MenuEvent::PdfTools { paths, tool } => dialogs::pdf::open(window, cx, paths.clone(), (*tool).into()),
+            MenuEvent::RemovePersonalInfo { paths } => {
+                dialogs::metadata::open(window, cx, paths.clone(), dialogs::metadata::Mode::Scrub)
+            }
+            MenuEvent::ChangeDateTaken { paths } => {
+                dialogs::metadata::open(window, cx, paths.clone(), dialogs::metadata::Mode::Date)
+            }
+            MenuEvent::BackUp { folder } => dialogs::backup::open(window, cx, folder.clone()),
+            // Sending and sharing.
+            MenuEvent::SendToDevice { device, paths } => {
+                dialogs::nearby::send_to_device(window, cx, device.clone(), paths.clone())
+            }
+            MenuEvent::SendNearby { paths } => {
+                dialogs::nearby::open(window, cx, paths.clone());
+            }
+            MenuEvent::SendToPc { path } => dialogs::share::offer_to_pc(window, cx, path.clone()),
+            MenuEvent::ShareOnNetwork { path } => dialogs::share::offer_on_network(window, cx, path.clone()),
+            MenuEvent::ShareWithWindows { paths } => dialogs::share::share_with_windows(window, cx, paths.clone()),
+            MenuEvent::ReceiveHere { folder } => dialogs::share::open_receive(window, cx, folder.clone()),
             other => {
                 // The parts not built yet: named by the menu's own word for them until they are.
                 let name = format!("{other:?}");
@@ -555,9 +975,11 @@ impl Workspace {
                 };
                 e.navigate(folder, options, cx)
             }),
-            dialogs::versions::Request::CompareFolders { .. } | dialogs::versions::Request::CompareFiles { .. } => {
-                Self::not_yet(window, cx, t!("Comparing"))
+            // The dialog closed itself first; how it was goes on the left.
+            dialogs::versions::Request::CompareFiles { then, now } => {
+                dialogs::compare_files::open(window, cx, then, now)
             }
+            dialogs::versions::Request::CompareFolders { .. } => Self::not_yet(window, cx, t!("Comparing folders")),
         });
     }
 
@@ -655,7 +1077,7 @@ impl Workspace {
         self.settings_events =
             Some(
                 cx.subscribe_in(&view, window, |_, _, event: &SettingsEvent, window, cx| match event {
-                    SettingsEvent::ConnectCloud => Self::not_yet(window, cx, t!("Remote connections")),
+                    SettingsEvent::ConnectCloud => dialogs::cloud_setup::open(window, cx),
                     SettingsEvent::FolderRules => dialogs::rules::open(window, cx, None),
                 }),
             );
@@ -700,7 +1122,16 @@ impl Workspace {
             .bg(theme::chrome_fill(cx))
             .border_b_1()
             .border_color(t.border)
-            .child(div().flex_1().min_w_0().child(self.address.clone()))
+            .child(self.mode_switch(t, cx))
+            // Text mode has its own search bar below; the files' address bar steps aside.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(!self.text_mode, |area| area.child(self.address.clone())),
+            )
+            .children(self.sharing_button(cx))
+            .when(!self.text_mode, |bar| bar.child(self.disk_usage_button(cx)))
             // TEMPORARY: This PC's tiles and banner open it too; this button goes with the Settings part.
             .child(
                 Button::new("drive-health")
@@ -713,11 +1144,54 @@ impl Workspace {
             )
     }
 
+    /// What is shared or being sent right now, opening its dialog (the web app's `SharingButton`); nothing when
+    /// nothing is.
+    fn sharing_button(&self, cx: &App) -> Option<AnyElement> {
+        let (label, view) = self.sharing.as_ref()?.read(cx).button()?;
+        Some(
+            Button::new("sharing")
+                .ghost()
+                .small()
+                .icon(IconName::Share2)
+                .label(label)
+                .on_click(move |_, window, cx| {
+                    dialogs::share::open_view(window, cx, view);
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// Disk usage, or back to the file list (the web app's command bar button).
+    fn disk_usage_button(&self, cx: &App) -> AnyElement {
+        let tab = explorer::explorer(cx).read(cx).active_tab_id();
+        let mapped = disk_usage::shows(cx, tab);
+        let label = if mapped {
+            t!("Back to the file list")
+        } else {
+            t!("Disk usage")
+        };
+        Button::new("disk-usage")
+            .ghost()
+            .small()
+            .icon(IconName::LayoutDashboard)
+            .selected(mapped)
+            .disabled(!Self::can_map(cx))
+            .accessibility_label(label.clone())
+            .tooltip(if mapped {
+                label
+            } else {
+                t!("Disk usage: a map of what fills this folder, from the instant search index when it has it, otherwise measured with pdu")
+            })
+            .on_click(|_, _, cx| Self::toggle_disk_usage(cx))
+            .into_any_element()
+    }
+
     /// Pane `pane`: the view its tab asks for, and the zone a dragged tab can be dropped on.
     fn pane(&self, pane: usize, t: &theme::Tokens, cx: &App) -> AnyElement {
         let views = &self.panes[pane];
         let view: AnyElement = match Self::shown_in(pane, cx) {
             Some(Shown::ThisPc) => views.this_pc.clone().into_any_element(),
+            Some(Shown::DiskUsage) => views.usage.clone().into_any_element(),
             Some(Shown::Grid) => views.grid.clone().into_any_element(),
             Some(Shown::List) | None => views.list.clone().into_any_element(),
         };
@@ -810,7 +1284,7 @@ impl Render for Workspace {
         if window.rem_size() != rem {
             window.set_rem_size(rem);
         }
-        col()
+        let root = col()
             .id("workspace")
             .key_context("Workspace")
             .track_focus(&self.focus)
@@ -821,6 +1295,36 @@ impl Render for Workspace {
             .text_size(theme::size::SM)
             // Text starts at the reading direction's start edge (text alignment is inherited by everything below).
             .text_start()
+            // Either mode.
+            .on_action(cx.listener(|this, _: &actions::TextSearch, window, cx| {
+                // In text mode it does nothing, as in the web app.
+                if !this.text_mode {
+                    this.enter_text(None, window, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &actions::BackToFiles, window, cx| this.leave_text(window, cx)))
+            .on_action(
+                cx.listener(|_, _: &actions::ShowDriveHealth, window, cx| {
+                    dialogs::drive_health::open(window, cx, None)
+                }),
+            )
+            .on_action(cx.listener(|_, _: &actions::ShowShortcuts, window, cx| dialogs::shortcuts::open(window, cx)))
+            .on_action(cx.listener(|_, action: &actions::ShowHistory, window, cx| {
+                dialogs::history::open(window, cx, &action.query)
+            }))
+            .on_action(cx.listener(|this, _: &actions::OpenSettings, window, cx| this.open_settings(window, cx)))
+            .on_action(cx.listener(|_, _: &actions::CommandPalette, window, cx| palette::toggle(window, cx)));
+        if self.text_mode {
+            // Text search instead of the files: no tabs, no sidebar, no status bar (as the web app hid them); the
+            // files' keys (Delete, Ctrl+C...) aren't heard, so nothing happens to files that aren't on screen.
+            let text = self.text.clone();
+            return root
+                .child(TitleBar::new())
+                .child(self.toolbar(&t, cx))
+                .child(div().flex_1().min_h_0().children(text))
+                .child(self.menus.clone());
+        }
+        root
             // Tabs and panes.
             .on_action(cx.listener(|_, _: &actions::NewTab, _, cx| Self::explorer(cx, |e, cx| e.new_tab(None, cx))))
             .on_action(cx.listener(|_, _: &actions::CloseTab, _, cx| Self::explorer(cx, |e, cx| e.close_tab(None, cx))))
@@ -856,12 +1360,8 @@ impl Render for Workspace {
                 this.address.update(cx, |bar, cx| bar.focus_search(window, cx))
             }))
             // The view.
-            .on_action(cx.listener(|_, _: &actions::ListView, _, cx| {
-                Self::explorer(cx, |e, cx| e.set_view(ViewMode::List, None, cx))
-            }))
-            .on_action(cx.listener(|_, _: &actions::GridView, _, cx| {
-                Self::explorer(cx, |e, cx| e.set_view(ViewMode::Grid, None, cx))
-            }))
+            .on_action(cx.listener(|_, _: &actions::ListView, _, cx| Self::choose_view(ViewMode::List, cx)))
+            .on_action(cx.listener(|_, _: &actions::GridView, _, cx| Self::choose_view(ViewMode::Grid, cx)))
             .on_action(cx.listener(|_, _: &actions::GridLarger, _, cx| Self::explorer(cx, |e, cx| e.zoom_grid(1, cx))))
             .on_action(
                 cx.listener(|_, _: &actions::GridSmaller, _, cx| Self::explorer(cx, |e, cx| e.zoom_grid(-1, cx))),
@@ -870,18 +1370,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &actions::ToggleHidden, _, cx| {
                 state::update(cx, |settings| settings.show_hidden = !settings.show_hidden)
             }))
-            // Windows of their own and parts still to come.
-            .on_action(
-                cx.listener(|_, _: &actions::ShowDriveHealth, window, cx| {
-                    dialogs::drive_health::open(window, cx, None)
-                }),
-            )
-            .on_action(cx.listener(|_, _: &actions::ShowShortcuts, window, cx| dialogs::shortcuts::open(window, cx)))
-            .on_action(cx.listener(|_, action: &actions::ShowHistory, window, cx| {
-                dialogs::history::open(window, cx, &action.query)
-            }))
-            .on_action(cx.listener(|this, _: &actions::OpenSettings, window, cx| this.open_settings(window, cx)))
-            .on_action(cx.listener(|_, _: &actions::CommandPalette, window, cx| palette::toggle(window, cx)))
+            .on_action(cx.listener(|_, _: &actions::CompareFiles, window, cx| Self::compare_selected(window, cx)))
+            .on_action(cx.listener(|_, _: &actions::DiskUsage, _, cx| Self::toggle_disk_usage(cx)))
             // File operations, on the active tab's selection.
             .on_action(cx.listener(|_, _: &actions::Copy, _, cx| {
                 let paths = Self::selection(cx);
@@ -976,7 +1466,11 @@ mod tests {
         let disk = FakeDisk::new();
         disk.folder(
             "C:\\Work",
-            vec![folder("C:\\Work", "src"), file("C:\\Work", "notes.txt", 120, 0)],
+            vec![
+                folder("C:\\Work", "src"),
+                file("C:\\Work", "notes.txt", 120, 0),
+                file("C:\\Work", "todo.txt", 80, 0),
+            ],
         );
         cx.update(|cx| {
             testing::init(cx);
@@ -1070,6 +1564,54 @@ mod tests {
             view,
             Some(ViewMode::Grid),
             "the grid view action switches the tab's view"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn disk_usage_shows_the_map_in_the_pane_and_the_list_again(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = open(cx, false);
+        let shown = |visual: &mut VisualTestContext| visual.update(|_, cx| Workspace::shown_in(0, cx));
+        assert_eq!(shown(&mut visual), Some(Shown::List));
+        visual.dispatch_action(actions::DiskUsage);
+        visual.run_until_parked();
+        assert_eq!(shown(&mut visual), Some(Shown::DiskUsage), "the pane draws the map");
+        // The list view action goes back to the list, as the web app's chooseView did.
+        visual.dispatch_action(actions::ListView);
+        visual.run_until_parked();
+        assert_eq!(shown(&mut visual), Some(Shown::List));
+        let tab = visual.update(|_, cx| explorer::explorer(cx).read(cx).active_tab_id());
+        assert!(!visual.update(|_, cx| disk_usage::shows(cx, tab)));
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_m_pairs_the_two_files_selected(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = open(cx, false);
+        let pair = |visual: &mut VisualTestContext| visual.update(|_, cx| Workspace::compare_pair(cx));
+        assert_eq!(pair(&mut visual), None, "nothing selected");
+        visual
+            .update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.select_only(Some("C:\\Work\\notes.txt"), cx)));
+        assert_eq!(pair(&mut visual), None, "one file and one pane");
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| {
+                if let Some(rows) = e.active_tab().map(|t| t.rows.clone()) {
+                    e.select_all(&rows, cx);
+                }
+            })
+        });
+        // A folder and two files: three chosen, not a pair.
+        assert_eq!(pair(&mut visual), None, "three items aren't a pair");
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| {
+                e.select_only(Some("C:\\Work\\notes.txt"), cx);
+                e.toggle_selected("C:\\Work\\todo.txt", cx);
+            })
+        });
+        assert_eq!(
+            pair(&mut visual),
+            Some(("C:\\Work\\notes.txt".to_string(), "C:\\Work\\todo.txt".to_string())),
+            "the two files, in the rows' order"
         );
     }
 

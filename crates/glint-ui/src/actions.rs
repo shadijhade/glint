@@ -63,6 +63,7 @@ actions!(
         GridLarger,
         GridSmaller,
         GridReset,
+        DiskUsage,
         // The file list
         OpenItem,
         QuickLook,

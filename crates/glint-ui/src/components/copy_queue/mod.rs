@@ -208,6 +208,11 @@ impl CopyQueue {
         &self.jobs
     }
 
+    /// Whether a queued copy or move hasn't finished yet (`useQueue().jobs.some((job) => !finished(job))`).
+    pub fn running(&self) -> bool {
+        self.jobs.iter().any(|job| !job::finished(job))
+    }
+
     /// Whether the panel is open (the pill shows while it is not and jobs run).
     pub fn is_open(&self) -> bool {
         self.open

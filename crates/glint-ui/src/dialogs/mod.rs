@@ -18,72 +18,59 @@
 
 use crate::kit::prelude::*;
 
+/// What the file-action dialogs share: where results go, runs, Undo (ActionParts.tsx).
+pub mod action_run;
+/// Backups with restic (BackupDialog.tsx).
+pub mod backup;
 /// Renaming several items at once (BatchRenameDialog.tsx).
 pub mod batch_rename;
 /// Checking files: secrets, malware scans, YARA (CheckDialog.tsx).
 pub mod check;
 /// Cleaning up a drive or folder (CleanupDialog.tsx).
 pub mod cleanup;
+/// Connecting a cloud through rclone (CloudSetup.tsx).
+pub mod cloud_setup;
+/// Comparing two files and merging their changes (CompareFilesDialog.tsx).
+pub mod compare_files;
 /// Compressing in place with Windows' WOF (CompressInPlaceDialog.tsx).
 pub mod compress_in_place;
-pub mod drive_health;
-/// Comparing two files and merging their changes (CompareFilesDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-compare-files")]
-pub mod compare_files;
-/// Media files: convert, trim, extract, subtitles (MediaDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-media")]
-pub mod media;
-/// Media tools for several files (MediaTools.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-media-tools")]
-pub mod media_tools;
-/// A song's tags (SongDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-song")]
-pub mod song;
-/// A file's metadata, read and cleaned (MetadataDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-metadata")]
-pub mod metadata;
-/// Converting pictures (ConvertDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-convert")]
+/// Converting pictures (ConvertDialog.tsx).
 pub mod convert;
-/// Converting documents (DocConvertDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-doc-convert")]
-pub mod doc_convert;
-/// Making files smaller (ShrinkDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-shrink")]
-pub mod shrink;
-/// PDF tools (PdfDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-pdf")]
-pub mod pdf;
-/// Data tools: query, convert, profile (DataTools.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-data-tools")]
+/// Data tools: query, convert, profile (DataTools.tsx).
 pub mod data_tools;
-/// Sharing files: a link, the network, Windows' share (ShareDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-share")]
-pub mod share;
-/// Sending to and receiving from phones and PCs nearby (NearbyDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-nearby")]
-pub mod nearby;
-/// Adding and editing a remote connection (RemoteDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-remote")]
-pub mod remote;
-/// Connecting a cloud through rclone (CloudSetup.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-cloud-setup")]
-pub mod cloud_setup;
-/// Backups with restic (BackupDialog.tsx). Wave 8 slot.
-#[cfg(feature = "dialog-backup")]
-pub mod backup;
+/// Converting documents (DocConvertDialog.tsx).
+pub mod doc_convert;
+pub mod drive_health;
 /// Duplicate files (DuplicatesDialog.tsx).
 pub mod duplicates;
 /// A file's history (HistoryDialog.tsx).
 pub mod history;
 /// What holds a file open, and stopping it (LocksDialog.tsx).
 pub mod locks;
+/// Media files: convert, trim, extract, subtitles (MediaDialog.tsx).
+pub mod media;
+/// Media tools for several files (MediaTools.tsx).
+pub mod media_tools;
+/// A file's metadata, read and cleaned (MetadataDialog.tsx).
+pub mod metadata;
+/// Sending to and receiving from phones and PCs nearby (NearbyDialog.tsx).
+pub mod nearby;
 /// A password asked for or set (PasswordDialog.tsx).
 pub mod password;
+/// PDF tools (PdfDialog.tsx).
+pub mod pdf;
+/// Adding and editing a remote connection (RemoteDialog.tsx).
+pub mod remote;
 /// Folder rules (RulesDialog.tsx).
 pub mod rules;
+/// Sharing files: a link, the network, Windows' share (ShareDialog.tsx).
+pub mod share;
 /// The keyboard shortcuts sheet (ShortcutsDialog.tsx).
 pub mod shortcuts;
+/// Making files smaller (ShrinkDialog.tsx).
+pub mod shrink;
+/// A song's tags (SongDialog.tsx).
+pub mod song;
 /// Tags for files and folders (TagsDialog.tsx).
 pub mod tags;
 /// Recent changes on a drive (TimelineDialog.tsx).

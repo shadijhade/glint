@@ -593,6 +593,7 @@ pub fn read_inputs(cx: &App) -> Inputs {
         now: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+        mapped: tab.is_some_and(|t| crate::components::disk_usage::shows(cx, t.id)),
     }
 }
 

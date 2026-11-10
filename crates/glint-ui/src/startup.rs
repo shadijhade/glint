@@ -33,6 +33,11 @@ fn main_hwnd() -> Option<HWND> {
 /// The main window, for notices raised outside it (the explorer's, the tray's, start-up's).
 struct MainWindow(AnyWindowHandle);
 
+/// The main window's content, for what quitting asks (a copy still queued).
+struct MainWorkspace(Entity<workspace::Workspace>);
+
+impl Global for MainWorkspace {}
+
 impl Global for MainWindow {}
 
 /// Start-up after `core_bridge::init`: the services that need core, then the main window, then the first
@@ -44,10 +49,14 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     start_quick_search(cx);
     start_rules(cx);
     start_explorer(cx);
+    // The disk usage maps, reading glint-core (after the explorer, whose tabs they follow).
+    crate::components::disk_usage::init(cx);
+    // The saved remote connections, handed to core so their folders open (`initRemotes`).
+    crate::dialogs::remote::push_to_core(cx);
     start_tray(cx, request.tray);
     keep_jump_list(cx);
 
-    let (window, _workspace) = match workspace::open_main_window(cx) {
+    let (window, main_workspace) = match workspace::open_main_window(cx) {
         Ok(opened) => opened,
         Err(error) => {
             eprintln!("glint: couldn't open the main window: {error:#}");
@@ -56,6 +65,7 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
         }
     };
     cx.set_global(MainWindow(window));
+    cx.set_global(MainWorkspace(main_workspace));
     let _ = window.update(cx, |_, window, cx| {
         launch::set_main_window(window);
         if let Some(hwnd) = core_bridge::hwnd_of(window) {
@@ -136,10 +146,8 @@ fn reveal_main() {
 }
 
 /// Closing the main window keeps its place, then hides it in the tray when the tray keeps Glint running, and
-/// otherwise lets it close (the last window closing quits; see `run`).
-///
-/// PORT ME: the old app first asked when quitting would cut a copy short or lose Compare's edits
-/// (`mayQuit`); the copy queue and Compare parts add that question here.
+/// otherwise lets it close (the last window closing quits; see `run`). Quitting asks first when it would cut a
+/// copy or move short, or lose Compare's edits (`mayQuit`); hidden in the tray, nothing stops.
 fn close_to_tray(window: &mut Window, cx: &mut App) {
     window.on_window_should_close(cx, |window, cx| {
         let Some(hwnd) = core_bridge::hwnd_of(window) else {
@@ -148,6 +156,10 @@ fn close_to_tray(window: &mut Window, cx: &mut App) {
         // GetWindowPlacement sends the window nothing, so this is safe inside the callback.
         window_state::save_hwnd(hwnd);
         if !tray::keep_running() {
+            if copying(cx) || crate::dialogs::compare_files::unsaved(cx) {
+                ask_before_quitting(window, cx);
+                return false;
+            }
             // Quitting: the hidden Quick Search window goes too, or it would keep the app alive.
             quick_search::close(cx);
             return true;
@@ -164,6 +176,50 @@ fn close_to_tray(window: &mut Window, cx: &mut App) {
     });
 }
 
+/// A copy, move or other file operation is running, here or in the copy queue (`operationsRunning`).
+fn copying(cx: &App) -> bool {
+    explorer::try_explorer(cx).is_some_and(|e| e.read(cx).busy_count() > 0)
+        || cx
+            .try_global::<MainWorkspace>()
+            .is_some_and(|main| main.0.read(cx).copy_queue_running(cx))
+}
+
+/// `mayQuit`'s questions, one after the other: a copy still running, then Compare's edits; the window closes
+/// (and Glint quits) only on yes to each.
+fn ask_before_quitting(window: &mut Window, cx: &mut App) {
+    let then_edits = |window: &mut Window, cx: &mut App| {
+        if crate::dialogs::compare_files::unsaved(cx) {
+            crate::dialogs::compare_files::ask_discard(window, cx, quit_now);
+        } else {
+            quit_now(window, cx);
+        }
+    };
+    if copying(cx) {
+        crate::dialogs::confirm(
+            window,
+            cx,
+            t!("Close Glint?"),
+            t!("A copy or move is still running, and closing Glint stops it where it is."),
+            t!("Close anyway"),
+            true,
+            then_edits,
+        );
+    } else {
+        then_edits(window, cx);
+    }
+}
+
+/// Closes the main window after the questions: the hidden Quick Search window goes too, and the app quits.
+fn quit_now(window: &mut Window, cx: &mut App) {
+    quick_search::close(cx);
+    window.remove_window();
+}
+
+/// The main window's content, once it exists.
+pub(crate) fn main_workspace(cx: &App) -> Option<Entity<workspace::Workspace>> {
+    cx.try_global::<MainWorkspace>().map(|main| main.0.clone())
+}
+
 /// The main window, once it exists.
 pub(crate) fn main_window(cx: &App) -> Option<AnyWindowHandle> {
     cx.try_global::<MainWindow>().map(|main| main.0)
@@ -174,14 +230,6 @@ fn notify(cx: &mut App, notification: Notification) {
     if let Some(main) = cx.try_global::<MainWindow>().map(|m| m.0) {
         let _ = main.update(cx, |_, window, cx| window.push_notification(notification, cx));
     }
-}
-
-/// The marker for something whose part of the port isn't built yet, as the workspace's toolbar shows it.
-fn not_yet(cx: &mut App, what: SharedString) {
-    notify(
-        cx,
-        Notification::info(t!("{what} comes with its part of the port.", what = what)),
-    );
 }
 
 // ---- Launches, the tray and the shortcut ------------------------------------------------------------------
@@ -403,14 +451,11 @@ fn start_explorer(cx: &mut App) {
             }
         }
         explorer::ExplorerEvent::Notice(notice) => notify(cx, notice_for(notice)),
-        explorer::ExplorerEvent::Handoff(handoff) => not_yet(
-            cx,
-            match handoff {
-                explorer::Handoff::VersionFile(_) => t!("Opening previous versions"),
-                explorer::Handoff::DiskImage(_) => t!("Opening disk images"),
-                explorer::Handoff::ArchivedFile(_) => t!("Opening files inside archives"),
-            },
-        ),
+        // A previous version, a disk image, a file inside an archive: copied out, mounted or extracted, then opened.
+        explorer::ExplorerEvent::Handoff(handoff) => {
+            let handoff = handoff.clone();
+            explorer.update(cx, |e, cx| e.handoff(handoff, cx).detach());
+        }
         _ => {}
     })
     .detach();
