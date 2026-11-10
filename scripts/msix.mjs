@@ -1,17 +1,25 @@
 // Builds Glint for the Microsoft Store as an MSIX package (docs/releasing.md, The Microsoft Store): the
-// app with a data folder of its own (src-tauri/tauri.msix.conf.json), laid out with the instant search
-// service, the tools that come with Glint, the notices, the Store's logos at every scale and
-// AppxManifest.xml (src-tauri/msix), and packed by the Windows SDK's makeappx into
-// release/v<version>/Glint_<version>_x64.msix. Nothing here signs it: the Store does, once Partner Center
-// has it.
+// GPUI build (Glint.exe and the instant search service from cargo build --release -p glint -p shadui-index),
+// rg, fd and pdu, the notices, the Store's logos at every scale and AppxManifest.xml (crates/glint/msix), laid
+// out in a folder and packed by the Windows SDK's makeappx into release/v<version>/Glint_<version>_x64.msix.
+// Nothing here signs it: the Store does, once Partner Center has it.
 //
 // The package's identity is the one Partner Center gives the app (Product identity), in
-// src-tauri/msix/store.json. Until it's there, the package has a test identity, to try here and not for
+// crates/glint/msix/store.json. Until it's there, the package has a test identity, to try here and not for
 // the Store (its name ends in _test).
 //
-// Usage: npm run msix [-- --no-build | --from <folder>] [--try | --untry]
-//   --no-build  package what the release build's folder holds (built with tauri.msix.conf.json already)
+// What the manifest says matches what the app checks (crates/glint-core/src/lib.rs): the executable is
+// Glint.exe, which `package_family()` and `store_copy()` find the package of by asking Windows, so a packaged
+// copy never looks for updates itself; `glint.exe`, the execution alias, is what verbs.rs and the Jump List
+// start it by; the startup task is `GlintTray` with `--tray` (crates/glint-ui/src/platform/tray.rs).
+// (The Tauri build gave the Store's copy a data folder of its own, com.shado.glint.store, through a config
+// overlay; the GPUI app's folder is glint_core::host::IDENTIFIER whatever the package: docs/releasing.md says
+// what that leaves.)
+//
+// Usage: npm run msix [-- --no-build | --from <folder>] [--try | --untry] [--out <folder>]
+//   --no-build  package what the release build's folder holds (target/ui/release, built already)
 //   --from      package the app built in another folder (a test build), without building
+//   --out       where the layout and the .msix go (default release/v<version>)
 //   --try       a test package (its own identity and folder), installed here from its folder: needs
 //               Developer Mode, and starts from Start like the Store's would
 //   --untry     uninstall that test package
@@ -19,13 +27,14 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { root, targetDir, workspaceVersion } from "./lib/project.mjs";
 import { signService } from "./sign-service.mjs";
 import { hasUpdateKey, unlockUpdateKey } from "./update-key.mjs";
 
-const root = resolve(import.meta.dirname, "..");
 const args = process.argv.slice(2);
 const tryIt = args.includes("--try");
-const from = args.includes("--from") ? resolve(args[args.indexOf("--from") + 1]) : undefined;
+const option = (name) => (args.includes(name) ? resolve(args[args.indexOf(name) + 1]) : undefined);
+const from = option("--from");
 
 const fail = (message) => {
     console.error(`\n✗ ${message}`);
@@ -49,13 +58,11 @@ if (args.includes("--untry")) {
     process.exit(0);
 }
 
-const config = json("src-tauri/tauri.conf.json");
-const version = json("package.json").version;
-if (!/^\d+\.\d+\.\d+$/.test(version)) fail(`An MSIX version has four numbers, so ${version} can't be one`);
-const store = json("src-tauri/msix/store.json");
+const version = workspaceVersion();
+const store = json("crates/glint/msix/store.json");
 const fromPartnerCenter = ["name", "publisher", "publisherDisplayName", "displayName"].every((key) => store[key]);
 const identity = fromPartnerCenter && !tryIt ? store : TEST;
-if (identity === TEST && !tryIt) console.warn("! src-tauri/msix/store.json has no identity from Partner Center yet, so this is a test package, not one for the Store.");
+if (identity === TEST && !tryIt) console.warn("! crates/glint/msix/store.json has no identity from Partner Center yet, so this is a test package, not one for the Store.");
 
 // makeappx and makepri, from the newest Windows SDK.
 const kits = "C:\\Program Files (x86)\\Windows Kits\\10\\bin";
@@ -69,31 +76,31 @@ if (!sdk) fail("The Windows SDK (makeappx) isn't installed: Visual Studio's C++ 
 const tool = (name) => join(kits, sdk, "x64", name);
 
 if (!args.includes("--no-build") && !from) {
-    console.log("Building Glint for the Store's package (its own data folder)…");
-    const cli = join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
-    run(process.execPath, [cli, "build", "--no-bundle", "--config", "src-tauri/tauri.msix.conf.json"], { stdio: "inherit" });
+    console.log("Building Glint and the instant search service (cargo build --release -p glint -p shadui-index)…");
+    run("cargo", ["build", "--release", "-p", "glint", "-p", "shadui-index"], { stdio: "inherit", env: { ...process.env, CARGO_TARGET_DIR: targetDir() } });
 }
 
 // The files the setup program installs, but its uninstaller: the app, the service, the tools Glint
 // comes with and the notices.
-const out = join(root, "release", `v${version}`);
+const out = option("--out") ?? join(root, "release", `v${version}`);
 // A package tried here runs from its folder, so that one is its own.
 const layout = join(out, tryIt ? "msix-try" : identity === TEST ? "msix-test" : "msix");
 rmSync(layout, { recursive: true, force: true });
 mkdirSync(join(layout, "Assets"), { recursive: true });
-const built = from ?? join(process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(root, "src-tauri", "target"), "release");
-// (cargo build names the app after its crate; tauri build, after mainBinaryName.)
-const crate = readFileSync(join(root, "src-tauri", "Cargo.toml"), "utf8").match(/^\[package\][^[]*?^name = "([^"]+)"/m)?.[1];
-const app = `${config.mainBinaryName}.exe`;
-for (const exe of [app, "shadui-index.exe", ...config.bundle.externalBin.map((bin) => `${bin.split("/").pop()}.exe`)]) {
-    const source = [exe, exe === app && `${crate}.exe`].filter(Boolean).map((name) => join(built, name)).find(existsSync);
+const built = from ?? join(targetDir(), "release");
+for (const exe of ["Glint.exe", "shadui-index.exe", "rg.exe", "fd.exe", "pdu.exe"]) {
+    // rg, fd and pdu are beside the build (crates/glint/build.rs copies them), else the official ones.
+    const tool = exe.replace(/\.exe$/, "");
+    const source = [join(built, exe), join(root, "crates", "glint", "binaries", `${tool}-x86_64-pc-windows-msvc.exe`)].find(existsSync);
     if (!source) fail(`${exe} isn't in ${built}: build first (without --no-build)`);
     copyFileSync(source, join(layout, exe));
 }
-for (const [from, to] of Object.entries(config.bundle.resources)) copyFileSync(join(root, "src-tauri", from), join(layout, to));
+for (const [file, to] of [["LICENSE", "LICENSE.txt"], ["THIRD_PARTY_LICENSES.md", "THIRD_PARTY_LICENSES.md"], ["THIRD_PARTY_CRATES.md", "THIRD_PARTY_CRATES.md"]]) {
+    copyFileSync(join(root, file), join(layout, to));
+}
 
 // The service's update signature, so the Store's copy updates its service without administrator approval
-// (src-tauri/index/src/update.rs): the build's own when it's for these very bytes, else made now with the
+// (crates/shadui-index/src/update.rs): the build's own when it's for these very bytes, else made now with the
 // update key (TAURI_SIGNING_PRIVATE_KEY).
 const service = join(layout, "shadui-index.exe");
 const builtSignature = join(built, "shadui-index.exe.sig");
@@ -102,7 +109,7 @@ if (existsSync(builtSignature) && spawnSync(service, ["verify-update", service, 
 } else if (hasUpdateKey()) {
     try {
         unlockUpdateKey();
-        console.log(`✓ ${signService(service)}`);
+        console.log(`✓ ${await signService(service)}`);
     } catch (e) {
         fail(`Couldn't sign the instant search service: ${e.message}`);
     }
@@ -111,11 +118,11 @@ if (existsSync(builtSignature) && spawnSync(service, ["verify-update", service, 
 }
 
 console.log("Drawing the logos…");
-run("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(root, "scripts", "msix-assets.ps1"), "-Source", join(root, "src-tauri", "icons", "icon.png"), "-Out", join(layout, "Assets")]);
+run("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(root, "scripts", "msix-assets.ps1"), "-Source", join(root, "crates", "glint", "msix", "icon.png"), "-Out", join(layout, "Assets")]);
 
 // Four numbers, the last 0: the Store keeps that one for itself.
 const xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-let manifest = readFileSync(join(root, "src-tauri", "msix", "AppxManifest.xml"), "utf8");
+let manifest = readFileSync(join(root, "crates", "glint", "msix", "AppxManifest.xml"), "utf8");
 for (const [key, value] of Object.entries({ ...identity, version: `${version}.0` })) manifest = manifest.replaceAll(`{{${key}}}`, xml(value));
 if (/\{\{\w+\}\}/.test(manifest)) fail(`AppxManifest.xml still has ${manifest.match(/\{\{\w+\}\}/)[0]}`);
 writeFileSync(join(layout, "AppxManifest.xml"), manifest);
@@ -129,7 +136,7 @@ writeFileSync(priConfig, readFileSync(priConfig, "utf8").replace(/<packaging>[\s
 run(tool("makepri.exe"), ["new", "/pr", layout, "/cf", priConfig, "/mn", join(layout, "AppxManifest.xml"), "/of", join(layout, "resources.pri"), "/o"]);
 rmSync(priConfig, { force: true });
 
-const msix = join(out, `${config.productName}_${version}_x64${identity === TEST ? "_test" : ""}.msix`);
+const msix = join(out, `Glint_${version}_x64${identity === TEST ? "_test" : ""}.msix`);
 run(tool("makeappx.exe"), ["pack", "/d", layout, "/p", msix, "/o"]);
 console.log(`✓ ${msix}`);
 

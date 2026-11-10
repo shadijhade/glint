@@ -1,14 +1,16 @@
 // Checks a release's update the way the app does before installing it: latest.json points at this
 // installer, and the installer's signature verifies with the app's public key and is bound to the
-// version latest.json announces (the app sets requireSignedVersion, so anything else is refused).
+// version latest.json announces (the app requires a signed version, so anything else is refused).
 //
 // Usage: node scripts/verify-update.mjs <latest.json> <installer-setup.exe> [public key]
-// The public key defaults to plugins.updater.pubkey in src-tauri/tauri.conf.json, the one the app is
-// built with. `npm run release` runs this on every release, before anything is uploaded.
+// The public key (the minisign box, base64-encoded, or the path to a file holding it) defaults to the one the
+// releases are signed with, crates/shadui-index/update-pubkey.txt (GLINT_UPDATE_PUBKEY names another, for a
+// dry run with a throwaway key). `npm run release` runs this on every release, before anything is uploaded.
 
-import { createHash, createPublicKey, verify } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
+import { checkSignature, parsePublicKey } from "./lib/minisign.mjs";
+import { updatePubkey } from "./lib/project.mjs";
 
 const [manifestPath, installerPath, pubkeyArg] = process.argv.slice(2);
 if (!manifestPath || !installerPath) {
@@ -16,8 +18,7 @@ if (!manifestPath || !installerPath) {
     process.exit(2);
 }
 
-const config = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
-const pubkey = pubkeyArg ?? config.plugins.updater.pubkey;
+const pubkey = pubkeyArg ? (existsSync(pubkeyArg) ? readFileSync(pubkeyArg, "utf8").trim() : pubkeyArg) : updatePubkey();
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const installer = readFileSync(installerPath);
 const name = basename(installerPath);
@@ -25,36 +26,15 @@ const name = basename(installerPath);
 const problems = [];
 const check = (ok, problem) => ok || problems.push(problem);
 
-/** Tauri stores minisign keys and signatures base64-encoded, comment lines included. */
-const minisign = (text) => Buffer.from(String(text).trim(), "base64").toString("utf8").split(/\r?\n/);
-/** Ed25519 verification that answers false for malformed input instead of throwing. */
-function ed25519(key, message, signature) {
-    try {
-        const der = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), key]);
-        return verify(null, message, createPublicKey({ key: der, format: "der", type: "spki" }), signature);
-    } catch {
-        return false;
-    }
-}
-
 const platforms = Object.entries(manifest.platforms ?? {}).filter(([target]) => target.startsWith("windows-x86_64"));
 check(/^\d+\.\d+\.\d+/.test(String(manifest.version)), `latest.json has no valid version (${manifest.version})`);
 check(platforms.length > 0, "latest.json has no windows-x86_64 entry");
+check(!!parsePublicKey(pubkey), "no usable public key (crates/shadui-index/update-pubkey.txt)");
 
-// A public key is "Ed" | key id (8 bytes) | Ed25519 key (32 bytes).
-const key = Buffer.from(minisign(pubkey ?? "")[1] ?? "", "base64");
-check(key.length === 42, "no usable public key (plugins.updater.pubkey in src-tauri/tauri.conf.json)");
-
-for (const [target, { url, signature }] of key.length === 42 ? platforms : []) {
+for (const [target, { url, signature }] of parsePublicKey(pubkey) ? platforms : []) {
     check(String(url).endsWith(`/releases/download/v${manifest.version}/${name}`), `${target}: ${url} isn't ${name} from release v${manifest.version}`);
-    // Lines: untrusted comment, "ED" (BLAKE2b-prehashed) | key id | signature, trusted comment, its signature.
-    const [, sigLine = "", trustedLine = "", globalLine = ""] = minisign(signature ?? "");
-    const sig = Buffer.from(sigLine, "base64");
-    const trusted = trustedLine.replace(/^trusted comment: /, "");
-    check(sig.length === 74 && sig.subarray(2, 10).equals(key.subarray(2, 10)), `${target}: not signed with the app's key`);
-    const prehashed = sig.subarray(0, 2).toString() === "ED";
-    check(ed25519(key.subarray(10), prehashed ? createHash("blake2b512").update(installer).digest() : installer, sig.subarray(10)), `${target}: the signature doesn't match the installer`);
-    check(ed25519(key.subarray(10), Buffer.concat([sig.subarray(10), Buffer.from(trusted)]), Buffer.from(globalLine, "base64")), `${target}: the signature's trusted comment doesn't verify`);
+    const { problems: bad, trusted } = checkSignature(installer, signature, pubkey);
+    for (const problem of bad) check(false, `${target}: ${problem.replace("the file", "the installer").replace("this key", "the app's key")}`);
     check(trusted.split("\t").includes(`version:${manifest.version}`), `${target}: the signature isn't bound to version ${manifest.version} (trusted comment: ${trusted})`);
 }
 

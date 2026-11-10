@@ -1,43 +1,52 @@
 # Releasing
 
-Releases are built one of two ways: by the release workflow on GitHub when a `vX.Y.Z` tag is pushed (the only way to get them signed by SignPath), or on the maintainer's PC with `npm run release`. Both make the same files. This page covers what to set up once and what to do for each release.
+Glint is built, signed and laid out by `npm run release` on the maintainer's PC, or by the release workflow on GitHub when a `vX.Y.Z` tag is pushed (the only way to get the binaries signed by SignPath). Both make the same files. This page covers what to set up once and what to do for each release.
+
+The build is the GPUI one: `Glint.exe` (`crates/glint`) and the instant search service (`shadui-index.exe`, `crates/shadui-index`), built together by `cargo build --release -p glint -p shadui-index` into `target/ui/release` (`CARGO_TARGET_DIR` changes the folder), and packed by `makensis` into a plain NSIS setup program ([`crates/glint/installer`](../crates/glint/installer/README.md)). There is no Tauri in the pipeline: no `tauri build`, no bundler, no WebView2 inside the installer. What every installed Glint (v0.9.x, built with Tauri) relies on to update itself is kept as it was; [what stays fixed](#what-stays-fixed-because-installed-copies-update-through-it) lists it.
 
 ## How it works
 
-1.  **`npm run release`** ([`scripts/release.mjs`](../scripts/release.mjs)) checks that `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` agree on the version, that everything is committed and that the crates pass their checks ([below](#5-release-notes-and-the-crates-checks)), then builds the NSIS installer (code-signed when signing is set up) and signs it for the in-app updater. It writes `latest.json` and checks the update the way the app will: the signature must verify with the public key the app is built with and be bound to the version `latest.json` announces. It also writes the winget and Scoop manifests. Everything lands in `release/vX.Y.Z/`, with the installer a second time as `Glint-setup.exe` (below), and it prints the `gh release create` command that makes the draft release.
+1.  **`npm run release`** ([`scripts/release.mjs`](../scripts/release.mjs)) does these, in order, and stops at the first that fails:
+    1.  checks that the root `Cargo.toml`'s `[workspace.package] version`, every crate's version and `package.json` agree, and that everything is committed (`--allow-dirty` for a trial);
+    2.  runs the crates' checks ([below](#5-release-notes-and-the-crates-checks)): `cargo deny check` and `npm run licenses -- --check`. A check whose tool isn't installed is skipped, with a warning that says what it leaves unchecked;
+    3.  checks the update key: the private key and its password (asked once, now, not after the build) must be the pair of `crates/shadui-index/update-pubkey.txt`, which must be the same text as `PUBLIC_KEY` in `crates/glint-ui/src/updater.rs`;
+    4.  works out the code signing ([below](#2-code-signing-optional-recommended));
+    5.  builds `Glint.exe` and the service, then signs a copy of the service (code signing first when set up, then the update key; the service itself checks the signature with `shadui-index.exe verify-update`), and has [`scripts/gpui-installer.mjs`](../scripts/gpui-installer.mjs) pack the installer with `makensis`, code-signing `Glint.exe`, rg, fd, pdu, the uninstaller and the setup when it's set up, and checking those signatures;
+    6.  signs the installer for the in-app updater ([`scripts/lib/minisign.mjs`](../scripts/lib/minisign.mjs): minisign, written with Node's own crypto), writes `latest.json` and checks the update the way the app will ([`scripts/verify-update.mjs`](../scripts/verify-update.mjs)): the signature must verify with the public key the app is built with and be bound to the version `latest.json` announces. It also writes the winget and Scoop manifests.
+
+    Everything lands in `release/vX.Y.Z/` (`--out <folder>` puts it elsewhere), with the installer a second time as `Glint-setup.exe` ([below](#what-stays-fixed-because-installed-copies-update-through-it)), and it prints the `gh release create` command that makes the draft release.
 2.  **Publishing the draft** makes it the latest release. Copies of the app installed with the setup program read `https://github.com/shadijhade/glint/releases/latest/download/latest.json` at start and every 12 hours, say *Update available* once, and keep an **Update** button in the header. **Install** (in the notice or in **Settings → About**) downloads the installer, verifies its signature, waits for any copy or move to finish, closes the app, installs over it with a progress bar and opens the new version.
 
 Copies that the setup program didn't install (Scoop, a portable copy, a dev build) don't install updates themselves: the app tells them about the new version and links to it. A release without `latest.json` gets the same treatment from every copy, through GitHub's latest-release API.
 
-**Every release has a `Glint-setup.exe`**, the same installer under a name without the version, so `https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe` always downloads the newest one. It's what the README's and the [website's](#the-website) Download links point at: a release without it breaks them until the next release, so upload it with the rest (`npm run release` and the release workflow both make it).
+### What stays fixed, because installed copies update through it
 
-**The instant search service updates itself.** It runs from `C:\Program Files\ShadUI Ripgrep\`, which an app update doesn't touch (the in-app updater runs the installer in update mode, so its uninstall hook leaves the service alone). The app and the service share one version, `[workspace.package] version` in `src-tauri/Cargo.toml`, so after an app update the service reports an older version, and the app hands it the build that came with the update. Each release signs `shadui-index.exe` with the updater key, the version sealed in the signature ([`scripts/sign-service.mjs`](../scripts/sign-service.mjs), which the service then checks itself with `shadui-index.exe verify-update`), and the installer carries the signature next to it as `shadui-index.exe.sig`; a service from after 0.9 takes a later build signed that way without administrator approval ([how, and why it's safe](instant-search.md#security-model)). A service from 0.9 or before, or a release without the signature, is updated the old way: the app says *Instant search has an update* once, and **Settings → Instant search** shows **Update** until it's done (one administrator approval; it runs the same `shadui-index.exe install` as turning it on).
+Every Glint already installed (the Tauri 0.9.x ones, and the GPUI ones after them) finds and installs its updates through these. Change none of them without a release that both old and new copies can read:
 
-A code-signed build changes `shadui-index.exe` after the point where `npm run release` signs it, so a code-signed release leaves the signature out (and says so), and its service updates with administrator approval. The release workflow signs the service after SignPath has, so its releases carry it either way.
+-   **`latest.json`**: its format (`version`, `notes`, `pub_date` and `platforms."windows-x86_64"` with a `signature` and a `url`), its address (`https://github.com/shadijhade/glint/releases/latest/download/latest.json`; `MANIFEST_URL` in `crates/glint-ui/src/updater.rs`, `plugins.updater.endpoints` of the old `tauri.conf.json`) and the platform key it lists. The GPUI updater also reads `windows-x86_64-nsis` first, which `release.mjs` doesn't write.
+-   **The installer's names**: `Glint_<version>_x64-setup.exe` (what `latest.json`'s `url` ends with, and what the winget and Scoop manifests download) and `Glint-setup.exe` (the same file, so `…/releases/latest/download/Glint-setup.exe` always downloads the newest one: the README's and the [website's](#the-website) Download links point at it, so a release without it breaks them until the next release).
+-   **The update signature**: minisign's format as Tauri writes it (the `.sig` is the base64 of the minisign box, which is also what `latest.json`'s `signature` holds), signed with the same key, with the version in the trusted comment (`timestamp:…<TAB>file:Glint_X.Y.Z_x64-setup.exe<TAB>version:X.Y.Z`). The app requires the signed version to be the announced one, so a tampered `latest.json` can't pass off an older, validly signed installer as new. Updates never go backwards either. The public key is `crates/shadui-index/update-pubkey.txt` (the service's) and `PUBLIC_KEY` in `updater.rs` (the app's): the same text, which `release.mjs` checks.
+-   **The installer's command line**: the in-app updater runs the setup as `Glint_X.Y.Z_x64-setup.exe /P /UPDATE /R /ARGS <the arguments Glint was started with>`. That is what `tauri-plugin-updater` 2.14 runs in `passive` mode (`updater_parameters` in its `updater.rs`: the install mode's flags `/P`, then `/UPDATE`, then, when it restarts the app, `/R` and `/ARGS` with the current arguments), and what `updater.rs` builds and tests (`/P /UPDATE /R /ARGS …`). The installer ([`installer.nsi`](../crates/glint/installer/installer.nsi)) reads exactly those: `/P` and `/UPDATE` in `.onInit` (passive: no pages, closes itself; update: install over a running version without asking, keep the shortcuts as they are), `/S` as NSIS's own silent switch (what the winget manifest's `Silent` uses; `/P` is its `SilentWithProgress`), and `/R` with `/ARGS` in `.onInstSuccess`, to start Glint again with the arguments it had. `/NS` (no shortcuts), `/D=<folder>` and, from Glint's own pages, `/TOOLS=jaq,uv` and `/INSTANTSEARCH` are the installer's too. A different order or spelling in a future updater would still work, as `GetOptions` finds each flag wherever it is.
+
+**The instant search service updates itself.** It runs from `C:\Program Files\ShadUI Ripgrep\`, which an app update doesn't touch (the in-app updater runs the installer in update mode, so its uninstall hook leaves the service alone). The app and the service share one version, `[workspace.package] version` in the root `Cargo.toml`, so after an app update the service reports an older version, and the app hands it the build that came with the update. Each release signs `shadui-index.exe` with the update key, the version sealed in the signature ([`scripts/sign-service.mjs`](../scripts/sign-service.mjs)), and the installer carries the signature next to it as `shadui-index.exe.sig`; a service from after 0.9 takes a later build signed that way without administrator approval ([how, and why it's safe](instant-search.md#security-model)). A service from 0.9 or before, or a release without the signature, is updated the old way: the app says *Instant search has an update* once, and **Settings → Instant search** shows **Update** until it's done (one administrator approval; it runs the same `shadui-index.exe install` as turning it on).
+
+Code signing happens to the service first, and its update signature is made over the code-signed file, so a code-signed release carries the signature too (the Tauri pipeline couldn't: it signed after).
 
 ## One-time setup
 
 ### 1. The updater key (needed for auto-update)
 
-Updates are signed with a minisign key pair. The public key is compiled into the app; the private key signs each release, on your PC or as a secret of the release workflow. Set this up **before the first release that has the updater** (the first one after v0.2.0): every update after it must be signed with the matching private key. v0.2.0 itself predates the updater, so its users get a link to that release and install it by hand once.
+Updates are signed with a minisign key pair. The public key is compiled into the app and the service; the private key signs each release, on your PC or as a secret of the release workflow. **It is the key already in use**: every installed copy trusts it, so a new release must be signed with the same private key, and there is nothing to set up again unless it's lost.
 
-1.  Generate the pair and choose a password when asked:
-
-    ```bash
-    npm run tauri signer generate -- -w ~/.tauri/shadui-ripgrep.key
-    ```
-
-    This writes `shadui-ripgrep.key` (private) and `shadui-ripgrep.key.pub` (public) in `%USERPROFILE%\.tauri`, outside the repository.
-2.  Paste the contents of `shadui-ripgrep.key.pub` into `src-tauri/tauri.conf.json` as `plugins.updater.pubkey`, and commit it. It's public.
-3.  Keep a copy of the private key and its password in a password manager. **If they're lost**, installed copies can't verify new updates: you'd need a new pair, and everyone would have to download the next version by hand once (the app still tells them it exists). **If they leak**, rotate the same way.
+-   The key was made with the Tauri CLI, `npx @tauri-apps/cli signer generate -w ~/.tauri/shadui-ripgrep.key` (choose a password when asked), which writes `shadui-ripgrep.key` (private) and `shadui-ripgrep.key.pub` (public) in `%USERPROFILE%\.tauri`, outside the repository. Signing no longer needs the Tauri CLI; only making a new key does.
+-   The public half is committed in two places that must hold the same text: `crates/shadui-index/update-pubkey.txt` (the service trusts it) and `PUBLIC_KEY` in `crates/glint-ui/src/updater.rs` (the app does). It's public.
+-   Keep a copy of the private key and its password in a password manager. **If they're lost**, installed copies can't verify new updates: you'd need a new pair, and everyone would have to download the next version by hand once (the app still tells them it exists). **If they leak**, rotate the same way.
 
 The release workflow needs the key's contents and its password as the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (**Settings → Secrets and variables → Actions**). Without them a tag push fails rather than publish a release the app can't install by itself.
 
-`npm run release` needs `TAURI_SIGNING_PRIVATE_KEY` set to the key file's path (or its contents), and asks for the password once, before building, unless `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is set: it signs a scratch file with the two right away, so a wrong password stops it then rather than after the build. It refuses to build with only one half (a key without a public key in `tauri.conf.json`, or the other way round); with neither, it builds without auto-update files and says so.
+`npm run release` needs `TAURI_SIGNING_PRIVATE_KEY` set to the key file's path (or its contents), and asks for the password once, before building, unless `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is set (the variable names are Tauri's, kept so the secrets and habits stay): it unlocks the key right away, so a wrong password or a key that isn't the one for the committed public key stops it then rather than after the build.
 
-The same key signs the instant search service, which takes an update only when its signature holds with the public key in `tauri.conf.json` as the service was built: a `--config` overlay that changes `plugins.updater.pubkey` changes the app's key, not the service's.
-
-The app sets `requireSignedVersion`: a signature must name the version it was signed for (`tauri build` records it), so a tampered `latest.json` can't pass off an older, validly signed installer as new. Updates never go backwards either.
+The signing is `scripts/lib/minisign.mjs`, minisign's format with Node's built-in `crypto` (scrypt to unlock the key, BLAKE2b-512 of the file, Ed25519). `npm run test:signing` proves it against the real `tauri signer sign`: it makes throwaway keys with `tauri signer generate`, signs a file with both under one trusted comment and compares the two `.sig` files field by field (the same layout, algorithm, key id, comments and lengths), and checks both hold under the app's check. The signature bytes themselves can't be compared: Tauri's signer adds random noise to Ed25519's nonce, so two of its own signatures of one file differ too; ours is the plain, repeatable RFC 8032 signature, which every verifier (the app's `minisign-verify` included) accepts. The test needs `@tauri-apps/cli` in `node_modules`.
 
 ### 2. Code signing (optional, recommended)
 
@@ -48,28 +57,28 @@ Since June 2023 a publicly trusted code-signing key must live in hardware (a sma
 | Option | Cost | Who can get it | Name on the signature | With `npm run release` |
 | :--- | :--- | :--- | :--- | :--- |
 | [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/quickstart) (formerly Trusted Signing) | About $10 a month (Basic) | Organizations in the US, Canada, the EU, the UK, Australia, New Zealand, Japan, South Korea, Singapore, Switzerland, Norway and Israel; individual developers in the US and Canada | Your verified name | Built in: three environment variables |
-| [Certum](https://shop.certum.eu/code-signing.html): *Open Source Code Signing* (with a smartcard and reader) or *Standard Code Signing* in the cloud (SimplySign) | About €69 or from €49 | Individuals and companies Certum validates, in most countries | Your name | `--sign-config` with the certificate's thumbprint |
-| Another CA with a hardware or cloud key (SSL.com eSigner, DigiCert KeyLocker, Sectigo…) | Roughly €200 to €500 a year | Anyone the CA validates | Your name | `--sign-config` with its signing tool |
+| [Certum](https://shop.certum.eu/code-signing.html): *Open Source Code Signing* (with a smartcard and reader) or *Standard Code Signing* in the cloud (SimplySign) | About €69 or from €49 | Individuals and companies Certum validates, in most countries | Your name | `--sign-command` with the certificate's thumbprint |
+| Another CA with a hardware or cloud key (SSL.com eSigner, DigiCert KeyLocker, Sectigo…) | Roughly €200 to €500 a year | Anyone the CA validates | Your name | `--sign-command` with its signing tool |
 | [SignPath Foundation](https://signpath.org/) | Free for open source | OSI-licensed projects with no proprietary parts | SignPath Foundation | Applied in October 2026 and declined until Glint is better known (stars, forks, articles, discussions); they invite a new application. It only signs builds made on GitHub-hosted runners, so it's the release workflow's (below) |
 
-**Azure Artifact Signing.** `npm run release` fetches Microsoft's Artifact Signing client for `signtool` (pinned by its SHA-256) into `release/.tools`, has Tauri run it on every executable it bundles and then on the installer (before the update signature, since signing changes the file), and checks the signatures afterwards.
+The signing is one command line with `%1` where a file's path goes, run on `Glint.exe`, `rg.exe`, `fd.exe`, `pdu.exe`, the service, the uninstaller and the finished setup (`GLINT_SIGN_COMMAND`, which `--sign-command` sets for one run). Afterwards the script checks every one of them with `Get-AuthenticodeSignature`. It signs copies: the official tools in `crates/glint/binaries` stay as they are, so only the installer carries the signed ones.
+
+**Azure Artifact Signing.** `npm run release` fetches Microsoft's Artifact Signing client for `signtool` (pinned by its SHA-256) into `release/.tools` and builds the command from it.
 
 1.  In an Azure subscription, register the `Microsoft.CodeSigning` resource provider, create an Artifact Signing account (note its region's endpoint, such as `https://weu.codesigning.azure.net`), complete a **Public** identity validation, and create a **Public Trust** certificate profile. Microsoft's [quickstart](https://learn.microsoft.com/azure/artifact-signing/quickstart) walks through it; validation takes from a few hours to a few weeks.
 2.  Assign your account the **Artifact Signing Certificate Profile Signer** role on the certificate profile.
 3.  On your PC: the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-windows) (then `az login`), the .NET 8 runtime and the Windows SDK (`signtool` 10.0.26100 or newer; Visual Studio's C++ tools include it).
 4.  Before `npm run release`, set `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT` and `AZURE_SIGNING_PROFILE`. (An app registration works too: set `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_TENANT_ID` instead of `az login`.)
 
-**A certificate in the Windows certificate store** (Certum's card, SimplySign's virtual card, most CAs' tokens): write a Tauri config overlay such as `%USERPROFILE%\.tauri\sign.json`
+**A certificate in the Windows certificate store** (Certum's card, SimplySign's virtual card, most CAs' tokens), with `signtool`:
 
-```json
-{ "bundle": { "windows": { "certificateThumbprint": "<SHA-1 thumbprint>", "digestAlgorithm": "sha256", "timestampUrl": "http://time.certum.pl" } } }
+```powershell
+npm run release -- --sign-command '"C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe" sign /fd SHA256 /sha1 <SHA-1 thumbprint> /tr http://time.certum.pl /td SHA256 "%1"'
 ```
 
-and run `npm run release -- --sign-config %USERPROFILE%\.tauri\sign.json`. For a provider whose tool isn't `signtool` (SSL.com's CodeSignTool, DigiCert's `smctl`), put a `signCommand` there instead: `{ "cmd": "<tool>", "args": [..., "%1"] }`, where `%1` is the file to sign.
+For a provider whose tool isn't `signtool` (SSL.com's CodeSignTool, DigiCert's `smctl`), put its command line there instead, with `"%1"` for the file.
 
-Tauri signs rg, fd and pdu where they are, in `src-tauri/binaries`; `npm run release` puts the official files back after the build, so only the installer carries the signed copies. (If a signed build is cut short and `git status` shows them changed, `git checkout -- src-tauri/binaries`.)
-
-**SignPath Foundation** (the release workflow). Once the project is approved, set the repository secrets `SIGNPATH_API_TOKEN` and `SIGNPATH_ORGANIZATION_ID`. The workflow submits the app and the service (artifact configuration `zip`), then the installer (`exe`), to project `glint` with signing policy `release-signing`, and waits up to an hour for each request to be approved on SignPath. It checks the signatures before anything is uploaded. Without the secrets it builds unsigned.
+**SignPath Foundation** (the release workflow). Once the project is approved, set the repository secrets `SIGNPATH_API_TOKEN` and `SIGNPATH_ORGANIZATION_ID`. The workflow submits `Glint.exe` and the service (artifact configuration `zip`), then the installer (`exe`), to project `glint` with signing policy `release-signing`, and waits up to an hour for each request to be approved on SignPath. It checks the signatures before anything is uploaded. Without the secrets it builds unsigned. (SignPath signs `Glint.exe` and the service, not rg, fd and pdu, which the installer carries as they are.)
 
 Once releases are signed, take the SmartScreen note out of the README's Install section (and the website's question about it), and Glint can go into [the Microsoft Store](#the-microsoft-store).
 
@@ -79,7 +88,7 @@ Once releases are signed, take the SmartScreen note out of the README's Install 
 
 ### 4. winget and Scoop (from the first release with the updater)
 
-`npm run release` writes `release/vX.Y.Z/package-manifests/`: `winget/manifests/s/shadijhade/Glint/X.Y.Z/` (three YAML files) and `scoop/glint.json`. Submit them once the release is published, since they point at its download. For a release that's already out, `node scripts/package-manifests.mjs X.Y.Z` makes them from GitHub's copy of the installer.
+`npm run release` writes `release/vX.Y.Z/package-manifests/`: `winget/manifests/s/shadijhade/Glint/X.Y.Z/` (three YAML files) and `scoop/glint.json`. Submit them once the release is published, since they point at its download. For a release that's already out, `node scripts/package-manifests.mjs X.Y.Z` makes them from GitHub's copy of the installer. The package id stays `shadijhade.Glint`; the winget installer entry is `nullsoft`, per user, with the setup's own switches (`/S` silent, `/P` silent with progress).
 
 **winget**:
 
@@ -99,41 +108,55 @@ Once a package is live, add its install command to the README's Install section.
 
 ### 5. Release notes and the crates' checks
 
-Three tools help with each release, and `npm run release` skips (with a warning) the checks whose tool isn't installed:
+Four tools help with each release, and `npm run release` skips (with a warning that says what that leaves unchecked) the checks whose tool isn't installed:
 
 -   **[git-cliff](https://git-cliff.org/)** drafts the release notes from the commits' subjects (`feat(preview): Markdown as it reads`): what's new by area, then what's faster and what's fixed. [`cliff.toml`](../cliff.toml) names the areas; give a new scope a name there. Install it with `winget install orhun.git-cliff`.
--   **[cargo-deny](https://github.com/EmbarkStudios/cargo-deny)** checks every crate in the Windows build against [RustSec's advisory database](https://rustsec.org/) (known vulnerabilities, and unmaintained crates Glint depends on directly), the licenses in [`src-tauri/deny.toml`](../src-tauri/deny.toml), and that crates come only from crates.io. Run it any time with `cargo deny --manifest-path src-tauri/Cargo.toml check`. For a vulnerability, update the crate (`cargo update --manifest-path src-tauri/Cargo.toml -p <crate>`), or, if Glint doesn't use what's affected, add its ID with the reason to `ignore` under `[advisories]` in `deny.toml`. A crate under a license that isn't listed there needs a decision before it goes in.
--   **[cargo-about](https://github.com/EmbarkStudios/cargo-about)** writes [`THIRD_PARTY_CRATES.md`](../THIRD_PARTY_CRATES.md), every crate in the app with its license's text, which the installer carries (`npm run licenses`, from [`src-tauri/about.toml`](../src-tauri/about.toml) and `about.hbs`). Run it when crates change and commit the file: `npm run release` stops while it's out of date.
+-   **[cargo-deny](https://github.com/EmbarkStudios/cargo-deny)** checks every crate in the Windows build against [RustSec's advisory database](https://rustsec.org/) (known vulnerabilities, and unmaintained crates Glint depends on directly), the licenses in [`deny.toml`](../deny.toml), and that crates come only from crates.io. Run it any time with `cargo deny check` from the repository root. For a vulnerability, update the crate (`cargo update -p <crate>`), or, if Glint doesn't use what's affected, add its ID with the reason to `ignore` under `[advisories]` in `deny.toml`. A crate under a license that isn't listed there needs a decision before it goes in. (The vendored GPUI crates under `vendor/` are path dependencies of the workspace's `[patch.crates-io]`, so they're checked as the crates they are.)
+-   **[cargo-about](https://github.com/EmbarkStudios/cargo-about)** writes [`THIRD_PARTY_CRATES.md`](../THIRD_PARTY_CRATES.md), every crate in the app with its license's text, which the installer and the Store package carry (`npm run licenses`, from [`about.toml`](../about.toml) and [`about.hbs`](../about.hbs), over the whole workspace). Run it when crates change and commit the file: `npm run release` stops while it's out of date.
+-   **What cargo-about and cargo-deny can't see**: fonts, icons and data that crates embed under licenses of their own. [`scripts/lib/embedded-notices.mjs`](../scripts/lib/embedded-notices.mjs) writes them after the crate list, from the crates' sources at the versions in `Cargo.lock` (so no tool needs installing for it): the KaTeX fonts (SIL OFL 1.1, embedded by `ratex-svg`'s `embed-fonts`), the Lucide icons (ISC, through `gpui-kit-assets`), `two-face`'s syntax definitions and themes (each with its own license), Typst's assets (Foxit PDF fonts, ICC profiles, W3C-derived tables), the citation styles `hayagriva` embeds (CC BY-SA 3.0), `hypher`'s hyphenation patterns and the time zone database. `npm run licenses -- --embedded` rewrites just that section, with no cargo-about; when you add a crate that embeds something, add it to `SOURCES` in that file. The file is the notices the installer and the package carry; nothing in the app's windows opens it (Settings → About shows the version, updates and diagnostics, not the notices), so it is read from the install folder.
 
-Install the last two with `cargo install --locked cargo-deny cargo-about`, or put the `x86_64-pc-windows-msvc` builds from their GitHub releases on `PATH`.
+Install the two cargo tools with `cargo install --locked cargo-deny cargo-about`, or put the `x86_64-pc-windows-msvc` builds from their GitHub releases on `PATH`. **Until cargo-about has run on this workspace, `THIRD_PARTY_CRATES.md`'s crate list is the old Tauri build's**: run `npm run licenses` and commit it before releasing.
 
 ## Every release
 
-1.  **Bump the version** to the same `X.Y.Z` in three places:
+1.  **Bump the version** to the same `X.Y.Z` in two places:
+    -   `Cargo.toml`: `[workspace.package] version`, which the app, the installer and the instant search service share; then `cargo check` to update `Cargo.lock`
     -   `package.json`: `npm version X.Y.Z --no-git-tag-version` (updates `package-lock.json` too)
-    -   `src-tauri/Cargo.toml`: `[workspace.package] version`, which the app and the instant search service share; then `cargo check --manifest-path src-tauri/Cargo.toml` to update `Cargo.lock`
-    -   `src-tauri/tauri.conf.json`: `version`
+
+    `npm run release` and the workflow check that the two agree (and every crate's).
 2.  **Commit** (`Release vX.Y.Z`) and push to `master`.
 3.  **Draft the notes**: `npm run notes` writes `release/vX.Y.Z/notes.md` with what changed since the last release. Read it and edit it: it lists commits, and the notes are for people using Glint.
-4.  **Build the release** (5 to 10 minutes):
+4.  **Build the release** (the build is most of it: a clean release build takes tens of minutes, an incremental one a few):
 
     ```powershell
     $env:TAURI_SIGNING_PRIVATE_KEY = "$HOME\.tauri\shadui-ripgrep.key"
     npm run release
     ```
 
-    with the code-signing variables or `--sign-config` from above if you sign. It checks the crates first and stops on a known vulnerability, a license `deny.toml` doesn't allow, or an out-of-date `THIRD_PARTY_CRATES.md` ([what to do](#5-release-notes-and-the-crates-checks)).
-5.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json` (and with `--store`, the offline installer), with your notes, and the tag is made at your commit when you publish.
+    with the code-signing variables or `--sign-command` from above if you sign. It checks the crates first and stops on a known vulnerability, a license `deny.toml` doesn't allow, or an out-of-date `THIRD_PARTY_CRATES.md` ([what to do](#5-release-notes-and-the-crates-checks)).
+5.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json`, with your notes, and the tag is made at your commit when you publish.
 6.  **On GitHub**, read the release notes (the app's *What's new* opens this page), try the installer, and **publish**. Running copies find the update within 12 hours or at their next start.
 7.  **Submit** `release/vX.Y.Z/package-manifests` to winget and Scoop.
 8.  **The Microsoft Store**, when it should have this version: `npm run msix`, and upload the package in Partner Center ([below](#as-an-msix-package)).
 
+### A trial with a throwaway key
+
+To run the whole pipeline without the real key, and without touching `release/`:
+
+```powershell
+npx @tauri-apps/cli signer generate -w D:\trial\test.key        # a password of your choice
+$env:TAURI_SIGNING_PRIVATE_KEY = "D:\trial\test.key"; $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<it>"
+npm run release -- --allow-dirty --out D:\trial\release --pubkey D:\trial\test.key.pub
+```
+
+Everything is made and checked, with the throwaway key standing in for the app's: `verify-update.mjs` is run with its public key, and the service's signature is checked by `sign-service.mjs` with it (the service itself trusts only the committed key, so no installed Glint or service would take what a trial makes). It never publishes, uploads or installs anything.
+
 ### With the release workflow
 
-Steps 1 and 2 as above, then:
+Step 1 and 2 as above, then:
 
 3.  **Try it** (optional): **Actions → Release → Run workflow** on `master` runs every check and builds (and signs) the installer without making a release; its files are in the run's `release-vX.Y.Z` artifact.
-4.  **Tag and push**: `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The workflow checks that the three versions and the tag agree, runs the checks, signs with SignPath when it's set up (approve the requests there), signs the update, and creates a draft release with `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json`. It doesn't run cargo-deny or cargo-about, so run those here first (`cargo deny --manifest-path src-tauri/Cargo.toml check` and `npm run licenses`).
+4.  **Tag and push**: `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The workflow checks that the versions and the tag agree, runs the checks, builds with `cargo build --release -p glint -p shadui-index`, signs `Glint.exe` and the service with SignPath when it's set up (approve the requests there), signs the service's update and packs the installer with `scripts/gpui-installer.mjs`, signs the installer with SignPath, signs the update, and creates a draft release with `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json`. It doesn't run cargo-deny or cargo-about, so run those here first (`cargo deny check` and `npm run licenses`).
 5.  **Notes**: `npm run notes`, edit `release/vX.Y.Z/notes.md`, and put it on the draft with `gh release edit vX.Y.Z --notes-file release/vX.Y.Z/notes.md`.
 6.  **On GitHub**, as in step 6 above.
 7.  **Submit** the manifests from the run's `release-vX.Y.Z` artifact (`package-manifests/`) to winget and Scoop.
@@ -144,14 +167,13 @@ If a release turns out broken, publish a fixed one with a higher version: the up
 
 ## The installer
 
-The NSIS installer is Tauri's own with Glint's pages, in [`src-tauri/installer/`](../src-tauri/installer/):
+The NSIS installer is Glint's own script in [`crates/glint/installer/`](../crates/glint/installer/README.md), made from the Tauri build's (itself Tauri's template at 2.12.2, with Glint's pages), so `makensis` is all that builds it. [`scripts/gpui-installer.mjs`](../scripts/gpui-installer.mjs) gathers what it carries into a folder and runs `makensis` (found through `MAKENSIS`, the `PATH`, `%LOCALAPPDATA%\tauri\NSIS`, where Tauri's bundler kept one, or `Program Files\NSIS`; `winget install NSIS.NSIS` brings one). It installs over the Tauri build's in place: the same folder (`%LOCALAPPDATA%\Glint`), registry keys, shortcuts and switches. It carries no WebView2: the GPUI app draws everything itself.
 
--   **WebView2**: the installer carries Microsoft's small WebView2 installer (`webviewInstallMode` `embedBootstrapper`), so it needs no download of its own before that one fetches the runtime, with its own progress window. A runtime whose version reads `0.0.0.0` (removed, or broken) counts as missing. When it can't be installed (an offline PC), the installer asks: **Retry**, or **Ignore** and install Glint anyway, which then offers WebView2 itself when it starts ([`src-tauri/src/webview.rs`](../src-tauri/src/webview.rs), as it does for Scoop's and copied installs, which never run the installer); a silent install stops, as Tauri's does.
--   **`installer.nsi`**: Tauri's template (`crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi` in the tauri repository), from the `@tauri-apps/cli` version its first lines name, with Glint's changes marked `Glint:`: the **Extra tools** page after the folder page, Glint's look, and its name and version where NSIS would name itself. When `@tauri-apps/cli` is updated, `npm run release` warns until the template is compared: take Tauri's file at the new CLI's tag (`tauri-cli-vX.Y.Z`), put the `Glint:` parts back in, and update the version line.
--   **`hooks.nsh`**: what runs before and after installing and uninstalling (ShadUI Ripgrep's leftovers, File Explorer's entries, the instant search service, putting back a bundled tool a security program removed as it landed, and the question when WebView2 couldn't be installed), and it brings in the two below.
+-   **`installer.nsi`**: the script, with the switches above, the pages (Welcome, the reinstall question, the folder, the **Extra tools** page, the install, the finish page) and the uninstaller.
+-   **`hooks.nsh`**: what runs before and after installing and uninstalling (ShadUI Ripgrep's leftovers, File Explorer's entries, the instant search service, the tools picked on the Extra tools page), and it brings in the two below.
 -   **`look.nsh`**: Segoe UI, the welcome and finish pages' words, a question before **Cancel** quits, and the artwork for the screen's scaling.
--   **`tools.nsh`**: the **Extra tools** page: instant search, the meaning model and every tool Settings → Tools installs, grouped, each with what it is and what Glint uses it for; one already on the PC is greyed out. What's ticked installs after Glint itself, by Glint (`Glint.exe tools install <id>`, Settings → Tools' own code), with its progress on the installer's status line; the finish page says what didn't install. A test in `src-tauri/src/tools.rs` fails when a tool joins `TOOLS` without a row here. Silent installs pick them with `/TOOLS=difftastic,jaq` ([docs/tools.md](tools.md)).
--   **`art/`**: the pictures beside the welcome and finish pages and in the header, for 100% to 200% scaling, drawn by `node scripts/installer-art.mjs` from the logo (run it again when the logo or their words change).
+-   **`tools.nsh`**: the **Extra tools** page: instant search, the meaning model and every tool Settings → Tools installs, grouped, each with what it is and what Glint uses it for; one already on the PC is greyed out. What's ticked installs after Glint itself, by Glint (`Glint.exe tools install <id>`, Settings → Tools' own code), with its progress on the installer's status line; the finish page says what didn't install. A test in `crates/glint-core/src/tools.rs` fails when a tool joins `TOOLS` without a row here. Silent installs pick them with `/TOOLS=difftastic,jaq` ([docs/tools.md](tools.md)).
+-   **`art/`**: the pictures beside the welcome and finish pages and in the header, for 100% to 300% scaling, drawn by `npm run installer-art` from `crates/glint/installer/logo.svg` (run it again when the logo or their words change; it needs Microsoft Edge, and gives the committed files byte for byte).
 
 ## The Microsoft Store
 
@@ -161,41 +183,41 @@ The Store takes Glint two ways. **As an MSIX package**, which `npm run msix` bui
 
 ### As an MSIX package
 
-`npm run msix` ([`scripts/msix.mjs`](../scripts/msix.mjs)) builds Glint for the package with [`src-tauri/tauri.msix.conf.json`](../src-tauri/tauri.msix.conf.json), lays it out with the instant search service, rg, fd and pdu, the notices, [`AppxManifest.xml`](../src-tauri/msix/AppxManifest.xml) and the Store's logos at every scale (drawn from `src-tauri/icons/icon.png` by [`scripts/msix-assets.ps1`](../scripts/msix-assets.ps1), with `resources.pri` to tell them apart), and packs it with the Windows SDK's makeappx into `release/vX.Y.Z/Glint_X.Y.Z_x64.msix`. It takes about as long as `npm run release`, nearly all of it the build, and needs the Windows SDK, which Visual Studio's C++ tools bring.
+`npm run msix` ([`scripts/msix.mjs`](../scripts/msix.mjs)) builds Glint (`cargo build --release -p glint -p shadui-index`; `--no-build` packages what `target/ui/release` holds), lays it out with the instant search service, rg, fd and pdu, the notices, [`AppxManifest.xml`](../crates/glint/msix/AppxManifest.xml) and the Store's logos at every scale (drawn from `crates/glint/msix/icon.png` by [`scripts/msix-assets.ps1`](../scripts/msix-assets.ps1), with `resources.pri` to tell them apart), and packs it with the Windows SDK's makeappx into `release/vX.Y.Z/Glint_X.Y.Z_x64.msix`. It needs the Windows SDK, which Visual Studio's C++ tools bring. The service's update signature is made the same way as the setup program's (`TAURI_SIGNING_PRIVATE_KEY`).
+
+The manifest matches what the app checks: the executable is `Glint.exe` (`store_copy()` and `package_family()` in `crates/glint-core/src/lib.rs` ask Windows which package the process is in, so they need no name), the execution alias is `glint.exe` (`verbs.rs` and the Jump List start it by it) and the startup task is `GlintTray` with `--tray` (`crates/glint-ui/src/platform/tray.rs`).
 
 How the Store's copy differs from the setup program's:
 
--   **A data folder of its own.** Windows lets a packaged app change files that already exist in AppData (only what it creates there is its own), so the Store's copy has its own identifier, `com.shado.glint.store`, and never touches the settings of a Glint the setup program installed on the same PC. Settings travel between them with **Settings → About → Settings file**.
 -   **The Store updates it.** It doesn't look for updates itself, and **Settings → About** says the Store keeps it up to date.
 -   **No File Explorer integration.** Windows keeps a packaged app's registry writes to itself, so *Open in Glint*, *Open folders in Glint by default* and *Win+E opens Glint* say they need the setup program's Glint.
 -   **Start with Windows** is the package's startup task (`GlintTray`, which starts it with `--tray`), which Windows' **Startup apps** can turn off; then only they can turn it on again.
 -   **AI agents and the Jump List** start it by its `glint.exe` alias, `%LOCALAPPDATA%\Microsoft\WindowsApps\<package family>\glint.exe`, which stays put as updates come (the package's own folder has its version in its name).
 -   **Instant search** turns on as it does elsewhere, with one administrator approval. Uninstalling a Store app runs nothing of Glint's, so the service learns which package turned it on, checks for it every half hour, and removes itself within the hour once it's gone for every account, unless a copy from the setup program, Scoop or a portable one uses it too ([how](instant-search.md#security-model)). A test package installed with `--try` doesn't name itself, so taking it out leaves the service where it is.
+-   **Its data folder.** The Tauri build gave the Store's copy a data folder of its own, `com.shado.glint.store` (a config overlay at build time), because Windows lets a packaged app change files that already exist in AppData and only what it creates there is its own, so settings could cross between a Store copy and a setup copy. The GPUI app's data folder is `glint_core::host::IDENTIFIER` (`com.shado.shadui-ripgrep`) in every build, so **until the app picks `com.shado.glint.store` when it runs as a package (`package_family()` is set), the Store's copy shares the folder of a setup copy on the same PC**. This is the coordinator's open item for `crates/glint-core/src/host.rs`; settings travel between the two with **Settings → About → Settings file** once it's done.
 
 **Once:**
 
 1.  Sign up as an individual developer at [storedeveloper.microsoft.com](https://storedeveloper.microsoft.com/) (free; a government ID and a selfie), which opens Partner Center.
 2.  **Apps and games → New product → MSIX or PWA app**, and reserve the name (*Glint*, or *Glint File Explorer* if that's taken).
-3.  The app's **Product management → Product identity** has three values the package must carry: put `Package/Identity/Name`, `Package/Identity/Publisher` and `Package/Properties/PublisherDisplayName` in [`src-tauri/msix/store.json`](../src-tauri/msix/store.json) as `name`, `publisher` and `publisherDisplayName`, the name you reserved as `displayName` and the Store ID as `storeId` (for links to the listing), and commit it. Until it's there, `npm run msix` makes a test package (`…_test.msix`), which the Store won't take.
+3.  The app's **Product management → Product identity** has three values the package must carry: put `Package/Identity/Name`, `Package/Identity/Publisher` and `Package/Properties/PublisherDisplayName` in [`crates/glint/msix/store.json`](../crates/glint/msix/store.json) as `name`, `publisher` and `publisherDisplayName`, the name you reserved as `displayName` and the Store ID as `storeId` (for links to the listing), and commit it. It's there already (the Store ID is 9NQLRJ3HF1C9); until it is, `npm run msix` makes a test package (`…_test.msix`), which the Store won't take.
 4.  Fill in the Store listing: the description from the README, screenshots from `screenshots/`, the privacy policy ([SECURITY.md](../SECURITY.md#code-signing-and-privacy-policy)), the category and the age rating questions. The package declares `runFullTrust`, as every desktop app does; when Partner Center asks why, it's a desktop file explorer that reads and changes files anywhere the user can.
 
 **For a release the Store should offer:** on the release's commit (after `npm run release`, or instead of it), `npm run msix`, then in Partner Center a new submission with `release/vX.Y.Z/Glint_X.Y.Z_x64.msix` under **Packages**, and **Submit for certification**. The Store signs it; certification takes a few days. Its version can only go up, and the Store keeps the fourth number (`X.Y.Z.0`) for itself.
 
-**To try it here** (with Developer Mode on): `npm run msix -- --try` installs a test package from its folder, *Glint (test)* in Start, under its own identity so it can never stand in the Store copy's way; `npm run msix -- --untry` takes it out, with everything it kept. `--from <folder>` packages a build made elsewhere instead of building, such as a debug build with `cargo build --features tauri/custom-protocol` and the same identifier in `TAURI_CONFIG`.
+**To try it here** (with Developer Mode on): `npm run msix -- --try` installs a test package from its folder, *Glint (test)* in Start, under its own identity so it can never stand in the Store copy's way; `npm run msix -- --untry` takes it out, with everything it kept. `--from <folder>` packages a build made elsewhere instead of building, such as a debug build.
 
 ### As an EXE app
 
 The Store can also list Glint as an **EXE app**: it downloads the installer from a link you give it and runs it silently, and a copy installed that way updates itself like any other. Microsoft's [requirements](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msi/app-package-requirements) for that installer:
 
 -   It and every program in it are code-signed with a certificate from a CA in Microsoft's Trusted Root Program ([code signing](#2-code-signing-optional-recommended)), so the Store needs signed releases.
--   It downloads nothing while it runs. The normal installer fetches WebView2 on a PC that doesn't have it, so the Store gets the **offline installer**, `Glint_X.Y.Z_x64_offline-setup.exe`, which carries WebView2 (about 220 MB, where the normal installer is 13 MB; [`src-tauri/tauri.microsoftstore.conf.json`](../src-tauri/tauri.microsoftstore.conf.json)). It's built after the normal one, with only the code signing (no update signature: copies from the Store update with the normal installer), and takes a minute more.
+-   It downloads nothing while it runs. The Tauri build's installer fetched WebView2 on a PC that didn't have it, so the Store got a separate **offline installer** of 220 MB. The GPUI installer carries no WebView2 and downloads nothing, so **the normal `Glint_X.Y.Z_x64-setup.exe` is the one the Store takes**, and `npm run release` no longer makes another (its old `--store` option is gone).
 -   It installs without showing anything when run with `/S`. The NSIS installer does, and the installer hooks only ask their question when the install isn't silent.
 -   Its address names the version, and the file there never changes: a release's download link, as long as nobody replaces the file.
 
-Sign up as above, but make the product an **EXE or MSI app**. For a release the Store should offer (not every release needs it: copies from the Store update themselves from GitHub, so one installed from an older Store version is offered the newest at its first start):
+Sign up as above, but make the product an **EXE or MSI app**. For a release the Store should offer (not every release needs it: copies from the Store update themselves from GitHub, so one installed from an older Store version is offered the newest at its first start): build the release code-signed (`npm run release` with the Azure variables or `--sign-command`), publish it, give Partner Center the installer's link (`https://github.com/shadijhade/glint/releases/download/vX.Y.Z/Glint_X.Y.Z_x64-setup.exe`) for x64, with `/S` where it asks how to install silently, and **Submit for certification**. Certification takes a few days.
 
-1.  Build it code-signed and with `--store`: `npm run release -- --store --sign-config <overlay>` (or with the Azure variables) also builds the offline installer, checks its signatures and adds it to the `gh release create` command. Without code signing it still builds it, to try, but leaves it out of the release.
-2.  Once the release is published, give Partner Center the offline installer's link, which `npm run release` prints (`https://github.com/shadijhade/glint/releases/download/vX.Y.Z/Glint_X.Y.Z_x64_offline-setup.exe`), for x64, with `/S` where it asks how to install silently, and **Submit for certification**. Certification takes a few days.
 ## The website
 
 [glint.rafd.tech](https://glint.rafd.tech/) is Glint's home page, one of Rafd's free innovations, built the way [rafd.tech](https://rafd.tech/) is: [`site/`](../site) is an Astro project of its own (GSAP and Lenis for the motion, a hand-written WebGL2 field in `site/src/scripts/field.ts`), published from this PC as the Cloudflare Worker `glint-site`, static assets only. `site/wrangler.toml` declares the domain, so every deploy keeps glint.rafd.tech attached (DNS record and certificate) on the rafd.tech zone.
@@ -210,45 +232,12 @@ npm run deploy   # build + wrangler deploy (signs in to Cloudflare in a browser 
 
 `npm run site` at the root runs its dev server. All the words and numbers are in `site/src/content/site.ts`, every time and count there is the README's, and the screenshots come from `screenshots/`, made into AVIF and WebP when it builds. The search demo searches `site/public/data/names.txt`: 9,474 of Windows' own file names (programs whose version information names Microsoft; no fonts, drivers or other files a third party installed), worth regenerating only if Windows changes a lot.
 
-Its main buttons go to the Microsoft Store's listing (`SITE.store`) and its installer links to `releases/latest/download/Glint-setup.exe`, like the README's; the page asks GitHub's API for the latest release to show its version and the installer's size, and a link to the offline installer when the release has one. Nothing on it changes for a release; deploy it again when its words, numbers or screenshots change.
+Its main buttons go to the Microsoft Store's listing (`SITE.store`) and its installer links to `releases/latest/download/Glint-setup.exe`, like the README's; the page asks GitHub's API for the latest release to show its version and the installer's size. Nothing on it changes for a release; deploy it again when its words, numbers or screenshots change.
 
-## Trying the updater locally
+## Trying the updater
 
-The flow can be tested end to end without the real key, the real install or GitHub, with two builds that differ only in version, a test key and a local `latest.json`:
+What can be checked without the real key, the real install or GitHub:
 
-1.  `npm run tauri signer generate -- --ci -p "" -w <scratch>/test.key`.
-2.  Write a config overlay, `<scratch>/test.json`, that gives the test builds their own name (so they install next to the real app, not over it), drops the installer hooks (so uninstalling the test copy can't remove the real instant search service), and points the updater at a local server:
-
-    ```json
-    {
-      "productName": "glint-updatetest",
-      "identifier": "com.shado.shadui-ripgrep.updatetest",
-      "bundle": { "createUpdaterArtifacts": true, "windows": { "nsis": { "installerHooks": null } } },
-      "plugins": {
-        "updater": {
-          "pubkey": "<contents of test.key.pub>",
-          "endpoints": ["http://127.0.0.1:8765/latest.json"],
-          "dangerousInsecureTransportProtocol": true
-        }
-      }
-    }
-    ```
-3.  Build the old and the new version, with `TAURI_SIGNING_PRIVATE_KEY=<scratch>/test.key` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD=` set: `npm run tauri build -- --bundles nsis --config <scratch>/test.json --config <scratch>/old.json`, where `old.json` is just `{ "version": "0.2.0" }`, then the same with a `new.json` (a file rather than inline JSON, which npm's Windows shell mangles). For the new build, also bump `[workspace.package] version` for the moment, to see the instant search update offer, and put it back afterwards.
-4.  Serve the new installer at `http://127.0.0.1:8765/releases/download/v<new>/<installer>` next to a `latest.json`:
-
-    ```json
-    {
-      "version": "<new>",
-      "pub_date": "2026-10-16T12:00:00Z",
-      "platforms": {
-        "windows-x86_64": {
-          "url": "http://127.0.0.1:8765/releases/download/v<new>/glint-updatetest_<new>_x64-setup.exe",
-          "signature": "<contents of the installer's .sig>"
-        }
-      }
-    }
-    ```
-
-    and check it: `node scripts/verify-update.mjs latest.json <installer> "<contents of test.key.pub>"`.
-5.  Install the old build with `/S /NS` (silent, no shortcuts), start it from `%LOCALAPPDATA%\glint-updatetest`, and install the update from the notice or **Settings → About**: the app closes, the installer's progress bar shows, and the new version opens. To see a refusal, announce a different version in `latest.json` or change a byte of the installer.
-6.  Afterwards, uninstall the test copy with its `uninstall.exe /S` and delete `%LOCALAPPDATA%\com.shado.shadui-ripgrep.updatetest`.
+-   **The signing and the release's checks**: `npm run test:signing` (the signature is what Tauri writes) and [a trial with a throwaway key](#a-trial-with-a-throwaway-key) (the whole pipeline, with `verify-update.mjs` run on the result).
+-   **The app's side**: the updater's own tests in `crates/glint-ui/src/updater.rs` run the feed, the version rules, the signature checks (a wrong key, a changed byte, another version's signature, a signature without a version) and the setup program's command line (`/P /UPDATE /R /ARGS …`) with a throwaway key and fake servers.
+-   **The whole update on a PC**: the app reads one address and one key (`MANIFEST_URL` and `PUBLIC_KEY`, both constants in `updater.rs`) and refuses an `http:` address, so there is no override to point a build at a local server. Watching a real install replace an older one means a build of an older version (a throwaway checkout with a lower `[workspace.package] version`) whose two constants (and `crates/shadui-index/update-pubkey.txt`) name a test key and an `https:` address you control, a newer build signed by `release.mjs --pubkey`, and that address serving its `latest.json` and installer. The test copy must not be the real one: install it to its own folder (`/D=<folder>`, with `/NS`), never run the setup on the PC's real Glint, and its uninstaller removes the instant search service, so delete the folder instead.

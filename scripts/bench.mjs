@@ -1,4 +1,4 @@
-// `npm run bench [-- <Glint.exe bench options>]`: runs `Glint.exe bench` (src-tauri/src/bench.rs) from the
+// `npm run bench [-- <Glint.exe bench options>]`: runs `Glint.exe bench` (glint-core's bench) from the
 // newest build there is (release, else debug), saves the run in bench-results/, and compares it with the
 // run before it, measure by measure. Options go through to Glint: `--copy 5000` adds the copy measures,
 // `--runs 15` runs each measure more often, and folders (a 100,000-file test folder, say) are listed too.
@@ -12,9 +12,10 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const root = resolve(import.meta.dirname, "..");
-const builds = ["release", "debug"].map((b) => join(root, "src-tauri", "target", b, "Glint.exe")).filter(existsSync);
+const target = process.env.CARGO_TARGET_DIR ?? join(root, "target", "ui");
+const builds = ["release", "debug"].map((b) => join(target, b, "Glint.exe")).filter(existsSync);
 if (!builds.length) {
-    console.error("No Glint.exe built yet: run `npx tauri build` (or a debug build) first.");
+    console.error("No Glint.exe built yet: run `cargo build --release -p glint` (or a debug build) first.");
     process.exit(1);
 }
 const exe = builds.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];

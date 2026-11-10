@@ -1,19 +1,20 @@
-// Draws the installer's artwork (src-tauri/installer/art): the picture beside the welcome and finish
+// Draws the installer's artwork (crates/glint/installer/art): the picture beside the welcome and finish
 // pages and the one in every other page's header, at each common scaling from 100% to 300%, so neither
 // is stretched (installer/look.nsh picks the one for the screen). Edge draws each from the HTML
-// below, with the logo from src/assets/logo.svg; Windows' System.Drawing then makes the 24-bit BMPs that
-// NSIS takes.
+// below, with the logo from crates/glint/installer/logo.svg; Windows' System.Drawing then makes the 24-bit
+// BMPs that NSIS takes.
 //
-// Usage: node scripts/installer-art.mjs
+// Usage: node scripts/installer-art.mjs [--out <folder>]    (the folder defaults to crates/glint/installer/art)
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { root } from "./lib/project.mjs";
 
-const root = resolve(import.meta.dirname, "..");
-const out = join(root, "src-tauri", "installer", "art");
+const args = process.argv.slice(2);
+const out = args.includes("--out") ? resolve(args[args.indexOf("--out") + 1]) : join(root, "crates", "glint", "installer", "art");
 const edge = ["ProgramFiles(x86)", "ProgramFiles"].map((v) => join(process.env[v] ?? "", "Microsoft", "Edge", "Application", "msedge.exe")).find(existsSync);
 if (!edge) throw new Error("Microsoft Edge wasn't found");
 
@@ -32,7 +33,7 @@ const SIZES = {
     300: { sidebar: [545, 1158], header: [500, 210] },
 };
 
-const logo = `data:image/svg+xml;base64,${readFileSync(join(root, "src", "assets", "logo.svg")).toString("base64")}`;
+const logo = `data:image/svg+xml;base64,${readFileSync(join(root, "crates", "glint", "installer", "logo.svg")).toString("base64")}`;
 const font = "font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;";
 
 // Each is drawn in a box of the picture's size (Edge's window can be wider than asked).

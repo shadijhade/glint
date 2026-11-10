@@ -1257,7 +1257,6 @@ impl Render for FileList {
                     .child(list)
                     .test_support(),
             )
-            // PORT ME(coordinator): a `kit::Scrollbar`; the kit doesn't export one, so this reaches gpui-kit's base layer.
             .child(base::Scrollbar::vertical(&self.scroll).viewport_from_layout())
             // The bar says the next folder is being read while this one stays on screen; with nothing to show
             // yet the state says it.

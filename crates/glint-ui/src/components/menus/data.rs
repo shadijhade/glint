@@ -40,7 +40,6 @@ pub struct MenuData {
     /// (`nextUndo()?.label`). The host fills it from the explorer each time a folder menu opens.
     pub undo: Option<String>,
     /// Folders of a remote connection shown in File Explorer on demand (`useOnDemand.mounts`): connection ids.
-    // PORT ME(on-demand): the on-demand files part owns this.
     pub on_demand: Vec<String>,
 }
 

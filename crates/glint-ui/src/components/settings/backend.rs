@@ -172,6 +172,11 @@ pub trait Backend: Send + Sync + 'static {
     // Instant search (the NTFS index service).
     fn index_status(&self) -> Fut<IndexInfo>;
     fn index_enable(&self) -> Fut<IndexInfo>;
+    /// Updates an older service to this app's build without administrator approval (`indexUpdate`); fails with
+    /// why not when only the approval route can, for the caller to offer it. A backend with no service says so.
+    fn index_update(&self) -> Fut<IndexInfo> {
+        Box::pin(async { Err(crate::t!("Instant search isn't available here").to_string()) })
+    }
     fn index_disable(&self) -> Fut<IndexInfo>;
     // Search inside files; photos and recordings; devices.
     fn content_status(&self) -> Fut<content::Status>;
@@ -267,6 +272,10 @@ fn fetch_channel(progress: async_channel::Sender<Fetch>) -> host::ipc::Channel<g
 impl Backend for CoreBackend {
     fn index_status(&self) -> Fut<IndexInfo> {
         on_core(async { glint_core::index::index_status().await.map(IndexInfo::from) })
+    }
+
+    fn index_update(&self) -> Fut<IndexInfo> {
+        on_core(async { glint_core::index::index_update().await.map(IndexInfo::from) })
     }
 
     fn index_enable(&self) -> Fut<IndexInfo> {

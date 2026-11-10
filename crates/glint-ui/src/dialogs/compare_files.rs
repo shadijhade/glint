@@ -4362,10 +4362,8 @@ fn close_requested(view: &Entity<CompareDialog>, window: &mut Window, cx: &mut A
 
 // ---- Opening it ------------------------------------------------------------------------------------------
 
-// PORT ME(coordinator): `MenuEvent::Compare { left, right }` and the `CompareFiles` action (Ctrl+M, the two
-// selected files or one in each pane) call `open(window, cx, left, right)`; `dialogs::versions::Request::
-// CompareFiles { then, now }` calls it with `then` as the left file; quitting (`mayQuit`, startup.rs) asks
-// [`unsaved`] and then [`ask_discard`].
+// Wired: `MenuEvent::Compare` and the `CompareFiles` action (Ctrl+M) in workspace.rs, `versions::Request::
+// CompareFiles` there too, and quitting (`mayQuit`, startup.rs) asks [`unsaved`] and then [`ask_discard`].
 /// Opens two files side by side (`compareFiles(left, right)`; `MenuEvent::Compare { left, right }` and the
 /// `CompareFiles` action call this): text, or pictures when both are, or bytes.
 pub fn open(window: &mut Window, cx: &mut App, left: String, right: String) {

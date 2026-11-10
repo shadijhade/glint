@@ -25,6 +25,7 @@
 use crate::components::address_bar::{AddressBar, AddressBarEvent};
 use crate::components::columns_view::ColumnsView;
 use crate::components::command_bar::{CommandBar, CommandBarEvent};
+use crate::components::compare_bar::CompareBar;
 use crate::components::copy_queue::{CopyQueue, CopyQueueEvent};
 use crate::components::disk_usage::{self, DiskUsage, DiskUsageEvent};
 use crate::components::file_grid::{FileGrid, FileGridEvent};
@@ -74,6 +75,8 @@ struct PaneViews {
     months: Entity<GalleryMonths>,
     /// The folders used most, above Recent.
     frequent: Entity<FrequentFolders>,
+    /// The compare bar above the pane while the panes are compared (and the bar for two files selected across them).
+    compare: Entity<CompareBar>,
 }
 
 /// Which of a pane's views is on screen.
@@ -165,6 +168,7 @@ impl Workspace {
                 columns,
                 months: cx.new(|cx| GalleryMonths::new(pane, window, cx)),
                 frequent: cx.new(|cx| FrequentFolders::new(pane, window, cx)),
+                compare: cx.new(|cx| CompareBar::new(pane, window, cx)),
             }
         });
         let command_bar = cx.new(|cx| CommandBar::new(window, cx));
@@ -1505,6 +1509,11 @@ impl Workspace {
         } else {
             view
         };
+        // The compare bar on top of everything else in the pane (it draws nothing unless the panes are compared).
+        let view = col()
+            .size_full()
+            .child(div().flex_none().child(views.compare.clone()))
+            .child(div().flex_1().min_h_0().child(view));
         div()
             .id(("pane", pane))
             .relative()

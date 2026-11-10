@@ -1266,7 +1266,7 @@ fn identifier() -> Option<String> {
     if let Some(id) = option_env!("TAURI_CONFIG").and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok()).and_then(|c| c["identifier"].as_str().map(str::to_string)) {
         return Some(id);
     }
-    Some(crate::host::IDENTIFIER.to_string())
+    Some(crate::host::identifier().to_string())
 }
 
 /// Installs one for `tools install`, and what to say once it's done. One that stops making progress for
@@ -1430,11 +1430,11 @@ mod tests {
         }
     }
 
-    /// The installer's Extra tools page (installer/tools.nsh) lists every tool that doesn't come with
+    /// The installer's Extra tools page (crates/glint/installer/tools.nsh) lists every tool that doesn't come with
     /// Glint, with its program and package folder as here, plus instant search and the meaning model.
     #[test]
     fn the_installer_offers_every_tool() {
-        let rows: Vec<Vec<&str>> = include_str!("../../../src-tauri/installer/tools.nsh")
+        let rows: Vec<Vec<&str>> = include_str!("../../glint/installer/tools.nsh")
             .lines()
             .filter_map(|line| line.trim().strip_prefix("!insertmacro ${ROW} "))
             .map(|row| {

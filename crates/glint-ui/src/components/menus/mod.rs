@@ -43,8 +43,8 @@
 //! 2. Subscribe to it for [`MenuEvent`]s and hand each to its part.
 //! 3. Call it from the views' events:
 //!    - `FileListEvent::ContextMenu { target, at, shift }` -> `menus.update(cx, |m, cx| m.open_list_menu(pane, target.as_deref(), at, shift, window, cx))`.
-//!      `None` for `at` (the keyboard) puts the menu at the middle of the window until the list can say where its
-//!      focused row is (see the `PORT ME` in [`MenuHost::anchor`]).
+//!      `None` for `at` puts the menu at the middle of the window (the list passes the focused row's bottom edge
+//!      for the keyboard, see [`MenuHost::anchor`]).
 //!    - `FileGridEvent::ContextMenu { path, position }` -> `open_list_menu(pane, Some(&path), Some(position), false, ..)`.
 //!    - `FileGridEvent::BackgroundContextMenu { position }` -> `open_background_menu(pane, Some(position), ..)`.
 //!    - `ThisPcEvent::ContextMenu { path, position }` -> `open_folder_menu(&path, position, ..)`.
@@ -198,9 +198,8 @@ impl MenuHost {
 
     /// Where a menu asked for with no point goes: the middle of the window, a third of the way down (the
     /// TypeScript's fallback when there is no list).
-    // PORT ME(coordinator): the keyboard's menu belongs at the focused row (`keyboardMenu` put it at the row's
-    // bottom edge, 24 px in). The file list and grid can't say where that row is yet; when they can, pass it as
-    // `at` and this fallback is only for a window with no list.
+    // The file list and grid pass the focused row's place as `at` for the keyboard's menu; this fallback is for
+    // a window with no list.
     fn anchor(at: Option<Point<Pixels>>, window: &Window) -> Point<Pixels> {
         at.unwrap_or_else(|| {
             let size = window.viewport_size();

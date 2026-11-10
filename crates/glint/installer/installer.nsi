@@ -466,7 +466,7 @@ Section Install
   File /a "${STAGE}\THIRD_PARTY_CRATES.md"
 
   ; The instant search service (turned on from the Extra tools page or Settings), and the signature that
-  ; lets an installed one update itself without administrator approval (src-tauri/index/src/update.rs)
+  ; lets an installed one update itself without administrator approval (crates/shadui-index/src/update.rs)
   !ifdef HAVE_SERVICE
     File /a "${STAGE}\shadui-index.exe"
   !endif

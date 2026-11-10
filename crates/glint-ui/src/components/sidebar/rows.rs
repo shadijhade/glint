@@ -92,6 +92,50 @@ pub struct Search {
     pub count: Option<String>,
 }
 
+/// A tag, in the sidebar: a click finds what has it on every drive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tag {
+    pub name: String,
+    /// How many items have it, where instant search can say (the tags it lists); the recent ones show none.
+    pub count: Option<u64>,
+}
+
+/// The most tags listed by instant search the sidebar shows.
+pub const MOST_INDEXED_TAGS: usize = 12;
+/// The most recent tags it shows when instant search lists none.
+pub const MOST_RECENT_TAGS: usize = 8;
+
+/// The tags to show (`TagsSection`): every tag on the drives instant search covers, with how many items have it,
+/// most used first (the first twelve), else the ones used here lately (the first eight), without counts.
+pub fn shown_tags(indexed: &[(String, u64)], recent: &[String]) -> Vec<Tag> {
+    if !indexed.is_empty() {
+        return indexed
+            .iter()
+            .take(MOST_INDEXED_TAGS)
+            .map(|(name, count)| Tag {
+                name: name.clone(),
+                count: Some(*count),
+            })
+            .collect();
+    }
+    recent
+        .iter()
+        .take(MOST_RECENT_TAGS)
+        .map(|name| Tag {
+            name: name.clone(),
+            count: None,
+        })
+        .collect()
+}
+
+/// What a click on a tag searches for: what has it, on every drive (`tag:"name"` at This PC).
+pub fn tag_search(name: &str) -> SavedSearch {
+    SavedSearch {
+        query: format!("tag:\"{name}\""),
+        folder: THIS_PC.to_string(),
+    }
+}
+
 /// One row of the sidebar.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
@@ -110,6 +154,8 @@ pub enum Row {
         reason: String,
     },
     Search(Search),
+    /// A tag.
+    Tag(Tag),
     /// "Add a connection".
     AddConnection,
 }
@@ -132,6 +178,7 @@ impl Row {
             Row::Folder(f) => format!("f:{}", f.path),
             Row::Note { depth, .. } => format!("n:{depth}"),
             Row::Search(s) => format!("s:{}\n{}", s.folder, s.query),
+            Row::Tag(t) => format!("t:{}", t.name),
             Row::AddConnection => "add".to_string(),
         }
     }
@@ -182,6 +229,8 @@ pub struct Inputs<'a> {
     pub pinned: &'a [String],
     pub saved: &'a [SavedSearch],
     pub remotes: &'a [RemoteConnection],
+    /// The tags to list ([`shown_tags`]).
+    pub tags: &'a [Tag],
     /// The "Folder tree" setting.
     pub folder_tree: bool,
     pub tree: &'a Tree,
@@ -383,7 +432,10 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
         }
     }
 
-    // Tags: PORT ME(tags) belongs to the tags part.
+    if !i.tags.is_empty() {
+        rows.push(heading("Tags"));
+        rows.extend(i.tags.iter().cloned().map(Row::Tag));
+    }
 
     if !i.saved.is_empty() {
         rows.push(heading("Searches"));
@@ -545,6 +597,7 @@ mod tests {
         pinned: Vec<String>,
         saved: Vec<SavedSearch>,
         remotes: Vec<RemoteConnection>,
+        tags: Vec<Tag>,
         tree: Tree,
         spaces: HashMap<String, Space>,
         counts: HashMap<String, String>,
@@ -568,6 +621,7 @@ mod tests {
                     folder: THIS_PC.into(),
                 }],
                 remotes: vec![remote("nas", "My NAS", RemoteKind::Sftp)],
+                tags: Vec::new(),
                 tree: Tree::default(),
                 spaces: HashMap::new(),
                 counts: HashMap::new(),
@@ -582,6 +636,7 @@ mod tests {
                 pinned: &self.pinned,
                 saved: &self.saved,
                 remotes: &self.remotes,
+                tags: &self.tags,
                 folder_tree,
                 tree: &self.tree,
                 spaces: &self.spaces,
@@ -601,6 +656,7 @@ mod tests {
                 Row::Folder(f) => format!("{}> {}", " ".repeat(f.depth), f.name),
                 Row::Note { reason, .. } => format!("! {reason}"),
                 Row::Search(s) => format!("? {}", s.query),
+                Row::Tag(t) => format!("# {}", t.name),
                 Row::AddConnection => "+ add".to_string(),
             })
             .collect()
@@ -637,6 +693,59 @@ mod tests {
         bare.saved.clear();
         let text = describe(&bare.rows("", true));
         assert!(!text.contains(&"# Pinned".to_string()) && !text.contains(&"# Searches".to_string()));
+    }
+
+    #[test]
+    fn tags_come_after_pinned_and_before_searches_and_only_when_there_are_some() {
+        let mut world = World::new();
+        world.tags = shown_tags(&[("Work".to_string(), 12), ("ضريبة".to_string(), 3)], &[]);
+        let text = describe(&world.rows("", true));
+        let at = |what: &str| text.iter().position(|t| t == what).unwrap();
+        assert_eq!(&text[at("# Tags")..at("# Tags") + 3], ["# Tags", "# Work", "# ضريبة"]);
+        assert!(at("# Pinned") < at("# Tags") && at("# Tags") < at("# Searches"));
+        // No tags: no title either.
+        world.tags.clear();
+        assert!(!describe(&world.rows("", true)).contains(&"# Tags".to_string()));
+    }
+
+    #[test]
+    fn instant_searchs_tags_win_over_the_recent_ones_and_each_list_has_its_own_most() {
+        let indexed: Vec<(String, u64)> = (0..20).map(|n| (format!("tag{n}"), 100 - n)).collect();
+        let recent: Vec<String> = (0..20).map(|n| format!("recent{n}")).collect();
+        let shown = shown_tags(&indexed, &recent);
+        assert_eq!(shown.len(), 12, "twelve of instant search's");
+        assert_eq!(
+            shown[0],
+            Tag {
+                name: "tag0".into(),
+                count: Some(100)
+            }
+        );
+        // Instant search lists none (it is off, or from before tags): the recent ones, eight, without counts.
+        let shown = shown_tags(&[], &recent);
+        assert_eq!(shown.len(), 8);
+        assert!(shown.iter().all(|t| t.count.is_none()));
+        assert_eq!(shown[7].name, "recent7");
+        assert!(shown_tags(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_tag_finds_what_has_it_on_every_drive() {
+        assert_eq!(
+            tag_search("Work"),
+            SavedSearch {
+                query: "tag:\"Work\"".into(),
+                folder: THIS_PC.into()
+            }
+        );
+        // The count can't be had from the index for such a search (it reads the tags of the files).
+        assert!(reads_files(&tag_search("Work").query));
+        let row = Row::Tag(Tag {
+            name: "Work".into(),
+            count: None,
+        });
+        assert!(row.focusable() && row.target().is_none());
+        assert_eq!(row.key(), "t:Work");
     }
 
     #[test]

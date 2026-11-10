@@ -98,6 +98,38 @@ pub(crate) fn start(cx: &mut App) {
         .detach();
         return;
     }
+    // `look14:<compare|deep>|<left>|<right>`, `look14:palette=<query>|<folder>`, `look14:open|<path>`, left open for a
+    // look: the two folders compared in the panes (deep: subfolders too); the Ctrl+K palette asked for `query`;
+    // a path opened (an archive with a password asks for it).
+    if let Some(rest) = script.strip_prefix("look14:") {
+        let parts: Vec<String> = rest.split('|').map(str::to_string).collect();
+        let what = parts.first().cloned().unwrap_or_default();
+        let first = parts.get(1).cloned().unwrap_or_default();
+        let second = parts.get(2).cloned().unwrap_or_default();
+        if what == "deep" {
+            crate::state::update(cx, |settings| settings.compare_subfolders = true);
+        }
+        if what.starts_with("palette") || what == "open" {
+            explorer::explorer(cx).update(cx, |e, cx| e.navigate(first.clone(), Default::default(), cx));
+        }
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_millis(800)).await;
+            cx.update(|cx| {
+                if let Some(query) = what.strip_prefix("palette=") {
+                    if let Some(main) = startup::main_window(cx) {
+                        let _ = main.update(cx, |_, window, cx| {
+                            crate::components::palette::open(window, cx);
+                            crate::components::palette::type_query(query, window, cx);
+                        });
+                    }
+                } else if what == "compare" || what == "deep" {
+                    explorer::explorer(cx).update(cx, |e, cx| e.compare_with_version(&first, &second, cx).detach());
+                }
+            });
+        })
+        .detach();
+        return;
+    }
     // `map:<folder>`: the folder's disk usage map, left open for a look.
     if let Some(folder) = script.strip_prefix("map:") {
         let folder = folder.to_string();

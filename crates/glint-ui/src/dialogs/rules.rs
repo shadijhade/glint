@@ -20,9 +20,8 @@
 //! them, as the TypeScript's store subscription did for every change.
 //!
 //! Not here, because it is not the dialog: the toasts the TypeScript's `initRules` showed as rules do their
-//! work (`rule-did` events, with Undo), and pushing the saved rules to core at start. PORT ME(coordinator):
-//! `startup.rs` should call `glint_core::rules::rules_set` with `persistence::app(cx).rules` once at start
-//! and subscribe to the `rule-did` core event.
+//! work (`rule-did` events, with Undo). (`startup.rs` pushes the saved rules to core at start.) PORT ME(coordinator):
+//! subscribe to the `rule-did` core event and show the toast.
 
 use crate::kit::prelude::*;
 use crate::{core_bridge, persistence, t, theme};

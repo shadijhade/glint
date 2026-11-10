@@ -28,22 +28,24 @@ Per user, with no administrator rights, into `%LOCALAPPDATA%\Glint` (or the fold
 | File | Where it comes from |
 | :--- | :--- |
 | `Glint.exe` | `cargo build --release -p glint` |
-| `rg.exe`, `fd.exe`, `pdu.exe` | next to the built `Glint.exe` (`crates/glint/build.rs` puts them there), else `src-tauri/binaries` |
+| `rg.exe`, `fd.exe`, `pdu.exe` | next to the built `Glint.exe` (`crates/glint/build.rs` puts them there from `crates/glint/binaries`), else `crates/glint/binaries` |
 | `LICENSE.txt`, `THIRD_PARTY_LICENSES.md`, `THIRD_PARTY_CRATES.md` | the repository root |
-| `shadui-index.exe`, `shadui-index.exe.sig` | the instant search service and its update signature, **when found** (see "What is left") |
+| `shadui-index.exe`, `shadui-index.exe.sig` | the instant search service (`cargo build --release -p shadui-index`) and its update signature, **when found** |
 | `uninstall.exe` | made by the installer |
 
 Pages, as before: Welcome, the reinstall question (only when Glint is installed), the folder, the Extra tools
 page (`tools.nsh`), then the install and a finish page with "Create desktop shortcut" and "Run Glint". The
-look is `look.nsh` and `art/` (the pictures `scripts/installer-art.mjs` draws, a copy of
-`src-tauri/installer/art`).
+look is `look.nsh` and `art/` (the pictures `scripts/installer-art.mjs` draws from `logo.svg`).
 
 Switches (all as in the Tauri build, which is what the updater relies on): `/S` silent, `/P` passive (no pages,
 closes itself), `/UPDATE` (install over the running version without asking, keep the shortcuts as they are),
 `/NS` (no shortcuts), `/R` and `/ARGS <args>` (start Glint when a silent or passive install is done),
 `/D=<folder>` (install folder), `/TOOLS=jaq,uv` and `/INSTANTSEARCH` (tools.nsh). tauri-plugin-updater's
-passive mode passes `/P /UPDATE /R` (plus `/ARGS`); the GPUI updater has to pass the same, which is the one thing
-this script and `updater.rs` must agree on.
+passive mode passes `/P /UPDATE /R /ARGS <the arguments Glint was started with>` (checked against
+`tauri-plugin-updater` 2.14's `updater_parameters`: the install mode's `/P`, then `/UPDATE`, then, when it restarts
+the app, `/R` and `/ARGS`, in that order); `updater.rs` builds and tests the same line, and `installer.nsi` reads each of the
+flags with `GetOptions`, so it finds them wherever they are. `/S` is NSIS's own silent switch (winget's `Silent`; `/P` is
+its `SilentWithProgress`). Nothing else has to agree.
 
 ## What it changes in the registry and the Start menu
 
@@ -83,6 +85,7 @@ before), and no language chooser (English only, as before).
 | `hooks.nsh` | Glint's install and uninstall steps: the old-name migration, Explorer entries, the service, the tools |
 | `look.nsh` | font, welcome and finish words, artwork picked for the screen's scaling |
 | `tools.nsh` | the Extra tools page (identical to `src-tauri/installer/tools.nsh` until that folder goes; the script warns if they differ) |
+| `logo.svg` | the logo `scripts/installer-art.mjs` draws the pictures from |
 | `utils.nsh` | Tauri's helper macros (shortcuts, the "close it first" check) minus the plugin call |
 | `strings.nsh` | the installer's English words |
 | `art/` | 16 bitmaps: `header-` and `sidebar-` at 100% to 300% |
@@ -97,19 +100,19 @@ and the service's (`shadui-index.exe.sig`) are made by the release pipeline with
 (`scripts/release.mjs`, `scripts/sign-service.mjs`); signing the service after its signature was made
 invalidates that signature, so the script then leaves it out.
 
+## What the release pipeline does around it
+
+`npm run release` ([docs/releasing.md](../../../docs/releasing.md)) builds Glint.exe and the service, signs a copy of
+the service for the instant search self-update, runs this script with the service and its signature
+(`--service-signed` when the service was code-signed first), then signs the setup for the in-app updater, writes
+`latest.json` and the winget and Scoop manifests. `npm run msix` packs the Store's package from the same build
+(`crates/glint/msix`). The artwork comes from `npm run installer-art`.
+
 ## What is left
 
-- **MSIX** (`scripts/msix.mjs`) still packs the Tauri build; it has to be pointed at the GPUI build's folder
-  (the identity 9NQLRJ3HF1C9 stays). The Store's offline installer no longer needs WebView2 inside.
-- **The service.** `shadui-index.exe` is a binary of the old `src-tauri` package; the GPUI workspace doesn't
-  build one yet, so unless one is passed with `--service` (or is in `src-tauri/target/release`), the setup has no
-  instant search service. Glint.exe looks for it beside itself (`glint-core/src/index.rs`).
-- **Release plumbing.** `release.mjs` still builds the Tauri installer; it has to call this script, sign what
-  it makes, write `latest.json` and the winget and Scoop manifests (`package-manifests.mjs`) from
-  `Glint-setup.exe`.
-- **`scripts/installer-art.mjs`** writes the pictures into `src-tauri/installer/art`; point it at `art/` here
-  when `src-tauri` goes. The same goes for glint-core's test that checks `tools.nsh` against its tool list
-  (`include_str!("../../../src-tauri/installer/tools.nsh")` in `tools.rs`).
+- **When `src-tauri` goes:** glint-core's test that checks `tools.nsh` against its tool list reads
+  `src-tauri/installer/tools.nsh` (`include_str!("../../../src-tauri/installer/tools.nsh")` in `tools.rs`); point it at
+  this folder's, and drop the script's comparison note.
 - **Not tried for real:** the setup itself was never run (by rule): it compiles with no warnings, and its
   contents were listed, but the pages, the in-place update over a Tauri 0.9.x install, silent and passive
   installs, the Extra tools page and the uninstaller need a test run on a spare account or machine.

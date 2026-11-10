@@ -1,5 +1,7 @@
 # cargo-about's list of the crates Glint is built from, with their licenses' texts:
-# THIRD_PARTY_CRATES.md, written by `npm run licenses` with about.hbs (docs/releasing.md).
+# THIRD_PARTY_CRATES.md, written by `npm run licenses` with about.hbs (docs/releasing.md):
+#   cargo about generate --workspace -c about.toml about.hbs
+# What embedded fonts, icons and data need besides is scripts/lib/embedded-notices.mjs's.
 
 # The licenses deny.toml allows. A crate under a choice of them (MIT OR Apache-2.0) is listed under the
 # first here, so the short, permissive ones come first.

@@ -53,11 +53,10 @@ fn write_version_header(out_dir: &Path, version: &str) -> std::io::Result<()> {
     fs::write(out_dir.join("glint-version.h"), header)
 }
 
-/// Copies the bundled search tools next to the exe being built (OUT_DIR is <target>/<profile>/build/<pkg>/out).
-///
-/// TODO(coordinator): the binaries move out of src-tauri when src-tauri goes.
+/// Copies the bundled search tools (the official, unsigned rg, fd and pdu in crates/glint/binaries) next to the exe
+/// being built (OUT_DIR is <target>/<profile>/build/<pkg>/out).
 fn bundle_tools(manifest_dir: &Path, out_dir: &Path) {
-    let binaries = manifest_dir.join("../../src-tauri/binaries");
+    let binaries = manifest_dir.join("binaries");
     let Some(profile_dir) = out_dir.ancestors().nth(3) else {
         return;
     };

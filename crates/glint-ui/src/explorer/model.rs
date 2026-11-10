@@ -67,6 +67,10 @@ pub(super) struct Prefs {
     pub find_exclusions: Vec<String>,
     /// The most results a search keeps; none for no limit.
     pub find_max_results: Option<u64>,
+    /// Compare panes goes into the subfolders too (the compare bar's options).
+    pub compare_subfolders: bool,
+    /// Compare panes reads the files' contents, not only their sizes and dates.
+    pub compare_contents: bool,
 }
 
 impl Prefs {
@@ -88,6 +92,8 @@ impl Prefs {
             find_respect_ignore: settings.find_respect_ignore,
             find_exclusions: settings.find_exclusions.clone(),
             find_max_results: settings.find_max_results,
+            compare_subfolders: settings.compare_subfolders,
+            compare_contents: settings.compare_contents,
         }
     }
 
@@ -558,6 +564,11 @@ impl Explorer {
             return;
         }
         self.gallery_sent = Some(folders.clone());
+        // glint-core keeps the handle in a process-wide static: tests, each with its own executor, would drop each
+        // other's handles on the wrong thread, so under test the folders are recorded but not handed over.
+        if cfg!(test) {
+            return;
+        }
         if let Some(core) = cx.try_global::<core_bridge::Core>() {
             glint_core::gallery::gallery_set_folders(core.app.clone(), folders);
         }

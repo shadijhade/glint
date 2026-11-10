@@ -16,7 +16,7 @@ serde = { version = "1.0", features = ["derive"] }
 # in the app: GPUI turns this on in Glint.exe, and the Tauri build had it too, so tests see what ships.
 serde_json = { version = "1.0", features = ["preserve_order"] }
 notify = "8"
-shadui-index = { path = "../../src-tauri/index" }
+shadui-index = { path = "../shadui-index" }
 # The File X-Ray's checksums: RustCrypto's SHA-256 (with the CPU's SHA instructions where it has them)
 # and crc32fast, both already in the build through Tauri and flate2, and BLAKE3, which the duplicate
 # finder hashes content with too (several times SHA-256's speed, with SIMD).
