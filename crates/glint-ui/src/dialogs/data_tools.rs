@@ -39,7 +39,7 @@ use action_run::{
 };
 use glint_core::actions::{Output, Progress, Report};
 use glint_core::data_lens::TablePreview;
-use glint_core::duck::{DataFormat, Profile};
+use glint_core::duck::{ColumnProfile, DataFormat, Profile};
 use glint_model::format::{format_count, format_duration, plural};
 use glint_model::js::to_fixed;
 use glint_model::paths::base_name;
@@ -1254,6 +1254,30 @@ impl ProfileGrid {
     }
 }
 
+/// What a header of the profile's table explains when hovered (the TypeScript's `title`s), if it has one.
+fn profile_header_tip(ix: usize) -> Option<SharedString> {
+    match ix {
+        2 => Some(t!("Rows without a value")),
+        3 => Some(t!("About how many different values")),
+        7 => Some(t!("Lower quartile, median, upper quartile")),
+        _ => None,
+    }
+}
+
+/// The tooltip of a cell of the profile's table: a cell that can be cut short shows all of it, and the mean
+/// says its standard deviation.
+fn profile_cell_tip(column: &ColumnProfile, ix: usize) -> Option<SharedString> {
+    let all = match ix {
+        0 => column.name.clone(),
+        1 => column.duck_type.clone(),
+        4 => column.min.clone(),
+        5 => column.max.clone(),
+        6 if !column.std.is_empty() => return Some(t!("Standard deviation {std}", std = column.std.clone())),
+        _ => String::new(),
+    };
+    (!all.is_empty()).then(|| all.into())
+}
+
 /// "12%", or "0.50%" for under one percent (`toFixed(c.nullPercent && c.nullPercent < 1 ? 2 : 0)`).
 pub fn missing_text(percent: f64) -> String {
     format!(
@@ -1298,6 +1322,19 @@ impl TableDelegate for ProfileGrid {
     ) {
     }
 
+    fn render_th(&mut self, ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+        let name = self.column(ix, cx).name.clone();
+        match profile_header_tip(ix) {
+            Some(tip) => div()
+                .id(("profile-th", ix))
+                .w_full()
+                .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
+                .child(name)
+                .into_any_element(),
+            None => div().w_full().child(name).into_any_element(),
+        }
+    }
+
     fn render_td(
         &mut self,
         row: usize,
@@ -1307,14 +1344,21 @@ impl TableDelegate for ProfileGrid {
     ) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
         let text = self.text(row, ix);
+        // Hovering a cell shows all of what the cell cuts short.
+        let tip = self.profile.columns.get(row).and_then(|c| profile_cell_tip(c, ix));
+        let cell = div().id(("profile-td", row * 8 + ix)).w_full();
+        let cell = match tip {
+            Some(tip) => cell.tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx)),
+            None => cell,
+        };
         match ix {
-            0 => div()
+            0 => cell
                 .w_full()
                 .truncate()
                 .font_weight(FontWeight::MEDIUM)
                 .child(isolate(text))
                 .into_any_element(),
-            1 => div()
+            1 => cell
                 .w_full()
                 .truncate()
                 .font_family(theme::mono_font(cx))
@@ -1344,8 +1388,8 @@ impl TableDelegate for ProfileGrid {
                     .child(div().child(text))
                     .into_any_element()
             }
-            3 | 6 => div().w_full().truncate().text_end().child(text).into_any_element(),
-            _ => div().w_full().truncate().child(isolate(text)).into_any_element(),
+            3 | 6 => cell.truncate().text_end().child(text).into_any_element(),
+            _ => cell.truncate().child(isolate(text)).into_any_element(),
         }
     }
 
@@ -1528,7 +1572,6 @@ mod tests {
     use super::*;
     use crate::testing;
     use glint_core::data_lens::TableColumn;
-    use glint_core::duck::ColumnProfile;
     use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
     use gpui_kit::{TestAppContext, VisualTestContext};
     use std::sync::Mutex;
@@ -1649,6 +1692,37 @@ mod tests {
                 *n += 1;
             }
         }
+    }
+
+    #[test]
+    fn the_profile_explains_its_headers_and_cuts_nothing_short_without_saying_so() {
+        let _guard = testing::lock();
+        assert_eq!(profile_header_tip(2).as_deref(), Some("Rows without a value"));
+        assert_eq!(
+            profile_header_tip(3).as_deref(),
+            Some("About how many different values")
+        );
+        assert_eq!(
+            profile_header_tip(7).as_deref(),
+            Some("Lower quartile, median, upper quartile")
+        );
+        for plain in [0, 1, 4, 5, 6] {
+            assert_eq!(profile_header_tip(plain), None, "column {plain}");
+        }
+        let mut c = column("age", "number", 0.);
+        c.min = "29".into();
+        c.max = "41".into();
+        c.std = "6.02".into();
+        assert_eq!(profile_cell_tip(&c, 0).as_deref(), Some("age"));
+        assert_eq!(profile_cell_tip(&c, 1).as_deref(), Some("BIGINT"));
+        assert_eq!(profile_cell_tip(&c, 4).as_deref(), Some("29"));
+        assert_eq!(profile_cell_tip(&c, 5).as_deref(), Some("41"));
+        assert_eq!(profile_cell_tip(&c, 6).as_deref(), Some("Standard deviation 6.02"));
+        // No spread known, no tip on the mean; the counts need none.
+        c.std = String::new();
+        assert_eq!(profile_cell_tip(&c, 6), None);
+        assert_eq!(profile_cell_tip(&c, 3), None);
+        assert_eq!(profile_cell_tip(&c, 7), None);
     }
 
     fn column(name: &str, kind: &str, nulls: f64) -> ColumnProfile {

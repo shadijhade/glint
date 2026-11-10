@@ -472,6 +472,10 @@ pub struct XRayDialog {
 impl XRayDialog {
     /// The view of `xray`. `tools` is the model the install cards read (none in tests).
     pub fn new(xray: Entity<XRay>, tools: Option<Entity<Tools>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        super::refresh_on_f5(cx, |this, _, cx| {
+            this.xray.update(cx, |xray, cx| xray.inspect(false, cx));
+        });
         let expected = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Paste a checksum to compare")));
         let mut subscriptions = vec![
             cx.observe(&xray, |_, _, cx| cx.notify()),
@@ -1077,7 +1081,15 @@ impl XRayDialog {
                         align_row(2.)
                             .child(
                                 div()
+                                    .id("xray-expected")
                                     .w(rems(16.))
+                                    .tooltip(|window, cx| {
+                                        crate::kit::tooltip(
+                                            t!("A SHA-256, BLAKE3 or CRC32 checksum, as a download page publishes it"),
+                                            window,
+                                            cx,
+                                        )
+                                    })
                                     .child(Input::new(&self.expected).aria_label(t!("Paste a checksum to compare"))),
                             )
                             .children(verdict),
@@ -1397,7 +1409,7 @@ impl Render for XRayDialog {
                     .xsmall()
                     .icon(IconName::RefreshCw)
                     .loading(load == Load::Loading)
-                    .tooltip(t!("Refresh"))
+                    .tooltip(t!("Refresh (F5)"))
                     .accessibility_label(t!("Refresh"))
                     .on_click(cx.listener(|this, _, _, cx| this.xray.update(cx, |xray, cx| xray.inspect(false, cx)))),
             );

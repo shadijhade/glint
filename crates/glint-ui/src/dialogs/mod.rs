@@ -82,6 +82,26 @@ pub mod versions;
 /// A file's X-Ray (XRayDialog.tsx).
 pub mod xray;
 
+/// Makes F5 run `refresh` on `view` for as long as the view lives: in a dialog with a Refresh button the key does
+/// what the button does (Modal.tsx's header took it). The dialog layer sits outside the workspace, so the window's
+/// own F5 never reaches a dialog; and no focus has to be inside the view, as with the dialog's own buttons.
+pub fn refresh_on_f5<V: 'static>(
+    cx: &mut Context<V>,
+    refresh: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+) {
+    let view = cx.weak_entity();
+    let keys = cx.intercept_keystrokes(move |event, window, cx| {
+        let modifiers = event.keystroke.modifiers;
+        if event.keystroke.key != "f5" || modifiers.modified() {
+            return;
+        }
+        cx.stop_propagation();
+        let _ = view.update(cx, |this, cx| refresh(this, window, cx));
+    });
+    // Alive as long as the view: released with it.
+    cx.on_release(move |_, _| drop(keys)).detach();
+}
+
 /// Shows `view` in the window's dialog layer, titled `title`, `width` wide.
 ///
 /// gpui-component keeps the dialog's builder and calls it again when the dialog layer rebuilds, so the

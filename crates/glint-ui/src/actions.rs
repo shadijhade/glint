@@ -61,6 +61,7 @@ actions!(
         TogglePreview,
         GridView,
         ListView,
+        ColumnsView,
         GridLarger,
         GridSmaller,
         GridReset,
@@ -176,7 +177,23 @@ pub static BINDINGS: &[Binding] = &[
         SearchHere,
         "Search this folder and its subfolders (by name or path)"
     ),
+    // Explorer.tsx also took Ctrl+E and F3 for the search box (File Explorer's keys), and Alt+D and F4 for the
+    // address bar. The sheet never listed them; they are bound after the listed key, which the menus show.
+    bind!(
+        "ctrl-e",
+        "Workspace",
+        SearchHere,
+        "Search this folder and its subfolders (by name or path)"
+    ),
+    bind!(
+        "f3",
+        "Workspace",
+        SearchHere,
+        "Search this folder and its subfolders (by name or path)"
+    ),
     bind!("ctrl-l", "Workspace", FocusAddress, "Type a path"),
+    bind!("alt-d", "Workspace", FocusAddress, "Type a path"),
+    bind!("f4", "Workspace", FocusAddress, "Type a path"),
     bind!("alt-left", "Workspace", Back, "Back"),
     bind!("alt-right", "Workspace", Forward, "Forward"),
     bind!("alt-up", "Workspace", Up, "Up"),
@@ -203,15 +220,30 @@ pub static BINDINGS: &[Binding] = &[
         ShowItemMenu,
         "The menu of what's selected (or the menu key)"
     ),
+    // The menu key itself (`ContextMenu` in Explorer.tsx). The list heard it from its own key handler; the grid not.
+    bind!(
+        "menu",
+        "FileList",
+        ShowItemMenu,
+        "The menu of what's selected (or the menu key)"
+    ),
     bind!("alt-enter", "FileList", Properties, "Properties"),
     bind!("ctrl-h", "Workspace", ToggleHidden, "Hidden items"),
     bind!("alt-p", "Workspace", TogglePreview, "Preview pane"),
     bind!("ctrl-shift-2", "Workspace", GridView, "Grid"),
     bind!("ctrl-shift-6", "Workspace", ListView, "List"),
+    // Ctrl+Shift+9 for columns (unused in File Explorer), as the command bar's tooltip says.
+    bind!("ctrl-shift-9", "Workspace", ColumnsView, "Columns"),
     bind!("ctrl-=", "Workspace", GridLarger, "Grid: larger tiles"),
+    // The browser's other ways to zoom, which Explorer.tsx took too: Ctrl++ (also on the number pad) and Ctrl+_.
+    bind!("ctrl-shift-=", "Workspace", GridLarger, "Grid: larger tiles"),
+    bind!("ctrl-+", "Workspace", GridLarger, "Grid: larger tiles"),
     bind!("ctrl--", "Workspace", GridSmaller, "Grid: smaller tiles"),
+    bind!("ctrl-shift--", "Workspace", GridSmaller, "Grid: smaller tiles"),
     bind!("ctrl-0", "Workspace", GridReset, "Grid: the usual size"),
     bind!("f5", "Workspace", Refresh, "Refresh"),
+    // Explorer.tsx refreshed on Ctrl+R too.
+    bind!("ctrl-r", "Workspace", Refresh, "Refresh"),
     // Tabs and panes
     bind!("ctrl-t", "Workspace", NewTab, "New tab"),
     bind!("ctrl-w", "Workspace", CloseTab, "Close the tab"),
@@ -377,6 +409,51 @@ mod tests {
             let action = (binding.action)();
             let go = action.as_any().downcast_ref::<GoToTab>().map(|go| go.index);
             assert_eq!(go, Some(i));
+        }
+    }
+
+    #[test]
+    fn every_key_explorer_tsx_took_is_bound_in_the_context_it_applied_in() {
+        // Explorer.tsx's `onKey`, beyond what the shortcut sheet lists.
+        let wanted = [
+            ("ctrl-e", "Workspace", "glint::SearchHere"),
+            ("f3", "Workspace", "glint::SearchHere"),
+            ("alt-d", "Workspace", "glint::FocusAddress"),
+            ("f4", "Workspace", "glint::FocusAddress"),
+            ("ctrl-r", "Workspace", "glint::Refresh"),
+            ("ctrl-shift-9", "Workspace", "glint::ColumnsView"),
+            ("ctrl-shift-=", "Workspace", "glint::GridLarger"),
+            ("ctrl-+", "Workspace", "glint::GridLarger"),
+            ("ctrl-shift--", "Workspace", "glint::GridSmaller"),
+            ("menu", "FileList", "glint::ShowItemMenu"),
+            // What was bound before stays.
+            ("ctrl-p", "Workspace", "glint::CommandPalette"),
+            ("ctrl-=", "Workspace", "glint::GridLarger"),
+            ("ctrl--", "Workspace", "glint::GridSmaller"),
+        ];
+        for (keys, context, action) in wanted {
+            let bound = BINDINGS
+                .iter()
+                .find(|b| b.keys == keys && b.context == context)
+                .map(|b| (b.action)().name().to_string());
+            assert_eq!(bound.as_deref(), Some(action), "{keys} in {context}");
+        }
+    }
+
+    #[test]
+    fn the_listed_key_of_an_action_comes_before_the_ones_added_for_the_web_apps_habits() {
+        // Menus and tooltips show the first key an action has.
+        for (action, first) in [
+            ("glint::SearchHere", "ctrl-f"),
+            ("glint::FocusAddress", "ctrl-l"),
+            ("glint::Refresh", "f5"),
+            ("glint::GridLarger", "ctrl-="),
+            ("glint::GridSmaller", "ctrl--"),
+            ("glint::ShowItemMenu", "shift-f10"),
+            ("glint::CommandPalette", "ctrl-k"),
+        ] {
+            let found = BINDINGS.iter().find(|b| (b.action)().name() == action).map(|b| b.keys);
+            assert_eq!(found, Some(first), "{action}");
         }
     }
 

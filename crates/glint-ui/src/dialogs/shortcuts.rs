@@ -89,6 +89,10 @@ const TAB_KEYS: &[&str] = &[
 /// The Workspace keys about the app as a whole, not the folder or the tabs.
 const ANYWHERE_KEYS: &[&str] = &["ctrl-shift-f", "ctrl-shift-e", "ctrl-,", "f1", "ctrl-/"];
 
+/// Keys that do what another key of the same row does and are only there because the web app took them too (the
+/// browser's ways to zoom): the sheet leaves them out so its rows stay short, and the key itself still works.
+const NOT_LISTED: &[&str] = &["ctrl-shift-=", "ctrl-+", "ctrl-shift--"];
+
 /// The section a binding is listed under. The context decides most of it; a few Workspace keys are tabs or
 /// app-wide ones, and everything else in Workspace is about the folder.
 pub fn group_of(binding: &Binding) -> Group {
@@ -185,6 +189,7 @@ fn key_name(key: &str) -> String {
         "tab" => "Tab".to_string(),
         "pageup" => "PageUp".to_string(),
         "pagedown" => "PageDown".to_string(),
+        "menu" => "Menu".to_string(),
         other => match other.strip_prefix('f') {
             // F1 to F12: the letter is upper case, the number as it is.
             Some(digits) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
@@ -236,7 +241,10 @@ pub fn sheet(quick_shortcut: Option<&str>) -> Vec<(Group, Vec<Row>)> {
         .map(|group| {
             // Bindings with the same text are one row, their keys in order.
             let mut rows: Vec<(Vec<String>, &'static str)> = Vec::new();
-            for binding in BINDINGS.iter().filter(|binding| group_of(binding) == group) {
+            for binding in BINDINGS
+                .iter()
+                .filter(|binding| group_of(binding) == group && !NOT_LISTED.contains(&binding.keys))
+            {
                 let label = key_label(binding.keys);
                 match rows.iter_mut().find(|(_, what)| *what == binding.what) {
                     Some((keys, _)) => keys.push(label),
@@ -543,6 +551,31 @@ mod tests {
         assert!(!rows_of(None, Group::Anywhere)
             .iter()
             .any(|row| row.what == "Quick search, from any app"));
+    }
+
+    #[test]
+    fn keys_the_web_app_also_took_share_the_row_of_the_listed_one_except_the_zoom_aliases() {
+        let row = |what: &str| {
+            all_rows(None)
+                .into_iter()
+                .map(|(_, row)| row)
+                .find(|row| row.what == what)
+                .map(|row| row.keys)
+        };
+        assert_eq!(row("Type a path").as_deref(), Some("Ctrl+L / Alt+D / F4"));
+        assert_eq!(
+            row("Search this folder and its subfolders (by name or path)").as_deref(),
+            Some("Ctrl+F / Ctrl+E / F3")
+        );
+        assert_eq!(row("Refresh").as_deref(), Some("F5 / Ctrl+R"));
+        assert_eq!(row("Columns").as_deref(), Some("Ctrl+Shift+9"));
+        assert_eq!(
+            row("The menu of what's selected (or the menu key)").as_deref(),
+            Some("Shift+F10 / Menu")
+        );
+        // The zoom aliases work but are not on the sheet.
+        assert_eq!(row("Grid: larger tiles").as_deref(), Some("Ctrl+="));
+        assert_eq!(row("Grid: smaller tiles").as_deref(), Some("Ctrl+-"));
     }
 
     #[test]
