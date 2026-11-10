@@ -79,9 +79,13 @@
 //! | `rename.rs` | rename (F2, `renameEntry`) |
 //! | `create.rs` | New folder, New file and the New menu's kinds |
 //! | `view.rs` | focus, marquee selection, columns, the address bar's editing flag, eject |
+//! | `find_types.rs` | searching's types: [`FindOptions`], [`Found`], [`Wider`], [`SearchIndex`], [`FindNotice`] |
+//! | `find.rs` | searching by name: run, as typed, stop, leave, clear, saved searches (`runFind`…) |
 
 mod clipboard;
 mod create;
+mod find;
+mod find_types;
 mod memory;
 mod model;
 mod nav;
@@ -107,10 +111,13 @@ mod view;
 #[cfg(test)]
 pub(crate) mod fake;
 #[cfg(test)]
+mod find_tests;
+#[cfg(test)]
 mod ops_tests;
 #[cfg(test)]
 mod tests;
 
+pub use find_types::{FindNotice, FindOptions, Found, SearchIndex, Wider};
 pub use memory::Memory;
 pub use model::Explorer;
 pub use nav::Refresh;

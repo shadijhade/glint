@@ -12,21 +12,26 @@
 //! | `useDriveHealth` and the banner             | `dialogs::drive_health` (the badge, the banner, the dialog)     |
 //! | `CapacityBar`, `freeOf`, `DRIVE_ICONS`      | `kit::capacity_bar`, `kit::free_of`, `kit::drive_icon`          |
 //! | `openDriveTreemap`, `inspectTimeline`, `inspectDuplicates` | [`ThisPcEvent`]s: the windows that own them show them |
-//! | `ejectDrive` and `refreshDrives`            | [`ThisPc::eject`], which refreshes the drives when it worked    |
+//! | `ejectDrive` and `refreshDrives`            | [`ThisPc::eject`], through `Explorer::eject`                    |
 //! | the total's pill                            | the totals line above the drives (`model::totals`)              |
+//! | `data-drop` on the tiles and `dropFiles`    | [`ThisPc::drag_over_tile`] and [`ThisPc::drop_on_tile`]         |
 //!
 //! **Keyboard.** Every tile is a tab stop. Tab and Shift+Tab move between them; the arrows move one tile to
-//! the next or previous (reversed in Arabic) and up or down a row of its grid; Home and End go to the first
-//! and last tile; Enter and Space open the tile. A tile's own buttons (eject, map, recent changes, duplicates)
-//! are tab stops of their own, and their Enter and Space are theirs.
+//! the next or previous (reversed in Arabic) and up or down a row of its grid, and the page scrolls so the tile
+//! with the focus is in view. Home and End go to the first and last tile; Enter and Space open the tile. A
+//! tile's own buttons (eject, map, recent changes, duplicates) are tab stops of their own, and their Enter and
+//! Space are theirs. Those buttons show when the tile is hovered or has the focus inside it.
 //!
 //! **Mouse.** A click opens the folder or drive in this pane; a middle click opens it in a new tab; a right
 //! click emits [`ThisPcEvent::ContextMenu`] for the window's menu.
 //!
+//! **Drops.** Files dragged over a folder or drive tile light it, and the drag's words say what a drop does
+//! ("Copy to Downloads"). A drop copies the files into it, or moves them with Shift. A CD or DVD drive, a place
+//! that is read-only, and a folder the files are already in refuse the drop.
+//!
 //! **What isn't here yet** (each marked `PORT ME` where it belongs):
 //! - The instant search card above the folders (the TypeScript's `InstantSearchCard`). It needs the index
 //!   state, which the explorer model doesn't hold yet.
-//! - Drops onto the tiles (the TypeScript's `data-drop` targets and their highlight): the drop part.
 //! - The disk-usage map, recent changes and duplicates: their windows come with their own parts; this view
 //!   only says which drive was asked for.
 
@@ -34,16 +39,17 @@ mod model;
 #[cfg(test)]
 mod tests;
 
-use crate::core_bridge::{self, Core};
+use crate::components::tab_strip::drop_words;
 use crate::dialogs::drive_health::{self, DriveHealthBadge, DriveHealthBanner, Health};
 use crate::explorer::{Drive, DriveKind, ExplorerEvent, KnownId, NavOptions, TabId};
 use crate::kit::prelude::*;
-use crate::{i18n, t, theme, workspace};
+use crate::platform::dragdrop::{Answer, DropEffect};
+use crate::{drops, i18n, t, theme};
 use glint_core::drivehealth::DriveHealth;
 use glint_model::format::format_size;
 use gpui_kit::rems;
 use model::Step;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// What This PC asks the window to do: the menus and windows that belong to other parts of the port.
@@ -126,6 +132,15 @@ pub struct ThisPc {
     totals: Option<model::Totals>,
     /// The width of the content, measured while painting: the arrow keys need the columns of each grid.
     width: Rc<Cell<Pixels>>,
+    /// The page's scroll: the arrow keys bring the focused tile into view.
+    scroll: ScrollHandle,
+    /// Where each folder tile and each drive tile was painted last, in window pixels (folders first in the
+    /// first list, drives in the second).
+    folder_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    drive_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    /// The tile (by its index, folders first) that files dragged over would drop into, while a drop there is
+    /// taken. The tiles light from it; it's shared with their paint closures.
+    drop_over: Rc<Cell<Option<usize>>>,
     health: Entity<Health>,
     _subscriptions: Vec<Subscription>,
 }
@@ -153,6 +168,10 @@ impl ThisPc {
             failing: Vec::new(),
             totals: None,
             width: Rc::new(Cell::new(px(0.))),
+            scroll: ScrollHandle::new(),
+            folder_bounds: Rc::new(RefCell::new(Vec::new())),
+            drive_bounds: Rc::new(RefCell::new(Vec::new())),
+            drop_over: Rc::new(Cell::new(None)),
             health,
             _subscriptions: subscriptions,
         };
@@ -283,21 +302,13 @@ impl ThisPc {
         cx.emit(ThisPcEvent::DiskUsage { tab, path });
     }
 
-    /// "Safely eject": asks Windows to eject the drive. On success the drives are read again and a notice says
-    /// so; on failure the notice says why (`ejectDrive` with its toasts).
+    /// "Safely eject": Windows ejects the drive through the explorer (`Explorer::eject`). On success the drives
+    /// are read again and a notice says so; on failure the notice says why (`ejectDrive` with its toasts).
     fn eject(&mut self, path: String, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let app = cx.global::<Core>().app.clone();
-        let running = core_bridge::run(async move {
-            // The shell asks for the window that owns it: the main window, which core knows by its label.
-            use glint_core::host::Manager as _;
-            let Some(core_window) = app.get_webview_window(workspace::MAIN) else {
-                return Err("Glint has no window to eject from".to_string());
-            };
-            glint_core::shell::eject_drive(core_window, path).await
-        });
         let explorer = crate::explorer::explorer(cx);
+        let ejecting = explorer.update(cx, |explorer, cx| explorer.eject(&path, cx));
         cx.spawn_in(window, async move |this, cx| {
-            let result = running.await.and_then(|inner| inner);
+            let result = ejecting.await;
             let ejected = result.is_ok();
             let _ = this.update_in(cx, |_, window, cx| match result {
                 Ok(()) => window.push_notification(
@@ -315,6 +326,78 @@ impl ThisPc {
             }
         })
         .detach();
+    }
+
+    /// Scrolls the page so the tile at `index` is wholly in view. The tiles' places are the ones painted last,
+    /// which is what the person is looking at.
+    fn reveal(&self, index: usize) {
+        let known = self.known.len();
+        let tile = if index < known {
+            self.folder_bounds.borrow().get(index).cloned()
+        } else {
+            self.drive_bounds.borrow().get(index - known).cloned()
+        };
+        let Some(tile) = tile else {
+            return;
+        };
+        let view = self.scroll.bounds();
+        let mut offset = self.scroll.offset();
+        if tile.top() < view.top() {
+            offset.y += view.top() - tile.top();
+        } else if tile.bottom() > view.bottom() {
+            offset.y -= tile.bottom() - view.bottom();
+        }
+        self.scroll.set_offset(offset);
+    }
+
+    /// Files dragged over a tile (every tile hears every move): while the pointer is over it and a drop would be
+    /// taken, the tile lights and the drag's words say what the drop does there; otherwise the drop is refused.
+    fn drag_over_tile(
+        &mut self,
+        index: usize,
+        dest: &str,
+        name: &str,
+        disc: bool,
+        event: &DragMoveEvent<ExternalPaths>,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.bounds.contains(&event.event.position) {
+            self.leave_tile(index, cx);
+            return;
+        }
+        let paths = drops::paths(event.drag(cx));
+        if model::drop_accepted(&paths, dest, disc) {
+            drops::answer(cx, Answer::Accept(drop_words(name)));
+            if self.drop_over.get() != Some(index) {
+                self.drop_over.set(Some(index));
+                cx.notify();
+            }
+        } else {
+            drops::answer(cx, Answer::Refuse);
+            self.leave_tile(index, cx);
+        }
+    }
+
+    /// The pointer left a tile, or the tile refuses the drag: it stops lighting.
+    fn leave_tile(&self, index: usize, cx: &mut Context<Self>) {
+        if self.drop_over.get() == Some(index) {
+            self.drop_over.set(None);
+            cx.notify();
+        }
+    }
+
+    /// Files dropped on a tile go into its folder: copied, or moved when Shift was held (the drop's effect), as
+    /// the TypeScript's `dropFiles` did. The explorer says how it went.
+    fn drop_on_tile(&mut self, dest: &str, disc: bool, dropped: &ExternalPaths, cx: &mut Context<Self>) {
+        self.drop_over.set(None);
+        cx.notify();
+        let paths = drops::paths(dropped);
+        if !model::drop_accepted(&paths, dest, disc) {
+            return;
+        }
+        let moves = drops::effect(cx) == DropEffect::Move;
+        let explorer = crate::explorer::explorer(cx);
+        explorer.update(cx, |explorer, cx| explorer.drop_files(paths, dest, moves, cx).detach());
     }
 
     /// Keys on the tiles: the arrows move, Home and End jump, Enter and Space open the tile under the focus.
@@ -359,15 +442,23 @@ impl ThisPc {
             if let Some(focus) = self.focus_at(target) {
                 focus.focus(window, cx);
             }
+            self.reveal(target);
+            cx.notify();
             cx.stop_propagation();
         }
     }
 
     /// A folder tile: a click opens it, a middle click opens it in a new tab, a right click asks for the menu.
+    /// Files dragged over it light it, and a drop copies them into it.
     fn render_folder(&self, index: usize, tile: &KnownTile, t: &theme::Tokens, cx: &Context<Self>) -> impl IntoElement {
         let open_path = tile.path.clone();
         let middle_path = tile.path.clone();
         let menu_path = tile.path.clone();
+        let tip = SharedString::from(tile.path.clone());
+        let drag_path = tile.path.clone();
+        let drop_path = tile.path.clone();
+        let drag_name = tile.name.clone();
+        let lit = Rc::clone(&self.drop_over);
         let (primary, accent, ring, border, card) = (t.primary, t.accent, t.ring, t.border, t.card);
         // The folder's icon: a tinted square, as the TypeScript's.
         let glyph = div()
@@ -387,6 +478,7 @@ impl ThisPc {
             .role(Role::Button)
             .aria_label(tile.name.clone())
             .aria_description(SharedString::from(tile.path.clone()))
+            .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
             .test_support()
             .track_focus(&tile.focus)
             .focus(|style| style.border_color(ring))
@@ -404,7 +496,19 @@ impl ThisPc {
             .bg(card)
             .cursor_pointer()
             .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent.opacity(0.6)))
-            // PORT ME(drop): a file dragged over a folder tile highlights it and opens it on a drop (data-drop).
+            .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                if lit.get() == Some(index) {
+                    style.border_color(primary).bg(primary.opacity(0.15))
+                } else {
+                    style
+                }
+            })
+            .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                this.drag_over_tile(index, &drag_path, &drag_name, false, event, cx)
+            }))
+            .on_drop(cx.listener(move |this, dropped: &ExternalPaths, _, cx| {
+                this.drop_on_tile(&drop_path, false, dropped, cx)
+            }))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open(&open_path, cx)))
             .on_mouse_down(
                 MouseButton::Middle,
@@ -431,10 +535,26 @@ impl ThisPc {
     }
 
     /// A drive tile: its icon, name, file system, health, used share, capacity bar, free space and quick actions.
-    fn render_drive(&self, index: usize, tile: &DriveTile, t: &theme::Tokens, cx: &Context<Self>) -> impl IntoElement {
+    /// Files dragged over it light it, and a drop copies them into it, unless it is a CD or DVD drive.
+    fn render_drive(
+        &self,
+        index: usize,
+        tile: &DriveTile,
+        t: &theme::Tokens,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let open_path = tile.path.clone();
         let middle_path = tile.path.clone();
         let menu_path = tile.path.clone();
+        let drag_path = tile.path.clone();
+        let drop_path = tile.path.clone();
+        let drag_name = tile.title.clone();
+        let disc = tile.kind == DriveKind::Cdrom;
+        let lit = Rc::clone(&self.drop_over);
+        // The quick actions show when the tile is hovered or has the focus inside it (the TypeScript's group).
+        let group = SharedString::from(format!("this-pc-drive-{index}"));
+        let focus_within = tile.focus.contains_focused(window, cx);
         let (primary, accent, ring, border, card, muted, muted_fg, destructive, warning, foreground) = (
             t.primary,
             t.accent,
@@ -470,14 +590,17 @@ impl ThisPc {
             .child(icon(drive_icon(tile.kind)).size_5());
 
         // The name line: the name, the badges (WSL, file system, health), and the used share at the end.
-        let linux = (tile.kind == DriveKind::Wsl).then(|| {
+        let wsl_tip = t!("Windows Subsystem for Linux distribution");
+        let linux = (tile.kind == DriveKind::Wsl).then(move || {
             div()
+                .id(("this-pc-linux", index))
                 .flex_none()
                 .rounded(theme::size::RADIUS_SM)
                 .px(space(1.5))
                 .bg(warning.opacity(0.15))
                 .text_color(warning)
                 .text_size(theme::size::XXS)
+                .tooltip(move |window, cx| crate::kit::tooltip(wsl_tip.clone(), window, cx))
                 .child(t!("Linux"))
         });
         let file_system = (tile.kind != DriveKind::Wsl && !tile.fs.is_empty()).then(|| {
@@ -527,7 +650,8 @@ impl ThisPc {
             )
             .children(used);
 
-        let actions = model::has_actions(tile.kind, tile.total).then(|| self.tile_actions(index, tile, cx));
+        let actions =
+            model::has_actions(tile.kind, tile.total).then(|| self.tile_actions(index, tile, &group, focus_within, cx));
 
         let subtitle = div()
             .min_w_0()
@@ -538,6 +662,7 @@ impl ThisPc {
 
         div()
             .id(("this-pc-drive", index))
+            .group(group)
             .role(Role::Button)
             .aria_label(tile.title.clone())
             .aria_description(tile.subtitle.clone())
@@ -558,7 +683,21 @@ impl ThisPc {
             .bg(card)
             .cursor_pointer()
             .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent.opacity(0.6)))
-            // PORT ME(drop): a file dragged over a drive tile highlights it and opens it on a drop (data-drop).
+            .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                if lit.get() == Some(index) {
+                    style.border_color(primary).bg(primary.opacity(0.15))
+                } else {
+                    style
+                }
+            })
+            .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                this.drag_over_tile(index, &drag_path, &drag_name, disc, event, cx)
+            }))
+            .on_drop(
+                cx.listener(move |this, dropped: &ExternalPaths, _, cx| {
+                    this.drop_on_tile(&drop_path, disc, dropped, cx)
+                }),
+            )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open(&open_path, cx)))
             .on_mouse_down(
                 MouseButton::Middle,
@@ -601,8 +740,16 @@ impl ThisPc {
     }
 
     /// The quick actions of a drive: eject (removable and disc drives), then map, recent changes and duplicates
-    /// (drives with a size). Each is its own tab stop, and a click on one doesn't open the drive.
-    fn tile_actions(&self, index: usize, tile: &DriveTile, cx: &Context<Self>) -> impl IntoElement {
+    /// (drives with a size). Each is its own tab stop, and a click on one doesn't open the drive. They are hidden
+    /// until the tile is hovered or has the focus inside it.
+    fn tile_actions(
+        &self,
+        index: usize,
+        tile: &DriveTile,
+        group: &SharedString,
+        focus_within: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let name = tile.title.clone();
         let eject_path = tile.path.clone();
         let eject_name = name.clone();
@@ -667,6 +814,8 @@ impl ThisPc {
             .flex_none()
             .items_center()
             .gap(space(0.5))
+            .opacity(if focus_within { 1. } else { 0. })
+            .group_hover(group.clone(), |style| style.opacity(1.))
             .children(eject)
             .children(map)
             .children(recent)
@@ -675,7 +824,7 @@ impl ThisPc {
 }
 
 impl Render for ThisPc {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
         // The view belongs to a pane whose tab is This PC; when that tab shows a folder, nothing is drawn here.
         let shown = crate::explorer::explorer(cx)
@@ -690,14 +839,17 @@ impl Render for ThisPc {
         let width = self.width.clone();
         let measure = gpui_kit::canvas(move |bounds, _, _| width.set(bounds.size.width), |_, _, _, _| {})
             .w_full()
-            .h(px(0.));
+            .h(space(0.));
 
+        // Each grid records where its tiles were painted, for the arrow keys' scroll and the drops.
+        let folder_places = Rc::clone(&self.folder_bounds);
         let folders = self
             .known
             .iter()
             .enumerate()
             .map(|(i, tile)| self.render_folder(i, tile, &t, cx));
         let folder_grid = row_start()
+            .on_children_prepainted(move |places, _, _| *folder_places.borrow_mut() = places)
             .id("this-pc-folders")
             .role(Role::Group)
             .aria_label(t!("Folders"))
@@ -759,12 +911,15 @@ impl Render for ThisPc {
             )
             .children(totals);
 
+        let drive_places = Rc::clone(&self.drive_bounds);
+        let known = self.known.len();
         let drives = self
             .drives
             .iter()
             .enumerate()
-            .map(|(i, tile)| self.render_drive(self.known.len() + i, tile, &t, cx));
+            .map(|(i, tile)| self.render_drive(known + i, tile, &t, &*window, cx));
         let drive_grid = row_start()
+            .on_children_prepainted(move |places, _, _| *drive_places.borrow_mut() = places)
             .id("this-pc-drives")
             .role(Role::Group)
             .aria_label(t!("Devices and drives"))
@@ -799,6 +954,7 @@ impl Render for ThisPc {
             .test_support()
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .text_start()
             .text_size(theme::size::SM)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.on_key(event, window, cx)))

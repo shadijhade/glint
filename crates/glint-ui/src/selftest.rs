@@ -3,8 +3,9 @@
 //!
 //! `GLINT_SELFTEST=ops:<folder>` (a scratch folder holding `a.txt` and `b.txt`): Glint opens it, selects
 //! everything, copies and pastes it (through the window's Copy and Paste actions), renames `a.txt` to
-//! `renamed.txt` (the Rename action, then what the file list's rename box sends), undoes the rename, writes
-//! what it saw to `<folder>\selftest.log` and quits. Release builds ignore the variable.
+//! `renamed.txt` (the Rename action, then what the file list's rename box sends), undoes the rename, searches
+//! the folder for the copies, writes what it saw to `<folder>\selftest.log` and quits. Release builds ignore
+//! the variable.
 
 use crate::explorer;
 use crate::kit::prelude::*;
@@ -154,5 +155,29 @@ async fn ops(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     })
     .await;
     check(&mut log, "undo the rename", undone, folder);
+
+    // 4. A search below the folder (as the address bar's Enter runs it) finds the two copies.
+    cx.update(|cx| {
+        explorer::explorer(cx).update(cx, |e, cx| e.run_find("Copy", explorer::Wider::default(), cx).detach())
+    });
+    let found = wait_for(cx, Duration::from_secs(20), |cx| {
+        cx.update(|cx| {
+            explorer::explorer(cx)
+                .read(cx)
+                .active_tab()
+                .and_then(|t| t.find.as_ref())
+                .is_some_and(|find| !find.running && find.entries.len() == 2)
+        })
+    })
+    .await;
+    let how = cx.update(|cx| {
+        explorer::explorer(cx)
+            .read(cx)
+            .active_tab()
+            .and_then(|t| t.find.as_ref())
+            .map(|find| format!("{} found by {} ({})", find.entries.len(), find.engine, find.error))
+            .unwrap_or_default()
+    });
+    check(&mut log, &format!("search: {how}"), found, folder);
     log
 }

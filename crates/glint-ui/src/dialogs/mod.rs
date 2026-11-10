@@ -18,25 +18,21 @@
 
 use crate::kit::prelude::*;
 
-pub mod drive_health;
-/// Renaming several items at once (BatchRenameDialog.tsx). Wave 6 slot.
-#[cfg(feature = "dialog-batch-rename")]
+/// Renaming several items at once (BatchRenameDialog.tsx).
 pub mod batch_rename;
-/// Tags for files and folders (TagsDialog.tsx). Wave 6 slot.
-#[cfg(feature = "dialog-tags")]
-pub mod tags;
-/// A password asked for or set (PasswordDialog.tsx). Wave 6 slot.
-#[cfg(feature = "dialog-password")]
-pub mod password;
-/// Encrypting and decrypting with age (VaultDialog.tsx). Wave 6 slot.
-#[cfg(feature = "dialog-vault")]
-pub mod vault;
+pub mod drive_health;
 /// A file's history (HistoryDialog.tsx).
 pub mod history;
 /// What holds a file open, and stopping it (LocksDialog.tsx).
 pub mod locks;
+/// A password asked for or set (PasswordDialog.tsx).
+pub mod password;
 /// The keyboard shortcuts sheet (ShortcutsDialog.tsx).
 pub mod shortcuts;
+/// Tags for files and folders (TagsDialog.tsx).
+pub mod tags;
+/// Encrypting and decrypting with age (VaultDialog.tsx).
+pub mod vault;
 /// Previous versions of a file or folder (VersionsDialog.tsx).
 pub mod versions;
 
@@ -46,7 +42,12 @@ pub mod versions;
 /// view is created once, before this call, and the builder only clones its handle.
 pub fn show<V: Render>(window: &mut Window, cx: &mut App, title: SharedString, width: Pixels, view: Entity<V>) {
     window.open_dialog(cx, move |dialog, _window, _cx| {
-        dialog.title(title.clone()).w(width).child(view.clone())
+        // Enter belongs to the dialog's own boxes and buttons, not to the dialog layer (which would close it).
+        dialog
+            .title(title.clone())
+            .w(width)
+            .on_ok(|_, _, _| false)
+            .child(view.clone())
     });
 }
 

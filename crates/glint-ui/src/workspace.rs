@@ -23,10 +23,11 @@
 use crate::components::address_bar::{AddressBar, AddressBarEvent};
 use crate::components::copy_queue::{CopyQueue, CopyQueueEvent};
 use crate::components::file_grid::{FileGrid, FileGridEvent};
+use crate::components::file_list::DragFromArchive;
 use crate::components::file_list::{FileList, FileListEvent};
 use crate::components::menus::{MenuEvent, MenuHost};
 use crate::components::settings::SettingsEvent;
-use crate::components::sidebar::{Sidebar, SidebarEvent};
+use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
 use crate::components::status_bar::StatusBar;
 use crate::components::tab_strip::{PaneDropZone, TabStrip};
 use crate::components::this_pc::{ThisPc, ThisPcEvent};
@@ -114,12 +115,19 @@ impl Workspace {
 
         subscriptions.push(cx.subscribe_in(&address, window, Self::on_address_event));
         subscriptions.push(cx.subscribe_in(&sidebar, window, Self::on_sidebar_event));
+        subscriptions.push(cx.subscribe_in(&sidebar, window, Self::on_sidebar_request));
         subscriptions.push(cx.subscribe_in(&menus, window, Self::on_menu_event));
         subscriptions.push(cx.subscribe_in(&queue, window, Self::on_queue_event));
         for (pane, views) in panes.iter().enumerate() {
             subscriptions.push(cx.subscribe_in(&views.list, window, move |this, _, event, window, cx| {
                 this.on_list_event(pane, event, window, cx)
             }));
+            // Items inside an archive are extracted first, then dragged as copies: the archive part does that.
+            subscriptions.push(
+                cx.subscribe_in(&views.list, window, |_, _, _: &DragFromArchive, window, cx| {
+                    Self::not_yet(window, cx, t!("Dragging out of archives"))
+                }),
+            );
             subscriptions.push(cx.subscribe_in(&views.grid, window, move |this, _, event, window, cx| {
                 this.on_grid_event(pane, event, window, cx)
             }));
@@ -140,7 +148,8 @@ impl Workspace {
                 ExplorerEvent::Busy(busy) => notices::busy(busy, window, cx),
                 ExplorerEvent::Ask(question) => notices::ask(question, window, cx),
                 ExplorerEvent::QueueOpened => this.queue.update(cx, |queue, cx| queue.show(cx)),
-                ExplorerEvent::BatchRename(_) => Self::not_yet(window, cx, t!("Batch rename")),
+                ExplorerEvent::BatchRename(paths) => dialogs::batch_rename::open(window, cx, paths.clone()),
+                ExplorerEvent::Find(notice) => notices::find(notice, window, cx),
                 ExplorerEvent::FromArchive(_) => Self::not_yet(window, cx, t!("Copying out of archives")),
                 _ => {}
             }),
@@ -187,6 +196,9 @@ impl Workspace {
             let now = Self::shown_in(pane, cx);
             if self.shown[pane] == Some(Shown::Grid) && now != Some(Shown::Grid) {
                 self.panes[pane].grid.update(cx, |grid, cx| grid.pause(cx));
+            }
+            if self.shown[pane] == Some(Shown::List) && now != Some(Shown::List) {
+                self.panes[pane].list.update(cx, |list, cx| list.pause(cx));
             }
             self.shown[pane] = now;
         }
@@ -273,11 +285,14 @@ impl Workspace {
                 }
                 self.focus_files(window, cx);
             }
-            // The bar already filters the folder as you type; searching below it is the find part's.
-            AddressBarEvent::FindAsTyped { .. } | AddressBarEvent::LeaveFind | AddressBarEvent::ClearFind => {}
-            AddressBarEvent::RunFind { .. } | AddressBarEvent::RerunFind { .. } => {
-                Self::not_yet(window, cx, t!("Searching subfolders"))
+            // The bar filters the folder as you type; the explorer searches below it.
+            AddressBarEvent::FindAsTyped { query } => Self::explorer(cx, |e, cx| e.find_as_typed(query, cx).detach()),
+            AddressBarEvent::RunFind { query } => {
+                Self::explorer(cx, |e, cx| e.run_find(query, explorer::Wider::default(), cx).detach())
             }
+            AddressBarEvent::LeaveFind => Self::explorer(cx, |e, cx| e.leave_find(None, cx)),
+            AddressBarEvent::ClearFind => Self::explorer(cx, |e, cx| e.clear_find(cx)),
+            AddressBarEvent::RerunFind { .. } => Self::explorer(cx, |e, cx| e.rerun_find(cx).detach()),
         }
     }
 
@@ -288,14 +303,32 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let what = match event {
-            SidebarEvent::RunSavedSearch(_) => t!("Saved searches"),
-            SidebarEvent::AddConnection | SidebarEvent::EditRemote(_) | SidebarEvent::RemoveRemote(_) => {
-                t!("Remote connections")
+        match event {
+            SidebarEvent::RunSavedSearch(saved) => {
+                let saved = saved.clone();
+                Self::explorer(cx, |e, cx| e.run_saved_search(saved, cx).detach())
             }
-            SidebarEvent::SearchText(_) => t!("Text search"),
-        };
-        Self::not_yet(window, cx, what);
+            SidebarEvent::AddConnection | SidebarEvent::EditRemote(_) | SidebarEvent::RemoveRemote(_) => {
+                Self::not_yet(window, cx, t!("Remote connections"))
+            }
+            SidebarEvent::SearchText(_) => Self::not_yet(window, cx, t!("Text search")),
+        }
+    }
+
+    /// The sidebar's places and folders open the shared folder menu.
+    fn on_sidebar_request(
+        &mut self,
+        _: &Entity<Sidebar>,
+        request: &SidebarRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match request {
+            SidebarRequest::ContextMenu { path, position } => self
+                .menus
+                .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
+            SidebarRequest::SendToDevice { .. } => Self::not_yet(window, cx, t!("Sending to a paired PC")),
+        }
     }
 
     fn on_list_event(&mut self, pane: usize, event: &FileListEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -318,7 +351,9 @@ impl Workspace {
                 let path = e.tab(tab).map(|t| t.path.clone()).unwrap_or_default();
                 e.reset_folder_view(&path, cx)
             }),
-            FileListEvent::SearchSubfolders { .. } => Self::not_yet(window, cx, t!("Searching subfolders")),
+            FileListEvent::SearchSubfolders { query } => {
+                Self::explorer(cx, |e, cx| e.run_find(query, explorer::Wider::default(), cx).detach())
+            }
         }
     }
 
@@ -336,10 +371,19 @@ impl Workspace {
                     Self::not_yet(window, cx, t!("Dragging out of archives"));
                 } else {
                     let drag = dragdrop::drag_out(cx, MAIN, paths.clone(), false);
-                    cx.spawn(async move |_, _| {
-                        if let Err(error) = drag.await {
+                    let grid = self.panes[pane].grid.clone();
+                    cx.spawn(async move |_, cx| {
+                        let effect = drag.await;
+                        if let Err(error) = &effect {
                             eprintln!("glint: couldn't drag the items: {error}");
                         }
+                        cx.update(|cx| {
+                            // The dragged tiles stop looking lifted; a move took them away, so the folder is read again.
+                            grid.update(cx, |grid, cx| grid.end_drag(cx));
+                            if effect.as_deref() == Ok("move") {
+                                Self::explorer(cx, |e, cx| e.reload(None, cx).detach());
+                            }
+                        });
                     })
                     .detach();
                 }
@@ -398,6 +442,15 @@ impl Workspace {
             MenuEvent::Locks { paths } => {
                 dialogs::locks::open(window, cx, paths.clone(), |exe, _, cx| Self::reveal(&exe, cx))
             }
+            MenuEvent::EditTags { paths } => dialogs::tags::open(window, cx, paths.clone()),
+            MenuEvent::SetTags { paths, add, remove } => {
+                dialogs::tags::set_tags(window, cx, paths.clone(), add.clone(), remove.clone())
+            }
+            MenuEvent::Vault { paths, decrypt } => dialogs::vault::open(window, cx, paths.clone(), *decrypt),
+            MenuEvent::EditConnection { .. } | MenuEvent::RemoveConnection { .. } => {
+                Self::not_yet(window, cx, t!("Remote connections"))
+            }
+            MenuEvent::SearchText { .. } => Self::not_yet(window, cx, t!("Text search")),
             other => {
                 // The parts not built yet: named by the menu's own word for them until they are.
                 let name = format!("{other:?}");
@@ -783,9 +836,16 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|_, _: &actions::Rename, _, cx| Self::explorer(cx, |e, cx| e.begin_rename(None, cx))),
             )
-            .on_action(
-                cx.listener(|_, _: &actions::BatchRename, window, cx| Self::not_yet(window, cx, t!("Batch rename"))),
-            )
+            .on_action(cx.listener(|_, _: &actions::BatchRename, window, cx| {
+                // Several items: the batch rename dialog; one: its rename box (begin_rename asks for the dialog itself
+                // when several are selected and archives or the Recycle Bin say no).
+                let paths = Self::selection(cx);
+                if paths.len() > 1 {
+                    dialogs::batch_rename::open(window, cx, paths)
+                } else {
+                    Self::explorer(cx, |e, cx| e.begin_rename(None, cx))
+                }
+            }))
             .on_action(cx.listener(|_, _: &actions::Undo, _, cx| Self::explorer(cx, |e, cx| e.undo(None, cx).detach())))
             .on_action(
                 cx.listener(|_, _: &actions::NewFolder, _, cx| {

@@ -5,6 +5,7 @@
 //! elements, and translates the words (`t!`).
 
 use crate::explorer::{Drive, DriveKind};
+use glint_model::paths::{droppable, in_archive_path, is_remote_path};
 
 /// The folders' tiles are `minmax(10.5rem, 1fr)` with `gap-2` between them.
 pub const FOLDER_TILE_REM: f32 = 10.5;
@@ -80,6 +81,13 @@ pub fn has_actions(kind: DriveKind, total: u64) -> bool {
 /// Removable drives and discs get the eject button.
 pub fn is_ejectable(kind: DriveKind) -> bool {
     matches!(kind, DriveKind::Removable | DriveKind::Cdrom)
+}
+
+/// Whether a drop of `paths` on the tile at `dest` is taken (`targetAt` in Explorer.tsx). Not on a CD or DVD drive
+/// (`disc`: its disc is read-only), not into a place that is read-only (a remote connection, an archive), and not
+/// where every file already is: the TypeScript refused those, so the tile doesn't light for them.
+pub fn drop_accepted(paths: &[String], dest: &str, disc: bool) -> bool {
+    !disc && !is_remote_path(dest) && !in_archive_path(dest) && !droppable(paths, dest).is_empty()
 }
 
 /// Where the focus goes from a tile. The view maps the arrow keys to these, reversing left and right in
@@ -256,6 +264,21 @@ mod tests {
         // No tiles: nothing moves, nothing panics.
         assert_eq!(super::step(0, Step::Next, 0, 0, 1, 1), None);
         assert_eq!(super::step(0, Step::Down, 0, 0, 0, 0), None);
+    }
+
+    #[test]
+    fn a_drop_is_refused_on_a_disc_and_where_the_files_already_are() {
+        let files = vec!["C:\\Users\\me\\Downloads\\ملف.txt".to_string()];
+        assert!(drop_accepted(&files, "C:\\Users\\me\\Documents", false));
+        // The files are in Downloads already: dropping them there does nothing, so the tile doesn't light.
+        assert!(!drop_accepted(&files, "C:\\Users\\me\\Downloads", false));
+        // A drive's root is refused for files at its top (they're there already) and taken for others.
+        assert!(!drop_accepted(&["C:\\readme.txt".to_string()], "C:\\", false));
+        assert!(drop_accepted(&files, "C:\\", false));
+        // A CD or DVD drive is read-only, whatever is dropped.
+        assert!(!drop_accepted(&files, "D:\\", true));
+        // Nothing dropped, nothing taken.
+        assert!(!drop_accepted(&[], "C:\\", false));
     }
 
     #[test]

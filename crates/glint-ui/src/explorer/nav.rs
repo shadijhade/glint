@@ -289,6 +289,8 @@ impl Explorer {
             tab.nav_started = visible.then_some(started);
         });
         if dropped_find {
+            // Going to another folder ends the search, as `navigate` did with `cancelFind`.
+            self.stop_find_job(id, was_running);
             cx.emit(ExplorerEvent::FindDropped { tab: id, was_running });
         }
         if options.select.is_some() && !selected.is_empty() {
