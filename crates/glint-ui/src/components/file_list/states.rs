@@ -201,6 +201,38 @@ impl FileList {
                 .test_support()
                 .into_any_element();
         }
+        if let Some(same) = view
+            .diffs
+            .as_ref()
+            .filter(|_| view.diff_only)
+            .map(|diffs| diffs.same)
+            .filter(|&n| n > 0)
+        {
+            // Compare panes with only the differences shown, and there are none.
+            let heading = t!("No differences in this pane");
+            let note = t!(
+                "All {n} items match the other pane.",
+                n = glint_model::format::format_count(same)
+            );
+            return centered(t, "file-list-no-differences")
+                .role(Role::Status)
+                .aria_label(heading.clone())
+                .aria_description(note.clone())
+                .child(icon(IconName::GitCompareArrows).size(rems(1.5)).text_color(t.success))
+                .child(title(t, heading))
+                .child(div().child(note))
+                .child(
+                    Button::new("file-list-show-identical")
+                        .outline()
+                        .small()
+                        .label(t!("Show identical items"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.explorer.update(cx, |explorer, cx| explorer.toggle_diff_only(cx));
+                        })),
+                )
+                .test_support()
+                .into_any_element();
+        }
         if view.entries > 0 {
             return centered(t, "file-list-only-hidden")
                 .role(Role::Status)

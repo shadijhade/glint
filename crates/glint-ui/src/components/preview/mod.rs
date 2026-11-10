@@ -73,23 +73,17 @@ pub mod sources;
 /// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).
 pub mod sqlite;
 pub mod states;
-/// PDF pages drawn natively with Windows.Data.Pdf (PdfPreview in FilePreview.tsx). Wave 10 slot.
-#[cfg(feature = "preview-pdf")]
+/// PDF pages drawn natively with Windows.Data.Pdf (PdfPreview in FilePreview.tsx).
 pub mod pdf;
-/// The rich text the book and Word previews share: blocks and runs, right to left (previews-native.md sections 2-3). Wave 10 slot.
-#[cfg(feature = "preview-books")]
+/// The rich text the book and Word previews share: blocks and runs, right to left (previews-native.md sections 2-3).
 pub mod rich;
-/// Books: EPUB, FB2 and comics, read page by page (BookView.tsx). Wave 10 slot.
-#[cfg(feature = "preview-books")]
+/// Books: EPUB, FB2 and comics, read page by page (BookView.tsx).
 pub mod book;
-/// Word documents laid out without Office (DocxView.tsx). Wave 10 slot.
-#[cfg(feature = "preview-books")]
+/// Word documents laid out without Office (DocxView.tsx).
 pub mod docx;
-/// 3D models: STL, OBJ, PLY, glTF/GLB and 3MF, drawn and turned (ModelView.tsx). Wave 10 slot.
-#[cfg(feature = "preview-3d")]
+/// 3D models: STL, OBJ, PLY, glTF/GLB and 3MF, drawn and turned (ModelView.tsx).
 pub mod model3d;
-/// Video and audio played with Media Foundation, with Trim, the waveform and scrubbing (VideoPreview, AudioPreview, Waveform.tsx, VideoScrub.tsx). Wave 10 slot.
-#[cfg(feature = "preview-player")]
+/// Video and audio played with Media Foundation, with Trim, the waveform and scrubbing (VideoPreview, AudioPreview, Waveform.tsx, VideoScrub.tsx).
 pub mod player;
 #[cfg(test)]
 mod tests;
