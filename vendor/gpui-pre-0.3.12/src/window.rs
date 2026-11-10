@@ -5874,6 +5874,13 @@ impl Window {
         self.last_input_modality = match &event {
             PlatformInput::KeyDown(_) => InputModality::Keyboard,
             PlatformInput::MouseMove(_) | PlatformInput::MouseDown(_) => InputModality::Mouse,
+            // A file dragged in from another app is pointer input too: it is turned into mouse moves and a
+            // mouse up below, and hover (which the drop listeners check) is off while the modality is keyboard.
+            PlatformInput::FileDrop(
+                FileDropEvent::Entered { .. }
+                | FileDropEvent::Pending { .. }
+                | FileDropEvent::Submit { .. },
+            ) => InputModality::Mouse,
             PlatformInput::Touch(_) => InputModality::Touch,
             _ => self.last_input_modality,
         };

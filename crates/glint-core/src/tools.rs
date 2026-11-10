@@ -1008,12 +1008,17 @@ async fn fetch_into(temp: &Path, url: &str, name: &str, ipv4: bool, stop: &Atomi
     Ok(hasher.finalize())
 }
 
+/// The TLS provider Glint's HTTP clients use (ring), installed for the process; installing it twice is harmless.
+/// The app's updater calls it before its own client.
+pub fn install_tls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// The HTTP client Glint downloads with: the TLS the updater uses, and the PC's proxy. With `ipv4`, it
 /// connects over IPv4 alone, as a network whose IPv6 is broken (connections reset, or never answered)
 /// still gets through that way.
 pub(crate) fn client(ipv4: bool) -> Result<reqwest::Client, String> {
-    // Installing the TLS provider twice is harmless.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    install_tls_provider();
     let builder = reqwest::Client::builder().user_agent(concat!("Glint/", env!("CARGO_PKG_VERSION"))).connect_timeout(Duration::from_secs(15));
     let builder = if ipv4 { builder.dns_resolver(Arc::new(Ipv4Only)) } else { builder };
     builder.build().map_err(|e| e.to_string())

@@ -452,6 +452,60 @@ fn escape_cancels_the_rename_and_leaving_the_box_commits(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn enter_in_the_rename_box_commits_and_does_not_open_the_item(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    ui.click(0);
+    // Quick Look is what the list's own Enter closes (`open_selected`): it shows whether that Enter ran.
+    ui.explorer.update(&mut ui.visual, |e, _| e.quick_look = true);
+    ui.rename(Some("C:\\x\\alpha.txt"));
+    ui.press("enter");
+    assert_eq!(ui.events().len(), 1, "{:?}", ui.events());
+    assert!(matches!(ui.events()[0], FileListEvent::CommitRename { .. }));
+    assert!(
+        ui.explorer.read_with(&ui.visual, |e, _| e.quick_look),
+        "the list's Open ran on the old name"
+    );
+    // The same for Ctrl+Enter and F2, which the list binds too.
+    ui.press("ctrl-enter");
+    ui.press("f2");
+    assert!(ui.explorer.read_with(&ui.visual, |e, _| e.quick_look));
+}
+
+#[gpui_kit::test]
+fn the_list_takes_the_keyboard_back_when_the_rename_box_closes(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    for key in ["escape", "enter"] {
+        let mut ui = open(cx, &small_disk(), "C:\\x");
+        ui.rename(Some("C:\\x\\alpha.txt"));
+        let list = ui.list.clone();
+        let list_has_it = |ui: &mut Ui| ui.visual.update(|window, cx| list.read(cx).focus.is_focused(window));
+        assert!(!list_has_it(&mut ui), "the box holds the keyboard while it is open");
+        ui.press(key);
+        // The explorer's rename part clears `Tab::renaming` once it has heard.
+        ui.rename(None);
+        ui.frame();
+        assert!(list_has_it(&mut ui), "after {key} nothing holds the keyboard");
+        // A key that is an action of the list reaches it again.
+        ui.press("ctrl-a");
+        assert!(!ui.selected().is_empty(), "Ctrl+A after {key}");
+    }
+}
+
+#[gpui_kit::test]
+fn a_rename_box_closed_by_going_elsewhere_leaves_the_focus_there(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    let other = ui.visual.update(|_, cx| cx.focus_handle());
+    ui.rename(Some("C:\\x\\alpha.txt"));
+    ui.visual.update(|window, cx| other.focus(window, cx));
+    ui.frame();
+    ui.rename(None);
+    ui.frame();
+    assert!(ui.visual.update(|window, _| other.is_focused(window)));
+}
+
+#[gpui_kit::test]
 fn a_character_no_name_can_hold_is_refused(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut ui = open(cx, &small_disk(), "C:\\x");

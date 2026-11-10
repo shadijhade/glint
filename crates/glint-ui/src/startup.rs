@@ -16,6 +16,7 @@ use crate::kit::prelude::*;
 use crate::platform::{launch, preview_host, tray, window_state};
 use crate::{core_bridge, explorer, persistence, state, t, workspace};
 use glint_model::paths::{base_name, THIS_PC};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 use windows::Win32::Foundation::HWND;
@@ -51,6 +52,8 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     start_explorer(cx);
     // The disk usage maps, reading glint-core (after the explorer, whose tabs they follow).
     crate::components::disk_usage::init(cx);
+    // Early, before the saved state is first written: the updater tells a first start after an update by it.
+    start_updater(cx);
     // The system fonts Typst sets documents in, found once in the background (Typst previews, PDF export).
     crate::typst_engine::warm_fonts();
     // Git's status for the folders shown, and File Explorer's on-demand folders the menus offer to hide.
@@ -162,7 +165,7 @@ fn close_to_tray(window: &mut Window, cx: &mut App) {
         window_state::save_hwnd(hwnd);
         if !tray::keep_running() {
             if copying(cx) || crate::dialogs::compare_files::unsaved(cx) {
-                ask_before_quitting(window, cx);
+                ask_before_quitting(window, cx, Rc::new(quit_now));
                 return false;
             }
             // Quitting: the hidden Quick Search window goes too, or it would keep the app alive.
@@ -191,12 +194,16 @@ fn copying(cx: &App) -> bool {
 
 /// `mayQuit`'s questions, one after the other: a copy still running, then Compare's edits; the window closes
 /// (and Glint quits) only on yes to each.
-fn ask_before_quitting(window: &mut Window, cx: &mut App) {
-    let then_edits = |window: &mut Window, cx: &mut App| {
+/// What runs once every question is answered yes (the window closes, or the updater quits to install).
+type AfterYes = Rc<dyn Fn(&mut Window, &mut App)>;
+
+fn ask_before_quitting(window: &mut Window, cx: &mut App, then: AfterYes) {
+    let then_edits = move |window: &mut Window, cx: &mut App| {
         if crate::dialogs::compare_files::unsaved(cx) {
-            crate::dialogs::compare_files::ask_discard(window, cx, quit_now);
+            let then = then.clone();
+            crate::dialogs::compare_files::ask_discard(window, cx, move |window, cx| then(window, cx));
         } else {
-            quit_now(window, cx);
+            then(window, cx);
         }
     };
     if copying(cx) {
@@ -216,8 +223,48 @@ fn ask_before_quitting(window: &mut Window, cx: &mut App) {
 
 /// Closes the main window after the questions: the hidden Quick Search window goes too, and the app quits.
 fn quit_now(window: &mut Window, cx: &mut App) {
+    crate::book_places::shared().flush();
     quick_search::close(cx);
     window.remove_window();
+}
+
+/// The updater's question before it quits to install: `mayQuit`'s, then `go` only on yes (at once when nothing is in
+/// the way).
+fn confirm_quit_for_update(cx: &mut App, go: Box<dyn FnOnce(&mut App)>) {
+    let go = Rc::new(std::cell::RefCell::new(Some(go)));
+    let run = {
+        let go = go.clone();
+        move |cx: &mut App| {
+            if let Some(go) = go.borrow_mut().take() {
+                go(cx)
+            }
+        }
+    };
+    match main_window(cx) {
+        Some(main) if copying(cx) || crate::dialogs::compare_files::unsaved(cx) => {
+            let _ = main.update(cx, move |_, window, cx| {
+                ask_before_quitting(window, cx, Rc::new(move |_, cx| run(cx)))
+            });
+        }
+        _ => run(cx),
+    }
+}
+
+/// Glint keeps itself up to date (never the Store copy or a debug build): latest.json checked at start and every 12
+/// hours, the setup's signature checked before it runs; what it says goes to the main window.
+fn start_updater(cx: &mut App) {
+    let hooks = crate::updater::Hooks {
+        confirm_quit: Rc::new(confirm_quit_for_update),
+        quit: Rc::new(quit),
+    };
+    let source = crate::updater::http_source(glint_core::tools::install_tls_provider);
+    let updater = crate::updater::init(cx, source, hooks);
+    cx.subscribe(&updater, |_, event, cx| {
+        if let Some(main) = main_window(cx) {
+            let _ = main.update(cx, |_, window, cx| crate::updater::show(event, window, cx));
+        }
+    })
+    .detach();
 }
 
 /// The main window's content, once it exists.
@@ -413,6 +460,7 @@ fn configure_tray(cx: &mut App, in_tray: bool) {
 /// The tray menu's Quit Glint: the window's place is kept (a hidden one's was as it hid), then GPUI quits,
 /// which saves the state.
 fn quit(cx: &mut App) {
+    crate::book_places::shared().flush();
     if let Some(hwnd) = main_hwnd() {
         window_state::save_hwnd(hwnd);
     }

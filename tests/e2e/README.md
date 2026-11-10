@@ -74,12 +74,12 @@ start or was aborted, 4 when something was not put back (see below). The last li
 | `address-bar` | Ctrl+L opens the address box, a typed path plus Enter opens that folder, Escape cancels and leaves the folder as it was, a breadcrumb and the Up button go up |
 | `context-menu` | A right-click on the empty list opens the *Folder menu* with its items; Escape closes it; **New folder** from it creates a folder, in the rename box, named as typed, on disk |
 | `rename-undo` | Right-click a row, **Rename** from the *Item menu* opens the real rename box, the new name reaches the disk; an Arabic name typed into the box (F2) arrives intact; two presses of Ctrl+Z put both names back |
-| `rename-cancel-focus` | *Known issue.* After Escape closes the rename box, Ctrl+L still opens the address box |
-| `rename-enter` | *Known issue.* Enter in the rename box commits the name and does nothing else |
+| `rename-cancel-focus` | After Escape closes the rename box, Ctrl+L still opens the address box |
+| `rename-enter` | Enter in the rename box commits the name and does nothing else |
 | `drag-copy` | A real mouse drag of a file onto a folder row copies it into the folder; the original stays, the contents match |
 | `drag-move-shift` | The same drag with Shift held moves it |
 | `drop-from-explorer` | A file dragged out of a real File Explorer window (opened on the scratch folder) onto a folder row of Glint is copied in, and stays in the Explorer folder |
-| `drop-after-key` | *Known issue.* The same drop also works after a key was pressed in Glint |
+| `drop-after-key` | The same drop also works after a key was pressed in Glint |
 | `quick-look` | Space opens Quick Look named after the file and showing its text, the right arrow moves to the next item, Space and Escape close it |
 | `command-bar` | The buttons: New folder, Copy (onto the real clipboard) and Paste (Windows names the copy), Rename (and Escape), Grid and List (the layout really changes), the palette button and a command run from it, the View and Tools menus |
 | `dual-pane-compare` | Ctrl+Shift+D shows two named panes, a second pane can be taken elsewhere, Ctrl+Shift+M marks "Only here" items in both and unmarks, Ctrl+Shift+D closes the second pane |
@@ -91,18 +91,13 @@ start or was aborted, 4 when something was not put back (see below). The last li
 Every check begins from `Reset-App`: overlays closed, Files mode, one pane, one tab, the arena open with its original
 contents, nothing selected.
 
-### Bugs of the app these checks found (kept as `-Known` checks)
+### Bugs of the app these checks found (fixed)
 
-1. **`rename-enter`:** Enter in the rename box commits the name *and also* runs the list's Open on the old name
-   (gpui's `Input` propagates a single-line Enter and `file_list/rename.rs` stops only Escape): a renamed folder is
-   "opened" under its old name ("Can't open ... doesn't exist") and a renamed *file* would launch its app. The other
-   checks therefore commit a rename by clicking away (the box commits on losing focus).
-2. **`rename-cancel-focus`:** when the rename box closes with Escape (and after the Enter above), nothing holds the
-   keyboard focus: Ctrl+L, F5 and the buttons that dispatch an action (the palette button) do nothing until a click in
-   the list.
-3. **`drop-after-key`:** after any key press in Glint, a file dropped from another app is silently ignored (the drag
-   shows "Copy to target", the drop does nothing) until the mouse has moved over Glint's window. Glint's own drags
-   are not affected.
+These three were kept as `-Known` checks until they were fixed; the checks now pass and guard them.
+
+1. **`rename-enter`:** Enter in the rename box committed the name *and also* ran the list's Open on the old name (gpui's `Input` propagates a single-line Enter to the list's `OpenItem`). Fixed in `file_list/rename.rs`: the box's wrapper takes `OpenItem`, `OpenInNewTab`, `Rename` and `Properties` so they stop there.
+2. **`rename-cancel-focus`:** when the rename box closed, nothing held the keyboard focus, so Ctrl+L, F5 and the buttons that dispatch an action did nothing until a click. Fixed in `file_list/rename.rs` (`end_rename`): the list takes the focus back when the box held it (or nothing did); a box closed by going to another control leaves the focus there.
+3. **`drop-after-key`:** after any key press in Glint, a file dropped from another app was ignored until the mouse had moved over the window. The vendored GPUI set its input modality from the file-drop event (not pointer input), so hover, which every drop listener checks, stayed off after a key press. Fixed in `Window::dispatch_event` (see `docs/gpui/VENDOR.md`); `drops.rs` has the headless test.
 
 ## What it can't check yet
 
