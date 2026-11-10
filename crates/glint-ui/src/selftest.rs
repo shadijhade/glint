@@ -1,0 +1,145 @@
+//! Debug builds only: drives the real app through file operations without synthetic input, so the coordinator
+//! can check the real Windows paths (the clipboard, IFileOperation, undo) that headless tests fake.
+//!
+//! `GLINT_SELFTEST=ops:<folder>` (a scratch folder holding `a.txt` and `b.txt`): Glint opens it, selects
+//! everything, copies and pastes it (through the window's Copy and Paste actions), renames `a.txt` to
+//! `renamed.txt` (the Rename action, then what the file list's rename box sends), undoes the rename, writes
+//! what it saw to `<folder>\selftest.log` and quits. Release builds ignore the variable.
+
+use crate::explorer;
+use crate::kit::prelude::*;
+use crate::{actions, startup};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// Starts the self-test the environment asks for, if any (debug builds only).
+pub(crate) fn start(cx: &mut App) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let Ok(script) = std::env::var("GLINT_SELFTEST") else {
+        return;
+    };
+    let Some(folder) = script.strip_prefix("ops:").map(PathBuf::from) else {
+        eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
+        return;
+    };
+    cx.spawn(async move |cx| {
+        let log = ops(&folder, cx).await;
+        let _ = std::fs::write(folder.join("selftest.log"), log.join("\r\n"));
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
+}
+
+/// The folder's file names, sorted (the log's evidence).
+fn names(folder: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(folder)
+        .map(|dir| {
+            dir.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "selftest.log")
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Waits until `ready` holds (polling), or `limit` passes. True if it held.
+async fn wait_for(cx: &mut AsyncApp, limit: Duration, mut ready: impl FnMut(&mut AsyncApp) -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        if ready(cx) {
+            return true;
+        }
+        cx.background_executor().timer(Duration::from_millis(100)).await;
+    }
+    ready(cx)
+}
+
+/// Dispatches `action` in the main window, as a key or a menu would.
+fn dispatch(cx: &mut AsyncApp, action: Box<dyn Action>) {
+    cx.update(|cx| {
+        if let Some(main) = startup::main_window(cx) {
+            let _ = main.update(cx, |_, window, cx| window.dispatch_action(action, cx));
+        }
+    });
+}
+
+async fn ops(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
+    let mut log = Vec::new();
+    let dir = folder.to_string_lossy().into_owned();
+    let check = |log: &mut Vec<String>, step: &str, ok: bool, folder: &Path| {
+        log.push(format!("{} {step}: {:?}", if ok { "OK  " } else { "FAIL" }, names(folder)));
+        ok
+    };
+
+    // 1. The folder is open in the active tab.
+    let target = dir.clone();
+    cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.navigate(target, Default::default(), cx)));
+    let opened = wait_for(cx, Duration::from_secs(10), |cx| {
+        cx.update(|cx| {
+            let e = explorer::explorer(cx).read(cx);
+            e.active_tab().is_some_and(|t| t.path.eq_ignore_ascii_case(&dir) && t.rows.len() >= 2)
+        })
+    })
+    .await;
+    if !check(&mut log, "open the folder", opened, folder) {
+        return log;
+    }
+
+    // 2. Everything selected, copied (Ctrl+C), pasted (Ctrl+V): Windows names the copies.
+    cx.update(|cx| {
+        explorer::explorer(cx).update(cx, |e, cx| {
+            if let Some(rows) = e.active_tab().map(|t| t.rows.clone()) {
+                e.select_all(&rows, cx);
+            }
+        })
+    });
+    dispatch(cx, Box::new(actions::Copy));
+    let copied = wait_for(cx, Duration::from_secs(5), |_| glint_core::shell::clipboard_paths().len() >= 2).await;
+    check(&mut log, "copy to the clipboard", copied, folder);
+    dispatch(cx, Box::new(actions::Paste));
+    let pasted = wait_for(cx, Duration::from_secs(15), |_| names(folder).len() >= 4).await;
+    check(&mut log, "paste", pasted, folder);
+
+    // 3. a.txt renamed (F2, then the rename box's Enter), then the rename undone (Ctrl+Z).
+    let a = folder.join("a.txt").to_string_lossy().into_owned();
+    cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.select_only(Some(&a), cx)));
+    dispatch(cx, Box::new(actions::Rename));
+    let renaming = wait_for(cx, Duration::from_secs(5), |cx| {
+        cx.update(|cx| explorer::explorer(cx).read(cx).active_tab().is_some_and(|t| t.renaming.is_some()))
+    })
+    .await;
+    check(&mut log, "rename box opens", renaming, folder);
+    cx.update(|cx| {
+        explorer::explorer(cx).update(cx, |e, cx| {
+            let tab = e.active_tab_id();
+            e.commit_rename_in(tab, "renamed.txt", cx).detach()
+        })
+    });
+    let renamed = wait_for(cx, Duration::from_secs(10), |_| folder.join("renamed.txt").exists()).await;
+    check(&mut log, "rename", renamed, folder);
+    // Windows renames before the operation returns and the explorer records its undo step: wait for the step,
+    // or Ctrl+Z would take back the paste instead (a person can't press it that fast).
+    let recorded = wait_for(cx, Duration::from_secs(5), |cx| {
+        cx.update(|cx| {
+            explorer::explorer(cx)
+                .read(cx)
+                .next_undo()
+                .is_some_and(|(_, label)| label.starts_with("rename"))
+        })
+    })
+    .await;
+    if !check(&mut log, "the rename can be undone", recorded, folder) {
+        return log;
+    }
+    dispatch(cx, Box::new(actions::Undo));
+    let undone = wait_for(cx, Duration::from_secs(10), |_| {
+        folder.join("a.txt").exists() && !folder.join("renamed.txt").exists()
+    })
+    .await;
+    check(&mut log, "undo the rename", undone, folder);
+    log
+}

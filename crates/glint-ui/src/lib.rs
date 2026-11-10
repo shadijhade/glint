@@ -22,8 +22,10 @@ pub mod dialogs;
 pub mod explorer;
 pub mod i18n;
 pub mod kit;
+pub mod notices;
 pub mod persistence;
 pub mod platform;
+mod selftest;
 mod startup;
 pub mod state;
 pub mod theme;
@@ -60,7 +62,13 @@ pub fn run() -> i32 {
         // Closing the last window quits. With the tray keeping Glint running, closing only hides the window
         // (startup.rs), so this doesn't come.
         cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+            // The Quick Search window, made ahead of time and only ever hidden, doesn't keep the app open.
+            let windows = cx.windows();
+            if windows
+                .iter()
+                .all(|window| components::quick_search::is_quick_window(cx, *window))
+            {
+                components::quick_search::close(cx);
                 cx.quit();
             }
         })

@@ -28,6 +28,10 @@ gpui-base = { path = "vendor/gpui-base-0.9.1" }
 
 # Dependencies (GPUI, glint-core's tree) are built without debug info in debug builds: with it, every glint-ui
 # test binary linked a PDB of about 1 GB, one per feature combination, and a wave of agents filled the disk.
-# Glint's own crates keep full debug info.
 [profile.dev.package."*"]
 debug = false
+
+# Glint's own crates keep line tables (file:line in panics and backtraces) but not full debug info: a wave of
+# agents still filled 45 GB with full-debug test binaries and their incremental caches.
+[profile.dev]
+debug = "line-tables-only"

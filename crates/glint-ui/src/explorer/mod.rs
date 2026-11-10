@@ -69,11 +69,29 @@
 //! | `open.rs` | opening files and entries, go to, Get access |
 //! | `start.rs` | start-up, session, watches, hints |
 //! | `requested.rs` | folders a later launch hands over |
+//! | `ops_types.rs` | file operations' types: [`FileOp`], [`OpNotice`], [`Ask`], [`UndoId`]… |
+//! | `ops.rs` | copy, move, delete, drops, the busy toast (`fileOp`, `deletePaths`, `dropFiles`…) |
+//! | `ops_state.rs` | the file operations' state in the [`Explorer`] |
+//! | `undo.rs` | Ctrl+Z (`rememberUndo`, `undo`) |
+//! | `clipboard.rs` | cut, copy and paste |
+//! | `queue.rs` | the copy queue (`queueFiles`, a finished job) |
+//! | `recycle.rs` | the Recycle Bin: restore, delete for good, empty |
+//! | `rename.rs` | rename (F2, `renameEntry`) |
+//! | `create.rs` | New folder, New file and the New menu's kinds |
+//! | `view.rs` | focus, marquee selection, columns, the address bar's editing flag, eject |
 
+mod clipboard;
+mod create;
 mod memory;
 mod model;
 mod nav;
 mod open;
+mod ops;
+mod ops_state;
+mod ops_types;
+mod queue;
+mod recycle;
+mod rename;
 mod requested;
 mod rows;
 mod select;
@@ -82,10 +100,14 @@ mod start;
 mod tab;
 mod tabs;
 mod types;
+mod undo;
+mod view;
 
 /// A fake disk for tests: views' tests use it too (`crate::explorer::fake::{FakeDisk, file, folder}`).
 #[cfg(test)]
 pub(crate) mod fake;
+#[cfg(test)]
+mod ops_tests;
 #[cfg(test)]
 mod tests;
 
@@ -93,6 +115,9 @@ pub use memory::Memory;
 pub use model::Explorer;
 pub use nav::Refresh;
 pub use open::is_disk_image;
+pub use ops_types::*;
+pub use recycle::purge_what;
+pub use rename::{clean_name, INVALID_NAME_CHARS, INVALID_NAME_HINT};
 pub use rows::{build_rows, GroupLayout, RowSpec, Rows};
 pub use source::{Access, CoreSource, Effect, Fut, Resolved, Source};
 pub use tab::{PathSet, Selection, Tab};

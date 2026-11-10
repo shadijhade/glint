@@ -7,6 +7,7 @@
 //! future the model awaits in a GPUI task: [`CoreSource`] runs them on core's runtime through
 //! [`core_bridge::run`], so the UI thread never waits, and decodes big listings off the UI thread too.
 
+use super::ops_types::*;
 use super::types::*;
 use crate::core_bridge;
 use glint_core::host::{AppHandle, Manager as _, Window};
@@ -69,6 +70,37 @@ pub trait Source {
     fn watch(&self, folders: Vec<String>) -> bool;
     /// Fire and forget.
     fn effect(&self, effect: Effect);
+
+    // ---- File operations -----------------------------------------------------------------------------
+
+    /// A copy, move, rename, delete or restore through Windows' own file engine (`fileOp` in fs.ts): its
+    /// progress and conflict dialogs belong to the main window. Says what became of each item.
+    fn file_op(&self, op: FileOp) -> Fut<Result<Performed, String>>;
+    /// Adds a copy or move to Glint's copy queue (`queue_add`): the job's id. The queue tells how it goes with
+    /// core's "copy-queue" event.
+    fn queue_add(&self, kind: QueueKind, sources: Vec<String>, dest: String, verify: bool) -> Fut<Result<u64, String>>;
+    /// Puts files on the clipboard the way File Explorer does (`clipboardSetFiles`).
+    fn clipboard_set_files(&self, paths: Vec<String>, cut: bool) -> Fut<Result<(), String>>;
+    /// The files copied or cut, here or in File Explorer, if the clipboard holds any (`clipboardGetFiles`).
+    fn clipboard_get_files(&self) -> Fut<Result<Option<ClipboardFiles>, String>>;
+    /// Empties the clipboard (`clipboardClear`).
+    fn clipboard_clear(&self) -> Fut<Result<(), String>>;
+    /// Paste with no files on the clipboard: its picture or text as a new file in `folder`; the file made
+    /// (`clipboardPasteFile`).
+    fn clipboard_paste_file(&self, folder: &str) -> Fut<Result<Option<String>, String>>;
+    /// Empties the Recycle Bin, every drive's, after Windows' own question: whether it's empty now
+    /// (`recycleEmpty`).
+    fn recycle_empty(&self) -> Fut<Result<bool, String>>;
+    /// A folder or empty file in `parent`, numbered like Explorer when the name is taken: its path
+    /// (`createEntry`).
+    fn create_entry(&self, parent: &str, name: &str, dir: bool) -> Fut<Result<String, String>>;
+    /// The kinds of file File Explorer's New menu has on this PC (`new_kinds`).
+    fn new_kinds(&self) -> Fut<Result<Vec<NewKind>, String>>;
+    /// Makes a file of the kind with extension `ext` in `folder`: its path, or `None` when its app hasn't made
+    /// it within a few seconds (`newFile`).
+    fn new_file(&self, folder: &str, ext: &str) -> Fut<Result<Option<String>, String>>;
+    /// Ejects a drive: a USB drive made safe to remove, a mounted disc image, a disc (`ejectDrive`).
+    fn eject(&self, path: &str) -> Fut<Result<(), String>>;
 }
 
 // ---- Core ------------------------------------------------------------------------------------------------
@@ -191,6 +223,117 @@ impl Source for CoreSource {
         true
     }
 
+    fn file_op(&self, op: FileOp) -> Fut<Result<Performed, String>> {
+        let Some(window) = self.window() else {
+            return Box::pin(async { Err("Glint has no window to ask from".to_string()) });
+        };
+        let running = core_bridge::run(glint_core::shell::file_op(window, core_op(op)));
+        Box::pin(async move {
+            let done = running.await??;
+            Ok(Performed {
+                completed: done.completed,
+                items: done
+                    .items
+                    .into_iter()
+                    .map(|item| ItemResult {
+                        from: item.from,
+                        to: item.to,
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    fn queue_add(&self, kind: QueueKind, sources: Vec<String>, dest: String, verify: bool) -> Fut<Result<u64, String>> {
+        let running = core_bridge::run(glint_core::queue::queue_add(
+            self.app.clone(),
+            kind.as_str().to_string(),
+            sources,
+            dest,
+            verify,
+        ));
+        Box::pin(async move { running.await? })
+    }
+
+    fn clipboard_set_files(&self, paths: Vec<String>, cut: bool) -> Fut<Result<(), String>> {
+        let Some(window) = self.window() else {
+            return Box::pin(async { Err("Glint has no window to reach the clipboard from".to_string()) });
+        };
+        let running = core_bridge::run(glint_core::shell::clipboard_set_files(window, paths, cut));
+        Box::pin(async move { running.await? })
+    }
+
+    fn clipboard_get_files(&self) -> Fut<Result<Option<ClipboardFiles>, String>> {
+        let Some(window) = self.window() else {
+            return Box::pin(async { Err("Glint has no window to reach the clipboard from".to_string()) });
+        };
+        let running = core_bridge::run(glint_core::shell::clipboard_get_files(window));
+        Box::pin(async move {
+            Ok(running.await??.map(|files| ClipboardFiles {
+                paths: files.paths,
+                cut: files.cut,
+            }))
+        })
+    }
+
+    fn clipboard_clear(&self) -> Fut<Result<(), String>> {
+        let Some(window) = self.window() else {
+            return Box::pin(async { Err("Glint has no window to reach the clipboard from".to_string()) });
+        };
+        let running = core_bridge::run(glint_core::shell::clipboard_clear(window));
+        Box::pin(async move { running.await? })
+    }
+
+    fn clipboard_paste_file(&self, folder: &str) -> Fut<Result<Option<String>, String>> {
+        let Some(window) = self.window() else {
+            return Box::pin(async { Err("Glint has no window to reach the clipboard from".to_string()) });
+        };
+        let running = core_bridge::run(glint_core::shell::clipboard_paste_file(window, folder.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn recycle_empty(&self) -> Fut<Result<bool, String>> {
+        let Some(window) = self.window() else {
+            return Box::pin(async { Err("Glint has no window to ask from".to_string()) });
+        };
+        let running = core_bridge::run(glint_core::recycle::recycle_empty(window));
+        Box::pin(async move { running.await? })
+    }
+
+    fn create_entry(&self, parent: &str, name: &str, dir: bool) -> Fut<Result<String, String>> {
+        let running = core_bridge::run(glint_core::fsx::create_entry(parent.to_string(), name.to_string(), dir));
+        Box::pin(async move { running.await? })
+    }
+
+    fn new_kinds(&self) -> Fut<Result<Vec<NewKind>, String>> {
+        let running = core_bridge::run(glint_core::newmenu::new_kinds());
+        Box::pin(async move {
+            Ok(running
+                .await??
+                .into_iter()
+                .map(|kind| NewKind {
+                    ext: kind.ext,
+                    name: kind.name,
+                    icon: kind.icon,
+                    by_app: kind.by_app,
+                })
+                .collect())
+        })
+    }
+
+    fn new_file(&self, folder: &str, ext: &str) -> Fut<Result<Option<String>, String>> {
+        let running = core_bridge::run(glint_core::newmenu::new_file(folder.to_string(), ext.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn eject(&self, path: &str) -> Fut<Result<(), String>> {
+        let Some(window) = self.window() else {
+            return Box::pin(async { Err("Glint has no window to eject from".to_string()) });
+        };
+        let running = core_bridge::run(glint_core::shell::eject_drive(window, path.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
     fn effect(&self, effect: Effect) {
         match effect {
             Effect::ReportFolder(path) => glint_core::dialogs::report_folder(path),
@@ -201,6 +344,39 @@ impl Source for CoreSource {
             Effect::BenchFirstFolder => glint_core::startup::bench_first_folder(self.app.clone()),
             Effect::ZoxideAdd(path) => glint_core::zoxide::zoxide_add(path),
         }
+    }
+}
+
+/// A file operation as glint-core takes it.
+fn core_op(op: FileOp) -> glint_core::shell::FileOp {
+    use glint_core::shell::{Back, FileOp as Core};
+    let back = |items: Vec<MoveItem>| -> Vec<Back> {
+        items
+            .into_iter()
+            .map(|item| Back {
+                path: item.path,
+                folder: item.folder,
+                name: item.name,
+            })
+            .collect()
+    };
+    match op {
+        FileOp::Copy { sources, dest } => Core::Copy { sources, dest },
+        FileOp::Move { sources, dest } => Core::Move { sources, dest },
+        FileOp::Delete {
+            paths,
+            permanent,
+            confirm,
+        } => Core::Delete {
+            paths,
+            permanent,
+            confirm,
+        },
+        FileOp::Rename { path, name } => Core::Rename { path, name },
+        FileOp::MoveBack { items } => Core::MoveBack { items: back(items) },
+        FileOp::Restore { items } => Core::Restore { items: back(items) },
+        FileOp::Purge { paths } => Core::Purge { paths },
+        FileOp::CopyInto { items } => Core::CopyInto { items: back(items) },
     }
 }
 
