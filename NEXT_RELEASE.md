@@ -1,18 +1,20 @@
 # Glint: next release plan
 
+> **Note (0.10):** this plan was written when Glint's interface was a Tauri/WebView2 app. The interface is GPUI now (`crates/glint-ui`) and the engine's Rust files live in `crates/glint-core/src` (links here point there); the plan's mentions of `.tsx` files, WebView2, Vite, three.js, SpessaSynth and the like, and its test counts, describe the old build and are kept as the record of what was planned and checked.
+
 *Part 1 (reviewed and built 2026-11-09) is on master as 373b14e, not released. Part 2 was planned and built the same day and is on master as cb203c0, not released either. Part 3 is a list of candidates to choose from, not a plan yet.*
 
 ## Part 3: hidden gems to review (listed 2026-11-09)
 
-*Each item was checked against what Glint already has: the 34 tools in [tools.rs](src-tauri/src/tools.rs), the crates and npm packages, and parts 1 and 2 with their "if there's room" and "cut" tables. Nothing here repeats them. Versions and licenses were checked on 2026-11-09, and the seven rules still apply. Effort: **S** is about half a day, **M** a day or two, **L** more.*
+*Each item was checked against what Glint already has: the 34 tools in [tools.rs](crates/glint-core/src/tools.rs), the crates and npm packages, and parts 1 and 2 with their "if there's room" and "cut" tables. Nothing here repeats them. Versions and licenses were checked on 2026-11-09, and the seven rules still apply. Effort: **S** is about half a day, **M** a day or two, **L** more.*
 
 ### Build status (part 3, started 2026-11-09)
 
 You picked H1, H2, H4, H9 and H19 on 2026-11-09. All five are built and tested in a release test copy; nothing is committed yet.
 
-- **H1 Compress in place** ([wof.rs](src-tauri/src/wof.rs), CompressInPlaceDialog.tsx): measure, compress a few files at a time, decompress, and Undo (by an id kept for the run). WOF hides its reparse point from folder listings, so each file that might be compressed is asked, in parallel. The estimate compresses a sample of at most 6 MB for real with each algorithm, in a hidden file on the same drive. Read-only files are compressed too, dates stay, and the user's own files need no admin rights. It's in the file menu (Compress to → In place), Ctrl+K, and Make smaller's row for folders. Measuring node_modules (24,000 files) takes 0.6 s, Program Files\Git 0.9 s. In the test copy, 7.1 MB of text took 284 KB with XPRESS 8K, and Undo put it back.
-- **H2 Drive health** ([drivehealth.rs](src-tauri/src/drivehealth.rs), DriveHealth.tsx): no admin rights and no change to the service after all. A disk opened with no access rights still answers `IOCTL_STORAGE_QUERY_PROPERTY` (the NVMe health log, the temperature), `IOCTL_STORAGE_GET_COUNTERS`, and `IOCTL_STORAGE_PREDICT_FAILURE` (a SATA drive's SMART table and its own prediction). This PC shows a badge on each drive (its temperature, or Check or Failing), a banner when a disk isn't healthy, and a details dialog. This PC's NVMe drive (5% of its life used, 47 TB written) and its SATA SSD both read.
-- **H4 Old text encodings** ([textenc.rs](src-tauri/src/textenc.rs)): byte order marks, UTF-16 without one, valid UTF-8, else chardetng's guess with this PC's code page as the region hint. Text previews get an encoding chip (Read as…, Convert to UTF-8); Search inside files instantly reads text files in their own encoding, and re-reads once the ones it indexed garbled; meaning search's notes too. Convert to UTF-8 runs through actions.rs: in the file's place, the original recycled, Ctrl+Z, a byte order mark for CSV and TSV (Excel reads UTF-8 by it), the date kept. Also in Ctrl+K for selected text files.
+- **H1 Compress in place** ([wof.rs](crates/glint-core/src/wof.rs), CompressInPlaceDialog.tsx): measure, compress a few files at a time, decompress, and Undo (by an id kept for the run). WOF hides its reparse point from folder listings, so each file that might be compressed is asked, in parallel. The estimate compresses a sample of at most 6 MB for real with each algorithm, in a hidden file on the same drive. Read-only files are compressed too, dates stay, and the user's own files need no admin rights. It's in the file menu (Compress to → In place), Ctrl+K, and Make smaller's row for folders. Measuring node_modules (24,000 files) takes 0.6 s, Program Files\Git 0.9 s. In the test copy, 7.1 MB of text took 284 KB with XPRESS 8K, and Undo put it back.
+- **H2 Drive health** ([drivehealth.rs](crates/glint-core/src/drivehealth.rs), DriveHealth.tsx): no admin rights and no change to the service after all. A disk opened with no access rights still answers `IOCTL_STORAGE_QUERY_PROPERTY` (the NVMe health log, the temperature), `IOCTL_STORAGE_GET_COUNTERS`, and `IOCTL_STORAGE_PREDICT_FAILURE` (a SATA drive's SMART table and its own prediction). This PC shows a badge on each drive (its temperature, or Check or Failing), a banner when a disk isn't healthy, and a details dialog. This PC's NVMe drive (5% of its life used, 47 TB written) and its SATA SSD both read.
+- **H4 Old text encodings** ([textenc.rs](crates/glint-core/src/textenc.rs)): byte order marks, UTF-16 without one, valid UTF-8, else chardetng's guess with this PC's code page as the region hint. Text previews get an encoding chip (Read as…, Convert to UTF-8); Search inside files instantly reads text files in their own encoding, and re-reads once the ones it indexed garbled; meaning search's notes too. Convert to UTF-8 runs through actions.rs: in the file's place, the original recycled, Ctrl+Z, a byte order mark for CSV and TSV (Excel reads UTF-8 by it), the date kept. Also in Ctrl+K for selected text files.
 - **H9 Word documents** (DocxView.tsx, docx-preview 0.4.1, Apache-2.0): in a shadow root, loaded only when needed (a 171 KB chunk). Pages are scaled to the pane, or the text flows to it when the pane is narrower than 520 px; a document that doesn't say its page size gets Word's A4. Links open in the browser and embedded HTML isn't shown. An Arabic document lays out right to left.
 - **H19 mimalloc**, in Glint.exe only (crate 0.1.52, mimalloc 3.3.2 by default). `Glint.exe bench`, release builds, two runs each: the 100,000-file folder 41.7 → 29.2 ms (its sort 11.8 → 4.7 ms), WinSxS 22.7 → 18.3 ms, System32 2.3 → 1.5 ms; searches (in the service) unchanged. The service keeps Windows' allocator: it can't be measured without installing it.
 - **Checks**: cargo test 315 pass, clippy `-D warnings` clean, tsc and vite build clean. In a release test copy, scratchpad e2e-h.mjs passed 20 of 20: encodings read and converted, compress, measure, Undo, drive health, Word documents in the pane (reflowed) and in Quick Look (pages), the encoding menu, the Compress in place dialog and This PC's badges and details on screen.
@@ -326,9 +328,9 @@ So: the README's 12 ms for System32 is ~2 ms of Rust and ~10 ms of IPC, decoding
 
 Every new feature follows these rules (the draft's five, sharpened):
 
-1. **No terminal.** The feature lives where the file is: its menu, the preview, Quick Look, `Ctrl+K`. Arguments are built in Rust from typed options ([tools.rs](src-tauri/src/tools.rs)), never from raw UI text.
+1. **No terminal.** The feature lives where the file is: its menu, the preview, Quick Look, `Ctrl+K`. Arguments are built in Rust from typed options ([tools.rs](crates/glint-core/src/tools.rs)), never from raw UI text.
 2. **Installed on first use** through tools.rs (winget, else the pinned GitHub release checked by SHA-256), listed in Settings → Tools and on the installer's Extra tools page.
-3. **In-process when it's small and pure Rust** (age, resvg, like zip, 7z and tantivy today); a separate program when it's big, not Rust, or a crash would hurt (FFmpeg, DuckDB, 7-Zip), run in the Job Object ([proc.rs](src-tauri/src/proc.rs)) with limits.
+3. **In-process when it's small and pure Rust** (age, resvg, like zip, 7z and tantivy today); a separate program when it's big, not Rust, or a crash would hurt (FFmpeg, DuckDB, 7-Zip), run in the Job Object ([proc.rs](crates/glint-core/src/proc.rs)) with limits.
 4. **Nothing leaves the PC unless the user asks.** A tool that goes online by default (DuckDB's extension autoload, osv-scanner's API, Typst's package downloads, fetching SSH keys from GitHub) runs offline, or asks first each time it would go online.
 5. **Undoable.** Anything that writes puts its result next to the original or recycles the original, as Convert pictures does, and Undo takes it back as one step.
 6. **One engine per job.** No second tool for what an installed one already does (DuckDB's `SUMMARIZE` instead of qsv).
@@ -338,8 +340,8 @@ Every new feature follows these rules (the draft's five, sharpened):
 
 - **24 tools in tools.rs today:** ripgrep, fd and pdu (bundled); Czkawka, Difftastic, FFmpeg, Magika, c2patool, whisper.cpp, YARA-X, Kingfisher, ast-grep, jaq, zoxide, rimage, onefetch, tokei, just, uv, Bun, sendme, dufs, rclone and Nushell.
 - **Still untried for real from 0.9.5:** Previous versions through the real service, devices between two real PCs, the MCP confirm dialogs clicked through, the service updating itself under the SCM, ReFS indexing (no ReFS volume here), odr.exe registration (not on this Windows build).
-- **The draft's code facts hold:** [fsx.rs](src-tauri/src/fsx.rs) lists with `FindFirstFileExW` + `FIND_FIRST_EX_LARGE_FETCH`; [shared.rs](src-tauri/src/shared.rs) creates a shared buffer per post over 256 KB; [ioring.rs](src-tauri/src/ioring.rs) creates a ring per call (used by dedup.rs and media.rs); [sql.rs](src-tauri/src/sql.rs) caps loads at 256 MB and 1M rows; [photos.rs](src-tauri/src/photos.rs) runs CLIP on the CPU one picture per run; [thumbs.rs](src-tauri/src/thumbs.rs) sends BMPs; [mcp.rs](src-tauri/src/mcp.rs) has 9 tools.
-- **Not there yet:** Group by, a columns (Miller) view, phones and cameras (MTP), video conversion ([convert.rs](src-tauri/src/convert.rs) is pictures only), creating links, exporting Markdown, 3D model or notebook previews, pushing files to a paired device, OCR text in the content index. The copy queue ([queue.rs](src-tauri/src/queue.rs)) runs one worker, file by file, with `CopyFileEx`.
+- **The draft's code facts hold:** [fsx.rs](crates/glint-core/src/fsx.rs) lists with `FindFirstFileExW` + `FIND_FIRST_EX_LARGE_FETCH`; `shared.rs` (Tauri's, removed in 0.10) creates a shared buffer per post over 256 KB; [ioring.rs](crates/glint-core/src/ioring.rs) creates a ring per call (used by dedup.rs and media.rs); [sql.rs](crates/glint-core/src/sql.rs) caps loads at 256 MB and 1M rows; [photos.rs](crates/glint-core/src/photos.rs) runs CLIP on the CPU one picture per run; [thumbs.rs](crates/glint-core/src/thumbs.rs) sends BMPs; [mcp.rs](crates/glint-core/src/mcp.rs) has 9 tools.
+- **Not there yet:** Group by, a columns (Miller) view, phones and cameras (MTP), video conversion ([convert.rs](crates/glint-core/src/convert.rs) is pictures only), creating links, exporting Markdown, 3D model or notebook previews, pushing files to a paired device, OCR text in the content index. The copy queue ([queue.rs](crates/glint-core/src/queue.rs)) runs one worker, file by file, with `CopyFileEx`.
 
 ### Core scope (recommended)
 
@@ -351,7 +353,7 @@ Every new feature follows these rules (the draft's five, sharpened):
 - **Convert and shrink…:** "fit under 10 / 25 / 50 MB" works out the bitrate from the length; hardware encoders when the PC has them (NVENC, AMF and Quick Sync are all in Gyan's essentials build), x264 otherwise. Extract audio (MP3, M4A, Opus, FLAC). A clip to GIF (palettegen) or animated WebP.
 - **Every video plays in Quick Look:** what WebView2 can't play (AVI, WMV, FLV, MPEG-TS, MKV with codecs it lacks) is remuxed on the fly to fragmented MP4 (`-c copy`), and transcoded only when the codec itself won't play.
 - **Make subtitles:** a video's speech as an `.srt` beside it (whisper-cli `-osrt`), in its own language or translated to English (`-tr`).
-- Where: a new `media_tools.rs` beside convert.rs; [scrub.rs](src-tauri/src/scrub.rs) (Media Foundation frames) gives the trim bar its pictures. Gyan's essentials build has no SVT-AV1 or dav1d (full build only), so AV1 encoding is hardware-only unless a full build is found.
+- Where: a new `media_tools.rs` beside convert.rs; [scrub.rs](crates/glint-core/src/scrub.rs) (Media Foundation frames) gives the trim bar its pictures. Gyan's essentials build has no SVT-AV1 or dav1d (full build only), so AV1 encoding is hardware-only unless a full build is found.
 
 **A2. PDF tools.** [pdfcpu](https://github.com/pdfcpu/pdfcpu) (Apache-2.0, Go, one exe; v0.16.2 checked).
 
@@ -381,7 +383,7 @@ Every new feature follows these rules (the draft's five, sharpened):
 **A6. Encrypt with age.** The [`age`](https://github.com/str4d/rage) crate, in-process (MIT/Apache-2.0, from rage's repository).
 
 - Right-click → **Encrypt…** with a passphrase or an SSH public key (a file, or a GitHub user's published keys, after asking); folders become `.tar.zst.age`.
-- `.age` files open like archives after the passphrase or private key, and work with age and rage on any OS. The passphrase can be kept in Windows Credential Manager ([credentials.rs](src-tauri/src/credentials.rs)).
+- `.age` files open like archives after the passphrase or private key, and work with age and rage on any OS. The passphrase can be kept in Windows Credential Manager ([credentials.rs](crates/glint-core/src/credentials.rs)).
 - Replaces the draft's rage.exe: same format, nothing to download.
 
 #### B. Explorer and previews
@@ -404,13 +406,13 @@ Every new feature follows these rules (the draft's five, sharpened):
 
 - Glint shows up in the LocalSend apps (Android, iOS, macOS, Linux, Windows) on the same network, and they show up in Glint: send a selection to a phone, receive into Downloads with a toast. No account, no internet, HTTPS between devices.
 - Built from the open spec. The existing Rust crates (`localsend` by LocalSend's author, last updated 2025-01; `localsend-rs`, 2026-01) are references, not dependencies, until one proves complete. Needs the same firewall handling as Share on this network.
-- **Drop to device** for paired PCs (iroh, [devices.rs](src-tauri/src/devices.rs)): drag onto a device in the sidebar, or **Send to <PC>**, into its Inbox folder with a toast there. Today devices only browse, read-only.
+- **Drop to device** for paired PCs (iroh, [devices.rs](crates/glint-core/src/devices.rs)): drag onto a device in the sidebar, or **Send to <PC>**, into its Inbox folder with a toast there. Today devices only browse, read-only.
 
 **C10. More for AI agents** (mcp.rs, no new tools). Read-only `search_content` (tantivy), `search_photos` (`shows:`), `search_speech` (`says:`), `search_code` (ast-grep), `query_data` (sql.rs, or DuckDB when installed) and `compare_files` (Difftastic), each with the same folder scope and limits as today's tools.
 
 #### D. Search
 
-**D11. Words in screenshots and scans.** [ocr.rs](src-tauri/src/ocr.rs) (Windows OCR) feeds the content index ([content.rs](src-tauri/src/content.rs)): pictures and image-only PDFs in indexed folders become searchable by the text in them, read in the background below normal priority. Today OCR runs only for Copy text and Documents search's *Images too*.
+**D11. Words in screenshots and scans.** [ocr.rs](crates/glint-core/src/ocr.rs) (Windows OCR) feeds the content index ([content.rs](crates/glint-core/src/content.rs)): pictures and image-only PDFs in indexed folders become searchable by the text in them, read in the background below normal priority. Today OCR runs only for Copy text and Documents search's *Images too*.
 
 #### E. Speed you can feel
 
@@ -442,7 +444,7 @@ Every new feature follows these rules (the draft's five, sharpened):
 | File history slider in the Changes tab, a structural diff at each commit | gix (already used) + Difftastic | UI work; developers only |
 | Dependency vulnerabilities on the repository card | [osv-scanner](https://google.github.io/osv-scanner/usage/offline-mode) `--offline` with its downloaded databases | Only offline mode fits rule 4, and the database download needs a consent step |
 | Resolve Git conflicts by structure; lazygit in the terminal pane; scc for code stats | mergiraf (GPL-3.0, run as a separate program; winget `Mergiraf.Mergiraf`), lazygit (MIT), scc (MIT) | Developer niceties. scc would replace tokei, which is stuck at 12.1.2 because its later releases ship no programs |
-| Remotes writable from File Explorer and other apps | Cloud Files write-back in [ondemand.rs](src-tauri/src/ondemand.rs) | Needs change detection, upload, in-sync states and conflict handling; the data-loss risk calls for a release of its own |
+| Remotes writable from File Explorer and other apps | Cloud Files write-back in [ondemand.rs](crates/glint-core/src/ondemand.rs) | Needs change detection, upload, in-sync states and conflict handling; the data-loss risk calls for a release of its own |
 
 On writable remotes, the draft named the dehydrate callback, which is about freeing space. Edits arrive as writes to hydrated placeholders that Glint must notice, upload and then mark in sync (`CfSetInSyncState`); renames and deletes come as `NOTIFY_RENAME` and `NOTIFY_DELETE` callbacks.
 
