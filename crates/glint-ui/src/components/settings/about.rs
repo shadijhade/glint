@@ -12,7 +12,8 @@ use super::widgets::{self, bad, good};
 use crate::kit::prelude::*;
 use crate::{actions, state, t, theme};
 use glint_model::store::Settings;
-use std::sync::Arc;
+use gpui_kit::{Image, ImageFormat};
+use std::sync::{Arc, OnceLock};
 
 use crate::updater::{self, Install, Policy, Status, Updater};
 
@@ -200,6 +201,40 @@ impl About {
     }
 }
 
+/// Glint's logo (src/assets/logo.svg, drawn at 128 px, which GPUI rasterizes at twice that: it is shown at under 50, and the full 1024 would hold 4 MB).
+const LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="back" x1="0" y1="168" x2="0" y2="832" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f4a62a"/>
+      <stop offset="1" stop-color="#e07f06"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="344" x2="0" y2="856" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd966"/>
+      <stop offset="1" stop-color="#ffb526"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="584" y1="76" x2="944" y2="476" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff8fd0"/>
+      <stop offset="0.55" stop-color="#ec4899"/>
+      <stop offset="1" stop-color="#c026d3"/>
+    </linearGradient>
+  </defs>
+  <!-- Folder: the back with its tab, then the front panel, as in Windows 11's folder icons. -->
+  <path d="M176 168 H366 C398 168 420 180 440 202 L486 252 H848 Q928 252 928 332 V776 Q928 856 848 856 H176 Q96 856 96 776 V248 Q96 168 176 168 Z" fill="url(#back)"/>
+  <rect x="96" y="344" width="832" height="512" rx="80" fill="url(#front)"/>
+  <rect x="96" y="344" width="832" height="10" rx="5" fill="#fff1b8" opacity="0.9"/>
+  <!-- The glint: a four-point sparkle on the corner, and a small one beside it. -->
+  <path d="M764 76 C790 215 839 264 976 290 C839 316 790 365 764 504 C738 365 689 316 552 290 C689 264 738 215 764 76 Z" fill="url(#spark)"/>
+  <path d="M764 214 C773 263 791 281 840 290 C791 299 773 317 764 366 C755 317 737 299 688 290 C737 281 755 263 764 214 Z" fill="#ffffff" opacity="0.35"/>
+  <path d="M586 92 C592 124.5 603.5 136 636 142 C603.5 148 592 159.5 586 192 C580 159.5 568.5 148 536 142 C568.5 136 580 124.5 586 92 Z" fill="#ff8fd0"/>
+</svg>"##;
+
+/// The logo as a picture GPUI draws; made once.
+fn logo() -> Arc<Image> {
+    static LOGO: OnceLock<Arc<Image>> = OnceLock::new();
+    LOGO.get_or_init(|| Arc::new(Image::from_bytes(ImageFormat::Svg, LOGO_SVG.as_bytes().to_vec())))
+        .clone()
+}
+
 impl Render for About {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.attach_updater(cx);
@@ -212,17 +247,13 @@ impl Render for About {
                 .px(space(4.))
                 .py(space(4.))
                 .child(
-                    // PORT ME(coordinator): src/assets/logo.svg as an embedded asset; until then Glint's pink tile.
                     div()
+                        .id("about-logo")
+                        .role(Role::Image)
+                        .aria_label(t!("Glint"))
                         .size(space(11.))
                         .flex_none()
-                        .rounded(theme::size::RADIUS_LG)
-                        .bg(t.primary)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_color(t.primary_foreground)
-                        .child(icon(IconName::Sparkles).size_5()),
+                        .child(img(logo()).size_full()),
                 )
                 .child(
                     col()
@@ -304,5 +335,21 @@ impl Render for About {
             .into_any_element(),
         );
         widgets::section("about", t!("About"), None, rows, &t)
+    }
+}
+
+#[cfg(test)]
+mod logo_tests {
+    use super::*;
+
+    #[gpui_kit::test]
+    fn the_logo_decodes_to_a_square_picture(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let drawn = logo().to_image_data(cx.svg_renderer()).expect("the logo decodes");
+            let size = drawn.size(0);
+            assert_eq!((size.width.0, size.height.0), (256, 256));
+            // The same picture every time: made once.
+            assert!(Arc::ptr_eq(&logo(), &logo()));
+        });
     }
 }

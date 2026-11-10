@@ -46,7 +46,20 @@ fn setup(
     drives: Vec<Drive>,
     rtl: bool,
 ) -> (VisualTestContext, Entity<ThisPc>, Entity<Explorer>, FakeDisk) {
+    setup_with_index(cx, drives, rtl, None)
+}
+
+/// [`setup`] with instant search answering from `index` (the card reads it); without one the service can't be reached.
+fn setup_with_index(
+    cx: &mut TestAppContext,
+    drives: Vec<Drive>,
+    rtl: bool,
+    index: Option<crate::components::status_bar::index::Source>,
+) -> (VisualTestContext, Entity<ThisPc>, Entity<Explorer>, FakeDisk) {
     cx.update(testing::init);
+    if let Some(source) = index {
+        cx.update(|cx| crate::components::status_bar::index::init_with(cx, source));
+    }
     // Start-up shows This PC, not Home (the default start folder).
     cx.update(|cx| state::update(cx, |settings| settings.start_folder = StartFolder::ThisPc));
     testing::set_rtl(rtl);
@@ -609,4 +622,171 @@ fn the_arrow_keys_scroll_the_page_to_bring_the_focused_tile_into_view(cx: &mut T
         last.top() >= page.top() && last.bottom() <= page.bottom(),
         "the last tile is wholly in view"
     );
+}
+
+// ---- The instant search card ------------------------------------------------------------------------------------
+
+use crate::components::status_bar::index::{Index, Source, State, Volume};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// An index source answering `status` (changeable through the returned handle), and turning on as `enable` says.
+fn fake_index(status: Index, enable: Result<Index, String>) -> (Source, Arc<Mutex<Index>>, Arc<AtomicUsize>) {
+    let shared = Arc::new(Mutex::new(status));
+    let enables = Arc::new(AtomicUsize::new(0));
+    let (read, count) = (shared.clone(), enables.clone());
+    let source = Source {
+        status: Arc::new(move || {
+            let now = read
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_else(|p| p.into_inner().clone());
+            Box::pin(async move { Ok(now) })
+        }),
+        enable: Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            let answer = enable.clone();
+            Box::pin(async move { answer })
+        }),
+    };
+    (source, shared, enables)
+}
+
+fn index(state: State, volumes: Vec<Volume>) -> Index {
+    Index {
+        state,
+        version: None,
+        volumes,
+        error: None,
+    }
+}
+
+fn volume(name: &str, scanning: bool, error: bool, progress: u64, total: u64) -> Volume {
+    Volume {
+        volume: name.into(),
+        scanning,
+        error,
+        progress,
+        progress_total: total,
+    }
+}
+
+fn card_setup(
+    cx: &mut TestAppContext,
+    status: Index,
+    enable: Result<Index, String>,
+) -> (VisualTestContext, Arc<Mutex<Index>>, Arc<AtomicUsize>) {
+    let (source, shared, enables) = fake_index(status, enable);
+    let (visual, _view, _explorer, _disk) = setup_with_index(cx, standard_drives(), false, Some(source));
+    (visual, shared, enables)
+}
+
+/// Lets core's threads answer: polls until `done` holds, for up to two seconds.
+fn wait_until(visual: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
+    for _ in 0..400 {
+        settle(visual);
+        if done(visual) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+const OFFER: &str =
+    "Turn on instant search to find files on every drive in milliseconds and see folder sizes as they open.";
+
+#[gpui_kit::test]
+fn the_card_offers_turning_on_when_the_service_is_off_and_turning_on_calls_the_service(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (source, _shared, enables) = fake_index(
+        index(State::Off, vec![]),
+        Ok(index(State::On, vec![volume("C:", false, false, 0, 0)])),
+    );
+    let (mut visual, _view, _explorer, _disk) = setup_with_index(cx, standard_drives(), false, Some(source));
+    wait_until(&mut visual, |cx| has(cx, OFFER));
+    assert!(has(&mut visual, OFFER));
+    assert_eq!(role_of(&mut visual, OFFER), Some(Role::Status));
+    assert!(has(&mut visual, "Turn on instant search"));
+    click(&mut visual, "this-pc-instant-search-button");
+    // The service is asked off the UI thread.
+    wait_until(&mut visual, |_| enables.load(Ordering::SeqCst) == 1);
+    assert_eq!(enables.load(Ordering::SeqCst), 1);
+    // The service's answer says every drive is read: the card goes.
+    wait_until(&mut visual, |cx| !has(cx, OFFER));
+    assert!(!has(&mut visual, OFFER));
+}
+
+#[gpui_kit::test]
+fn a_stopped_service_gets_the_same_offer(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, _shared, _enables) = card_setup(cx, index(State::Stopped, vec![]), Err("cancelled".into()));
+    wait_until(&mut visual, |cx| has(cx, OFFER));
+    assert!(has(&mut visual, OFFER));
+    // A declined approval says nothing and keeps the offer.
+    click(&mut visual, "this-pc-instant-search-button");
+    assert!(has(&mut visual, OFFER));
+}
+
+#[gpui_kit::test]
+fn the_card_says_starting_then_reading_with_progress(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (source, shared, _enables) = fake_index(index(State::On, vec![]), Ok(index(State::On, vec![])));
+    let (mut visual, view, _explorer, _disk) = setup_with_index(cx, standard_drives(), false, Some(source));
+    wait_until(&mut visual, |cx| has(cx, "Instant search is starting…"));
+    assert!(has(&mut visual, "Instant search is starting…"));
+    assert!(!has(&mut visual, "Turn on instant search"), "no button while starting");
+    *shared.lock().unwrap_or_else(|p| p.into_inner()) = index(
+        State::On,
+        vec![volume("C:", true, false, 25, 100), volume("D:", true, false, 1, 0)],
+    );
+    view.update(&mut visual, |view, cx| {
+        view.index.update(cx, |index, cx| index.refresh(cx))
+    });
+    wait_until(&mut visual, |cx| has(cx, "Indexing C: 25%… · Indexing D:…"));
+    assert!(has(&mut visual, "Indexing C: 25%… · Indexing D:…"));
+    assert!(!has(&mut visual, "Retry"));
+}
+
+#[gpui_kit::test]
+fn a_failed_drive_shows_retry_which_calls_the_service(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, _shared, enables) = card_setup(
+        cx,
+        index(State::On, vec![volume("D:", false, true, 0, 0)]),
+        Ok(index(State::On, vec![volume("D:", false, true, 0, 0)])),
+    );
+    wait_until(&mut visual, |cx| has(cx, "D: couldn't be indexed"));
+    assert!(has(&mut visual, "D: couldn't be indexed"));
+    assert!(has(&mut visual, "Retry"));
+    click(&mut visual, "this-pc-instant-search-button");
+    assert_eq!(enables.load(Ordering::SeqCst), 1);
+}
+
+#[gpui_kit::test]
+fn no_card_when_all_is_well_when_unfixable_or_when_the_service_cannot_be_reached(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, _s, _e) = card_setup(
+        cx,
+        index(State::On, vec![volume("C:", false, false, 0, 0)]),
+        Ok(index(State::On, vec![])),
+    );
+    settle(&mut visual);
+    assert!(!has(&mut visual, "Instant search is starting…"));
+    assert!(visual.update(|window, _| window.try_find_by_label("Retry").is_none()));
+    assert!(!has(&mut visual, OFFER));
+}
+
+#[gpui_kit::test]
+fn another_accounts_service_gets_no_card(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, _s, _e) = card_setup(cx, index(State::NoAccess, vec![]), Ok(index(State::On, vec![])));
+    settle(&mut visual);
+    assert!(!has(&mut visual, OFFER));
+}
+
+#[gpui_kit::test]
+fn the_card_is_not_drawn_without_an_index_source(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, _view, _explorer, _disk) = setup(cx, standard_drives(), false);
+    assert!(!has(&mut visual, OFFER));
 }

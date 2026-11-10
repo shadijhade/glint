@@ -1046,6 +1046,7 @@ fn open_reader(reader: Box<dyn ReadSeek>) -> Result<(Book, Metadata), BookError>
     let count = parts.weights.len();
     let book = Book {
         title: metadata.title.clone(),
+        language: super::book::named_language(&language),
         rtl,
         toc: parts.toc,
         count,
@@ -2894,6 +2895,11 @@ mod tests {
         let (book, meta) = open(arabic);
         assert!(book.rtl, "an Arabic book");
         assert_eq!(meta.language.as_deref(), Some("ar"));
+        assert_eq!(
+            book.language.as_deref(),
+            Some("ar"),
+            "the book carries it for read aloud"
+        );
         assert_eq!(book.title, "كتاب");
         assert_eq!(lines(&chapter(&book, 0)), ["بسم الله الرحمن الرحيم"]);
     }

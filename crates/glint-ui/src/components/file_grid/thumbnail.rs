@@ -1018,6 +1018,64 @@ impl Thumbnails {
 
 // ---- Drawing --------------------------------------------------------------------------------------------
 
+/// The folder icon's fill: the Lucide folder's outline filled with `fill`, as a picture to put under the outlined
+/// icon (the web drew `fill-amber-400/80` on it; the kit's icons are strokes only). The picture is drawn once per
+/// colour and kept, so a frame costs a lookup.
+pub fn folder_fill(fill: Hsla) -> Img {
+    thread_local! {
+        static FILLS: std::cell::RefCell<HashMap<[u8; 4], Arc<Image>>> = std::cell::RefCell::new(HashMap::new());
+    }
+    let rgba = gpui_kit::Rgba::from(fill);
+    // A colour channel is 0..=1, so the product is 0..=255.
+    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+    let key = [byte(rgba.r), byte(rgba.g), byte(rgba.b), byte(rgba.a)];
+    let image = FILLS.with(|fills| {
+        fills
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| {
+                #[cfg(test)]
+                FILLS_MADE.with(|made| made.set(made.get() + 1));
+                Arc::new(Image::from_bytes(ImageFormat::Svg, folder_fill_svg(key).into_bytes()))
+            })
+            .clone()
+    });
+    img(image)
+}
+
+// How many fill pictures were made on this thread (tests).
+#[cfg(test)]
+thread_local! {
+    static FILLS_MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The outline of lucide's `folder` (24 x 24), filled with `rgba` (red, green, blue, alpha as bytes), drawn at 48 px
+/// (GPUI rasterizes at twice that) so it stays sharp when scaled down.
+fn folder_fill_svg(rgba: [u8; 4]) -> String {
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"48\" height=\"48\" viewBox=\"0 0 24 24\">         <path d=\"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z\"          fill=\"#{:02x}{:02x}{:02x}\" fill-opacity=\"{:.3}\"/></svg>",
+        rgba[0],
+        rgba[1],
+        rgba[2],
+        f32::from(rgba[3]) / 255.
+    )
+}
+
+/// A kind's icon, `icon_px` square: the kit's outlined icon in the kind's colour, and under it the kind's fill when
+/// it has one (the folder's amber).
+pub fn kind_icon_filled(kind: &Kind, icon_px: Pixels, cx: &App) -> Div {
+    let tone = theme::kind_tone(kind, cx);
+    let filled = kind.icon == glint_model::file_types::Icon::Folder;
+    div()
+        .relative()
+        .flex_none()
+        .size(icon_px)
+        .when_some(tone.fill.filter(|_| filled), |tile, fill| {
+            tile.child(folder_fill(fill).absolute().inset_0().size_full())
+        })
+        .child(icon(kind_icon(kind.icon)).size(icon_px).text_color(tone.color))
+}
+
 /// A tile's thumbnail square (the TypeScript's `Thumbnail` inside its `relative grid place-items-center` box):
 /// the kind's icon, `icon_px` square, until the picture is in; then the picture, centred and (with `bottom`)
 /// sitting on the bottom of its square as in Explorer, so names line up under pictures of any shape.
@@ -1030,11 +1088,7 @@ pub fn thumbnail_square(look: &Look, kind: &Kind, box_px: f32, icon_px: f32, bot
         .items_center()
         .justify_center();
     match look {
-        Look::Icon => {
-            let tone = theme::kind_tone(kind, cx);
-            // PORT ME(coordinator): the folder's fill (`tone.fill`): the kit's icons can't be filled yet.
-            square.child(icon(kind_icon(kind.icon)).size(px(icon_px)).text_color(tone.color))
-        }
+        Look::Icon => square.child(kind_icon_filled(kind, px(icon_px), cx)),
         Look::Picture(drawn) | Look::StandIn(drawn) => {
             let shadow = !matches!(look, Look::StandIn(_)) && bottom;
             let picture = img(drawn.image.clone())
@@ -1063,6 +1117,27 @@ pub(super) mod tests {
     use crate::testing;
     use glint_core::thumbs::{encode_bmp, Pixels};
     use std::cell::RefCell;
+
+    #[gpui_kit::test]
+    fn the_folder_fill_is_a_picture_made_once_per_colour_that_decodes_with_its_alpha(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let _guard = testing::lock();
+        cx.update(|cx| {
+            let amber = gpui_kit::hsla(0.12, 0.9, 0.6, 0.8);
+            // Same colour, same picture: the cache hands back the one made.
+            let made = FILLS_MADE.with(|made| made.get());
+            let _ = folder_fill(amber);
+            let _ = folder_fill(amber);
+            assert_eq!(FILLS_MADE.with(|made| made.get()), made + 1, "made once for a colour");
+            // The SVG is one GPUI's renderer reads, at the size it was drawn.
+            let svg = folder_fill_svg([0xf5, 0xa6, 0x23, 0xcc]);
+            let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, svg.into_bytes());
+            let drawn = image.to_image_data(cx.svg_renderer()).expect("the fill decodes");
+            let size = drawn.size(0);
+            assert_eq!((size.width.0, size.height.0), (96, 96));
+        });
+    }
 
     /// The answer core sends: the 8-byte header, then the BMP.
     pub(crate) fn answer(width: u32, height: u32, bgra: [u8; 4], lasting: bool, from: u8) -> Vec<u8> {

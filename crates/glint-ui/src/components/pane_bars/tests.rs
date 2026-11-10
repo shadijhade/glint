@@ -1,7 +1,8 @@
 //! Headless tests of the bars over a pane: the search bar (running, finished, close matches, stopped at the limit,
 //! Save), the bar for a folder listed from the index, nothing for a plain folder, and the same in the Arabic
-//! interface. They run on the explorer's fake disk. The fake can't list a folder from the index, so the closed bar's
-//! decision is tested on tabs built by hand, and its Get access button on a denied folder with the bar forced.
+//! interface. They run on the explorer's fake disk, which can list a folder from the index
+//! ([`FakeDisk::index_folder`]): the closed bar is tested end to end that way, its decision also on tabs built by
+//! hand, and its Get access button on a denied folder with the bar forced.
 
 use super::*;
 use crate::explorer::fake::{file, folder, FakeDisk};
@@ -531,6 +532,55 @@ fn the_closed_bar_says_to_itself_and_offers_nothing_when_windows_refused(cx: &mu
         Some("Windows keeps this folder to itself: shown read-only from instant search.")
     );
     assert!(!rig.there(("pane-closed-get-access", 0)));
+}
+
+#[gpui_kit::test]
+fn a_folder_the_index_lists_gets_the_closed_bar_and_get_access_opens_it_for_real(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, "indexed", false);
+    rig.disk
+        .index_folder("C:\\indexed", vec![file("C:\\indexed", "seen.txt", 3, 1)]);
+    rig.act(|e, cx| e.navigate("C:\\indexed", NavOptions::default(), cx));
+    // The tab lists what the index has, and is closed; nothing is forced.
+    rig.explorer.read_with(&rig.visual, |e, _| {
+        let tab = e.active_tab().expect("a tab");
+        assert!(tab.is_closed());
+        assert!(tab
+            .listing
+            .as_ref()
+            .is_some_and(|l| l.from_index && l.entries.len() == 1));
+    });
+    assert!(matches!(
+        rig.bar(0),
+        Bar::Closed(ClosedInfo {
+            refused: false,
+            can_get_access: true,
+            ..
+        })
+    ));
+    assert_eq!(
+        rig.label_of(("pane-closed-text", 0)).as_deref(),
+        Some("Windows keeps this folder closed to you: shown read-only from instant search.")
+    );
+    assert!(rig.has(0, "Get access"), "{:?}", rig.labels(0));
+    // Windows lets this account in: the folder is listed from the disk, and the bar goes.
+    rig.disk.folder(
+        "C:\\indexed",
+        vec![
+            file("C:\\indexed", "seen.txt", 3, 1),
+            file("C:\\indexed", "more.txt", 4, 2),
+        ],
+    );
+    rig.click(("pane-closed-get-access", 0));
+    rig.explorer.read_with(&rig.visual, |e, _| {
+        let tab = e.active_tab().expect("a tab");
+        assert!(!tab.is_closed());
+        assert_eq!(
+            tab.listing.as_ref().map(|l| (l.from_index, l.entries.len())),
+            Some((false, 2))
+        );
+    });
+    assert_eq!(rig.bar(0), Bar::Hidden);
 }
 
 // ---- Right to left ------------------------------------------------------------------------------------------

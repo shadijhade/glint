@@ -172,8 +172,7 @@ impl Pick {
 // ---- New --------------------------------------------------------------------------------------------------
 
 /// What New makes in the open folder: a folder, a text document, and the kinds of file Windows' New menu has
-/// (Word, Excel, a zip…) (`newMenuItems(true)`).
-// PORT ME(new items): the TypeScript drew each kind's own icon (`image`); the menu has no picture rows yet.
+/// (Word, Excel, a zip…) (`newMenuItems(true)`). Each kind shows its own icon, as in the folder's New menu.
 pub fn new_menu(kinds: &[NewKind]) -> Vec<Node> {
     let mut items = vec![
         Node::Item(Entry::command(t!("Folder"), IconName::FolderPlus, Command::NewFolder)),
@@ -187,11 +186,14 @@ pub fn new_menu(kinds: &[NewKind]) -> Vec<Node> {
         items.push(Node::Separator);
     }
     items.extend(kinds.iter().map(|kind| {
-        Node::Item(Entry::ask(
-            SharedString::from(kind.name.clone()),
-            IconName::FilePlus,
-            MenuEvent::NewOfKind { ext: kind.ext.clone() },
-        ))
+        Node::Item(
+            Entry::ask(
+                SharedString::from(kind.name.clone()),
+                IconName::FilePlus,
+                MenuEvent::NewOfKind { ext: kind.ext.clone() },
+            )
+            .with_data_url_picture(kind.icon.as_deref()),
+        )
     }));
     items
 }
@@ -642,4 +644,32 @@ pub fn tasks_menu(groups: &[TaskGroup]) -> Vec<Node> {
         }
     }
     nodes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bars_new_menu_draws_each_kind_with_its_own_icon() {
+        let kinds = [NewKind {
+            ext: ".docx".into(),
+            name: "Microsoft Word Document".into(),
+            icon: Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==".into()),
+            by_app: false,
+        }];
+        let nodes = new_menu(&kinds);
+        let word = nodes.iter().find_map(|node| match node {
+            Node::Item(entry) if entry.label.as_ref() == "Microsoft Word Document" => Some(entry),
+            _ => None,
+        });
+        assert!(word.is_some_and(|entry| entry.picture.is_some()));
+        // Folder and Text document are drawn with their icons.
+        assert!(nodes.iter().all(|node| match node {
+            Node::Item(entry) if entry.label.as_ref() == "Folder" || entry.label.as_ref() == "Text document" => {
+                entry.picture.is_none() && entry.icon.is_some()
+            }
+            _ => true,
+        }));
+    }
 }

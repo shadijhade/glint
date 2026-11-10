@@ -22,6 +22,7 @@
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 /// The localStorage key the old app saved its state under.
@@ -693,6 +694,16 @@ pub struct AppState {
     pub visits: OrderedMap<Visit>,
     /// Each folder's own view, by its path in lower case.
     pub folder_views: OrderedMap<FolderView>,
+    /// The tags used lately, most recent first (the old app's `glint-recent-tags` in localStorage, which was not
+    /// in the store; kept here so they outlive the session). Not written while empty, so a state without any
+    /// saves exactly as the old app's did.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_tags: Vec<String>,
+    /// The notices already shown, by key and the value they were shown for (`firstNotice`'s localStorage keys:
+    /// `offer-instant-search`, `service-update-notice`, `update-notice`, `quick-shortcut-taken`). Not written while
+    /// empty.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub notices: BTreeMap<String, String>,
 }
 
 impl Default for AppState {
@@ -712,6 +723,8 @@ impl Default for AppState {
             session: None,
             visits: OrderedMap::new(),
             folder_views: OrderedMap::new(),
+            recent_tags: Vec::new(),
+            notices: BTreeMap::new(),
         }
     }
 }
@@ -865,6 +878,8 @@ lenient_deserialize!(AppState {
     "session" => session,
     "visits" => visits,
     "folderViews" => folder_views,
+    "recentTags" => recent_tags,
+    "notices" => notices,
 });
 
 /// zustand's saved wrapper around the state.
@@ -905,6 +920,16 @@ pub fn load_persisted(text: &str) -> AppState {
 }
 
 impl AppState {
+    /// Whether `value` (a version, say) is new for the notice `key`, and remembers it: a notice shown once per
+    /// value (`firstNotice` in utils.ts). `"offer-instant-search"` with `"1"` is once ever.
+    pub fn first_notice(&mut self, key: &str, value: &str) -> bool {
+        if self.notices.get(key).is_some_and(|seen| seen == value) {
+            return false;
+        }
+        self.notices.insert(key.to_string(), value.to_string());
+        true
+    }
+
     /// Remembers a search at the top, once: an older one with the same text and folder moves up. Kept
     /// only if `settings.save_search_history`; `now` is Unix milliseconds.
     pub fn add_to_history(&mut self, query: &str, path: &str, now: i64) {
@@ -1140,6 +1165,31 @@ mod tests {
         assert_eq!(s.find_max_results, Some(50000));
         assert_eq!(s.growth_days, 7);
         assert_eq!(STORAGE_KEY, "shadui-ripgrep-storage");
+    }
+
+    #[test]
+    fn notices_and_recent_tags_are_saved_and_loaded() {
+        let mut state = AppState::default();
+        assert!(state.first_notice("offer-instant-search", "1"));
+        assert!(state.first_notice("service-update-notice", "0.9.5"));
+        state.recent_tags = vec!["Work".into(), "Blue".into()];
+        let json = persisted_json(&state).unwrap();
+        assert!(json.contains(r#""recentTags":["Work","Blue"]"#), "{json}");
+        assert!(
+            json.contains(r#""notices":{"offer-instant-search":"1","service-update-notice":"0.9.5"}"#),
+            "{json}"
+        );
+        let mut back = load_persisted(&json);
+        assert_eq!(back, state);
+        // Once ever, and once per value.
+        assert!(!back.first_notice("offer-instant-search", "1"));
+        assert!(!back.first_notice("service-update-notice", "0.9.5"));
+        assert!(back.first_notice("service-update-notice", "0.9.6"));
+        assert!(!back.first_notice("service-update-notice", "0.9.6"));
+        // A wrong-typed value costs only that field.
+        let odd = load_persisted(r#"{"state":{"recentTags":5,"notices":{"a":"b"}},"version":0}"#);
+        assert!(odd.recent_tags.is_empty());
+        assert_eq!(odd.notices.get("a").map(String::as_str), Some("b"));
     }
 
     #[test]

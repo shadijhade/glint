@@ -65,6 +65,7 @@ impl Group {
 const TAB_KEYS: &[&str] = &[
     "ctrl-t",
     "ctrl-w",
+    "ctrl-n",
     "ctrl-shift-t",
     "ctrl-tab",
     "ctrl-shift-tab",
@@ -480,6 +481,23 @@ mod tests {
             join_keys(&["Ctrl+1".into(), "Ctrl+3".into(), "Ctrl+4".into()]),
             "Ctrl+1 / Ctrl+3 / Ctrl+4"
         );
+    }
+
+    #[test]
+    fn new_window_is_listed_under_tabs_and_panes_beside_the_other_tab_keys() {
+        let tabs = rows_of(None, Group::Tabs);
+        let whats: Vec<_> = tabs.iter().map(|row| row.what).collect();
+        let at = whats.iter().position(|what| *what == "New window on the folder shown");
+        let row = at.map(|at| &tabs[at]);
+        assert_eq!(row.map(|row| row.keys.as_str()), Some("Ctrl+N"));
+        // After Close the tab and before Reopen, where the bindings list it.
+        let of = |text: &str| whats.iter().position(|what| *what == text).unwrap_or(usize::MAX);
+        assert!(of("Close the tab") < at.unwrap_or(usize::MAX));
+        assert!(at.unwrap_or(usize::MAX) < of("Reopen the last closed tab"));
+        // It is no longer among the folder's keys.
+        assert!(!rows_of(None, Group::Files)
+            .iter()
+            .any(|row| row.what == "New window on the folder shown"));
     }
 
     #[test]

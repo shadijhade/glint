@@ -44,6 +44,9 @@ pub(crate) mod testing;
 /// Wrapped right-to-left paragraphs on the real DirectWrite (the vendored GPUI's line layout).
 #[cfg(test)]
 mod rtl_wrap_tests;
+/// Every reachable control named, and the bars mirrored in Arabic, across the main views (wave 17).
+#[cfg(test)]
+mod a11y_tests;
 
 /// Starts the app and runs until it quits. Returns the exit code core asked for (0 normally); the caller
 /// (`Glint.exe`) passes it to the process.

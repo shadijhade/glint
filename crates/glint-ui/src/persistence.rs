@@ -20,8 +20,9 @@
 //! session...) lives here, in [`Persistence`]. [`init`] loads and hands the settings to `state`, whose
 //! `update` calls [`sync`] after every change, so changed settings are saved soon.
 //!
-//! Not ported: importing the old WebView2 storage (a LevelDB folder under `EBWebView`), which needs a new
-//! dependency.
+//! **The first start** imports the old app's state from WebView2's `localStorage` (a LevelDB folder under
+//! `EBWebView`): when there is no `state.json` yet, [`init`] first asks [`crate::old_settings`] to write one (and
+//! `books.json`) from it, read-only, and then loads that file like any other. See that module.
 
 use glint_model::rank::Visit;
 use glint_model::store::{
@@ -323,10 +324,14 @@ struct Follow {
 impl Global for Persistence {}
 
 /// Start-up step after `state::init`: loads `state.json`, puts its settings in `state`, starts watching the
-/// settings for changes and saves on quit. Without an app data folder nothing is loaded or saved.
+/// settings for changes and saves on quit. Without an app data folder nothing is loaded or saved. At the very
+/// first start (no `state.json` yet) the old app's settings are imported first ([`crate::old_settings`]).
 pub fn init(cx: &mut App) {
     match state_path() {
-        Some(path) => init_at(cx, path),
+        Some(path) => {
+            crate::old_settings::import_at_first_start(&path);
+            init_at(cx, path)
+        }
         None => eprintln!("glint: no app data folder; settings won't be saved"),
     }
 }
@@ -367,6 +372,8 @@ pub fn init_at(cx: &mut App, path: PathBuf) {
             path.display()
         );
     }
+    // The first start after the old app: its notice flags and recent tags (kept outside its store) come along.
+    let took_old = !secondary && crate::old_settings::imported().is_some_and(|old| take_old_extras(&mut app, old));
     let saver = (!loaded.keep_file && !secondary).then(|| Saver::start(path.clone()));
     let follow = if secondary { follow_main(cx, &path) } else { None };
     cx.set_global(Persistence {
@@ -375,6 +382,9 @@ pub fn init_at(cx: &mut App, path: PathBuf) {
         set_aside: loaded.set_aside,
         _follow: follow,
     });
+    if took_old {
+        save_soon(cx);
+    }
 
     cx.on_app_quit(move |cx| {
         sync_quietly(cx);
@@ -515,6 +525,50 @@ pub fn update_app(cx: &mut App, change: impl FnOnce(&mut AppState)) {
             saver.save_soon(p.app.clone());
         }
     }
+}
+
+/// Whether the notice `key` is new for `value`, remembered across runs (`firstNotice`): `"offer-instant-search"`
+/// with `"1"` is shown once ever, `"service-update-notice"` with the app's version once per version. True without a
+/// saved state (a notice can repeat; that beats never showing it).
+pub fn first_notice(cx: &mut App, key: &str, value: &str) -> bool {
+    if !cx.has_global::<Persistence>() {
+        return true;
+    }
+    let mut first = false;
+    update_app(cx, |app| first = app.first_notice(key, value));
+    first
+}
+
+/// The tags used lately, most recent first, as kept between runs.
+pub fn recent_tags(cx: &App) -> Vec<String> {
+    app(cx).map(|app| app.recent_tags.clone()).unwrap_or_default()
+}
+
+/// Keeps the tags used lately (saved soon).
+pub fn set_recent_tags(cx: &mut App, tags: Vec<String>) {
+    update_app(cx, |app| {
+        if app.recent_tags != tags {
+            app.recent_tags = tags;
+        }
+    });
+}
+
+/// What the old app kept in localStorage outside its store, taken into the saved state at the first start after
+/// it: the first-notice flags (so an updated user isn't offered instant search again) and the recent tags. What
+/// the new app already has wins. True if anything was taken.
+fn take_old_extras(app: &mut AppState, old: &crate::old_settings::OldData) -> bool {
+    let mut taken = false;
+    for (key, value) in &old.notices {
+        if !app.notices.contains_key(key) {
+            app.notices.insert(key.clone(), value.clone());
+            taken = true;
+        }
+    }
+    if app.recent_tags.is_empty() && !old.recent_tags.is_empty() {
+        app.recent_tags = old.recent_tags.clone();
+        taken = true;
+    }
+    taken
 }
 
 /// Where the state file that wasn't a saved state was moved to at start, if there was one.
@@ -1448,5 +1502,75 @@ mod tests {
         }
         assert!(followed, "the window followed the file to the light theme");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Notices and recent tags that outlive the run
+
+    /// Starts the app on `path`, runs `f`, saves, and ends it (a run of Glint).
+    fn a_run(cx: &mut gpui_kit::TestAppContext, path: &Path, f: impl FnOnce(&mut App)) {
+        cx.update(|cx| {
+            crate::testing::init(cx);
+            init_at(cx, path.to_path_buf());
+            f(cx);
+            save_now(cx);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn each_notice_shows_once_ever_or_once_per_version_across_restarts(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = crate::testing::lock();
+        let dir = temp_dir("notices");
+        let path = dir.join(STATE_FILE);
+        a_run(cx, &path, |cx| {
+            assert!(first_notice(cx, "offer-instant-search", "1"));
+            assert!(!first_notice(cx, "offer-instant-search", "1"), "not twice in a run");
+            assert!(first_notice(cx, "service-update-notice", "0.9.5"));
+        });
+        // The next start: the offer never again; the service notice again only for a newer app.
+        a_run(cx, &path, |cx| {
+            assert!(!first_notice(cx, "offer-instant-search", "1"));
+            assert!(!first_notice(cx, "service-update-notice", "0.9.5"));
+            assert!(first_notice(cx, "service-update-notice", "0.9.6"));
+        });
+        a_run(cx, &path, |cx| {
+            assert!(!first_notice(cx, "service-update-notice", "0.9.6"));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn recent_tags_are_saved_and_loaded(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = crate::testing::lock();
+        let dir = temp_dir("recent-tags");
+        let path = dir.join(STATE_FILE);
+        a_run(cx, &path, |cx| {
+            assert!(recent_tags(cx).is_empty());
+            set_recent_tags(cx, vec!["Work".into(), "Blue".into()]);
+        });
+        a_run(cx, &path, |cx| {
+            assert_eq!(recent_tags(cx), ["Work", "Blue"]);
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_old_apps_flags_and_tags_come_along_but_never_replace_ours() {
+        let mut old = crate::old_settings::OldData::default();
+        old.notices.insert("offer-instant-search".into(), "1".into());
+        old.notices.insert("service-update-notice".into(), "0.8.0".into());
+        old.recent_tags = vec!["Old".into()];
+        let mut app = AppState::default();
+        assert!(take_old_extras(&mut app, &old));
+        assert!(!app.first_notice("offer-instant-search", "1"));
+        assert!(app.first_notice("service-update-notice", "0.9.5"));
+        assert_eq!(app.recent_tags, ["Old"]);
+        // Ours win, and there is nothing more to take.
+        let mut ours = AppState::default();
+        ours.notices.insert("service-update-notice".into(), "0.9.5".into());
+        ours.recent_tags = vec!["Ours".into()];
+        assert!(take_old_extras(&mut ours, &old), "the missing flag is taken");
+        assert!(!ours.first_notice("service-update-notice", "0.9.5"));
+        assert_eq!(ours.recent_tags, ["Ours"]);
+        assert!(!take_old_extras(&mut ours, &old));
     }
 }

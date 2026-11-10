@@ -209,6 +209,11 @@ impl Tools {
     }
 
     /// Downloads a meaning model (`installMeaning`, `installMultilingual`).
+    /// How far the meaning model's download is, while it downloads (the text search card shows it).
+    pub fn meaning_progress(&self) -> Option<&Fetch> {
+        self.meaning_progress.as_ref()
+    }
+
     pub fn install_meaning(&mut self, multilingual: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.meaning_progress.is_some() {
             return;

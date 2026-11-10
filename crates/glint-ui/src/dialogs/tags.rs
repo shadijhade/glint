@@ -191,9 +191,9 @@ pub struct TagsChanged {
 /// The tags shared by the dialog, the menus and the file list: the call into core, the tags used lately and the
 /// event that says tags changed.
 ///
-/// NOTE(port): the TypeScript kept the recent tags in `localStorage` (`glint-recent-tags`), so they outlived
-/// the session. They are kept for the session here; PORT ME(coordinator): `persistence::AppState` needs a
-/// `recent_tags: Vec<String>` (camelCase on disk) for them to outlive it.
+/// The recent tags are kept in the saved state (`AppState.recent_tags`), so they outlive the session as the
+/// TypeScript's `localStorage` key `glint-recent-tags` did; at the first start after the old app they are its own
+/// (`persistence::init_at` takes them from `old_settings::imported`).
 pub struct Tags {
     backend: Arc<dyn Backend>,
     recent: Vec<String>,
@@ -202,12 +202,15 @@ pub struct Tags {
 impl EventEmitter<TagsChanged> for Tags {}
 
 impl Tags {
-    /// A model calling `backend`.
+    /// A model calling `backend`, with no recent tags.
     pub fn new(backend: Arc<dyn Backend>) -> Self {
-        Self {
-            backend,
-            recent: Vec::new(),
-        }
+        Self::with_recent(backend, Vec::new())
+    }
+
+    /// A model calling `backend`, starting from the recent tags kept last time (at most `MOST_RECENT`).
+    pub fn with_recent(backend: Arc<dyn Backend>, mut recent: Vec<String>) -> Self {
+        recent.truncate(MOST_RECENT);
+        Self { backend, recent }
     }
 
     /// The calls into core's tags, for whoever reads tags for the rows (`components::row_facts`).
@@ -240,7 +243,8 @@ impl Global for SharedTags {}
 /// Makes the shared model with `backend` (the app passes [`CoreBackend`]; tests a fake). [`hub`] makes one on
 /// core's tags if this was never called.
 pub fn init_with(cx: &mut App, backend: Arc<dyn Backend>) {
-    let tags = cx.new(|_| Tags::new(backend));
+    let recent = crate::persistence::recent_tags(cx);
+    let tags = cx.new(|_| Tags::with_recent(backend, recent));
     cx.set_global(SharedTags(tags));
 }
 
@@ -270,6 +274,10 @@ pub fn set_tags(window: &mut Window, cx: &mut App, paths: Vec<String>, add: Vec<
                         }
                         cx.emit(TagsChanged { paths });
                     });
+                    if !add.is_empty() {
+                        let recent = tags.read(cx).recent().to_vec();
+                        crate::persistence::set_recent_tags(cx, recent);
+                    }
                     if let Some((first_path, why)) = failed.first() {
                         let title = if failed.len() == 1 {
                             t!("Couldn't tag “{name}”", name = base_name(first_path))
@@ -832,6 +840,41 @@ mod tests {
             let tags = cx.update(|_, cx| hub(cx));
             tags.read_with(cx, |t, _| t.recent() == ["Work", "Blue"])
         });
+    }
+
+    #[gpui_kit::test]
+    fn recent_tags_are_saved_with_the_state_and_come_back_after_a_restart(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let dir = std::env::temp_dir().join(format!("glint-recent-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("makes the folder");
+        let path = dir.join("state.json");
+        let fake = Fake::new(&[(r"C:\a\one.txt", &[])]);
+        cx.update(testing::init);
+        cx.update(|cx| crate::persistence::init_at(cx, path.clone()));
+        let mut visual = window(cx, &fake);
+        visual.update(|window, cx| {
+            set_tags(
+                window,
+                cx,
+                strings(&[r"C:\a\one.txt"]),
+                strings(&["Work", "Blue"]),
+                Vec::new(),
+            );
+        });
+        settle(&mut visual, |cx| {
+            let tags = cx.update(|_, cx| hub(cx));
+            tags.read_with(cx, |t, _| t.recent() == ["Work", "Blue"])
+        });
+        cx.update(crate::persistence::save_now);
+        assert_eq!(crate::persistence::load_from(&path).state.recent_tags, ["Work", "Blue"]);
+        // A restart: the state is read again and the shared model starts from it.
+        cx.update(|cx| crate::persistence::init_at(cx, path.clone()));
+        let backend: Arc<dyn Backend> = fake.clone();
+        cx.update(|cx| init_with(cx, backend));
+        let tags = cx.update(hub);
+        assert_eq!(tags.read_with(cx, |t, _| t.recent().to_vec()), ["Work", "Blue"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[gpui_kit::test]

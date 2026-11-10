@@ -19,16 +19,29 @@
 //! - `frame.rs`'s `build`: `Body::Small(kind) => cx.new(|cx| SmallPreview::new(entry.clone(), kind, window, cx)).into()`.
 //!   The view needs no other event.
 //!
+//! # HTML mail
+//!
+//! - **HTML mail is laid out as a page** without a web view (docs/gpui/previews-native.md section 8, without
+//!   ammonia or mail-parser): [`sanitize_html`] keeps only the tags a page draws, then [`html_to_xhtml`] closes them
+//!   the way a browser would, and the book reader's XHTML-to-blocks conversion (`book::xhtml_document`) turns the
+//!   result into the [`rich`](super::rich) model that [`RichView`] draws ([`Page`]): paragraphs, headings, lists,
+//!   tables, links, bold and italic, pictures. Scripts, styles, frames, objects and forms are dropped, never run or
+//!   drawn; of a message's styles only `direction`, `text-align`, weight, italic and decoration are kept (and the
+//!   `dir` and `align` attributes), so an Arabic message keeps its direction while a newsletter's colours, fonts,
+//!   widths and background pictures are gone. A table of one meaningful cell a row (the way newsletters lay
+//!   themselves out) is flattened into its blocks; other tables draw as grids.
+//! - **Pictures.** `data:` pictures and `cid:` pictures come out of the message itself. Pictures on the internet
+//!   are not fetched, and nothing is requested, until the message's "Load pictures" button is pressed (the note above
+//!   the body says so): then each is fetched by [`Hooks::fetch`] (glint-core's HTTP stack in the app: no cookies, no
+//!   referrer, a size cap, nothing on this PC's own network, only what really is a picture) and the page is laid
+//!   out again. Until then a picture with alt text shows it, and one without is left out.
+//! - **Links** open in the default browser only when clicked, and only http, https and mailto ([`safe_link`]; the
+//!   book reader's conversion drops `tel:` links, so a telephone number is plain text).
+//! - **Plain version.** A message with both parts has a button that switches to the plain one and back. A message of
+//!   HTML alone has no plain part to show; HTML with nothing in it falls back to the text.
+//!
 //! # Not ported
 //!
-//! - **HTML mail is drawn by the TextView's HTML subset** after [`sanitize_html`] (docs/gpui/previews-native.md section 8, without
-//!   ammonia or mail-parser): scripts, styles, frames, objects, forms, event attributes and all styles are dropped, so
-//!   a newsletter's colours, fonts, widths and background pictures are gone; layout tables draw as plain tables;
-//!   right-to-left paragraphs are not aligned (the TextView has no `dir`). Pictures from the internet are never
-//!   fetched and the note says so (PORT ME(remote images): a per-message "load pictures" switch); `cid:` pictures
-//!   come from the message ([`MailPictures`]); links open only on a click, only http, https, mailto and tel
-//!   ([`safe_link`]). A message with both parts shows the HTML, as the TypeScript did; HTML with nothing in it
-//!   falls back to the text. PORT ME(plain-text tab): a switch to the plain version.
 //! - Outlook bodies: PR_HTML, else PR_RTF_COMPRESSED ([`rtf_decompress`], LZFu) de-encapsulated to HTML
 //!   (the `fromhtml1` flag) or reduced to text ([`rtf_body`]). The last three bytes of the LZFu starting dictionary are
 //!   not known (see `LZFU_DICTIONARY`). Messages attached inside a message (`.msg` in a `.msg`) are not listed.
@@ -43,12 +56,13 @@
 //! - Dates in an event or a message are written with Windows' long date (`format_full_date`), which has seconds
 //!   where the TypeScript's `timeStyle: "short"` had none; a date alone is written short.
 
+use super::book::xhtml_document;
+use super::rich::{self, picture_of, Block, Document, Picture, RichEvent, RichView, Row, Table};
 use super::sources::{sources, Fut};
 use super::states::centered;
 use super::{diagram, svg_image};
 use crate::kit::prelude::*;
 use crate::kit::{Editor, EditorState};
-use crate::kit::{TextView, TextViewState};
 use crate::{core_bridge, explorer, t, theme};
 use glint_model::entries::FileEntry;
 use glint_model::format::{format_date, format_full_date, format_size};
@@ -57,7 +71,7 @@ use gpui_kit::{list, Image, ImageFormat, ImageSource, ListAlignment, ListState, 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 /// The biggest file read for a small preview.
 const MAX_BYTES: u64 = 32 << 20;
@@ -516,8 +530,8 @@ pub struct Message {
     pub text: String,
     /// The message had an HTML part and no text part: `text` is the HTML's text.
     pub html_only: bool,
-    /// The HTML body after [`sanitize_html`], ready for the TextView; empty when there is none (or nothing in it).
-    /// The TypeScript's choice of part: this is shown when it is there, the text when it is not.
+    /// The HTML body after [`sanitize_html`], ready to be laid out as a [`Page`]; empty when there is none (or
+    /// nothing in it). The TypeScript's choice of part: this is shown when it is there, the text when it is not.
     pub html: String,
     /// The pictures the HTML points at with `cid:`; each one's `name` is its Content-ID, cleaned ([`clean_cid`]).
     pub inline: Vec<Attachment>,
@@ -1217,12 +1231,13 @@ pub fn read_email(bytes: &[u8]) -> Message {
     }
 }
 
-// ---- Mail: HTML for the TextView -----------------------------------------------------------------------------
+// ---- Mail: HTML for the page ---------------------------------------------------------------------------------
 
 /// The most of a message's HTML that is sanitised; the rest is dropped.
 const MAX_HTML: usize = 4 << 20;
 
-/// What a tag becomes in the TextView's HTML (`None`: the tag goes, what is inside it stays).
+/// What a tag becomes in the page's HTML (`None`: the tag goes, what is inside it stays). Every name here is one the
+/// book reader's conversion draws.
 fn mapped_tag(name: &str) -> Option<&'static str> {
     Some(match name {
         "a" => "a",
@@ -1249,8 +1264,17 @@ fn mapped_tag(name: &str) -> Option<&'static str> {
         "p" => "p",
         "pre" => "pre",
         "s" | "strike" => "s",
-        "span" | "font" | "small" | "big" | "sub" | "sup" | "label" | "abbr" | "cite" | "q" | "time" | "var"
-        | "kbd" | "samp" | "tt" | "nobr" => "span",
+        "span" | "font" | "small" | "big" | "label" | "abbr" | "time" | "nobr" | "bdo" | "bdi" => "span",
+        "cite" | "dfn" | "var" => "i",
+        "kbd" | "samp" | "tt" => "code",
+        "sub" => "sub",
+        "sup" => "sup",
+        "q" => "q",
+        "center" => "center",
+        "dt" => "dt",
+        "dd" => "dd",
+        "caption" => "caption",
+        "html" | "body" => "div",
         "strong" => "strong",
         "summary" => "summary",
         "table" => "table",
@@ -1261,8 +1285,8 @@ fn mapped_tag(name: &str) -> Option<&'static str> {
         "tr" => "tr",
         "u" | "ins" => "u",
         "ul" => "ul",
-        "center" | "dl" | "dt" | "dd" | "section" | "article" | "header" | "footer" | "main" | "nav" | "aside"
-        | "figure" | "figcaption" | "address" | "caption" | "menu" | "dir" => "div",
+        "dl" | "section" | "article" | "header" | "footer" | "main" | "nav" | "aside" | "figure" | "figcaption"
+        | "address" | "menu" | "dir" => "div",
         _ => return None,
     })
 }
@@ -1436,17 +1460,55 @@ pub fn safe_link(href: &str) -> Option<String> {
     ok.then(|| format!("{scheme}:{rest}"))
 }
 
-/// A picture that may stay: one of the message's own (`cid:`) or one written in it (`data:image/…`, not SVG).
+/// A picture that may stay: one of the message's own (`cid:`), one written in it (`data:image/…`, not SVG), or one
+/// on the web (`http:`, `https:`; nothing is fetched for it until the person asks, see [`Page`]).
 fn kept_picture(src: &str) -> Option<String> {
     let clean = src.trim();
     let lower = clean.to_ascii_lowercase();
-    let ok = lower.starts_with("cid:") || (lower.starts_with("data:image/") && !lower.starts_with("data:image/svg"));
+    let ok = lower.starts_with("cid:")
+        || (lower.starts_with("data:image/") && !lower.starts_with("data:image/svg"))
+        || lower.starts_with("http://")
+        || lower.starts_with("https://");
     ok.then(|| clean.to_string())
 }
 
-/// A message's HTML for the TextView: only the tags it draws, no scripts, styles, frames, objects or forms, no
-/// event attributes or styles at all, links only to the web, mail and telephones, and pictures only the
-/// message's own (`cid:`) or written in it. Pictures from the internet go (their alt text stays).
+/// A `style` attribute cut down to the few properties the page draws, each with a value from a short list (so no
+/// `url(…)` and nothing else can get through).
+fn kept_style(style: &str) -> String {
+    let mut out = String::new();
+    for declaration in style.split(';') {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let property = property.trim().to_ascii_lowercase();
+        let value = value.replace("!important", "").trim().to_ascii_lowercase();
+        let ok = match property.as_str() {
+            "direction" => matches!(value.as_str(), "rtl" | "ltr"),
+            "text-align" => matches!(value.as_str(), "left" | "right" | "center" | "start" | "end"),
+            "font-weight" => {
+                matches!(value.as_str(), "bold" | "bolder" | "normal" | "lighter")
+                    || (value.len() == 3 && value.chars().all(|c| c.is_ascii_digit()))
+            }
+            "font-style" => matches!(value.as_str(), "italic" | "oblique" | "normal"),
+            "text-decoration" | "text-decoration-line" => {
+                !value.is_empty()
+                    && value
+                        .split_whitespace()
+                        .all(|word| matches!(word, "underline" | "line-through" | "none"))
+            }
+            _ => false,
+        };
+        if ok {
+            out.push_str(&format!("{property}:{value};"));
+        }
+    }
+    out
+}
+
+/// A message's HTML for the page: only the tags it draws, no scripts, styles, frames, objects or forms, no event
+/// attributes, a `style` cut down to [`kept_style`], links only to the web, mail and telephones, and pictures only
+/// the message's own (`cid:`), written in it, or on the web (laid out as a [`Page`], which fetches none of them
+/// unasked).
 pub fn sanitize_html(html: &str) -> String {
     let mut end = html.len().min(MAX_HTML);
     while !html.is_char_boundary(end) {
@@ -1549,6 +1611,21 @@ pub fn sanitize_html(html: &str) -> String {
                 }
             }
         }
+        // The direction and alignment an Arabic or Hebrew message says it has.
+        if let Some(dir) = attribute("dir").map(|v| v.trim().to_ascii_lowercase()) {
+            if matches!(dir.as_str(), "ltr" | "rtl") {
+                out.push_str(&format!(" dir=\"{dir}\""));
+            }
+        }
+        if let Some(align) = attribute("align").map(|v| v.trim().to_ascii_lowercase()) {
+            if matches!(align.as_str(), "left" | "right" | "center") {
+                out.push_str(&format!(" align=\"{align}\""));
+            }
+        }
+        let style = attribute("style").map(kept_style).unwrap_or_default();
+        if !style.is_empty() {
+            out.push_str(&format!(" style=\"{style}\""));
+        }
         out.push('>');
     }
     out
@@ -1581,59 +1658,563 @@ fn clean_cid(id: &str) -> String {
     String::from_utf8_lossy(&percent_bytes(id)).to_lowercase()
 }
 
-/// The pictures a message's HTML points at inside the message, made into images the first time they are drawn.
-pub struct MailPictures {
-    inline: Vec<Attachment>,
-    made: Mutex<HashMap<String, Arc<Image>>>,
-    written: Mutex<HashMap<String, Arc<Image>>>,
+// ---- Mail: the page -----------------------------------------------------------------------------------------------
+
+/// Where a picture of the page comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// Written in the HTML (`data:image/…`); the conversion has already read it.
+    Written,
+    /// One of the message's own, by its cleaned Content-ID.
+    Own(String),
+    /// On the internet, by its address; fetched only when asked.
+    Remote(String),
 }
 
-/// The nothing a picture that isn't loaded shows.
-fn blank_picture() -> Arc<Image> {
-    static BLANK: OnceLock<Arc<Image>> = OnceLock::new();
-    BLANK
-        .get_or_init(|| {
-            let png = super::markdown::base64_decode(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-            )
-            .unwrap_or_default();
-            Arc::new(Image::from_bytes(ImageFormat::Png, png))
-        })
-        .clone()
+/// A picture's place in the page rides in front of its alt text, between two private-use characters, through the
+/// conversion to blocks (which keeps the alt text of every picture, in order, and nothing else of it that we could
+/// use).
+const MARK_OPEN: char = '\u{e000}';
+const MARK_CLOSE: char = '\u{e001}';
+/// How deep the XHTML nests (the reader refuses more than 100 levels and would then show the text alone).
+const XHTML_DEPTH: usize = 80;
+/// The most pictures on the internet one message may ask for, in all, in one go.
+pub const MAX_REMOTE: usize = 100;
+
+/// Whether `c` may appear in XML 1.0.
+fn xml_char(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
 }
 
-impl MailPictures {
-    pub fn new(inline: Vec<Attachment>) -> Self {
-        Self {
-            inline,
-            made: Mutex::new(HashMap::new()),
-            written: Mutex::new(HashMap::new()),
+/// `text` with the characters XML cannot hold left out and `<` written as a reference.
+fn push_clean(out: &mut String, text: &str) {
+    for c in text.chars().filter(|c| xml_char(*c)) {
+        if c == '<' {
+            out.push_str("&lt;");
+        } else {
+            out.push(c);
+        }
+    }
+}
+
+/// Text of the sanitised HTML as XML text: its character references are checked (a number that is no character XML
+/// can hold goes), its names are left for the reader, which knows HTML's, and a `&` that starts none is a `&amp;`.
+fn push_text(out: &mut String, text: &str) {
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        push_clean(out, &rest[..at]);
+        rest = &rest[at..];
+        let end = rest[1..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '#'))
+            .map_or(rest.len(), |i| i + 1);
+        if end > 1 && end <= 12 && rest[end..].starts_with(';') {
+            let name = &rest[1..end];
+            if let Some(number) = name.strip_prefix('#') {
+                let code = match number.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => number.parse().ok(),
+                };
+                if let Some(c) = code.and_then(char::from_u32).filter(|c| xml_char(*c)) {
+                    out.push_str(&format!("&#{};", c as u32));
+                }
+            } else {
+                out.push('&');
+                out.push_str(name);
+                out.push(';');
+            }
+            rest = &rest[end + 1..];
+        } else {
+            out.push_str("&amp;");
+            rest = &rest[1..];
+        }
+    }
+    push_clean(out, rest);
+}
+
+/// An attribute value as XML.
+fn xml_attribute(value: &str) -> String {
+    let mut clean = String::with_capacity(value.len());
+    push_clean(&mut clean, &value.replace('&', "&amp;"));
+    clean.replace('"', "&quot;")
+}
+
+/// The index of the innermost open element of `wanted` in `stack`, looking no further than a `stop` element.
+fn find_open(stack: &[&str], wanted: &[&str], stop: &[&str]) -> Option<usize> {
+    for (at, name) in stack.iter().enumerate().rev() {
+        if wanted.contains(name) {
+            return Some(at);
+        }
+        if stop.contains(name) {
+            return None;
+        }
+    }
+    None
+}
+
+/// Closes elements until `stack` is `len` long.
+fn close_to(stack: &mut Vec<&'static str>, out: &mut String, len: usize) {
+    while stack.len() > len {
+        if let Some(name) = stack.pop() {
+            out.push_str("</");
+            out.push_str(name);
+            out.push('>');
+        }
+    }
+}
+
+/// Ends what an opening `name` ends without being told, as HTML lets a writer leave the end out: a paragraph by a
+/// block, a list item by the next, a cell by the next, a row by the next. (An item that starts after a paragraph of
+/// the one before is further down the stack, so it closes both.)
+fn end_implied(stack: &mut Vec<&'static str>, out: &mut String, name: &str) {
+    let close = match name {
+        "p" | "div" | "ul" | "ol" | "table" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" | "pre"
+        | "center" => find_open(stack, &["p"], &["td", "th", "table", "caption"]),
+        "li" => find_open(stack, &["li"], &["ul", "ol", "table", "td", "th"]),
+        "td" | "th" => find_open(stack, &["td", "th"], &["tr", "table"]),
+        "tr" => find_open(stack, &["tr"], &["table"]),
+        "thead" | "tbody" => find_open(stack, &["thead", "tbody"], &["table"]),
+        "dt" | "dd" => find_open(stack, &["dt", "dd"], &["div", "table", "td", "th"]),
+        _ => None,
+    };
+    if let Some(at) = close {
+        close_to(stack, out, at);
+    }
+}
+
+/// The sanitised HTML ([`sanitize_html`]) as XHTML the book reader's conversion takes: every element closed where a
+/// browser would close it, void elements written closed, references checked, no more than [`XHTML_DEPTH`] levels.
+/// Also each picture's [`Source`], by its index, which is written in front of its alt text.
+pub fn html_to_xhtml(html: &str) -> (String, Vec<Source>) {
+    let mut out = String::with_capacity(html.len() + 64);
+    out.push_str("<html><body>");
+    let mut sources = Vec::new();
+    let mut stack: Vec<&'static str> = Vec::new();
+    let mut skipped: Vec<&'static str> = Vec::new();
+    let bytes = html.as_bytes();
+    let mut i = 0;
+    while i < html.len() {
+        let Some(found) = html[i..].find('<') else {
+            push_text(&mut out, &html[i..]);
+            break;
+        };
+        push_text(&mut out, &html[i..i + found]);
+        i += found;
+        let next = bytes.get(i + 1).copied().unwrap_or(0);
+        let is_tag =
+            next.is_ascii_alphabetic() || (next == b'/' && bytes.get(i + 2).is_some_and(u8::is_ascii_alphabetic));
+        if !is_tag {
+            out.push_str("&lt;");
+            i += 1;
+            continue;
+        }
+        let tag = read_tag(html, i);
+        i = tag.end.max(i + 1);
+        // Only what the sanitiser writes (its names map to themselves).
+        let Some(name) = mapped_tag(&tag.name).filter(|name| *name == tag.name) else {
+            continue;
+        };
+        if tag.closing {
+            if skipped.last() == Some(&name) {
+                skipped.pop();
+                continue;
+            }
+            let stop: &[&str] = match name {
+                "table" => &[],
+                "tr" | "thead" | "tbody" | "caption" => &["table"],
+                "td" | "th" => &["tr", "table"],
+                _ => &["td", "th", "table", "caption"],
+            };
+            if !is_void(name) {
+                if let Some(at) = find_open(&stack, &[name], stop) {
+                    close_to(&mut stack, &mut out, at);
+                }
+            }
+            continue;
+        }
+        let attribute = |key: &str| tag.attributes.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        match name {
+            "img" => {
+                let alt = attribute("alt").unwrap_or_default();
+                let src = attribute("src").unwrap_or_default().trim();
+                let lower = src.to_ascii_lowercase();
+                let (source, written) = if lower.starts_with("cid:") {
+                    (Source::Own(clean_cid(src)), "cid:")
+                } else if lower.starts_with("data:image/") {
+                    (Source::Written, src)
+                } else if lower.starts_with("http://") || lower.starts_with("https://") {
+                    (Source::Remote(src.to_string()), "remote:")
+                } else {
+                    continue;
+                };
+                out.push_str(&format!(
+                    "<img src=\"{}\" alt=\"{MARK_OPEN}{}{MARK_CLOSE}{}\"/>",
+                    xml_attribute(written),
+                    sources.len(),
+                    xml_attribute(alt)
+                ));
+                sources.push(source);
+                continue;
+            }
+            "br" | "hr" => {
+                out.push_str(&format!("<{name}/>"));
+                continue;
+            }
+            _ => {}
+        }
+        end_implied(&mut stack, &mut out, name);
+        if stack.len() >= XHTML_DEPTH {
+            skipped.push(name);
+            continue;
+        }
+        stack.push(name);
+        out.push('<');
+        out.push_str(name);
+        let mut kept: Vec<&str> = vec!["dir", "align", "style"];
+        match name {
+            "a" => kept.push("href"),
+            "td" | "th" => kept.extend(["colspan", "rowspan"]),
+            _ => {}
+        }
+        for key in kept {
+            if let Some(value) = attribute(key) {
+                out.push_str(&format!(" {key}=\"{}\"", xml_attribute(value)));
+            }
+        }
+        out.push('>');
+    }
+    close_to(&mut stack, &mut out, 0);
+    out.push_str("</body></html>");
+    (out, sources)
+}
+
+/// A picture's place in the page and its own alt text, from the alt text the conversion kept.
+fn split_mark(alt: &str) -> (Option<usize>, &str) {
+    let Some(rest) = alt.strip_prefix(MARK_OPEN) else {
+        return (None, alt);
+    };
+    match rest.split_once(MARK_CLOSE) {
+        Some((index, alt)) => (index.parse().ok(), alt),
+        None => (None, alt),
+    }
+}
+
+/// Whether a table cell has anything to see.
+fn has_something(cell: &rich::Cell) -> bool {
+    cell.blocks.iter().any(|block| match block {
+        Block::Heading { text, .. } | Block::Paragraph(text) | Block::Item { text, .. } | Block::Quote { text, .. } => {
+            !text.is_blank()
+        }
+        Block::Code(code) => !code.trim().is_empty(),
+        Block::Picture(_) | Block::Table(_) | Block::Rule => true,
+        Block::PageBreak => false,
+    })
+}
+
+/// Tables made to lay a newsletter out, not to hold data (no heading row, and no row with two cells that have
+/// something in them) give their blocks to the page.
+fn flatten_layout(blocks: Vec<Block>) -> Vec<Block> {
+    let mut out = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let Block::Table(mut table) = block else {
+            out.push(block);
+            continue;
+        };
+        for row in &mut table.rows {
+            for cell in &mut row.cells {
+                cell.blocks = flatten_layout(std::mem::take(&mut cell.blocks));
+            }
+        }
+        let layout = table
+            .rows
+            .iter()
+            .all(|row| !row.header && row.cells.iter().filter(|cell| has_something(cell)).count() <= 1);
+        if layout {
+            out.extend(
+                table
+                    .rows
+                    .into_iter()
+                    .flat_map(|row| row.cells)
+                    .flat_map(|cell| cell.blocks),
+            );
+        } else {
+            out.push(Block::Table(table));
+        }
+    }
+    out
+}
+
+/// A message's HTML laid out as blocks, with its pictures kept apart so the ones on the internet can wait.
+pub struct Page {
+    doc: Document,
+    sources: Vec<Source>,
+    /// The message's own pictures the page uses, by cleaned Content-ID.
+    own: HashMap<String, Picture>,
+}
+
+impl Page {
+    /// Lays out the sanitised HTML `html` ([`Message::html`]); `inline` are the message's own pictures.
+    pub fn new(html: &str, inline: &[Attachment]) -> Page {
+        let (xhtml, sources) = html_to_xhtml(html);
+        let doc = xhtml_document(&xhtml, "", None);
+        let mut own = HashMap::new();
+        for source in &sources {
+            if let Source::Own(id) = source {
+                if own.contains_key(id) {
+                    continue;
+                }
+                if let Some(picture) = inline.iter().find(|a| &a.name == id) {
+                    own.insert(id.clone(), picture_of(picture.data.to_vec(), "", None));
+                }
+            }
+        }
+        Page { doc, sources, own }
+    }
+
+    /// The addresses of the pictures on the internet, each once, no more than [`MAX_REMOTE`].
+    pub fn remote_urls(&self) -> Vec<String> {
+        let mut urls: Vec<String> = Vec::new();
+        for source in &self.sources {
+            if let Source::Remote(url) = source {
+                if urls.len() < MAX_REMOTE && !urls.contains(url) {
+                    urls.push(url.clone());
+                }
+            }
+        }
+        urls
+    }
+
+    /// The blocks with the pictures put in: the message's own, those written in the HTML, and the ones on the
+    /// internet that are in `fetched` (by address). A picture that is not there shows its alt text, or, with none, is
+    /// left out (unless that would leave the page empty).
+    pub fn document(&self, fetched: &HashMap<String, Picture>) -> Document {
+        let mut blocks = self.filled(&self.doc.blocks, fetched, false);
+        if blocks.is_empty() {
+            blocks = self.filled(&self.doc.blocks, fetched, true);
+        }
+        Document {
+            blocks: flatten_layout(blocks),
+            anchors: HashMap::new(),
         }
     }
 
-    /// What a picture address in the message shows: its own picture, one written in it, or nothing (never a fetch).
-    pub fn source(&self, src: &str) -> ImageSource {
-        let src = src.trim_start();
-        let lower = src.to_ascii_lowercase();
-        if lower.starts_with("cid:") {
-            let id = clean_cid(src);
-            let Ok(mut made) = self.made.lock() else {
-                return ImageSource::Image(blank_picture());
-            };
-            if let Some(image) = made.get(&id) {
-                return ImageSource::Image(image.clone());
+    fn filled(&self, blocks: &[Block], fetched: &HashMap<String, Picture>, keep_blank: bool) -> Vec<Block> {
+        let mut out = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            match block {
+                Block::Picture(picture) => {
+                    let (index, alt) = split_mark(&picture.alt);
+                    let mut picture = Picture {
+                        image: picture.image.clone(),
+                        size: picture.size,
+                        alt: alt.to_string(),
+                    };
+                    // What replaces the placeholder: the message's own picture, or one that was fetched.
+                    let replacement = match index.and_then(|at| self.sources.get(at)) {
+                        Some(Source::Own(id)) => self.own.get(id),
+                        Some(Source::Remote(url)) => fetched.get(url),
+                        _ => None,
+                    };
+                    if let Some(found) = replacement {
+                        picture.image = found.image.clone();
+                        picture.size = found.size;
+                    }
+                    // A picture with nothing to show and nothing to say is left out.
+                    if picture.image.is_none() && alt.trim().is_empty() && !keep_blank {
+                        continue;
+                    }
+                    out.push(Block::Picture(picture));
+                }
+                Block::Table(table) => out.push(Block::Table(Table {
+                    rows: table
+                        .rows
+                        .iter()
+                        .map(|row| Row {
+                            cells: row
+                                .cells
+                                .iter()
+                                .map(|cell| rich::Cell {
+                                    blocks: self.filled(&cell.blocks, fetched, keep_blank),
+                                    span: cell.span,
+                                    shade: cell.shade,
+                                })
+                                .collect(),
+                            header: row.header,
+                        })
+                        .collect(),
+                    rtl: table.rtl,
+                })),
+                other => out.push(other.clone()),
             }
-            let image = match self.inline.iter().find(|a| a.name == id) {
-                Some(picture) => Arc::new(Image::from_bytes(sniff_photo(&picture.data), picture.data.to_vec())),
-                None => blank_picture(),
-            };
-            made.insert(id, image.clone());
-            return ImageSource::Image(image);
         }
-        if lower.starts_with("data:image/") && !lower.starts_with("data:image/svg") {
-            return super::markdown::picture_source(src, "", "", &self.written);
+        out
+    }
+}
+
+// ---- Mail: pictures from the internet, when asked ------------------------------------------------------------------
+
+/// The most one picture from the internet may be, in bytes.
+const MAX_FETCH_ONE: usize = 8 << 20;
+/// The most all the pictures of one message may be, in bytes.
+pub const MAX_FETCH_ALL: usize = 48 << 20;
+/// How many are fetched at once.
+const FETCH_AT_ONCE: usize = 4;
+
+/// Whether `ip` is an address of the internet and not of this PC or a network it is on.
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || o[0] == 0
+                // Shared address space (carrier-grade NAT), benchmarking, reserved.
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+                || (o[0] == 198 && (18..20).contains(&o[1]))
+                || o[0] >= 240)
         }
-        ImageSource::Image(blank_picture())
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_ip(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                // Unique local (fc00::/7) and link local (fe80::/10).
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+/// Whether a picture's address may be fetched: http or https, no sign-in in it, and a host on the internet (not
+/// `localhost`, a bare name that only this PC's network would know, or an address of a private network).
+pub fn fetchable(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') || authority.contains(char::is_whitespace) {
+        return false;
+    }
+    // The host, without a port (an IPv6 address is in brackets).
+    let host = match authority.strip_prefix('[') {
+        Some(inner) => match inner.split_once(']') {
+            Some((host, _)) => host,
+            None => return false,
+        },
+        None => authority.rsplit_once(':').map_or(authority, |(host, _)| host),
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return public_ip(ip);
+    }
+    // 2130706433, 0x7f.1 and their kin are addresses written in ways only a browser reads: a name whose last
+    // part is a number is one.
+    let last = host.rsplit('.').next().unwrap_or_default();
+    let number = last.chars().all(|c| c.is_ascii_digit())
+        || last
+            .strip_prefix("0x")
+            .is_some_and(|hex| hex.chars().all(|c| c.is_ascii_hexdigit()));
+    if number {
+        return false;
+    }
+    host.contains('.')
+        && host != "localhost"
+        && !host.ends_with(".localhost")
+        && !host.ends_with(".local")
+        && !host.ends_with(".localdomain")
+        && !host.ends_with(".internal")
+        && !host.ends_with(".lan")
+        && !host.ends_with(".home.arpa")
+}
+
+/// Finds a name's addresses, the ones on the internet only (so a name that points at this PC or its network gets
+/// nowhere).
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let found = glint_core::host::async_runtime::spawn_blocking(move || {
+                use std::net::ToSocketAddrs;
+                (host.as_str(), 0).to_socket_addrs().map(|addrs| {
+                    addrs
+                        .filter(|addr| public_ip(addr.ip()))
+                        .collect::<Vec<std::net::SocketAddr>>()
+                })
+            })
+            .await;
+            let boxed = |e: String| Box::<dyn std::error::Error + Send + Sync>::from(e);
+            let addrs = found
+                .map_err(|e| boxed(e.to_string()))?
+                .map_err(|e| boxed(e.to_string()))?;
+            if addrs.is_empty() {
+                return Err(boxed("the name is not on the internet".to_string()));
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// One picture from the internet, over glint-core's runtime: no cookies, no referrer, redirects only to places
+/// [`fetchable`] says, a time limit and a size limit, and only what the bytes show to be a picture (not an SVG,
+/// which could be anything).
+async fn fetch_picture(url: String) -> Result<Vec<u8>, String> {
+    if !fetchable(&url) {
+        return Err("This address is not one to fetch from".to_string());
+    }
+    glint_core::tools::install_tls_provider();
+    let policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            attempt.error("too many redirects")
+        } else if fetchable(attempt.url().as_str()) {
+            attempt.follow()
+        } else {
+            attempt.error("redirected to an address that is not one to fetch from")
+        }
+    });
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("Glint/", env!("CARGO_PKG_VERSION")))
+        .redirect(policy)
+        .dns_resolver(Arc::new(PublicOnly))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut response = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("The server answered {}", response.status().as_u16()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_FETCH_ONE as u64)
+    {
+        return Err("The picture is too big".to_string());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len() + chunk.len() > MAX_FETCH_ONE {
+            return Err("The picture is too big".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    match rich::sniff_image(&bytes) {
+        Some(gpui_kit::ImageFormat::Svg) | None => Err("It is not a picture".to_string()),
+        Some(_) => Ok(bytes),
     }
 }
 
@@ -2334,8 +2915,13 @@ pub fn read_outlook(bytes: &[u8]) -> Result<Message, String> {
 pub type SaveFn = Rc<dyn Fn(String, Vec<u8>) -> Fut<Result<String, String>>>;
 /// Opens a file with its app.
 pub type OpenFn = Rc<dyn Fn(&str, &mut App)>;
+/// Fetches a picture from the internet (its address) and gives its bytes.
+pub type FetchFn = Rc<dyn Fn(String) -> Fut<Result<Vec<u8>, String>>>;
+/// Opens a link (an address [`safe_link`] let through) in the default browser or mail program.
+pub type LinkFn = Rc<dyn Fn(&str, &mut App)>;
 
-/// Saving an attachment and opening it: glint-core and the explorer in the app, fakes in tests.
+/// Saving an attachment and opening it, fetching a message's pictures and opening its links: glint-core, the
+/// explorer and the shell in the app, fakes in tests.
 #[derive(Clone)]
 pub struct Hooks {
     /// Saves the attachment's bytes under its name into a temp folder of Glint's, marked as from the internet;
@@ -2343,10 +2929,15 @@ pub struct Hooks {
     pub save: SaveFn,
     /// Opens the copy with its app (through the explorer).
     pub open: OpenFn,
+    /// Fetches one of a message's pictures on the internet. Called only after the person pressed "Load pictures".
+    pub fetch: FetchFn,
+    /// Opens a link the person clicked.
+    pub link: LinkFn,
 }
 
 impl Hooks {
-    /// glint-core's `attachment_save`, then `Explorer::open_file`.
+    /// glint-core's `attachment_save`, then `Explorer::open_file`; pictures over glint-core's runtime
+    /// ([`fetch_picture`]); links through the shell.
     pub fn core() -> Self {
         Hooks {
             save: Rc::new(|name, data| {
@@ -2359,6 +2950,11 @@ impl Hooks {
                     explorer.open_file(&path, None, cx).detach();
                 });
             }),
+            fetch: Rc::new(|url| {
+                let running = core_bridge::run(fetch_picture(url));
+                Box::pin(async move { running.await.and_then(|inner| inner) })
+            }),
+            link: Rc::new(|url, cx| cx.open_url(url)),
         }
     }
 }
@@ -2427,18 +3023,54 @@ impl Problem {
 enum Loaded {
     Contacts(Vec<Card>),
     Events(Vec<Event>),
-    Mail(Box<Message>),
+    /// A message, and its HTML laid out when it has any (done here, off the UI thread).
+    Mail(Box<(Message, Option<Page>)>),
     Picture(PathBuf),
     Source(String),
 }
 
-/// A message on screen: it, its text in a read-only editor, and its HTML in a TextView when it has any.
+/// Where a message's pictures from the internet stand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pictures {
+    /// Not asked for: none has been requested.
+    Off,
+    /// Being fetched.
+    Loading,
+    /// Fetched; `failed` of them could not be.
+    Loaded { failed: usize },
+}
+
+/// A message's HTML on screen: the page, and the view that draws it.
+#[derive(Clone)]
+struct Formatted {
+    view: Entity<RichView>,
+    page: Arc<Page>,
+    /// The pictures from the internet that were fetched, by address.
+    fetched: Arc<HashMap<String, Picture>>,
+}
+
+/// A message on screen: it, its text in a read-only editor, and its HTML as a page when it has any.
 #[derive(Clone)]
 struct Mailbox {
     message: Arc<Message>,
     body: Entity<EditorState>,
-    html: Option<(Entity<TextViewState>, Arc<MailPictures>)>,
+    html: Option<Formatted>,
     cut: bool,
+    /// The plain version shows instead of the page.
+    plain: bool,
+    pictures: Pictures,
+}
+
+impl Mailbox {
+    /// Whether the message has two versions to switch between: it has a text part of its own, and a page.
+    fn has_both(&self) -> bool {
+        self.html.is_some() && !self.message.html_only && !self.message.text.trim().is_empty()
+    }
+
+    /// Whether the page is what shows.
+    fn shows_page(&self) -> bool {
+        self.html.is_some() && !self.plain
+    }
 }
 
 enum Load {
@@ -2475,6 +3107,9 @@ pub struct SmallPreview {
     /// Why an attachment didn't open.
     problem: Option<SharedString>,
     task: Option<Task<()>>,
+    /// The pictures of a message being fetched, and the clicks on its page's links.
+    fetching: Option<Task<()>>,
+    _links: Option<Subscription>,
     /// The scroll of a drawn diagram, for Quick Look's page keys.
     diagram_scroll: gpui_kit::ScrollHandle,
 }
@@ -2502,6 +3137,12 @@ fn diagram_source(bytes: &[u8]) -> Result<String, Problem> {
     Ok(glint_core::textenc::decode(head, bytes.len() > MAX_TEXT).text)
 }
 
+/// A message with its HTML, if it has any, laid out.
+fn laid_out(message: Message) -> Loaded {
+    let page = (!message.html.is_empty()).then(|| Page::new(&message.html, &message.inline));
+    Loaded::Mail(Box::new((message, page)))
+}
+
 fn read_small(kind: SmallKind, path: &str, size: u64) -> Result<Loaded, Problem> {
     if size > MAX_BYTES {
         return Err(Problem::TooBig);
@@ -2526,10 +3167,8 @@ fn read_small(kind: SmallKind, path: &str, size: u64) -> Result<Loaded, Problem>
                 Ok(Loaded::Events(events))
             }
         }
-        SmallKind::Email => Ok(Loaded::Mail(Box::new(read_email(&bytes)))),
-        SmallKind::Outlook => read_outlook(&bytes)
-            .map(|m| Loaded::Mail(Box::new(m)))
-            .map_err(Problem::Outlook),
+        SmallKind::Email => Ok(laid_out(read_email(&bytes))),
+        SmallKind::Outlook => read_outlook(&bytes).map(laid_out).map_err(Problem::Outlook),
         SmallKind::Graphviz | SmallKind::Mermaid => diagram_source(&bytes).map(Loaded::Source),
         SmallKind::Design => Err(Problem::NoPicture),
     }
@@ -2546,6 +3185,8 @@ impl SmallPreview {
             focus: cx.focus_handle(),
             problem: None,
             task: None,
+            fetching: None,
+            _links: None,
             diagram_scroll: gpui_kit::ScrollHandle::new(),
         };
         // Pictures still being drawn for a view that is gone are not wanted.
@@ -2591,15 +3232,50 @@ impl SmallPreview {
         }
     }
 
-    /// The message's words as drawn: the HTML's in the TextView, or the plain text in the editor.
+    /// The message's words as drawn: the page's, or the plain text in the editor.
     pub fn mail_text(&self, cx: &App) -> Option<String> {
         match &self.load {
             Load::Mail(mail) => Some(match &mail.html {
-                Some((state, _)) => state.read(cx).rendered_text().as_str().to_string(),
-                None => mail.body.read(cx).value().to_string(),
+                Some(formatted) if !mail.plain => formatted.view.read(cx).document().plain_text(),
+                _ => mail.body.read(cx).value().to_string(),
             }),
             _ => None,
         }
+    }
+
+    /// Whether the plain version of the message is showing instead of its page.
+    pub fn showing_plain(&self) -> bool {
+        matches!(&self.load, Load::Mail(mail) if mail.plain)
+    }
+
+    /// The pictures of the message's page as drawn (the blocks of the page, tables included, in order).
+    pub fn mail_pictures(&self, cx: &App) -> Vec<Picture> {
+        fn walk(blocks: &[Block], out: &mut Vec<Picture>) {
+            for block in blocks {
+                match block {
+                    Block::Picture(picture) => out.push(picture.clone()),
+                    Block::Table(table) => {
+                        for cell in table.rows.iter().flat_map(|row| &row.cells) {
+                            walk(&cell.blocks, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Load::Mail(Mailbox {
+            html: Some(formatted), ..
+        }) = &self.load
+        {
+            walk(&formatted.view.read(cx).document().blocks, &mut out);
+        }
+        out
+    }
+
+    /// Whether the message's pictures from the internet have been asked for (and fetched, or being fetched).
+    pub fn pictures_asked(&self) -> bool {
+        matches!(&self.load, Load::Mail(mail) if mail.pictures != Pictures::Off)
     }
 
     /// Why the file couldn't be shown.
@@ -2644,6 +3320,16 @@ impl SmallPreview {
             cx.notify();
             return true;
         }
+        // A message's page scrolls like the book it is laid out by.
+        if let Load::Mail(mail) = &self.load {
+            return match &mail.html {
+                Some(formatted) if !mail.plain => {
+                    let view = formatted.view.clone();
+                    view.update(cx, |view, cx| view.page(down, cx))
+                }
+                _ => false,
+            };
+        }
         if !matches!(self.load, Load::Contacts { .. } | Load::Events(_)) {
             return false;
         }
@@ -2657,6 +3343,8 @@ impl SmallPreview {
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         svg_image::forget(cx.entity_id());
         self.load = Load::Reading;
+        self.fetching = None;
+        self._links = None;
         let entry = self.entry.clone();
         let kind = self.kind;
         let extract = sources(cx).extract.clone();
@@ -2711,7 +3399,8 @@ impl SmallPreview {
                 self.list.reset(events.len().min(MAX_EVENTS));
                 Load::Events(Arc::new(events))
             }
-            Ok(Loaded::Mail(message)) => {
+            Ok(Loaded::Mail(parts)) => {
+                let (message, page) = *parts;
                 let cut = message.text.len() > MAX_TEXT;
                 let mut end = message.text.len().min(MAX_TEXT);
                 while !message.text.is_char_boundary(end) {
@@ -2727,15 +3416,36 @@ impl SmallPreview {
                         .default_value(shown)
                 });
                 body.update(cx, |editor, cx| editor.set_readonly(true, cx));
-                let html = (!message.html.is_empty()).then(|| {
-                    let state = cx.new(|cx| TextViewState::html(&message.html, cx).selectable(true));
-                    (state, Arc::new(MailPictures::new(message.inline.clone())))
+                self.fetching = None;
+                self._links = None;
+                let html = page.map(|page| {
+                    let page = Arc::new(page);
+                    let fetched = Arc::new(HashMap::new());
+                    let doc = Arc::new(page.document(&fetched));
+                    let rtl = doc.mostly_rtl();
+                    let view = cx.new(|cx| {
+                        let mut view = RichView::new(rems(48.), t!("The message"), cx);
+                        view.set_scale(0.93, cx);
+                        view.set_document(doc, rtl, cx);
+                        view
+                    });
+                    // Links open only on a click, through the shell, and only the web's and mail's.
+                    self._links = Some(cx.subscribe(&view, |_, _, event: &RichEvent, cx| {
+                        if let RichEvent::Link(href) = event {
+                            if let Some(address) = safe_link(href.as_ref()) {
+                                (hooks(cx).link)(&address, cx);
+                            }
+                        }
+                    }));
+                    Formatted { view, page, fetched }
                 });
                 Load::Mail(Mailbox {
-                    message: Arc::new(*message),
+                    message: Arc::new(message),
                     body,
                     html,
                     cut,
+                    plain: false,
+                    pictures: Pictures::Off,
                 })
             }
             Ok(Loaded::Picture(path)) => Load::Picture(path),
@@ -2766,6 +3476,81 @@ impl SmallPreview {
                 }
             }
         };
+        cx.notify();
+    }
+
+    /// Switches between the page and the plain version of a message that has both.
+    fn toggle_plain(&mut self, cx: &mut Context<Self>) {
+        if let Load::Mail(mail) = &mut self.load {
+            if mail.has_both() {
+                mail.plain = !mail.plain;
+                cx.notify();
+            }
+        }
+    }
+
+    /// "Load pictures": fetches the message's pictures from the internet, a few at a time, then lays the page out
+    /// again with them. Nothing is requested before this.
+    fn load_pictures(&mut self, cx: &mut Context<Self>) {
+        let Load::Mail(mail) = &mut self.load else { return };
+        let Some(formatted) = mail.html.clone() else { return };
+        if mail.pictures != Pictures::Off {
+            return;
+        }
+        let urls = formatted.page.remote_urls();
+        if urls.is_empty() {
+            return;
+        }
+        mail.pictures = Pictures::Loading;
+        let fetch = hooks(cx).fetch;
+        self.fetching = Some(cx.spawn(async move |this, cx| {
+            let mut fetched: HashMap<String, Picture> = HashMap::new();
+            let (mut failed, mut total) = (0usize, 0usize);
+            for batch in urls.chunks(FETCH_AT_ONCE) {
+                // All of a batch is asked for at once, then answered in turn.
+                let running: Vec<_> = batch.iter().map(|url| (url.clone(), fetch(url.clone()))).collect();
+                for (url, future) in running {
+                    match future.await {
+                        Ok(bytes) if total + bytes.len() <= MAX_FETCH_ALL => {
+                            total += bytes.len();
+                            fetched.insert(url, picture_of(bytes, "", None));
+                        }
+                        _ => failed += 1,
+                    }
+                }
+            }
+            this.update(cx, |this, cx| {
+                this.pictures_arrived(&formatted.page, fetched, failed, cx)
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// The fetched pictures are in: the page is laid out again with them, kept at the block it was scrolled to.
+    fn pictures_arrived(
+        &mut self,
+        page: &Arc<Page>,
+        fetched: HashMap<String, Picture>,
+        failed: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Load::Mail(mail) = &mut self.load else { return };
+        let Some(formatted) = &mut mail.html else { return };
+        if !Arc::ptr_eq(&formatted.page, page) {
+            return;
+        }
+        formatted.fetched = Arc::new(fetched);
+        let doc = Arc::new(page.document(&formatted.fetched));
+        let rtl = doc.mostly_rtl();
+        formatted.view.update(cx, |view, cx| {
+            let top = view.top_block();
+            view.set_document(doc, rtl, cx);
+            if top > 0 {
+                view.scroll_to_block(top, cx);
+            }
+        });
+        mail.pictures = Pictures::Loaded { failed };
         cx.notify();
     }
 
@@ -3079,14 +3864,57 @@ impl SmallPreview {
                     .into_any_element()
             })
             .collect();
+        let remote = mail.shows_page()
+            && mail
+                .html
+                .as_ref()
+                .is_some_and(|formatted| !formatted.page.remote_urls().is_empty());
         let notes = [
             (message.html_only && message.html.is_empty())
                 .then(|| t!("This message is formatted; it is shown here as plain text.")),
             mail.cut.then(|| t!("Only the start of the message is shown.")),
-            message
-                .remote
+            (remote && mail.pictures == Pictures::Off)
                 .then(|| t!("Pictures from the internet aren't loaded, so nobody learns it was opened.")),
+            (remote && mail.pictures == Pictures::Loading).then(|| t!("Loading pictures…")),
+            match mail.pictures {
+                Pictures::Loaded { failed: 1 } if remote => Some(t!("1 picture couldn't be loaded.")),
+                Pictures::Loaded { failed } if remote && failed > 1 => {
+                    Some(t!("{count} pictures couldn't be loaded.", count = failed))
+                }
+                _ => None,
+            },
         ];
+        // The switches: to the plain version and back, and the pictures from the internet.
+        let mut switches: Vec<AnyElement> = Vec::new();
+        if remote && mail.pictures == Pictures::Off {
+            let label = t!("Load pictures");
+            switches.push(
+                Button::new("small-mail-load-pictures")
+                    .ghost()
+                    .small()
+                    .label(label.clone())
+                    .accessibility_label(label)
+                    .tooltip(t!("The sender may learn that the message was opened."))
+                    .on_click(cx.listener(|this, _, _, cx| this.load_pictures(cx)))
+                    .into_any_element(),
+            );
+        }
+        if mail.has_both() {
+            let label = if mail.plain {
+                t!("Show the formatted version")
+            } else {
+                t!("Show the plain text version")
+            };
+            switches.push(
+                Button::new("small-mail-plain-toggle")
+                    .ghost()
+                    .small()
+                    .label(label.clone())
+                    .accessibility_label(label)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_plain(cx)))
+                    .into_any_element(),
+            );
+        }
         let header = col()
             .id("small-mail-header")
             .role(Role::Group)
@@ -3154,38 +3982,22 @@ impl SmallPreview {
                     .text_size(theme::size::XS)
                     .text_color(t.muted_foreground)
                     .child(note)
-            }));
+            }))
+            .when(!switches.is_empty(), |this| {
+                this.child(row_start().flex_wrap().gap(space(1.)).pt(space(1.5)).children(switches))
+            });
         col()
             .size_full()
             .min_h_0()
             .child(header)
             .child(match &mail.html {
-                Some((state, pictures)) => {
-                    let pictures = pictures.clone();
-                    div()
-                        .id("small-mail-body")
-                        .role(Role::Document)
-                        .aria_label(t!("The message"))
-                        .test_support()
-                        .flex_1()
-                        .min_h_0()
-                        .px(space(3.))
-                        .py(space(2.))
-                        .child(
-                            TextView::new(state)
-                                .selectable(true)
-                                .scrollable(true)
-                                .image_source(move |uri| pictures.source(uri.as_ref()))
-                                // Links open only on a click, through the shell, and only the web's, mail and phones.
-                                .on_link_click(|url, _, _, cx| {
-                                    if let Some(address) = safe_link(url.as_ref()) {
-                                        cx.open_url(&address);
-                                    }
-                                }),
-                        )
-                        .into_any_element()
-                }
-                None => div()
+                // The page is the RichView, which names itself "The message" and draws and scrolls the blocks.
+                Some(formatted) if !mail.plain => div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(formatted.view.clone())
+                    .into_any_element(),
+                _ => div()
                     .flex_1()
                     .min_h_0()
                     .child(
@@ -3982,7 +4794,7 @@ mod tests {
     }
 
     #[test]
-    fn html_is_sanitised_for_the_textview() {
+    fn html_is_sanitised_for_the_page() {
         let html = sanitize_html(MAIL_HTML);
         for gone in [
             "script",
@@ -3999,7 +4811,7 @@ mod tests {
             "button",
             "javascript",
             "conditional",
-            "x.test",
+            "src=\"https://x.test\"",
             "bgcolor",
             "<html",
             "<head",
@@ -4008,8 +4820,12 @@ mod tests {
             assert!(!html.contains(gone), "{gone} is gone: {html}");
         }
         assert!(html.contains("<p>Hello <b>world</b> مرحبا بالعالم</p>"), "{html}");
-        // The picture from the internet is gone, its alt text stays; the message's own picture stays.
-        assert!(html.contains("tracker") && !html.contains("<img src=\"https"), "{html}");
+        // The pictures from the internet stay in the page (nothing fetches them unasked), and the message's own.
+        assert!(
+            html.contains("<img src=\"https://x.test/p.gif\" alt=\"tracker\">"),
+            "{html}"
+        );
+        assert!(html.contains("<img src=\"http://x.test/q.gif\">"), "{html}");
         assert!(html.contains("<img src=\"cid:Logo@X\" alt=\"logo\">"), "{html}");
         // Links: the web's stay, a script's doesn't.
         assert!(
@@ -4024,6 +4840,18 @@ mod tests {
         assert_eq!(sanitize_html("<a href=\" JaVa\tScript:x\">x</a>"), "<a>x</a>");
         assert_eq!(sanitize_html("1 < 2"), "1 &lt; 2");
         assert_eq!(sanitize_html("<img src=\"data:image/svg+xml;base64,AAAA\">"), "");
+        assert_eq!(sanitize_html("<img src=\"file:///C:/a.png\" alt=\"disk\">"), "disk");
+        // The direction and alignment a message says it has stay, and so do the few styles the page draws.
+        assert_eq!(
+            sanitize_html(
+                "<body dir=\"RTL\"><p align=\"center\" style=\"color:red; direction: rtl; background:url(http://x.test/a)\">x</p>"
+            ),
+            "<div dir=\"rtl\"><p align=\"center\" style=\"direction:rtl;\">x</p>"
+        );
+        assert_eq!(
+            sanitize_html("<p dir=\"auto\" style=\"font-weight:expression(1)\">x"),
+            "<p>x"
+        );
         assert!(sanitize_html("<img src=\"data:image/png;base64,AAAA\">").contains("data:image/png"));
         assert_eq!(sanitize_html("<script>never ends"), "");
         assert_eq!(sanitize_html("<p onclick=\"a>b\">x"), "<p>x");
@@ -4066,24 +4894,17 @@ mod tests {
         assert!(message.attachments.is_empty(), "the logo is not a file to open");
         assert_eq!(message.inline.len(), 1);
         assert_eq!(message.inline[0].name, "logo@x", "the Content-ID, cleaned");
-        let pictures = MailPictures::new(message.inline.clone());
-        let made = |src: &str| match pictures.source(src) {
-            ImageSource::Image(image) => image,
-            _ => panic!("{src} is not an image"),
-        };
-        // The cid picture is the message's own (made once); another cid, the web and files are blank.
-        let logo = made("cid:Logo@X");
-        assert!(Arc::ptr_eq(&logo, &made("cid:logo@x")));
-        let blank = made("cid:nothing");
-        assert!(!Arc::ptr_eq(&logo, &blank));
-        for src in [
-            "https://x.test/p.gif",
-            "file:///C:/a.png",
-            "C:\\a.png",
-            "data:image/svg+xml;base64,AAAA",
-        ] {
-            assert!(Arc::ptr_eq(&made(src), &blank), "{src}");
-        }
+        // The page: the message's own picture is in it; the one on the internet waits, showing its alt text; the one
+        // with no alt text is left out.
+        let page = Page::new(&message.html, &message.inline);
+        let shown = pictures_in(&page.document(&HashMap::new()));
+        assert_eq!(shown.len(), 2, "tracker and logo; the unnamed one is left out");
+        assert_eq!((shown[0].alt.as_str(), shown[0].image.is_some()), ("tracker", false));
+        assert_eq!((shown[1].alt.as_str(), shown[1].image.is_some()), ("logo", true));
+        assert_eq!(
+            page.remote_urls(),
+            vec!["https://x.test/p.gif".to_string(), "http://x.test/q.gif".to_string()]
+        );
         // A message with both parts shows the HTML, the TypeScript's choice, and keeps the text for the editor.
         let both = read_email(eml().as_bytes());
         assert!(both.html.contains("<p>Hello"), "{}", both.html);
@@ -4092,6 +4913,243 @@ mod tests {
         let hollow =
             read_email(b"Subject: s\nContent-Type: text/html\n\n<script>alert(1)</script><style>p{}</style>\n");
         assert!(hollow.html.is_empty());
+    }
+
+    /// Every picture of a document, tables included, in order.
+    fn pictures_in(doc: &Document) -> Vec<Picture> {
+        fn walk(blocks: &[Block], out: &mut Vec<Picture>) {
+            for block in blocks {
+                match block {
+                    Block::Picture(picture) => out.push(picture.clone()),
+                    Block::Table(table) => {
+                        for cell in table.rows.iter().flat_map(|row| &row.cells) {
+                            walk(&cell.blocks, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&doc.blocks, &mut out);
+        out
+    }
+
+    /// A message's HTML as the document the view draws.
+    fn page_of(html: &str) -> Document {
+        Page::new(&sanitize_html(html), &[]).document(&HashMap::new())
+    }
+
+    #[test]
+    fn an_html_message_becomes_headings_paragraphs_lists_a_table_and_a_link() {
+        let doc = page_of(
+            "<h1>Quarterly report</h1>\
+             <p>Read <a href=\"https://example.com/x?a=1&amp;b=2\">the full text</a>, <b>bold</b> and <i>italic</i>.\
+             <ul><li>first<li>second</ul>\
+             <table><tr><th>Name<th>Qty<tr><td>Tea<td>2</table>",
+        );
+        assert_eq!(doc.blocks.len(), 5, "{}", doc.plain_text());
+        match &doc.blocks[0] {
+            Block::Heading { level, text } => assert_eq!((*level, text.plain().as_str()), (1, "Quarterly report")),
+            _ => panic!("a heading first"),
+        }
+        let Block::Paragraph(text) = &doc.blocks[1] else {
+            panic!("a paragraph");
+        };
+        assert_eq!(text.plain(), "Read the full text, bold and italic.");
+        let span = |word: &str| {
+            text.spans
+                .iter()
+                .find(|span| span.text == word)
+                .map(|span| span.style.clone())
+        };
+        assert_eq!(
+            span("the full text").and_then(|style| style.link).as_deref(),
+            Some("https://example.com/x?a=1&b=2")
+        );
+        assert!(span("bold").is_some_and(|style| style.bold));
+        assert!(span("italic").is_some_and(|style| style.italic));
+        // A list item the writer never closed still ends where the next begins.
+        for (at, words) in ["first", "second"].into_iter().enumerate() {
+            match &doc.blocks[2 + at] {
+                Block::Item { marker, text, .. } => assert_eq!((marker.as_str(), text.plain().as_str()), ("•", words)),
+                _ => panic!("a list item"),
+            }
+        }
+        let Block::Table(table) = &doc.blocks[4] else {
+            panic!("a table");
+        };
+        assert_eq!(table.rows.len(), 2);
+        assert!(table.rows[0].header && !table.rows[1].header);
+        let cell = |row: usize, at: usize| {
+            table.rows[row].cells[at]
+                .blocks
+                .iter()
+                .map(|block| block.name())
+                .collect::<String>()
+        };
+        assert_eq!(
+            [cell(0, 0), cell(0, 1), cell(1, 0), cell(1, 1)],
+            ["Name", "Qty", "Tea", "2"]
+        );
+    }
+
+    #[test]
+    fn a_picture_written_in_the_html_is_in_the_page_and_a_vector_one_is_not() {
+        let doc = page_of(&format!(
+            "<p>a</p><img src=\"data:image/png;base64,{PNG_1X1}\" alt=\"inline\"><img src=\"data:image/svg+xml;base64,AAAA\" alt=\"vector\">"
+        ));
+        let pictures = pictures_in(&doc);
+        assert_eq!(pictures.len(), 1, "{}", doc.plain_text());
+        assert_eq!(pictures[0].alt, "inline");
+        assert!(pictures[0].image.is_some());
+        // Its own size is known before it is drawn.
+        assert_eq!(pictures[0].size, Some((1, 1)));
+    }
+
+    #[test]
+    fn a_message_that_says_it_runs_right_to_left_does() {
+        let doc = page_of(
+            "<body dir=\"rtl\"><p>مرحبا بالعالم</p><p style=\"direction:ltr\">hello</p><p align=\"center\">وسط</p>",
+        );
+        let texts: Vec<&rich::Text> = doc
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 3);
+        assert_eq!(texts[0].dir, rich::Dir::Rtl);
+        assert_eq!(texts[1].dir, rich::Dir::Ltr);
+        assert_eq!(texts[2].align, rich::Align::Center);
+        assert!(doc.mostly_rtl());
+    }
+
+    #[test]
+    fn tables_that_only_lay_the_page_out_give_their_blocks_to_it() {
+        // One cell with something in it a row (and spacer cells beside it): layout.
+        let doc = page_of(
+            "<table><tr><td></td><td><p>Hello</p><table><tr><td><p>Deep</p></td></tr></table></td><td></td></tr>\
+             <tr><td colspan=\"3\"><p>Footer</p></td></tr></table>",
+        );
+        assert_eq!(doc.plain_text(), "Hello\nDeep\nFooter\n");
+        assert!(doc.blocks.iter().all(|block| !matches!(block, Block::Table(_))));
+        // Two cells with something in them in a row: data, kept as a grid; a layout table inside it goes.
+        let doc = page_of(
+            "<table><tr><td>a</td><td><table><tr><td>b</td></tr></table></td></tr><tr><td>c</td><td>d</td></tr></table>",
+        );
+        let Some(Block::Table(table)) = doc.blocks.first() else {
+            panic!("a grid");
+        };
+        assert_eq!(doc.blocks.len(), 1);
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(doc.plain_text(), "a\tb\nc\td\n");
+    }
+
+    #[test]
+    fn html_is_closed_the_way_a_browser_closes_it() {
+        let xhtml = |html: &str| html_to_xhtml(&sanitize_html(html)).0;
+        let wrapped = |inner: &str| format!("<html><body>{inner}</body></html>");
+        assert_eq!(
+            xhtml("<p>a<p>b<br>c<ul><li>x<li>y</ul>"),
+            wrapped("<p>a</p><p>b<br/>c</p><ul><li>x</li><li>y</li></ul>")
+        );
+        assert_eq!(
+            xhtml("<table><tr><td>a<td>b<tr><td>c</table>"),
+            wrapped("<table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table>")
+        );
+        // An end tag for nothing open is nothing; one for a parent closes what is open inside it.
+        assert_eq!(xhtml("a</div>b</p>c"), wrapped("abc"));
+        assert_eq!(xhtml("<div><b>x</div>y"), wrapped("<div><b>x</b></div>y"));
+        // An end tag cannot reach out of a table cell.
+        assert_eq!(
+            xhtml("<div><table><tr><td>x</div>y</td></tr></table>z"),
+            wrapped("<div><table><tr><td>xy</td></tr></table>z</div>")
+        );
+        // References: names are for the reader, numbers are checked, a bare ampersand is escaped.
+        assert_eq!(
+            xhtml("AT&T &eacute; &#65; &#x42; &#0; &#xD800; &#1114112; a < b"),
+            wrapped("AT&amp;T &eacute; &#65; &#66;    a &lt; b")
+        );
+        // Characters XML cannot hold are left out.
+        assert_eq!(xhtml("a\u{1}b\u{8}c\u{fffe}"), wrapped("abc"));
+        // Pictures are numbered in the order they come, and their addresses told apart.
+        let (xhtml, sources) = html_to_xhtml(&sanitize_html(
+            "<img src=\"cid:%3CLogo%3E\" alt=\"a\"><img src=\"https://x.test/p.png\"><img src=\"data:image/png;base64,AA==\">",
+        ));
+        assert_eq!(
+            sources,
+            vec![
+                Source::Own("<logo>".to_string()),
+                Source::Remote("https://x.test/p.png".to_string()),
+                Source::Written
+            ]
+        );
+        assert!(xhtml.contains(&format!("alt=\"{MARK_OPEN}0{MARK_CLOSE}a\"")), "{xhtml}");
+        assert!(xhtml.contains(&format!("alt=\"{MARK_OPEN}1{MARK_CLOSE}\"")), "{xhtml}");
+    }
+
+    #[test]
+    fn whatever_the_html_the_page_is_made_and_deep_html_is_flattened_not_dropped() {
+        for html in [
+            "<table><div>stray</div><tr><td>cell</table>",
+            "<<>>&&;;<p><b><i></p></b></i>",
+            "<td><tr><li><dt><dd><caption>x",
+            "<a href=\"https://example.com/\"><a href=\"https://example.com/2\">nested</a>",
+            "",
+        ] {
+            let doc = page_of(html);
+            let _ = doc.plain_text();
+        }
+        let deep = format!("{}deep{}", "<div>".repeat(300), "</div>".repeat(300));
+        let (xhtml, _) = html_to_xhtml(&deep);
+        assert!(xhtml.matches("<div>").count() <= XHTML_DEPTH);
+        assert_eq!(page_of(&deep).plain_text(), "deep\n");
+        let nested_tables = format!("{}x{}", "<table><tr><td>".repeat(20), "</td></tr></table>".repeat(20));
+        assert!(page_of(&nested_tables).plain_text().contains('x'));
+    }
+
+    #[test]
+    fn only_addresses_on_the_internet_are_fetched() {
+        for ok in [
+            "https://example.com/a.png",
+            "http://cdn.example.com:8080/x.gif?y=1#z",
+            "http://8.8.8.8/p.gif",
+            "https://[2606:4700::1111]/p.gif",
+        ] {
+            assert!(fetchable(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "ftp://example.com/a.png",
+            "file:///C:/a.png",
+            "https:///a.png",
+            "https://localhost/a.png",
+            "https://app.localhost/a.png",
+            "http://127.0.0.1/a.png",
+            "http://127.1/a.png",
+            "http://10.0.0.5/a.png",
+            "http://192.168.1.1/a.png",
+            "http://172.16.0.9/a.png",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.0.1/a.png",
+            "http://0.0.0.0/a.png",
+            "http://[::1]/a.png",
+            "http://[fd00::1]/a.png",
+            "http://[fe80::1]/a.png",
+            "http://[::ffff:127.0.0.1]/a.png",
+            "http://2130706433/a.png",
+            "http://0x7f.0.0.1/a.png",
+            "http://intranet/a.png",
+            "http://printer.local/a.png",
+            "http://user:secret@example.com/a.png",
+            "http://example.com@evil.test/a.png",
+            "http://exa mple.com/a.png",
+        ] {
+            assert!(!fetchable(bad), "{bad}");
+        }
     }
 
     /// Compressed RTF made the way Outlook does, with a reference into the starting dictionary first.
@@ -4284,6 +5342,214 @@ mod tests {
         testing::set_rtl(false);
     }
 
+    /// A message of text and HTML laid out the way a newsletter is: a layout table, a heading, a link, the sender's
+    /// own logo and a picture on the internet.
+    fn news_eml() -> String {
+        [
+            "From: news@example.com".to_string(),
+            "Subject: News".to_string(),
+            "MIME-Version: 1.0".to_string(),
+            "Content-Type: multipart/alternative; boundary=\"alt\"".to_string(),
+            String::new(),
+            "--alt".to_string(),
+            "Content-Type: text/plain; charset=utf-8".to_string(),
+            String::new(),
+            "Plain version of the news".to_string(),
+            "--alt".to_string(),
+            "Content-Type: multipart/related; boundary=\"rel\"".to_string(),
+            String::new(),
+            "--rel".to_string(),
+            "Content-Type: text/html; charset=utf-8".to_string(),
+            String::new(),
+            "<html><body><table><tr><td><h1>Big news</h1>\
+             <p><a href=\"https://example.com/a\">Read online</a> or <a href=\"javascript:alert(1)\">not</a></p>\
+             <img src=\"cid:logo@x\" alt=\"our logo\">\
+             <img src=\"https://tracker.example.com/open.gif?id=7\" alt=\"banner\">\
+             <script>alert(2)</script><form action=\"https://x.test\"><input name=q></form></td></tr></table>\
+             </body></html>"
+                .to_string(),
+            "--rel".to_string(),
+            "Content-Type: image/png".to_string(),
+            "Content-ID: <logo@x>".to_string(),
+            "Content-Transfer-Encoding: base64".to_string(),
+            String::new(),
+            PNG_1X1.to_string(),
+            "--rel--".to_string(),
+            "--alt--".to_string(),
+            String::new(),
+        ]
+        .join("\r\n")
+    }
+
+    /// Runs the loop until `done` holds (or gives up).
+    fn wait_for(visual: &mut VisualTestContext, what: &str, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
+        for _ in 0..400 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.render_frame(cx));
+            if done(visual) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("never happened: {what}");
+    }
+
+    #[gpui_kit::test]
+    fn an_html_message_is_a_page_with_its_own_picture_and_opens_links_only_on_a_click(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let dir = temp_dir("page");
+        let entry = entry_of(&dir, "news.eml", news_eml().as_bytes());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        cx.update(testing::init);
+        fake_hooks(cx, log.clone(), false);
+        let (view, mut visual) = open(cx, entry, SmallKind::Email, false);
+        settle(&view, &mut visual);
+        // The page: a heading, the links' paragraph, and the logo (the message's own picture, drawn); the script and
+        // the form are nowhere.
+        visual.update(|window, _| {
+            assert_eq!(window.find_by_label("Big news").role(), Some(Role::Heading));
+            assert_eq!(window.find_by_label("Read online or not").role(), Some(Role::Paragraph));
+            assert_eq!(window.find_by_label("our logo").role(), Some(Role::Image));
+            assert_eq!(window.find_by_label("banner").role(), Some(Role::Image));
+        });
+        let drawn = view.read_with(&visual, |v, cx| v.mail_text(cx)).unwrap_or_default();
+        assert!(!drawn.contains("alert") && !drawn.contains("Plain version"), "{drawn}");
+        let pictures = view.read_with(&visual, |v, cx| v.mail_pictures(cx));
+        let logo = pictures.iter().find(|p| p.alt == "our logo");
+        assert!(
+            logo.is_some_and(|p| p.image.is_some()),
+            "the cid picture comes out of the message"
+        );
+        let banner = pictures.iter().find(|p| p.alt == "banner");
+        assert!(
+            banner.is_some_and(|p| p.image.is_none()),
+            "the one on the internet waits"
+        );
+        // Nothing is touched by looking.
+        assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+        // A click on the link opens it, through the hook; the other link is no link at all.
+        visual.update(|window, cx| {
+            window.click_at(
+                ("rich-block", 1usize),
+                gpui_kit::point(gpui_kit::px(8.), gpui_kit::px(8.)),
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        assert_eq!(*log.borrow(), vec!["link https://example.com/a".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn pictures_from_the_internet_are_fetched_only_when_asked(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let dir = temp_dir("fetch");
+        let entry = entry_of(&dir, "news.eml", news_eml().as_bytes());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        cx.update(testing::init);
+        fake_hooks(cx, log.clone(), false);
+        let (view, mut visual) = open(cx, entry, SmallKind::Email, false);
+        settle(&view, &mut visual);
+        let note = "Pictures from the internet aren't loaded, so nobody learns it was opened.";
+        assert!(has(&mut visual, note) && has(&mut visual, "Load pictures"));
+        assert!(!view.read_with(&visual, |v, _| v.pictures_asked()));
+        for _ in 0..5 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.render_frame(cx));
+        }
+        assert!(
+            log.borrow().is_empty(),
+            "nothing is fetched before the button: {:?}",
+            log.borrow()
+        );
+        // The button asks for each picture once.
+        visual.update(|window, cx| window.click("small-mail-load-pictures", cx));
+        wait_for(&mut visual, "the banner arrives", |visual| {
+            view.read_with(visual, |v, cx| {
+                v.mail_pictures(cx)
+                    .iter()
+                    .any(|p| p.alt == "banner" && p.image.is_some())
+            })
+        });
+        assert_eq!(
+            *log.borrow(),
+            vec!["fetch https://tracker.example.com/open.gif?id=7".to_string()]
+        );
+        assert!(view.read_with(&visual, |v, _| v.pictures_asked()));
+        assert!(!has(&mut visual, note) && !has(&mut visual, "Load pictures"));
+        // The page was laid out again with everything in it, the logo too.
+        let pictures = view.read_with(&visual, |v, cx| v.mail_pictures(cx));
+        assert_eq!(pictures.len(), 2);
+        assert!(pictures.iter().all(|p| p.image.is_some()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_picture_that_cannot_be_fetched_says_so(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let dir = temp_dir("fetchfail");
+        let entry = entry_of(&dir, "news.eml", news_eml().as_bytes());
+        cx.update(testing::init);
+        cx.update(|cx| {
+            init_with(
+                cx,
+                Hooks {
+                    save: Rc::new(|_, _| Box::pin(async { Err("no".to_string()) })),
+                    open: Rc::new(|_, _| {}),
+                    fetch: Rc::new(|_| Box::pin(async { Err("The server answered 404".to_string()) })),
+                    link: Rc::new(|_, _| {}),
+                },
+            )
+        });
+        let (view, mut visual) = open(cx, entry, SmallKind::Email, false);
+        settle(&view, &mut visual);
+        visual.update(|window, cx| window.click("small-mail-load-pictures", cx));
+        wait_for(&mut visual, "the failure is told", |visual| {
+            has(visual, "1 picture couldn't be loaded.")
+        });
+        let pictures = view.read_with(&visual, |v, cx| v.mail_pictures(cx));
+        assert!(
+            pictures.iter().any(|p| p.alt == "banner" && p.image.is_none()),
+            "its alt text stays"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_message_with_both_parts_switches_to_the_plain_version_and_back(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let dir = temp_dir("plain");
+        let entry = entry_of(&dir, "news.eml", news_eml().as_bytes());
+        cx.update(testing::init);
+        let (view, mut visual) = open(cx, entry, SmallKind::Email, false);
+        settle(&view, &mut visual);
+        let text = |view: &Entity<SmallPreview>, visual: &VisualTestContext| {
+            view.read_with(visual, |v, cx| v.mail_text(cx)).unwrap_or_default()
+        };
+        assert!(text(&view, &visual).contains("Big news"));
+        assert!(!view.read_with(&visual, |v, _| v.showing_plain()));
+        assert!(has(&mut visual, "Show the plain text version"));
+        visual.update(|window, cx| window.click("small-mail-plain-toggle", cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.render_frame(cx));
+        assert!(view.read_with(&visual, |v, _| v.showing_plain()));
+        assert_eq!(text(&view, &visual).trim(), "Plain version of the news");
+        assert!(has(&mut visual, "Show the formatted version"));
+        // The pictures' button belongs to the page.
+        assert!(!has(&mut visual, "Load pictures"));
+        visual.update(|window, cx| window.click("small-mail-plain-toggle", cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.render_frame(cx));
+        assert!(text(&view, &visual).contains("Big news"));
+        assert!(has(&mut visual, "Load pictures"));
+        // A message of HTML alone has no plain version to switch to.
+        let alone = entry_of(&dir, "alone.eml", html_eml().as_bytes());
+        let (view, mut visual) = open(cx, alone, SmallKind::Email, false);
+        settle(&view, &mut visual);
+        assert!(!has(&mut visual, "Show the plain text version"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ---- The views --------------------------------------------------------------------------------------------------
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -4384,11 +5650,18 @@ mod tests {
 
     fn fake_hooks(cx: &mut TestAppContext, log: Rc<RefCell<Vec<String>>>, fail: bool) {
         let saved = log.clone();
+        let fetched = log.clone();
+        let linked = log.clone();
         let opened = log;
         cx.update(|cx| {
             init_with(
                 cx,
                 Hooks {
+                    fetch: Rc::new(move |url| {
+                        fetched.borrow_mut().push(format!("fetch {url}"));
+                        Box::pin(async move { Ok(rich::TEST_PNG.to_vec()) })
+                    }),
+                    link: Rc::new(move |url, _| linked.borrow_mut().push(format!("link {url}"))),
                     save: Rc::new(move |name, data| {
                         saved.borrow_mut().push(format!("save {name} {} bytes", data.len()));
                         Box::pin(async move {

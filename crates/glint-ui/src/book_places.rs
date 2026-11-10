@@ -10,6 +10,9 @@
 //! **Tests** never touch the real folder: in a test build [`shared`] is in memory only, and tests that want a file
 //! make a [`BookPlaces`] on a temp folder with [`BookPlaces::load`].
 //!
+//! **Importing the old app's places:** the first start of this app writes this file from the old reader's
+//! `localStorage` ([`import_old`], called by `old_settings`).
+//!
 //! **Wiring (coordinator):** `pub mod book_places;` in lib.rs; `book_places::shared().flush()` where the app
 //! flushes its state on quit (optional: a change is written half a second after it settles either way).
 
@@ -302,6 +305,44 @@ impl BookPlaces {
     }
 }
 
+/// Writes the places and text size the old app kept in WebView2's `localStorage` to `path`, as this file, if
+/// there is no file there yet (`places` oldest first, keyed as [`BookPlaces`] keys them; `size` in percent, clamped
+/// like [`BookPlaces::set_text_size`]). Whether a file was written; nothing is written when there is nothing worth
+/// keeping (no places and the default size).
+pub fn import_old(path: &Path, places: &[(String, Place)], size: Option<u32>) -> bool {
+    if path.exists() {
+        return false;
+    }
+    let size = size.map_or(DEFAULT_SIZE, |s| s.clamp(MIN_SIZE, MAX_SIZE));
+    let mut kept: Vec<(String, Place)> = Vec::new();
+    for (book, place) in places {
+        let key = book.to_lowercase();
+        kept.retain(|(k, _)| *k != key);
+        kept.push((key, *place));
+    }
+    let extra = kept.len().saturating_sub(KEEP);
+    kept.drain(..extra);
+    if kept.is_empty() && size == DEFAULT_SIZE {
+        return false;
+    }
+    let saved = Saved {
+        version: 1,
+        size,
+        places: kept
+            .into_iter()
+            .map(|(path, place)| SavedPlace {
+                path,
+                chapter: place.chapter,
+                block: place.block,
+            })
+            .collect(),
+    };
+    match serde_json::to_string(&saved) {
+        Ok(text) => write_atomically(path, &text),
+        Err(_) => false,
+    }
+}
+
 fn write_atomically(path: &Path, text: &str) -> bool {
     // A secondary window keeps nothing of its own: its places count as saved, so nothing retries.
     if crate::platform::secondary::is_secondary() {
@@ -448,6 +489,42 @@ mod tests {
         let places = BookPlaces::load(Some(folder.file()));
         assert_eq!(places.text_size(), 200);
         assert_eq!(places.place("c:\\x.epub"), Some(Place { chapter: 1, block: 2 }));
+    }
+
+    #[test]
+    fn old_places_are_imported_once_into_a_file_that_is_not_there_yet() {
+        let folder = Folder::new("import");
+        let old = vec![
+            (r"C:\Books\A.epub".to_string(), Place { chapter: 1, block: 0 }),
+            (r"c:\books\b.epub".to_string(), Place { chapter: 5, block: 0 }),
+            (r"c:\books\a.epub".to_string(), Place { chapter: 2, block: 0 }),
+        ];
+        assert!(import_old(&folder.file(), &old, Some(500)));
+        let places = BookPlaces::load(Some(folder.file()));
+        assert_eq!(places.text_size(), 200);
+        assert_eq!(
+            places.place(r"c:\books\a.epub"),
+            Some(Place { chapter: 2, block: 0 }),
+            "the later one wins"
+        );
+        assert_eq!(places.place(r"C:\Books\B.epub"), Some(Place { chapter: 5, block: 0 }));
+        // A file that is there is left alone.
+        assert!(!import_old(&folder.file(), &[], Some(150)));
+        assert_eq!(BookPlaces::load(Some(folder.file())).text_size(), 200);
+        // Nothing worth keeping writes nothing.
+        let other = Folder::new("import-nothing");
+        assert!(!import_old(&other.file(), &[], None));
+        assert!(!import_old(&other.file(), &[], Some(100)));
+        assert!(!other.file().exists());
+        // Only the last 200 books are kept.
+        let many: Vec<(String, Place)> = (0..250)
+            .map(|i| (format!(r"C:\many\{i}.epub"), Place { chapter: i, block: 0 }))
+            .collect();
+        let third = Folder::new("import-many");
+        assert!(import_old(&third.file(), &many, None));
+        let places = BookPlaces::load(Some(third.file()));
+        assert_eq!(places.place(r"c:\many\49.epub"), None);
+        assert_eq!(places.place(r"c:\many\50.epub").map(|p| p.chapter), Some(50));
     }
 
     #[test]
