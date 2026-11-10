@@ -224,18 +224,16 @@
 
 **Build folder:** since 2026-11-10, `target/ui` is a junction to `E:\glint-gpui-target\ui`. E: is on the same NVMe drive and has 104 GB free, so C: keeps its room. Paths didn't change, so nothing was rebuilt.
 
-## Who works where (since 2026-11-10)
+## Antigravity (2026-11-10): closed before it started
 
-| Lane | Who | Folder | Branch | Owns | Status |
-|---|---|---|---|---|---|
-| Coordinator and the Sonnet swarm | Claude Code | `.claude\worktrees\gpui-migration` | `gpui-migration` | everything not listed below | waves 1–12 done |
-| Antigravity | Antigravity's agent (the user's credits) | `D:\glint-antigravity` | `gpui-antigravity` | each task's "You own" list in [ANTIGRAVITY.md](ANTIGRAVITY.md): AG-1 parity audit, AG-2 the service into `crates/shadui-index`, AG-3 the release pipeline, AG-4 Arabic (only on the user's word) | AG-1 not started |
+The user offered Antigravity to share the work. It hit its rate limit before doing anything; it left only an empty report. Its lane is closed and its worktree and branch are removed.
 
-**Rules for the lane split:** while a task is open, the swarm's prompts list its files as not theirs to touch. Antigravity commits only to `gpui-antigravity`, with an `Agent: Antigravity` last line, and keeps `docs/gpui/antigravity/AG-<n>.md` and `LOG.md`.
+Its brief is in commit 86c5c9b (`docs/gpui/ANTIGRAVITY.md`). Those tasks come back here:
 
-**To review:** `git log --oneline gpui-migration..gpui-antigravity`, `git diff gpui-migration...gpui-antigravity --stat`, the reports. Then the full tests here, and `git merge --no-ff gpui-antigravity`.
-
-**Merged from Antigravity up to:** nothing yet.
+- **AG-2:** move the service into `crates/shadui-index`. Goes to the swarm as wave 14.
+- **AG-3:** the release pipeline for the GPUI build, the notices and the MSIX. Also wave 14.
+- **AG-1, the parity audit:** done here instead, by scripts first. They list the strings and commands the TypeScript app has that the GPUI app lacks.
+- **Arabic:** still waits on the user.
 
 ## Coming waves (order follows the dependencies)
 
