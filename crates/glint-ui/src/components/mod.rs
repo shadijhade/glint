@@ -8,6 +8,8 @@ pub mod address_bar;
 pub mod columns_view;
 /// The command bar under the address bar: New, Cut, Copy, Paste, Rename, Delete, Sort, View... (CommandBar.tsx).
 pub mod command_bar;
+/// The compare bar over each pane while the panes are compared, with the deeper comparison (wave 14).
+pub mod compare_bar;
 /// The copy queue: jobs, progress, pause, cancel, questions (CopyQueue.tsx).
 pub mod copy_queue;
 /// The disk usage map of a folder or drive (DiskUsage.tsx, diskUsage.ts).
