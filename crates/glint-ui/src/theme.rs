@@ -453,7 +453,14 @@ pub fn apply(cx: &mut App) {
     // gpui-component loads its registered theme for the mode, and only then are colors edited (its docs:
     // "edit colors in a second update after switching mode").
     Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
+    // Notices at the bottom end, as the web app's Toaster had them (`position="bottom-right"`), clear of the toolbar.
+    let notices_at = if crate::i18n::is_rtl() {
+        gpui_kit::Anchor::BottomLeft
+    } else {
+        gpui_kit::Anchor::BottomRight
+    };
     Theme::update(cx, |theme| {
+        theme.notification.placement = notices_at;
         theme.font_family = sans;
         theme.mono_font_family = mono;
         theme.font_size = font_size;
