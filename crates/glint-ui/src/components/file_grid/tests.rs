@@ -39,8 +39,21 @@ struct Env {
 }
 
 fn env(cx: &mut TestAppContext, disk: &FakeDisk, thumbs: Rc<Fake>) -> Env {
+    env_with(cx, disk, thumbs, None)
+}
+
+/// [`env`] on a fake Git, if there is one.
+fn env_with(
+    cx: &mut TestAppContext,
+    disk: &FakeDisk,
+    thumbs: Rc<Fake>,
+    git: Option<&crate::components::file_list::fake_git::FakeGit>,
+) -> Env {
     cx.update(testing::init);
     cx.update(|cx| explorer::init_with(cx, disk.source()));
+    if let Some(git) = git {
+        cx.update(|cx| git.install(cx));
+    }
     let source: Rc<dyn ThumbSource> = Rc::new(thumbs);
     let service = cx.update(|cx| thumbnail::init_with(cx, source));
     let explorer = cx.update(|cx| explorer::explorer(cx));
@@ -163,6 +176,8 @@ impl Env {
             .update(|window, cx| window.dispatch_action(action.boxed_clone(), cx));
     }
 }
+
+mod marks;
 
 fn plain() -> Rc<Fake> {
     Rc::new(Fake::default())

@@ -36,6 +36,7 @@
 //! in the icon cell.
 
 mod cells;
+pub mod diff;
 #[cfg(test)]
 pub(crate) mod fake_git;
 mod header;
@@ -57,7 +58,8 @@ use crate::actions;
 use crate::components::file_grid::thumbnail::{self, Thumbnails};
 use crate::components::git;
 use crate::explorer::{
-    self, Explorer, ExplorerEvent, FindRun, LoadState, NavOptions, NoAccess, Rows, Selection, TabId, ViewMode,
+    self, Comparison, Explorer, ExplorerEvent, FindRun, LoadState, NavOptions, NoAccess, Rows, Selection, TabId,
+    ViewMode,
 };
 use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
@@ -219,6 +221,10 @@ pub(crate) struct TabView {
     pub measuring: bool,
     /// What Git says of the folder's items (none outside a repository, and for search results).
     pub git: Option<Arc<GitMarks>>,
+    /// How the items differ from the other pane's, while the panes are compared (none otherwise).
+    pub diffs: Option<Arc<Comparison>>,
+    /// "Diff only" is on: the identical items are left out.
+    pub diff_only: bool,
 }
 
 /// Says where an item is, in a list of items from many folders.
@@ -242,6 +248,8 @@ pub(crate) struct Frame {
     pub measuring: bool,
     /// What Git says of the folder's items (lowercase name to mark): a pill after the name, ignored ones dimmed.
     pub git: Option<Arc<GitMarks>>,
+    /// How the items differ from the other pane's (compare panes): a pill after the name, the same ones dimmed.
+    pub diffs: Option<Arc<Comparison>>,
     pub flashed: Arc<HashSet<String>>,
     pub now: i64,
     /// Items cut to the clipboard: dimmed until pasted (`cut`).
@@ -385,6 +393,7 @@ impl FileList {
                 sizes: None,
                 measuring: false,
                 git: None,
+                diffs: None,
                 flashed: Arc::new(HashSet::new()),
                 now: 0,
                 cut: Arc::new(HashSet::new()),
@@ -496,6 +505,8 @@ impl FileList {
             sizes: sizes.map(|run| run.sizes.clone()),
             measuring: sizes.is_some_and(|run| run.running),
             git: marks_in(cx, tab.id, &tab.path).filter(|_| plain),
+            diffs: explorer.comparison_of(tab.id).filter(|_| plain),
+            diff_only: explorer.diff_only,
         })
     }
 
@@ -1010,12 +1021,21 @@ impl FileList {
 
 /// What Git says of the items of `tab`'s folder `path`: not the marks it still holds of the folder the tab was in
 /// before, while the new one is being looked at.
-fn marks_in(cx: &App, tab: TabId, path: &str) -> Option<Arc<GitMarks>> {
+pub(crate) fn marks_in(cx: &App, tab: TabId, path: &str) -> Option<Arc<GitMarks>> {
     let run = git::try_shared(cx)?.read(cx).run(tab)?;
     if !same_path(&run.folder, path) {
         return None;
     }
     run.view.as_ref().map(|view| view.marks.clone())
+}
+
+impl Frame {
+    /// The item is the same as its namesake in the other pane (compare panes).
+    pub(crate) fn same_as_other(&self, entry: &FileEntry) -> bool {
+        self.diffs
+            .as_ref()
+            .is_some_and(|diffs| diffs.status(entry) == Some(glint_model::entries::DiffStatus::Same))
+    }
 }
 
 impl Focusable for FileList {
@@ -1063,6 +1083,7 @@ impl Render for FileList {
             sizes: view.sizes.clone(),
             measuring: view.measuring,
             git: view.git.clone(),
+            diffs: view.diffs.clone(),
             flashed,
             now: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

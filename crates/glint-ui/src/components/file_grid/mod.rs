@@ -56,7 +56,7 @@
 //!
 //! # Not here yet
 //!
-//! Each is marked `PORT ME(<part>)` where it belongs: renaming in place, the diff and Git badges, and the search's,
+//! Each is marked `PORT ME(<part>)` where it belongs: renaming in place, and the search's,
 //! Gallery's and Recent's empty states. A folder's tile says its size once "Folder sizes" measured it, and "…" while
 //! that runs (`Explorer::size_run`). The context menu's content is the workspace's: the
 //! grid only emits [`FileGridEvent::ContextMenu`] (from the keyboard at the focused tile's bottom-start corner).
@@ -249,6 +249,10 @@ impl FileGrid {
                 }
             }),
         ];
+        // Git's marks arrived or changed: the pills on the tiles, and the faded ignored ones, are drawn again.
+        if let Some(model) = crate::components::git::try_shared(cx) {
+            subscriptions.push(cx.observe(&model, |_, _, cx| cx.notify()));
+        }
         let service = thumbs.clone();
         subscriptions.push(cx.on_release(move |_, cx| {
             service.update(cx, |thumbs, cx| thumbs.release(id, cx));
@@ -1124,6 +1128,13 @@ impl Render for FileGrid {
         // The sizes "Folder sizes" measured for this folder (a search's results come from many folders).
         let run = explorer.size_run(&tab.path).filter(|_| !search);
         let (sizes, measuring) = (run.map(|run| run.sizes.clone()), run.is_some_and(|run| run.running));
+        // What Git says of the folder's items, and how they differ from the other pane's (search results have neither).
+        let git = super::file_list::marks_in(cx, tab_id, &tab.path).filter(|_| !search);
+        let diffs = explorer.comparison_of(tab_id).filter(|_| !search);
+        let diff_same = diffs
+            .as_ref()
+            .filter(|_| explorer.diff_only)
+            .map_or(0, |diffs| diffs.same);
 
         // The layout: tiles from the tile-size setting and the text size, as many to a row as the width holds.
         let tile = tile_layout(rem, state::settings(cx).tile_size.as_str());
@@ -1230,6 +1241,8 @@ impl Render for FileGrid {
             located,
             sizes,
             measuring,
+            git,
+            diffs,
             recycled,
             gallery,
             scope,
@@ -1265,7 +1278,8 @@ impl Render for FileGrid {
         } else {
             t!("Files")
         };
-        let empty = (rows.is_empty() && has_listing).then(|| empty::Empty::of(&filter, recycled, listed, archive));
+        let empty =
+            (rows.is_empty() && has_listing).then(|| empty::Empty::of(&filter, recycled, listed, archive, diff_same));
 
         let body = div()
             .id("file-grid-body")

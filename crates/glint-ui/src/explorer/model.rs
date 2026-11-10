@@ -156,6 +156,8 @@ pub struct Explorer {
     pub(super) archives: super::archive::ArchiveState,
     /// The menu actions' state: the folder sizes measured, the remotes shown in File Explorer.
     pub(super) actions: super::actions::ActionState,
+    /// Compare panes: each pane's answer ([`Explorer::comparison_of`]).
+    pub(super) compare: super::compare::CompareState,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -209,6 +211,7 @@ impl Explorer {
             searching: Default::default(),
             archives: Default::default(),
             actions: Default::default(),
+            compare: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -393,6 +396,7 @@ impl Explorer {
         self.save_session(cx);
         self.hint_startup(cx);
         self.report_folder();
+        self.refresh_comparison(cx);
         cx.notify();
     }
 
@@ -529,6 +533,8 @@ impl Explorer {
     /// The settings (or the folders' own views) changed: sort, group, columns and rows follow.
     pub(super) fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
         self.refresh_views(cx);
+        // Show hidden items changes what is compared.
+        self.refresh_comparison(cx);
         cx.notify();
     }
 
@@ -624,6 +630,7 @@ impl Explorer {
             // A listing arrives sorted; a search's results are sorted here.
             presorted: tab.find.is_none(),
             sizes: self.row_sizes(tab),
+            diffs: self.diff_filter(id),
             // Search results have no marks (`useGit(...).view.marks` is undefined while a search shows).
             git: tab
                 .git
@@ -758,6 +765,7 @@ fn is_plain(spec: &RowSpec) -> bool {
         && !spec.sort.desc
         && spec.filter.trim().is_empty()
         && spec.group == GroupBy::None
+        && spec.diffs.is_none()
 }
 
 /// Now, in milliseconds since the Unix epoch.

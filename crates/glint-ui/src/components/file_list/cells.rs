@@ -176,7 +176,16 @@ impl FileList {
             Some(rename) => name_cell.child(self.rename_input(rename, cx)),
             None => name_cell.child(div().min_w_0().truncate().child(isolate(entry.name.clone()))),
         };
-        // PORT ME(compare): the "Only here / Newer / Different / Older" badges (the Git badge goes after them).
+        // How the item differs from its namesake in the other pane (compare panes), then Git's pill.
+        let diff = frame.diffs.as_ref().and_then(|diffs| diffs.status(entry));
+        if let Some(badge) = diff.and_then(super::diff::diff_badge) {
+            name_cell = name_cell.child(super::diff::badge_element(
+                ("file-list-diff", i),
+                &entry.name,
+                &badge,
+                cx,
+            ));
+        }
         if let Some(badge) = &tracked.badge {
             name_cell = name_cell.child(git::row::badge_element(("file-list-git", i), &entry.name, badge, cx));
         }
@@ -294,6 +303,10 @@ impl FileList {
         }
         if let Some(opacity) = dimness(dim, dragged) {
             line = line.opacity(opacity);
+        }
+        // Identical in both panes: dimmed (`opacity-60`, which wins over the other dimming) unless selected.
+        if !selected && frame.same_as_other(entry) {
+            line = line.opacity(super::diff::SAME_OPACITY);
         }
         if focused {
             line = line.aria_active_descendant();
