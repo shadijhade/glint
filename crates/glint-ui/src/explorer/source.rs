@@ -7,12 +7,16 @@
 //! future the model awaits in a GPUI task: [`CoreSource`] runs them on core's runtime through
 //! [`core_bridge::run`], so the UI thread never waits, and decodes big listings off the UI thread too.
 
+use super::find_types::{FindOptions, Found, SearchIndex};
 use super::ops_types::*;
 use super::types::*;
 use crate::core_bridge;
+use glint_core::host::ipc::{Channel, InvokeResponseBody};
 use glint_core::host::{AppHandle, Manager as _, Window};
+use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 /// A future the model awaits on the UI thread (so it needn't be `Send`).
 pub type Fut<T> = Pin<Box<dyn Future<Output = T>>>;
@@ -101,6 +105,23 @@ pub trait Source {
     fn new_file(&self, folder: &str, ext: &str) -> Fut<Result<Option<String>, String>>;
     /// Ejects a drive: a USB drive made safe to remove, a mounted disc image, a disc (`ejectDrive`).
     fn eject(&self, path: &str) -> Fut<Result<(), String>>;
+
+    // ---- Searching -----------------------------------------------------------------------------------
+
+    /// Starts a name search of `roots` for `query` in `lane` (`findFiles`): the stream of what it says, ending
+    /// with the search. Each tab searches in its own lane (its id), so a newer search in a tab ends that tab's
+    /// older one and no other. An `Err` is a query core refuses (a bad filter, nothing to look for).
+    fn find(
+        &self,
+        lane: &str,
+        roots: Vec<String>,
+        query: String,
+        options: FindOptions,
+    ) -> Fut<Result<async_channel::Receiver<Found>, String>>;
+    /// Ends the lane's search, if one runs (`cancelFind`). A search started after this call isn't touched by it.
+    fn cancel_find(&self, lane: &str);
+    /// How instant search stands (`IndexInfo`), or `None` when that can't be said.
+    fn search_index(&self) -> Fut<Option<SearchIndex>>;
 }
 
 // ---- Core ------------------------------------------------------------------------------------------------
@@ -108,12 +129,18 @@ pub trait Source {
 /// [`Source`] backed by glint-core.
 pub struct CoreSource {
     app: AppHandle,
+    /// Searches being ended on a blocking thread: a search started after waits for them, so a late Stop can't
+    /// end the new search in the same lane.
+    cancels: Arc<Mutex<Vec<async_channel::Receiver<()>>>>,
 }
 
 impl CoreSource {
     /// A source for the app handle `core_bridge::init` made (`cx.global::<Core>().app.clone()`).
     pub fn new(app: AppHandle) -> Self {
-        CoreSource { app }
+        CoreSource {
+            app,
+            cancels: Arc::default(),
+        }
     }
 
     /// The window shell dialogs and watchers belong to: the main window, else any.
@@ -334,6 +361,82 @@ impl Source for CoreSource {
         Box::pin(async move { running.await? })
     }
 
+    fn find(
+        &self,
+        lane: &str,
+        roots: Vec<String>,
+        query: String,
+        options: FindOptions,
+    ) -> Fut<Result<async_channel::Receiver<Found>, String>> {
+        let (sender, receiver) = async_channel::unbounded::<Found>();
+        // Runs on core's search thread, so decoding never touches the UI thread.
+        let channel: Channel = Channel::new(move |message| {
+            if let Some(found) = found_from(message) {
+                sender
+                    .try_send(found)
+                    .map_err(|_| glint_core::host::Error::from("the search was left"))?;
+            }
+            Ok(())
+        });
+        let waits = std::mem::take(&mut *self.cancels.lock().unwrap_or_else(|e| e.into_inner()));
+        let (app, lane) = (self.app.clone(), lane.to_string());
+        let running = core_bridge::run(async move {
+            for wait in waits {
+                // Closed when that search's end is done.
+                let _ = wait.recv().await;
+            }
+            let state = app
+                .try_state::<glint_core::AppState>()
+                .ok_or_else(|| "Glint's search isn't ready yet".to_string())?;
+            let options = glint_core::find::FindOptions {
+                hidden: options.hidden,
+                respect_ignore: options.respect_ignore,
+                exclude: options.exclude,
+                max_results: options.max_results,
+                fuzzy: options.fuzzy,
+                rank: options.rank,
+            };
+            glint_core::find::find_files(state, roots, query, options, channel, lane).await
+        });
+        Box::pin(async move { running.await.and_then(|started| started).map(|()| receiver) })
+    }
+
+    fn cancel_find(&self, lane: &str) {
+        let (done, wait) = async_channel::bounded::<()>(1);
+        {
+            let mut cancels = self.cancels.lock().unwrap_or_else(|e| e.into_inner());
+            cancels.retain(|w| !w.is_closed());
+            cancels.push(wait);
+        }
+        let (app, lane) = (self.app.clone(), lane.to_string());
+        // Ending a search kills fd's process: not on the UI thread.
+        glint_core::host::async_runtime::spawn_blocking(move || {
+            if let Some(state) = app.try_state::<glint_core::AppState>() {
+                glint_core::find::cancel_find(state, lane);
+            }
+            drop(done);
+        });
+    }
+
+    fn search_index(&self) -> Fut<Option<SearchIndex>> {
+        let running = core_bridge::run(glint_core::index::index_status());
+        Box::pin(async move {
+            let info = running.await.ok()?.ok()?;
+            let on = info.state == "on";
+            Some(SearchIndex {
+                on,
+                can_turn_on: matches!(info.state, "off" | "stopped"),
+                outdated: SearchIndex::outdated_by(on, info.version.as_deref(), info.app_version),
+                ready: info
+                    .volumes
+                    .iter()
+                    .filter(|v| v.state == "ready")
+                    .map(|v| v.volume.to_uppercase())
+                    .collect(),
+            })
+        })
+    }
+
     fn effect(&self, effect: Effect) {
         match effect {
             Effect::ReportFolder(path) => glint_core::dialogs::report_folder(path),
@@ -343,6 +446,49 @@ impl Source for CoreSource {
             }
             Effect::BenchFirstFolder => glint_core::startup::bench_first_folder(self.app.clone()),
             Effect::ZoxideAdd(path) => glint_core::zoxide::zoxide_add(path),
+        }
+    }
+}
+
+/// What `find_files` reports besides results, as JSON (find.rs's `FindEvent`).
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum CoreFindEvent {
+    Started {
+        engine: String,
+    },
+    Error {
+        message: String,
+    },
+    Finished {
+        count: usize,
+        elapsed: f64,
+        limited: bool,
+        fuzzy: bool,
+    },
+}
+
+/// A message from core's search as a [`Found`]. Anything it can't read is dropped.
+fn found_from(message: InvokeResponseBody) -> Option<Found> {
+    match message {
+        InvokeResponseBody::Json(json) => Some(match serde_json::from_str::<CoreFindEvent>(&json).ok()? {
+            CoreFindEvent::Started { engine } => Found::Started { engine },
+            CoreFindEvent::Error { message } => Found::Error(message),
+            CoreFindEvent::Finished {
+                count,
+                elapsed,
+                limited,
+                fuzzy,
+            } => Found::Finished {
+                count,
+                elapsed,
+                limited,
+                fuzzy,
+            },
+        }),
+        InvokeResponseBody::Raw(bytes) => {
+            let items = glint_model::entries::decode_items(&bytes).ok()?;
+            Some(Found::Entries(items.entries))
         }
     }
 }

@@ -476,7 +476,7 @@ impl AddressBar {
                 div()
                     .absolute()
                     .top_full()
-                    .mt(px(4.))
+                    .mt(space(1.))
                     .when(rtl, |d| d.right_0())
                     .when(!rtl, |d| d.left_0())
                     .child(

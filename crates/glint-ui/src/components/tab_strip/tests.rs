@@ -21,10 +21,18 @@ fn disk() -> FakeDisk {
 
 /// The strip in a window over an explorer on the fake disk, in English or Arabic.
 fn open(cx: &mut TestAppContext, rtl: bool) -> (VisualTestContext, Entity<TabStrip>) {
+    let (visual, strip, _) = open_on_disk(cx, rtl);
+    (visual, strip)
+}
+
+/// The same, with the fake disk, to see what was done to it.
+fn open_on_disk(cx: &mut TestAppContext, rtl: bool) -> (VisualTestContext, Entity<TabStrip>, FakeDisk) {
     cx.update(testing::init);
-    cx.update(|cx| explorer::init_with(cx, disk().source()));
+    let disk = disk();
+    cx.update(|cx| explorer::init_with(cx, disk.source()));
     testing::set_rtl(rtl);
-    testing::open_window(cx, |window, cx| cx.new(|cx| TabStrip::new(window, cx)))
+    let (visual, strip) = testing::open_window(cx, |window, cx| cx.new(|cx| TabStrip::new(window, cx)));
+    (visual, strip, disk)
 }
 
 fn ex(cx: &mut VisualTestContext) -> Entity<Explorer> {
@@ -296,4 +304,182 @@ fn drives_are_named_in_the_interface_language() {
         ..drive
     };
     assert_eq!(drive_title(&wsl), "Ubuntu (WSL)");
+}
+
+// ---- Files dragged over tabs ------------------------------------------------------------------------
+
+use crate::drops;
+use crate::explorer::FileOp;
+use crate::platform::dragdrop::{DropAnswers, DropEvent};
+use std::time::Duration;
+
+/// The middle of the element with this id, from a fresh frame.
+fn middle(cx: &mut VisualTestContext, id: &'static str) -> (f32, f32) {
+    let b = bounds(cx, id);
+    (
+        f32::from(b.origin.x + b.size.width / 2.),
+        f32::from(b.origin.y + b.size.height / 2.),
+    )
+}
+
+fn drag_event(cx: &mut VisualTestContext, answers: &DropAnswers, event: DropEvent) {
+    cx.update(|window, cx| drops::dispatch(event, answers, window, cx));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn files_held_over_a_hidden_tab_open_it_after_a_moment_and_a_drop_goes_into_its_folder(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _, disk) = open_on_disk(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
+    assert_eq!(active(&mut cx), TabId(3));
+    let answers = DropAnswers::default();
+    let files = vec!["C:\\a\\one.txt".to_string()];
+    let (x, y) = middle(&mut cx, "tab-2");
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Enter {
+            paths: files.clone(),
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Over {
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    match answers.get() {
+        Answer::Accept(under) => assert_eq!(under.name, "a"),
+        other => panic!("the tab under the pointer should take the drop, got {other:?}"),
+    }
+    assert_eq!(active(&mut cx), TabId(3), "not yet");
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(active(&mut cx), TabId(2), "the tab opened under the held files");
+
+    // Dropped on the tab for B (now hidden): the files are copied into its folder.
+    let (x, y) = middle(&mut cx, "tab-3");
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Over {
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Drop {
+            paths: files.clone(),
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    assert!(
+        disk.ops().iter().any(|op| matches!(op, FileOp::Copy { sources, dest }
+            if sources == &files && dest == "C:\\b")),
+        "the files were copied into B, got {:?}",
+        disk.ops()
+    );
+}
+
+#[gpui_kit::test]
+fn files_dropped_on_a_tab_with_an_arabic_folder_move_there_with_the_move_effect_in_arabic(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _, disk) = open_on_disk(cx, true);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\تقارير"), cx));
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    let answers = DropAnswers::default();
+    let files = vec!["C:\\a\\one.txt".to_string()];
+    let (x, y) = middle(&mut cx, "tab-2");
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Enter {
+            paths: files.clone(),
+            x,
+            y,
+            effect: DropEffect::Move,
+        },
+    );
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Over {
+            x,
+            y,
+            effect: DropEffect::Move,
+        },
+    );
+    assert!(matches!(answers.get(), Answer::Accept(under) if under.name == "تقارير"));
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Drop {
+            paths: files.clone(),
+            x,
+            y,
+            effect: DropEffect::Move,
+        },
+    );
+    assert!(
+        disk.ops()
+            .iter()
+            .any(|op| matches!(op, FileOp::Move { dest, .. } if dest == "C:\\تقارير")),
+        "moved into the Arabic folder, got {:?}",
+        disk.ops()
+    );
+}
+
+#[gpui_kit::test]
+fn the_first_tab_of_this_pc_refuses_files(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    let answers = DropAnswers::default();
+    let (x, y) = middle(&mut cx, "tab-1");
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Enter {
+            paths: vec!["C:\\a\\one.txt".into()],
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    drag_event(
+        &mut cx,
+        &answers,
+        DropEvent::Over {
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    assert_eq!(answers.get(), Answer::Refuse);
+}
+
+#[gpui_kit::test]
+fn the_new_tab_button_follows_the_last_tab(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    let last = bounds(&mut cx, "tab-2");
+    let plus = snapshot(&mut cx, "New tab").unwrap().2;
+    assert!(
+        plus.origin.x >= last.origin.x + last.size.width && plus.origin.x - (last.origin.x + last.size.width) < px(40.),
+        "the + sits right after the last tab, not at the far end"
+    );
 }

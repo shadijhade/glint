@@ -10,9 +10,14 @@
 //! this folder" popover with its breakdown, filter chips and "How long it took". StatusBar.tsx has no view switch
 //! and no zoom (those live in the toolbar), so the bar has neither.
 //!
-//! **Not yet** (each comes with its part, marked `PORT ME` where it belongs): the thumbnail run (file grid), Git
-//! status (git), the folder sizes and the disk-usage map (disk usage), and the X-Ray, batch rename and Zip buttons.
-//! Those buttons are left out until their parts exist.
+//! The thumbnails' line (`N thumbnails in X`) comes from the file grid's burst for the tab, and shows only while the
+//! tab shows the grid, as the TypeScript did.
+//!
+//! **Keyboard.** The breakdown's segments are tab stops: Enter or Space filters to the kind, as a click does.
+//!
+//! **Not yet** (each comes with its part, marked `PORT ME` where it belongs): Git status (git), the folder sizes and
+//! the disk-usage map (disk usage), and the X-Ray, batch rename and Zip buttons. Those buttons are left out until
+//! their parts exist.
 //!
 //! **Narrow windows.** The TypeScript used container queries (`@lg:` and so on) to drop the least important words
 //! first. GPUI has none, so the bar reads the window's width in rems instead: the same breakpoints, measured on the
@@ -23,11 +28,15 @@ mod summary;
 #[cfg(test)]
 mod tests;
 
+use crate::components::file_grid::thumbnail::{self, Thumbnails};
 use crate::explorer::{self, Explorer};
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
 use index::{Index, IndexModel, Source, Volume};
-use summary::{chip_active, chip_title, counts, drives, items, segment_title, stages, Category, Summary, Work};
+use summary::{
+    chip_active, chip_title, counts, drives, items, segment_title, stages, thumbs_line, thumbs_stage, thumbs_title,
+    Category, Summary, Thumbs, Work,
+};
 
 /// The widths the bar drops words at, in rems (the TypeScript's `@2xs`, `@md`, `@lg` and `@xl` containers).
 const TWO_XS: f32 = 18.;
@@ -54,6 +63,10 @@ pub struct StatusBar {
     details_focus: FocusHandle,
     /// Turning instant search on is under way; the button waits for it.
     enabling: bool,
+    /// The file grid's thumbnails: the bar reads the tab's burst from them.
+    thumbs: Entity<Thumbnails>,
+    /// One focus handle per segment of the breakdown, so the keyboard can reach them (kept across frames).
+    segment_focus: Vec<FocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -75,6 +88,7 @@ impl StatusBar {
         let source = index::shared_source(cx);
         let model = cx.new(move |_| IndexModel::new(source));
         model.update(cx, |model, cx| model.refresh(cx));
+        let thumbs = thumbnail::thumbnails(cx);
         let subscriptions = vec![
             // Any change to the explorer may change what the bar says; the summary is made on the next frame.
             cx.observe(&explorer, |this: &mut Self, _, cx| {
@@ -85,6 +99,8 @@ impl StatusBar {
                 this.index_info = model.read(cx).info().cloned();
                 cx.notify();
             }),
+            // A thumbnail that arrives changes the thumbnails' line.
+            cx.observe(&thumbs, |_: &mut Self, _, cx| cx.notify()),
         ];
         StatusBar {
             explorer,
@@ -96,6 +112,8 @@ impl StatusBar {
             dismissed_at: None,
             details_focus: cx.focus_handle(),
             enabling: false,
+            thumbs,
+            segment_focus: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -229,19 +247,38 @@ fn tint(color: Hsla, alpha: f32) -> Hsla {
     color.opacity(alpha)
 }
 
+impl StatusBar {
+    /// The thumbnails of the items on screen: the tab's burst, when the tab shows the grid and some came
+    /// (`thumbsHere` in StatusBar.tsx). Read every frame, because the service changes while the grid fills.
+    fn thumbs_here(&self, cx: &App) -> Option<Thumbs> {
+        let s = &self.summary;
+        if s.thumbs_scope.is_empty() {
+            return None;
+        }
+        let run = self.thumbs.read(cx).run(&s.lane)?;
+        (run.scope == s.thumbs_scope && run.found > 0).then(|| Thumbs::of(run))
+    }
+}
+
 impl Render for StatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.dirty {
             self.refresh_summary(cx);
         }
+        // One focus handle per segment of the breakdown, kept across frames so the keyboard stays where it was.
+        let kinds = self.summary.spectrum.len();
+        while self.segment_focus.len() < kinds {
+            self.segment_focus.push(cx.focus_handle().tab_stop(true));
+        }
         let t = theme::tokens(cx).clone();
         let wide = Wide::of(window);
+        let thumbs = self.thumbs_here(cx);
         let s = &self.summary;
 
         let left = self.left(s, wide, &t, cx);
-        let right = self.right(s, wide, &t, cx);
-        let popover =
-            (s.has_listing && !s.this_pc && s.find.is_none() && self.details_open).then(|| self.details(s, &t, cx));
+        let right = self.right(s, wide, thumbs.as_ref(), &t, cx);
+        let popover = (s.has_listing && !s.this_pc && s.find.is_none() && self.details_open)
+            .then(|| self.details(s, thumbs.as_ref(), &t, cx));
 
         row_start()
             .id("status-bar")
@@ -316,7 +353,14 @@ impl StatusBar {
 
     /// The work on the right: instant search's state and progress, and how the folder was read and shown. Gone in
     /// a very narrow window, as the TypeScript's `@2xs` hid it (This PC's drives and index stay).
-    fn right(&self, s: &Summary, wide: Wide, t: &theme::Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn right(
+        &self,
+        s: &Summary,
+        wide: Wide,
+        thumbs: Option<&Thumbs>,
+        t: &theme::Tokens,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !s.this_pc && !wide.two_xs {
             return None;
         }
@@ -341,12 +385,13 @@ impl StatusBar {
                 .children(wide.medium.then(|| scanning.map(|v| indexing_line(v, t))).flatten())
                 .children(find.running.then(|| spinner(t)))
                 .child(div().child(summary::search_text(find)))
+                .children(thumbs.and_then(|th| thumbs_piece(th, wide, t)))
                 .children((fd_offer && wide.large).then(|| self.turn_on_button(t, cx)))
                 .into_any_element()
         } else if s.has_listing {
             // The folder's work, with its details one click away (the popover).
             let work = Work::of(s);
-            self.work_button(&work, wide, scanning, t, cx)
+            self.work_button(&work, wide, scanning, thumbs, t, cx)
         } else {
             row_start()
                 .items_center()
@@ -374,6 +419,7 @@ impl StatusBar {
         work: &Work,
         wide: Wide,
         scanning: Option<&Volume>,
+        thumbs: Option<&Thumbs>,
         t: &theme::Tokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -408,7 +454,6 @@ impl StatusBar {
                     .child(div().child(shown.clone()))
                     // PORT ME(disk usage): "sized … in …" once the folder sizes are read (xl only).
                     // PORT ME(git): the Git status line (xl only).
-                    // PORT ME(file grid): the thumbnails' line.
                     .into_any_element(),
             ),
             // Nothing to say about the folder yet: the button still opens the popover, with its breakdown.
@@ -435,7 +480,8 @@ impl StatusBar {
                     .min_w_0()
                     .overflow_hidden()
                     .children(wide.medium.then(|| scanning.map(|v| indexing_line(v, t))).flatten())
-                    .child(pieces),
+                    .child(pieces)
+                    .children(thumbs.and_then(|th| thumbs_piece(th, wide, t))),
             );
         let trigger = match title {
             Some(title) => trigger.tooltip(title),
@@ -480,7 +526,7 @@ impl StatusBar {
 
     /// "What's in this folder": the breakdown by kind, filter chips, and how long showing the folder took. It
     /// opens above the bar, at the end edge (as the TypeScript placed it beside its button).
-    fn details(&self, s: &Summary, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
+    fn details(&self, s: &Summary, thumbs: Option<&Thumbs>, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
         let total: usize = s.spectrum.iter().map(|c| c.count).sum::<usize>().max(1);
 
         // Built now, not lazily: the segments and the chips both need `cx`.
@@ -493,21 +539,34 @@ impl StatusBar {
                 let clickable = !category.query.is_empty();
                 let query = category.query.clone();
                 let fraction = (category.count as f32 / total as f32).max(0.04);
+                let title = segment_title(category);
                 let segment = div()
                     .id(("status-segment", i))
                     .h_full()
                     .flex_none()
                     .w(gpui_kit::relative(fraction))
-                    .bg(color);
+                    .bg(color)
+                    .tooltip(move |window, cx| crate::kit::tooltip(title.clone(), window, cx));
                 if clickable {
-                    segment
+                    // Enter and Space act as the click, so the segment is a tab stop with its own focus.
+                    let key_query = query.clone();
+                    let mut segment = segment
                         .cursor_pointer()
                         .hover(|style| style.opacity(0.8))
                         .role(Role::Button)
                         .aria_label(segment_title(category))
                         .test_support()
                         .on_click(cx.listener(move |this, _, _, cx| this.toggle_category(&query, cx)))
-                        .into_any_element()
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.toggle_category(&key_query, cx);
+                                cx.stop_propagation();
+                            }
+                        }));
+                    if let Some(focus) = self.segment_focus.get(i) {
+                        segment = segment.track_focus(focus).focus(|style| style.bg(t.ring));
+                    }
+                    segment.into_any_element()
                 } else {
                     segment.into_any_element()
                 }
@@ -555,11 +614,11 @@ impl StatusBar {
                 )
         });
 
-        let stage_rows = stages(s);
+        let mut stage_rows = stages(s);
+        stage_rows.extend(thumbs.and_then(thumbs_stage));
         let max_ms = stage_rows.iter().map(|stage| stage.ms).fold(1.0_f64, f64::max);
         // PORT ME(disk usage): the "Folder sizes" stage.
         // PORT ME(git): the "Git status" stage.
-        // PORT ME(file grid): the "Thumbnails" stage.
         let timing = (!stage_rows.is_empty()).then(|| {
             col()
                 .gap(space(1.5))
@@ -724,6 +783,32 @@ impl StatusBar {
 /// A spinner drawn in the primary color, for work that is running (`Loader2` with `animate-spin`).
 fn spinner(t: &theme::Tokens) -> AnyElement {
     Spinner::new().color(t.primary).into_any_element()
+}
+
+/// The thumbnails' line in the folder's work button: "· 12 thumbnails in 3.2 ms", with its title on hover, or
+/// "· 5 thumbnails…" with a spinner while more are on their way. Only in a wide bar (`hidden @lg:inline`).
+fn thumbs_piece(th: &Thumbs, wide: Wide, t: &theme::Tokens) -> Option<AnyElement> {
+    if !wide.large {
+        return None;
+    }
+    let line = thumbs_line(th);
+    let row = row_start()
+        .id("status-thumbnails")
+        .role(Role::Status)
+        .aria_label(line.clone())
+        .test_support()
+        .items_center()
+        .gap(space(1.))
+        .flex_none()
+        .child(div().child("·"));
+    let row = if th.pending {
+        row.child(spinner(t)).child(div().child(line))
+    } else {
+        let title = thumbs_title(th);
+        row.tooltip(move |window, cx| crate::kit::tooltip(title.clone(), window, cx))
+            .child(div().child(line))
+    };
+    Some(row.into_any_element())
 }
 
 /// "Indexing C: 45%…" with a spinner, while the service reads a drive.

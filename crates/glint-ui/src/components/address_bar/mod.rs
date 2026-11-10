@@ -41,12 +41,17 @@ use crate::kit::prelude::*;
 use crate::{i18n, state, t, theme};
 use completion::{Ask, Look, Suggestion, Typed};
 use glint_model::entries::FileEntry;
-use glint_model::paths::{crumbs, is_gallery, is_recent, is_recycle_bin, is_remote_path, same_path, THIS_PC};
+use glint_model::paths::{
+    crumbs, in_archive_path, is_gallery, is_recent, is_recycle_bin, is_remote_path, same_path, THIS_PC,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// How far the pointer moves with a crumb held before the folder is dragged out (`crumbDragRef`, 6 px).
+const DRAG_THRESHOLD: f32 = 6.;
 
 pub use keys::{ListAccept, ListCancel, ListComplete, ListDown, ListFirst, ListLast, ListUp};
 
@@ -231,6 +236,10 @@ pub struct AddressBar {
     find_focused: bool,
     plain: Option<glint_model::plain::Plain>,
     find_timer: Option<Task<()>>,
+    /// A crumb pressed, and where: dragged past [`DRAG_THRESHOLD`] with the button down, it drags its folder out.
+    crumb_press: Option<(String, Point<Pixels>)>,
+    /// The crumb dragged files are held over, lit while they are.
+    drop_over: Option<usize>,
     in_repository: bool,
     /// What the box's placeholder says now ("Search {folder}").
     placeholder: SharedString,
@@ -242,6 +251,8 @@ pub struct AddressBar {
 #[derive(Default)]
 struct Measure {
     layout: Layout,
+    /// Where each crumb's cell was painted (window coordinates), for the crumb under dragged files.
+    cells: Vec<Bounds<Pixels>>,
 }
 
 impl EventEmitter<AddressBarEvent> for AddressBar {}
@@ -294,6 +305,8 @@ impl AddressBar {
             find_focused: false,
             plain: None,
             find_timer: None,
+            crumb_press: None,
+            drop_over: None,
             in_repository: false,
             placeholder,
             _subscriptions: subscriptions,
@@ -316,10 +329,8 @@ impl AddressBar {
             });
             return;
         }
-        self.explorer.update(cx, |explorer, cx| {
-            explorer.editing_address = true;
-            cx.notify();
-        });
+        self.explorer
+            .update(cx, |explorer, cx| explorer.set_editing_address(true, cx));
         // The explorer's change reaches `sync` later; the box opens now.
         let mut seen = (*self.seen).clone();
         seen.editing = true;
@@ -441,12 +452,8 @@ impl AddressBar {
         if !self.editing {
             return;
         }
-        self.explorer.update(cx, |explorer, cx| {
-            if explorer.editing_address {
-                explorer.editing_address = false;
-                cx.notify();
-            }
-        });
+        self.explorer
+            .update(cx, |explorer, cx| explorer.set_editing_address(false, cx));
         let mut seen = (*self.seen).clone();
         seen.editing = false;
         self.seen = Rc::new(seen);
@@ -705,29 +712,9 @@ impl AddressBar {
 
 // ---- Drawing --------------------------------------------------------------------------------------------
 
-/// A tooltip: the small box a `title` was.
-struct Tip(SharedString);
-
-impl Render for Tip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::tokens(cx);
-        div()
-            .px(space(2.))
-            .py(space(1.))
-            .rounded(theme::size::RADIUS_SM)
-            .border_1()
-            .border_color(t.border)
-            .bg(t.popover)
-            .text_color(t.popover_foreground)
-            .text_size(theme::size::XS)
-            .max_w(space(96.))
-            .child(self.0.clone())
-    }
-}
-
-/// The tooltip builder for `.tooltip(..)`.
+/// The tooltip builder for `.tooltip(..)` (the kit's tooltip).
 fn tip(text: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    move |_, cx| cx.new(|_| Tip(text.clone())).into()
+    move |window, cx| crate::kit::tooltip(text.clone(), window, cx)
 }
 
 static SAMPLE_FOLDER: std::sync::LazyLock<FileEntry> = std::sync::LazyLock::new(|| sample("folder", true));
@@ -967,7 +954,7 @@ impl AddressBar {
                             .min_w_0()
                             .truncate()
                             .text_end()
-                            .font_family(mono_font(cx))
+                            .font_family(theme::mono_font(cx))
                             .text_size(theme::size::XS)
                             .text_color(t.muted_foreground)
                             .child(detail.clone())
@@ -975,7 +962,7 @@ impl AddressBar {
             })
             .collect();
         deferred(
-            div().absolute().top_full().mt(px(4.)).left_0().right_0().child(
+            div().absolute().top_full().mt(space(1.)).left_0().right_0().child(
                 col()
                     .id("address-suggestions")
                     .role(Role::ListBox)
@@ -1127,6 +1114,7 @@ impl AddressBar {
             };
             let folded = cells.iter().take_while(|cell| outside(cell)).count();
             let mut m = measure.borrow_mut();
+            m.cells = cells.to_vec();
             if m.layout.folded != folded {
                 m.layout.folded = folded;
                 drop(m);
@@ -1149,7 +1137,49 @@ impl AddressBar {
             .when(!i18n::is_rtl(), |r| r.justify_end())
             .when(i18n::is_rtl(), |r| r.justify_start())
             .children(cells)
-            .child(canvas(|_, _, _| (), |_, _, _, _| ()).absolute().size_full());
+            .child(canvas(|_, _, _| (), |_, _, _, _| ()).absolute().size_full())
+            // Files held over a folder crumb: a drop there goes into the folder, and the drag's words say so.
+            // (One listener for the row, finding the crumb under the pointer from where they were painted.)
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                let at = event.event.position;
+                let under = if event.bounds.contains(&at) {
+                    let cells = this.measure.borrow().cells.clone();
+                    cells.iter().position(|cell| cell.contains(&at))
+                } else {
+                    None
+                }
+                .filter(|&i| this.seen.crumbs.get(i).is_some_and(crumb_takes_files));
+                if let Some(i) = under {
+                    let name = this.seen.crumbs[i].name.clone();
+                    crate::drops::answer(
+                        cx,
+                        crate::platform::dragdrop::Answer::Accept(crate::components::tab_strip::drop_words(&name)),
+                    );
+                }
+                if this.drop_over != under {
+                    this.drop_over = under;
+                    cx.notify();
+                }
+            }))
+            .on_drop(cx.listener(|this, drop: &ExternalPaths, _, cx| {
+                let Some(i) = this.drop_over.take() else {
+                    return;
+                };
+                cx.notify();
+                let Some(dest) = this
+                    .seen
+                    .crumbs
+                    .get(i)
+                    .filter(|c| crumb_takes_files(c))
+                    .map(|c| c.path.clone())
+                else {
+                    return;
+                };
+                let moves = crate::drops::effect(cx) == crate::platform::dragdrop::DropEffect::Move;
+                let paths = crate::drops::paths(drop);
+                this.explorer
+                    .update(cx, |e, cx| e.drop_files(paths, &dest, moves, cx).detach());
+            }));
 
         // Measures the bar itself, for the classes that drop "This PC" and the "…" when it is narrow.
         let measure = self.measure.clone();
@@ -1259,6 +1289,10 @@ impl AddressBar {
         };
         let (path, middle) = (crumb.path.clone(), crumb.path.clone());
         let name = crumb.name.clone();
+        // A folder on disk takes files, and can be dragged out: not an archive, a remote, This PC, the Recycle
+        // Bin, Recent or the Gallery (`writableCrumb`).
+        let writable = crumb_takes_files(crumb);
+        let (press_path, move_path) = (crumb.path.clone(), crumb.path.clone());
         let button = div()
             .id(("address-crumb", i))
             .role(Role::Button)
@@ -1279,8 +1313,46 @@ impl AddressBar {
             .focus_visible(|s| s.bg(t.accent))
             .active(|s| s.bg(t.accent))
             .tooltip(tip(title))
-            // PORT ME(drag and drop): dropping files on a folder crumb copies or moves them there, and
-            // dragging a crumb out drags the folder (`data-drop`, `crumbDragRef`).
+            .when(writable && self.drop_over == Some(i) && cx.has_active_drag(), |b| {
+                b.bg(t.primary.opacity(0.2))
+                    .text_color(t.primary)
+                    .border_1()
+                    .border_color(t.primary)
+            })
+            .when(writable, |b| {
+                // Pressed and pulled away, the crumb drags its folder out to File Explorer, the desktop…
+                b.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                        this.crumb_press = Some((press_path.clone(), event.position));
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseUpEvent, _, _| this.crumb_press = None),
+                )
+                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                    let Some((path, from)) = this.crumb_press.clone() else {
+                        return;
+                    };
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        this.crumb_press = None;
+                        return;
+                    }
+                    let (dx, dy) = (event.position.x - from.x, event.position.y - from.y);
+                    if (f32::from(dx).powi(2) + f32::from(dy).powi(2)).sqrt() < DRAG_THRESHOLD || path != move_path {
+                        return;
+                    }
+                    this.crumb_press = None;
+                    let drag = crate::platform::dragdrop::drag_out(cx, crate::workspace::MAIN, vec![path], false);
+                    cx.spawn(async move |_, _| {
+                        if let Err(error) = drag.await {
+                            eprintln!("glint: couldn't drag the folder: {error}");
+                        }
+                    })
+                    .detach();
+                }))
+            })
             .on_click(cx.listener(move |this, _, window, cx| this.open(path.clone(), window, cx)))
             .on_mouse_down(
                 MouseButton::Middle,
@@ -1318,6 +1390,18 @@ impl AddressBar {
     }
 }
 
+/// Whether a folder crumb takes files dropped on it and can be dragged out: a folder on disk, not an archive, a
+/// remote, This PC, the Recycle Bin, Recent or the Gallery (`writableCrumb`).
+fn crumb_takes_files(crumb: &CrumbView) -> bool {
+    !crumb.archive
+        && !in_archive_path(&crumb.path)
+        && !is_remote_path(&crumb.path)
+        && !is_recycle_bin(&crumb.path)
+        && !is_recent(&crumb.path)
+        && !is_gallery(&crumb.path)
+        && crumb.path != THIS_PC
+}
+
 /// A folder or an archive as a sample entry, which the kinds' colors are taken from.
 fn sample(name: &str, dir: bool) -> FileEntry {
     use glint_model::entries::{attr, with_details, RawEntry};
@@ -1330,12 +1414,6 @@ fn sample(name: &str, dir: bool) -> FileEntry {
         },
         "",
     )
-}
-
-/// A monospace family, for paths and file systems (`font-mono`).
-/// TODO(coordinator): from `theme` (`mono_font(cx)`).
-fn mono_font(cx: &App) -> SharedString {
-    gpui_kit::component::Theme::global(cx).mono_font_family.clone()
 }
 
 #[cfg(test)]

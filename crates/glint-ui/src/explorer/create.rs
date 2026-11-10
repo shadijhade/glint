@@ -86,6 +86,7 @@ impl Explorer {
             t.filter.clear();
         });
         if let Some(was_running) = running {
+            self.stop_find_job(tab, was_running);
             cx.emit(ExplorerEvent::FindDropped { tab, was_running });
         }
         self.rebuild_rows(tab, cx);

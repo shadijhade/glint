@@ -6,7 +6,8 @@ use super::thumbnail::tests::{answer, Fake};
 use super::thumbnail::{self, ThumbSource, Thumbnails};
 use super::*;
 use crate::explorer::fake::{file, folder, FakeDisk};
-use crate::explorer::{NavOptions, ViewMode};
+use crate::explorer::{FileOp, NavOptions, ViewMode};
+use crate::platform::dragdrop::{DropAnswers, DropEvent};
 use crate::testing;
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{InputEvent as _, TestAppContext, VisualTestContext};
@@ -588,6 +589,566 @@ fn the_arabic_interface_mirrors_the_tiles_and_the_arrow_keys(cx: &mut TestAppCon
     env.press("right");
     assert_eq!(env.focus().as_deref(), Some("a.jpg"));
     testing::set_rtl(false);
+}
+
+// ---- Follow-ups: focus, marquee, drops, the menu key, SVG tiles --------------------------------------
+
+#[gpui_kit::test]
+fn ctrl_arrows_move_the_cursor_only_and_a_press_on_a_multi_selection_moves_it_at_once(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    env.click(1);
+    env.press("ctrl-right");
+    assert_eq!(env.selected(), ["a.jpg"], "the selection stays");
+    assert_eq!(env.focus().as_deref(), Some("b.txt"), "the cursor moved");
+    // Ctrl+Space then takes the item under the cursor in.
+    env.press("ctrl-space");
+    let mut chosen = env.selected();
+    chosen.sort();
+    assert_eq!(chosen, ["a.jpg", "b.txt"]);
+    env.press("ctrl-left");
+    env.press("ctrl-left");
+    assert_eq!(env.focus().as_deref(), Some("docs"));
+    assert_eq!(env.selected().len(), 2, "still the same two");
+
+    // A press on one of two selected items keeps both but moves the focus (and the anchor) to it, before release.
+    env.visual.update(|window, cx| {
+        window.render_frame(cx);
+        let at = window.find(("file-grid-tile", 2_usize)).bounds().center();
+        window.pointer_down(at, MouseButton::Left, cx);
+    });
+    assert_eq!(env.selected().len(), 2);
+    assert_eq!(env.focus().as_deref(), Some("b.txt"));
+    let anchor = env.explorer.read_with(&env.visual, |e, _| {
+        e.pane_tab(0).and_then(|t| t.selection.anchor().map(str::to_string))
+    });
+    assert!(anchor.is_some_and(|a| a.ends_with("b.txt")));
+    env.visual.update(|window, cx| {
+        let at = window.find(("file-grid-tile", 2_usize)).bounds().center();
+        window.pointer_up(at, MouseButton::Left, cx);
+    });
+    assert_eq!(env.selected(), ["b.txt"]);
+}
+
+/// The window position of a tile's center, and of a spot in the empty part below the tiles.
+fn spots(env: &mut Env, tile: usize) -> (Point<Pixels>, Point<Pixels>) {
+    env.visual.update(|window, cx| {
+        window.render_frame(cx);
+        let body = window.find("file-grid-body").bounds();
+        let center = window.find(("file-grid-tile", tile)).bounds().center();
+        (center, point(center.x, body.bottom() - px(8.)))
+    })
+}
+
+fn marquee_shown(env: &Env) -> bool {
+    env.visual
+        .read(|cx| env.grid.read(cx).marquee.as_ref().is_some_and(|marquee| marquee.shown))
+}
+
+#[gpui_kit::test]
+fn a_marquee_selects_the_tiles_it_covers_and_ctrl_adds_to_what_was_selected(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    // Four tiles in a row, and the empty part below them. Dragging from below the second to the third.
+    let (second, below_second) = spots(&mut env, 1);
+    let (third, _) = spots(&mut env, 2);
+    let (fourth, _) = spots(&mut env, 3);
+    env.click(0);
+    env.visual.update(|window, cx| {
+        window.pointer_down(below_second, MouseButton::Left, cx);
+    });
+    assert!(
+        env.selected().is_empty(),
+        "a press on the empty part clears the selection"
+    );
+    // A tiny movement is no marquee.
+    env.visual.update(|window, cx| {
+        window.pointer_move(below_second + point(px(1.), px(-2.)), Some(MouseButton::Left), cx);
+    });
+    assert!(!marquee_shown(&env));
+    assert!(env
+        .visual
+        .update(|window, _| window.try_find("file-grid-marquee").is_none()));
+    env.visual.update(|window, cx| {
+        window.pointer_move(third, Some(MouseButton::Left), cx);
+    });
+    assert!(marquee_shown(&env));
+    let mut chosen = env.selected();
+    chosen.sort();
+    assert_eq!(chosen, ["a.jpg", "b.txt"], "the tiles under the rectangle");
+    assert_eq!(
+        env.focus().as_deref(),
+        Some("b.txt"),
+        "the last one covered has the cursor"
+    );
+    assert!(
+        env.visual
+            .update(|window, _| window.try_find("file-grid-marquee").is_some()),
+        "it is drawn"
+    );
+    // Back to just the second tile.
+    env.visual.update(|window, cx| {
+        window.pointer_move(second, Some(MouseButton::Left), cx);
+    });
+    assert_eq!(env.selected(), ["a.jpg"]);
+    env.visual.update(|window, cx| {
+        window.pointer_up(second, MouseButton::Left, cx);
+    });
+    assert!(!marquee_shown(&env));
+    assert!(
+        env.visual
+            .update(|window, _| window.try_find("file-grid-marquee").is_none()),
+        "gone on release"
+    );
+    assert_eq!(env.selected(), ["a.jpg"], "the selection stays");
+
+    // With Ctrl, what was selected stays and the marquee adds to it.
+    env.click(0);
+    env.visual.update(|window, cx| {
+        window.change_modifiers(Modifiers::control(), cx);
+        window.pointer_down(point(fourth.x, below_second.y), MouseButton::Left, cx);
+        window.pointer_move(fourth + point(px(0.), px(-2.)), Some(MouseButton::Left), cx);
+        window.pointer_move(fourth + point(px(3.), px(-6.)), Some(MouseButton::Left), cx);
+        window.pointer_up(fourth, MouseButton::Left, cx);
+        window.change_modifiers(Modifiers::default(), cx);
+    });
+    let mut chosen = env.selected();
+    chosen.sort();
+    assert_eq!(chosen, ["docs", "تقرير الربع.pdf"]);
+}
+
+#[gpui_kit::test]
+fn a_marquee_held_at_the_bottom_scrolls_and_selects_what_comes_into_view(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(600), plain());
+    env.frame();
+    let (from, to) = env.visual.update(|window, cx| {
+        window.render_frame(cx);
+        let body = window.find("file-grid-body").bounds();
+        // The space before the first tile of a row is no tile: a press there is on the empty part.
+        let from = point(body.left() + px(2.), body.top() + px(20.));
+        let to = point(body.center().x, body.bottom() - px(4.));
+        (from, to)
+    });
+    let top = |env: &Env| env.grid.read_with(&env.visual, |grid, _| grid.scroll_top());
+    env.visual.update(|window, cx| {
+        window.pointer_down(from, MouseButton::Left, cx);
+        window.pointer_move(to, Some(MouseButton::Left), cx);
+    });
+    let (before, picked) = (top(&env), env.selected().len());
+    assert!(picked > 0 && picked < 604);
+    // Held there, it scrolls every so often, and the rectangle covers more.
+    for _ in 0..10 {
+        env.visual.executor().advance_clock(Duration::from_millis(40));
+        env.visual.run_until_parked();
+    }
+    env.frame();
+    assert!(top(&env) > before, "scrolled from {before} to {}", top(&env));
+    assert!(env.selected().len() > picked, "{} tiles", env.selected().len());
+    // Released, it stops.
+    env.visual
+        .update(|window, cx| window.pointer_up(to, MouseButton::Left, cx));
+    let stopped = top(&env);
+    env.visual.executor().advance_clock(Duration::from_millis(200));
+    env.visual.run_until_parked();
+    assert_eq!(top(&env), stopped);
+}
+
+#[gpui_kit::test]
+fn the_arabic_interface_counts_the_marquees_columns_from_the_right(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    testing::set_rtl(true);
+    env.explorer.update(&mut env.visual, |_, cx| cx.notify());
+    // In Arabic the first tile is at the right: from below the first (docs) to the second (a.jpg).
+    let (first, below_first) = spots(&mut env, 0);
+    let (second, _) = spots(&mut env, 1);
+    assert!(first.x > second.x);
+    env.visual.update(|window, cx| {
+        window.pointer_down(below_first, MouseButton::Left, cx);
+        window.pointer_move(second, Some(MouseButton::Left), cx);
+        window.pointer_up(second, MouseButton::Left, cx);
+    });
+    let mut chosen = env.selected();
+    chosen.sort();
+    assert_eq!(chosen, ["a.jpg", "docs"]);
+    testing::set_rtl(false);
+}
+
+/// Hands Glint's drop target's events to the window, as it would, and returns what the views answered.
+struct Dragging {
+    answers: DropAnswers,
+    files: Vec<String>,
+}
+
+impl Dragging {
+    fn new(files: &[&str]) -> Self {
+        Dragging {
+            answers: DropAnswers::default(),
+            files: files.iter().map(|f| f.to_string()).collect(),
+        }
+    }
+
+    /// The pointer arrives (the first call) or moves to `at`; returns what the views said a drop there does.
+    fn over(&self, env: &mut Env, at: Point<Pixels>, first: bool) -> Answer {
+        let (x, y) = (f32::from(at.x), f32::from(at.y));
+        env.visual.update(|window, cx| {
+            window.render_frame(cx);
+            if first {
+                // The drag before this one has left the window.
+                drops::dispatch(DropEvent::Leave, &self.answers, window, cx);
+            }
+            let event = if first {
+                DropEvent::Enter {
+                    paths: self.files.clone(),
+                    x,
+                    y,
+                    effect: DropEffect::Copy,
+                }
+            } else {
+                DropEvent::Over {
+                    x,
+                    y,
+                    effect: DropEffect::Copy,
+                }
+            };
+            drops::dispatch(event, &self.answers, window, cx);
+            window.render_frame(cx);
+        });
+        self.answers.get()
+    }
+
+    fn drop_at(&self, env: &mut Env, at: Point<Pixels>, effect: DropEffect) {
+        let (x, y) = (f32::from(at.x), f32::from(at.y));
+        env.visual.update(|window, cx| {
+            drops::dispatch(
+                DropEvent::Drop {
+                    paths: self.files.clone(),
+                    x,
+                    y,
+                    effect,
+                },
+                &self.answers,
+                window,
+                cx,
+            );
+        });
+        env.visual.run_until_parked();
+    }
+}
+
+fn under(name: &str) -> Answer {
+    Answer::Accept(Under {
+        name: name.into(),
+        copy: "Copy to %1".into(),
+        moves: "Move to %1".into(),
+        always_move: false,
+    })
+}
+
+fn drop_over(env: &Env) -> Option<DropOver> {
+    env.grid.read_with(&env.visual, |grid, _| grid.drop_over.clone())
+}
+
+fn drop_lit(env: &mut Env) -> bool {
+    env.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.try_find("file-grid-drop").is_some()
+    })
+}
+
+#[gpui_kit::test]
+fn files_dragged_onto_a_folder_tile_go_into_it_and_onto_the_background_into_the_folder_shown(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = disk(0);
+    let mut env = env(cx, &disk, plain());
+    let outside = r"C:\other\ملف.txt";
+    let files = Dragging::new(&[outside]);
+    let (docs, below) = spots(&mut env, 0);
+    let (a_jpg, _) = spots(&mut env, 1);
+
+    // Over a folder tile: the drag says "into docs", and that tile lights (not the whole grid).
+    assert_eq!(files.over(&mut env, docs, true), under("docs"));
+    assert_eq!(drop_over(&env), Some(DropOver::Tile(r"C:\x\docs".into())));
+    assert!(!drop_lit(&mut env));
+    // The words are the ones File Explorer's picture will show.
+    let words = env
+        .grid
+        .read_with(&env.visual, |grid, cx| grid.drop_words(r"C:\x\docs", cx));
+    assert_eq!(
+        (words.copy.as_str(), words.moves.as_str(), words.always_move),
+        ("Copy to %1", "Move to %1", false)
+    );
+    files.drop_at(&mut env, docs, DropEffect::Copy);
+    assert_eq!(
+        disk.ops(),
+        [FileOp::Copy {
+            sources: vec![outside.into()],
+            dest: r"C:\x\docs".into()
+        }]
+    );
+    assert_eq!(drop_over(&env), None, "nothing lit after the drop");
+
+    // Over a file tile or the empty part: the folder shown, lit as a whole. Shift moves.
+    assert_eq!(files.over(&mut env, a_jpg, true), under("x"));
+    assert_eq!(drop_over(&env), Some(DropOver::Pane));
+    assert!(drop_lit(&mut env));
+    assert_eq!(files.over(&mut env, below, false), under("x"));
+    files.drop_at(&mut env, below, DropEffect::Move);
+    assert_eq!(
+        disk.ops()[1..],
+        [FileOp::Move {
+            sources: vec![outside.into()],
+            dest: r"C:\x".into()
+        }]
+    );
+}
+
+#[gpui_kit::test]
+fn a_drop_that_would_do_nothing_or_that_nothing_can_take_is_refused(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = disk(0);
+    let mut env = env(cx, &disk, plain());
+    let (docs, below) = spots(&mut env, 0);
+    let (a_jpg, _) = spots(&mut env, 1);
+
+    // Files already in the folder, dropped on its background (or on a file in it): nothing to do there.
+    let here = Dragging::new(&[r"C:\x\a.jpg"]);
+    assert_eq!(here.over(&mut env, below, true), Answer::Refuse);
+    assert_eq!(drop_over(&env), None);
+    assert!(!drop_lit(&mut env));
+    assert_eq!(here.over(&mut env, a_jpg, false), Answer::Refuse);
+    // But a folder tile of it takes them in.
+    assert_eq!(here.over(&mut env, docs, false), under("docs"));
+    // A folder dropped into itself.
+    let itself = Dragging::new(&[r"C:\x\docs"]);
+    assert_eq!(itself.over(&mut env, docs, true), Answer::Refuse);
+    // A refused drop reaches nobody, even if the shell says copy.
+    here.over(&mut env, below, false);
+    here.drop_at(&mut env, below, DropEffect::None);
+    assert!(disk.ops().is_empty());
+
+    // Outside the grid nothing is answered.
+    let elsewhere = Dragging::new(&[r"C:\other\a.txt"]);
+    assert_eq!(elsewhere.over(&mut env, point(px(-5.), px(-5.)), true), Answer::Refuse);
+    assert_eq!(drop_over(&env), None);
+
+    // This PC is no folder; nor are search results or archives; a folder Windows keeps closed takes nothing.
+    env.go("");
+    assert_eq!(elsewhere.over(&mut env, below, false), Answer::Refuse);
+    assert_eq!(drop_over(&env), None);
+}
+
+#[gpui_kit::test]
+fn the_recycle_bin_always_moves_and_a_folders_own_name_is_on_the_drag(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let env = env(cx, &disk(0), plain());
+    env.grid.read_with(&env.visual, |grid, cx| {
+        let bin = grid.drop_words(glint_model::paths::RECYCLE_BIN, cx);
+        assert!(bin.always_move);
+        assert_eq!(bin.name, "Recycle Bin");
+        let folder = grid.drop_words(r"C:\x\docs", cx);
+        assert!(!folder.always_move);
+        assert_eq!(folder.name, "docs");
+        let arabic = grid.drop_words(r"C:\x\تقارير", cx);
+        assert_eq!(arabic.name, "تقارير");
+    });
+}
+
+#[gpui_kit::test]
+fn the_arabic_interface_finds_the_tile_under_a_drag_from_the_right(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    testing::set_rtl(true);
+    env.explorer.update(&mut env.visual, |_, cx| cx.notify());
+    let files = Dragging::new(&[r"C:\other\ملف.txt"]);
+    let (docs, _) = spots(&mut env, 0);
+    let (pdf, _) = spots(&mut env, 3);
+    assert!(docs.x > pdf.x, "docs is at the right");
+    // (The drag's words are Arabic now, too: the tile is found by its name.)
+    let named = |answer: Answer| match answer {
+        Answer::Accept(under) => Some(under.name),
+        _ => None,
+    };
+    assert_eq!(named(files.over(&mut env, docs, true)).as_deref(), Some("docs"));
+    // The Arabic-named file is a file: the folder shown takes it.
+    assert_eq!(named(files.over(&mut env, pdf, false)).as_deref(), Some("x"));
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn tiles_dragged_out_are_dim_until_the_drag_is_over(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    env.click(1);
+    let dragging = |env: &Env| env.grid.read_with(&env.visual, |grid, _| grid.dragging.clone());
+    env.visual.update(|window, cx| {
+        window.render_frame(cx);
+        let from = window.find(("file-grid-tile", 1_usize)).bounds().center();
+        window.pointer_down(from, MouseButton::Left, cx);
+        window.pointer_move(from + point(px(12.), px(0.)), Some(MouseButton::Left), cx);
+        window.pointer_up(from + point(px(12.), px(0.)), MouseButton::Left, cx);
+    });
+    let dim = dragging(&env).expect("the dragged items are dim");
+    assert!(dim.iter().all(|path| path.ends_with("a.jpg")) && dim.len() == 1);
+    // Windows has the pointer while it drags; the first move with no button down is after it.
+    env.visual.update(|window, cx| {
+        window.pointer_move(point(px(300.), px(300.)), None, cx);
+    });
+    assert!(dragging(&env).is_none());
+    // Or the one who ran the drag says so.
+    env.grid.update(&mut env.visual, |grid, cx| {
+        grid.dragging = Some(Arc::new(HashSet::from(["x".to_string()])));
+        grid.end_drag(cx);
+    });
+    assert!(dragging(&env).is_none());
+}
+
+#[gpui_kit::test]
+fn the_menu_key_opens_the_menu_at_the_focused_tiles_bottom_start_corner(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(20), plain());
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sink = events.clone();
+    env.visual.update(|_, cx| {
+        cx.subscribe(&env.grid, move |_, event: &FileGridEvent, _| {
+            sink.borrow_mut().push(event.clone())
+        })
+        .detach();
+    });
+    let corner = |env: &mut Env, tile: usize, rtl: bool| {
+        env.visual.update(|window, cx| {
+            window.render_frame(cx);
+            let bounds = window.find(("file-grid-tile", tile)).bounds();
+            point(if rtl { bounds.right() } else { bounds.left() }, bounds.bottom())
+        })
+    };
+    let asked = |events: &Rc<RefCell<Vec<FileGridEvent>>>| match events.borrow().last() {
+        Some(FileGridEvent::ContextMenu { position, .. }) => Some(*position),
+        _ => None,
+    };
+    // A tile in the second row, not the first: the corner moves with the row and the column.
+    env.click(1);
+    env.press("down");
+    env.press("shift-f10");
+    let focused = env.grid.read_with(&env.visual, |grid, cx| {
+        grid.snapshot(cx)
+            .and_then(|(rows, selection)| usize::try_from(FileGrid::focus_index(&rows, &selection)).ok())
+    });
+    let tile = focused.expect("a focused tile");
+    let (want, got) = (corner(&mut env, tile, false), asked(&events).expect("a menu"));
+    assert!(
+        (f32::from(want.x - got.x)).abs() < 1.5 && (f32::from(want.y - got.y)).abs() < 1.5,
+        "{got:?} is not the corner {want:?}"
+    );
+    // In Arabic it is the bottom right of the tile.
+    testing::set_rtl(true);
+    env.explorer.update(&mut env.visual, |_, cx| cx.notify());
+    env.press("shift-f10");
+    let (want, got) = (corner(&mut env, tile, true), asked(&events).expect("a menu"));
+    assert!(
+        (f32::from(want.x - got.x)).abs() < 1.5 && (f32::from(want.y - got.y)).abs() < 1.5,
+        "{got:?} is not the corner {want:?}"
+    );
+    testing::set_rtl(false);
+}
+
+/// A folder of real SVG files, for the grid to draw itself.
+fn svg_folder(name: &str, files: &[(&str, &str)]) -> (std::path::PathBuf, Vec<glint_model::entries::FileEntry>) {
+    let dir = std::env::temp_dir().join(format!("glint-grid-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a temp folder");
+    let mut entries = Vec::new();
+    for (file_name, text) in files {
+        std::fs::write(dir.join(file_name), text).expect("a temp file");
+        entries.push(file(&dir.to_string_lossy(), file_name, text.len() as u64, 1));
+    }
+    (dir, entries)
+}
+
+#[gpui_kit::test]
+fn svg_files_are_drawn_by_the_grid_crisp_in_their_own_shape_and_never_asked_of_windows(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let wide = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#c00"/></svg>"##;
+    let tall = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 200"><rect width="50" height="200" fill="#06c"/></svg>"##;
+    let (dir, mut entries) = svg_folder(
+        "tiles",
+        &[
+            ("wide.svg", wide),
+            ("tall.svg", tall),
+            ("broken.svg", "this is not a drawing"),
+        ],
+    );
+    let dir_text = dir.to_string_lossy().to_string();
+    entries.push(file(&dir_text, "photo.jpg", 10, 1));
+    let disk = disk(0);
+    disk.folder(&dir_text, entries.clone());
+    let fake = plain();
+    let mut env = env(cx, &disk, fake.clone());
+    env.go(&dir_text);
+    let scale = env.visual.update(|window, _| window.scale_factor());
+    env.settle(|env| {
+        env.service
+            .read_with(&env.visual, |t, _| t.held_count() >= 3 && t.pending_count() == 0)
+    });
+    // Windows was asked about the photo only.
+    let asked: Vec<String> = fake
+        .asked
+        .borrow()
+        .iter()
+        .map(|a| a.path.clone())
+        .filter(|path| path.starts_with(&dir_text))
+        .collect();
+    assert!(
+        !asked.is_empty() && asked.iter().all(|path| path.ends_with("photo.jpg")),
+        "{asked:?}"
+    );
+    let look = |name: &str| {
+        let entry = entries.iter().find(|e| e.name == name).expect("an entry").clone();
+        env.service.read_with(&env.visual, |t, _| t.look(&entry, 96.0, scale))
+    };
+    let thumbnail::Look::Picture(wide) = look("wide.svg") else {
+        panic!("the wide drawing is drawn");
+    };
+    let thumbnail::Look::Picture(tall) = look("tall.svg") else {
+        panic!("the tall drawing is drawn");
+    };
+    // The shape is kept, and the long side fills the square.
+    assert!(
+        (wide.width / wide.height - 2.0).abs() < 0.1,
+        "{}x{}",
+        wide.width,
+        wide.height
+    );
+    assert!(
+        (tall.width / tall.height - 0.25).abs() < 0.05,
+        "{}x{}",
+        tall.width,
+        tall.height
+    );
+    assert!((wide.width - 96.0).abs() < 2.0 && (tall.height - 96.0).abs() < 2.0);
+    // What is not a drawing keeps its icon.
+    assert!(matches!(look("broken.svg"), thumbnail::Look::Icon));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn only_svg_files_the_grid_can_read_are_drawn_by_it() {
+    use glint_model::entries::attr;
+    let svg = |size: u64| file("C:\\x", "logo.SVG", size, 1);
+    assert!(thumbnail::is_vector(&svg(1_000)));
+    assert!(thumbnail::is_vector(&svg(4 << 20)), "4 MB is the most");
+    assert!(!thumbnail::is_vector(&svg((4 << 20) + 1)));
+    assert!(!thumbnail::is_vector(&file("C:\\x", "a.png", 10, 1)));
+    assert!(!thumbnail::is_vector(&folder("C:\\x", "d.svg")));
+    let mut inside = svg(10);
+    inside.attrs |= attr::IN_ARCHIVE;
+    assert!(!thumbnail::is_vector(&inside), "not in archives");
+    let mut cloud = svg(10);
+    cloud.attrs |= attr::OFFLINE;
+    assert!(
+        !thumbnail::is_vector(&cloud),
+        "an online-only file isn't downloaded to be drawn"
+    );
 }
 
 #[test]

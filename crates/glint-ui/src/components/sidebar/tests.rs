@@ -4,6 +4,7 @@
 use super::*;
 use crate::explorer::fake::{file, folder, FakeDisk};
 use crate::explorer::{init_with, Drive, DriveKind, KnownFolder, KnownId};
+use crate::platform::dragdrop::{Answer, DropAnswers, DropEffect, DropEvent};
 use crate::testing;
 use glint_model::store::RemoteConnection;
 use gpui_kit::test::{ClickOptions, TestQueryExt as _, TestWindowExt as _};
@@ -76,8 +77,10 @@ struct World {
     sidebar: Entity<Sidebar>,
     fakes: Arc<Fakes>,
     events: Rc<RefCell<Vec<SidebarEvent>>>,
+    requests: Rc<RefCell<Vec<SidebarRequest>>>,
+    disk: FakeDisk,
     explorer: Entity<Explorer>,
-    _subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 fn state_file(name: &str) -> std::path::PathBuf {
@@ -151,10 +154,17 @@ fn world(cx: &mut TestAppContext, name: &str) -> World {
         testing::open_window(cx, |window, cx| cx.new(|cx| Sidebar::with_sources(sources, window, cx)));
     let events = Rc::new(RefCell::new(Vec::new()));
     let sink = events.clone();
-    let subscription = visual.update(|_, cx| {
-        cx.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
-            sink.borrow_mut().push(event.clone())
-        })
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let asked = requests.clone();
+    let subscriptions = visual.update(|_, cx| {
+        vec![
+            cx.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                sink.borrow_mut().push(event.clone())
+            }),
+            cx.subscribe(&sidebar, move |_, event: &SidebarRequest, _| {
+                asked.borrow_mut().push(event.clone())
+            }),
+        ]
     });
     let task = explorer.update(&mut visual, |e, cx| e.init_explorer(Vec::new(), cx));
     visual.foreground_executor().block_test(task);
@@ -163,8 +173,10 @@ fn world(cx: &mut TestAppContext, name: &str) -> World {
         sidebar,
         fakes,
         events,
+        requests,
+        disk,
         explorer,
-        _subscription: subscription,
+        _subscriptions: subscriptions,
     };
     world.settle(|w| w.path() == HOME && !w.tab_loading());
     world
@@ -388,27 +400,19 @@ fn pinned_folders_show_with_their_names_and_the_menu_pins_and_unpins(cx: &mut Te
         Some(Role::Button),
         "the plain name, no direction marks"
     );
-    // Its right-click menu says Unpin; choosing it takes the folder out of the saved state.
+    // Its right-click asks the window for the shared folder menu (which says Unpin for a pinned folder).
     let id = w.id_of("تقارير 2024");
     w.cx.update(|window, cx| window.right_click(id, cx));
-    w.frame();
-    assert!(w.has("Unpin from sidebar"), "the menu offers to unpin a pinned folder");
-    assert!(w.has("Open in new tab") && w.has("Copy path") && w.has("Search text"));
-    w.click("Unpin from sidebar");
-    w.cx.run_until_parked();
-    assert!(w.cx.update(|_, cx| persistence::app(cx).unwrap().pinned.is_empty()));
-    assert!(!w.names().contains(&"# Pinned".to_string()));
-    // A folder that isn't pinned offers to pin it.
-    let id = w.id_of("Documents");
-    w.cx.update(|window, cx| window.right_click(id, cx));
-    w.frame();
-    assert!(w.has("Pin to sidebar"));
-    w.click("Pin to sidebar");
-    w.cx.run_until_parked();
-    assert_eq!(
-        w.cx.update(|_, cx| persistence::app(cx).unwrap().pinned.clone()),
-        [DOCS]
+    assert!(
+        matches!(w.requests.borrow().last(), Some(SidebarRequest::ContextMenu { path, .. }) if path == r"D:\Work\تقارير 2024"),
+        "{:?}",
+        w.requests.borrow()
     );
+    // Unpinning (the menu's job now) takes it out of the list.
+    w.pin(r"D:\Work\تقارير 2024");
+    assert!(!w.names().contains(&"# Pinned".to_string()));
+    // The sidebar has no menu of its own any more.
+    assert!(!w.has("Pin to sidebar") && !w.has("Unpin from sidebar"));
 }
 
 #[gpui_kit::test]
@@ -652,17 +656,13 @@ fn connections_show_their_cloud_space_and_the_add_button_asks_for_the_dialog(cx:
         .all(|r| !matches!(r, Row::Place(p) if p.remote.as_deref() == Some("nas") && p.capacity.is_some())));
     w.click("Add a remote connection");
     assert_eq!(w.events.borrow().last(), Some(&SidebarEvent::AddConnection));
-    // A connection's menu has its own items, and the editor and the removal are asked of the window.
+    // A connection's menu is the shared folder menu, asked of the window for the connection's top.
     let id = w.id_of("NAS");
     w.cx.update(|window, cx| window.right_click(id, cx));
-    w.frame();
-    assert!(w.has("Edit the connection…") && w.has("Remove the connection…"));
-    assert!(w.has("Read-only: on a remote connection"));
-    assert!(!w.has("Pin to sidebar"), "a connection's top is not pinned");
-    w.click("Remove the connection…");
-    assert_eq!(
-        w.events.borrow().last(),
-        Some(&SidebarEvent::RemoveRemote("nas".into()))
+    assert!(
+        matches!(w.requests.borrow().last(), Some(SidebarRequest::ContextMenu { path, .. }) if path == "remote:nas"),
+        "{:?}",
+        w.requests.borrow()
     );
 }
 
@@ -700,6 +700,231 @@ fn arabic_names_draw_and_the_arabic_interface_mirrors(cx: &mut TestAppContext) {
     w.settle(|w| w.names().contains(&"> Pictures".to_string()));
     assert!(home_open(&mut w));
     testing::set_rtl(false);
+}
+
+impl World {
+    fn row_of(&mut self, key: String) -> usize {
+        self.rows().iter().position(|r| r.key() == key).expect("a row")
+    }
+
+    fn bounds_of(&mut self, id: impl Into<ElementId>) -> Bounds<Pixels> {
+        let id = id.into();
+        self.cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.find(id).bounds()
+        })
+    }
+
+    /// Drags `files` over the middle of element `id` (entering, then moving), as File Explorer would.
+    fn drag_over(&mut self, answers: &DropAnswers, files: &[String], id: impl Into<ElementId>, effect: DropEffect) {
+        let at = self.bounds_of(id).center();
+        let (x, y) = (f32::from(at.x), f32::from(at.y));
+        let paths = files.to_vec();
+        self.cx.update(|window, cx| {
+            crate::drops::dispatch(DropEvent::Leave, answers, window, cx);
+            crate::drops::dispatch(DropEvent::Enter { paths, x, y, effect }, answers, window, cx);
+            crate::drops::dispatch(DropEvent::Over { x, y, effect }, answers, window, cx);
+        });
+        self.frame();
+    }
+
+    fn drop_at(&mut self, answers: &DropAnswers, files: &[String], id: impl Into<ElementId>, effect: DropEffect) {
+        let at = self.bounds_of(id).center();
+        let (x, y) = (f32::from(at.x), f32::from(at.y));
+        let paths = files.to_vec();
+        self.cx.update(|window, cx| {
+            crate::drops::dispatch(DropEvent::Drop { paths, x, y, effect }, answers, window, cx);
+        });
+        self.cx.run_until_parked();
+    }
+
+    fn lit(&mut self) -> Option<String> {
+        self.sidebar.read_with(&self.cx, |s, _| s.drop_hover.clone())
+    }
+
+    fn cursor_row_ix(&mut self) -> usize {
+        self.sidebar
+            .read_with(&self.cx, |s, _| s.cursor)
+            .expect("the keyboard is on a row")
+    }
+}
+
+#[gpui_kit::test]
+fn the_menu_key_and_shift_f10_ask_for_the_menu_at_the_rows_bottom_start_corner(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "menu-key");
+    w.focus();
+    assert_eq!(w.cursor_row().as_deref(), Some(&*format!("p:{HOME}")));
+    let ix = w.row_of(format!("p:{HOME}"));
+    let row = w.bounds_of(("place", ix));
+    w.press("menu");
+    let asked = |w: &World| w.requests.borrow().clone();
+    let first = asked(&w);
+    assert_eq!(first.len(), 1, "{first:?}");
+    let SidebarRequest::ContextMenu { path, position } = first[0].clone() else {
+        panic!("a menu was asked for");
+    };
+    assert_eq!(path, HOME);
+    assert!(
+        (f32::from(position.x) - f32::from(row.left())).abs() < 1.5,
+        "the start edge"
+    );
+    let below = f32::from(position.y) - f32::from(row.bottom());
+    assert!((0. ..4.).contains(&below), "just under the row: {below}");
+    // Shift+F10 is the same; F10 alone is not.
+    w.press("f10");
+    assert_eq!(asked(&w).len(), 1);
+    w.press("shift-f10");
+    assert_eq!(asked(&w).len(), 2);
+    assert_eq!(asked(&w)[1], first[0]);
+    // On a folder in the tree it asks for that folder; in Arabic the start edge is the right one.
+    w.press("right");
+    w.settle(|w| w.names().contains(&"> Pictures".to_string()));
+    w.press("down");
+    testing::set_rtl(true);
+    w.frame();
+    let ix = w.cursor_row_ix();
+    let row = w.bounds_of(("folder", ix));
+    w.press("menu");
+    let last = asked(&w).pop().expect("a request");
+    let SidebarRequest::ContextMenu { path, position } = last else {
+        panic!("a menu was asked for");
+    };
+    assert!(path.starts_with(HOME), "{path}");
+    assert!(
+        (f32::from(position.x) - f32::from(row.right())).abs() < 1.5,
+        "the right edge in Arabic"
+    );
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn ejecting_goes_through_the_explorer_and_the_button_is_a_tab_stop(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "eject");
+    // Tab moves from the list on to the eject button of the removable drive, which then shows.
+    w.focus();
+    w.cx.update(|window, cx| window.focus_next(cx));
+    w.frame();
+    let sidebar = w.sidebar.clone();
+    let on_button =
+        w.cx.update(|window, cx| sidebar.read(cx).eject_focus.values().any(|h| h.is_focused(window)));
+    assert!(on_button, "Tab reaches the eject button");
+    assert!(w.disk.ejected().is_empty());
+    w.press("enter");
+    w.cx.run_until_parked();
+    assert_eq!(w.disk.ejected(), ["E:\\"], "ejected through the explorer's source");
+    // The mouse does the same.
+    w.click("Eject Photos (E:)");
+    w.cx.run_until_parked();
+    assert_eq!(w.disk.ejected().len(), 2);
+}
+
+#[gpui_kit::test]
+fn files_dropped_on_a_place_or_a_tree_folder_are_copied_or_moved_into_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "drop-folder");
+    w.disk.folder(
+        "D:\\Inbox",
+        vec![file("D:\\Inbox", "a.txt", 3, 1), file("D:\\Inbox", "ملف.txt", 3, 1)],
+    );
+    let files = vec!["D:\\Inbox\\a.txt".to_string(), "D:\\Inbox\\ملف.txt".to_string()];
+    let answers = DropAnswers::default();
+    let docs = w.row_of(format!("p:{DOCS}"));
+    // Over Documents: the drag says where it goes, and the row is lit.
+    w.drag_over(&answers, &files, ("place", docs), DropEffect::Copy);
+    match answers.get() {
+        Answer::Accept(under) => {
+            assert_eq!(under.name, "Documents");
+            assert_eq!(under.copy, "Copy to %1");
+            assert_eq!(under.moves, "Move to %1");
+            assert!(!under.always_move);
+        }
+        other => panic!("expected Accept, got {other:?}"),
+    }
+    assert_eq!(w.lit(), Some(format!("p:{DOCS}")));
+    // A copy leaves the files where they were.
+    w.drop_at(&answers, &files, ("place", docs), DropEffect::Copy);
+    w.settle(|w| w.disk.names(DOCS).contains(&"ملف.txt".to_string()));
+    assert_eq!(w.lit(), None, "the highlight goes with the drop");
+    assert!(w.disk.names("D:\\Inbox").contains(&"a.txt".to_string()));
+    // Shift moves them.
+    w.disk.folder("D:\\Box", vec![file("D:\\Box", "b.txt", 3, 1)]);
+    let moved = vec!["D:\\Box\\b.txt".to_string()];
+    w.drag_over(&answers, &moved, ("place", docs), DropEffect::Move);
+    w.drop_at(&answers, &moved, ("place", docs), DropEffect::Move);
+    w.settle(|w| w.disk.names(DOCS).contains(&"b.txt".to_string()));
+    assert!(w.disk.names("D:\\Box").is_empty());
+    // A folder in the tree takes them too, and a folder that already holds them refuses.
+    w.focus();
+    w.press("right");
+    w.settle(|w| w.names().contains(&"> Pictures".to_string()));
+    let pictures = w.row_of(format!("f:{HOME}\\Pictures"));
+    w.drag_over(&answers, &files, ("folder", pictures), DropEffect::Copy);
+    assert!(matches!(answers.get(), Answer::Accept(u) if u.name == "Pictures"));
+    let home_files = vec![format!("{HOME}\\readme.txt")];
+    let home = w.row_of(format!("p:{HOME}"));
+    w.drag_over(&answers, &home_files, ("place", home), DropEffect::Copy);
+    assert_eq!(answers.get(), Answer::Refuse, "already in Home");
+    assert_eq!(w.lit(), None);
+}
+
+#[gpui_kit::test]
+fn views_remotes_and_titles_refuse_files_and_the_bin_and_a_paired_pc_take_them(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "drop-refuse");
+    let remotes = vec![
+        RemoteConnection {
+            id: "nas".into(),
+            name: "NAS".into(),
+            kind: RemoteKind::Sftp,
+            host: Some("nas.local".into()),
+            ..Default::default()
+        },
+        RemoteConnection {
+            id: "pc1".into(),
+            name: "Laptop".into(),
+            kind: RemoteKind::Device,
+            ..Default::default()
+        },
+    ];
+    w.cx.update(|_, cx| persistence::update_app(cx, |app| app.remotes = remotes));
+    w.settle(|w| w.names().contains(&"Laptop".to_string()));
+    w.disk.folder("D:\\Inbox", vec![file("D:\\Inbox", "a.txt", 3, 1)]);
+    let files = vec!["D:\\Inbox\\a.txt".to_string()];
+    let answers = DropAnswers::default();
+    // Recent, Gallery, a read-only remote and the This PC title take nothing.
+    for (key, id) in [
+        ("p:shell:Recent", "place"),
+        ("p:shell:Gallery", "place"),
+        ("p:remote:nas", "place"),
+        ("h:This PC", "heading"),
+    ] {
+        let ix = w.row_of(key.to_string());
+        w.drag_over(&answers, &files, (id, ix), DropEffect::Copy);
+        assert_eq!(answers.get(), Answer::Refuse, "{key}");
+        assert_eq!(w.lit(), None, "{key}");
+    }
+    // The Recycle Bin always moves; a paired PC is sent to.
+    let bin = w.row_of(format!("p:{}", glint_model::paths::RECYCLE_BIN));
+    w.drag_over(&answers, &files, ("place", bin), DropEffect::Copy);
+    assert!(matches!(answers.get(), Answer::Accept(u) if u.always_move && u.name == "Recycle Bin"));
+    let pc = w.row_of("p:remote:pc1".to_string());
+    w.drag_over(&answers, &files, ("place", pc), DropEffect::Copy);
+    assert!(matches!(answers.get(), Answer::Accept(u) if u.name == "Laptop" && u.copy == "Send to %1"));
+    w.drop_at(&answers, &files, ("place", pc), DropEffect::Copy);
+    assert_eq!(
+        w.requests.borrow().last(),
+        Some(&SidebarRequest::SendToDevice {
+            id: "pc1".into(),
+            paths: files.clone()
+        })
+    );
+    // A drop on the Recycle Bin recycles them.
+    w.drag_over(&answers, &files, ("place", bin), DropEffect::Move);
+    w.drop_at(&answers, &files, ("place", bin), DropEffect::Move);
+    w.settle(|w| !w.disk.names("D:\\Inbox").contains(&"a.txt".to_string()));
+    assert_eq!(w.disk.bin_names(), ["a.txt"]);
 }
 
 #[gpui_kit::test]

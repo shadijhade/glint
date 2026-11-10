@@ -338,9 +338,9 @@ pub struct Loaded {
     pub engine: Engine,
 }
 
-/// A search's run, in a tab (`FindRun` in explorer.ts). **Owned by the find part**: this part only needs to
-/// know whether a tab has one (it hides the folder's listing, and navigating away drops it). The find agent
-/// adds what it needs to the struct.
+/// A name search's run, in a tab (`FindRun` in explorer.ts): while it exists the tab shows its `entries`
+/// instead of the folder's listing, and navigating away drops it. The methods that make and end it are in
+/// `find.rs` ([`Explorer::run_find`](super::Explorer::run_find) and the rest).
 #[derive(Clone, Debug, Default)]
 pub struct FindRun {
     pub id: u64,
@@ -481,13 +481,15 @@ pub enum ExplorerEvent {
     KnownFoldersChanged,
     /// The set of briefly highlighted paths changed.
     FlashChanged,
-    /// A tab closed. The find part stops its search if `find_running`, and the sizes part what it was
+    /// A tab closed. Its running search was stopped (`find_running`); the sizes part stops what it was
     /// measuring for the tab (`forget` in explorer.ts).
     TabClosed { tab: TabId, find_running: bool },
-    /// A tab's search was dropped because the tab moved to another folder. If it was running, stop it.
+    /// A tab's search was dropped because the tab moved to another folder (stopped too if it was running).
     FindDropped { tab: TabId, was_running: bool },
     /// The person should be told something.
     Notice(Notice),
+    /// Searching has something to say that is not about one file (see [`FindNotice`](super::FindNotice)).
+    Find(super::FindNotice),
     /// Work for another part (see [`Handoff`]).
     Handoff(Handoff),
     /// Something the app keeps between runs changed: the last folder, the session, the visits or a folder's

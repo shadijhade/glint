@@ -214,13 +214,12 @@ impl Explorer {
         }
     }
 
-    /// Stops what a closed tab had running and drops its bookkeeping (`forget`). The find part stops a running
-    /// search when it sees [`ExplorerEvent::TabClosed`].
+    /// Stops what a closed tab had running and drops its bookkeeping (`forget`): a running search ends here; the
+    /// sizes part stops what it measured when it sees [`ExplorerEvent::TabClosed`].
     fn forget(&mut self, id: TabId, tab: Option<&Tab>, cx: &mut Context<Self>) {
-        cx.emit(ExplorerEvent::TabClosed {
-            tab: id,
-            find_running: tab.is_some_and(|t| t.find.as_ref().is_some_and(|f| f.running)),
-        });
+        let find_running = tab.is_some_and(|t| t.find.as_ref().is_some_and(|f| f.running));
+        self.stop_find_job(id, find_running);
+        cx.emit(ExplorerEvent::TabClosed { tab: id, find_running });
         self.refreshed_by_hand.remove(&id);
     }
 

@@ -4,7 +4,7 @@
 //!
 //! The workspace calls these from its subscription to the explorer, with the main window at hand.
 
-use crate::explorer::{self, Ask, BusyEvent, Failing, OpNotice, OtherPane, QueueKind, UndoId, Working};
+use crate::explorer::{self, Ask, BusyEvent, Failing, FindNotice, OpNotice, OtherPane, QueueKind, UndoId, Working};
 use crate::kit::prelude::*;
 use crate::platform::window_state::{self, ProgressState};
 use crate::{dialogs, t};
@@ -235,6 +235,58 @@ pub fn ask(question: &Ask, window: &mut Window, cx: &mut App) {
                     explorer::explorer(cx).update(cx, |e, cx| e.confirm_purge(purge, cx).detach());
                 },
             );
+        }
+    }
+}
+
+/// The instant-search offer, kept up for the web app's 15 s.
+struct OfferToast;
+
+/// What searching tells the person.
+///
+/// PORT ME(coordinator): the web app made the instant-search offer once ever (`firstNotice`); the explorer
+/// makes it at most once a run until the saved state keeps a flag for it.
+pub fn find(notice: &FindNotice, window: &mut Window, cx: &mut App) {
+    match notice {
+        FindNotice::NothingBelowRecycleBin => window.push_notification(
+            Notification::info(t!("What you type already narrows what's shown in it."))
+                .title(t!("Nothing to search below the Recycle Bin")),
+            cx,
+        ),
+        FindNotice::OfferInstantSearch => {
+            let offer = Notification::info(t!(
+                "It reads each drive's file table once and keeps up with every change. Windows asks for administrator approval."
+            ))
+            .title(t!("Instant search finds names in milliseconds"))
+            .id::<OfferToast>()
+            .action(|_, _, _| {
+                Button::new("turn-on-instant-search").label(t!("Turn on")).on_click(|_, window, cx| {
+                    window.remove_notification::<OfferToast>(cx);
+                    let source = crate::components::status_bar::index::shared_source(cx);
+                    let turning_on = crate::core_bridge::run((source.enable)());
+                    let handle = window.window_handle();
+                    cx.spawn(async move |cx| {
+                        let result = turning_on.await.and_then(|inner| inner.map(|_| ()));
+                        let _ = handle.update(cx, |_, window, cx| {
+                            let note = match result {
+                                Ok(()) => Notification::success(t!("Instant search is on")),
+                                Err(error) => {
+                                    Notification::error(error).title(t!("Couldn't turn on instant search"))
+                                }
+                            };
+                            window.push_notification(note, cx);
+                        });
+                    })
+                    .detach();
+                })
+            });
+            window.push_notification(offer, cx);
+            let handle = window.window_handle();
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(Duration::from_secs(15)).await;
+                let _ = handle.update(cx, |_, window, cx| window.remove_notification::<OfferToast>(cx));
+            })
+            .detach();
         }
     }
 }

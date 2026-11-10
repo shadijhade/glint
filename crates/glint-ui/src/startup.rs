@@ -371,6 +371,15 @@ fn start_explorer(cx: &mut App) {
                 app.folder_views = folder_views;
             });
         }
+        // An archive whose list of files is encrypted: its password, then the folder again.
+        explorer::ExplorerEvent::Notice(explorer::Notice::ArchivePassword { path, tab, select, .. }) => {
+            let (path, tab, select) = (path.clone(), *tab, select.clone());
+            if let Some(main) = main_window(cx) {
+                let _ = main.update(cx, |_, window, cx| {
+                    crate::dialogs::password::ask_for_notice(window, cx, path, tab, select)
+                });
+            }
+        }
         explorer::ExplorerEvent::Notice(notice) => notify(cx, notice_for(notice)),
         explorer::ExplorerEvent::Handoff(handoff) => not_yet(
             cx,

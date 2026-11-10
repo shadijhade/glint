@@ -9,7 +9,8 @@
 //! | `TreeKids`, `TreeRow`, `TreeArrow`            | `Row::Folder` rows, drawn by [`Sidebar::draw_folder`]      |
 //! | `onTreeKey`                                   | [`Sidebar::on_key_down`]                                  |
 //! | `useCloudSpace`, `useSavedCount`              | [`Sidebar::ask_cloud_space`], [`Sidebar::recount`]         |
-//! | `folderMenu` for a place                      | [`menu::build`]                                           |
+//! | `folderMenu` for a place, `onPlaceContextMenu` | [`SidebarRequest::ContextMenu`]: the window's shared menu |
+//! | `data-drop`, `dropTarget`                     | [`drop::target_of`], [`Sidebar::drag_over`], [`Sidebar::drop_on`] |
 //!
 //! **One flat, virtualised list.** The TypeScript nested a component per place and per folder. A tree of
 //! thousands of folders is possible, so the sidebar lists what is on screen as plain rows
@@ -27,20 +28,20 @@
 //! "rail" below the `md` breakpoint (a 48 px icon-only sidebar) is the window width's business in CSS, and the
 //! GPUI workspace resizes the sidebar between fixed limits instead.
 
-mod menu;
+mod drop;
 mod rows;
 mod tree;
 
-use crate::core_bridge::{self, Core};
+use crate::core_bridge;
 use crate::explorer::{explorer, Explorer, NavOptions};
 use crate::kit::prelude::*;
 use crate::persistence::Persistence;
+use crate::platform::dragdrop::{Answer, DropEffect};
 use crate::state::UiState;
-use crate::{persistence, state, t, theme};
-use glint_core::host::Manager as _;
+use crate::{drops, persistence, state, t, theme};
 use glint_model::entries::{with_details, FileEntry, RawEntry};
 use glint_model::file_types::kind_of;
-use glint_model::paths::{same_path, THIS_PC};
+use glint_model::paths::{same_path, RECYCLE_BIN, THIS_PC};
 use glint_model::store::{RemoteKind, SavedSearch};
 use rows::{build_rows, count_key, reads_files, Glyph, Inputs, Label, Place, Row, Space};
 use std::collections::{HashMap, HashSet};
@@ -53,6 +54,16 @@ use theme::{KindTone, Tokens};
 pub use rows::{remote_path, remote_where};
 pub use tree::{core_subfolders, key_of, reveal_chain, Kids, Subfolder, SubfolderSource, Tree};
 
+/// Rows the list draws beyond the visible ones, so scrolling doesn't show blanks.
+const OVERDRAW: Pixels = px(300.);
+
+/// A tree folder's text (`text-[13px]`): between the theme's `XS` and `SM`.
+const TREE_TEXT: Rems = rems(0.8125);
+
+/// Spacing units ([`space`]): how far in a tree folder's icon is below a place (`pl-[38px]`), and a step a level.
+const TREE_INDENT: f32 = 9.5;
+const TREE_STEP: f32 = 3.5;
+
 /// How long a cloud's space is reused before its service is asked again (the TypeScript's ten minutes).
 const SPACE_FRESH_FOR: Duration = Duration::from_secs(10 * 60);
 
@@ -64,12 +75,27 @@ pub enum SidebarEvent {
     RunSavedSearch(SavedSearch),
     /// "Add a connection" was clicked (`addRemote`). PORT ME(remotes): open the connection dialog.
     AddConnection,
-    /// "Edit the connection…" in a connection's menu, with the connection's id (`editRemote`).
+    /// No longer emitted: "Edit the connection…" is the shared menu's `MenuEvent::EditConnection` now. Kept only
+    /// until the window's match on this enum drops it.
     EditRemote(String),
-    /// "Remove the connection…" in a connection's menu, with its id (`removeRemote`).
+    /// No longer emitted: "Remove the connection…" is the shared menu's `MenuEvent::RemoveConnection` now.
     RemoveRemote(String),
-    /// "Search text" in a folder's menu: switch to text search in this folder (`onSearchText`).
+    /// No longer emitted: "Search text" is the shared menu's `MenuEvent::SearchText` now.
     SearchText(String),
+}
+
+/// What else the sidebar asks its owner for. A second type, so adding to it never breaks the window's exhaustive
+/// match on [`SidebarEvent`]; subscribe to both. (The coordinator may fold it into [`SidebarEvent`] when it edits
+/// the window.)
+#[derive(Clone, Debug, PartialEq)]
+pub enum SidebarRequest {
+    /// The menu of a place or a tree folder, from a right-click or from the menu key or Shift+F10 on the row the
+    /// keyboard is on. `position` is in the window: the pointer, or the row's bottom-start corner (`onPlaceContextMenu`).
+    /// The window opens `components::menus::MenuHost::open_folder_menu(&path, position, ..)`.
+    ContextMenu { path: String, position: Point<Pixels> },
+    /// Files dropped on a paired PC's place: send them to it (`sendToDevice(device, paths)`). `id` is the
+    /// connection's id. PORT ME(coordinator): the devices part sends them; no explorer call does yet.
+    SendToDevice { id: String, paths: Vec<String> },
 }
 
 /// A cloud's space from its service: its rclone remote's name and the folder in it. Total and free bytes, or
@@ -153,10 +179,15 @@ pub struct Sidebar {
     /// The pixels in a rem the rows were measured at.
     measured_at: Pixels,
     folder_tone: Option<KindTone>,
+    /// The row (its [`Row::key`]) a drag of files is over and would drop into: lit while the drag is.
+    drop_hover: Option<String>,
+    /// The eject buttons' focus, by drive, so Tab reaches them.
+    eject_focus: HashMap<String, FocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
+impl EventEmitter<SidebarRequest> for Sidebar {}
 
 impl Sidebar {
     /// The sidebar, reading from glint-core. Needs the explorer ([`crate::explorer::init`]) to exist. Put it in the
@@ -184,7 +215,7 @@ impl Sidebar {
             explorer,
             sources,
             focus,
-            list: ListState::new(0, ListAlignment::Top, px(300.)),
+            list: ListState::new(0, ListAlignment::Top, OVERDRAW),
             rows: Vec::new(),
             cursor: None,
             tree: Tree::default(),
@@ -200,6 +231,8 @@ impl Sidebar {
             scroll_to_current: false,
             measured_at: theme::rem_size(cx),
             folder_tone: None,
+            drop_hover: None,
+            eject_focus: HashMap::new(),
             _subscriptions: subscriptions,
         };
         this.refresh(cx);
@@ -517,24 +550,12 @@ impl Sidebar {
         }
     }
 
-    /// Ejects a drive (a USB drive made safe to remove, a disc) and reads the drives again.
+    /// Ejects a drive (a USB drive made safe to remove, a disc) through the explorer, says how it went, and reads
+    /// the drives again.
     fn eject(&mut self, path: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
-        let host = cx.try_global::<Core>().and_then(|core| {
-            core.app
-                .get_webview_window(crate::workspace::MAIN)
-                .or_else(|| core.app.webview_windows().into_values().next())
-        });
-        let Some(host) = host else {
-            window.push_notification(
-                Notification::error(t!("Windows didn't answer")).title(t!("Couldn't eject {name}", name = name)),
-                cx,
-            );
-            return;
-        };
+        let ejecting = self.explorer.update(cx, |e, cx| e.eject(&path, cx));
         cx.spawn_in(window, async move |this, cx| {
-            let result = core_bridge::run(glint_core::shell::eject_drive(host, path))
-                .await
-                .and_then(|inner| inner);
+            let result = ejecting.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
@@ -549,6 +570,105 @@ impl Sidebar {
             });
         })
         .detach();
+    }
+
+    // ---- Menus and drops --------------------------------------------------------------------------------
+
+    /// Asks for the shared folder menu on row `ix` (a place or a tree folder) at `position`.
+    fn open_menu(&mut self, ix: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if let Some(path) = self
+            .rows
+            .get(ix)
+            .filter(|r| matches!(r, Row::Place(_) | Row::Folder(_)))
+            .and_then(Row::target)
+        {
+            cx.emit(SidebarRequest::ContextMenu {
+                path: path.to_string(),
+                position,
+            });
+        }
+    }
+
+    /// A right-click on row `ix`: the keyboard moves there and the menu is asked for at the pointer.
+    fn right_click(&mut self, ix: usize, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        self.cursor = Some(ix);
+        window.focus(&self.focus, cx);
+        self.open_menu(ix, position, cx);
+        cx.notify();
+    }
+
+    /// The menu key or Shift+F10 on the row the keyboard is on: the menu opens at the row's bottom-start corner.
+    fn keyboard_menu(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(ix) = self.cursor else {
+            return false;
+        };
+        let bounds = self
+            .list
+            .bounds_for_item(ix)
+            .unwrap_or_else(|| self.list.viewport_bounds());
+        let x = if crate::i18n::is_rtl() {
+            bounds.right()
+        } else {
+            bounds.left()
+        };
+        self.open_menu(ix, point(x, bounds.bottom()), cx);
+        true
+    }
+
+    /// A drag of files moved over row `ix`: when the pointer is on it, says what a drop here would do (or that it
+    /// would do nothing), and lights the row when it would take them (`targetAt`, `tell`).
+    fn drag_over(&mut self, ix: usize, event: &DragMoveEvent<ExternalPaths>, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(ix) else {
+            return;
+        };
+        let key = row.key();
+        if !event.bounds.contains(&event.event.position) {
+            if self.drop_hover.as_deref() == Some(&key) {
+                self.drop_hover = None;
+                cx.notify();
+            }
+            return;
+        }
+        let dragged = event
+            .dragged_item()
+            .downcast_ref::<ExternalPaths>()
+            .map(drops::paths)
+            .unwrap_or_default();
+        let name = row_name(row);
+        let accepted = drop::under(row, &name, &dragged);
+        let hover = accepted.is_some().then_some(key);
+        if let Some(under) = accepted {
+            drops::answer(cx, Answer::Accept(under));
+        }
+        if self.drop_hover != hover {
+            self.drop_hover = hover;
+            cx.notify();
+        }
+    }
+
+    /// Files dropped on row `ix`: copied or moved into the folder (the Recycle Bin recycles them), or sent to a
+    /// paired PC. Done by the explorer.
+    fn drop_on(&mut self, ix: usize, files: &ExternalPaths, cx: &mut Context<Self>) {
+        self.drop_hover = None;
+        cx.notify();
+        let Some(target) = self.rows.get(ix).and_then(drop::target_of) else {
+            return;
+        };
+        let paths = drops::paths(files);
+        if paths.is_empty() {
+            return;
+        }
+        // A link (Alt) is copied: the explorer makes no shortcuts.
+        let moving = drops::effect(cx) == DropEffect::Move;
+        match target {
+            drop::Target::Folder(dest) => self
+                .explorer
+                .update(cx, |e, cx| e.drop_files(paths, &dest, moving, cx).detach()),
+            drop::Target::Bin => self
+                .explorer
+                .update(cx, |e, cx| e.drop_files(paths, RECYCLE_BIN, true, cx).detach()),
+            drop::Target::Device { id } => cx.emit(SidebarRequest::SendToDevice { id, paths }),
+        }
     }
 
     // ---- The keyboard -----------------------------------------------------------------------------------
@@ -581,6 +701,8 @@ impl Sidebar {
                 }
                 None => false,
             },
+            "menu" => self.keyboard_menu(cx),
+            "f10" if m.shift => self.keyboard_menu(cx),
             "delete" => match self.cursor {
                 Some(ix) if matches!(self.rows.get(ix), Some(Row::Search(_))) => {
                     self.remove_search(ix, cx);
@@ -682,11 +804,24 @@ impl Sidebar {
             return div().into_any_element();
         };
         let t = theme::tokens(cx).clone();
-        let focused = self.cursor == Some(ix) && self.focus.contains_focused(window, cx);
+        let focused = self.cursor == Some(ix) && self.focus.is_focused(window);
+        let dropping = self.drop_hover.as_ref().is_some_and(|key| *key == row.key());
         match row {
             Row::Heading { .. } => self.draw_heading(ix, row, &t, focused, cx),
-            Row::Place(p) => self.draw_place(ix, p, &t, focused, cx),
-            Row::Folder(f) => self.draw_folder(ix, f, &t, focused, cx),
+            Row::Place(p) => {
+                // A drive that can be ejected has a button of its own that Tab reaches.
+                let eject = p.eject.is_some().then(|| {
+                    let handle = self
+                        .eject_focus
+                        .entry(p.path.to_lowercase())
+                        .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                        .clone();
+                    let on = handle.is_focused(window);
+                    (handle, on)
+                });
+                self.draw_place(ix, p, &t, Look { focused, dropping }, eject, cx)
+            }
+            Row::Folder(f) => self.draw_folder(ix, f, &t, Look { focused, dropping }, cx),
             Row::Note { depth, reason } => self.draw_note(*depth, reason, &t),
             Row::Search(s) => self.draw_search(ix, s, &t, focused, cx),
             Row::AddConnection => self.draw_add(ix, &t, focused, cx),
@@ -759,7 +894,7 @@ impl Sidebar {
         } else {
             wrap.left_0()
         };
-        wrap.child(div().w(px(3.)).h(height).rounded_full().bg(t.primary))
+        wrap.child(div().w(space(0.75)).h(height).rounded_full().bg(t.primary))
     }
 
     /// A tree arrow's wrapper: `offset` from the start edge, centred vertically.
@@ -808,27 +943,6 @@ impl Sidebar {
         )
     }
 
-    /// The menu of a row, built when it opens from what the row is then.
-    fn row_menu(
-        &self,
-        ix: usize,
-        cx: &mut Context<Self>,
-    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
-        let sidebar = cx.entity().downgrade();
-        move |menu, _window, cx| {
-            let Some(view) = sidebar.upgrade() else {
-                return menu;
-            };
-            let Some(row) = view.read(cx).rows.get(ix).cloned() else {
-                return menu;
-            };
-            let pinned = row
-                .target()
-                .is_some_and(|path| persistence::app(cx).is_some_and(|a| a.pinned.iter().any(|p| p == path)));
-            menu::build(menu, &row, pinned, &sidebar, cx)
-        }
-    }
-
     fn glyph_icon(glyph: &Glyph) -> IconName {
         match glyph {
             Glyph::Recent => IconName::Clock,
@@ -857,10 +971,16 @@ impl Sidebar {
         }
     }
 
-    // PORT ME(drag and drop): places and tree folders take dropped files (copy into the folder, Shift moves,
-    // a paired PC's connection sends, the Recycle Bin deletes) and show `dropTarget`'s highlight while one is over
-    // them; the TypeScript marked them `data-drop`. The drop part answers with `DropAnswers::set` per row.
-    fn draw_place(&self, ix: usize, p: &Place, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn draw_place(
+        &self,
+        ix: usize,
+        p: &Place,
+        t: &Tokens,
+        look: Look,
+        eject: Option<(FocusHandle, bool)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Look { focused, dropping } = look;
         let label: SharedString = match &p.label {
             Label::Fixed(text) => t!(*text),
             Label::Plain(text) => text.clone(),
@@ -880,6 +1000,7 @@ impl Sidebar {
             .children(bar.map(|b| div().mt(space(1.)).child(b)));
         let tip = tooltip_of(label.clone(), p.detail.clone());
         let (active, accent, foreground) = (p.active, t.accent, t.foreground);
+        let (lit, lit_ring) = (t.primary.opacity(0.2), t.primary);
         let mut button = row_start()
             .id(("place", ix))
             .role(Role::Button)
@@ -904,22 +1025,36 @@ impl Sidebar {
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
             .when(active, move |d| d.bg(accent).text_color(foreground))
+            .when(dropping, move |d| {
+                d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(lit).border_color(lit_ring))
+            })
             .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(move |this, _, _, cx| this.open_in_new_tab(ix, cx)),
             )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                    this.right_click(ix, event.position, window, cx)
+                }),
+            )
+            .on_drag_move::<ExternalPaths>(
+                cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| this.drag_over(ix, event, cx)),
+            )
+            .on_drop::<ExternalPaths>(
+                cx.listener(move |this, files: &ExternalPaths, _, cx| this.drop_on(ix, files, cx)),
+            )
             .tooltip(tip)
             .when(active, |d| d.child(Self::pill(t, space(4.))))
             .child(icon(Self::glyph_icon(&p.glyph)).size_4().flex_none().text_color(color))
-            .child(text)
-            .context_menu(self.row_menu(ix, cx));
+            .child(text);
 
-        let mut cell = div().group("row").relative().w_full().pb(px(1.)).child(button);
+        let mut cell = div().group("row").relative().w_full().pb(space(0.25)).child(button);
         if let Some(opens) = p.tree {
-            cell = cell.child(self.arrow(ix, opens, rems(0.25), t, cx));
+            cell = cell.child(self.arrow(ix, opens, space(1.), t, cx));
         }
-        if let Some(name) = &p.eject {
+        if let (Some(name), Some((handle, on))) = (&p.eject, eject) {
             let (path, label) = (p.path.clone(), name.clone());
             let hover = t.background;
             cell = cell.child(
@@ -934,11 +1069,14 @@ impl Sidebar {
                             .role(Role::Button)
                             .aria_label(t!("Eject {name}", name = name))
                             .test_support()
+                            .track_focus(&handle)
                             .p(space(1.))
                             .rounded(theme::size::RADIUS_SM)
+                            .border_1()
+                            .border_color(ring(t, on))
                             .cursor_pointer()
                             .text_color(t.muted_foreground)
-                            .opacity(0.)
+                            .opacity(if on { 1. } else { 0. })
                             .group_hover("row", |s| s.opacity(1.))
                             .hover(move |s| s.bg(hover))
                             .tooltip(tooltip_of(
@@ -948,6 +1086,12 @@ impl Sidebar {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.eject(path.clone(), label.clone(), window, cx)
                             }))
+                            // Enter and Space press it (a click); the arrows hand the keyboard back to the list.
+                            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "up" | "down" | "home" | "end") {
+                                    window.focus(&this.focus, cx);
+                                }
+                            }))
                             .child(icon(IconName::Unplug).size_3p5()),
                     ),
             );
@@ -955,16 +1099,11 @@ impl Sidebar {
         cell.into_any_element()
     }
 
-    fn draw_folder(
-        &self,
-        ix: usize,
-        f: &rows::Folder,
-        t: &Tokens,
-        focused: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        // How far in a folder `depth` levels below a place is: past the place's own icon, a step a level (px).
-        let indent = 38. + f.depth as f32 * 14.;
+    fn draw_folder(&self, ix: usize, f: &rows::Folder, t: &Tokens, look: Look, cx: &mut Context<Self>) -> AnyElement {
+        let Look { focused, dropping } = look;
+        // How far in a folder `depth` levels below a place is: past the place's own icon, a step a level.
+        let indent = TREE_INDENT + f.depth as f32 * TREE_STEP;
+        let (lit, lit_ring) = (t.primary.opacity(0.2), t.primary);
         let tip = tooltip_of(f.name.clone(), SharedString::from(f.path.clone()));
         let (active, accent, foreground) = (f.active, t.accent, t.foreground);
         let button = row_start()
@@ -981,19 +1120,34 @@ impl Sidebar {
             .gap(space(2.))
             .py(space(1.))
             .pe(2.)
-            .ps(indent / 4.)
+            .ps(indent)
             .rounded(theme::size::RADIUS)
             .border_1()
             .border_color(ring(t, focused))
             .cursor_pointer()
-            .text_size(rems(0.8125))
+            .text_size(TREE_TEXT)
             .text_color(t.foreground.opacity(0.85))
             .hover(move |s| s.bg(accent))
             .when(active, move |d| d.bg(accent).text_color(foreground))
+            .when(dropping, move |d| {
+                d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(lit).border_color(lit_ring))
+            })
             .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(move |this, _, _, cx| this.open_in_new_tab(ix, cx)),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                    this.right_click(ix, event.position, window, cx)
+                }),
+            )
+            .on_drag_move::<ExternalPaths>(
+                cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| this.drag_over(ix, event, cx)),
+            )
+            .on_drop::<ExternalPaths>(
+                cx.listener(move |this, files: &ExternalPaths, _, cx| this.drop_on(ix, files, cx)),
             )
             .tooltip(tip)
             .when(active, |d| d.child(Self::pill(t, space(3.5))))
@@ -1003,16 +1157,15 @@ impl Sidebar {
                     .flex_none()
                     .text_color(self.folder_color(t)),
             )
-            .child(div().flex_1().min_w_0().truncate().child(isolate(f.name.clone())))
-            .context_menu(self.row_menu(ix, cx));
+            .child(div().flex_1().min_w_0().truncate().child(isolate(f.name.clone())));
 
-        let mut cell = div().group("row").relative().w_full().pb(px(1.)).child(button);
+        let mut cell = div().group("row").relative().w_full().pb(space(0.25)).child(button);
         if f.has != Some(false) {
             let opens = rows::Opens {
                 open: f.open,
                 loading: f.loading,
             };
-            cell = cell.child(self.arrow(ix, opens, rems((indent - 18.) / 16.), t, cx));
+            cell = cell.child(self.arrow(ix, opens, space(indent - 4.5), t, cx));
         }
         cell.into_any_element()
     }
@@ -1024,7 +1177,7 @@ impl Sidebar {
             .id(("note", depth))
             .w_full()
             .py(space(1.))
-            .ps((38. + depth as f32 * 14.) / 4.)
+            .ps(TREE_INDENT + depth as f32 * TREE_STEP)
             .truncate()
             .text_size(theme::size::XS)
             .text_color(t.muted_foreground)
@@ -1136,7 +1289,7 @@ impl Sidebar {
             .group("row")
             .relative()
             .w_full()
-            .pb(px(1.))
+            .pb(space(0.25))
             .child(button)
             .child(remove)
             .into_any_element()
@@ -1146,7 +1299,7 @@ impl Sidebar {
         let accent = t.accent;
         div()
             .w_full()
-            .pb(px(1.))
+            .pb(space(0.25))
             .child(
                 row_start()
                     .id(("add", ix))
@@ -1175,6 +1328,13 @@ impl Sidebar {
     }
 }
 
+/// How a row is drawn beyond what it is: the keyboard is on it, and a drag of files that it would take is over it.
+#[derive(Clone, Copy)]
+struct Look {
+    focused: bool,
+    dropping: bool,
+}
+
 /// The ring a row shows while the keyboard is on it; transparent otherwise (so rows don't move).
 fn ring(t: &Tokens, focused: bool) -> Hsla {
     if focused {
@@ -1184,38 +1344,31 @@ fn ring(t: &Tokens, focused: bool) -> Hsla {
     }
 }
 
-/// A tooltip with a title line and, where there is one, a second line of detail.
-// TODO(coordinator): from kit (Tooltip); this is a private stand-in until the kit exports one.
-struct Tip {
-    title: SharedString,
-    detail: SharedString,
-}
-
-impl Render for Tip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::tokens(cx);
-        col()
-            .max_w(rems(24.))
-            .px(space(2.5))
-            .py(space(1.5))
-            .rounded(theme::size::RADIUS)
-            .border_1()
-            .border_color(t.border)
-            .bg(t.popover)
-            .text_color(t.popover_foreground)
-            .text_size(theme::size::XS)
-            .child(isolate(self.title.clone()))
-            .when(!self.detail.is_empty(), |d| {
-                d.child(div().text_color(t.muted_foreground).child(self.detail.clone()))
-            })
-    }
-}
-
-/// The tooltip builder for `title` and `detail` (the TypeScript's `title="label\ndetail"`).
+/// The tooltip builder for `title` and `detail` (the TypeScript's `title="label\ndetail"`): the kit's tooltip with
+/// the detail on a second line.
 fn tooltip_of(title: SharedString, detail: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    move |_, cx| {
-        let (title, detail) = (title.clone(), detail.clone());
-        cx.new(|_| Tip { title, detail }).into()
+    let title = isolate(title);
+    let text: SharedString = if detail.is_empty() {
+        title
+    } else {
+        format!(
+            "{title}
+{detail}"
+        )
+        .into()
+    };
+    move |window, cx| tooltip(text.clone(), window, cx)
+}
+
+/// What a place or folder row is called (the drag picture's words, `dropName`).
+fn row_name(row: &Row) -> String {
+    match row {
+        Row::Place(p) => match &p.label {
+            Label::Fixed(text) => t!(*text).to_string(),
+            Label::Plain(text) => text.to_string(),
+        },
+        Row::Folder(f) => f.name.to_string(),
+        _ => String::new(),
     }
 }
 

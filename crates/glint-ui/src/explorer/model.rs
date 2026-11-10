@@ -61,6 +61,12 @@ pub(super) struct Prefs {
     pub verify_copies: bool,
     /// Windows asks before it deletes.
     pub confirm_delete: bool,
+    /// Searches by name follow .gitignore files (fd's alone).
+    pub find_respect_ignore: bool,
+    /// Names and globs a search skips.
+    pub find_exclusions: Vec<String>,
+    /// The most results a search keeps; none for no limit.
+    pub find_max_results: Option<u64>,
 }
 
 impl Prefs {
@@ -79,6 +85,9 @@ impl Prefs {
             copy_queue: settings.copy_queue,
             verify_copies: settings.verify_copies,
             confirm_delete: settings.confirm_delete,
+            find_respect_ignore: settings.find_respect_ignore,
+            find_exclusions: settings.find_exclusions.clone(),
+            find_max_results: settings.find_max_results,
         }
     }
 
@@ -141,6 +150,8 @@ pub struct Explorer {
     pub(super) initialized: bool,
     /// The file operations' state: cut items, Undo, slow work, the copy queue, the New menu.
     pub(super) ops: OpsState,
+    /// The searches by name: running ones, their numbering and where instant search stands.
+    pub(super) searching: super::find::Searching,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -191,6 +202,7 @@ impl Explorer {
             refreshed_by_hand: HashSet::new(),
             initialized: false,
             ops: OpsState::new(),
+            searching: Default::default(),
             _subscriptions: subscriptions,
         }
     }

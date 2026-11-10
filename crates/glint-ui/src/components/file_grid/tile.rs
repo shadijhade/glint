@@ -33,6 +33,12 @@ pub(super) struct Frame {
     /// In the pane the keyboard isn't acting on: the selection shows muted, as in an unfocused window.
     pub inactive: bool,
     pub flashed: Arc<HashSet<String>>,
+    /// Cut to the clipboard: dim until pasted.
+    pub cut: Arc<HashSet<String>>,
+    /// Being dragged out of the window: dim until the drag is over.
+    pub dragging: Option<Arc<HashSet<String>>>,
+    /// The folder tile that files dragged over the grid would be dropped into (`dropTarget`).
+    pub drop_tile: Option<String>,
     pub tile: GridTile,
     pub cols: usize,
     /// How many rows of tiles there are.
@@ -205,7 +211,11 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
     let shown_focus = focused && !frame.inactive;
     let thumb = frame.tile.thumb;
 
-    let background = if selected {
+    let dropping = frame.drop_tile.as_deref() == Some(entry.path.as_str());
+    let background = if dropping {
+        // `bg-primary/20 outline-primary`: the folder the files would go into.
+        t.primary.opacity(0.20)
+    } else if selected {
         // `bg-primary/15 dark:bg-primary/20`; muted in the pane the keyboard isn't in.
         t.primary.opacity(match (frame.inactive, t.dark) {
             (true, _) => 0.10,
@@ -218,7 +228,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
     } else {
         hsla(0., 0., 0., 0.)
     };
-    let border = if shown_focus {
+    let border = if shown_focus || dropping {
         t.primary
     } else if selected && frame.inactive {
         t.primary.opacity(0.25)
@@ -252,7 +262,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
     let on_up = frame.on_right_up.clone();
     let on_hover = frame.on_hover.clone();
     let tip_frame = frame.clone();
-    let hidden = is_hidden(entry);
+    let faded = faded(entry, &frame.cut, frame.dragging.as_deref());
     let name = entry.name.clone();
 
     div()
@@ -260,7 +270,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
         .w(px(frame.col_w))
         .h_full()
         .flex_none()
-        .p(px(2.))
+        .p(space(0.5))
         .child(
             div()
                 .id(("file-grid-tile", i))
@@ -284,9 +294,10 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                 .border_color(border)
                 .bg(background)
                 .text_center()
-                .when(!selected, |tile| tile.hover(|hover| hover.bg(t.accent.opacity(0.6))))
-                // Hidden items are drawn dim, as Explorer does.
-                .when(hidden, |tile| tile.opacity(0.55))
+                .when(!selected && !dropping, |tile| {
+                    tile.hover(|hover| hover.bg(t.accent.opacity(0.6)))
+                })
+                .when_some(faded, |tile, opacity| tile.opacity(opacity))
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     cx.stop_propagation();
                     on_down(&(i, event.clone()), window, cx)
@@ -313,7 +324,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                         .get(i)
                         .map(|entry| tooltip_text(&tip_frame, entry))
                         .unwrap_or_default();
-                    crate::components::file_grid::compat::tooltip(text, window, cx)
+                    crate::kit::tooltip(text, window, cx)
                 })
                 .child(square)
                 .child(
@@ -340,6 +351,18 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                         .child(line),
                 ),
         )
+}
+
+/// How dim a tile is drawn, if at all: hidden and cut items are dim, as Explorer does (`opacity-55`); the ones being
+/// dragged out of the window dimmer (`opacity-45`).
+pub(super) fn faded(entry: &FileEntry, cut: &HashSet<String>, dragging: Option<&HashSet<String>>) -> Option<f32> {
+    if dragging.is_some_and(|paths| paths.contains(&entry.path)) {
+        Some(0.45)
+    } else if is_hidden(entry) || cut.contains(&entry.path) {
+        Some(0.55)
+    } else {
+        None
+    }
 }
 
 /// What a corner mark shows: its icon, color and the words a screen reader says.
@@ -397,13 +420,13 @@ fn corner_mark(i: usize, what: &'static str, mark: Mark, _cx: &App) -> impl Into
         .aria_label(mark.label)
         .test_support()
         .absolute()
-        .bottom(px(2.))
+        .bottom(space(0.5))
         .size(rems(1.))
         .child(icon(mark.glyph).size(rems(1.)).text_color(mark.color));
     if i18n::is_rtl() {
-        corner.left(px(2.))
+        corner.left(space(0.5))
     } else {
-        corner.right(px(2.))
+        corner.right(space(0.5))
     }
 }
 
@@ -423,6 +446,22 @@ mod tests {
         assert_eq!(relative_to("C:\\Users\\me", "D:\\other\\a.txt"), "D:\\other");
         // Searching everything has no scope: the whole folder.
         assert_eq!(relative_to("", "D:\\other\\a.txt"), "D:\\other");
+    }
+
+    #[test]
+    fn cut_hidden_and_dragged_tiles_are_dimmed_by_how_much_the_web_app_dimmed_them() {
+        let plain = file("C:\\x", "a.txt", 1, 1);
+        let hidden = crate::explorer::fake::hidden("C:\\x", "h.txt");
+        let none = HashSet::new();
+        let only = |entry: &FileEntry| HashSet::from([entry.path.clone()]);
+        assert_eq!(faded(&plain, &none, None), None);
+        assert_eq!(faded(&hidden, &none, None), Some(0.55));
+        assert_eq!(faded(&plain, &only(&plain), None), Some(0.55), "cut");
+        // Being dragged out is dimmer than hidden or cut, whichever else it is.
+        assert_eq!(faded(&plain, &none, Some(&only(&plain))), Some(0.45));
+        assert_eq!(faded(&hidden, &only(&hidden), Some(&only(&hidden))), Some(0.45));
+        // Another item being dragged doesn't dim this one.
+        assert_eq!(faded(&plain, &none, Some(&only(&hidden))), None);
     }
 
     #[test]

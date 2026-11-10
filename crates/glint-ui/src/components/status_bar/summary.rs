@@ -6,11 +6,13 @@
 //! The view calls [`Summary::of`] when the explorer changes, not on every frame, and draws what it holds. Nothing
 //! here touches GPUI, so the text and the numbers are tested on their own.
 
+use crate::components::file_grid::thumbnail::ThumbRun;
 use crate::explorer::{Engine, Tab, TabId};
 use crate::t;
 use glint_model::entries::FileEntry;
 use glint_model::file_types::{group_filter, type_group, TypeGroup, TYPE_GROUPS};
 use glint_model::format::{format_count, format_duration, format_size};
+use glint_model::store::ViewMode;
 use gpui_kit::SharedString;
 
 /// The folders' color on the breakdown (`FOLDERS_GROUP` in StatusBar.tsx). Folders aren't a kind of file, so they
@@ -130,6 +132,11 @@ pub struct Summary {
     pub filter: String,
     /// The folder's breakdown by kind (empty without a listing).
     pub spectrum: Vec<Category>,
+    /// The tab's lane in the thumbnail service (`tab3`): the bar reads that tab's burst of thumbnails by it.
+    pub lane: String,
+    /// The scope the grid times its thumbnails under (`dir:C:\a:grid`) while the tab shows the grid; empty in
+    /// the other views, where the bar says nothing about thumbnails.
+    pub thumbs_scope: String,
 }
 
 impl Summary {
@@ -171,6 +178,12 @@ impl Summary {
             find,
             filter: tab.filter.clone(),
             spectrum: Vec::new(),
+            lane: tab.id.to_string(),
+            thumbs_scope: if matches!(tab.view, ViewMode::Grid) {
+                format!("{}:grid", tab.view_key())
+            } else {
+                String::new()
+            },
         };
         if let Some(listing) = &tab.listing {
             summary.read_ms = Some(listing.elapsed);
@@ -294,8 +307,8 @@ pub struct Stage {
     pub ms: f64,
 }
 
-/// The stages of showing the folder: reading it, and getting it on screen (`telemetryStages`). The folder sizes,
-/// Git status and thumbnails stages come with their parts.
+/// The stages of showing the folder: reading it, and getting it on screen (`telemetryStages`). The folder sizes
+/// and Git status stages come with their parts; the thumbnails' stage is [`thumbs_stage`].
 pub fn stages(s: &Summary) -> Vec<Stage> {
     let mut out = Vec::new();
     if let (Some(ms), Some(engine)) = (s.read_ms, s.engine) {
@@ -318,6 +331,111 @@ pub fn stages(s: &Summary) -> Vec<Stage> {
         });
     }
     out
+}
+
+/// The thumbnails of the items on screen, as the status bar reads them from the file grid's burst for the tab
+/// (`ThumbRun`). A plain copy: the run keeps its own id, and the words and the stage are worked out from these.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Thumbs {
+    /// Thumbnails that came.
+    pub found: usize,
+    /// Some are still on their way (`run.pending` in StatusBar.tsx).
+    pub pending: bool,
+    /// From the burst's first request to its last answer, ms.
+    pub elapsed_ms: f64,
+    /// Where they came from: Windows' thumbnail cache, made from their files, or core's memory.
+    pub cache: usize,
+    pub made: usize,
+    /// Milliseconds the shell spent making the ones it made.
+    pub made_ms: f64,
+    pub memory: usize,
+}
+
+impl Thumbs {
+    /// The status bar's view of a burst.
+    pub fn of(run: &ThumbRun) -> Thumbs {
+        Thumbs {
+            found: run.found,
+            pending: run.pending > 0,
+            elapsed_ms: run.elapsed_ms,
+            cache: run.cache,
+            made: run.made,
+            made_ms: run.made_ms,
+            memory: run.memory,
+        }
+    }
+}
+
+/// "12 thumbnails in 3.2 ms", or "12 thumbnails…" while more are on their way (`ThumbWork` in StatusBar.tsx).
+pub fn thumbs_line(th: &Thumbs) -> SharedString {
+    let count = format_count(th.found);
+    match (th.pending, th.found == 1) {
+        (true, true) => t!("{count} thumbnail…", count = count),
+        (true, false) => t!("{count} thumbnails…", count = count),
+        (false, true) => t!(
+            "{count} thumbnail in {time}",
+            count = count,
+            time = format_duration(th.elapsed_ms)
+        ),
+        (false, false) => t!(
+            "{count} thumbnails in {time}",
+            count = count,
+            time = format_duration(th.elapsed_ms)
+        ),
+    }
+}
+
+/// The thumbnails' hover text: how long the burst took, how fast, and from where (`ThumbWork`'s title).
+pub fn thumbs_title(th: &Thumbs) -> SharedString {
+    let elapsed = format_duration(th.elapsed_ms);
+    // Math.round of the rate, halves up; no rate when no time has passed.
+    let rate = if th.elapsed_ms > 0.0 {
+        (th.found as f64 / (th.elapsed_ms / 1000.0) + 0.5).floor()
+    } else {
+        0.0
+    };
+    let rate_text = if rate >= 1.0 {
+        format!(" {}", t!("({rate} a second)", rate = format_count(rate as usize)))
+    } else {
+        String::new()
+    };
+    let mut from: Vec<String> = Vec::new();
+    if th.cache > 0 {
+        from.push(t!("{count} from Windows' thumbnail cache", count = format_count(th.cache)).to_string());
+    }
+    if th.made > 0 {
+        let each = format_duration(th.made_ms / th.made as f64);
+        from.push(
+            t!(
+                "{count} made from their files ({each} each)",
+                count = format_count(th.made),
+                each = each
+            )
+            .to_string(),
+        );
+    }
+    if th.memory > 0 {
+        from.push(t!("{count} from memory", count = format_count(th.memory)).to_string());
+    }
+    t!(
+        "Thumbnails of the items on screen, {time} from the first request to the last{rate}: {from}.",
+        time = elapsed,
+        rate = rate_text,
+        from = from.join(", ")
+    )
+}
+
+/// The thumbnails' stage in "How long it took": its time, and how many came from the cache (`telemetryStages`).
+/// None while some are still on their way, as the TypeScript left the stage out then.
+pub fn thumbs_stage(th: &Thumbs) -> Option<Stage> {
+    if th.pending {
+        return None;
+    }
+    Some(Stage {
+        label: t!("Thumbnails ({count})", count = format_count(th.found)),
+        detail: t!("{count} cached", count = th.cache),
+        ms: th.elapsed_ms,
+    })
 }
 
 /// The bar's right side for a folder: the text, and what it says when hovered.
@@ -682,5 +800,71 @@ mod tests {
         assert_eq!(chip_title(&other), "Other files");
         assert!(chip_active(&folders, " folder: "));
         assert!(!chip_active(&other, ""));
+    }
+
+    fn burst(found: usize, pending: bool, elapsed_ms: f64) -> Thumbs {
+        Thumbs {
+            found,
+            pending,
+            elapsed_ms,
+            cache: 0,
+            made: 0,
+            made_ms: 0.0,
+            memory: 0,
+        }
+    }
+
+    #[test]
+    fn thumbnail_words_count_the_burst_and_say_while_it_is_still_coming() {
+        let _guard = testing::lock();
+        assert_eq!(thumbs_line(&burst(12, false, 3.2)), "12 thumbnails in 3.2 ms");
+        assert_eq!(thumbs_line(&burst(1, false, 3.2)), "1 thumbnail in 3.2 ms");
+        assert_eq!(thumbs_line(&burst(5, true, 3.2)), "5 thumbnails…");
+        assert_eq!(thumbs_line(&burst(1, true, 3.2)), "1 thumbnail…");
+    }
+
+    #[test]
+    fn the_thumbnails_title_gives_the_rate_and_where_they_came_from() {
+        let _guard = testing::lock();
+        // 12 in 3 s is four a second; two made from their files took 40 ms, so 20 ms each.
+        let done = Thumbs {
+            found: 12,
+            pending: false,
+            elapsed_ms: 3000.0,
+            cache: 10,
+            made: 2,
+            made_ms: 40.0,
+            memory: 0,
+        };
+        let title = thumbs_title(&done);
+        assert!(
+            title.starts_with("Thumbnails of the items on screen, 3.00 s from the first request"),
+            "{title}"
+        );
+        assert!(title.contains("(4 a second)"), "{title}");
+        assert!(title.contains("10 from Windows' thumbnail cache"), "{title}");
+        assert!(title.contains("2 made from their files (20"), "{title}");
+        assert!(
+            !title.contains("from memory"),
+            "no memory origin, nothing said: {title}"
+        );
+        // Without any time passed there is no rate to say.
+        let instant = Thumbs {
+            elapsed_ms: 0.0,
+            ..done
+        };
+        assert!(!thumbs_title(&instant).contains("a second"));
+    }
+
+    #[test]
+    fn the_thumbnails_stage_waits_until_they_are_all_in() {
+        let _guard = testing::lock();
+        let mut done = burst(12, false, 3.2);
+        done.cache = 10;
+        let stage = thumbs_stage(&done).expect("done thumbnails have a stage");
+        assert_eq!(stage.label, "Thumbnails (12)");
+        assert_eq!(stage.detail, "10 cached");
+        assert_eq!(stage.ms, 3.2);
+        assert!(thumbs_stage(&burst(12, true, 3.2)).is_none());
     }
 }

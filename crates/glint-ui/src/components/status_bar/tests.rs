@@ -2,13 +2,18 @@
 //! did. A fake disk stands behind the explorer, and a fake index behind the bar.
 
 use super::index::{Index, Source, State, Volume};
+use super::summary::Thumbs;
 use super::{summary, StatusBar};
+use crate::components::file_grid::thumbnail::{self, Ask, Fut, ThumbSource, Want};
 use crate::explorer::fake::{file, folder, hidden, FakeDisk};
 use crate::explorer::{self, Drive, DriveKind, Explorer, NavOptions};
 use crate::kit::prelude::*;
 use crate::testing;
+use glint_model::format::format_duration;
+use glint_model::store::ViewMode;
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -112,6 +117,16 @@ struct Setup {
 
 /// The skeleton's globals, a fake disk, a fake index answering `answer`, and a window holding the status bar.
 fn setup(cx: &mut TestAppContext, answer: Index, enable: Result<Index, String>) -> Setup {
+    setup_with(cx, answer, enable, None)
+}
+
+/// [`setup`], with the thumbnail service answering from `thumbs` (the file grid's source, in tests).
+fn setup_with(
+    cx: &mut TestAppContext,
+    answer: Index,
+    enable: Result<Index, String>,
+    thumbs: Option<Rc<dyn ThumbSource>>,
+) -> Setup {
     cx.update(testing::init);
     let disk = FakeDisk::new();
     standard_disk(&disk);
@@ -120,6 +135,9 @@ fn setup(cx: &mut TestAppContext, answer: Index, enable: Result<Index, String>) 
     cx.update(|cx| {
         explorer::init_with(cx, disk.source());
         super::init_with(cx, source);
+        if let Some(thumbs) = thumbs {
+            thumbnail::init_with(cx, thumbs);
+        }
     });
     let (mut visual, frame) = testing::open_window(cx, |window, cx| {
         let bar = cx.new(|cx| StatusBar::new(window, cx));
@@ -370,6 +388,126 @@ fn a_drive_being_read_shows_its_progress(cx: &mut TestAppContext) {
         bar.index.update(cx, |model, cx| model.refresh(cx))
     });
     settle(&mut setup.visual, |cx| !has(cx, "Indexing C: 50%…"));
+}
+
+#[gpui_kit::test]
+fn a_breakdown_segment_takes_the_keyboard_and_enter_filters_to_its_kind(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    go(&mut setup, "C:\\a");
+    click(&mut setup, "status-bar-details");
+    let folders = setup
+        .bar
+        .read_with(&setup.visual, |bar, _| {
+            bar.summary.spectrum.iter().position(|c| c.query == "folder:")
+        })
+        .expect("folders are a kind here");
+    // The segment is a button a person can reach with Tab: it has a focus of its own.
+    let focus = setup
+        .bar
+        .read_with(&setup.visual, |bar, _| bar.segment_focus.get(folders).cloned())
+        .expect("the segment has a focus handle");
+    setup.visual.update(|window, cx| {
+        window.render_frame(cx);
+        focus.focus(window, cx);
+    });
+    press(&mut setup, "enter");
+    assert_eq!(
+        filter_of(&setup).as_deref(),
+        Some("folder:"),
+        "Enter filters as the click does"
+    );
+    assert_eq!(names_shown(&setup), ["sub"]);
+}
+
+/// A 1 x 1 picture: a top-down, 32-bit BMP, as core's answer carries it after its 8-byte header.
+const ONE_PIXEL: [u8; 58] = [
+    b'B', b'M', 58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, // file header: size 58, pixels at 54
+    40, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 1, 0, 32, 0, // info: 1 x -1, one plane, 32 bits
+    0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // no compression, 4 bytes, no resolution or colours
+    0, 0, 255, 255, // the pixel: blue, opaque
+];
+
+/// Answers every thumbnail with a picture from core's memory, as core does for a file it has just made.
+struct Pictures;
+
+impl ThumbSource for Pictures {
+    fn thumbnail(&self, _ask: Ask) -> Fut<Result<Vec<u8>, String>> {
+        // Found (byte 0 is 0), from memory (byte 1 is 0), not lasting, and no time spent by the shell.
+        let mut answer = vec![0, 0, 0, 0, 0, 0, 0, 0];
+        answer.extend_from_slice(&ONE_PIXEL);
+        Box::pin(async move { Ok(answer) })
+    }
+
+    fn cancel(&self, _lane: &str, _paths: Option<Vec<String>>, _up_to: u32) {}
+}
+
+/// The tab's thumbnail lane and grid scope, as the file grid names them.
+fn grid_keys(setup: &Setup) -> (String, String) {
+    setup.explorer.read_with(&setup.visual, |e, _| {
+        let tab = e.active_tab().expect("a tab is open");
+        (tab.id.to_string(), format!("{}:grid", tab.view_key()))
+    })
+}
+
+/// The thumbnail run of `lane`, if the service has one.
+fn run_of(cx: &mut VisualTestContext, lane: &str) -> Option<thumbnail::ThumbRun> {
+    cx.update(|_, app| {
+        let service = thumbnail::thumbnails(app);
+        service.read(app).run(lane).cloned()
+    })
+}
+
+#[gpui_kit::test]
+fn the_thumbnails_of_the_grid_show_in_the_bar_once_they_come(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup_with(
+        cx,
+        index(State::Off, vec![]),
+        Ok(index(State::On, vec![])),
+        Some(Rc::new(Pictures)),
+    );
+    go(&mut setup, "C:\\a");
+    with_explorer(&mut setup, |e, cx| e.set_view(ViewMode::Grid, None, cx));
+    let (lane, scope) = grid_keys(&setup);
+    // The grid asks for its items' thumbnails and times the burst, as FileGrid does on first showing.
+    let wants: Vec<Want> = setup.explorer.read_with(&setup.visual, |e, _| {
+        e.active_tab()
+            .map(|t| {
+                t.entries()
+                    .iter()
+                    .filter_map(|entry| Want::for_entry(entry, 100., 1.))
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    assert!(!wants.is_empty(), "the folder has files a thumbnail can be made of");
+    let viewer = setup.bar.entity_id();
+    setup.visual.update(|_, cx| {
+        let service = thumbnail::thumbnails(cx);
+        service.update(cx, |t, cx| {
+            t.time(&lane, &scope, cx);
+            t.show(viewer, &lane, wants, cx);
+        });
+    });
+    settle(&mut setup.visual, |cx| {
+        run_of(cx, &lane).is_some_and(|run| run.found > 0 && run.pending == 0)
+    });
+    // The line says how many came and how long they took, and the stage in the details says the same.
+    let run = run_of(&mut setup.visual, &lane).expect("the burst is timed");
+    let th = Thumbs::of(&run);
+    let line = summary::thumbs_line(&th);
+    assert_eq!(role_of(&mut setup.visual, &line), Some(Role::Status));
+    click(&mut setup, "status-bar-details");
+    let stage = summary::thumbs_stage(&th).expect("done thumbnails have a stage");
+    let row = format!("{} · {}: {}", stage.label, stage.detail, format_duration(stage.ms));
+    assert_eq!(role_of(&mut setup.visual, &row), Some(Role::Group));
+
+    // In the list there is no grid, so the bar says nothing about thumbnails.
+    click(&mut setup, "status-bar-details");
+    with_explorer(&mut setup, |e, cx| e.set_view(ViewMode::List, None, cx));
+    assert!(!has(&mut setup.visual, &line), "the list shows no thumbnails line");
 }
 
 #[gpui_kit::test]

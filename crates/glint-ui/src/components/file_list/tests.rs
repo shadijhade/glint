@@ -38,8 +38,35 @@ fn small_disk() -> FakeDisk {
 }
 
 fn open(cx: &mut TestAppContext, disk: &FakeDisk, path: &str) -> Ui {
+    open_with(cx, disk, path, None)
+}
+
+/// [`open`], the thumbnail service reading from `pictures` when given.
+fn open_with(
+    cx: &mut TestAppContext,
+    disk: &FakeDisk,
+    path: &str,
+    pictures: Option<Rc<dyn thumbnail::ThumbSource>>,
+) -> Ui {
+    open_setting(cx, disk, path, pictures, true)
+}
+
+/// [`open_with`], Settings' "pictures in the list" on or off.
+fn open_setting(
+    cx: &mut TestAppContext,
+    disk: &FakeDisk,
+    path: &str,
+    pictures: Option<Rc<dyn thumbnail::ThumbSource>>,
+    list_thumbnails: bool,
+) -> Ui {
     cx.update(testing::init);
+    cx.update(|cx| state::update(cx, |settings| settings.list_thumbnails = list_thumbnails));
     cx.update(|cx| explorer::init_with(cx, disk.source()));
+    if let Some(pictures) = pictures {
+        cx.update(|cx| {
+            thumbnail::init_with(cx, pictures);
+        });
+    }
     let explorer = cx.update(|cx| explorer::explorer(cx));
     let task = explorer.update(cx, |e, cx| e.navigate_task(path, NavOptions::default(), cx));
     cx.foreground_executor().block_test(task);
@@ -998,4 +1025,681 @@ fn the_recycle_bin_says_where_each_item_was_deleted_from(cx: &mut TestAppContext
         let place = window.find("file-list-where").bounds().size.width;
         assert!(place < name && place > name * 0.8, "{place:?} {name:?}");
     });
+}
+
+// ---- Follow-ups: the explorer's focus and marquee, cut items, dragging, drops, thumbnails, the keyboard's menu --
+
+use crate::components::file_grid::thumbnail::{Ask, Fut, ThumbSource};
+use crate::platform::dragdrop::{Answer, DropAnswers, DropEffect, DropEvent, Under};
+use gpui_kit::MouseButton;
+
+impl Ui {
+    /// Where row `i` is in the window.
+    fn row_at(&mut self, i: usize) -> gpui_kit::Bounds<Pixels> {
+        self.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find(("file-row", i)).bounds()
+        })
+    }
+
+    /// The list's area under the header, in the window.
+    fn area(&mut self) -> gpui_kit::Bounds<Pixels> {
+        self.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find("file-list-area").bounds()
+        })
+    }
+
+    fn down(&mut self, at: Point<Pixels>) {
+        self.visual
+            .update(|window, cx| window.pointer_down(at, MouseButton::Left, cx));
+        self.frame();
+    }
+
+    fn drag_to(&mut self, at: Point<Pixels>) {
+        self.visual
+            .update(|window, cx| window.pointer_move(at, Some(MouseButton::Left), cx));
+        self.frame();
+    }
+
+    fn up(&mut self, at: Point<Pixels>) {
+        self.visual
+            .update(|window, cx| window.pointer_up(at, MouseButton::Left, cx));
+        self.frame();
+    }
+
+    fn anchor(&mut self) -> Option<String> {
+        self.explorer.read_with(&self.visual, |e, _| {
+            e.active_tab().and_then(|t| {
+                t.selection
+                    .anchor()
+                    .map(|p| p.rsplit('\\').next().unwrap_or(p).to_string())
+            })
+        })
+    }
+
+    /// What the last frame was drawn from.
+    fn frame_of(&mut self) -> Rc<Frame> {
+        self.frame();
+        self.list.read_with(&self.visual, |list, _| list.frame.clone())
+    }
+
+    fn lane(&mut self) -> String {
+        self.explorer
+            .read_with(&self.visual, |e, _| e.active_tab_id().to_string())
+    }
+}
+
+#[gpui_kit::test]
+fn ctrl_and_the_arrows_move_the_focus_without_touching_the_selection(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    ui.click(1);
+    ui.press("ctrl-down");
+    ui.press("ctrl-down");
+    assert_eq!(ui.selected(), ["alpha.txt"], "the selection stays");
+    assert_eq!(ui.focused().as_deref(), Some("beta.md"), "the focus moved two rows");
+    // Ctrl+Space then adds the focused item.
+    ui.press("ctrl-space");
+    assert_eq!(ui.selected(), ["alpha.txt", "beta.md"]);
+    ui.press("ctrl-up");
+    assert_eq!(ui.focused().as_deref(), Some("berry.png"));
+    assert_eq!(ui.selected(), ["alpha.txt", "beta.md"]);
+}
+
+#[gpui_kit::test]
+fn pressing_one_item_of_a_selection_moves_the_focus_and_anchor_and_narrows_on_release(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    ui.click(1);
+    ui.click_with(3, shift());
+    assert_eq!(ui.selected(), ["alpha.txt", "berry.png", "beta.md"]);
+    let at = ui.row_at(2).center();
+    ui.down(at);
+    assert_eq!(ui.selected(), ["alpha.txt", "berry.png", "beta.md"], "kept for a drag");
+    assert_eq!(ui.focused().as_deref(), Some("berry.png"));
+    assert_eq!(ui.anchor().as_deref(), Some("berry.png"));
+    ui.up(at);
+    assert_eq!(ui.selected(), ["berry.png"]);
+}
+
+#[gpui_kit::test]
+fn a_drag_on_empty_space_selects_the_rows_it_crosses_and_ctrl_adds(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    let last = ui.row_at(3);
+    let below = point(last.center().x, last.bottom() + px(40.));
+    let second = ui.row_at(1).center();
+    // Nothing shows until the pointer has moved.
+    ui.down(below);
+    ui.visual
+        .update(|window, _| assert!(window.try_find("file-list-marquee").is_none()));
+    ui.drag_to(second);
+    // The rectangle is drawn from where it began to the pointer.
+    ui.visual.update(|window, _| {
+        let rect = window.find("file-list-marquee").bounds();
+        assert_eq!(rect.origin.y, second.y);
+        assert_eq!(rect.bottom(), below.y);
+    });
+    // From below the last row up to the second: alpha, berry, beta. The first covered is the anchor, the last
+    // has the focus.
+    assert_eq!(ui.selected(), ["alpha.txt", "berry.png", "beta.md"]);
+    assert_eq!(ui.anchor().as_deref(), Some("alpha.txt"));
+    assert_eq!(ui.focused().as_deref(), Some("beta.md"));
+    // Dragged back down to the third, fewer are covered.
+    let third = ui.row_at(2).center();
+    ui.drag_to(third);
+    assert_eq!(ui.selected(), ["berry.png", "beta.md"]);
+    ui.up(third);
+    ui.visual
+        .update(|window, _| assert!(window.try_find("file-list-marquee").is_none()));
+    assert_eq!(
+        ui.selected(),
+        ["berry.png", "beta.md"],
+        "kept when the button is let go"
+    );
+
+    // With Ctrl, what was selected stays.
+    ui.click(0);
+    ui.visual.update(|window, cx| window.change_modifiers(ctrl(), cx));
+    ui.down(below);
+    ui.drag_to(third);
+    ui.up(third);
+    ui.visual
+        .update(|window, cx| window.change_modifiers(Modifiers::default(), cx));
+    assert_eq!(ui.selected(), ["docs", "berry.png", "beta.md"]);
+    // A press on empty space that never moves just clears the selection.
+    ui.down(below);
+    ui.up(below);
+    assert!(ui.selected().is_empty());
+}
+
+#[gpui_kit::test]
+fn a_marquee_held_beyond_the_bottom_scrolls_the_list_and_covers_what_comes_into_view(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &big_disk(300), "C:\\big");
+    let area = ui.area();
+    // Started the way a press on the empty part would (a long list has none on screen).
+    let from = point(area.center().x, area.origin.y + px(40.));
+    ui.list
+        .update(&mut ui.visual, |list, cx| list.begin_marquee(from, false, cx));
+    let held = point(area.center().x, area.bottom() - px(4.));
+    ui.drag_to(held);
+    // (The last row covered has the focus, which keeps it in view: a few pixels.)
+    let before = ui.list.read_with(&ui.visual, |list, _| list.scroll_top());
+    assert!(before < 28., "{before}");
+    let covered = ui.selected().len();
+    for _ in 0..10 {
+        let list = ui.list.clone();
+        ui.visual.update(|window, cx| {
+            list.update(cx, |list, cx| {
+                assert!(list.scroll_tick(window, cx));
+            })
+        });
+        ui.frame();
+    }
+    // Half a row (14 px) a tick, and more as the focus follows the last row covered.
+    let after = ui.list.read_with(&ui.visual, |list, _| list.scroll_top());
+    assert!(after >= before + 140., "{before} -> {after}");
+    assert!(ui.selected().len() > covered, "more rows are covered after the scroll");
+    ui.up(held);
+    // The ticks stop once the marquee is over.
+    let list = ui.list.clone();
+    ui.visual.update(|window, cx| {
+        list.update(cx, |list, cx| assert!(!list.scroll_tick(window, cx)));
+    });
+}
+
+#[gpui_kit::test]
+fn cut_items_are_dimmed_until_pasted(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    assert!(ui.frame_of().cut.is_empty());
+    ui.explorer.update(&mut ui.visual, |e, cx| {
+        e.copy_to_clipboard(vec!["C:\\x\\beta.md".into()], true, cx).detach()
+    });
+    let frame = ui.frame_of();
+    assert!(frame.cut.contains("C:\\x\\beta.md"));
+    assert_eq!(cells::dimness(true, false), Some(0.55));
+    assert_eq!(cells::dimness(false, true), Some(0.45), "dragging is dimmer still");
+    assert_eq!(cells::dimness(true, true), Some(0.45));
+    assert_eq!(cells::dimness(false, false), None);
+}
+
+/// Pictures for the thumbnail service: every ask is answered with a 4 x 2 red picture.
+#[derive(Default)]
+struct Pictures {
+    asked: RefCell<Vec<Ask>>,
+}
+
+impl ThumbSource for Rc<Pictures> {
+    fn thumbnail(&self, ask: Ask) -> Fut<Result<Vec<u8>, String>> {
+        self.asked.borrow_mut().push(ask);
+        let pixels = glint_core::thumbs::Pixels {
+            width: 4,
+            height: 2,
+            bgra: [0, 0, 255, 255].iter().copied().cycle().take(4 * 2 * 4).collect(),
+        };
+        let mut answer = vec![0, 1, 1, 0];
+        answer.extend(1.5f32.to_le_bytes());
+        answer.extend(glint_core::thumbs::encode_bmp(&pixels));
+        Box::pin(async move { Ok(answer) })
+    }
+
+    fn cancel(&self, _: &str, _: Option<Vec<String>>, _: u32) {}
+}
+
+#[gpui_kit::test]
+fn pictures_and_videos_get_their_thumbnail_in_the_icon_cell_and_nothing_else_does(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    disk.folder(
+        "C:\\x",
+        vec![
+            folder("C:\\x", "docs"),
+            file("C:\\x", "alpha.txt", 100, 0),
+            file("C:\\x", "berry.png", 20_000, 0),
+            file("C:\\x", "clip.mp4", 9_000, 0),
+        ],
+    );
+    let pictures = Rc::new(Pictures::default());
+    let mut ui = open_with(cx, &disk, "C:\\x", Some(Rc::new(pictures.clone())));
+    // The service is asked for the picture and the video, in the list's one-rem square.
+    for _ in 0..200 {
+        ui.frame();
+        if pictures.asked.borrow().len() >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let mut asked: Vec<String> = pictures.asked.borrow().iter().map(|a| a.path.clone()).collect();
+    asked.sort();
+    assert_eq!(asked, ["C:\\x\\berry.png", "C:\\x\\clip.mp4"]);
+    let lane = ui.lane();
+    assert!(pictures.asked.borrow().iter().all(|a| a.lane == lane && a.size >= 16));
+    // Once decoded, the cell draws the picture in the icon's place.
+    let mut drawn = false;
+    for _ in 0..400 {
+        ui.visual.run_until_parked();
+        let frame = ui.frame_of();
+        let picture = ui.list.read_with(&ui.visual, |list, cx| {
+            let entry = frame.rows.get(2).cloned();
+            entry.and_then(|entry| list.look_of(&frame, &entry, cx))
+        });
+        if matches!(picture, Some(thumbnail::Look::Picture(_))) {
+            drawn = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(drawn, "the picture arrived and the cell shows it");
+    let text_has_none = ui.list.read_with(&ui.visual, |list, cx| {
+        let frame = list.frame.clone();
+        let text = frame.rows.get(1).cloned();
+        text.and_then(|entry| list.look_of(&frame, &entry, cx)).is_none()
+    });
+    assert!(text_has_none, "a text file keeps its icon");
+}
+
+#[gpui_kit::test]
+fn with_list_thumbnails_off_nothing_is_asked(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let pictures = Rc::new(Pictures::default());
+    let mut ui = open_setting(cx, &small_disk(), "C:\\x", Some(Rc::new(pictures.clone())), false);
+    ui.frame();
+    assert!(pictures.asked.borrow().is_empty());
+    assert!(!ui.frame_of().thumbnails);
+}
+
+// ---- Dragging out ---------------------------------------------------------------------------------------------
+
+fn started() -> Vec<(Vec<String>, bool)> {
+    pointer::STARTED.with(|started| std::mem::take(&mut *started.borrow_mut()))
+}
+
+#[gpui_kit::test]
+fn a_press_on_the_selection_that_moves_six_pixels_drags_it_out_of_the_window(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    started();
+    ui.click(1);
+    ui.click_with(2, shift());
+    let start = ui.row_at(1).center();
+    ui.down(start);
+    // Less than the threshold is not a drag.
+    ui.drag_to(point(start.x + px(3.), start.y + px(3.)));
+    assert!(started().is_empty());
+    ui.drag_to(point(start.x + px(6.), start.y + px(2.)));
+    assert_eq!(
+        started(),
+        [(
+            vec!["C:\\x\\alpha.txt".to_string(), "C:\\x\\berry.png".to_string()],
+            false
+        )]
+    );
+    // Further moves don't start it again, and the release doesn't narrow the selection.
+    ui.drag_to(point(start.x + px(60.), start.y));
+    ui.up(start);
+    assert!(started().is_empty());
+    assert_eq!(ui.selected(), ["alpha.txt", "berry.png"]);
+}
+
+#[gpui_kit::test]
+fn the_items_being_dragged_are_dimmed_only_while_the_drag_lasts(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    started();
+    ui.click(1);
+    let start = ui.row_at(1).center();
+    ui.down(start);
+    ui.drag_to(point(start.x + px(10.), start.y));
+    assert_eq!(started().len(), 1);
+    // The test's drag ends at once, as "copy": the dimming is over.
+    assert!(ui.frame_of().dragging.is_empty());
+    ui.list.update(&mut ui.visual, |list, _| {
+        list.dragging = Arc::new(["C:\\x\\alpha.txt".to_string()].into_iter().collect());
+    });
+    assert!(ui.frame_of().dragging.contains("C:\\x\\alpha.txt"));
+}
+
+#[gpui_kit::test]
+fn items_in_an_archive_are_extracted_first_and_those_in_the_recycle_bin_cannot_be_dragged(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    let mut inside = file("C:\\x\\pack.zip", "readme.txt", 10, 0);
+    inside.attrs |= attr::IN_ARCHIVE;
+    disk.folder("C:\\x\\pack.zip", vec![inside]);
+    let mut ui = open(cx, &disk, "C:\\x\\pack.zip");
+    started();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let sink = asked.clone();
+    ui.visual.update(|_, cx| {
+        cx.subscribe(&ui.list, move |_, event: &DragFromArchive, _| {
+            sink.borrow_mut().push(event.clone())
+        })
+        .detach();
+    });
+    ui.click(0);
+    let start = ui.row_at(0).center();
+    ui.down(start);
+    ui.drag_to(point(start.x + px(20.), start.y));
+    ui.up(start);
+    assert_eq!(
+        *asked.borrow(),
+        [DragFromArchive {
+            paths: vec!["C:\\x\\pack.zip\\readme.txt".to_string()]
+        }]
+    );
+    assert!(started().is_empty(), "the archive part drags the extracted copies");
+
+    let disk = FakeDisk::new();
+    let mut deleted = file("C:\\$Recycle.Bin", "old.txt", 5, 1_000);
+    deleted.attrs |= attr::RECYCLED;
+    disk.folder("shell:RecycleBinFolder", vec![deleted]);
+    let mut ui = open(cx, &disk, "shell:RecycleBinFolder");
+    started();
+    ui.click(0);
+    let start = ui.row_at(0).center();
+    ui.down(start);
+    ui.drag_to(point(start.x + px(20.), start.y));
+    ui.up(start);
+    assert!(started().is_empty());
+}
+
+// ---- Drops ----------------------------------------------------------------------------------------------------
+
+impl Ui {
+    fn dispatch(&mut self, answers: &DropAnswers, event: DropEvent) {
+        self.visual
+            .update(|window, cx| crate::drops::dispatch(event, answers, window, cx));
+        self.frame();
+    }
+
+    /// Files come over `at`, and what the list answered.
+    fn over(&mut self, answers: &DropAnswers, paths: &[&str], at: Point<Pixels>, effect: DropEffect) -> Answer {
+        let paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+        // Each drag starts anew: GPUI keeps the files of the first one entered until the drag exits.
+        self.dispatch(answers, DropEvent::Leave);
+        self.dispatch(
+            answers,
+            DropEvent::Enter {
+                paths,
+                x: f32::from(at.x),
+                y: f32::from(at.y),
+                effect,
+            },
+        );
+        self.dispatch(
+            answers,
+            DropEvent::Over {
+                x: f32::from(at.x),
+                y: f32::from(at.y),
+                effect,
+            },
+        );
+        answers.get()
+    }
+}
+
+fn under(name: &str) -> Answer {
+    Answer::Accept(Under {
+        name: name.into(),
+        copy: "Copy to %1".into(),
+        moves: "Move to %1".into(),
+        always_move: false,
+    })
+}
+
+#[gpui_kit::test]
+fn files_dragged_over_a_folder_row_go_into_it_and_elsewhere_into_the_folder_shown(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = small_disk();
+    let mut ui = open(cx, &disk, "C:\\x");
+    let answers = DropAnswers::default();
+    let outside = ["D:\\Work\\report.docx"];
+    // Over the folder row: "Copy to docs", and the row is lit.
+    let docs = ui.row_at(0).center();
+    assert_eq!(ui.over(&answers, &outside, docs, DropEffect::Copy), under("docs"));
+    assert_eq!(ui.frame_of().drop_row.as_deref(), Some("C:\\x\\docs"));
+    // Over a file row, and the empty part: the folder shown.
+    let file_row = ui.row_at(1).center();
+    assert_eq!(ui.over(&answers, &outside, file_row, DropEffect::Copy), under("x"));
+    assert_eq!(ui.frame_of().drop_row, None);
+    let area = ui.area();
+    let empty = point(area.center().x, area.bottom() - px(20.));
+    assert_eq!(ui.over(&answers, &outside, empty, DropEffect::Copy), under("x"));
+    // The header is part of the list too.
+    let header = ui
+        .visual
+        .update(|window, _| window.find("file-list-header").bounds().center());
+    assert_eq!(ui.over(&answers, &outside, header, DropEffect::Copy), under("x"));
+    ui.dispatch(&answers, DropEvent::Leave);
+    assert_eq!(ui.frame_of().drop_row, None, "nothing is lit once the drag has left");
+}
+
+#[gpui_kit::test]
+fn a_drop_copies_or_moves_into_the_folder_under_the_pointer(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = small_disk();
+    let mut ui = open(cx, &disk, "C:\\x");
+    let answers = DropAnswers::default();
+    let files = vec!["D:\\Work\\report.docx".to_string(), "D:\\Work\\ملف.txt".to_string()];
+    let paths: Vec<&str> = files.iter().map(String::as_str).collect();
+    let docs = ui.row_at(0).center();
+    ui.over(&answers, &paths, docs, DropEffect::Copy);
+    ui.dispatch(
+        &answers,
+        DropEvent::Drop {
+            paths: files.clone(),
+            x: f32::from(docs.x),
+            y: f32::from(docs.y),
+            effect: DropEffect::Copy,
+        },
+    );
+    ui.frame();
+    assert!(
+        disk.ops()
+            .iter()
+            .any(|op| matches!(op, crate::explorer::FileOp::Copy { sources, dest }
+            if *sources == files && dest == "C:\\x\\docs")),
+        "{:?}",
+        disk.ops()
+    );
+    // Shift moves; on a file row it is the folder shown.
+    let beta = ui.row_at(2).center();
+    ui.over(&answers, &paths, beta, DropEffect::Move);
+    ui.dispatch(
+        &answers,
+        DropEvent::Drop {
+            paths: files.clone(),
+            x: f32::from(beta.x),
+            y: f32::from(beta.y),
+            effect: DropEffect::Move,
+        },
+    );
+    ui.frame();
+    assert!(
+        disk.ops()
+            .iter()
+            .any(|op| matches!(op, crate::explorer::FileOp::Move { sources, dest }
+            if *sources == files && dest == "C:\\x")),
+        "{:?}",
+        disk.ops()
+    );
+    // A drop that was refused where it landed never reaches the list.
+    let before = disk.ops().len();
+    ui.dispatch(
+        &answers,
+        DropEvent::Drop {
+            paths: files.clone(),
+            x: f32::from(beta.x),
+            y: f32::from(beta.y),
+            effect: DropEffect::None,
+        },
+    );
+    assert_eq!(disk.ops().len(), before);
+}
+
+#[gpui_kit::test]
+fn a_drop_is_refused_where_the_files_already_are_and_into_themselves(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = small_disk();
+    let mut ui = open(cx, &disk, "C:\\x");
+    let answers = DropAnswers::default();
+    let docs = ui.row_at(0).center();
+    let file_row = ui.row_at(1).center();
+    // A folder over itself.
+    assert_eq!(
+        ui.over(&answers, &["C:\\x\\docs"], docs, DropEffect::Copy),
+        Answer::Refuse
+    );
+    assert_eq!(ui.frame_of().drop_row, None);
+    // Files from this folder over this folder.
+    assert_eq!(
+        ui.over(&answers, &["C:\\x\\alpha.txt"], file_row, DropEffect::Copy),
+        Answer::Refuse
+    );
+    // A folder into one of its own subfolders.
+    assert_eq!(
+        ui.over(&answers, &["C:\\x"], docs, DropEffect::Copy),
+        Answer::Refuse,
+        "a folder can't go into one of its own"
+    );
+    // But a file of this folder into the folder row is fine.
+    assert_eq!(
+        ui.over(&answers, &["C:\\x\\alpha.txt"], docs, DropEffect::Copy),
+        under("docs")
+    );
+}
+
+#[gpui_kit::test]
+fn nothing_is_dropped_into_a_closed_folder_and_a_closed_row_means_the_folder_shown(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let answers = DropAnswers::default();
+    let outside = ["D:\\Work\\report.docx"];
+
+    // A folder Windows keeps closed.
+    let disk = FakeDisk::new();
+    disk.folder("C:\\x", vec![]);
+    disk.deny("C:\\x");
+    let mut ui = open(cx, &disk, "C:\\x");
+    let area = ui.area();
+    assert_eq!(
+        ui.over(&answers, &outside, area.center(), DropEffect::Copy),
+        Answer::Refuse
+    );
+
+    // A closed folder's row isn't a place for files; it falls through to the folder shown, as the web's did.
+    let disk = FakeDisk::new();
+    let mut closed = folder("C:\\x", "locked");
+    closed.attrs |= attr::CLOSED;
+    disk.folder("C:\\x", vec![closed]);
+    let mut ui = open(cx, &disk, "C:\\x");
+    let row = ui.row_at(0).center();
+    assert_eq!(ui.over(&answers, &outside, row, DropEffect::Copy), under("x"));
+}
+
+#[gpui_kit::test]
+fn the_recycle_bin_takes_files_to_recycle_them_and_the_words_are_arabic_in_the_arabic_interface(
+    cx: &mut TestAppContext,
+) {
+    let _guard = testing::lock();
+    let disk = FakeDisk::new();
+    let mut deleted = file("C:\\$Recycle.Bin", "old.txt", 5, 1_000);
+    deleted.attrs |= attr::RECYCLED;
+    disk.folder("shell:RecycleBinFolder", vec![deleted]);
+    let mut ui = open(cx, &disk, "shell:RecycleBinFolder");
+    let answers = DropAnswers::default();
+    let area = ui.area();
+    let at = point(area.center().x, area.bottom() - px(20.));
+    let got = ui.over(&answers, &["D:\\Work\\report.docx"], at, DropEffect::Copy);
+    let Answer::Accept(into) = got else {
+        panic!("the Recycle Bin takes files: {got:?}")
+    };
+    assert!(into.always_move, "a drop there always deletes");
+
+    // The Arabic interface: the words, and a folder with an Arabic name.
+    let disk = FakeDisk::new();
+    disk.folder(
+        "C:\\ar",
+        vec![folder("C:\\ar", "مجلد"), file("C:\\ar", "report.txt", 5, 0)],
+    );
+    let mut ui = open(cx, &disk, "C:\\ar");
+    testing::set_rtl(true);
+    ui.list.update(&mut ui.visual, |_, cx| cx.notify());
+    ui.frame();
+    let row = ui.row_at(0).center();
+    let got = ui.over(&answers, &["D:\\Work\\ملف.txt"], row, DropEffect::Copy);
+    testing::set_rtl(false);
+    let Answer::Accept(into) = got else {
+        panic!("a folder row takes files: {got:?}")
+    };
+    assert_eq!(into.name, "مجلد");
+    assert_eq!(into.copy, "نسخ إلى %1");
+    assert_eq!(into.moves, "نقل إلى %1");
+}
+
+// ---- The keyboard's menu --------------------------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn the_menu_key_asks_for_the_menu_at_the_focused_rows_bottom_corner(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &small_disk(), "C:\\x");
+    ui.click(2);
+    ui.press("shift-f10");
+    let row = ui.row_at(2);
+    let area = ui.area();
+    let events = ui.events();
+    let Some(FileListEvent::ContextMenu { target, at, shift }) = events.last() else {
+        panic!("{events:?}")
+    };
+    assert_eq!(target.as_deref(), Some("C:\\x\\berry.png"));
+    assert!(!shift);
+    // 1.5 rem in from the start edge, on the row's bottom edge.
+    assert_eq!(*at, Some(point(area.origin.x + px(24.), row.bottom())));
+
+    // In the Arabic interface the corner is the other one.
+    testing::set_rtl(true);
+    ui.list.update(&mut ui.visual, |_, cx| cx.notify());
+    ui.frame();
+    ui.press("shift-f10");
+    let events = ui.events();
+    testing::set_rtl(false);
+    let Some(FileListEvent::ContextMenu { at: Some(at), .. }) = events.last() else {
+        panic!("{events:?}")
+    };
+    assert_eq!(at.x, area.right() - px(24.));
+    assert_eq!(at.y, row.bottom());
+
+    // With nothing focused it is the folder's menu, near the list's top.
+    ui.press("escape");
+    ui.press("shift-f10");
+    let events = ui.events();
+    let Some(FileListEvent::ContextMenu {
+        target: None,
+        at: Some(at),
+        ..
+    }) = events.last()
+    else {
+        panic!("{events:?}")
+    };
+    assert_eq!(at.y, area.origin.y + px(8.));
+}
+
+#[gpui_kit::test]
+fn the_menu_key_follows_the_focused_row_when_the_list_is_scrolled(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open(cx, &big_disk(300), "C:\\big");
+    ui.click(0);
+    ui.press("end");
+    ui.press("menu");
+    ui.frame();
+    let area = ui.area();
+    let events = ui.events();
+    let Some(FileListEvent::ContextMenu { at: Some(at), .. }) = events.last() else {
+        panic!("{events:?}")
+    };
+    // The last row sits at the bottom of the list.
+    assert!(at.y > area.origin.y && at.y <= area.bottom(), "{at:?} in {area:?}");
+    assert!(f32::from(area.bottom() - at.y) < 2., "{at:?} in {area:?}");
 }

@@ -2,6 +2,7 @@
 //! FileList.tsx). Built only for the lines on screen.
 
 use super::{FileList, Frame, Track};
+use crate::components::file_grid::thumbnail::thumbnail_square;
 use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
 use crate::{i18n, t};
@@ -10,8 +11,9 @@ use glint_model::entries::{
     attr, cloud_state, is_archived, is_closed, is_hidden, is_locked, is_recycled, CloudState, FileEntry,
 };
 use glint_model::file_types::{kind_of, type_label};
-use glint_model::format::{format_date, format_size};
+use glint_model::format::{format_date, format_full_date, format_size};
 use glint_model::groups::GroupHeader;
+use glint_model::paths::parent_path;
 
 /// The height of a line, 1.75 rem (`rowHeight`: 28 px at the usual size).
 pub const ROW_HEIGHT: Rems = rems(1.75);
@@ -74,12 +76,16 @@ pub fn biggest(rows: &crate::explorer::Rows, located: bool) -> u64 {
 /// File Explorer's words and marks for a cloud file's state.
 fn cloud_mark(state: CloudState, t: &Tokens) -> (IconName, SharedString, Hsla) {
     match state {
-        // PORT ME(coordinator): a theme token for sky-500; `tk_number` is the nearest blue meanwhile.
-        CloudState::Online => (IconName::Cloud, t!("Available when online"), t.tk_number),
+        CloudState::Online => (IconName::Cloud, t!("Available when online"), sky(t)),
         CloudState::Local => (IconName::CircleCheck, t!("Available on this device"), t.success),
         CloudState::Kept => (IconName::CircleCheck, t!("Always available on this device"), t.success),
-        CloudState::Pending => (IconName::RefreshCw, t!("Sync pending"), t.tk_number),
+        CloudState::Pending => (IconName::RefreshCw, t!("Sync pending"), sky(t)),
     }
+}
+
+/// `text-sky-500`, the mark of a file that is not (or not yet) on this device.
+fn sky(t: &Tokens) -> Hsla {
+    theme::tailwind("sky-500").unwrap_or(t.tk_number)
 }
 
 impl FileList {
@@ -109,28 +115,45 @@ impl FileList {
         let size = size_of(entry, frame.located);
         let percent = size_percent(size, frame.max_size);
         let hot = !frame.recycled && entry.modified > 0 && (0..HOT_FOR_MS).contains(&(frame.now - entry.modified));
-        // PORT ME(clipboard): cut items are dimmed too. PORT ME(git): so are the ones .gitignore leaves out.
-        // PORT ME(drag): the item being dragged is dimmer still (45%), and a folder files are dragged over (see
-        // `drop_path`) is outlined and tinted.
-        let dim = is_hidden(entry);
+        // Hidden and cut items are dimmed (PORT ME(git): so are the ones .gitignore leaves out); an item being
+        // dragged out is dimmer still (45%); a folder files are dragged over (see `drop_path`) is tinted and outlined.
+        let dim = is_hidden(entry) || frame.cut.contains(&entry.path);
+        let dragged = frame.dragging.contains(&entry.path);
+        let dropping = frame.drop_row.as_deref() == Some(entry.path.as_str());
         let kind = kind_of(entry);
         let tone = theme::kind_tone(kind, cx);
         let type_text = type_label(entry);
         let date_text = format_date(entry.modified, None, i18n::language());
+        // The date's title: the full date and time ("Deleted …" in the Recycle Bin).
+        let full_date: SharedString = if frame.recycled {
+            t!("Deleted {date}", date = format_full_date(entry.modified))
+        } else {
+            format_full_date(entry.modified).into()
+        };
         let size_text = match size {
             Some(size) => format_size(size),
             None => String::new(),
         };
 
-        // The name: its icon (PORT ME(thumbnails): a picture's or a video's own small image in its place),
-        // then the name, or the box it is renamed in.
+        // The name: its icon (a picture's or a video's own small image once it is in), then the name, or the box
+        // it is renamed in.
         let renaming = frame.renaming.as_deref() == Some(entry.path.as_str());
-        let mut name_cell = row_start().gap(space(2.)).flex_1().min_w_0().child(
-            icon(super::kind_icon(kind.icon))
+        let mark = match self.look_of(frame, entry, cx) {
+            Some(look) => thumbnail_square(&look, kind, frame.box_px, frame.box_px, false, cx).into_any_element(),
+            None => icon(super::kind_icon(kind.icon))
                 .size(rems(1.))
                 .text_color(tone.color)
-                .flex_none(),
-        );
+                .flex_none()
+                .into_any_element(),
+        };
+        let name_tip = isolate(entry.name.clone());
+        let mut name_cell = row_start()
+            .id(("file-list-name", i))
+            .gap(space(2.))
+            .flex_1()
+            .min_w_0()
+            .child(mark)
+            .tooltip(move |window, cx| tooltip(name_tip.clone(), window, cx));
         name_cell = match self.rename.as_ref().filter(|_| renaming) {
             Some(rename) => name_cell.child(self.rename_input(rename, cx)),
             None => name_cell.child(div().min_w_0().truncate().child(isolate(entry.name.clone()))),
@@ -195,16 +218,23 @@ impl FileList {
                         (Some(relative), false) => relative(&entry.path),
                         (None, false) => String::new(),
                     };
+                    // Its title was the folder it is in (where it was deleted from, in the Recycle Bin).
+                    let full = isolate(if frame.recycled {
+                        entry.origin.clone().unwrap_or_default()
+                    } else {
+                        parent_path(&entry.path)
+                    });
                     line.child(
-                        where_track(div())
+                        where_track(div().id(("file-list-where-cell", i)))
                             .truncate()
                             .text_size(theme::size::XS)
                             .text_color(t.muted_foreground)
-                            .child(isolate(place)),
+                            .child(isolate(place))
+                            .tooltip(move |window, cx| tooltip(full.clone(), window, cx)),
                     )
                 }
                 Track::Column { id, width } => line.child(match id {
-                    ColumnId::Modified => date_cell(width, date_text.clone(), hot, t),
+                    ColumnId::Modified => date_cell(i, width, date_text.clone(), full_date.clone(), hot, t),
                     ColumnId::Type => text_cell(width, type_text.clone(), false, t),
                     // PORT ME(media): what photos, videos and songs say about themselves (media.ts's facts):
                     // the dates they were taken, their dimensions, durations, artists and albums. Empty until
@@ -218,7 +248,10 @@ impl FileList {
             };
         }
 
-        line = if selected {
+        line = if dropping {
+            // The folder the files will go into: `bg-primary/20` and an outline.
+            line.bg(t.primary.opacity(0.20)).border_color(t.primary)
+        } else if selected {
             let tint = if t.dark { 0.20 } else { 0.15 };
             if frame.inactive {
                 // The pane the keyboard isn't in: muted, with a faint ring, as an unfocused window shows it.
@@ -238,8 +271,8 @@ impl FileList {
             // while the explorer says the item is flashed (1.2 s).
             line = line.bg(t.primary.opacity(0.25)).border_color(t.primary.opacity(0.85));
         }
-        if dim {
-            line = line.opacity(0.55);
+        if let Some(opacity) = dimness(dim, dragged) {
+            line = line.opacity(opacity);
         }
         if focused {
             line = line.aria_active_descendant();
@@ -273,6 +306,18 @@ impl FileList {
             None => line,
         };
         line.test_support().into_any_element()
+    }
+}
+
+/// How dim a row is drawn: hidden and cut items to 55%, an item being dragged out to 45% (`opacity-55`,
+/// `opacity-45`); None for a plain row.
+pub(super) fn dimness(dim: bool, dragged: bool) -> Option<f32> {
+    if dragged {
+        Some(0.45)
+    } else if dim {
+        Some(0.55)
+    } else {
+        None
     }
 }
 
@@ -345,9 +390,10 @@ fn text_cell(width: Pixels, text: String, end: bool, t: &Tokens) -> AnyElement {
     cell.child(isolate(text)).into_any_element()
 }
 
-/// The date: small and muted, with a green dot when it changed in the last hour.
-fn date_cell(width: Pixels, text: String, hot: bool, t: &Tokens) -> AnyElement {
+/// The date: small and muted, with a green dot when it changed in the last hour. Its tooltip is the full date.
+fn date_cell(i: usize, width: Pixels, text: String, full: SharedString, hot: bool, t: &Tokens) -> AnyElement {
     row_start()
+        .id(("file-list-date", i))
         .w(width)
         .flex_none()
         .gap(space(1.5))
@@ -367,6 +413,7 @@ fn date_cell(width: Pixels, text: String, hot: bool, t: &Tokens) -> AnyElement {
             )
         })
         .child(div().min_w_0().truncate().child(text))
+        .tooltip(move |window, cx| tooltip(full.clone(), window, cx))
         .into_any_element()
 }
 
@@ -378,7 +425,7 @@ fn size_cell(width: Pixels, text: String, percent: u32, t: &Tokens) -> AnyElemen
             .top(space(0.5))
             .bottom(space(0.5))
             .w(relative(percent as f32 / 100.))
-            .rounded(px(3.))
+            .rounded(theme::size::RADIUS_SM)
             .bg(t.primary.opacity(if t.dark { 0.18 } else { 0.12 }));
         // The bar grows from the end edge.
         if i18n::is_rtl() {
@@ -394,7 +441,7 @@ fn size_cell(width: Pixels, text: String, percent: u32, t: &Tokens) -> AnyElemen
         .h(rems(1.25))
         .justify_end()
         .overflow_hidden()
-        .rounded(px(3.))
+        .rounded(theme::size::RADIUS_SM)
         .px(space(1.))
         .text_size(theme::size::XS)
         .text_color(t.muted_foreground)

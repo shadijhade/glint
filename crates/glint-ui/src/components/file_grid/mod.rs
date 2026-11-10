@@ -32,14 +32,34 @@
 //! column of `size_full()`. Its root has the `FileList` key context and handles the actions listed on
 //! [`FileGrid`].
 //!
+//! # Marquee, drops, drag out
+//!
+//! - **Marquee:** a press on the empty part draws a rectangle that selects the tiles it covers
+//!   (`glint_model::grid::marquee_hits`, applied with `Explorer::set_selection`), added to the selection with Ctrl, and
+//!   scrolls while the pointer is held near the top or bottom of the body (`startMarquee`).
+//! - **Files dropped in** (from File Explorer, the desktop, the other pane): GPUI's own file drops, answered through
+//!   [`crate::drops`]. A folder tile takes them into it (not one in an archive, one Windows keeps closed or one in
+//!   the Recycle Bin); anywhere else they go into the folder shown, unless that is This PC, search results, an
+//!   archive or a closed folder. A drop that would do nothing (the files are already there, or it is one of them)
+//!   is refused. The drag's words are "Copy to %1" / "Move to %1" (the Recycle Bin always moves). The folder tile
+//!   (or the whole grid) under the pointer is lit. The drop is `Explorer::drop_files`; a link (Alt) copies, as the
+//!   web app's did.
+//! - **Dragging out:** [`FileGridEvent::DragStart`]; the dragged tiles are dimmed until the drag is over (the first
+//!   pointer move with no button down, or [`FileGrid::end_drag`]).
+//! - **Cut** tiles are dimmed from `Explorer::cut_paths`.
+//!
+//! # Right to left
+//!
+//! Tiles run from the right in Arabic. Left and Right move to the tile at the left or right *of the screen* (not
+//! the next or previous one in reading order): this is kept on purpose, as File Explorer does it in a mirrored
+//! window, and the tests pin it.
+//!
 //! # Not here yet
 //!
-//! Each is marked `PORT ME(<part>)` where it belongs: drag out and drop in (the grid emits
-//! [`FileGridEvent::DragStart`] and shows no drop highlight), the context menu's content (it emits
-//! [`FileGridEvent::ContextMenu`]), renaming in place, the marquee, the diff and Git badges, folders' measured sizes,
-//! SVG pictures drawn by the grid itself, and the search's, Gallery's and Recent's empty states.
+//! Each is marked `PORT ME(<part>)` where it belongs: renaming in place, the diff and Git badges, folders' measured
+//! sizes, and the search's, Gallery's and Recent's empty states. The context menu's content is the workspace's: the
+//! grid only emits [`FileGridEvent::ContextMenu`] (from the keyboard at the focused tile's bottom-start corner).
 
-mod compat;
 mod empty;
 mod keys;
 mod tile;
@@ -52,15 +72,18 @@ mod tests;
 use crate::actions::{GridLarger, GridReset, GridSmaller, OpenInNewTab, OpenItem, SelectAll, ShowItemMenu};
 use crate::explorer::{self, Explorer, ExplorerEvent, Rows, Selection, TabId};
 use crate::kit::prelude::*;
-use crate::{i18n, state, t, theme};
-use compat::ScrollableElement as _;
+use crate::platform::dragdrop::{Answer, DropEffect, Under};
+use crate::{drops, i18n, state, t, theme};
 use glint_model::columns::DESCENDING;
-use glint_model::entries::{is_archive_file, is_archived, is_recycled, FileEntry, Sort, SortKey};
-use glint_model::grid::{grid_columns, grid_move, keep_place, place_of, tile_layout, top_of, GridLayout};
-use glint_model::paths::is_gallery;
+use glint_model::entries::{is_archive_file, is_archived, is_closed, is_recycled, FileEntry, Sort, SortKey};
+use glint_model::grid::{
+    grid_columns, grid_move, keep_place, marquee_hits, place_of, tile_layout, top_of, GridLayout, Point as ContentPoint,
+};
+use glint_model::paths::{droppable, is_gallery, is_recycle_bin};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thumbnail::Thumbnails;
 
@@ -75,6 +98,15 @@ const DRAG_AFTER: f32 = 6.0;
 
 /// Opening more files than this at once asks first (`openSelected`).
 const OPEN_AT_MOST: usize = 10;
+
+/// How far a marquee's pointer moves, in pixels, before it is drawn (the TypeScript's 4).
+const MARQUEE_AFTER: f32 = 4.0;
+
+/// Held within this many rems of the body's top or bottom, a marquee scrolls (the TypeScript's 24 px).
+const MARQUEE_EDGE: f32 = 1.5;
+
+/// How often a marquee at the edge scrolls.
+const MARQUEE_TICK: Duration = Duration::from_millis(30);
 
 thread_local! {
     /// How wide each pane's grid was last, so the next folder's grid has its columns in its first frame
@@ -107,6 +139,46 @@ struct Press {
     narrow_to: Option<String>,
 }
 
+/// A marquee being dragged out over the empty part (`startMarquee`).
+struct Marquee {
+    /// Where it started: x from the body's left edge, y from the top of the content (scrolled part included).
+    start: ContentPoint,
+    /// Where the pointer is now, in the window.
+    pointer: Point<Pixels>,
+    /// What was selected when it began, kept with Ctrl held.
+    base: Vec<String>,
+    /// Whether the pointer has moved far enough to draw it.
+    shown: bool,
+    /// How many tiles it covered last, and the first and last of them: nothing is applied when they don't change.
+    last: Option<(usize, Option<usize>, Option<usize>)>,
+}
+
+/// Where the tiles are, as last drawn: what the marquee, the drops and the keyboard menu need to turn a pointer
+/// into a tile and a tile into a corner.
+#[derive(Clone, Copy, Debug)]
+struct Metrics {
+    cols: usize,
+    row_height: f32,
+    /// The space before the first tile and after the last one in a row.
+    pad: f32,
+    col_w: f32,
+    /// The width the rows are laid out in: the body less the scroll bar's gutter.
+    content_w: f32,
+    /// The gap around a tile in its cell (`m-0.5`).
+    inset: f32,
+    /// The window's rem, for the distances that follow the text size.
+    rem: f32,
+}
+
+/// What files dragged over the grid would be dropped into.
+#[derive(Clone, Debug, PartialEq)]
+enum DropOver {
+    /// The folder tile under the pointer.
+    Tile(String),
+    /// The folder the grid shows.
+    Pane,
+}
+
 /// The Ctrl+wheel zoom's count: a notch is one step; finer wheels add up to it.
 #[derive(Default)]
 struct Wheel {
@@ -119,8 +191,8 @@ struct Wheel {
 /// **Actions it handles** (in its `FileList` key context): `OpenItem`, `OpenInNewTab`, `SelectAll`,
 /// `GridLarger`, `GridSmaller`, `GridReset` and `ShowItemMenu` (as [`FileGridEvent::ContextMenu`]). Everything
 /// else bound in that context (Back, Rename, Delete, Copy…) it leaves to propagate to the workspace.
-/// **Keys it handles itself:** the arrows, Page Up/Down, Home and End (Shift extends, Ctrl only moves, which
-/// waits for `Explorer::set_focus`), Ctrl+Space, Escape, and type-ahead.
+/// **Keys it handles itself:** the arrows, Page Up/Down, Home and End (Shift extends, Ctrl only moves the
+/// cursor), Ctrl+Space, Escape, and type-ahead.
 pub struct FileGrid {
     pane: usize,
     explorer: Entity<Explorer>,
@@ -135,6 +207,8 @@ pub struct FileGrid {
     shown: Rc<Cell<u64>>,
     /// The layout drawn last, to keep the place when it changes under the scroll position.
     layout: Option<GridLayout>,
+    /// Where the tiles were drawn last.
+    metrics: Option<Metrics>,
     /// The tab and view whose scroll position was restored last.
     placed_for: Option<(TabId, String)>,
     /// The last place saved for it, so it is saved when it changes.
@@ -142,6 +216,13 @@ pub struct FileGrid {
     /// The focused item the list was last scrolled to.
     scrolled_to: Option<String>,
     press: Option<Press>,
+    marquee: Option<Marquee>,
+    /// Scrolls the body while a marquee is held at its edge; dropped with the marquee.
+    marquee_scroll: Option<Task<()>>,
+    /// The items being dragged out of the window, dimmed until it is over.
+    dragging: Option<Arc<HashSet<String>>>,
+    /// What a drop at the pointer would go into, while files are dragged over the grid.
+    drop_over: Option<DropOver>,
     wheel: Wheel,
     type_ahead: keys::TypeAhead,
     _subscriptions: Vec<Subscription>,
@@ -162,8 +243,7 @@ impl FileGrid {
             cx.observe_global::<state::UiState>(|_, cx| cx.notify()),
             cx.subscribe(&explorer, |this, _, event: &ExplorerEvent, cx| {
                 if matches!(event, ExplorerEvent::TabsChanged | ExplorerEvent::PaneFocused) {
-                    this.press = None;
-                    this.busy.set(false);
+                    this.stop_pointer();
                     cx.notify();
                 }
             }),
@@ -182,10 +262,15 @@ impl FileGrid {
             busy: Rc::new(Cell::new(false)),
             shown: Rc::new(Cell::new(0)),
             layout: None,
+            metrics: None,
             placed_for: None,
             saved_place: None,
             scrolled_to: None,
             press: None,
+            marquee: None,
+            marquee_scroll: None,
+            dragging: None,
+            drop_over: None,
             wheel: Wheel::default(),
             type_ahead: keys::TypeAhead::default(),
             _subscriptions: subscriptions,
@@ -208,8 +293,32 @@ impl FileGrid {
         let id = cx.entity_id();
         self.thumbs.update(cx, |thumbs, cx| thumbs.release(id, cx));
         self.shown.set(0);
+        self.stop_pointer();
+        self.dragging = None;
+        self.drop_over = None;
+    }
+
+    /// Lets go of a press or a marquee in progress.
+    fn stop_pointer(&mut self) {
         self.press = None;
-        self.busy.set(false);
+        self.marquee = None;
+        self.marquee_scroll = None;
+        self.sync_busy();
+    }
+
+    /// The window-level pointer listeners only do anything while something needs them.
+    fn sync_busy(&self) {
+        self.busy
+            .set(self.press.is_some() || self.marquee.is_some() || self.dragging.is_some());
+    }
+
+    /// The drag out of the window is over: the dragged tiles are drawn as they were. Called by itself on the first
+    /// pointer move with no button down; call it when the drag's future finishes to be sure.
+    pub fn end_drag(&mut self, cx: &mut Context<Self>) {
+        if self.dragging.take().is_some() {
+            self.sync_busy();
+            cx.notify();
+        }
     }
 
     // ---- What the explorer holds ------------------------------------------------------------------
@@ -249,6 +358,7 @@ impl FileGrid {
 
     /// A press on tile `index` (`onRowMouseDown`, and the double-click that opens).
     fn tile_down(&mut self, index: usize, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.dragging = None;
         window.focus(&self.focus, cx);
         self.activate_pane(cx);
         let Some((rows, selection)) = self.snapshot(cx) else {
@@ -285,18 +395,19 @@ impl FileGrid {
                         explorer.select_range(&rows, index, additive, cx);
                     } else if additive {
                         explorer.toggle_selected(&entry.path, cx);
-                    } else if !keep {
+                    } else if keep {
+                        // The others stay selected until release (so all of them can be dragged); the focus and
+                        // the anchor move to this one at once (`updateTab({ focus, anchor })`).
+                        explorer.set_focus(Some(&entry.path), Some(&entry.path), cx);
+                    } else {
                         explorer.select_only(Some(&entry.path), cx);
                     }
-                    // PORT ME(coordinator): `Explorer::set_focus(path, anchor)` for the `keep` case: the focus and
-                    // the anchor move to the pressed item at once (`updateTab({ focus, anchor })`). Until then they
-                    // move on release, with the narrowing.
                 });
                 self.press = Some(Press {
                     at: event.position,
                     narrow_to: keep.then(|| entry.path.clone()),
                 });
-                self.busy.set(true);
+                self.sync_busy();
                 if event.click_count == 2 {
                     self.explorer
                         .update(cx, |explorer, cx| explorer.open_entry(&entry, cx).detach());
@@ -337,28 +448,167 @@ impl FileGrid {
         });
     }
 
-    /// A press on the empty part: without Ctrl or Shift it clears the selection (`onBackgroundMouseDown`).
+    /// A press on the empty part: without Ctrl or Shift it clears the selection, and dragging draws a marquee that
+    /// selects what it covers, added to what was selected with Ctrl (`onBackgroundMouseDown`, `startMarquee`).
     fn background_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.dragging = None;
         window.focus(&self.focus, cx);
         self.activate_pane(cx);
-        if event.button == MouseButton::Left && !event.modifiers.control && !event.modifiers.shift {
+        if event.button != MouseButton::Left {
+            return;
+        }
+        if !event.modifiers.control && !event.modifiers.shift {
             self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
         }
-        // PORT ME(coordinator): the marquee (`startMarquee`): dragging from here draws a rectangle that selects what
-        // it covers, added to what was selected with Ctrl, scrolling while the pointer is held near the top or
-        // bottom. `glint_model::grid::marquee_hits` is ready; it needs `Explorer::set_selection(paths, anchor,
-        // focus)` to apply the hits at once.
+        let base = if event.modifiers.control {
+            self.snapshot(cx)
+                .map(|(_, selection)| selection.iter().map(str::to_string).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        self.marquee = Some(Marquee {
+            start: self.content_point(event.position),
+            pointer: event.position,
+            base,
+            shown: false,
+            last: None,
+        });
+        // Held near the top or bottom, the body scrolls, and what comes into view is covered too.
+        self.marquee_scroll = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(MARQUEE_TICK).await;
+            if this.update(cx, |this, cx| this.marquee_scroll_tick(cx)).is_err() {
+                break;
+            }
+        }));
+        self.sync_busy();
     }
 
-    /// The pointer moved with a press under way: far enough, and it is a drag.
+    /// A window position as a point in the content: x from the body's left edge, y from the content's top.
+    fn content_point(&self, at: Point<Pixels>) -> ContentPoint {
+        let body = self.body.get();
+        ContentPoint {
+            x: f32::from(at.x - body.origin.x),
+            y: f32::from(at.y - body.origin.y) + self.scroll_top(),
+        }
+    }
+
+    /// The pointer moved with a marquee under way.
+    fn marquee_moved(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.stop_pointer();
+            cx.notify();
+            return;
+        }
+        let here = self.content_point(event.position);
+        let Some(marquee) = &mut self.marquee else {
+            return;
+        };
+        marquee.pointer = event.position;
+        // Small movements are a click on the empty part, not a marquee.
+        let moved =
+            (here.x - marquee.start.x).abs() >= MARQUEE_AFTER || (here.y - marquee.start.y).abs() >= MARQUEE_AFTER;
+        if moved {
+            marquee.shown = true;
+        }
+        if marquee.shown {
+            self.marquee_apply(cx);
+            cx.notify();
+        }
+    }
+
+    /// Selects what the marquee covers now (`commitHits`): the tiles under its rectangle, with what was selected
+    /// at the start when Ctrl was held. The first tile it covers is the anchor, the last the focus.
+    fn marquee_apply(&mut self, cx: &mut Context<Self>) {
+        let (Some(metrics), Some((rows, _))) = (self.metrics, self.snapshot(cx)) else {
+            return;
+        };
+        let Some(marquee) = &self.marquee else {
+            return;
+        };
+        let (a, b) = (marquee.start, self.content_point(marquee.pointer));
+        // Tiles run from the right in Arabic: the columns are counted from there.
+        let rtl = i18n::is_rtl();
+        let mirrored = |p: ContentPoint| ContentPoint {
+            x: if rtl { metrics.content_w - p.x } else { p.x },
+            y: p.y,
+        };
+        let hits = marquee_hits(
+            mirrored(a),
+            mirrored(b),
+            rows.len(),
+            metrics.row_height,
+            metrics.cols,
+            metrics.content_w,
+            metrics.pad,
+        );
+        let (first, last) = (hits.first().copied(), hits.last().copied());
+        let summary = (hits.len(), first, last);
+        if marquee.last == Some(summary) {
+            return;
+        }
+        let mut chosen = marquee.base.clone();
+        chosen.extend(hits.iter().filter_map(|&i| rows.get(i)).map(|entry| entry.path.clone()));
+        let path_of = |i: Option<usize>| i.and_then(|i| rows.get(i)).map(|entry| entry.path.clone());
+        let (anchor, focus) = (path_of(first), path_of(last));
+        if let Some(marquee) = &mut self.marquee {
+            marquee.last = Some(summary);
+        }
+        self.explorer.update(cx, |explorer, cx| {
+            explorer.set_selection(chosen, anchor.as_deref(), focus.as_deref(), cx)
+        });
+    }
+
+    /// Every so often while a marquee is held near the top or bottom: scroll that way by half a row.
+    fn marquee_scroll_tick(&mut self, cx: &mut Context<Self>) {
+        let (Some(metrics), Some(marquee)) = (self.metrics, &self.marquee) else {
+            return;
+        };
+        if !marquee.shown {
+            return;
+        }
+        let body = self.body.get();
+        let (top, bottom) = (f32::from(body.origin.y), f32::from(body.origin.y + body.size.height));
+        let y = f32::from(marquee.pointer.y);
+        let edge = metrics.rem * MARQUEE_EDGE;
+        let step = if y < top + edge {
+            -1.0
+        } else if y > bottom - edge {
+            1.0
+        } else {
+            return;
+        };
+        let rows = self.snapshot(cx).map_or(0, |(rows, _)| rows.len());
+        let content = rows.div_ceil(metrics.cols.max(1)) as f32 * metrics.row_height;
+        let most = (content - f32::from(body.size.height)).max(0.0);
+        let to = (self.scroll_top() + step * metrics.row_height / 2.0).clamp(0.0, most);
+        if (to - self.scroll_top()).abs() > f32::EPSILON {
+            self.set_scroll_top(to);
+            self.marquee_apply(cx);
+            cx.notify();
+        }
+    }
+
+    /// The pointer moved with a press, a marquee or a drag out under way: far enough, and a press is a drag.
     fn pointer_moved(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.marquee.is_some() {
+            self.marquee_moved(event, cx);
+            return;
+        }
+        // The drag out is over once the pointer moves with the button up (nothing moves while Windows has it).
+        if self.press.is_none() && self.dragging.is_some() {
+            if event.pressed_button.is_none() {
+                self.end_drag(cx);
+            }
+            return;
+        }
         let Some(press) = &self.press else {
-            self.busy.set(false);
+            self.sync_busy();
             return;
         };
         if event.pressed_button != Some(MouseButton::Left) {
             self.press = None;
-            self.busy.set(false);
+            self.sync_busy();
             return;
         }
         let (dx, dy) = (
@@ -369,7 +619,7 @@ impl FileGrid {
             return;
         }
         self.press = None;
-        self.busy.set(false);
+        self.sync_busy();
         let Some((rows, selection)) = self.snapshot(cx) else {
             return;
         };
@@ -378,24 +628,36 @@ impl FileGrid {
         if chosen.is_empty() || chosen.iter().any(|entry| is_recycled(entry)) {
             return;
         }
-        cx.emit(FileGridEvent::DragStart {
-            paths: chosen.iter().map(|entry| entry.path.clone()).collect(),
-            from_archive: chosen.iter().any(|entry| is_archived(entry)),
-        });
-        // PORT ME(drag): the dragged items show dim (`dragging`), and the folder under the pointer highlights as
-        // the drop target (`dropTarget`).
+        let paths: Vec<String> = chosen.iter().map(|entry| entry.path.clone()).collect();
+        let from_archive = chosen.iter().any(|entry| is_archived(entry));
+        // The dragged items show dim (`dragging`) until the drag is over; out of an archive they are extracted
+        // first, so those wait for their copies and aren't dimmed.
+        if !from_archive {
+            self.dragging = Some(Arc::new(paths.iter().cloned().collect()));
+            self.sync_busy();
+            cx.notify();
+        }
+        cx.emit(FileGridEvent::DragStart { paths, from_archive });
     }
 
-    /// A button went up anywhere: a press on a multi-selection that wasn't a drag narrows to its item.
+    /// A button went up anywhere: a press on a multi-selection that wasn't a drag narrows to its item, and a
+    /// marquee ends.
     fn pointer_released(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         if event.button != MouseButton::Left {
             return;
         }
-        self.busy.set(false);
-        if let Some(Press {
-            narrow_to: Some(path), ..
-        }) = self.press.take()
-        {
+        if self.marquee.as_ref().is_some_and(|marquee| marquee.shown) {
+            self.marquee_apply(cx);
+        }
+        let narrow = self.press.take().and_then(|press| press.narrow_to);
+        let had_marquee = self.marquee.is_some();
+        self.marquee = None;
+        self.marquee_scroll = None;
+        self.sync_busy();
+        if had_marquee {
+            cx.notify();
+        }
+        if let Some(path) = narrow {
             self.explorer
                 .update(cx, |explorer, cx| explorer.select_only(Some(&path), cx));
         }
@@ -470,9 +732,9 @@ impl FileGrid {
                         self.explorer
                             .update(cx, |explorer, cx| explorer.select_range(&rows, to, ctrl, cx));
                     } else if ctrl {
-                        // PORT ME(coordinator): `Explorer::set_focus(path, None)`: Ctrl+arrow moves the cursor without
-                        // changing the selection (`updateTab({ focus })`). Until then the list scrolls there only.
-                        self.scroll_to_row(to / layout.cols.max(1));
+                        // Only the cursor moves (`updateTab({ focus })`); the view follows it when it is drawn.
+                        self.explorer
+                            .update(cx, |explorer, cx| explorer.set_focus(Some(&path), None, cx));
                     } else {
                         self.explorer
                             .update(cx, |explorer, cx| explorer.select_only(Some(&path), cx));
@@ -594,33 +856,132 @@ impl FileGrid {
         });
     }
 
-    /// Shift+F10 or the menu key: the menu of what is selected, at the focused tile.
+    /// Shift+F10 or the menu key: the menu of what is selected, at the focused tile's bottom-start corner (the
+    /// bottom left in English, the bottom right in Arabic), kept inside the body.
     fn keyboard_menu(&mut self, cx: &mut Context<Self>) {
         let Some((rows, selection)) = self.snapshot(cx) else {
             return;
         };
-        let at = Self::focus_index(&rows, &selection);
-        let Some(entry) = usize::try_from(at).ok().and_then(|i| rows.get(i)) else {
+        let Some(at) = usize::try_from(Self::focus_index(&rows, &selection)).ok() else {
             return;
         };
-        let layout = self.layout_now();
-        let cols = layout.cols.max(1);
-        let (row, col) = (
-            usize::try_from(at).unwrap_or(0) / cols,
-            usize::try_from(at).unwrap_or(0) % cols,
-        );
+        let (Some(entry), Some(metrics)) = (rows.get(at), self.metrics) else {
+            return;
+        };
+        let cols = metrics.cols.max(1);
+        let (row, col) = (at / cols, at % cols);
         let body = self.body.get();
-        let top = self.scroll_top();
-        let col_w = (f32::from(body.size.width) / cols as f32).max(1.0);
-        let col_x = if i18n::is_rtl() { cols - 1 - col } else { col };
-        // The middle of the tile, kept inside the body.
-        let x = f32::from(body.origin.x) + (col_x as f32 + 0.5) * col_w;
-        let y = (f32::from(body.origin.y) + (row as f32 + 0.5) * layout.row_height - top)
-            .clamp(f32::from(body.origin.y), f32::from(body.origin.y + body.size.height));
+        // The tile's start edge, from the body's start edge (its left, or its right in Arabic).
+        let along = metrics.pad + col as f32 * metrics.col_w + metrics.inset;
+        let x = if i18n::is_rtl() {
+            f32::from(body.origin.x) + metrics.content_w - along
+        } else {
+            f32::from(body.origin.x) + along
+        };
+        let (top, bottom) = (f32::from(body.origin.y), f32::from(body.origin.y + body.size.height));
+        let y = (top + (row + 1) as f32 * metrics.row_height - metrics.inset - self.scroll_top()).clamp(top, bottom);
         cx.emit(FileGridEvent::ContextMenu {
             path: entry.path.clone(),
             position: point(px(x), px(y)),
         });
+    }
+
+    // ---- Drops ------------------------------------------------------------------------------------
+
+    /// The tile under a window position, if the pointer is over one (not between them, not in the gutter).
+    fn tile_at(&self, at: Point<Pixels>, count: usize) -> Option<usize> {
+        let metrics = self.metrics?;
+        let body = self.body.get();
+        if !body.contains(&at) || metrics.col_w <= 0.0 || metrics.row_height <= 0.0 {
+            return None;
+        }
+        let point = self.content_point(at);
+        let x = if i18n::is_rtl() {
+            metrics.content_w - point.x
+        } else {
+            point.x
+        };
+        let col = ((x - metrics.pad) / metrics.col_w).floor();
+        let row = (point.y / metrics.row_height).floor();
+        if !(col >= 0.0 && row >= 0.0 && col < metrics.cols as f32) {
+            return None;
+        }
+        // Both are whole and non-negative, and the column is below the column count: the casts are exact (a row
+        // far beyond the rows is cut off by the count below).
+        let index = (row as usize).checked_mul(metrics.cols)?.checked_add(col as usize)?;
+        (index < count).then_some(index)
+    }
+
+    /// What a drop of `dragged` at `at` would go into: the folder tile under the pointer, else the folder shown,
+    /// as the web app's `targetAt` decided. `None` where nothing can be dropped, or where it would do nothing.
+    fn drop_under(&self, at: Point<Pixels>, dragged: &[String], cx: &App) -> Option<(String, DropOver)> {
+        let explorer = self.explorer.read(cx);
+        let tab = explorer.pane_tab(self.pane)?;
+        let over = self
+            .tile_at(at, tab.rows.len())
+            .and_then(|i| tab.rows.get(i))
+            .and_then(drop_folder);
+        let (dest, over) = match over {
+            Some(path) => (path.to_string(), DropOver::Tile(path.to_string())),
+            // Nothing can be dropped into an archive (it is read-only), into a folder Windows keeps closed, or
+            // into This PC or a search's results, which are no folder.
+            None if !tab.is_this_pc() && tab.find.is_none() && tab.archive().is_none() && !tab.is_closed() => {
+                (tab.path.clone(), DropOver::Pane)
+            }
+            None => return None,
+        };
+        // Where they all are already, or into one of them: nothing to do there.
+        let nothing = !dragged.is_empty() && !is_recycle_bin(&dest) && droppable(dragged, &dest).is_empty();
+        (!nothing).then_some((dest, over))
+    }
+
+    /// The words on the drag's picture for a drop into `dest`, and whether it always moves.
+    fn drop_words(&self, dest: &str, cx: &App) -> Under {
+        // The fixed names ("This PC", "Recycle Bin"...) are translated; a folder's name is as it is.
+        let name = self.explorer.read(cx).tab_name(dest);
+        Under {
+            name: glint_model::i18n::translate(i18n::language(), &name).to_string(),
+            copy: t!("Copy to %1").to_string(),
+            moves: t!("Move to %1").to_string(),
+            always_move: is_recycle_bin(dest),
+        }
+    }
+
+    /// Files dragged over the grid moved (every grid hears every move): answer what a drop at the pointer would
+    /// do, and light the place it would go.
+    fn files_over(&mut self, event: &DragMoveEvent<ExternalPaths>, cx: &mut Context<Self>) {
+        let dragged = event
+            .dragged_item()
+            .downcast_ref::<ExternalPaths>()
+            .map(drops::paths)
+            .unwrap_or_default();
+        let target = if event.bounds.contains(&event.event.position) {
+            self.drop_under(event.event.position, &dragged, cx)
+        } else {
+            None
+        };
+        if let Some((dest, _)) = &target {
+            drops::answer(cx, Answer::Accept(self.drop_words(dest, cx)));
+        }
+        let over = target.map(|(_, over)| over);
+        if self.drop_over != over {
+            self.drop_over = over;
+            cx.notify();
+        }
+    }
+
+    /// Files were dropped at `at`: into the folder under the pointer (`dropFiles`), copied, or moved when the drop
+    /// moves (Shift, or the Recycle Bin: recycled). A link copies, as it did on the web.
+    fn files_dropped(&mut self, drop: &ExternalPaths, at: Point<Pixels>, cx: &mut Context<Self>) {
+        self.drop_over = None;
+        cx.notify();
+        let paths = drops::paths(drop);
+        let Some((dest, _)) = self.drop_under(at, &paths, cx) else {
+            return;
+        };
+        let moves = drops::effect(cx) == DropEffect::Move;
+        self.explorer
+            .update(cx, |explorer, cx| explorer.drop_files(paths, &dest, moves, cx).detach());
     }
 
     // ---- Scrolling --------------------------------------------------------------------------------
@@ -714,6 +1075,13 @@ impl FileGrid {
     }
 }
 
+/// A folder that files dragged in can be dropped on: not one in an archive (read-only), nor one Windows keeps
+/// closed, nor one in the Recycle Bin (`dropPath`).
+// TODO(coordinator): from file_list::drop_path (the list's copy), once the views share it.
+fn drop_folder(entry: &FileEntry) -> Option<&str> {
+    (entry.dir && !is_archived(entry) && !is_closed(entry) && !is_recycled(entry)).then_some(entry.path.as_str())
+}
+
 /// A listener that tiles call with their index and the event.
 fn handler<E: 'static>(
     cx: &mut Context<FileGrid>,
@@ -749,6 +1117,7 @@ impl Render for FileGrid {
         let has_listing = tab.listing.is_some();
         let inactive = explorer.is_dual() && explorer.active_pane() != self.pane;
         let flashed = explorer.flashed().clone();
+        let cut = explorer.cut_paths().clone();
         let saved = explorer.saved_scroll(tab_id, &format!("{view_key}:grid"));
         let located = search || recycled;
 
@@ -808,6 +1177,15 @@ impl Render for FileGrid {
             self.set_scroll_top(next);
         }
         self.layout = Some(layout);
+        self.metrics = Some(Metrics {
+            cols,
+            row_height: layout.row_height,
+            pad: tile.pad,
+            col_w,
+            content_w: (width - gutter).max(0.0),
+            inset: rem * 0.125,
+            rem,
+        });
 
         // The focused item stays in view as the keyboard moves it.
         let focus = selection.focus().map(str::to_string);
@@ -826,12 +1204,21 @@ impl Render for FileGrid {
             });
         }
 
+        // Files dragged over the grid light the folder tile they would go into, or the whole grid; a drag that has
+        // ended (or left the window) lights nothing, whatever was last seen.
+        let drop_over = self.drop_over.clone().filter(|_| cx.has_active_drag());
         let frame = Rc::new(tile::Frame {
             rows: rows.clone(),
             selection: selection.clone(),
             focus,
             inactive,
             flashed,
+            cut,
+            dragging: self.dragging.clone(),
+            drop_tile: match &drop_over {
+                Some(DropOver::Tile(path)) => Some(path.clone()),
+                _ => None,
+            },
             tile,
             cols,
             lines: line_count,
@@ -907,10 +1294,12 @@ impl Render for FileGrid {
             )
             .vertical_scrollbar(&self.scroll)
             .children(empty.map(|empty| div().absolute().inset_0().child(empty::view(&empty, cx))))
+            .children(self.marquee_rect(&tokens))
             .child(self.taps(width, body_height, cx));
 
         col()
             .id(("file-grid-pane", self.pane))
+            .relative()
             .key_context("FileList")
             .track_focus(&self.focus)
             .size_full()
@@ -929,13 +1318,60 @@ impl Render for FileGrid {
             .on_action(cx.listener(|this, _: &GridSmaller, _, cx| this.zoom(-1, cx)))
             .on_action(cx.listener(|this, _: &GridReset, _, cx| this.zoom(0, cx)))
             .on_action(cx.listener(|this, _: &ShowItemMenu, _, cx| this.keyboard_menu(cx)))
+            // Files dropped in (from File Explorer, the desktop, the other pane): every grid hears every move and
+            // answers when the pointer is over it.
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<ExternalPaths>, _, cx| this.files_over(event, cx)))
+            .on_drop(cx.listener(|this, drop: &ExternalPaths, window, cx| {
+                this.files_dropped(drop, window.mouse_position(), cx)
+            }))
             .child(self.header(sort, recycled, located, gallery, cx))
             .child(body)
+            .children((drop_over == Some(DropOver::Pane) && !search).then(|| {
+                // `bg-primary/5 outline-2 outline-dashed outline-primary/60`
+                div()
+                    .id("file-grid-drop")
+                    .test_support()
+                    .absolute()
+                    .inset_0()
+                    .border_2()
+                    .border_dashed()
+                    .border_color(tokens.primary.opacity(0.6))
+                    .bg(tokens.primary.opacity(0.05))
+            }))
             .into_any_element()
     }
 }
 
 impl FileGrid {
+    /// The marquee being dragged, as a rectangle over the body (clipped to it): from where it started in the
+    /// content, so it stays with the tiles as the body scrolls, to the pointer.
+    fn marquee_rect(&self, tokens: &theme::Tokens) -> Option<impl IntoElement> {
+        let marquee = self.marquee.as_ref().filter(|marquee| marquee.shown)?;
+        let body = self.body.get();
+        let (width, height) = (f32::from(body.size.width), f32::from(body.size.height));
+        let end = self.content_point(marquee.pointer);
+        let (left, right) = (marquee.start.x.min(end.x), marquee.start.x.max(end.x));
+        let top = marquee.start.y.min(end.y) - self.scroll_top();
+        let bottom = marquee.start.y.max(end.y) - self.scroll_top();
+        // Kept to the body, so it neither draws over the header nor grows past the window.
+        let (left, right) = (left.clamp(0.0, width), right.clamp(0.0, width));
+        let (top, bottom) = (top.clamp(0.0, height), bottom.clamp(0.0, height));
+        // `border border-primary/80 bg-primary/15 rounded-[4px]`, a faint ring around.
+        let mark = div()
+            .id("file-grid-marquee")
+            .test_support()
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(right - left))
+            .h(px(bottom - top))
+            .rounded(theme::size::RADIUS_SM)
+            .border_1()
+            .border_color(tokens.primary.opacity(0.8))
+            .bg(tokens.primary.opacity(0.15));
+        Some(div().absolute().inset_0().overflow_hidden().child(mark))
+    }
+
     /// An invisible element over the body that measures it and listens to the window's pointer: the width and
     /// height for the layout, the Ctrl+wheel (which must be taken before the list scrolls with it), and the
     /// button going up anywhere after a press.

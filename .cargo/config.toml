@@ -1,0 +1,4 @@
+# Every build of this workspace goes to one folder, wherever cargo is run from: agents once built into
+# crates/target from a relative path (1.7 GB each time). CARGO_TARGET_DIR still wins when set.
+[build]
+target-dir = "target/ui"

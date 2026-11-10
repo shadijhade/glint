@@ -828,3 +828,114 @@ fn this_pc_has_no_copy_button(cx: &mut TestAppContext) {
     assert_eq!(rig.role("This PC"), Some(Role::Button));
     assert!(rig.has("Drives and places"));
 }
+
+// ---- Files dropped on crumbs ----------------------------------------------------------------------------
+
+impl Rig {
+    /// Sends one of the drop target's events to the window, as Windows' drop target would.
+    fn drop_event(
+        &mut self,
+        answers: &crate::platform::dragdrop::DropAnswers,
+        event: crate::platform::dragdrop::DropEvent,
+    ) {
+        self.visual.update(|window, cx| {
+            window.render_frame(cx);
+            crate::drops::dispatch(event, answers, window, cx)
+        });
+        self.settle();
+    }
+
+    /// The middle of the element with this label.
+    fn centre(&mut self, label: &str) -> (f32, f32) {
+        let b = self
+            .element(label)
+            .unwrap_or_else(|| panic!("no element labelled {label:?}"))
+            .bounds();
+        (
+            f32::from(b.origin.x + b.size.width / 2.),
+            f32::from(b.origin.y + b.size.height / 2.),
+        )
+    }
+}
+
+#[gpui_kit::test]
+fn files_dropped_on_a_crumb_go_into_its_folder_with_the_drag_words(cx: &mut TestAppContext) {
+    use crate::explorer::FileOp;
+    use crate::platform::dragdrop::{Answer, DropAnswers, DropEffect, DropEvent};
+    let _guard = testing::lock();
+    let mut rig = rig(cx, false, 1400., "C:\\Users\\me\\Documents");
+    let answers = DropAnswers::default();
+    let files = vec!["C:\\Users\\readme.txt".to_string()];
+    let (x, y) = rig.centre("me");
+    rig.drop_event(
+        &answers,
+        DropEvent::Enter {
+            paths: files.clone(),
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    rig.drop_event(
+        &answers,
+        DropEvent::Over {
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    match answers.get() {
+        Answer::Accept(under) => {
+            assert_eq!(under.name, "me");
+            assert_eq!(
+                (under.copy.as_str(), under.moves.as_str()),
+                ("Copy to %1", "Move to %1")
+            );
+        }
+        other => panic!("the crumb should take the drop, got {other:?}"),
+    }
+    rig.drop_event(
+        &answers,
+        DropEvent::Drop {
+            paths: files.clone(),
+            x,
+            y,
+            effect: DropEffect::Move,
+        },
+    );
+    assert!(
+        rig.disk
+            .ops()
+            .iter()
+            .any(|op| matches!(op, FileOp::Move { sources, dest } if sources == &files && dest == "C:\\Users\\me")),
+        "moved into me, got {:?}",
+        rig.disk.ops()
+    );
+}
+
+#[gpui_kit::test]
+fn the_recycle_bin_crumb_takes_no_drop_in_arabic(cx: &mut TestAppContext) {
+    use crate::platform::dragdrop::{Answer, DropAnswers, DropEffect, DropEvent};
+    let _guard = testing::lock();
+    let mut rig = rig(cx, true, 1400., "shell:RecycleBinFolder");
+    let answers = DropAnswers::default();
+    let (x, y) = rig.centre(&crate::t!("Recycle Bin"));
+    rig.drop_event(
+        &answers,
+        DropEvent::Enter {
+            paths: vec!["C:\\Users\\readme.txt".into()],
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    rig.drop_event(
+        &answers,
+        DropEvent::Over {
+            x,
+            y,
+            effect: DropEffect::Copy,
+        },
+    );
+    assert_eq!(answers.get(), Answer::Refuse);
+}
