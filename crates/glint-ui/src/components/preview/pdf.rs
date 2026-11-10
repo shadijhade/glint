@@ -1129,7 +1129,8 @@ impl PdfView {
             let mut by_distance: Vec<(usize, f32)> = self
                 .drawn
                 .keys()
-                .filter(|p| !on_screen.contains(p))
+                // `*p`: a `&usize` keeps `contains` unambiguous once another crate adds `PartialOrd<_> for usize`.
+                .filter(|p| !on_screen.contains(*p))
                 .map(|&p| {
                     let (_, h) = layout.extent(p);
                     (p, (layout.top(p) + h / 2. - middle).abs())

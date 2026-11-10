@@ -24,6 +24,9 @@ pub mod explorer;
 pub mod i18n;
 pub mod kit;
 pub mod notices;
+/// Glint keeping itself up to date: latest.json, the signed installer, the Update button. Wave 12 slot.
+#[cfg(feature = "updater")]
+pub mod updater;
 /// Typst in process: a World over the disk and the system fonts, compiling to pages and PDF. Wave 11 slot.
 #[cfg(feature = "typst")]
 pub mod typst_engine;
