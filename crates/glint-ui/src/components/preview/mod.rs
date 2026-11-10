@@ -34,12 +34,12 @@
 //!
 //! # Not ported yet
 //!
-//! Each is marked `PORT ME(<kind>)` where it belongs: video and audio (and their Trim, Waveform, Transcript), PDF
-//! pages, books, Word documents, 3D models, Typst, cast recordings, Graphviz and Mermaid drawings, and HTML mail
-//! drawn as a page (the text is shown). Until then those files get what the TypeScript showed when its own
-//! previewer failed: Windows' previewer over the file's icon, or the file as text. (Wave 9 brought SQLite and
-//! workbook tables, notebooks, program headers with the signature chip, contacts, calendars, mail, the Changes,
-//! Query and Profile views, Compare, File X-Ray, the repository card and folder sizes.)
+//! Each is marked `PORT ME(<kind>)` where it belongs: MOBI/AZW books, Typst documents and cast recordings (wave 11),
+//! Graphviz and Mermaid drawings and math (wave 11), and HTML mail laid out as a page (its text and pictures are
+//! shown). Until then those files get what the TypeScript showed when its own previewer failed: Windows' previewer
+//! over the file's icon, or the file as text. (Wave 9 brought tables, notebooks, program headers, contacts,
+//! calendars, mail, the Changes, Query and Profile views; wave 10 the player, PDF pages, books, Word documents and
+//! 3D models.)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
 pub mod data;
@@ -50,18 +50,39 @@ pub mod markdown;
 /// Text and code, highlighted (FilePreview.tsx's text view, highlighter.ts).
 pub mod text;
 
+/// Books: EPUB, FB2 and comics, read page by page (BookView.tsx).
+pub mod book;
 pub mod cards;
+/// asciinema recordings played (CastPreview.tsx). Wave 11 slot.
+#[cfg(feature = "terminal")]
+pub mod cast;
 pub mod choose;
 pub mod details;
+/// Mermaid and Graphviz diagrams, in Markdown and as files (merman, layout-rs). Wave 11 slot.
+#[cfg(feature = "diagrams")]
+pub mod diagram;
+/// Word documents laid out without Office (DocxView.tsx).
+pub mod docx;
 pub mod frame;
+/// Math in Markdown, LaTeX syntax (RaTeX). Wave 11 slot.
+#[cfg(feature = "diagrams")]
+pub mod math;
+/// 3D models: STL, OBJ, PLY, glTF/GLB and 3MF, drawn and turned (ModelView.tsx).
+pub mod model3d;
 /// Jupyter notebooks as they read (NotebookView.tsx).
 pub mod notebook;
 pub mod pane;
+/// PDF pages drawn natively with Windows.Data.Pdf (PdfPreview in FilePreview.tsx).
+pub mod pdf;
 pub mod picture;
+/// Video and audio played with Media Foundation, with Trim, the waveform and scrubbing (VideoPreview, AudioPreview, Waveform.tsx, VideoScrub.tsx).
+pub mod player;
 pub mod probe;
 /// A program's sections, imports and exports (BinaryPreview.tsx).
 pub mod program;
 pub mod quick_look;
+/// The rich text the book and Word previews share: blocks and runs, right to left (previews-native.md sections 2-3).
+pub mod rich;
 /// Workbooks and Parquet as tables (SheetPreview in FilePreview.tsx).
 pub mod sheet;
 pub mod shell;
@@ -76,32 +97,11 @@ pub mod states;
 /// SVG drawn as a GPUI image, cached by its source and size: the pipeline diagrams and math share (previews-native.md sections 4-7). Wave 11 slot.
 #[cfg(feature = "diagrams")]
 pub mod svg_image;
-/// Mermaid and Graphviz diagrams, in Markdown and as files (merman, layout-rs). Wave 11 slot.
-#[cfg(feature = "diagrams")]
-pub mod diagram;
-/// Math in Markdown, LaTeX syntax (RaTeX). Wave 11 slot.
-#[cfg(feature = "diagrams")]
-pub mod math;
-/// asciinema recordings played (CastPreview.tsx). Wave 11 slot.
-#[cfg(feature = "terminal")]
-pub mod cast;
+#[cfg(test)]
+mod tests;
 /// Typst documents typeset (TypstView.tsx). Wave 11 slot.
 #[cfg(feature = "typst")]
 pub mod typst_view;
-/// PDF pages drawn natively with Windows.Data.Pdf (PdfPreview in FilePreview.tsx).
-pub mod pdf;
-/// The rich text the book and Word previews share: blocks and runs, right to left (previews-native.md sections 2-3).
-pub mod rich;
-/// Books: EPUB, FB2 and comics, read page by page (BookView.tsx).
-pub mod book;
-/// Word documents laid out without Office (DocxView.tsx).
-pub mod docx;
-/// 3D models: STL, OBJ, PLY, glTF/GLB and 3MF, drawn and turned (ModelView.tsx).
-pub mod model3d;
-/// Video and audio played with Media Foundation, with Trim, the waveform and scrubbing (VideoPreview, AudioPreview, Waveform.tsx, VideoScrub.tsx).
-pub mod player;
-#[cfg(test)]
-mod tests;
 
 pub use choose::{choose, effective_view, views, Body, Choice, Fallback, View};
 pub use frame::{chosen, Chosen, EntryEvent, EntryView, Place};

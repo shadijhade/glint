@@ -35,7 +35,7 @@
 //! - An `ignored` item (`.gitignore` leaves it out) draws no pill; the row is dimmed to 55% (as hidden and cut
 //!   items are) and the name's tooltip is [`words::name_tooltip`]`(name, ignored)`, which adds "Git: left out by
 //!   .gitignore".
-//! - The file list's `PORT ME(git)` in `cells.rs` is both of these; the grid has no marks (the TypeScript's didn't).
+//! - The file list's `PORT ME(git)` in `cells.rs` is both of these; the grid draws them on its tiles too (file_grid/tile.rs), as FileGrid.tsx did.
 //!
 //! **The `git:` filters and Group by Git.** They need the marks, and the explorer builds the rows without them
 //! (`RowSpec` has no marks). Pass [`marks`] as the `git` argument of `glint_model::entries::matcher` (the filter box:

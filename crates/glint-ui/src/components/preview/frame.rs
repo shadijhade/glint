@@ -18,13 +18,18 @@
 //! **Compare** works on the pair the explorer would compare (Ctrl+M: [`crate::components::command_bar::Facts`]'s
 //! `pair`): two files selected, or one against the other pane's. It is read when the selection moves.
 
+use super::book::BookView;
 use super::cards::{ArchiveCard, FolderCard, LockedCard, Plain, PlainCard};
 use super::choose::{choose, effective_view, views, Body, Fallback, View};
 use super::data::DataPreview;
 use super::details::{has_details, map_link, rows};
+use super::docx::{DocxEvent, DocxView};
 use super::hex::HexPreview;
+use super::model3d::ModelView;
 use super::notebook::NotebookView;
+use super::pdf::PdfView;
 use super::picture::{release_retired, PictureView};
+use super::player::PlayerView;
 use super::probe::{As, TextProbe};
 use super::program::ProgramPreview;
 use super::sheet::SheetPreview;
@@ -285,7 +290,12 @@ impl EntryView {
             SqlitePreview,
             SheetPreview,
             NotebookView,
-            ProgramPreview
+            ProgramPreview,
+            PlayerView,
+            PdfView,
+            BookView,
+            DocxView,
+            ModelView
         );
         false
     }
@@ -374,6 +384,28 @@ impl EntryView {
                 .into()
             }
             Body::Small(kind) => cx.new(|cx| SmallPreview::new(entry.clone(), kind, window, cx)).into(),
+            Body::Player(kind) => cx.new(|cx| PlayerView::new(entry.clone(), kind, window, cx)).into(),
+            Body::Pdf => cx.new(|cx| PdfView::new(entry.clone(), window, cx)).into(),
+            Body::Book => cx.new(|cx| BookView::new(path, window, cx)).into(),
+            Body::Model => cx.new(|cx| ModelView::new(entry.clone(), window, cx)).into(),
+            Body::Docx => {
+                // A document Glint can't lay out falls back to Windows' previewer over the icon, as in the web app.
+                let view = cx.new(|cx| DocxView::new(path, window, cx));
+                self._body_events = Some(cx.subscribe_in(
+                    &view,
+                    window,
+                    |this, _, event: &DocxEvent, _, cx| match event {
+                        DocxEvent::Failed => {
+                            let entry = this.entry.clone();
+                            let under: AnyView = cx.new(|_| PlainCard::new(entry.clone(), Plain::Icon)).into();
+                            let claimant = this.place.claimant();
+                            this.body = Some(cx.new(|cx| ShellHost::new(&entry, claimant, false, under, cx)).into());
+                            cx.notify();
+                        }
+                    },
+                ));
+                view.into()
+            }
             Body::Changes => cx.new(|cx| ChangesView::new(entry.clone(), cx)).into(),
             Body::Query => {
                 let draft = self
@@ -433,7 +465,10 @@ impl EntryView {
 
 impl Render for EntryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Pictures, frames and drawings of views that are gone leave the GPU atlas.
         release_retired(window);
+        super::player::release_retired(window);
+        super::model3d::release_retired(window);
         let t = theme::tokens(cx).clone();
         let prefix = self.place.prefix();
         let entry = self.entry.clone();
