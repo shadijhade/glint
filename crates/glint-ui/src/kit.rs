@@ -156,6 +156,11 @@ pub use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariant
 pub use gpui_kit::component::checkbox::Checkbox;
 pub use gpui_kit::component::dialog::{Dialog, DialogFooter};
 pub use gpui_kit::component::input::{Input, InputEvent, InputState};
+/// A read-only (or editable) code view with syntax highlighting (syntect's grammars), virtualized: the text
+/// and code previews. And a multi-line text box.
+pub use gpui_kit::component::input::{Editor, EditorState, Textarea, TextareaState};
+/// Rendered Markdown (CommonMark and GitHub's extensions) and plain rich text: the Markdown preview, notes.
+pub use gpui_kit::component::text::{TextView, TextViewState};
 pub use gpui_kit::component::kbd::Kbd;
 pub use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 pub use gpui_kit::component::notification::Notification;
