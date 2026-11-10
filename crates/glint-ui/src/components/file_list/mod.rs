@@ -57,6 +57,7 @@ pub use rename::{selection_end, INVALID_NAME_CHARS};
 use crate::actions;
 use crate::components::file_grid::thumbnail::{self, Thumbnails};
 use crate::components::git;
+use crate::components::row_facts::{self, Media, RowFacts, Want};
 use crate::explorer::{
     self, Comparison, Explorer, ExplorerEvent, FindRun, LoadState, NavOptions, NoAccess, Rows, Selection, TabId,
     ViewMode,
@@ -88,6 +89,9 @@ use crate::kit::kind_icon;
 const PREFETCH_AFTER: Duration = Duration::from_millis(120);
 /// More files than this asked to open at once need the person's say-so (`files.length > 10`).
 const OPEN_MANY_ASKS_ABOVE: usize = 10;
+/// Selections up to this many items have their tags read (the Tags submenu's checks need them, and the rows may be
+/// off screen); a bigger one reads only what is shown.
+const MOST_SELECTION_READS: usize = 200;
 /// The width assumed before the list has been laid out once: wide, so no column is left out of the first frame.
 const FIRST_WIDTH: f32 = 1200.;
 
@@ -183,6 +187,8 @@ pub(crate) struct FindInfo {
 /// strings), never the entries.
 pub(crate) struct TabView {
     pub id: TabId,
+    /// What the rows' tags and media facts are kept under: the tab's folder or search (`Tab::view_key`).
+    pub facts_key: String,
     /// Where this list's scroll is kept: the folder or search, in the list (`placeKey`).
     pub place: String,
     pub path: String,
@@ -237,6 +243,10 @@ pub(crate) struct Frame {
     pub focus_path: Option<String>,
     pub renaming: Option<String>,
     pub tracks: Vec<Track>,
+    /// What the rows' tags and media facts are kept under (`TabView::facts_key`).
+    pub facts_key: String,
+    /// What the shown columns need read of the media files (none unless one of their columns is shown).
+    pub media: Media,
     pub inactive: bool,
     pub located: bool,
     pub recycled: bool,
@@ -266,6 +276,15 @@ pub(crate) struct Frame {
     pub lane: String,
     pub box_px: f32,
     pub scale: f32,
+}
+
+/// What was last asked of the facts, so a frame that draws the same lines asks nothing again.
+struct Asked {
+    key: String,
+    from: usize,
+    to: usize,
+    rows: usize,
+    want: Want,
 }
 
 /// What was worked out when the rows (or the tab) last changed.
@@ -309,6 +328,10 @@ pub struct FileList {
     viewer: EntityId,
     /// A fingerprint of the thumbnails last handed to the service (see `thumbs.rs`).
     thumbs_shown: Rc<Cell<u64>>,
+    /// The tags and media facts of the rows (`row_facts`).
+    facts: Entity<RowFacts>,
+    /// The lines the facts were last asked for; cleared when the rows or the facts change.
+    asked: Option<Asked>,
     /// Where the list is on screen (the area under the header), measured by the canvas under it.
     area: Rc<Cell<Bounds<Pixels>>>,
     /// A press or a marquee is under way: the window-level mouse listeners act.
@@ -334,6 +357,7 @@ impl FileList {
         let focus = cx.focus_handle();
         let thumbs = thumbnail::thumbnails(cx);
         let viewer = cx.entity_id();
+        let facts = row_facts::shared(cx);
         let mut subscriptions = vec![
             // Anything the explorer changes redraws; the kinds of change that make the rows different also say so.
             cx.observe(&explorer, |_, _, cx| cx.notify()),
@@ -347,6 +371,11 @@ impl FileList {
                         | ExplorerEvent::SizesChanged { .. }
                 ) {
                     this.dirty = true;
+                    this.asked = None;
+                }
+                // The selection's tags are read for the Tags submenu, whether or not its rows are on screen.
+                if let ExplorerEvent::SelectionChanged(tab) = event {
+                    this.ask_selection_tags(*tab, cx);
                 }
                 // Items were cut to the clipboard, or pasted: they are dimmed, or not.
                 if matches!(event, ExplorerEvent::CutChanged) {
@@ -355,6 +384,11 @@ impl FileList {
             }),
             // A picture arrived, or one was let go of.
             cx.observe(&thumbs, |_, _, cx| cx.notify()),
+            // Tags or media facts were read (or must be read again): the dots and cells are drawn, and asked for.
+            cx.observe(&facts, |this, _, cx| {
+                this.asked = None;
+                cx.notify();
+            }),
             // Column widths and the text size are settings.
             cx.observe_global::<state::UiState>(|_, cx| cx.notify()),
             // A click or a key in this list makes its pane the one the toolbar and the keys act on.
@@ -385,6 +419,8 @@ impl FileList {
                 focus_path: None,
                 renaming: None,
                 tracks: Vec::new(),
+                facts_key: String::new(),
+                media: Media::None,
                 inactive: false,
                 located: false,
                 recycled: false,
@@ -417,6 +453,8 @@ impl FileList {
             thumbs,
             viewer,
             thumbs_shown: Rc::new(Cell::new(0)),
+            facts,
+            asked: None,
             area: Rc::new(Cell::new(Bounds::default())),
             tracking: Rc::new(Cell::new(false)),
             marquee: None,
@@ -475,6 +513,7 @@ impl FileList {
             && explorer.memory().folder_view(&tab.path).is_some();
         Some(TabView {
             id: tab.id,
+            facts_key: tab.view_key(),
             // The grid keeps its own place in the same folder, so the key says which view it is for.
             place: format!("{}:list", tab.view_key()),
             path: tab.path.clone(),
@@ -730,16 +769,20 @@ impl FileList {
             return;
         }
         if key == "escape" {
-            let (searching, filtering, selected) = {
+            let (tab, searching, filtering, selected) = {
                 let Some(tab) = self.explorer.read(cx).pane_tab(self.pane) else {
                     return;
                 };
-                (tab.find.is_some(), !tab.filter.is_empty(), !tab.selection.is_empty())
+                (
+                    tab.id,
+                    tab.find.is_some(),
+                    !tab.filter.is_empty(),
+                    !tab.selection.is_empty(),
+                )
             };
             if searching || filtering {
-                // PORT ME(search): a search's results are dropped too (clearFind).
-                self.explorer
-                    .update(cx, |explorer, cx| explorer.set_filter("", None, cx));
+                // The filter goes, and a search's results with it (`clearFind`).
+                self.explorer.update(cx, |explorer, cx| explorer.clear_find_in(tab, cx));
             } else if selected {
                 self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
             } else {
@@ -1003,8 +1046,65 @@ impl FileList {
     fn render_lines(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let frame = self.frame.clone();
         self.show_thumbnails(&frame, &range, window, cx);
+        self.ask_facts(&frame, &range, cx);
         let t = theme::tokens(cx).clone();
         range.map(|line| self.line_element(&frame, &t, line, cx)).collect()
+    }
+
+    /// Asks for the tags (and, while a column of them is shown, the media facts) of the lines about to be drawn and
+    /// a half screen either side, not of the whole folder. Asking for what is read costs lookups, so a frame that
+    /// draws the same lines as the last asks nothing.
+    fn ask_facts(&mut self, frame: &Frame, range: &Range<usize>, cx: &mut Context<Self>) {
+        if frame.rows.is_empty() {
+            return;
+        }
+        let want = Want {
+            tags: true,
+            media: frame.media,
+        };
+        let margin = range.len() / 2;
+        let (from, to) = (
+            range.start.saturating_sub(margin),
+            range.end.saturating_add(margin).min(frame.lines),
+        );
+        let same = self.asked.as_ref().is_some_and(|asked| {
+            asked.key == frame.facts_key
+                && (asked.from, asked.to, asked.rows, asked.want) == (from, to, frame.rows.len(), want)
+        });
+        if same || from >= to {
+            return;
+        }
+        self.asked = Some(Asked {
+            key: frame.facts_key.clone(),
+            from,
+            to,
+            rows: frame.rows.len(),
+            want,
+        });
+        let entries = cells::entries_on(&frame.rows, from..to);
+        self.facts
+            .update(cx, |facts, cx| facts.ask(&frame.facts_key, entries, want, cx));
+    }
+
+    /// The tags of what tab `tab` has selected are read, if it is this pane's and the selection is of a size worth
+    /// reading (the Tags submenu checks them for the whole selection).
+    fn ask_selection_tags(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let read = self
+            .explorer
+            .read(cx)
+            .pane_tab(self.pane)
+            .filter(|t| t.id == tab)
+            .and_then(|tab| {
+                let size = tab.selection.len();
+                let on_disk = tab.archive().is_none() && !tab.is_recycle_bin();
+                (on_disk && (1..=MOST_SELECTION_READS).contains(&size))
+                    .then(|| (tab.view_key(), tab.selection.to_vec()))
+            });
+        if let Some((key, paths)) = read {
+            self.facts.update(cx, |facts, cx| {
+                facts.ask_tags_of(&key, paths.iter().map(String::as_str), cx)
+            });
+        }
     }
 
     /// What the list is called for a screen reader (`aria-label`).
@@ -1072,7 +1172,16 @@ impl Render for FileList {
             selected: view.selection.clone(),
             focus_path: view.selection.focus().map(str::to_string),
             renaming: view.renaming.clone(),
+            media: if tracks
+                .iter()
+                .any(|track| matches!(track, Track::Column { id, .. } if id.def().facts))
+            {
+                Media::All
+            } else {
+                Media::None
+            },
             tracks,
+            facts_key: view.facts_key.clone(),
             inactive: view.inactive,
             located: view.located,
             recycled: view.recycled,

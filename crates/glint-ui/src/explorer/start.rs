@@ -6,7 +6,7 @@
 //!
 //! **Not here** (they belong to the window or to other parts): the remotes and folder rules start
 //! (`initRemotes`, `initRules`), the instant-search index check, the jump list and taskbar thumbnail
-//! buttons, the New menu's kinds, the gallery's folders and the copy queue. `init_explorer` takes the folders
+//! buttons, the New menu's kinds and the copy queue. (The gallery's folders go to core from the model.) `init_explorer` takes the folders
 //! the app was started with as an argument; the launch module reads them.
 
 use super::model::{Explorer, Prefs};
@@ -44,6 +44,7 @@ impl Explorer {
             let known = known.await;
             let opened = this.update(cx, |this, cx| {
                 this.known = known.into();
+                this.push_gallery_folders(cx);
                 cx.emit(ExplorerEvent::KnownFoldersChanged);
                 this.begin(launch, cx)
             });

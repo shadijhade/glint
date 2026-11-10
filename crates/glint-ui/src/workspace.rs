@@ -890,7 +890,6 @@ impl Workspace {
                 self.focus_files(window, cx);
             }
             // The bar filters the folder as you type; the explorer searches below it.
-            AddressBarEvent::FindAsTyped { query } => Self::explorer(cx, |e, cx| e.find_as_typed(query, cx).detach()),
             AddressBarEvent::RunFind { query } => {
                 Self::explorer(cx, |e, cx| e.run_find(query, explorer::Wider::default(), cx).detach())
             }
@@ -1600,6 +1599,18 @@ impl Workspace {
 pub fn run_menu_command(event: MenuEvent, window: &mut Window, cx: &mut App) {
     if let Some(main) = crate::startup::main_workspace(cx) {
         main.update(cx, |workspace, cx| workspace.menu_command(&event, window, cx));
+    }
+}
+
+/// Types a project's task into the main window's terminal pane, in the project's folder (the Ctrl+K palette's
+/// "Run <task>", as the command bar's Run menu does). Does nothing before the main window exists.
+pub fn run_task(folder: String, command: String, window: &mut Window, cx: &mut App) {
+    if let Some(main) = crate::startup::main_workspace(cx) {
+        main.update(cx, |workspace, cx| {
+            workspace
+                .terminal
+                .update(cx, |terminal, cx| terminal.run_task(&folder, &command, window, cx))
+        });
     }
 }
 

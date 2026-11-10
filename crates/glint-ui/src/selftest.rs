@@ -62,6 +62,42 @@ pub(crate) fn start(cx: &mut App) {
         .detach();
         return;
     }
+    // `look13:<grid|tags|palette>|<folder>` (a scratch folder holding `a.txt`), left open for a look: the grid with
+    // the rename box on `a.txt`; the list, whose rows show the tags their files' streams hold; the Ctrl+K palette
+    // asked for "run" (the folder's project tasks).
+    if let Some(rest) = script.strip_prefix("look13:") {
+        let (what, folder) = rest.split_once('|').unwrap_or(("grid", rest));
+        let (what, folder) = (what.to_string(), folder.to_string());
+        let a = Path::new(&folder).join("a.txt").to_string_lossy().into_owned();
+        let options = explorer::NavOptions {
+            select: Some(vec![a.clone()]),
+            ..Default::default()
+        };
+        explorer::explorer(cx).update(cx, |e, cx| e.navigate(folder, options, cx));
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_millis(800)).await;
+            cx.update(|cx| {
+                let explorer = explorer::explorer(cx);
+                match what.as_str() {
+                    "grid" => explorer.update(cx, |e, cx| {
+                        e.set_view(explorer::ViewMode::Grid, None, cx);
+                        e.begin_rename(Some(&a), cx);
+                    }),
+                    "palette" => {
+                        if let Some(main) = startup::main_window(cx) {
+                            let _ = main.update(cx, |_, window, cx| {
+                                crate::components::palette::open(window, cx);
+                                crate::components::palette::type_query("run", window, cx);
+                            });
+                        }
+                    }
+                    _ => explorer.update(cx, |e, cx| e.set_view(explorer::ViewMode::List, None, cx)),
+                }
+            });
+        })
+        .detach();
+        return;
+    }
     // `map:<folder>`: the folder's disk usage map, left open for a look.
     if let Some(folder) = script.strip_prefix("map:") {
         let folder = folder.to_string();

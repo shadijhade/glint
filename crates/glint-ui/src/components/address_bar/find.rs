@@ -86,13 +86,21 @@ impl AddressBar {
             return;
         }
         let query = ready_query(trimmed);
-        // Subfolders as you type only where the index answers in milliseconds: the find part knows
-        // (`findsAsTyped`), so it gets the query after the pause and decides. An fd walk waits for Enter.
+        // Subfolders as you type only where the index answers in milliseconds: after the pause the explorer is
+        // asked, and it decides (`findsAsTyped`, which also reads where instant search stands if that is not
+        // known yet). An fd walk waits for Enter.
         if !query.is_empty() && !asks_models(&query) {
+            let explorer = self.explorer.clone();
             self.find_timer = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(AS_TYPED_AFTER).await;
-                this.update(cx, |_, cx| cx.emit(AddressBarEvent::FindAsTyped { query }))
+                let running = this
+                    .update(cx, |_, cx| {
+                        explorer.update(cx, |explorer, cx| explorer.find_as_typed(&query, cx))
+                    })
                     .ok();
+                if let Some(running) = running {
+                    running.await;
+                }
             }));
         }
         cx.notify();

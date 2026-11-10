@@ -210,17 +210,41 @@
 
 *2 tasks (Sonnet), both passed review; committed with the updater's wiring as 2a7c94a.* The vendored GPUI wraps a right-to-left paragraph at spaces in reading order and shapes each row alone (13 tests on the real DirectWrite); Enter in the rename box no longer opens the item; the list takes the keyboard back after a rename; drops from other apps work after a key press (file drags count as mouse input). End-to-end: 18 passed. The updater runs from start-up, asks before quitting to install, and has the toolbar's Update button. **Tried for real:** a long Arabic paragraph and a mixed Arabic and English one in the Markdown preview wrap at spaces, rows top to bottom, Latin words at the right ends. **Left:** in an English window those paragraphs align left. The Markdown TextView (gpui-kit) needs each block's direction from its first strong letter, as `preview::rich` already does for Word and books.
 
-## Wave 13: known gaps (running, wf_fa13162c-675)
+## Wave 13: known gaps: done 2026-11-10
 
-*5 tasks (Sonnet), off Antigravity's files.*
+*5 tasks (Sonnet; 12 agents, ~87 min, 2.1M tokens), all passed review.*
 
-- **find-buttons:** find as you type, search subfolders, try again, search wider, the Gallery and Recent states.
-- **grid-rename:** the rename box on tiles; clearing a filter ends a search.
-- **list-facts:** `components/row_facts.rs`, for tag dots, the Tags submenu's checks, and the Taken, Dimensions, Duration, Artist and Album columns.
-- **markdown-dir:** each Markdown block takes its own direction, in the vendored gpui-base.
-- **palette:** saved searches, Empty the Recycle Bin, and the file actions and tools, through `workspace::run_menu_command`.
+- **find-buttons:** find as you type (the bar asks the explorer itself; `AddressBarEvent::FindAsTyped` is gone), Search subfolders too, Try again, the three search-wider buttons, the Gallery's Add a folder, Recent's note.
+- **grid-rename:** the rename box on tiles (`file_grid/rename.rs`); Escape ends a search as well as a filter.
+- **list-facts:** `components/row_facts.rs` (tags and media facts read for the rows drawn, kept per folder), tag dots in the list, the Tags submenu's checks, and the Taken, Dimensions, Duration, Artist and Album columns.
+- **markdown-dir:** each Markdown block takes its direction from its first strong letter (vendored gpui-base, VENDOR.md row); lists, quotes and inline flows mirror; code stays left to right.
+- **palette:** saved searches, Empty the Recycle Bin, the file actions and tools (`Run::Menu` through `workspace::run_menu_command`), and Run <task> (through `workspace::run_task`).
 
-**Left for integration:** tag dots on grid tiles (from row_facts), Compare folders from Previous versions, and the Markdown follow-ups.
+**Integration:**
+- The grid's Search subfolders too searches its own pane.
+- The Tags submenu reads the chosen items' tags.
+- The palette uses the menus' `kinds`; its copy is deleted.
+- The kit's icon test lists all 216 icons the code names (a script made the list).
+- The Arabic Markdown test now really runs in an Arabic window.
+- New grid test: Escape ends a search.
+- **Bug found and fixed:** the Gallery was never given its folders. `gallery_set_folders` went uncalled, so it listed nothing. The explorer now hands over Pictures, Videos and the added folders at start and whenever they change. Tested headless only.
+
+Full suite: 2,075 + 300 + 233 passed; clippy clean.
+
+**Tried for real** (debug build, `GLINT_SELFTEST=look13:` and `show:`, settings put back):
+- F2 on a grid tile shows the box.
+- Tag dots are read from the files' `glint.tags` streams.
+- Ctrl+K "run" lists the folder's npm scripts.
+- Arabic paragraphs align right in an English window.
+
+**Left:**
+- The grid's box text isn't centred like the label.
+- Tag dots on tiles: the TypeScript app had none, so this isn't parity.
+- Mirrored table columns, and the ordered-list marker's bidi order.
+- Sort and filter by media facts.
+- The palette's remaining TS commands: Convert to UTF-8, Get access, Restore and Delete for good, Even out the panes, Invert selection, Extract all, Archive properties, New <kind>, Calculate folder sizes, Move tab to other pane, New window.
+- The shared rename-box helper (the list and the grid duplicate it).
+- An RTL underline overshoot in gpui-pre's `line.rs`.
 
 **Build folder:** since 2026-11-10, `target/ui` is a junction to `E:\glint-gpui-target\ui`. E: is on the same NVMe drive and has 104 GB free, so C: keeps its room. Paths didn't change, so nothing was rebuilt.
 
@@ -243,7 +267,7 @@ Its brief is in commit 86c5c9b (`docs/gpui/ANTIGRAVITY.md`). Those tasks come ba
   - `index_update`: the service's update button.
   - `tags_all`: the tag suggestions.
   - `cancel_archive_read`.
-  - `gallery_set_folders`: check what find-buttons does.
+  - ~~`gallery_set_folders`~~: wired in wave 13's integration. The Gallery was empty without it.
 - **Not settled by this pass:** the ~99 `PORT ME` notes in glint-ui. Each needs a look to tell stale from open; that's a wave 14 task.
 
 ## Coming waves (order follows the dependencies)

@@ -18,8 +18,9 @@
 //!
 //! # Not here yet (each is a later part)
 //!
-//! - **Finding** (`runFind`, `clearFind`, `leaveFind`, `findsAsTyped`): the box emits [`AddressBarEvent`]s
-//!   and filters the folder as you type (`Explorer::set_filter`); the find part runs the searches.
+//! - **Finding:** the box filters the folder as you type (`Explorer::set_filter`) and, where the index answers at
+//!   once, searches below it (`Explorer::find_as_typed`); Enter, leaving and clearing are [`AddressBarEvent`]s
+//!   the workspace answers.
 //! - **Git:** the branch chip after the breadcrumbs (one [`GitChip`](crate::components::git::GitChip) per tab,
 //!   hidden below 26 rem of bar), and `git:` in the box's hints in a repository. The bar follows the Git model
 //!   itself (it must exist, `git::init`, when the bar is made); [`AddressBar::set_in_repository`] is for tests.
@@ -70,9 +71,6 @@ pub enum AddressBarEvent {
     /// Give the keyboard to the file list or grid: Escape left a field, or a path was entered and opened.
     /// With `first`, move to its first item as well (Down arrow out of the search box).
     FocusFiles { first: bool },
-    /// The search text holds a query that may be searched as you type; 100 ms after the last key.
-    /// PORT ME(find): run `runFind(query)` if `findsAsTyped(query, path)` says the index answers at once.
-    FindAsTyped { query: String },
     /// Enter in the search box: search the folder and its subfolders (`runFind(query)`).
     RunFind { query: String },
     /// The search text became empty (or holds only a `git:` filter) while search results were shown:

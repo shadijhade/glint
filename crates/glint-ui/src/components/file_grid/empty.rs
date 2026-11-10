@@ -1,7 +1,8 @@
 //! What the grid says when a folder shows no tiles (the `empty` node Explorer.tsx builds for both views). Only the
-//! states of a plain folder, the filter and the Recycle Bin are here; the search's, the Gallery's, Recent's and
-//! the comparison's come with their parts.
+//! states of a plain folder, the filter and the Recycle Bin are here; the search's, the Gallery's and Recent's are
+//! the list's (`file_list/states.rs`).
 
+use crate::explorer::TabId;
 use crate::kit::prelude::*;
 use crate::{state, t, theme};
 
@@ -41,8 +42,9 @@ impl Empty {
     }
 }
 
-/// The centred message (`Centered` in Explorer.tsx).
-pub(super) fn view(empty: &Empty, cx: &App) -> impl IntoElement {
+/// The centred message (`Centered` in Explorer.tsx). `tab` is the grid's own tab: Search subfolders too searches it,
+/// not whichever pane is active.
+pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
     let t = theme::tokens(cx);
     let strong = |text: SharedString| {
         div()
@@ -78,7 +80,25 @@ pub(super) fn view(empty: &Empty, cx: &App) -> impl IntoElement {
                     place = place,
                     filter = filter
                 )))
-            // PORT ME(find): the "Search subfolders too" button (`runFind(filter)`) when not in the Recycle Bin.
+                .when(!*bin, |centered| {
+                    let query = filter.clone();
+                    centered.child(
+                        Button::new("file-grid-search-subfolders")
+                            .outline()
+                            .small()
+                            .icon(IconName::Search)
+                            .label(t!("Search subfolders too"))
+                            .on_click(move |_, _, cx| {
+                                if let Some(explorer) = crate::explorer::try_explorer(cx) {
+                                    explorer.update(cx, |explorer, cx| {
+                                        explorer
+                                            .run_find_in(tab, &query, crate::explorer::Wider::default(), cx)
+                                            .detach()
+                                    });
+                                }
+                            }),
+                    )
+                })
         }
         Empty::BinHasNothing => centered
             .aria_label(t!("The Recycle Bin is empty"))

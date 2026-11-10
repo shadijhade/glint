@@ -11,8 +11,8 @@ use gpui::{
     GlobalElementId, Hsla, ImageSource, InspectorElementId, InteractiveElement as _, IntoElement,
     LayoutId, LineFragment as WrapLineFragment, ObjectFit, Pixels, Refineable as _, ShapedLine,
     SharedString, Size, StatefulInteractiveElement as _, StyleRefinement, Styled, StyledImage as _,
-    TextRun, TextStyle, WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative,
-    size,
+    TextAlign, TextRun, TextStyle, WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px,
+    relative, size,
 };
 
 use crate::text::text_view::{LinkClickHandlerFn, handle_link_click};
@@ -476,6 +476,17 @@ impl Element for InlineFlow {
         let text_style = &typography.text_style;
         let mut elements = Vec::with_capacity(layout.fragments.len());
 
+        // A flow that starts at the right (an Arabic paragraph) is laid out
+        // like any other and then mirrored in its own width: each line's
+        // fragments swap ends, so the first fragment sits at the right edge
+        // and the line's short end is on the left, as right-to-left text is
+        // set.
+        let mirrored = text_style.text_align == TextAlign::Right;
+        let flow_width = bounds.size.width;
+        let mirror_x = |x: Pixels, width: Pixels| {
+            if mirrored { flow_width - x - width } else { x }
+        };
+
         // A reveal goes to the fragment it starts in. A line break lays out
         // no fragment, so a reveal starting on one, or on an empty line, goes
         // to the next fragment of its text, or to the last when none follows.
@@ -589,6 +600,14 @@ impl Element for InlineFlow {
                         continue;
                     };
                     let object_size = object.metrics.size;
+                    let origin = &point(mirror_x(origin.x, object_size.width), origin.y);
+                    let selection_bounds = &Bounds::new(
+                        point(
+                            mirror_x(selection_bounds.origin.x, selection_bounds.size.width),
+                            selection_bounds.origin.y,
+                        ),
+                        selection_bounds.size,
+                    );
                     let overlays =
                         report_box(*item_ix, Bounds::new(bounds.origin + *origin, object_size));
                     let mut element = InlineObject::new(
@@ -645,6 +664,7 @@ impl Element for InlineFlow {
                         continue;
                     };
                     let (origin, fragment_size, font_size) = (*origin, *fragment_size, *font_size);
+                    let origin = point(mirror_x(origin.x, fragment_size.width), origin.y);
                     let state = frame_state.borrow_mut().fragment_state(text_fragment_count);
                     text_fragment_count += 1;
                     if let Ok(mut state) = state.lock() {
@@ -652,9 +672,12 @@ impl Element for InlineFlow {
                     }
 
                     let insets = code_insets(highlights, font_size, window.rem_size());
-                    let background = code_background
-                        .as_ref()
-                        .map(|code| code.clone().offset(bounds.origin));
+                    let background = code_background.as_ref().map(|code| {
+                        let mut code = code.clone();
+                        code.bounds.origin.x =
+                            mirror_x(code.bounds.origin.x, code.bounds.size.width);
+                        code.offset(bounds.origin)
+                    });
                     // The fragment's typography: the flow's style at the
                     // fragment's size, on one line. Fragments are already
                     // wrapped, so this leaf must not wrap independently.
@@ -739,6 +762,7 @@ impl Element for InlineFlow {
                         continue;
                     };
                     let (origin, fragment_size) = (*origin, *fragment_size);
+                    let origin = point(mirror_x(origin.x, fragment_size.width), origin.y);
                     let overlays =
                         report_box(*item_ix, Bounds::new(bounds.origin + origin, fragment_size));
                     let mut element = Self::image_element(

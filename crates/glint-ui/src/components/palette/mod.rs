@@ -22,9 +22,12 @@
 //!
 //! **To wire it:** the workspace's `CommandPalette` action handler calls [`toggle`] (or [`open`]).
 //!
-//! What is not here (the TypeScript's other half of `paletteCommands`): the saved searches (they need the find part
-//! of the explorer), and every command that does something to files or opens a tool; each is marked
-//! `PORT ME(<part>)` in [`commands::actions`].
+//! The commands that do things to files and the tools do what their menu items do: [`commands::Run::Menu`] hands
+//! the same [`MenuEvent`](crate::components::menus::MenuEvent) to the main window
+//! ([`crate::workspace::run_menu_command`]); "Run <task>" types the task into the terminal pane
+//! ([`crate::workspace::run_task`]). What is not here: "Convert to UTF-8", "Get access", Restore and Delete for
+//! good in the Recycle Bin, "Even out the panes", "Invert selection", "Extract all", "Archive properties",
+//! "New <kind>", and the Sending / Shared rows.
 
 pub mod commands;
 mod keys;
@@ -34,6 +37,7 @@ mod tests;
 
 use self::commands::{Command, Inputs, Kind, Run};
 use self::keys::{PaletteAccept, PaletteCancel, PaletteDown, PaletteKeep, PaletteUp};
+use crate::components::command_bar::Facts;
 use crate::explorer::{explorer, NavOptions};
 use crate::kit::prelude::*;
 use crate::{core_bridge, persistence, state, t, theme};
@@ -59,6 +63,20 @@ pub type CalcSource = Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<S
 pub type ZoxideSource =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Option<Vec<(String, f64)>>, String>> + Send>> + Send + Sync>;
 
+/// What the tools of the folder are, read in the background: the scripts, the editors, the projects' tasks.
+#[derive(Clone, Debug, Default)]
+pub struct Tools {
+    /// The Scripts folder's scripts.
+    pub scripts: Vec<glint_core::scripts::Script>,
+    /// The editors and terminals found on this PC.
+    pub openers: Vec<glint_core::openers::Opener>,
+    /// What the folder's projects can run.
+    pub tasks: Vec<glint_core::projects::TaskGroup>,
+}
+
+/// Reads the [`Tools`] for a folder.
+pub type ToolsSource = Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Tools> + Send>> + Send + Sync>;
+
 /// Where the palette gets what takes work: glint-core in the app, fakes in tests.
 #[derive(Clone)]
 pub struct Sources {
@@ -66,6 +84,8 @@ pub struct Sources {
     pub calc: CalcSource,
     /// zoxide's folders, asked for when history is shared with it (Settings → History).
     pub zoxide: ZoxideSource,
+    /// The scripts, editors and tasks, asked for when the palette opens.
+    pub tools: ToolsSource,
     /// How long to wait after a key before asking the calculator.
     pub debounce: Duration,
 }
@@ -76,6 +96,20 @@ impl Sources {
         Sources {
             calc: Arc::new(|expression| Box::pin(glint_core::calc::calculate(expression))),
             zoxide: Arc::new(|| Box::pin(glint_core::zoxide::zoxide_folders())),
+            tools: Arc::new(|folder| {
+                Box::pin(async move {
+                    Tools {
+                        scripts: glint_core::scripts::scripts_list()
+                            .await
+                            .map(|found| found.scripts)
+                            .unwrap_or_default(),
+                        openers: glint_core::openers::openers().await.unwrap_or_default(),
+                        tasks: glint_core::projects::project_tasks(folder)
+                            .await
+                            .unwrap_or_default(),
+                    }
+                })
+            }),
             debounce: CALC_DEBOUNCE,
         }
     }
@@ -105,6 +139,7 @@ pub struct Palette {
     answer: Option<commands::Answer>,
     calc_task: Option<Task<()>>,
     _zoxide_task: Option<Task<()>>,
+    _tools_task: Option<Task<()>>,
     _subscription: Subscription,
 }
 
@@ -132,12 +167,14 @@ impl Palette {
             answer: None,
             calc_task: None,
             _zoxide_task: None,
+            _tools_task: None,
             _subscription: subscription,
         };
         palette.remake_results();
         if state::settings(cx).zoxide {
             palette._zoxide_task = Some(palette.ask_zoxide(cx));
         }
+        palette._tools_task = Some(palette.ask_tools(cx));
         // The dialog layer takes the focus when it opens; the box takes it from there.
         window.defer(cx, move |window, cx| {
             input.update(cx, |input, cx| input.focus(window, cx));
@@ -159,6 +196,25 @@ impl Palette {
                 })
                 .ok();
             }
+        })
+    }
+
+    /// Reads the scripts, editors and tasks (each time the palette opens) and adds their commands to the list.
+    fn ask_tools(&self, cx: &mut Context<Self>) -> Task<()> {
+        let asking = (self.sources.tools)(self.inputs.path.clone());
+        cx.spawn(async move |this, cx| {
+            let Ok(tools) = core_bridge::run(asking).await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.inputs.scripts = tools.scripts;
+                this.inputs.openers = tools.openers;
+                this.inputs.tasks = tools.tasks;
+                this.all = commands::all(&this.inputs);
+                this.remake_results();
+                cx.notify();
+            })
+            .ok();
         })
     }
 
@@ -522,7 +578,56 @@ fn carry_out(run: Run, window: &mut Window, cx: &mut App) {
             window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
         }
         Run::Change(change) => apply(change, cx),
+        // What a menu item does, once the palette's layer is gone (a dialog opens over the window).
+        Run::Menu(event) => {
+            window.defer(cx, move |window, cx| crate::workspace::run_menu_command(event, window, cx));
+        }
+        Run::Saved(saved) => {
+            explorer(cx).update(cx, |e, cx| e.run_saved_search(saved, cx).detach());
+        }
+        // PORT ME(coordinator): nothing the palette can call runs a task in the terminal pane yet, so the palette
+        // is not given any (`Sources::core`); this is what it will do.
+        Run::Task { folder, command } => {
+            window.defer(cx, move |window, cx| crate::workspace::run_task(folder, command, window, cx));
+        }
+        Run::OpenIn { opener, name, path } => report(
+            t!("Couldn't open it in {name}", name = name),
+            glint_core::openers::open_in(opener, path),
+            window,
+            cx,
+        ),
+        Run::Terminal(folder) => report(
+            t!("Couldn't open a terminal"),
+            glint_core::shell::open_terminal(folder),
+            window,
+            cx,
+        ),
+        Run::FileExplorer(folder) => {
+            // File Explorer's own "open" verb can take a moment: off the UI thread.
+            cx.background_spawn(async move { crate::platform::launch::hand_to_explorer(&[folder]) })
+                .detach();
+        }
+        Run::AddRemote => window.defer(cx, crate::dialogs::remote::open_add),
+        Run::Rules(folder) => window.defer(cx, move |window, cx| crate::dialogs::rules::open(window, cx, folder)),
     }
+}
+
+/// Runs a core call without waiting, and tells the person `what` failed if it did.
+fn report(
+    what: SharedString,
+    work: impl Future<Output = Result<(), String>> + Send + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window
+        .spawn(cx, async move |cx| {
+            if let Err(reason) = core_bridge::run(work).await.and_then(|inner| inner) {
+                let _ = cx.update(|window, cx| {
+                    window.push_notification(Notification::error(reason).title(what), cx);
+                });
+            }
+        })
+        .detach();
 }
 
 /// A [`commands::Change`].
@@ -594,6 +699,28 @@ pub fn read_inputs(cx: &App) -> Inputs {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
         mapped: tab.is_some_and(|t| crate::components::disk_usage::shows(cx, t.id)),
+        chosen_entries: tab
+            .filter(|t| !t.selection.is_empty())
+            .map(|t| {
+                t.rows
+                    .iter()
+                    .filter(|entry| t.selection.contains(&entry.path))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default(),
+        selected: tab.map(|t| t.selection.to_vec()).unwrap_or_default(),
+        focus_path: tab.and_then(|t| t.selection.focus().map(str::to_string)),
+        other_pane: e.other_pane_folder().map(|(_, path)| path),
+        undo: e.next_undo().map(|(_, label)| label.to_string()),
+        pair: Facts::read(e, false, settings)
+            .pair
+            .map(|p| ((p.left, p.left_name), (p.right, p.right_name))),
+        archive_outer: tab.and_then(|t| t.archive().map(|a| a.outer.clone())),
+        saved_searches: app.map(|a| a.saved_searches.clone()).unwrap_or_default(),
+        scripts: Vec::new(),
+        openers: Vec::new(),
+        tasks: Vec::new(),
     }
 }
 
@@ -615,6 +742,17 @@ pub fn is_open(window: &mut Window, cx: &mut App) -> bool {
 /// already open.
 pub fn open(window: &mut Window, cx: &mut App) {
     open_with(window, cx, Sources::core());
+}
+
+/// Debug builds' self-test: types `text` into the open palette's box, as a person would.
+#[cfg(debug_assertions)]
+pub(crate) fn type_query(text: &str, window: &mut Window, cx: &mut App) {
+    let Some(palette) = cx.try_global::<Current>().and_then(|current| current.0.upgrade()) else {
+        return;
+    };
+    let input = palette.read(cx).input.clone();
+    input.update(cx, |input, cx| input.set_value(text.to_string(), window, cx));
+    palette.update(cx, |palette, cx| palette.typed(cx));
 }
 
 /// Opens the palette when it's closed, closes it when it's open (the Ctrl+K action).

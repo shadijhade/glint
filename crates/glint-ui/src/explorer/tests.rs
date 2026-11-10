@@ -1233,6 +1233,42 @@ fn the_last_folder_start_setting_falls_back_to_home_quietly(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn the_gallery_is_given_pictures_videos_and_the_added_folders(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    let known = |id, name: &'static str, path: &str| KnownFolder {
+        id,
+        name,
+        path: path.into(),
+    };
+    h.disk.set_known(vec![
+        known(KnownId::Home, "Home", "C:\\a"),
+        known(KnownId::Pictures, "Pictures", "C:\\a\\Pictures"),
+        known(KnownId::Music, "Music", "C:\\a\\Music"),
+        known(KnownId::Videos, "Videos", "C:\\a\\Videos"),
+    ]);
+    // One added folder is Pictures again (any case): it is given once.
+    cx.update(|cx| {
+        crate::state::update(cx, |s| {
+            s.gallery_folders = vec!["c:\\A\\pictures".into(), "D:\\Photos".into()]
+        })
+    });
+    let task = h.explorer.update(cx, |e, cx| e.init_explorer(Vec::new(), cx));
+    cx.foreground_executor().block_test(task);
+    cx.run_until_parked();
+    let sent = |h: &Harness, cx: &mut TestAppContext| h.read(cx, |e| e.gallery_sent.clone());
+    assert_eq!(
+        sent(&h, cx).as_deref(),
+        Some(&["C:\\a\\Pictures".to_string(), "C:\\a\\Videos".into(), "D:\\Photos".into()][..])
+    );
+    // A folder added in Settings (or from the Gallery's own button) is given too.
+    cx.update(|cx| crate::state::update(cx, |s| s.gallery_folders.push("E:\\Camera".into())));
+    cx.run_until_parked();
+    assert_eq!(sent(&h, cx).map(|f| f.len()), Some(4));
+}
+
+#[gpui_kit::test]
 fn the_recent_start_folder_opens_recent(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let h = harness(cx);

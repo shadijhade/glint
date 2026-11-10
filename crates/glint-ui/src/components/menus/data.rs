@@ -5,9 +5,11 @@
 //! each time a menu opens (the TypeScript refreshed them at start and when the window came back in front), so
 //! a menu never waits: it shows what was last read. Tests give [`Sources`] fakes.
 
+use crate::components::row_facts;
 use glint_core::newmenu::NewKind;
 use glint_core::openers::Opener;
 use glint_core::scripts::Script;
+use gpui_kit::App;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -31,8 +33,8 @@ pub struct MenuData {
     pub scripts: Vec<Script>,
     /// The kinds of file Windows' New menu has (`newKinds()`).
     pub new_kinds: Vec<NewKind>,
-    /// The tags each item has, by its path in lower case (`useTags.byPath`).
-    // PORT ME(tags): the tags part owns this; until then the Tags submenu starts with every tag off.
+    /// The tags each item has, by its path in lower case (`useTags.byPath`): what the rows read, for the items the
+    /// menu is about ([`tags_for`]). An item not read yet is missing, and the Tags submenu shows it without them.
     pub tags: HashMap<String, Vec<String>>,
     /// What Undo would take back, in a few words ("copy"), or None when there is nothing to undo
     /// (`nextUndo()?.label`). The host fills it from the explorer each time a folder menu opens.
@@ -40,6 +42,18 @@ pub struct MenuData {
     /// Folders of a remote connection shown in File Explorer on demand (`useOnDemand.mounts`): connection ids.
     // PORT ME(on-demand): the on-demand files part owns this.
     pub on_demand: Vec<String>,
+}
+
+impl MenuData {
+    /// Takes the tags read so far for `paths` (by path in lower case) as [`MenuData::tags`]. The file list reads the
+    /// tags of the rows it shows and of what is selected (`components::row_facts`), so by the time a menu opens
+    /// they are there; `MenuHost` calls this on the data of the item menu it is making, with the paths the menu is
+    /// about. An item not read yet is left out, and the Tags submenu shows it without the tag.
+    pub fn read_tags<'a>(&mut self, cx: &App, paths: impl IntoIterator<Item = &'a str>) {
+        self.tags = row_facts::try_shared(cx)
+            .map(|facts| facts.read(cx).tags_among(paths))
+            .unwrap_or_default();
+    }
 }
 
 /// A boxed async read.

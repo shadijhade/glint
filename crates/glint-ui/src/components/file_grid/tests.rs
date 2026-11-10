@@ -1296,3 +1296,6 @@ mod scrubbing {
         assert_eq!(Scrub::width_for(160., 1.5), 240);
     }
 }
+
+mod empty_find;
+mod rename;

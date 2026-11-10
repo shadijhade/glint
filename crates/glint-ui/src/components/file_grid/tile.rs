@@ -76,6 +76,8 @@ pub(super) struct Frame {
     pub on_down: Handler<(usize, MouseDownEvent)>,
     pub on_right_up: Handler<(usize, MouseUpEvent)>,
     pub on_hover: Handler<(usize, bool)>,
+    /// The rename box, drawn in place of the name of the item it is for.
+    pub rename: Option<super::rename::RenameView>,
 }
 
 /// Where a search result is, below the folder that was searched ("" when right in it) (`relativeTo`).
@@ -314,6 +316,21 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
         faded
     };
     let name = entry.name.clone();
+    let renaming = frame.rename.as_ref().filter(|rename| rename.path == entry.path);
+    // The name under the thumbnail, or the box that renames it.
+    let label = match renaming {
+        Some(rename) => super::rename::box_element(rename, t),
+        None => div()
+            .mt(space(1.5))
+            .w_full()
+            .text_size(theme::size::XS)
+            .line_height(rems(1.))
+            .line_clamp(2)
+            .overflow_hidden()
+            .child(isolate(name.clone()))
+            .into_any_element(),
+    };
+    let renaming = renaming.is_some();
 
     div()
         // A cell of the row's grid; the tile inside is inset by 2 px (`m-0.5`).
@@ -368,26 +385,19 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                 .when(entry.dir || super::scrub::scrubbable(entry), |tile| {
                     tile.on_hover(move |hovered, window, cx| on_hover(&(i, *hovered), window, cx))
                 })
-                .tooltip(move |window, cx| {
-                    let text = tip_frame
-                        .rows
-                        .get(i)
-                        .map(|entry| tooltip_text(&tip_frame, entry))
-                        .unwrap_or_default();
-                    crate::kit::tooltip(text, window, cx)
+                // Not over the box being typed in.
+                .when(!renaming, |tile| {
+                    tile.tooltip(move |window, cx| {
+                        let text = tip_frame
+                            .rows
+                            .get(i)
+                            .map(|entry| tooltip_text(&tip_frame, entry))
+                            .unwrap_or_default();
+                        crate::kit::tooltip(text, window, cx)
+                    })
                 })
                 .child(square)
-                .child(
-                    div()
-                        .mt(space(1.5))
-                        .w_full()
-                        .text_size(theme::size::XS)
-                        .line_height(rems(1.))
-                        .line_clamp(2)
-                        .overflow_hidden()
-                        // PORT ME(rename): the rename box in place of the name when this is the tab's `renaming`.
-                        .child(isolate(name)),
-                )
+                .child(label)
                 .child(
                     div()
                         .h(space(4.))

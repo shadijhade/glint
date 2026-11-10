@@ -20,6 +20,7 @@
 //! | `gridMove`, type-ahead (Explorer.tsx)     | [`keys`] and `glint_model::grid::grid_move`                    |
 //! | `onRowMouseDown`                          | [`FileGrid`]'s tile handlers (select, range, toggle, open)      |
 //! | `Thumbnail`, `useThumbnail`               | [`thumbnail`]                                                  |
+//! | `RenameInput` in a tile (F2)              | [`rename`]: a box in place of the name, following `Tab::renaming` |
 //!
 //! # Placing it
 //!
@@ -56,13 +57,13 @@
 //!
 //! # Not here yet
 //!
-//! Each is marked `PORT ME(<part>)` where it belongs: renaming in place, and the search's,
-//! Gallery's and Recent's empty states. A folder's tile says its size once "Folder sizes" measured it, and "…" while
-//! that runs (`Explorer::size_run`). The context menu's content is the workspace's: the
-//! grid only emits [`FileGridEvent::ContextMenu`] (from the keyboard at the focused tile's bottom-start corner).
+//! Each is marked `PORT ME(<part>)` where it belongs: the search's, Gallery's and Recent's empty states. A
+//! folder's tile says its size once "Folder sizes" measured it, and "…" while that runs (`Explorer::size_run`).
+//! The context menu's content is the workspace's: the grid only emits [`FileGridEvent::ContextMenu`] (from the keyboard at the focused tile's bottom-start corner).
 
 mod empty;
 mod keys;
+mod rename;
 mod scrub;
 mod tile;
 
@@ -229,6 +230,8 @@ pub struct FileGrid {
     type_ahead: keys::TypeAhead,
     /// The scrub overlay of the video tile the pointer is on.
     scrub: scrub::ScrubSlot,
+    /// The box that renames a tile in place (F2): it follows `Tab::renaming`.
+    rename: Option<rename::RenameBox>,
     /// The thumbnail size drawn last, logical pixels.
     thumb: f32,
     _subscriptions: Vec<Subscription>,
@@ -284,6 +287,7 @@ impl FileGrid {
             wheel: Wheel::default(),
             type_ahead: keys::TypeAhead::default(),
             scrub: scrub::ScrubSlot::default(),
+            rename: None,
             thumb: 0.,
             _subscriptions: subscriptions,
         }
@@ -731,6 +735,10 @@ impl FileGrid {
 
     /// A key that no binding took (`onKey` in Explorer.tsx, the parts the grid and the list share).
     fn key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // The rename box has its keys: the arrows and letters typed there move no tile.
+        if self.is_renaming() {
+            return;
+        }
         let keystroke = &event.keystroke;
         let modifiers = keystroke.modifiers;
         let ctrl = modifiers.control || modifiers.platform;
@@ -779,16 +787,16 @@ impl FileGrid {
             }
             // Escape clears the filter, else the selection.
             ("escape", false, false) => {
-                let filter = self
+                let searching = self
                     .explorer
                     .read(cx)
                     .pane_tab(self.pane)
-                    .is_some_and(|tab| !tab.filter.is_empty());
-                if filter {
+                    .filter(|tab| tab.find.is_some() || !tab.filter.is_empty())
+                    .map(|tab| tab.id);
+                if let Some(tab) = searching {
                     cx.stop_propagation();
-                    // PORT ME(find): `clearFind` also ends a search's results.
-                    self.explorer
-                        .update(cx, |explorer, cx| explorer.set_filter("", None, cx));
+                    // `clearFind`: the filter goes, and a search's results end with it.
+                    self.explorer.update(cx, |explorer, cx| explorer.clear_find_in(tab, cx));
                 } else if !selection.is_empty() {
                     cx.stop_propagation();
                     self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
@@ -1154,6 +1162,13 @@ impl Render for FileGrid {
             .as_ref()
             .filter(|_| explorer.diff_only)
             .map_or(0, |diffs| diffs.same);
+        // The rename box follows the tab's `renaming`: the item it names, as the grid has it.
+        let renaming = tab.renaming.clone();
+        let find_renamed = |path: &str| {
+            let entry = rows.iter().find(|entry| entry.path == path)?;
+            Some((entry.path.clone(), entry.name.clone(), entry.dir))
+        };
+        self.sync_rename(renaming.as_deref(), find_renamed, window, cx);
 
         // The layout: tiles from the tile-size setting and the text size, as many to a row as the width holds.
         let tile = tile_layout(rem, state::settings(cx).tile_size.as_str());
@@ -1282,6 +1297,7 @@ impl Render for FileGrid {
             on_hover: handler(cx, |this, (i, hovered): &(usize, bool), window, cx| {
                 this.tile_hover(*i, *hovered, window, cx)
             }),
+            rename: self.rename_view(cx),
         });
 
         let list = uniform_list("file-grid-rows", line_count, {
@@ -1334,7 +1350,10 @@ impl Render for FileGrid {
                     .child(list),
             )
             .vertical_scrollbar(&self.scroll)
-            .children(empty.map(|empty| div().absolute().inset_0().child(empty::view(&empty, cx))))
+            .children(empty.map(|empty| {
+                let tab = self.explorer.read(cx).pane_tab_id(self.pane);
+                div().absolute().inset_0().child(empty::view(&empty, tab, cx))
+            }))
             .children(self.marquee_rect(&tokens))
             .child(self.taps(width, body_height, cx));
 

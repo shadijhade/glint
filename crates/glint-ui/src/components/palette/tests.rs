@@ -451,6 +451,7 @@ impl World {
                 let folders = zoxide.clone();
                 Box::pin(async move { Ok(Some(folders)) })
             }),
+            tools: Arc::new(|_| Box::pin(async { Tools::default() })),
             debounce: Duration::ZERO,
         }
     }
@@ -751,3 +752,5 @@ fn arabic_names_are_listed_found_highlighted_and_opened_in_the_mirrored_layout(c
     w.press("escape");
     testing::set_rtl(false);
 }
+
+mod files_and_tools;

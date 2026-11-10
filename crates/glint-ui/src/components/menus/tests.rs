@@ -408,6 +408,53 @@ fn tags_are_checked_when_every_item_has_them_and_toggle_off_then() {
 }
 
 #[test]
+fn a_tag_only_some_of_the_items_have_goes_on_them_all_and_one_all_have_comes_off_them_all() {
+    let _guard = english();
+    let mut c = ctx();
+    c.data
+        .tags
+        .insert("c:\\x\\alpha.txt".into(), vec!["Red".into(), "blue".into()]);
+    c.data.tags.insert("c:\\x\\beta.md".into(), vec!["RED".into()]);
+    let both = [text("alpha.txt"), text("beta.md")];
+    let paths = vec!["C:\\x\\alpha.txt".to_string(), "C:\\x\\beta.md".to_string()];
+    let menu = item_menu(&both, &c);
+    let tags = submenu(&menu, "Tags");
+    // Every item has Red, in any case: checked, and choosing it takes it off both.
+    let red = find(tags, "Red").expect("red");
+    assert_eq!(red.check, Some(true));
+    assert_eq!(
+        red.run,
+        Run::Ask(MenuEvent::SetTags {
+            paths: paths.clone(),
+            add: vec![],
+            remove: vec!["Red".into()],
+        })
+    );
+    // Only one has Blue: not checked, and choosing it puts it on both.
+    let blue = find(tags, "Blue").expect("blue");
+    assert_eq!(blue.check, Some(false));
+    assert_eq!(
+        blue.run,
+        Run::Ask(MenuEvent::SetTags {
+            paths: paths.clone(),
+            add: vec!["Blue".into()],
+            remove: vec![],
+        })
+    );
+    // None has Green.
+    assert_eq!(find(tags, "Green").and_then(|e| e.check), Some(false));
+    // A third item whose tags were not read yet counts as having none: nothing is all-checked any more.
+    let three = [text("alpha.txt"), text("beta.md"), text("gamma.txt")];
+    let menu = item_menu(&three, &c);
+    assert_eq!(find(submenu(&menu, "Tags"), "Red").and_then(|e| e.check), Some(false));
+    // The strip of colors and "Edit tags…" are for the whole selection.
+    let last = labels(submenu(&menu, "Tags")).last().cloned();
+    assert_eq!(last.as_deref(), Some("Edit tags…"));
+    let edit = find(submenu(&menu, "Tags"), "Edit tags…").expect("edit");
+    assert!(matches!(&edit.run, Run::Ask(MenuEvent::EditTags { paths }) if paths.len() == 3));
+}
+
+#[test]
 fn in_the_other_pane_items_copy_move_and_compare() {
     let _guard = english();
     let mut c = ctx();

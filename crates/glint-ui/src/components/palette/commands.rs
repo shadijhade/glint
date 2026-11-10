@@ -6,19 +6,25 @@
 //! Everything here is plain data and plain functions, so the ranking and the lists are tested without a
 //! window. A [`Command`] says what it does as a [`Run`] value (not a closure), which the view carries out.
 
+use crate::components::menus::kinds::*;
 use crate::actions::{self, Binding};
+use crate::components::menus::{CompressFormat, MediaTool, MenuEvent, PdfTool};
 use crate::explorer::{Drive, KnownId, TabId};
 use crate::kit::prelude::*;
 use crate::{i18n, t};
-use glint_model::format::{format_count, format_size};
+use glint_core::openers::Opener;
+use glint_core::projects::TaskGroup;
+use glint_core::scripts::Script;
+use glint_model::entries::{is_archive_file, is_closed, FileEntry};
+use glint_model::format::{format_count, format_size, plural};
 use glint_model::grid::{zoom_tiles, TileSize, TILE_SIZES};
 use glint_model::groups::{GroupBy, GROUP_BYS};
 use glint_model::paths::{
-    base_name, is_folder_path, is_gallery, is_recent, is_recycle_bin, is_remote_path, GALLERY, RECENT, RECYCLE_BIN,
-    THIS_PC,
+    base_name, is_folder_path, is_gallery, is_recent, is_recycle_bin, is_remote_path, parent_path, GALLERY, RECENT,
+    RECYCLE_BIN, THIS_PC,
 };
 use glint_model::rank::{frecency, fuzzy_indices, fuzzy_score, Visit};
-use glint_model::store::{RemoteConnection, RemoteKind, Theme};
+use glint_model::store::{RemoteConnection, RemoteKind, SavedSearch, Theme};
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -75,6 +81,36 @@ pub enum Run {
     Action(ActionMaker),
     /// Something with no action.
     Change(Change),
+    /// What a menu item does: handed to the main window as if it were chosen from a menu
+    /// ([`crate::workspace::run_menu_command`]).
+    Menu(MenuEvent),
+    /// A saved search: its folder opens in the active tab with its query searched (`runSavedSearch`).
+    Saved(SavedSearch),
+    /// A project's task, typed into the terminal pane in the project's folder (`runTask`, through
+    /// [`crate::workspace::run_task`]).
+    Task {
+        /// The project's folder.
+        folder: String,
+        /// The command line.
+        command: String,
+    },
+    /// A folder opened in an editor or a terminal found on this PC (`openIn`).
+    OpenIn {
+        /// The opener's id.
+        opener: String,
+        /// Its name, for the message when it fails.
+        name: String,
+        /// The folder.
+        path: String,
+    },
+    /// A terminal in this folder (`terminal`).
+    Terminal(String),
+    /// File Explorer's own window on this folder (`openPath`).
+    FileExplorer(String),
+    /// The dialog that adds a remote connection (`addRemote`).
+    AddRemote,
+    /// Folder rules, for one folder or none (`openRules`).
+    Rules(Option<String>),
 }
 
 /// One line of the list.
@@ -219,6 +255,28 @@ pub struct Inputs {
     pub now: i64,
     /// The active tab shows its disk usage map.
     pub mapped: bool,
+    /// The selected items, in the order the rows show them (`chosenEntries`).
+    pub chosen_entries: Vec<FileEntry>,
+    /// The selected paths, in the order they were selected (`[...t.selection]`).
+    pub selected: Vec<String>,
+    /// The item the keyboard is on (`t.focus`).
+    pub focus_path: Option<String>,
+    /// The folder open in the other pane, when things can be copied or moved into it (`otherPaneFolder`).
+    pub other_pane: Option<String>,
+    /// What Undo would take back, in a few words (`nextUndo()?.label`).
+    pub undo: Option<String>,
+    /// The two files Ctrl+M compares: path and name, left then right (`comparePair`).
+    pub pair: Option<((String, String), (String, String))>,
+    /// The file an archive in the tab is in, when the tab is inside one (`archive.outer`).
+    pub archive_outer: Option<String>,
+    /// Saved searches (`savedSearches`).
+    pub saved_searches: Vec<SavedSearch>,
+    /// The scripts of the Scripts folder (read in the background when the palette opens).
+    pub scripts: Vec<Script>,
+    /// The editors and terminals found on this PC (read in the background).
+    pub openers: Vec<Opener>,
+    /// What this folder's projects can run (read in the background).
+    pub tasks: Vec<TaskGroup>,
 }
 
 /// How much a folder is used: its visits here (frecency) and its zoxide score, together (`usedScore`).
@@ -322,8 +380,27 @@ pub fn folders(inputs: &Inputs) -> Vec<Command> {
             None,
         );
     }
-    // PORT ME(search): the TypeScript also listed the saved searches here ("Saved search in <folder>"); running one
-    // needs the find part of the explorer.
+    for saved in &inputs.saved_searches {
+        let place = if saved.folder.is_empty() {
+            t!("every drive").to_string()
+        } else {
+            saved.folder.clone()
+        };
+        let mut command = Command::new(
+            format!(
+                "search:{place}
+{}",
+                saved.query
+            ),
+            saved.query.clone(),
+            IconName::Search,
+            Kind::Folder,
+            Run::Saved(saved.clone()),
+        );
+        command.detail = Some(t!("Saved search in {place}", place = place));
+        command.weight = 1.5;
+        out.push(command);
+    }
     out
 }
 
@@ -339,6 +416,7 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
     let writable = in_folder && !inputs.in_archive;
     let can_grid = in_folder || bin || remote || inputs.finding;
     let grid = can_grid && inputs.grid;
+    let place = Place::of(inputs);
     let mut out: Vec<Command> = Vec::new();
     let mut push = |condition: bool, command: Command| {
         if condition {
@@ -493,7 +571,16 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         !bin,
         Command::go("recycle-bin", t!("Recycle Bin"), I::Trash, RECYCLE_BIN),
     );
-    // PORT ME(ops): "Empty the Recycle Bin" needs the explorer's file operations.
+    push(
+        true,
+        Command::new(
+            "empty-bin",
+            t!("Empty the Recycle Bin"),
+            I::Trash,
+            Kind::Action,
+            Run::Menu(MenuEvent::EmptyRecycleBin),
+        ),
+    );
     push(
         true,
         Command::action("new-tab", t!("New tab"), I::Plus, || Box::new(actions::NewTab)),
@@ -602,6 +689,22 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         ),
     );
     push(
+        place.other.is_some(),
+        Command::new(
+            "open-here",
+            t!("Open the other pane's folder here"),
+            I::FolderInput,
+            Kind::Action,
+            Run::Navigate(place.other.clone().unwrap_or_default()),
+        ),
+    );
+    for command in nearby_and_files(inputs, &place) {
+        push(true, command);
+    }
+    for command in to_the_other_pane(inputs, &place) {
+        push(true, command);
+    }
+    push(
         in_folder,
         Command::action("copy-path", t!("Copy this folder's path"), I::ClipboardCopy, || {
             Box::new(actions::CopyPath)
@@ -616,6 +719,9 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             || Box::new(actions::ToggleTerminal),
         ),
     );
+    for command in tools(inputs, &place) {
+        push(true, command);
+    }
     let pinned = inputs.pinned.iter().any(|p| p == path);
     push(
         in_folder,
@@ -650,6 +756,21 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         }),
     );
     push(
+        writable && !inputs.finding && !inputs.shut,
+        Command::new(
+            "paste-queued",
+            t!("Paste with the copy queue: pause, resume, and each copy checked"),
+            I::ClipboardPaste,
+            Kind::Action,
+            Run::Menu(MenuEvent::PasteQueued {
+                folder: inputs.path.clone(),
+            }),
+        ),
+    );
+    for command in inspect_and_share(inputs, &place) {
+        push(true, command);
+    }
+    push(
         writable,
         Command::action("properties", t!("Properties"), I::Info, || {
             Box::new(actions::Properties)
@@ -670,6 +791,15 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         },
     );
     push(
+        inputs.undo.is_some(),
+        Command::action(
+            "undo",
+            t!("Undo the {label}", label = inputs.undo.clone().unwrap_or_default()),
+            I::Undo2,
+            || Box::new(actions::Undo),
+        ),
+    );
+    push(
         true,
         Command::action("settings", t!("Settings"), I::Settings, || {
             Box::new(actions::OpenSettings)
@@ -687,11 +817,665 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             Box::new(actions::ShowDriveHealth)
         }),
     );
-    // PORT ME(ops): the commands that do things to files (compress, extract, convert, encrypt, PDF, media, data,
-    // song details, remove personal info, make smaller, copy/move to the other pane, undo, X-Ray, duplicates,
-    // cleanup, timeline, locks, Defender, secrets, YARA, Send/Share, Receive, the copy queue's paste).
-    // PORT ME(tools): scripts, Run <task>, "Open this folder in <editor>", "Open in Terminal", Open in File
-    // Explorer, Add a remote connection, Folder rules, Moved and deleted (history), Compare two selected files.
+    push(
+        true,
+        Command::new(
+            "add-remote",
+            t!("Add a remote connection: a cloud (Google Drive, OneDrive, Dropbox and 60 more), an S3 bucket, a WebDAV or an SFTP server"),
+            I::PlugZap,
+            Kind::Action,
+            Run::AddRemote,
+        ),
+    );
+    push(
+        true,
+        Command::new(
+            "rules",
+            t!("Folder rules: sort out what comes into a folder, and what they did"),
+            I::WandSparkles,
+            Kind::Action,
+            Run::Rules(None),
+        ),
+    );
+    push(
+        writable && !inputs.shut && !inputs.finding,
+        Command::new(
+            "rule-here",
+            t!("A rule for this folder: move, rename or clear out what comes in"),
+            I::WandSparkles,
+            Kind::Action,
+            Run::Menu(MenuEvent::Rule {
+                folder: inputs.path.clone(),
+            }),
+        ),
+    );
+    out
+}
+
+// ---- The commands that do things to files, and the tools ----------------------------------------------
+
+/// Where the tab is, as `paletteCommands` worked it out once for every condition.
+struct Place {
+    /// In the Recycle Bin (not a search of it).
+    bin: bool,
+    /// A folder on disk.
+    in_folder: bool,
+    /// A remote connection's folder.
+    remote: bool,
+    /// A folder where things can be made and changed: on disk, not inside an archive.
+    writable: bool,
+    /// Windows keeps this account out of the folder.
+    shut: bool,
+    /// Something in the selection is in a closed folder.
+    closed_items: bool,
+    /// The other pane's folder, when things can go into it.
+    other: Option<String>,
+}
+
+impl Place {
+    fn of(inputs: &Inputs) -> Place {
+        let path = inputs.path.as_str();
+        let in_folder = is_folder_path(path);
+        Place {
+            bin: is_recycle_bin(path) && !inputs.finding,
+            in_folder,
+            remote: is_remote_path(path),
+            writable: in_folder && !inputs.in_archive,
+            shut: inputs.shut,
+            closed_items: inputs.chosen_entries.iter().any(is_closed),
+            other: inputs.other_pane.clone(),
+        }
+    }
+}
+
+fn menu(id: &str, label: impl Into<SharedString>, icon: IconName, event: MenuEvent) -> Command {
+    Command::new(id, label, icon, Kind::Action, Run::Menu(event))
+}
+
+fn paths_of(entries: &[FileEntry]) -> Vec<String> {
+    entries.iter().map(|e| e.path.clone()).collect()
+}
+
+/// "Send to a phone nearby", and what the selection can be turned into: compressed, extracted, converted,
+/// encrypted, cleaned, merged, subtitled…
+fn nearby_and_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
+    use IconName as I;
+    let entries = inputs.chosen_entries.as_slice();
+    let all = paths_of(entries);
+    let any = |test: fn(&FileEntry) -> bool| entries.iter().any(test);
+    let count = |test: fn(&FileEntry) -> bool| entries.iter().filter(|e| test(e)).count();
+    let on_disk_only = !inputs.in_archive && !place.remote && !place.closed_items && !place.bin;
+    let mut out: Vec<Command> = Vec::new();
+    let mut add = |condition: bool, command: Command| {
+        if condition {
+            out.push(command);
+        }
+    };
+    add(
+        true,
+        menu(
+            "nearby",
+            if entries.is_empty() {
+                t!("Phones and computers nearby (LocalSend): send or receive")
+            } else {
+                t!("Send the selection to a phone nearby (LocalSend)")
+            },
+            I::Radar,
+            MenuEvent::SendNearby { paths: all.clone() },
+        ),
+    );
+    add(
+        on_disk_only && !entries.is_empty(),
+        menu(
+            "compress",
+            t!("Compress the selection to a zip file"),
+            I::FileArchive,
+            MenuEvent::Compress {
+                paths: all.clone(),
+                format: CompressFormat::Zip,
+            },
+        ),
+    );
+    if let [one] = entries {
+        add(
+            is_archive_file(one) && !inputs.in_archive && !place.closed_items,
+            menu(
+                "extract",
+                t!("Extract “{name}” here", name = one.name),
+                I::ArchiveRestore,
+                MenuEvent::ExtractHere { path: one.path.clone() },
+            ),
+        );
+        add(
+            can_back_up(one),
+            menu(
+                "backup",
+                t!("Back up the selected folder: to a drive or a cloud, encrypted, daily or weekly"),
+                I::DatabaseBackup,
+                MenuEvent::BackUp {
+                    folder: one.path.clone(),
+                },
+            ),
+        );
+    }
+    add(
+        entries.iter().any(|e| can_shrink(e) || e.dir),
+        menu(
+            "shrink",
+            t!("Make the selection smaller: videos that look the same, photos, PDFs, Office files"),
+            I::Minimize2,
+            MenuEvent::MakeSmaller { paths: all.clone() },
+        ),
+    );
+    add(
+        !entries.is_empty() && entries.iter().all(can_compress_in_place),
+        menu(
+            "compress-in-place",
+            t!("Compress in place: the selection takes less space and still opens normally"),
+            I::Shrink,
+            MenuEvent::CompressInPlace { paths: all.clone() },
+        ),
+    );
+    add(
+        any(can_convert_doc),
+        menu(
+            "convert-doc",
+            t!("Convert the selected documents: Word, PDF, Markdown, HTML, EPUB, PowerPoint…"),
+            I::FileType,
+            MenuEvent::ConvertDocument { paths: all.clone() },
+        ),
+    );
+    add(
+        any(is_song),
+        menu(
+            "song-details",
+            t!("Edit the selected songs' details: title, artist, album, track, cover"),
+            I::Music,
+            MenuEvent::EditSongs { paths: all.clone() },
+        ),
+    );
+    let media = |tool| MenuEvent::Media {
+        paths: all.clone(),
+        tool,
+    };
+    add(
+        any(is_media_file),
+        menu(
+            "media-volume",
+            t!("Even out the volume of the selected recordings and videos"),
+            I::Volume2,
+            media(MediaTool::Volume),
+        ),
+    );
+    add(
+        any(is_jxl),
+        menu(
+            "jxl-to-jpeg",
+            t!("Turn the selected JPEG XL files back into JPEGs"),
+            I::ImageDown,
+            MenuEvent::BackToJpeg { paths: all.clone() },
+        ),
+    );
+    add(
+        any(can_convert),
+        menu(
+            "convert",
+            t!("Convert the selected pictures: JPEG, PNG, WebP or AVIF, smaller"),
+            I::ImageDown,
+            MenuEvent::ConvertPictures { paths: all.clone() },
+        ),
+    );
+    add(
+        any(is_video_file),
+        menu(
+            "media-convert",
+            t!("Convert or shrink the selected videos (MP4, HEVC, AV1, to fit a size)"),
+            I::Film,
+            media(MediaTool::Convert),
+        ),
+    );
+    add(
+        any(is_media_file),
+        menu(
+            "media-audio",
+            t!("Take the sound out of the selected videos or recordings"),
+            I::AudioLines,
+            media(MediaTool::Audio),
+        ),
+    );
+    add(
+        any(is_video_file),
+        menu(
+            "media-gif",
+            t!("Make a GIF of the selected video"),
+            I::Clapperboard,
+            media(MediaTool::Gif),
+        ),
+    );
+    add(
+        any(can_encrypt),
+        menu(
+            "encrypt",
+            t!("Encrypt the selection with a passphrase (age)"),
+            I::Lock,
+            MenuEvent::Vault {
+                paths: all.clone(),
+                decrypt: false,
+            },
+        ),
+    );
+    add(
+        any(is_age_file),
+        menu(
+            "decrypt",
+            t!("Decrypt the selected .age files"),
+            I::LockOpen,
+            MenuEvent::Vault {
+                paths: all.clone(),
+                decrypt: true,
+            },
+        ),
+    );
+    add(
+        any(can_clean),
+        menu(
+            "remove-personal-info",
+            t!("Remove personal info: where, who and with what, before sharing"),
+            I::EyeOff,
+            MenuEvent::RemovePersonalInfo { paths: all.clone() },
+        ),
+    );
+    add(
+        any(can_redate),
+        menu(
+            "date-taken",
+            t!("Change when the selected photos or videos were taken"),
+            I::CalendarClock,
+            MenuEvent::ChangeDateTaken { paths: all.clone() },
+        ),
+    );
+    add(
+        count(is_data_file) > 1,
+        menu(
+            "query-together",
+            t!("Query the selected data files together with SQL (DuckDB)"),
+            I::Sigma,
+            MenuEvent::QueryTogether { paths: all.clone() },
+        ),
+    );
+    add(
+        any(is_data_file),
+        menu(
+            "convert-data",
+            t!("Convert the selected data files: CSV, Parquet or JSON lines"),
+            I::FileCog,
+            MenuEvent::ConvertData { paths: all.clone() },
+        ),
+    );
+    let pdf = |tool| MenuEvent::PdfTools {
+        paths: all.clone(),
+        tool,
+    };
+    add(
+        count(is_pdf_file) > 1,
+        menu(
+            "pdf-merge",
+            t!("Merge the selected PDFs into one"),
+            I::FileStack,
+            pdf(PdfTool::Merge),
+        ),
+    );
+    add(
+        any(is_pdf_file),
+        menu(
+            "pdf-tools",
+            t!("PDF tools: split, pages, smaller, pictures, passwords, stamp"),
+            I::FileText,
+            pdf(PdfTool::Optimize),
+        ),
+    );
+    add(
+        any(is_media_file),
+        menu(
+            "media-subtitles",
+            t!("Make subtitles for the selected videos (heard on this PC)"),
+            I::Captions,
+            media(MediaTool::Subtitles),
+        ),
+    );
+    out
+}
+
+/// Copy or move the selection into the folder of the other pane.
+fn to_the_other_pane(inputs: &Inputs, place: &Place) -> Vec<Command> {
+    let mut out = Vec::new();
+    if place.other.is_none() || !inputs.chosen {
+        return out;
+    }
+    if !place.bin {
+        out.push(menu(
+            "copy-other",
+            t!("Copy the selection to the other pane"),
+            IconName::CopyPlus,
+            MenuEvent::CopyToOtherPane {
+                paths: inputs.selected.clone(),
+                moving: false,
+            },
+        ));
+    }
+    if !inputs.in_archive && !place.remote && !place.shut && !place.bin {
+        out.push(menu(
+            "move-other",
+            t!("Move the selection to the other pane"),
+            IconName::FolderOutput,
+            MenuEvent::CopyToOtherPane {
+                paths: inputs.selected.clone(),
+                moving: true,
+            },
+        ));
+    }
+    out
+}
+
+/// Terminal, the project's tasks, scripts, editors, File Explorer.
+fn tools(inputs: &Inputs, place: &Place) -> Vec<Command> {
+    use IconName as I;
+    let entries = inputs.chosen_entries.as_slice();
+    let path = inputs.path.as_str();
+    let mut out: Vec<Command> = Vec::new();
+    if place.writable && !place.shut {
+        out.push(Command::new(
+            "terminal",
+            t!("Open in Terminal"),
+            I::SquareTerminal,
+            Kind::Action,
+            Run::Terminal(path.to_string()),
+        ));
+    }
+    // What this folder's projects can run, as the Run menu has them.
+    if place.writable && !place.shut && !inputs.finding {
+        for group in inputs.tasks.iter().filter(|g| g.missing.is_none()) {
+            for task in &group.tasks {
+                out.push(Command::new(
+                    format!("run:{}:{}", group.folder, task.command),
+                    t!("Run {command}", command = task.command),
+                    I::Play,
+                    Kind::Action,
+                    Run::Task {
+                        folder: group.folder.clone(),
+                        command: task.command.clone(),
+                    },
+                ));
+            }
+        }
+    }
+    if !inputs.in_archive
+        && !place.remote
+        && !place.shut
+        && !place.closed_items
+        && !place.bin
+        && (place.in_folder || !entries.is_empty())
+    {
+        let on: Vec<String> = if entries.is_empty() {
+            vec![path.to_string()]
+        } else {
+            paths_of(entries)
+        };
+        let cwd = if place.in_folder {
+            path.to_string()
+        } else {
+            on.first().map(|first| parent_path(first)).unwrap_or_default()
+        };
+        for script in &inputs.scripts {
+            let detail = if script.missing.is_some() {
+                t!("installs what it needs first")
+            } else if entries.len() > 1 {
+                t!("on the {items}", items = plural(entries.len(), "selected item"))
+            } else {
+                t!(
+                    "on {name}",
+                    name = entries
+                        .first()
+                        .map_or_else(|| t!("this folder").to_string(), |e| e.name.clone())
+                )
+            };
+            let mut command = menu(
+                &format!("script:{}", script.path),
+                t!("Script: {name}", name = script.name),
+                I::ScrollText,
+                MenuEvent::RunScript {
+                    script: script.path.clone(),
+                    cwd: cwd.clone(),
+                    paths: on.clone(),
+                },
+            );
+            command.detail = Some(detail);
+            out.push(command);
+        }
+    }
+    out.push(menu(
+        "scripts-folder",
+        t!("Open the Scripts folder"),
+        I::FolderCog,
+        MenuEvent::OpenScriptsFolder,
+    ));
+    if place.writable && !place.shut {
+        for opener in &inputs.openers {
+            out.push(Command::new(
+                format!("open-in-{}", opener.id),
+                t!("Open this folder in {name}", name = opener.name),
+                if opener.terminal { I::SquareTerminal } else { I::Code },
+                Kind::Action,
+                Run::OpenIn {
+                    opener: opener.id.to_string(),
+                    name: opener.name.to_string(),
+                    path: path.to_string(),
+                },
+            ));
+        }
+    }
+    if let Some(archive) = &inputs.archive_outer {
+        out.push(menu(
+            "explorer-archive",
+            t!("Show the archive in File Explorer"),
+            I::FileArchive,
+            MenuEvent::RevealArchive {
+                archive: archive.clone(),
+            },
+        ));
+    }
+    if place.writable {
+        out.push(Command::new(
+            "explorer",
+            t!("Open in File Explorer"),
+            I::FolderSearch,
+            Kind::Action,
+            Run::FileExplorer(path.to_string()),
+        ));
+    }
+    out
+}
+
+/// X-Ray, comparing, the folder's history, duplicates, cleaning up, sending and sharing, locks, scans.
+fn inspect_and_share(inputs: &Inputs, place: &Place) -> Vec<Command> {
+    use IconName as I;
+    let entries = inputs.chosen_entries.as_slice();
+    let folder = inputs.path.clone();
+    let chosen = inputs.chosen;
+    let on_disk_only = !inputs.in_archive && !place.remote;
+    let here = place.writable && !place.shut;
+    // One item, or the folder when nothing is chosen.
+    let one = inputs.selected.len() == 1;
+    let sendable = on_disk_only
+        && !place.closed_items
+        && !place.bin
+        && !place.shut
+        && (entries.len() == 1 || (place.in_folder && !chosen));
+    let sent = match entries {
+        [only] => only.path.clone(),
+        _ => folder.clone(),
+    };
+    let mut out: Vec<Command> = Vec::new();
+    let mut add = |condition: bool, command: Command| {
+        if condition {
+            out.push(command);
+        }
+    };
+    let xray = inputs.focus_path.clone().or_else(|| inputs.selected.first().cloned());
+    add(
+        on_disk_only && !place.closed_items && xray.is_some(),
+        menu(
+            "file-xray",
+            t!("File X-Ray: hashes and hidden streams"),
+            I::FingerprintPattern,
+            MenuEvent::XRay {
+                path: xray.unwrap_or_default(),
+            },
+        ),
+    );
+    if let Some(((_, left), (_, right))) = &inputs.pair {
+        add(
+            true,
+            Command::action(
+                "compare-files",
+                t!("Compare “{left}” and “{right}”", left = left, right = right),
+                I::GitCompareArrows,
+                || Box::new(actions::CompareFiles),
+            ),
+        );
+    }
+    add(
+        here,
+        menu(
+            "timeline",
+            t!("Recent changes in this folder"),
+            I::FileClock,
+            MenuEvent::Timeline { folder: folder.clone() },
+        ),
+    );
+    add(
+        true,
+        Command::action(
+            "history",
+            t!("Moved and deleted: where did a file go?"),
+            I::ClockArrowLeft,
+            || Box::new(actions::ShowHistory { query: String::new() }),
+        ),
+    );
+    add(
+        here,
+        menu(
+            "duplicates",
+            t!("Find duplicate files in this folder"),
+            I::Files,
+            MenuEvent::Duplicates { folder: folder.clone() },
+        ),
+    );
+    add(
+        here,
+        menu(
+            "cleanup",
+            t!("Clean up this folder: build output and package caches"),
+            I::BrushCleaning,
+            MenuEvent::Cleanup { folder: folder.clone() },
+        ),
+    );
+    add(
+        here,
+        menu(
+            "export-ncdu",
+            t!("Export this folder as ncdu JSON…"),
+            I::FileBraces,
+            MenuEvent::ExportNcdu { folder: folder.clone() },
+        ),
+    );
+    add(
+        sendable,
+        menu(
+            "send-pc",
+            match entries {
+                [only] => t!("Send “{name}” to another PC", name = only.name),
+                _ => t!("Send this folder to another PC"),
+            },
+            I::Send,
+            MenuEvent::SendToPc { path: sent.clone() },
+        ),
+    );
+    add(
+        sendable,
+        menu(
+            "share-network",
+            match entries {
+                [only] => t!("Share “{name}” on this network: a link for a phone", name = only.name),
+                _ => t!("Share this folder on this network: a link for a phone"),
+            },
+            I::Wifi,
+            MenuEvent::ShareOnNetwork { path: sent },
+        ),
+    );
+    add(
+        here && !inputs.finding,
+        menu(
+            "receive-pc",
+            t!("Receive from another PC here"),
+            I::Download,
+            MenuEvent::ReceiveHere { folder: folder.clone() },
+        ),
+    );
+    let targets = if chosen {
+        inputs.selected.clone()
+    } else {
+        vec![folder.clone()]
+    };
+    add(
+        on_disk_only && (place.in_folder || chosen),
+        menu(
+            "who-locks",
+            if chosen {
+                t!("What's locking the selection?")
+            } else {
+                t!("What's locking this folder?")
+            },
+            I::Lock,
+            MenuEvent::Locks { paths: targets.clone() },
+        ),
+    );
+    add(
+        on_disk_only && !place.closed_items && (place.in_folder || chosen),
+        menu(
+            "defender",
+            if chosen {
+                t!("Scan the selection with Microsoft Defender")
+            } else {
+                t!("Scan this folder with Microsoft Defender")
+            },
+            I::ShieldCheck,
+            MenuEvent::Defender { paths: targets },
+        ),
+    );
+    let checked = match inputs.selected.as_slice() {
+        [only] => only.clone(),
+        _ => folder,
+    };
+    let can_check = on_disk_only && !place.closed_items && (place.in_folder || one);
+    add(
+        can_check,
+        menu(
+            "secrets",
+            t!("Look for passwords and keys left in files"),
+            I::KeyRound,
+            MenuEvent::Secrets { path: checked.clone() },
+        ),
+    );
+    add(
+        can_check,
+        menu(
+            "yara",
+            t!("Check with YARA rules"),
+            I::ScanSearch,
+            MenuEvent::Yara { path: checked },
+        ),
+    );
     out
 }
 

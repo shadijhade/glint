@@ -5,6 +5,38 @@ use gpui::{Image, ImageFormat};
 
 const BULLETS: [&str; 5] = ["•", "◦", "▪", "‣", "⁃"];
 
+/// Whether `ch` is a letter of a right-to-left script (Hebrew, Arabic, Syriac, Thaana, NKo and their forms).
+fn is_rtl_letter(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF
+    )
+}
+
+/// The direction the first strong character of `text` reads in (HTML's `dir="auto"`): `Some(true)` for a
+/// right-to-left letter, `Some(false)` for any other letter, `None` when there is no letter.
+///
+/// An explicit right-to-left or left-to-right mark counts as a strong character, as it does where the
+/// text is laid out (`paragraph_reads_right_to_left` in the platform's line layout), so a block is aligned
+/// the way its rows are set.
+pub(super) fn first_strong_rtl(text: &str) -> Option<bool> {
+    for ch in text.chars() {
+        match ch {
+            '\u{200F}' => return Some(true),
+            '\u{200E}' => return Some(false),
+            _ if ch.is_alphabetic() => return Some(is_rtl_letter(ch)),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `text` has a character of a right-to-left script, or a mark that says to read right to left. Text
+/// that has none is laid out left to right, however its block is aligned.
+pub(super) fn has_rtl_text(text: &str) -> bool {
+    text.chars().any(|ch| is_rtl_letter(ch) || ch == '\u{200F}')
+}
+
 /// Returns an ordered-list item's ordinal, defaulting omitted starts to one.
 pub(super) fn ordered_list_ordinal(start: Option<u32>, ix: usize) -> u32 {
     start
@@ -58,7 +90,31 @@ pub(super) fn data_url_image(url: &str) -> Option<Arc<Image>> {
 mod tests {
     use gpui::ImageFormat;
 
-    use crate::text::utils::{data_url_image, list_item_prefix};
+    use crate::text::utils::{data_url_image, first_strong_rtl, has_rtl_text, list_item_prefix};
+
+    #[test]
+    fn the_first_strong_letter_gives_a_block_its_direction() {
+        assert_eq!(first_strong_rtl("Hello"), Some(false));
+        assert_eq!(first_strong_rtl("مرحبا بالعالم"), Some(true));
+        assert_eq!(first_strong_rtl("שלום"), Some(true));
+        // Digits, symbols and spaces are not strong: the first letter decides.
+        assert_eq!(first_strong_rtl("123 - مرحبا"), Some(true));
+        assert_eq!(first_strong_rtl("(1) Hello مرحبا"), Some(false));
+        // No letters, no direction.
+        assert_eq!(first_strong_rtl("1234 ..."), None);
+        assert_eq!(first_strong_rtl(""), None);
+        // The explicit marks are strong, as the platform's line layout reads them.
+        assert_eq!(first_strong_rtl("1 \u{200F}2 abc"), Some(true));
+        assert_eq!(first_strong_rtl("1 \u{200E}2 \u{0645}"), Some(false));
+    }
+
+    #[test]
+    fn text_in_a_right_to_left_script_is_found_anywhere_in_it() {
+        assert!(has_rtl_text("abc مرحبا"));
+        assert!(has_rtl_text("\u{200F}1"));
+        assert!(!has_rtl_text("abc 123 ..."));
+        assert!(!has_rtl_text(""));
+    }
 
     #[test]
     fn test_data_url_image() {

@@ -2,11 +2,67 @@
 //! folders (`empty` and `NoAccessView` in Explorer.tsx, worded as they are there).
 
 use super::{FileList, FileListEvent, TabView};
-use crate::explorer::LoadState;
+use crate::explorer::{LoadState, TabId, Wider};
 use crate::kit::prelude::*;
+use crate::platform::pickers::{self, Options};
 use crate::theme::Tokens;
-use crate::{state, t, theme};
-use glint_model::paths::base_name;
+use crate::{core_bridge, state, t, theme};
+use glint_model::paths::{base_name, is_gallery, same_path, THIS_PC};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How long what Windows said about keeping recent items is trusted before Recent asks again.
+const RECENT_FRESH: Duration = Duration::from_secs(5);
+
+/// Opens the folder picker: the dialog's title and the owner window in, the chosen folder out.
+type PickFolder = Arc<dyn Fn(String, isize) -> pickers::Fut<Result<Option<String>, String>> + Send + Sync>;
+
+/// What the empty states ask of the PC. Tests put their own in with `set_services`.
+#[derive(Clone)]
+struct Services {
+    /// A folder the person picks (`None`: cancelled), given the dialog's title and the owner window.
+    pick_folder: PickFolder,
+    /// Whether Windows keeps recently opened items (`recentKept`). Blocks (the registry), so it runs off the UI thread.
+    recent_kept: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl Default for Services {
+    fn default() -> Self {
+        Services {
+            pick_folder: Arc::new(|title, owner| pickers::open_folder(Options::new().title(title).owner(owner))),
+            recent_kept: Arc::new(glint_core::recent::recent_kept),
+        }
+    }
+}
+
+impl Global for Services {}
+
+/// Instead of the PC's own: the folder picker and the answer about Recent (tests).
+#[cfg(test)]
+pub(super) fn set_services(
+    cx: &mut App,
+    pick_folder: impl Fn(String, isize) -> pickers::Fut<Result<Option<String>, String>> + Send + Sync + 'static,
+    recent_kept: impl Fn() -> bool + Send + Sync + 'static,
+) {
+    cx.set_global(Services {
+        pick_folder: Arc::new(pick_folder),
+        recent_kept: Arc::new(recent_kept),
+    });
+    cx.set_global(RecentKnown::default());
+}
+
+fn services(cx: &App) -> Services {
+    cx.try_global::<Services>().cloned().unwrap_or_default()
+}
+
+/// What Windows last said about keeping recent items, and whether the question is out.
+#[derive(Default)]
+struct RecentKnown {
+    kept: Option<(bool, Instant)>,
+    asking: bool,
+}
+
+impl Global for RecentKnown {}
 
 /// A centred message: an icon, a title, a few lines and buttons (`Centered`).
 fn centered(t: &Tokens, id: &'static str) -> Stateful<Div> {
@@ -39,6 +95,7 @@ impl FileList {
     /// The message over the list when there is nothing to list, or None when the rows speak for themselves.
     pub(super) fn state_view(&self, view: &TabView, t: &Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
         if let Some(find) = &view.find {
+            let (tab, query, scope) = (view.id, find.query.clone(), find.scope.clone());
             if !find.error.is_empty() {
                 return Some(
                     centered(t, "file-list-search-failed")
@@ -49,7 +106,16 @@ impl FileList {
                         // The engine's own words, as they are.
                         // PORT ME(coordinator): theme::mono_family, the web drew this in the monospace font.
                         .child(div().max_w_full().text_size(theme::size::XS).child(find.error.clone()))
-                        // PORT ME(search): "Try again" runs the search again (runFind(query, { scope })).
+                        .child(
+                            Button::new("file-list-search-try-again")
+                                .outline()
+                                .small()
+                                .icon(IconName::RotateCw)
+                                .label(t!("Try again"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.search_again(tab, &query, Wider::in_scope(scope.clone()), cx)
+                                })),
+                        )
                         .test_support()
                         .into_any_element(),
                 );
@@ -73,7 +139,49 @@ impl FileList {
                         .child(icon(IconName::SearchX).size(rems(1.5)))
                         .child(title(t, t!("Nothing named like “{query}”", query = find.query)))
                         .child(div().max_w(rems(24.)).child(hint))
-                        // PORT ME(search): Include hidden files, Search skipped folders too, Search every drive.
+                        .child(
+                            row_start()
+                                .flex_wrap()
+                                .justify_center()
+                                .gap(space(2.))
+                                .children((!view.show_hidden).then(|| {
+                                    let scope = scope.clone();
+                                    let query = query.clone();
+                                    Button::new("file-list-search-hidden")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::Eye)
+                                        .label(t!("Include hidden files"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            state::update(cx, |settings| settings.show_hidden = true);
+                                            this.search_again(tab, &query, Wider::in_scope(scope.clone()), cx)
+                                        }))
+                                }))
+                                .children((!find.skipped.is_empty()).then(|| {
+                                    let scope = scope.clone();
+                                    let query = query.clone();
+                                    Button::new("file-list-search-skipped")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::FolderSearch)
+                                        .label(t!("Search skipped folders too"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let wider = Wider::in_scope(scope.clone()).skipping_nothing();
+                                            this.search_again(tab, &query, wider, cx)
+                                        }))
+                                }))
+                                .children((scope != THIS_PC).then(|| {
+                                    let query = query.clone();
+                                    Button::new("file-list-search-every-drive")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::HardDrive)
+                                        .label(t!("Search every drive"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.search_again(tab, &query, Wider::in_scope(THIS_PC), cx)
+                                        }))
+                                })),
+                        )
                         .test_support()
                         .into_any_element(),
                 );
@@ -116,6 +224,71 @@ impl FileList {
         }
     }
 
+    /// A search again in `tab`, wider than Settings say if `wider` says so (`runFind(query, { scope, .. })`).
+    fn search_again(&mut self, tab: TabId, query: &str, wider: Wider, cx: &mut Context<Self>) {
+        self.explorer
+            .update(cx, |explorer, cx| explorer.run_find_in(tab, query, wider, cx).detach());
+    }
+
+    /// "Add a folder" in the empty Gallery: a folder picked is added to Settings' gallery folders, and the Gallery
+    /// is read again (`addGalleryFolder`).
+    fn add_gallery_folder(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let owner = core_bridge::hwnd_of(window).map_or(0, |h| h.0 as isize);
+        let picked = (services(cx).pick_folder)(t!("A folder for the gallery").to_string(), owner);
+        let explorer = self.explorer.clone();
+        cx.spawn(async move |_, cx| {
+            let Ok(Some(folder)) = picked.await else {
+                return;
+            };
+            cx.update(|cx| {
+                state::update(cx, |settings| {
+                    if !settings.gallery_folders.iter().any(|f| same_path(f, &folder)) {
+                        settings.gallery_folders.push(folder);
+                    }
+                });
+                explorer.update(cx, |explorer, cx| {
+                    let here = explorer
+                        .tab(tab)
+                        .is_some_and(|t| is_gallery(&t.path) && t.find.is_none());
+                    if here {
+                        explorer.reload(Some(tab), cx).detach();
+                    }
+                });
+            })
+        })
+        .detach();
+    }
+
+    /// Whether Windows is set not to keep recently opened items. Asked off the UI thread; until it answers (and
+    /// while the answer is older than a few seconds) the last answer stands, "kept" at first.
+    fn recent_is_off(&self, cx: &mut Context<Self>) -> bool {
+        if !cx.has_global::<RecentKnown>() {
+            cx.set_global(RecentKnown::default());
+        }
+        let known = cx.global::<RecentKnown>();
+        let off = known.kept.is_some_and(|(kept, _)| !kept);
+        let stale = known.kept.is_none_or(|(_, at)| at.elapsed() > RECENT_FRESH);
+        if stale && !known.asking {
+            cx.global_mut::<RecentKnown>().asking = true;
+            let ask = services(cx).recent_kept;
+            cx.spawn(async move |this, cx| {
+                let kept = cx.background_spawn(async move { ask() }).await;
+                this.update(cx, |_, cx| {
+                    let known = cx.global_mut::<RecentKnown>();
+                    let changed = known.kept.is_none_or(|(was, _)| was != kept);
+                    known.kept = Some((kept, Instant::now()));
+                    known.asking = false;
+                    if changed {
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+        off
+    }
+
     /// A spinner and a word (`Searching…`).
     fn busy(&self, t: &Tokens, text: SharedString, id: &'static str) -> AnyElement {
         centered(t, id)
@@ -139,7 +312,7 @@ impl FileList {
             } else {
                 t!("Nothing in this folder matches “{filter}”.", filter = view.filter)
             };
-            let query = view.filter.clone();
+            let (query, tab) = (view.filter.clone(), view.id);
             return centered(t, "file-list-no-match")
                 .role(Role::Status)
                 .aria_label(text.clone())
@@ -152,10 +325,9 @@ impl FileList {
                             .small()
                             .icon(IconName::Search)
                             .label(t!("Search subfolders too"))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                // PORT ME(search): runs the search of subfolders (runFind(filter)).
-                                cx.emit(FileListEvent::SearchSubfolders { query: query.clone() });
-                            })),
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.search_again(tab, &query, Wider::default(), cx)),
+                            ),
                     )
                 })
                 .test_support()
@@ -175,6 +347,7 @@ impl FileList {
                 .test_support()
                 .into_any_element();
         }
+        let tab = view.id;
         if view.gallery && view.entries == 0 {
             return centered(t, "file-list-gallery-empty")
                 .role(Role::Status)
@@ -184,20 +357,35 @@ impl FileList {
                 .child(div().max_w(rems(24.)).text_size(theme::size::XS).child(t!(
                     "The gallery shows what's in Pictures and Videos, and in the folders you add to it, with everything below them."
                 )))
-                // PORT ME(gallery): the "Add a folder" button (addGalleryFolder).
+                .child(
+                    Button::new("file-list-gallery-add-folder")
+                        .outline()
+                        .small()
+                        .icon(IconName::FolderPlus)
+                        .label(t!("Add a folder"))
+                        .on_click(cx.listener(move |this, _, window, cx| this.add_gallery_folder(tab, window, cx))),
+                )
                 .test_support()
                 .into_any_element();
         }
         if view.recent && view.entries == 0 {
-            // PORT ME(recent): "Windows doesn't keep recently opened items" when Windows is set not to (recentKept).
+            let off = self.recent_is_off(cx);
+            let heading = if off {
+                t!("Windows doesn't keep recently opened items")
+            } else {
+                t!("Nothing opened lately")
+            };
+            let note = if off {
+                t!("It's set not to, in Settings → Personalization → Start: Show recently opened items in Start, Jump Lists and File Explorer. Turned on, the files you open in any app come here.")
+            } else {
+                t!("The files and folders you open, here or in any app, come here, newest first.")
+            };
             return centered(t, "file-list-recent-empty")
                 .role(Role::Status)
-                .aria_label(t!("Nothing opened lately"))
+                .aria_label(heading.clone())
                 .child(faded(t, IconName::Clock))
-                .child(title(t, t!("Nothing opened lately")))
-                .child(div().max_w(rems(24.)).text_size(theme::size::XS).child(t!(
-                    "The files and folders you open, here or in any app, come here, newest first."
-                )))
+                .child(title(t, heading))
+                .child(div().max_w(rems(24.)).text_size(theme::size::XS).child(note))
                 .test_support()
                 .into_any_element();
         }

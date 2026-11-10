@@ -511,12 +511,11 @@ fn the_search_box_filters_as_you_type_and_tells_the_find_part_the_rest(cx: &mut 
             .unwrap_or_default()
     });
     assert_eq!(rows, ["readme.txt"]);
-    // After a pause the find part is offered the query, to run if the index answers at once.
+    // After a pause the explorer is asked whether the index answers at once; here it doesn't (instant search
+    // isn't known to be on), so nothing is searched.
     rig.visual.executor().advance_clock(Duration::from_millis(150));
     rig.settle();
-    assert!(rig
-        .events()
-        .contains(&AddressBarEvent::FindAsTyped { query: "read".into() }));
+    assert!(rig.disk.finds().is_empty());
     // Enter searches the subfolders too.
     rig.press("enter");
     assert!(rig
@@ -1033,4 +1032,44 @@ fn the_search_box_offers_git_filters_in_a_repository_by_itself(cx: &mut TestAppC
         rig.has("git:changed"),
         "the hint follows Git without anyone calling set_in_repository"
     );
+}
+
+/// Instant search has `C:` ready.
+fn index_on() -> crate::explorer::SearchIndex {
+    crate::explorer::SearchIndex {
+        on: true,
+        ready: vec!["C:".into()],
+        ..Default::default()
+    }
+}
+
+#[gpui_kit::test]
+fn the_box_searches_below_as_you_type_when_the_index_answers_at_once(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = rig(cx, false, 900., "C:\\Users");
+    rig.disk.set_search_index(Some(index_on()));
+    rig.focus_search();
+    rig.type_text("read");
+    rig.visual.executor().advance_clock(Duration::from_millis(150));
+    rig.settle();
+    let finds = rig.disk.finds();
+    assert_eq!(finds.len(), 1, "one search, started by the bar itself");
+    assert_eq!(finds[0].query, "read");
+    assert_eq!(finds[0].roots, ["C:\\Users"]);
+}
+
+#[gpui_kit::test]
+fn the_box_waits_for_enter_when_fd_would_answer(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    // The service is older than the app: a filter in the query is fd's to answer.
+    let mut rig = rig(cx, false, 900., "C:\\Users");
+    rig.disk.set_search_index(Some(crate::explorer::SearchIndex {
+        outdated: true,
+        ..index_on()
+    }));
+    rig.focus_search();
+    rig.type_text("read ext:txt");
+    rig.visual.executor().advance_clock(Duration::from_millis(150));
+    rig.settle();
+    assert!(rig.disk.finds().is_empty());
 }
