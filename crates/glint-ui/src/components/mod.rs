@@ -30,6 +30,8 @@ pub mod palette;
 pub mod preview;
 /// The Quick Search window: the shortcut's and the tray's search (QuickSearch.tsx).
 pub mod quick_search;
+/// Tags and what photos, videos and songs say about themselves, read for the rows shown and kept (wave 13).
+pub mod row_facts;
 /// Settings (SettingsView.tsx).
 pub mod settings;
 /// Places and the folder tree (Sidebar.tsx, FolderTree.tsx).
