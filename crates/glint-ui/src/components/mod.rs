@@ -28,3 +28,9 @@ pub mod status_bar;
 pub mod tab_strip;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
+/// Searching inside files: the query, its options, the results and the history (Search.tsx, Results.tsx, History.tsx). Wave 8 slot.
+#[cfg(feature = "text-search")]
+pub mod text_search;
+/// The disk usage map of a folder or drive (DiskUsage.tsx, diskUsage.ts). Wave 8 slot.
+#[cfg(feature = "disk-usage")]
+pub mod disk_usage;
