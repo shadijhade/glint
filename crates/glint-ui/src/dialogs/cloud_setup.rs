@@ -23,7 +23,7 @@
 //! the view goes (Cancel, Escape, "Other clouds"), as the TypeScript's effect cleanup did.
 //!
 //! Not as in the TypeScript: the web addresses in rclone's help are not inline links but buttons listed under
-//! the text; the list of services is drawn whole (about 70 rows), not virtualized.
+//! the text. The list of services (about 70) is virtualized: rows of two, a `uniform_list`.
 
 use crate::components::settings::clouds;
 use crate::components::settings::tools::{self, Tools};
@@ -34,12 +34,19 @@ use glint_core::host::Manager as _;
 use glint_core::rclone::{Example, Provider, Question, Remote, Status, Step, LOCKED};
 use glint_model::collate::compare_base_numeric;
 use glint_model::store::RemoteConnection;
+use gpui_kit::UniformListScrollHandle;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::future::Future;
+use std::ops::Range;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// A service's row in the list, in rems (a name and the line under it, fixed so the list can be virtualized).
+const SERVICE_ROW: f32 = 3.;
+/// How many rows of the list show before it scrolls.
+const SERVICE_ROWS_SHOWN: usize = 6;
 
 /// A boxed core call.
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
@@ -921,11 +928,25 @@ impl Setup {
     pub fn start_over(&mut self, cx: &mut Context<Self>) {
         self.backend.authorize_cancel();
         self.generation += 1;
-        if let Some(making) = self.making.take() {
-            // Done on core's runtime as it is called; the answer is not waited for.
-            drop(self.backend.delete(making));
-        }
-        self.check(cx);
+        let Some(making) = self.making.take() else {
+            self.check(cx);
+            return;
+        };
+        // The services are listed again once rclone has taken the remote out of its configuration (the
+        // TypeScript awaited `rclone_delete`), so the list can't still show the half-made remote. A failed
+        // delete doesn't hold the list back.
+        let deleting = self.backend.delete(making);
+        self.set_phase(Phase::Checking, cx);
+        let generation = self.generation;
+        cx.spawn(async move |this, cx| {
+            let _ = deleting.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.generation == generation {
+                    this.check(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// "Add and open": hands the connection over, named as typed (`finish`).
@@ -979,6 +1000,8 @@ pub struct CloudSetup {
     /// The boxes of the phase on show, by what they hold ("name", "query", "answer", "password", "q:<setting>").
     inputs: HashMap<String, Entity<InputState>>,
     inputs_for: u64,
+    /// The list of services' scroll.
+    services_scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1031,6 +1054,7 @@ impl CloudSetup {
             on_cancel: Rc::new(on_cancel),
             inputs: HashMap::new(),
             inputs_for: u64::MAX,
+            services_scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -1546,6 +1570,71 @@ impl CloudSetup {
         }
     }
 
+    /// One service's button in the list: its icon, name and what it is (`p`'s description when the name
+    /// doesn't already say it).
+    fn service_button(
+        i: usize,
+        p: &Provider,
+        providers: &[Provider],
+        model: &Entity<Setup>,
+        t: &theme::Tokens,
+    ) -> AnyElement {
+        let shown = service_name(&p.name, providers);
+        let describe = !p.description.to_lowercase().contains(&shown.to_lowercase());
+        let (model, picked) = (model.clone(), p.clone());
+        Button::new(("cloud-service", i))
+            .ghost()
+            .h(rems(SERVICE_ROW))
+            .w(relative(0.49))
+            .justify_start()
+            .tooltip(p.description.clone())
+            .accessibility_label(if describe {
+                format!("{shown}: {}", p.description)
+            } else {
+                shown.to_string()
+            })
+            .on_click(move |_, _, cx| {
+                let picked = picked.clone();
+                model.update(cx, |m, cx| m.choose(picked, cx));
+            })
+            .child(
+                align_row(2.)
+                    .w_full()
+                    .child(
+                        icon(service_icon(&p.name))
+                            .size_4()
+                            .flex_none()
+                            .text_color(t.muted_foreground),
+                    )
+                    .child(
+                        col()
+                            .flex_1()
+                            .min_w_0()
+                            .align_start()
+                            .text_start()
+                            .child(div().truncate().child(isolate(shown.clone())))
+                            .when(describe, |this| {
+                                this.child(
+                                    div()
+                                        .truncate()
+                                        .text_size(theme::size::XXS)
+                                        .text_color(t.muted_foreground)
+                                        .child(p.description.clone()),
+                                )
+                            }),
+                    )
+                    .when(p.oauth, |this| {
+                        this.child(
+                            icon(IconName::Globe)
+                                .size_3p5()
+                                .flex_none()
+                                .text_color(t.muted_foreground),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
     /// The services, and the remotes rclone has already.
     fn choose_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::tokens(cx).clone();
@@ -1639,73 +1728,42 @@ impl CloudSetup {
                         .prefix(icon(IconName::Search).size_3p5().text_color(t.muted_foreground))
                         .aria_label(t!("Search services")),
                 )
-                .child(
-                    row_start()
+                .child({
+                    // Rows of two, drawn as they scroll into view (about 70 services).
+                    let rows = listed.len().div_ceil(2);
+                    let height = rows.min(SERVICE_ROWS_SHOWN) as f32 * SERVICE_ROW;
+                    let listed = Rc::new(listed);
+                    let colors = t.clone();
+                    let list = uniform_list(
+                        "cloud-service-rows",
+                        rows,
+                        cx.processor(move |_, range: Range<usize>, _, _| {
+                            range
+                                .map(|row| {
+                                    row_start()
+                                        .id(("cloud-service-row", row))
+                                        .h(rems(SERVICE_ROW))
+                                        .items_start()
+                                        .gap(space(1.))
+                                        .children((row * 2..row * 2 + 2).map(|i| match listed.get(i) {
+                                            Some(p) => Self::service_button(i, p, &providers, &model, &colors),
+                                            None => div().w(relative(0.49)).into_any_element(),
+                                        }))
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(&self.services_scroll)
+                    .size_full();
+                    div()
                         .id("cloud-services")
                         .role(Role::List)
                         .aria_label(t!("Services"))
                         .test_support()
-                        .max_h(rems(18.))
-                        .overflow_y_scroll()
-                        .flex_wrap()
-                        .gap(space(1.))
-                        .children(listed.iter().enumerate().map(|(i, p)| {
-                            let shown = service_name(&p.name, &providers);
-                            let describe = !p.description.to_lowercase().contains(&shown.to_lowercase());
-                            let (model, picked) = (model.clone(), p.clone());
-                            Button::new(("cloud-service", i))
-                                .ghost()
-                                .h_auto()
-                                .w(relative(0.49))
-                                .py(space(1.5))
-                                .justify_start()
-                                .tooltip(p.description.clone())
-                                .accessibility_label(if describe {
-                                    format!("{shown}: {}", p.description)
-                                } else {
-                                    shown.to_string()
-                                })
-                                .on_click(move |_, _, cx| {
-                                    let picked = picked.clone();
-                                    model.update(cx, |m, cx| m.choose(picked, cx));
-                                })
-                                .child(
-                                    align_row(2.)
-                                        .w_full()
-                                        .child(
-                                            icon(service_icon(&p.name))
-                                                .size_4()
-                                                .flex_none()
-                                                .text_color(t.muted_foreground),
-                                        )
-                                        .child(
-                                            col()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .align_start()
-                                                .text_start()
-                                                .child(div().truncate().child(isolate(shown.clone())))
-                                                .when(describe, |this| {
-                                                    this.child(
-                                                        div()
-                                                            .truncate()
-                                                            .text_size(theme::size::XXS)
-                                                            .text_color(t.muted_foreground)
-                                                            .child(p.description.clone()),
-                                                    )
-                                                }),
-                                        )
-                                        .when(p.oauth, |this| {
-                                            this.child(
-                                                icon(IconName::Globe)
-                                                    .size_3p5()
-                                                    .flex_none()
-                                                    .text_color(t.muted_foreground),
-                                            )
-                                        }),
-                                )
-                        })),
-                ),
+                        .h(rems(height))
+                        .child(list)
+                }),
             &t,
         );
         col()
@@ -2033,6 +2091,12 @@ mod tests {
         steps: Vec<Step>,
         calls: Vec<String>,
         test: Option<Result<String, String>>,
+        /// Holds a delete until something is sent.
+        hold_delete: Option<async_channel::Receiver<()>>,
+        /// More services than the usual few.
+        extra_providers: usize,
+        /// How many times rclone was looked for.
+        statuses: usize,
     }
 
     struct Fake {
@@ -2077,6 +2141,10 @@ mod tests {
             change(&mut self.script.lock().unwrap());
         }
 
+        fn with_read<T>(&self, read: impl FnOnce(&Script) -> T) -> T {
+            read(&self.script.lock().unwrap())
+        }
+
         fn next_step(&self) -> Result<Step, String> {
             let mut script = self.script.lock().unwrap();
             if script.steps.is_empty() {
@@ -2089,19 +2157,25 @@ mod tests {
 
     impl Backend for Fake {
         fn status(&self) -> Fut<Status> {
+            self.script.lock().unwrap().statuses += 1;
             let status = self.script.lock().unwrap().status.clone().unwrap_or_default();
             Box::pin(async move { Ok(status) })
         }
 
         fn providers(&self) -> Fut<Vec<Provider>> {
-            Box::pin(async {
-                Ok(vec![
+            let extra = self.script.lock().unwrap().extra_providers;
+            Box::pin(async move {
+                let mut all = vec![
                     sftp(),
                     s3(),
                     drive(),
                     provider("local", "Local Disk", false, vec![]),
                     provider("zzz", "Zzz Storage", false, vec![]),
-                ])
+                ];
+                all.extend(
+                    (0..extra).map(|i| provider(&format!("extra{i:02}"), &format!("Extra {i:02}"), false, vec![])),
+                );
+                Ok(all)
             })
         }
 
@@ -2160,8 +2234,17 @@ mod tests {
         }
 
         fn delete(&self, name: String) -> Fut<()> {
-            self.script.lock().unwrap().calls.push(format!("delete {name}"));
-            Box::pin(async { Ok(()) })
+            let hold = {
+                let mut script = self.script.lock().unwrap();
+                script.calls.push(format!("delete {name}"));
+                script.hold_delete.clone()
+            };
+            Box::pin(async move {
+                if let Some(hold) = hold {
+                    let _ = hold.recv().await;
+                }
+                Ok(())
+            })
         }
 
         fn test(&self, connection: RemoteConnection) -> Fut<String> {
@@ -2370,6 +2453,72 @@ mod tests {
         assert_eq!(model.read_with(&visual, |m, _| m.listed().len()), 1);
         type_into(&mut visual, &query, "google");
         assert_eq!(model.read_with(&visual, |m, _| m.listed()[0].name.clone()), "drive");
+    }
+
+    #[gpui_kit::test]
+    fn other_clouds_lists_the_services_again_only_after_the_half_made_remote_is_deleted(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let fake = Fake::new();
+        let (release, hold) = async_channel::bounded::<()>(1);
+        fake.with(|s| {
+            s.steps = vec![step("s1", Some(question("config_is_local"))), step("", None)];
+            s.hold_delete = Some(hold);
+        });
+        let (model, _, _) = open_it(&mut visual, &fake);
+        settle(&mut visual, "the services", |cx| {
+            phase_is(cx, &model, |p| matches!(p, Phase::Choose))
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(("cloud-service", 0_usize), cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("cloud-start", cx);
+        });
+        visual.run_until_parked();
+        let (before, looked) = (fake.calls().len(), fake.with_read(|s| s.statuses));
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("cloud-other", cx);
+        });
+        visual.run_until_parked();
+        // The delete is under way and the list has not been asked for.
+        assert_eq!(fake.calls()[before..], ["authorize-cancel", "delete google-drive"]);
+        assert!(phase_is(&mut visual, &model, |p| matches!(p, Phase::Checking)));
+        assert_eq!(
+            fake.with_read(|s| s.statuses),
+            looked,
+            "not looked for while the delete is under way"
+        );
+        release.try_send(()).unwrap();
+        settle(&mut visual, "the services again", |cx| {
+            phase_is(cx, &model, |p| matches!(p, Phase::Choose))
+        });
+        assert_eq!(fake.calls()[before..], ["authorize-cancel", "delete google-drive"]);
+        assert_eq!(
+            fake.with_read(|s| s.statuses),
+            looked + 1,
+            "looked for once the delete finished"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_long_list_of_services_draws_only_the_rows_in_view(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let fake = Fake::new();
+        fake.with(|s| s.extra_providers = 70);
+        let (model, _, _) = open_it(&mut visual, &fake);
+        settle(&mut visual, "the services", |cx| {
+            phase_is(cx, &model, |p| matches!(p, Phase::Choose))
+        });
+        assert_eq!(model.read_with(&visual, |m, _| m.listed().len()), 74);
+        assert_eq!(role_of(&mut visual, "Services"), Some(Role::List));
+        assert!(has(&mut visual, "Google Drive"), "the first rows are drawn");
+        assert!(!has(&mut visual, "Extra 69"), "the last is far below the view");
     }
 
     #[gpui_kit::test]

@@ -1,7 +1,7 @@
 //! A song's tags (SongDialog.tsx).
 //!
 //! Ported from src/components/explorer/SongDialog.tsx. The run, its progress, result and buttons, and the
-//! "Where" boxes are `dialogs::media::parts` (ActionParts.tsx), so this file needs the `dialog-media` feature too.
+//! "Where" boxes are `dialogs::action_run`'s (ActionParts.tsx).
 //!
 //! | TypeScript                               | Here                                                       |
 //! |------------------------------------------|------------------------------------------------------------|
@@ -19,14 +19,13 @@
 //! share, and what is typed applies to all (the title and track stay each song's own unless filled in from the
 //! names). Each song is rewritten as a copy that takes its place, so Ctrl+Z puts them all back.
 
-use super::media::parts;
+use super::action_run::{self, FooterSpec, Fut, Launch, ResultWords, Run};
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
 use glint_core::actions::{Progress, Report};
 use glint_core::songtags::{SongEdit, SongTags};
 use glint_model::format::{format_count, plural};
 use glint_model::paths::base_name;
-use parts::{Fut, Run};
 use std::sync::Arc;
 
 /// What lofty reads and writes details in (songtags.rs).
@@ -247,13 +246,13 @@ impl CoreBackend {
 
 impl Backend for CoreBackend {
     fn tags(&self, paths: Vec<String>) -> Fut<Vec<SongTags>> {
-        parts::on_core(glint_core::songtags::song_tags(paths))
+        action_run::on_core(glint_core::songtags::song_tags(paths))
     }
 
     fn write(&self, edits: Vec<SongEdit>, progress: glint_core::host::ipc::Channel<Progress>) -> Fut<Report> {
         let app = self.app.clone();
-        parts::on_core(async move {
-            let window = parts::main_window(&app)?;
+        action_run::on_core(async move {
+            let window = action_run::main_window(&app)?;
             glint_core::songtags::song_write(window, edits, progress).await
         })
     }
@@ -553,11 +552,11 @@ impl SongDialog {
         let edits = self.edits(cx);
         let (channel, receiver) = core_bridge::stream::<Progress>();
         let call = self.backend.write(edits, channel);
-        parts::drive(
+        action_run::drive(
             self,
             window,
             cx,
-            parts::Launch {
+            Launch {
                 total: self.files.len(),
                 call,
                 progress: receiver,
@@ -638,7 +637,7 @@ impl SongDialog {
 
     fn fields(&self, t: &theme::Tokens) -> impl IntoElement {
         col().gap(space(1.5)).children(self.visible().into_iter().map(|field| {
-            parts::field(
+            action_run::field(
                 field.label(),
                 Input::new(&self.inputs[field.index()])
                     .small()
@@ -776,7 +775,7 @@ impl SongDialog {
                 )
             })
             .child(self.cover_row(t, cx))
-            .child(parts::note(
+            .child(action_run::help(
                 t!("An empty field takes that detail out. Each song is saved as a copy with its new details that takes its place, so Ctrl+Z puts them all back."),
                 t,
             ))
@@ -797,22 +796,31 @@ impl Render for SongDialog {
         let t = theme::tokens(cx).clone();
         let body = match self.run.clone() {
             Run::Setup => self.setup(&t, cx),
-            Run::Running(progress) => parts::progress_view("song", &t!("Saving"), &progress, &t).into_any_element(),
-            Run::Done(report) => parts::result_view("song", "song", false, &report, &t).into_any_element(),
+            Run::Running(progress) => {
+                action_run::run_progress("song-progress", &t!("Saving"), &progress, &t).into_any_element()
+            }
+            Run::Done(report) => {
+                action_run::result_view("song-result", &report, &ResultWords::songs(), &t).into_any_element()
+            }
             Run::Failed(reason) => {
-                parts::error_view("song", t!("Couldn't save their details"), &reason, &t).into_any_element()
+                action_run::error_view("song-error", t!("Couldn't save their details"), reason, &t).into_any_element()
             }
         };
-        let footer = parts::Footer::<Self> {
-            slot: "song",
-            run: self.run.clone(),
-            label: t!("Save"),
-            icon: IconName::Music,
-            can_start: self.can_start(cx),
-            start: Self::start,
-            stop: Self::stop,
-        }
-        .render(&t, cx);
+        let footer = action_run::footer(
+            FooterSpec {
+                prefix: "song",
+                start_label: t!("Save"),
+                start_icon: IconName::Music,
+                can_start: self.can_start(cx),
+                stoppable: true,
+                show: self.run.first_made(),
+            },
+            &self.run,
+            Self::start,
+            |this, _, _| this.stop(),
+            &t,
+            cx,
+        );
         col()
             .id("song")
             .role(Role::Group)
@@ -822,11 +830,11 @@ impl Render for SongDialog {
             .text_size(theme::size::SM)
             // The dialog layer is outside the workspace's tree, so the start-aligned text is set here too.
             .text_start()
-            .child(parts::folder_line("song-folder", &self.files, &t))
+            .child(action_run::folder_line("song-folder", &self.files, &t))
             .child(
                 div()
                     .id("song-body")
-                    .max_h(parts::body_height(window))
+                    .max_h(action_run::body_height(window))
                     .overflow_y_scrollbar()
                     .child(body),
             )

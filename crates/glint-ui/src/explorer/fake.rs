@@ -1,6 +1,7 @@
 //! A fake disk for the model tests: folders with entries, held in memory, behind the same [`Source`] the app
 //! uses for glint-core. Listings can be held back and released, to test results that arrive out of order.
 
+use super::actions_types::*;
 use super::archive_types::*;
 use super::find_types::{FindOptions, Found, SearchIndex};
 use super::ops_types::*;
@@ -9,7 +10,7 @@ use super::types::*;
 use glint_model::entries::{attr, sort_entries, with_details, FileEntry, InArchive, RawEntry, Sort, SortKey};
 use glint_model::paths::{parent_path, same_path, RECYCLE_BIN};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -105,6 +106,46 @@ struct State {
     index_asked: usize,
     // ---- Archives ----
     arch: ArchiveFake,
+    // ---- Menu actions ----
+    act: ActionFake,
+}
+
+/// A measuring the fake was asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SizeCall {
+    pub path: String,
+    pub lane: String,
+    pub index_only: bool,
+}
+
+/// What the fake keeps for the menu actions: what it was asked, and what it answers.
+#[derive(Default)]
+struct ActionFake {
+    sandboxed: Vec<String>,
+    shell_opened: Vec<String>,
+    revealed: Vec<Vec<String>>,
+    forgotten: Vec<Vec<String>>,
+    wallpapers: Vec<String>,
+    rotated: Vec<(String, bool)>,
+    pins: Vec<(Vec<String>, PinState)>,
+    sizing: Vec<SizeCall>,
+    sizes_stopped: Vec<String>,
+    /// Measuring waits here until released (slow work).
+    sizes_gate: Option<async_channel::Receiver<()>>,
+    /// Folders the index has (lower-case keys): measured as "index", and the only ones an index-only ask answers.
+    indexed: HashSet<String>,
+    /// What a folder measures to when a test says so (lower-case keys).
+    measured: HashMap<String, Measured>,
+    exports: Vec<(String, String, String)>,
+    export_progress: Vec<(u64, u64)>,
+    export_gate: Option<async_channel::Receiver<()>>,
+    scripts: Vec<Script>,
+    scripts_folder: Option<String>,
+    mounts: Vec<OnDemand>,
+    /// The next call of this kind ("sandbox", "reveal"...) fails with this.
+    fail: HashMap<&'static str, String>,
+    /// Pictures that can't be turned (lower-case keys), with the reason.
+    fail_rotate: HashMap<String, String>,
 }
 
 /// What the fake keeps for archives, disk images and previous versions.
@@ -567,6 +608,114 @@ impl FakeDisk {
         self.state.borrow().ejected.clone()
     }
 
+    // ---- Menu actions ------------------------------------------------------------------------------------
+
+    /// The next call of this kind fails with `message`: "sandbox", "shell_open", "reveal", "forget_recent",
+    /// "wallpaper", "pin", "sizes", "export", "scripts_folder", "mount", "unmount".
+    pub fn fail_action(&self, kind: &'static str, message: &str) {
+        self.state.borrow_mut().act.fail.insert(kind, message.to_string());
+    }
+
+    /// Turning this picture fails with `message`.
+    pub fn fail_rotating(&self, path: &str, message: &str) {
+        self.state
+            .borrow_mut()
+            .act
+            .fail_rotate
+            .insert(key(path), message.to_string());
+    }
+
+    /// Marks a folder as one the index has: it measures as "index", instantly, and an index-only ask answers.
+    pub fn set_indexed(&self, path: &str) {
+        self.state.borrow_mut().act.indexed.insert(key(path));
+    }
+
+    /// What measuring this folder gives, instead of adding up the fake disk.
+    pub fn set_measured(&self, path: &str, measured: Measured) {
+        self.state.borrow_mut().act.measured.insert(key(path), measured);
+    }
+
+    /// Holds measuring back until the returned sender sends (or is dropped).
+    pub fn hold_sizes(&self) -> async_channel::Sender<()> {
+        let (gate, wait) = async_channel::bounded(1);
+        self.state.borrow_mut().act.sizes_gate = Some(wait);
+        gate
+    }
+
+    /// Holds the ncdu export back until the returned sender sends (or is dropped).
+    pub fn hold_export(&self) -> async_channel::Sender<()> {
+        let (gate, wait) = async_channel::bounded(1);
+        self.state.borrow_mut().act.export_gate = Some(wait);
+        gate
+    }
+
+    /// What an export reports as it starts: (done, total) pairs.
+    pub fn script_export_progress(&self, steps: &[(u64, u64)]) {
+        self.state.borrow_mut().act.export_progress = steps.to_vec();
+    }
+
+    /// The scripts in the Scripts folder, and where that folder is.
+    pub fn set_scripts(&self, folder: &str, scripts: Vec<Script>) {
+        let mut state = self.state.borrow_mut();
+        state.act.scripts = scripts;
+        state.act.scripts_folder = Some(folder.to_string());
+    }
+
+    /// The remotes shown in File Explorer on demand.
+    pub fn set_mounts(&self, mounts: Vec<OnDemand>) {
+        self.state.borrow_mut().act.mounts = mounts;
+    }
+
+    /// Files run in Windows Sandbox.
+    pub fn sandboxed(&self) -> Vec<String> {
+        self.state.borrow().act.sandboxed.clone()
+    }
+
+    /// Paths opened as the shell's `open` does.
+    pub fn shell_opened(&self) -> Vec<String> {
+        self.state.borrow().act.shell_opened.clone()
+    }
+
+    /// What was shown in File Explorer.
+    pub fn revealed(&self) -> Vec<Vec<String>> {
+        self.state.borrow().act.revealed.clone()
+    }
+
+    /// What was taken out of Recent.
+    pub fn forgotten(&self) -> Vec<Vec<String>> {
+        self.state.borrow().act.forgotten.clone()
+    }
+
+    /// The pictures set as the desktop background.
+    pub fn wallpapers(&self) -> Vec<String> {
+        self.state.borrow().act.wallpapers.clone()
+    }
+
+    /// The pictures turned: (path, clockwise).
+    pub fn rotated(&self) -> Vec<(String, bool)> {
+        self.state.borrow().act.rotated.clone()
+    }
+
+    /// The cloud pins set.
+    pub fn pins(&self) -> Vec<(Vec<String>, PinState)> {
+        self.state.borrow().act.pins.clone()
+    }
+
+    /// Every measuring asked for, in order.
+    pub fn size_calls(&self) -> Vec<SizeCall> {
+        self.state.borrow().act.sizing.clone()
+    }
+
+    /// The lanes asked to stop measuring.
+    pub fn sizes_stopped(&self) -> Vec<String> {
+        self.state.borrow().act.sizes_stopped.clone()
+    }
+
+    /// The exports asked for: (folder, destination, lane).
+    pub fn exports(&self) -> Vec<(String, String, String)> {
+        self.state.borrow().act.exports.clone()
+    }
+
     /// The names in a folder as listed (sorted as the engine sorts them, hidden ones included).
     pub fn names(&self, path: &str) -> Vec<String> {
         self.state
@@ -842,6 +991,44 @@ fn send_progress(state: &Rc<RefCell<State>>, progress: &ProgressSink) {
     let steps = state.borrow().arch.progress.clone();
     for (done, total) in steps {
         let _ = progress.try_send(StageProgress { done, total });
+    }
+}
+
+/// The bytes of every file under a folder of the fake disk.
+fn tree_size(state: &State, folder: &str) -> u64 {
+    let Some(found) = state.folders.get(&key(folder)) else {
+        return 0;
+    };
+    found
+        .entries
+        .iter()
+        .map(|e| if e.dir { tree_size(state, &e.path) } else { e.size })
+        .sum()
+}
+
+/// Takes the failure asked for `kind`, once.
+fn failure(state: &Rc<RefCell<State>>, kind: &'static str) -> Option<String> {
+    state.borrow_mut().act.fail.remove(kind)
+}
+
+/// Waits while the gate is held; true when the lane was asked to stop meanwhile (the ask is used up).
+async fn held_and_stopped(
+    state: &Rc<RefCell<State>>,
+    gate: Option<async_channel::Receiver<()>>,
+    lane: &str,
+    stopped: fn(&mut State) -> &mut Vec<String>,
+) -> bool {
+    if let Some(gate) = gate {
+        let _ = gate.recv().await;
+    }
+    let mut state = state.borrow_mut();
+    let list = stopped(&mut state);
+    match list.iter().position(|l| l == lane) {
+        Some(at) => {
+            list.remove(at);
+            true
+        }
+        None => false,
     }
 }
 
@@ -1325,6 +1512,217 @@ impl Source for FakeDisk {
 
     fn cancel_find(&self, lane: &str) {
         self.state.borrow_mut().cancelled.push(lane.to_string());
+    }
+
+    fn run_in_sandbox(&self, path: &str) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        let path = path.to_string();
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "sandbox") {
+                return Err(message);
+            }
+            state.borrow_mut().act.sandboxed.push(path);
+            Ok(())
+        })
+    }
+
+    fn shell_open(&self, path: &str) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        let path = path.to_string();
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "shell_open") {
+                return Err(message);
+            }
+            state.borrow_mut().act.shell_opened.push(path);
+            Ok(())
+        })
+    }
+
+    fn reveal(&self, paths: Vec<String>) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "reveal") {
+                return Err(message);
+            }
+            state.borrow_mut().act.revealed.push(paths);
+            Ok(())
+        })
+    }
+
+    fn forget_recent(&self, paths: Vec<String>) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "forget_recent") {
+                return Err(message);
+            }
+            state.borrow_mut().act.forgotten.push(paths);
+            Ok(())
+        })
+    }
+
+    fn set_wallpaper(&self, path: &str) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        let path = path.to_string();
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "wallpaper") {
+                return Err(message);
+            }
+            state.borrow_mut().act.wallpapers.push(path);
+            Ok(())
+        })
+    }
+
+    fn rotate_image(&self, path: &str, clockwise: bool) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        let path = path.to_string();
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            if let Some(message) = state.act.fail_rotate.get(&key(&path)) {
+                return Err(message.clone());
+            }
+            state.act.rotated.push((path, clockwise));
+            Ok(())
+        })
+    }
+
+    fn set_cloud_pin(&self, paths: Vec<String>, pin: PinState) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "pin") {
+                return Err(message);
+            }
+            state.borrow_mut().act.pins.push((paths, pin));
+            Ok(())
+        })
+    }
+
+    fn folder_sizes(&self, path: &str, lane: &str, index_only: bool) -> Fut<Result<Measured, String>> {
+        let state = self.state.clone();
+        let (path, lane) = (path.to_string(), lane.to_string());
+        let gate = {
+            let mut state = state.borrow_mut();
+            state.act.sizing.push(SizeCall {
+                path: path.clone(),
+                lane: lane.clone(),
+                index_only,
+            });
+            state.act.sizes_gate.clone()
+        };
+        Box::pin(async move {
+            if held_and_stopped(&state, gate, &lane, |st| &mut st.act.sizes_stopped).await {
+                return Err("cancelled".to_string());
+            }
+            if let Some(message) = failure(&state, "sizes") {
+                return Err(message);
+            }
+            let state = state.borrow();
+            let indexed = state.act.indexed.contains(&key(&path));
+            if index_only && !indexed {
+                return Err("not indexed".to_string());
+            }
+            if let Some(forced) = state.act.measured.get(&key(&path)) {
+                return Ok(forced.clone());
+            }
+            let sizes: Vec<(String, u64)> = state
+                .folders
+                .get(&key(&path))
+                .map(|f| {
+                    f.entries
+                        .iter()
+                        .filter(|e| e.dir)
+                        .map(|e| (e.name.clone(), tree_size(&state, &e.path)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(Measured {
+                total: tree_size(&state, &path),
+                sizes,
+                elapsed: 1.5,
+                engine: if indexed { "index" } else { "pdu" }.to_string(),
+            })
+        })
+    }
+
+    fn cancel_folder_sizes(&self, lane: &str) {
+        self.state.borrow_mut().act.sizes_stopped.push(lane.to_string());
+    }
+
+    fn export_ncdu(&self, path: &str, dest: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
+        let state = self.state.clone();
+        let (path, dest, lane) = (path.to_string(), dest.to_string(), lane.to_string());
+        let (gate, steps) = {
+            let mut state = state.borrow_mut();
+            state.act.exports.push((path.clone(), dest.clone(), lane.clone()));
+            (state.act.export_gate.clone(), state.act.export_progress.clone())
+        };
+        Box::pin(async move {
+            for (done, total) in steps {
+                let _ = progress.try_send(StageProgress { done, total });
+            }
+            if held_and_stopped(&state, gate, &lane, |st| &mut st.arch.stopped).await {
+                return Err("cancelled".to_string());
+            }
+            if let Some(message) = failure(&state, "export") {
+                return Err(message);
+            }
+            Ok(Staged {
+                folder: path,
+                paths: vec![dest],
+                skipped: Vec::new(),
+                bytes: 0,
+            })
+        })
+    }
+
+    fn scripts(&self) -> Fut<Result<Vec<Script>, String>> {
+        let scripts = self.state.borrow().act.scripts.clone();
+        Box::pin(async move { Ok(scripts) })
+    }
+
+    fn scripts_folder(&self) -> Fut<Result<String, String>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "scripts_folder") {
+                return Err(message);
+            }
+            let folder = state.borrow().act.scripts_folder.clone();
+            Ok(folder.unwrap_or_else(|| "C:\\Glint\\scripts".to_string()))
+        })
+    }
+
+    fn on_demand_list(&self) -> Fut<Vec<OnDemand>> {
+        let mounts = self.state.borrow().act.mounts.clone();
+        Box::pin(async move { mounts })
+    }
+
+    fn on_demand_mount(&self, id: &str, name: &str) -> Fut<Result<String, String>> {
+        let state = self.state.clone();
+        let (id, name) = (id.to_string(), name.to_string());
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "mount") {
+                return Err(message);
+            }
+            let folder = format!("C:\\Users\\me\\Glint remotes\\{name}");
+            let mut state = state.borrow_mut();
+            state.act.mounts.retain(|m| m.id != id);
+            state.act.mounts.push(OnDemand {
+                id,
+                folder: folder.clone(),
+            });
+            Ok(folder)
+        })
+    }
+
+    fn on_demand_unmount(&self, id: &str) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        let id = id.to_string();
+        Box::pin(async move {
+            if let Some(message) = failure(&state, "unmount") {
+                return Err(message);
+            }
+            state.borrow_mut().act.mounts.retain(|m| m.id != id);
+            Ok(())
+        })
     }
 
     fn search_index(&self) -> Fut<Option<SearchIndex>> {

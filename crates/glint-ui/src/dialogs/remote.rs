@@ -388,6 +388,9 @@ pub struct Form {
     /// Counts edits, so the answer of a test of an earlier state is dropped.
     serial: u64,
     taken_ids: Vec<String>,
+    /// A save is under way: Save is ignored (and shown disabled) until it fails, so two quick presses can't keep
+    /// the secret twice, say "Saved" twice or close the dialog from under the second.
+    saving: bool,
 }
 
 impl EventEmitter<FormEvent> for Form {}
@@ -427,6 +430,7 @@ impl Form {
             host_keys: None,
             serial: 0,
             taken_ids,
+            saving: false,
         };
         if let Some(r) = editing {
             let asking = backend.secret_saved(r.id);
@@ -519,6 +523,11 @@ impl Form {
         self.forget_test();
         self.host_keys = None;
         cx.notify();
+    }
+
+    /// A save is under way.
+    pub fn saving(&self) -> bool {
+        self.saving
     }
 
     /// Name and the one thing the kind needs are filled in (`ready`).
@@ -641,19 +650,26 @@ impl Form {
 
     /// Keeps the secret typed in Credential Manager, then says it is saved (`save`).
     pub fn save(&mut self, cx: &mut Context<Self>) {
-        if !self.ready() {
+        if !self.ready() || self.saving {
             return;
         }
+        self.saving = true;
+        cx.notify();
         let made = self.connection();
         let secret = self.text(Field::Secret).to_string();
         let keeping = (!secret.is_empty()).then(|| self.backend.secret_set(made.id.clone(), secret));
         cx.spawn(async move |this, cx| {
             if let Some(keeping) = keeping {
                 if let Err(reason) = keeping.await {
-                    let _ = this.update(cx, |_, cx| cx.emit(FormEvent::SecretFailed(reason)));
+                    let _ = this.update(cx, |this, cx| {
+                        this.saving = false;
+                        cx.notify();
+                        cx.emit(FormEvent::SecretFailed(reason));
+                    });
                     return;
                 }
             }
+            // Saved stays "saving": the dialog closes on it.
             let _ = this.update(cx, |_, cx| cx.emit(FormEvent::Saved(Box::new(made))));
         })
         .detach();
@@ -971,6 +987,7 @@ impl Render for RemoteDialog {
         let kind = form.kind();
         let editing = form.editing().cloned();
         let ready = form.ready();
+        let saving = form.saving();
         let test = form.test().cloned();
         let host_keys = form.host_keys().cloned();
         let thumbnails = form.thumbnails();
@@ -1331,7 +1348,7 @@ impl Render for RemoteDialog {
                     } else {
                         t!("Add and open")
                     })
-                    .disabled(!ready)
+                    .disabled(!ready || saving)
                     .on_click(cx.listener(|this, _, _, cx| this.form.update(cx, |form, cx| form.save(cx)))),
             );
 
@@ -1772,6 +1789,44 @@ mod tests {
         assert_eq!(stored(&mut visual).len(), 1);
         assert_eq!(stored(&mut visual)[0].id, "nas");
         assert!(!fake.calls().iter().any(|c| c.starts_with("secret-set")));
+    }
+
+    #[gpui_kit::test]
+    fn two_quick_saves_keep_the_secret_and_store_the_connection_once(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx, vec![]);
+        let fake = Fake::new();
+        let (form, view) = open(&mut visual, &fake, None);
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(("remote-kind", 2_usize), cx);
+        });
+        let (name, endpoint, secret) = view.read_with(&visual, |v, _| {
+            (
+                v.input(Field::Name).clone(),
+                v.input(Field::Endpoint).clone(),
+                v.input(Field::Secret).clone(),
+            )
+        });
+        type_into(&mut visual, &name, "NAS");
+        type_into(&mut visual, &endpoint, "https://nas/dav/");
+        type_into(&mut visual, &secret, "pw");
+        // Both presses land before the first save has finished.
+        visual.update(|_, cx| {
+            form.update(cx, |form, cx| {
+                form.save(cx);
+                assert!(form.saving());
+                form.save(cx);
+            })
+        });
+        settle(&mut visual, "the save", |cx| !stored(cx).is_empty());
+        visual.run_until_parked();
+        assert_eq!(stored(&mut visual).len(), 1, "stored once");
+        assert_eq!(
+            fake.calls().iter().filter(|c| c.starts_with("secret-set")).count(),
+            1,
+            "the secret was kept once"
+        );
     }
 
     #[gpui_kit::test]

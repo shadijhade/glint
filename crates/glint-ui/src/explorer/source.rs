@@ -7,6 +7,7 @@
 //! future the model awaits in a GPUI task: [`CoreSource`] runs them on core's runtime through
 //! [`core_bridge::run`], so the UI thread never waits, and decodes big listings off the UI thread too.
 
+use super::actions_types::*;
 use super::archive_types::*;
 use super::find_types::{FindOptions, Found, SearchIndex};
 use super::ops_types::*;
@@ -160,6 +161,44 @@ pub trait Source {
     fn cancel_find(&self, lane: &str);
     /// How instant search stands (`IndexInfo`), or `None` when that can't be said.
     fn search_index(&self) -> Fut<Option<SearchIndex>>;
+
+    // ---- Menu actions ---------------------------------------------------------------------------------------
+
+    /// Opens a copy of the file in Windows Sandbox (`sandboxRun`). `Err("notInstalled")` where Windows has none.
+    fn run_in_sandbox(&self, path: &str) -> Fut<Result<(), String>>;
+    /// Opens a path as the shell's `open` does (`openPath`): a folder in File Explorer, a program started.
+    fn shell_open(&self, path: &str) -> Fut<Result<(), String>>;
+    /// Shows items in File Explorer with them selected, one window for each folder they are in
+    /// (`revealItemInDir`).
+    fn reveal(&self, paths: Vec<String>) -> Fut<Result<(), String>>;
+    /// Takes items out of Recent (`recentForget`); the files stay where they are.
+    fn forget_recent(&self, paths: Vec<String>) -> Fut<Result<(), String>>;
+    /// Sets the desktop background (`setDesktopWallpaper`).
+    fn set_wallpaper(&self, path: &str) -> Fut<Result<(), String>>;
+    /// Turns a picture a quarter clockwise or back, in place (`rotateImage`).
+    fn rotate_image(&self, path: &str, clockwise: bool) -> Fut<Result<(), String>>;
+    /// Keeps cloud files on this device, frees up their space or leaves them to Windows (`setCloudPin`).
+    fn set_cloud_pin(&self, paths: Vec<String>, state: PinState) -> Fut<Result<(), String>>;
+    /// The sizes of a folder's subfolders (`folderSizes`): from the index when it has the folder, else with pdu
+    /// (an archive's folders are in its list). With `index_only` it is an `Err` instead of running pdu when the
+    /// index can't answer. Each tab measures in its own `lane`; `Err("cancelled")` when
+    /// [`Source::cancel_folder_sizes`] stopped it.
+    fn folder_sizes(&self, path: &str, lane: &str, index_only: bool) -> Fut<Result<Measured, String>>;
+    /// Stops the lane's measuring (`cancelFolderSizes`). Not waited for.
+    fn cancel_folder_sizes(&self, lane: &str);
+    /// Walks a folder on disk into an ncdu JSON export at `dest` (`exportNcdu`); the export is `paths[0]` of the
+    /// answer. `progress` hears how many entries are written so far (there is no total).
+    fn export_ncdu(&self, path: &str, dest: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>>;
+    /// The scripts in Glint's Scripts folder (`listScripts`).
+    fn scripts(&self) -> Fut<Result<Vec<Script>, String>>;
+    /// The Scripts folder, made with a script to start from the first time (`scriptsFolder`).
+    fn scripts_folder(&self) -> Fut<Result<String, String>>;
+    /// The remotes shown in File Explorer on demand (`ondemand_list`).
+    fn on_demand_list(&self) -> Fut<Vec<OnDemand>>;
+    /// Shows a remote in File Explorer on demand: its folder there (`ondemand_mount`).
+    fn on_demand_mount(&self, id: &str, name: &str) -> Fut<Result<String, String>>;
+    /// Stops showing a remote in File Explorer (`ondemand_unmount`).
+    fn on_demand_unmount(&self, id: &str) -> Fut<Result<(), String>>;
 }
 
 // ---- Core ------------------------------------------------------------------------------------------------
@@ -592,6 +631,123 @@ impl Source for CoreSource {
         })
     }
 
+    fn run_in_sandbox(&self, path: &str) -> Fut<Result<(), String>> {
+        let running = core_bridge::run(glint_core::sandbox::sandbox_run(path.to_string(), false));
+        Box::pin(async move { running.await? })
+    }
+
+    fn shell_open(&self, path: &str) -> Fut<Result<(), String>> {
+        let path = path.to_string();
+        let running =
+            core_bridge::run(
+                async move { glint_core::fsx::blocking(move || super::shell_win::shell_open(&path)).await },
+            );
+        Box::pin(async move { running.await? })
+    }
+
+    fn reveal(&self, paths: Vec<String>) -> Fut<Result<(), String>> {
+        let running =
+            core_bridge::run(async move { glint_core::fsx::blocking(move || super::shell_win::reveal(&paths)).await });
+        Box::pin(async move { running.await? })
+    }
+
+    fn forget_recent(&self, paths: Vec<String>) -> Fut<Result<(), String>> {
+        let running = core_bridge::run(glint_core::recent::recent_forget(paths));
+        Box::pin(async move { running.await? })
+    }
+
+    fn set_wallpaper(&self, path: &str) -> Fut<Result<(), String>> {
+        let running = core_bridge::run(glint_core::shell::set_desktop_wallpaper(path.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn rotate_image(&self, path: &str, clockwise: bool) -> Fut<Result<(), String>> {
+        let running = core_bridge::run(glint_core::shell::rotate_image(path.to_string(), clockwise));
+        Box::pin(async move { running.await? })
+    }
+
+    fn set_cloud_pin(&self, paths: Vec<String>, state: PinState) -> Fut<Result<(), String>> {
+        let running = core_bridge::run(glint_core::shell::set_cloud_pin(paths, state.as_str().to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn folder_sizes(&self, path: &str, lane: &str, index_only: bool) -> Fut<Result<Measured, String>> {
+        let (app, path, lane) = (self.app.clone(), path.to_string(), lane.to_string());
+        let running = core_bridge::run(async move {
+            let state = app
+                .try_state::<glint_core::AppState>()
+                .ok_or_else(|| "Glint's folder sizes aren't ready yet".to_string())?;
+            glint_core::sizes::folder_sizes(state, path, Some(index_only), lane).await
+        });
+        Box::pin(async move {
+            let found = running.await??;
+            Ok(Measured {
+                total: found.total,
+                sizes: found.sizes,
+                elapsed: found.elapsed,
+                engine: found.engine.to_string(),
+            })
+        })
+    }
+
+    fn cancel_folder_sizes(&self, lane: &str) {
+        let (app, lane) = (self.app.clone(), lane.to_string());
+        // Ending pdu's process is not for the UI thread.
+        glint_core::host::async_runtime::spawn_blocking(move || {
+            if let Some(state) = app.try_state::<glint_core::AppState>() {
+                glint_core::sizes::cancel_folder_sizes(state, lane);
+            }
+        });
+    }
+
+    fn export_ncdu(&self, path: &str, dest: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
+        let running = core_bridge::run(glint_core::archive::export_ncdu(
+            path.to_string(),
+            dest.to_string(),
+            lane.to_string(),
+            counting_channel(progress),
+        ));
+        Box::pin(async move { staged_from(&running.await??) })
+    }
+
+    fn scripts(&self) -> Fut<Result<Vec<Script>, String>> {
+        let running = core_bridge::run(glint_core::scripts::scripts_list());
+        Box::pin(async move { Ok(running.await??.scripts) })
+    }
+
+    fn scripts_folder(&self) -> Fut<Result<String, String>> {
+        let running = core_bridge::run(glint_core::scripts::scripts_folder());
+        Box::pin(async move { running.await? })
+    }
+
+    fn on_demand_list(&self) -> Fut<Vec<OnDemand>> {
+        let running =
+            core_bridge::run(async { glint_core::fsx::blocking(|| Ok(glint_core::ondemand::ondemand_list())).await });
+        Box::pin(async move {
+            running
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|mount| OnDemand {
+                    id: mount.id,
+                    folder: mount.folder,
+                })
+                .collect()
+        })
+    }
+
+    fn on_demand_mount(&self, id: &str, name: &str) -> Fut<Result<String, String>> {
+        let running = core_bridge::run(glint_core::ondemand::ondemand_mount(id.to_string(), name.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn on_demand_unmount(&self, id: &str) -> Fut<Result<(), String>> {
+        let running = core_bridge::run(glint_core::ondemand::ondemand_unmount(id.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
     fn effect(&self, effect: Effect) {
         match effect {
             Effect::ReportFolder(path) => glint_core::dialogs::report_folder(path),
@@ -628,6 +784,25 @@ fn progress_channel(sink: ProgressSink) -> Channel<glint_core::archive::StagePro
             let percent = i64::from(progress.percent());
             if last.swap(percent, std::sync::atomic::Ordering::Relaxed) != percent {
                 // A closed sink means the work was left; core keeps going and finishes on its own.
+                let _ = sink.try_send(progress);
+            }
+        }
+        Ok(())
+    })
+}
+
+/// A channel core's export reports to: how many entries are written so far, passed on at most every 100 ms (core
+/// reports a count as it walks, and the notice only needs to move now and then).
+fn counting_channel(sink: ProgressSink) -> Channel<glint_core::archive::StageProgress> {
+    let started = std::time::Instant::now();
+    let last = std::sync::atomic::AtomicU64::new(0);
+    Channel::new(move |message: glint_core::archive::StageProgress| {
+        let now = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX).max(1);
+        let before = last.load(std::sync::atomic::Ordering::Relaxed);
+        if before == 0 || now.saturating_sub(before) >= 100 {
+            last.store(now, std::sync::atomic::Ordering::Relaxed);
+            // core's fields are crate-private: JSON is how they are read.
+            if let Ok(progress) = serde_json::to_value(&message).and_then(serde_json::from_value::<StageProgress>) {
                 let _ = sink.try_send(progress);
             }
         }

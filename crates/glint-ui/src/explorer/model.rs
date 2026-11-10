@@ -154,6 +154,8 @@ pub struct Explorer {
     pub(super) searching: super::find::Searching,
     /// Archive work in progress (compressing, extracting, staging copy-outs) and the drag that is ready.
     pub(super) archives: super::archive::ArchiveState,
+    /// The menu actions' state: the folder sizes measured, the remotes shown in File Explorer.
+    pub(super) actions: super::actions::ActionState,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -206,6 +208,7 @@ impl Explorer {
             ops: OpsState::new(),
             searching: Default::default(),
             archives: Default::default(),
+            actions: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -619,6 +622,7 @@ impl Explorer {
             },
             // A listing arrives sorted; a search's results are sorted here.
             presorted: tab.find.is_none(),
+            sizes: self.row_sizes(tab),
         })
     }
 

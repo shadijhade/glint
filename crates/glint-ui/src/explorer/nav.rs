@@ -327,6 +327,9 @@ impl Explorer {
         cx.emit(ExplorerEvent::ListingChanged { tab: id, same });
         cx.emit(ExplorerEvent::SelectionChanged(id));
         self.tab_changed(id, cx);
+        // In an archive every folder's size comes with the listing; with the index, every folder shows its
+        // subfolders' sizes as it opens (and after each refresh).
+        self.sizes_for_listing(id, cx);
         true
     }
 

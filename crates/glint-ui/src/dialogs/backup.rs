@@ -1330,7 +1330,11 @@ fn show(window: &mut Window, cx: &mut App, title: SharedString, view: Entity<Bac
 pub fn open(window: &mut Window, cx: &mut App, folder: String) {
     let backend: Arc<dyn Backend> = match cx.try_global::<core_bridge::Core>() {
         Some(core) => Arc::new(CoreBackend::new(core.app.clone())),
-        None => return,
+        None => {
+            // Never in the app; but a press that does nothing at all would look broken.
+            window.push_notification(Notification::error(t!("Glint's core isn't running")), cx);
+            return;
+        }
     };
     let tools = tools_for(window, cx);
     open_with(window, cx, folder, backend, tools);
@@ -1622,6 +1626,19 @@ mod tests {
         assert!(!Backup::password_ok("12345678", "12345679"));
         // Characters, not bytes: eight Arabic letters are 16 bytes.
         assert!(Backup::password_ok("كلمةالسر!", "كلمةالسر!"));
+    }
+
+    #[gpui_kit::test]
+    fn without_core_opening_backup_says_so(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        // The test app starts a core; take it away for this press.
+        let core = visual.update(|_, cx| cx.remove_global::<core_bridge::Core>());
+        visual.update(|window, cx| open(window, cx, r"C:\Data".to_string()));
+        visual.run_until_parked();
+        visual.update(|_, cx| cx.set_global(core));
+        visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "no dialog without core"));
+        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1, "it says so"));
     }
 
     #[gpui_kit::test]

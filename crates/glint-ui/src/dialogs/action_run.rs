@@ -14,6 +14,14 @@
 //! | `revealInApp`                    | [`reveal`]                                                        |
 //! | `ToolNeeded`                     | [`tool_card`] over `settings::tools::needed`                      |
 //! | a slider (quality, strength)     | [`NumberField`]: a box with minus and plus (`PORT ME(coordinator)`: kit::Slider) |
+//!
+//! **One family.** Convert pictures, Convert document, Make smaller, PDF tools and Convert data keep their run in
+//! an [`ActionRun`] entity; the media, media-tools, song and metadata dialogs (MediaDialog.tsx, MediaTools.tsx,
+//! SongDialog.tsx, MetadataDialog.tsx) keep it in a field of the dialog and start it with [`drive`] (their tests
+//! and `run_state()` read it there). The pieces they draw with are the same: [`Where`], [`WhereChooser`],
+//! [`Choices`], [`progress_view`], [`result_view`], [`error_view`], [`footer`], [`Tooling`]. Two shapes differ,
+//! and stay here: [`drive`] runs in a view with a window so it can offer Undo in a notification
+//! ([`offer_undo`]), while [`ActionRun::start`] has no window and keeps Ctrl+Z only ([`remember_undo`]).
 
 use crate::components::settings::tools::{self, Tools};
 use crate::components::settings::{Backend as SettingsBackend, CoreBackend as SettingsCoreBackend};
@@ -26,6 +34,7 @@ use glint_model::paths::{base_name, parent_path};
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// A boxed core call.
@@ -155,6 +164,58 @@ impl WhereChooser {
             suffix: suffix_input,
             folder: folder_input,
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// A chooser starting at `initial` for "file"s, its note the default (a taken name gets "(2)"). The folder
+    /// box starts as "Converted" unless `initial` is a folder.
+    pub fn starting_at(id: &'static str, initial: &Where, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (kind, suffix, folder) = match initial {
+            Where::Beside { suffix } => (WhereKind::Beside, suffix.as_str(), "Converted"),
+            Where::Folder { name } => (WhereKind::Folder, "", name.as_str()),
+            Where::Replace => (WhereKind::Replace, "", "Converted"),
+        };
+        let mut this = Self::new(
+            id,
+            t!("file"),
+            t!("A name that's taken gets “(2)”, and Ctrl+Z takes it all back."),
+            true,
+            (suffix, folder),
+            window,
+            cx,
+        );
+        // Starting text isn't typing: the radio is the one asked for.
+        this.kind = kind;
+        this
+    }
+
+    /// Whether what is chosen can't be used (`badOutput`).
+    pub fn bad(&self, cx: &App) -> bool {
+        self.choice(cx).bad()
+    }
+
+    /// "Next to each {noun}…" and "the {noun}s moved to the Recycle Bin".
+    pub fn set_noun(&mut self, noun: SharedString, cx: &mut Context<Self>) {
+        if self.noun != noun {
+            self.noun = noun;
+            cx.notify();
+        }
+    }
+
+    /// The line under the choices.
+    pub fn set_note(&mut self, note: SharedString, cx: &mut Context<Self>) {
+        self.note = note;
+        cx.notify();
+    }
+
+    /// Changes the suffix when "Next to" is the choice (the dialog's mode asks for another).
+    ///
+    /// NOTE(port): the TypeScript changed its output but left the box showing the old suffix (the box kept its
+    /// own state from when it was made). Here the box shows what is used.
+    pub fn set_suffix(&mut self, suffix: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.kind == WhereKind::Beside {
+            self.suffix.update(cx, |input, cx| input.set_value(suffix, window, cx));
+            cx.notify();
         }
     }
 
@@ -365,7 +426,123 @@ impl<T> Choice<T> {
     }
 }
 
-/// A group of choices, one picked, laid out in `columns` (`Choices`): each a button with a name and a hint.
+/// What picking a choice does.
+type OnPick<T> = Rc<dyn Fn(&T, &mut Window, &mut App)>;
+
+/// A group of choices, one picked, laid out in `columns` (`Choices`): each a button with a name and a hint. The
+/// buttons are `(id, index)`; `on_pick` gets the value picked (use `cx.listener` to reach the dialog).
+#[derive(IntoElement)]
+pub struct Choices<T: Copy + PartialEq + 'static> {
+    id: &'static str,
+    label: SharedString,
+    value: T,
+    options: Vec<Choice<T>>,
+    columns: u16,
+    on_pick: OnPick<T>,
+}
+
+impl<T: Copy + PartialEq + 'static> Choices<T> {
+    /// The group `label`, with `id` for its buttons (`(id, index)`), `value` picked, two to a row.
+    pub fn new(id: &'static str, label: impl Into<SharedString>, value: T) -> Self {
+        Self {
+            id,
+            label: label.into(),
+            value,
+            options: Vec::new(),
+            columns: 2,
+            on_pick: Rc::new(|_, _, _| {}),
+        }
+    }
+
+    /// What can be picked.
+    pub fn options(mut self, options: Vec<Choice<T>>) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// How many to a row (the TypeScript's `columns`, 2 unless said).
+    pub fn columns(mut self, columns: u16) -> Self {
+        self.columns = columns.max(1);
+        self
+    }
+
+    /// Runs with the value picked.
+    pub fn on_pick(mut self, on_pick: impl Fn(&T, &mut Window, &mut App) + 'static) -> Self {
+        self.on_pick = Rc::new(on_pick);
+        self
+    }
+}
+
+impl<T: Copy + PartialEq + 'static> RenderOnce for Choices<T> {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let t = theme::tokens(cx).clone();
+        let id = self.id;
+        let value = self.value;
+        let on_pick = self.on_pick;
+        div()
+            .id(id)
+            .role(Role::RadioGroup)
+            .aria_label(self.label)
+            .test_support()
+            .grid()
+            .grid_cols(self.columns.max(1))
+            .gap(space(1.5))
+            .children(self.options.into_iter().enumerate().map(|(ix, option)| {
+                let chosen = option.value == value;
+                let on_pick = on_pick.clone();
+                let picked = option.value;
+                let label = option.label.clone();
+                let hint = option.hint.clone();
+                Button::new((id, ix))
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(if chosen {
+                                t.primary.opacity(0.1)
+                            } else {
+                                t.background.opacity(0.)
+                            })
+                            .foreground(t.foreground)
+                            .hover(if chosen { t.primary.opacity(0.15) } else { t.accent })
+                            .active(t.accent),
+                    )
+                    .min_w_0()
+                    .h_auto()
+                    .border_1()
+                    .border_color(if chosen { t.primary } else { t.border })
+                    .px(space(2.))
+                    .py(space(1.5))
+                    .role(Role::RadioButton)
+                    .toggled(chosen)
+                    .disabled(option.disabled)
+                    .when_some(hint.clone(), |this, hint| this.tooltip(hint))
+                    .accessibility_label(match &hint {
+                        Some(hint) => format!("{label}. {hint}"),
+                        None => label.to_string(),
+                    })
+                    .on_click(move |_, window, cx| on_pick(&picked, window, cx))
+                    .child(
+                        col()
+                            .w_full()
+                            .min_w_0()
+                            .align_start()
+                            .text_start()
+                            .child(div().font_weight(FontWeight::MEDIUM).child(label))
+                            .when_some(hint, |this, hint| {
+                                this.child(
+                                    div()
+                                        .max_w_full()
+                                        .truncate()
+                                        .text_size(theme::size::XXS)
+                                        .text_color(t.muted_foreground)
+                                        .child(hint),
+                                )
+                            }),
+                    )
+            }))
+    }
+}
+
+/// [`Choices`] for a dialog whose `on_pick` gets the dialog itself (and redraws it).
 #[allow(clippy::too_many_arguments)]
 pub fn choices<V: 'static, T: Copy + PartialEq + 'static>(
     id: &'static str,
@@ -374,71 +551,15 @@ pub fn choices<V: 'static, T: Copy + PartialEq + 'static>(
     options: Vec<Choice<T>>,
     columns: u16,
     on_pick: impl Fn(&mut V, T, &mut Window, &mut Context<V>) + Clone + 'static,
-    t: &theme::Tokens,
+    _t: &theme::Tokens,
     cx: &mut Context<V>,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .role(Role::RadioGroup)
-        .aria_label(name)
-        .test_support()
-        .grid()
-        .grid_cols(columns.max(1))
-        .gap(space(1.5))
-        .children(options.into_iter().enumerate().map(|(ix, option)| {
-            let chosen = option.value == value;
-            let on_pick = on_pick.clone();
-            let picked = option.value;
-            let label = option.label.clone();
-            let hint = option.hint.clone();
-            Button::new((id, ix))
-                .custom(
-                    ButtonCustomVariant::new(cx)
-                        .color(if chosen {
-                            t.primary.opacity(0.1)
-                        } else {
-                            t.background.opacity(0.)
-                        })
-                        .foreground(t.foreground)
-                        .hover(if chosen { t.primary.opacity(0.15) } else { t.accent })
-                        .active(t.accent),
-                )
-                .min_w_0()
-                .h_auto()
-                .border_1()
-                .border_color(if chosen { t.primary } else { t.border })
-                .px(space(2.))
-                .py(space(1.5))
-                .role(Role::RadioButton)
-                .toggled(chosen)
-                .disabled(option.disabled)
-                .when_some(hint.clone(), |this, hint| this.tooltip(hint))
-                .accessibility_label(match &hint {
-                    Some(hint) => format!("{label}. {hint}"),
-                    None => label.to_string(),
-                })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    on_pick(this, picked, window, cx);
-                    cx.notify();
-                }))
-                .child(
-                    col()
-                        .w_full()
-                        .min_w_0()
-                        .align_start()
-                        .text_start()
-                        .child(div().font_weight(FontWeight::MEDIUM).child(label))
-                        .when_some(hint, |this, hint| {
-                            this.child(
-                                div()
-                                    .max_w_full()
-                                    .truncate()
-                                    .text_size(theme::size::XXS)
-                                    .text_color(t.muted_foreground)
-                                    .child(hint),
-                            )
-                        }),
-                )
+    Choices::new(id, name, value)
+        .options(options)
+        .columns(columns)
+        .on_pick(cx.listener(move |this, picked: &T, window, cx| {
+            on_pick(this, *picked, window, cx);
+            cx.notify();
         }))
 }
 
@@ -714,19 +835,22 @@ impl ActionRun {
     }
 }
 
-/// Keeps how to take back what `report` made, for Ctrl+Z (`offerActionUndo`): what it made is recycled and the
-/// files it replaced come back from the Recycle Bin.
-///
-/// NOTE(port): the TypeScript took both back in one step, and offered the step in a toast with an Undo button.
-/// The explorer's undo steps hold one action each, so the replaced files' restore is its own step, below the
-/// recycling of what was made: Ctrl+Z recycles what was made, the next brings the originals back.
-pub fn remember_undo(report: &Report, what: &str, cx: &mut App) {
+/// The undo steps a run's report left in the explorer.
+struct UndoSteps {
+    explorer: Entity<explorer::Explorer>,
+    /// The files it replaced coming back from the Recycle Bin, if any were replaced.
+    restore: Option<explorer::UndoId>,
+    /// What it made going to the Recycle Bin.
+    recycle: explorer::UndoId,
+}
+
+/// Records how to take back what `report` made: what it made is recycled and the files it replaced come back
+/// from the Recycle Bin. `None` when it made nothing or there is no explorer.
+fn record_undo(report: &Report, what: &str, cx: &mut App) -> Option<UndoSteps> {
     if report.made.is_empty() {
-        return;
+        return None;
     }
-    let Some(explorer) = explorer::try_explorer(cx) else {
-        return;
-    };
+    let explorer = explorer::try_explorer(cx)?;
     let back: Vec<explorer::MoveItem> = report
         .recycled
         .iter()
@@ -737,13 +861,145 @@ pub fn remember_undo(report: &Report, what: &str, cx: &mut App) {
         })
         .collect();
     let made = report.made.clone();
-    let what = what.to_string();
-    explorer.update(cx, |explorer, cx| {
-        if !back.is_empty() {
-            explorer.remember_undo(what.clone(), explorer::UndoAction::Restore(back), cx);
-        }
-        explorer.remember_undo(what, explorer::UndoAction::Recycle(made), cx);
+    let (restore, recycle) = explorer.update(cx, |explorer, cx| {
+        let restore = (!back.is_empty()).then(|| explorer.remember_undo(what, explorer::UndoAction::Restore(back), cx));
+        (
+            restore,
+            explorer.remember_undo(what, explorer::UndoAction::Recycle(made), cx),
+        )
     });
+    Some(UndoSteps {
+        explorer,
+        restore,
+        recycle,
+    })
+}
+
+/// Keeps how to take back what `report` made, for Ctrl+Z (`offerActionUndo`): what it made is recycled and the
+/// files it replaced come back from the Recycle Bin.
+///
+/// NOTE(port): the TypeScript took both back in one step, and offered the step in a toast with an Undo button.
+/// The explorer's undo steps hold one action each (`UndoAction`), so the replaced files' restore is its own
+/// step, below the recycling of what was made: Ctrl+Z recycles what was made, the next brings the originals
+/// back. [`offer_undo`]'s button does both. `PORT ME(coordinator)`: a step that holds several actions
+/// (`UndoAction::Sequence` in explorer/ops_types.rs and undo.rs) would make this one Ctrl+Z.
+pub fn remember_undo(report: &Report, what: &str, cx: &mut App) {
+    let _ = record_undo(report, what, cx);
+}
+
+/// The Undo offer of an action's notification.
+struct ActionUndoToast;
+
+/// [`remember_undo`], and the notification that offers Undo for 8 s as the web app's toast did (`offerActionUndo`):
+/// its button takes back both steps.
+pub fn offer_undo(report: &Report, what: &str, window: &mut Window, cx: &mut App) {
+    let Some(UndoSteps {
+        explorer,
+        restore,
+        recycle,
+    }) = record_undo(report, what, cx)
+    else {
+        return;
+    };
+    let mut label = what.to_string();
+    if let Some(first) = label.get(..1) {
+        label = first.to_uppercase() + &label[1..];
+    }
+    let key = recycle.0 as usize;
+    let note = Notification::success(SharedString::from(label))
+        .id1::<ActionUndoToast>(key)
+        .action(move |_, _, _| {
+            let explorer = explorer.clone();
+            Button::new("action-undo")
+                .label(t!("Undo"))
+                .on_click(move |_, window, cx| {
+                    let first = explorer.update(cx, |e, cx| e.undo(Some(recycle), cx));
+                    let explorer = explorer.clone();
+                    cx.spawn(async move |cx| {
+                        first.await;
+                        if let Some(restore) = restore {
+                            let second = explorer.update(cx, |e, cx| e.undo(Some(restore), cx));
+                            second.await;
+                        }
+                    })
+                    .detach();
+                    window.remove_notification1::<ActionUndoToast>(key, cx);
+                })
+        });
+    window.push_notification(note, cx);
+    // The web app's toast stayed 8 s.
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(std::time::Duration::from_secs(8)).await;
+        let _ = handle.update(cx, |_, window, cx| {
+            window.remove_notification1::<ActionUndoToast>(key, cx)
+        });
+    })
+    .detach();
+}
+
+/// A run to start in a dialog that keeps its [`Run`] itself: how many jobs, core's call, and its progress.
+pub struct Launch {
+    /// How many jobs there are (the run's total until progress says).
+    pub total: usize,
+    /// Core's call.
+    pub call: Fut<Report>,
+    /// Its progress messages.
+    pub progress: async_channel::Receiver<Progress>,
+}
+
+/// Starts a run in a dialog (`useActionRun().start`): sets its [`Run`] (found by `state`) to running, keeps it
+/// up to date from the progress (at most once a frame), and when the call ends sets it to done or failed. A run
+/// that made something offers Undo, worded `undo_label(report)` ([`offer_undo`]).
+pub fn drive<V: 'static>(
+    this: &mut V,
+    window: &mut Window,
+    cx: &mut Context<V>,
+    launch: Launch,
+    state: fn(&mut V) -> &mut Run,
+    undo_label: impl FnOnce(&Report) -> String + 'static,
+) {
+    let Launch { total, call, progress } = launch;
+    *state(this) = Run::Running(Progress {
+        done: 0,
+        total,
+        current: String::new(),
+        part: 0.,
+    });
+    cx.notify();
+    // Progress: only the newest message each time the task wakes, so a chatty run redraws once.
+    cx.spawn_in(window, async move |this, cx| {
+        while let Ok(mut latest) = progress.recv().await {
+            while let Ok(newer) = progress.try_recv() {
+                latest = newer;
+            }
+            let alive = this.update(cx, |this, cx| {
+                let run = state(this);
+                if run.running() {
+                    *run = Run::Running(latest);
+                    cx.notify();
+                }
+            });
+            if alive.is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+    cx.spawn_in(window, async move |this, cx| {
+        let result = call.await;
+        let _ = this.update_in(cx, |this, window, cx| {
+            match result {
+                Ok(report) => {
+                    offer_undo(&report, &undo_label(&report), window, cx);
+                    *state(this) = Run::Done(report);
+                }
+                Err(reason) => *state(this) = Run::Failed(reason.into()),
+            }
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 /// Shows `path` in the explorer: its folder, with it selected (`revealInApp`).
@@ -822,6 +1078,11 @@ pub fn progress_view(id: &'static str, text: String, fraction: f32, t: &theme::T
         )
 }
 
+/// [`progress_view`] for a run under way with the usual line: `verb`, which of how many, the file, how far.
+pub fn run_progress(id: &'static str, verb: &str, progress: &Progress, t: &theme::Tokens) -> impl IntoElement {
+    progress_view(id, progress_text(verb, progress, false, false), whole(progress), t)
+}
+
 /// The words a finished run is told in.
 pub struct ResultWords {
     /// "Made 3 files" for how many were made (more than none).
@@ -835,6 +1096,14 @@ pub struct ResultWords {
 }
 
 impl ResultWords {
+    /// The words for songs (Edit song details): "Made 3 songs", no sizes line.
+    pub fn songs() -> Self {
+        Self {
+            made: |n| t!("Made {what}", what = plural(n, "song")),
+            ..Self::files(false)
+        }
+    }
+
     /// `RunResult`'s own words, with or without the sizes line.
     pub fn files(sizes: bool) -> Self {
         Self {
@@ -853,6 +1122,18 @@ pub fn change_text(before: u64, after: u64) -> String {
     format!("{}{rounded}%", if after <= before { "\u{2212}" } else { "+" })
 }
 
+/// "12 MB → 4.1 MB (−66%)": the sizes before and after a run, when they are known.
+pub fn sizes_line(before: u64, after: u64) -> Option<String> {
+    (before > 0).then(|| {
+        format!(
+            "{} \u{2192} {} ({})",
+            format_size(before),
+            format_size(after),
+            change_text(before, after)
+        )
+    })
+}
+
 /// What a finished run did: made how many, the sizes before and after, how long it took, and what failed.
 pub fn result_view(id: &'static str, report: &Report, words: &ResultWords, t: &theme::Tokens) -> impl IntoElement {
     let made = report.made.len();
@@ -865,17 +1146,10 @@ pub fn result_view(id: &'static str, report: &Report, words: &ResultWords, t: &t
         headline.push_str(&t!(" before it was stopped"));
     }
     let headline: SharedString = headline.into();
-    let details: SharedString = if words.sizes && report.before > 0 {
-        format!(
-            "{} \u{2192} {} ({}) · {}",
-            format_size(report.before),
-            format_size(report.after),
-            change_text(report.before, report.after),
-            format_duration(report.elapsed_ms)
-        )
-        .into()
-    } else {
-        format_duration(report.elapsed_ms).into()
+    let took = format_duration(report.elapsed_ms);
+    let details: SharedString = match words.sizes.then(|| sizes_line(report.before, report.after)).flatten() {
+        Some(sizes) => format!("{sizes} · {took}").into(),
+        None => took.into(),
     };
     let failed = report.failed.clone();
     col()
@@ -1093,11 +1367,41 @@ pub fn shell(
 
 /// Where the files are: their folder, or how many folders.
 pub fn where_they_are(files: &[String]) -> SharedString {
-    let folders: HashSet<String> = files.iter().map(|f| parent_path(f).to_lowercase()).collect();
+    let folders = folders_of(files);
     match (folders.len(), files.first()) {
         (1, Some(first)) => parent_path(first).into(),
         _ => t!("In {n} folders", n = format_count(folders.len())),
     }
+}
+
+/// The names of the distinct folders among `files`, lower-cased.
+pub fn folders_of(files: &[String]) -> HashSet<String> {
+    files.iter().map(|f| parent_path(f).to_lowercase()).collect()
+}
+
+/// The folder line under a dialog's title: the folder they are in, or how many folders.
+pub fn folder_line(id: &'static str, files: &[String], t: &theme::Tokens) -> impl IntoElement {
+    let text = where_they_are(files);
+    div()
+        .id(id)
+        .role(Role::Group)
+        .aria_label(text.clone())
+        .test_support()
+        .text_size(theme::size::XS)
+        .text_color(t.muted_foreground)
+        .truncate()
+        .child(isolate(text))
+}
+
+/// The height of a dialog's scrolling body: a share of the window, so a short window scrolls it.
+pub fn body_height(window: &Window) -> Pixels {
+    (window.viewport_size().height * 0.72).max(px(240.))
+}
+
+/// The tools backend core offers (the install cards), or none when core isn't started.
+pub fn core_tools(cx: &App) -> Option<Arc<dyn SettingsBackend>> {
+    let core = cx.try_global::<core_bridge::Core>()?;
+    Some(Arc::new(SettingsCoreBackend::new(core.app.clone())))
 }
 
 // ---- Tools --------------------------------------------------------------------------------------------------
@@ -1113,6 +1417,9 @@ pub fn tools_model(window: &mut Window, cx: &mut App) -> Option<Entity<Tools>> {
 /// The tools a dialog needs and the cards that install them (`useTool`, `ToolNeeded`).
 pub struct Tooling {
     tools: Option<Entity<Tools>>,
+    /// With no tools model at all, every tool counts as there (a dialog started without core's tools, as in the
+    /// tests that don't care); [`Tooling::new`] counts none.
+    assume_ready: bool,
     /// Tests say which tools are there instead (the settings' `Backend` can't be faked from outside it:
     /// `PORT ME(coordinator)`: `pub use backend::Fetch` in settings/mod.rs, then a fake can be written).
     #[cfg(test)]
@@ -1124,9 +1431,42 @@ impl Tooling {
     pub fn new(tools: Option<Entity<Tools>>) -> Self {
         Self {
             tools,
+            assume_ready: false,
             #[cfg(test)]
             forced: None,
         }
+    }
+
+    /// Looks for the tools through `backend`; with none (nothing to wait for) every tool counts as there.
+    pub fn from_backend<V: 'static>(
+        backend: Option<Arc<dyn SettingsBackend>>,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) -> Self {
+        let tools = backend.map(|backend| cx.new(|cx| Tools::new(backend, window, cx)));
+        Self {
+            tools,
+            assume_ready: true,
+            #[cfg(test)]
+            forced: None,
+        }
+    }
+
+    /// A tooling whose tools are never found, so [`Tooling::ready`] stays false (the state before the first look
+    /// for the tools, or with one missing).
+    #[cfg(test)]
+    pub fn never() -> Self {
+        Self::with(&[])
+    }
+
+    /// Runs `on_change` whenever the tools are looked for again or one is installed. Keep the subscription.
+    pub fn observe<V: 'static>(
+        &self,
+        cx: &mut Context<V>,
+        on_change: impl Fn(&mut V, &mut Context<V>) + 'static,
+    ) -> Option<Subscription> {
+        let tools = self.tools.as_ref()?;
+        Some(cx.observe(tools, move |this, _, cx| on_change(this, cx)))
     }
 
     /// A tooling in which exactly the tools `ids` are installed (tests).
@@ -1134,6 +1474,7 @@ impl Tooling {
     pub fn with(ids: &[&'static str]) -> Self {
         Self {
             tools: None,
+            assume_ready: false,
             forced: Some(ids.to_vec()),
         }
     }
@@ -1149,9 +1490,10 @@ impl Tooling {
         if let Some(forced) = &self.forced {
             return forced.contains(&id);
         }
-        self.tools
-            .as_ref()
-            .is_some_and(|tools| tools.read(cx).tool(id).is_some_and(|info| info.origin.is_some()))
+        match &self.tools {
+            None => self.assume_ready,
+            Some(tools) => tools.read(cx).tool(id).is_some_and(|info| info.origin.is_some()),
+        }
     }
 
     /// The card that says a feature needs the tool `id` and installs it (`ToolNeeded`); `None` once it is there,

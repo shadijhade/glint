@@ -14,13 +14,6 @@ name = "glint_ui"
 # wave its features go and the modules are always built. (Wave 3's went with its integration.)
 [features]
 default = []
-# Wave 9.
-command-bar = []
-git = []
-views-polish = []
-preview-tables = []
-preview-small = []
-pickers = []
 
 [dependencies]
 # syntect: syntax highlighting for the text and code previews (pure Rust: fancy-regex, two-face's grammars).

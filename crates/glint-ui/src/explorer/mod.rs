@@ -83,7 +83,13 @@
 //! | `view.rs` | focus, marquee selection, columns, the address bar's editing flag, eject |
 //! | `find_types.rs` | searching's types: [`FindOptions`], [`Found`], [`Wider`], [`SearchIndex`], [`FindNotice`] |
 //! | `find.rs` | searching by name: run, as typed, stop, leave, clear, saved searches (`runFind`…) |
+//! | `actions_types.rs` | the menu actions' types: [`SizeRun`], [`ActionNotice`], [`ExportNotice`], [`Request`]… |
+//! | `actions.rs` | open with an app, Sandbox, new window, reveal, Recent, wallpaper, rotate, cloud pins, ncdu export, scripts, on demand |
+//! | `sizes.rs` | folder sizes (`calcSizes`, `autoSizes`, `stopSizes`) and what reads them |
+//! | `shell_win.rs` | the shell calls the actions make directly: `open`, and reveal in File Explorer |
 
+mod actions;
+mod actions_types;
 mod archive;
 mod archive_types;
 mod clipboard;
@@ -103,6 +109,8 @@ mod rename;
 mod requested;
 mod rows;
 mod select;
+mod shell_win;
+mod sizes;
 mod source;
 mod start;
 mod tab;
@@ -111,6 +119,8 @@ mod types;
 mod undo;
 mod view;
 
+#[cfg(test)]
+mod actions_tests;
 #[cfg(test)]
 mod archive_tests;
 /// A fake disk for tests: views' tests use it too (`crate::explorer::fake::{FakeDisk, file, folder}`).
@@ -121,8 +131,11 @@ mod find_tests;
 #[cfg(test)]
 mod ops_tests;
 #[cfg(test)]
+mod sizes_tests;
+#[cfg(test)]
 mod tests;
 
+pub use actions_types::*;
 pub use archive_types::*;
 pub use find_types::{FindNotice, FindOptions, Found, SearchIndex, Wider};
 pub use memory::Memory;
@@ -132,7 +145,7 @@ pub use open::is_disk_image;
 pub use ops_types::*;
 pub use recycle::purge_what;
 pub use rename::{clean_name, INVALID_NAME_CHARS, INVALID_NAME_HINT};
-pub use rows::{build_rows, GroupLayout, RowSpec, Rows};
+pub use rows::{build_rows, GroupLayout, RowSizes, RowSpec, Rows};
 pub use source::{Access, CompressRequest, CoreSource, Effect, Fut, Resolved, Source};
 pub use tab::{PathSet, Selection, Tab};
 pub use types::*;

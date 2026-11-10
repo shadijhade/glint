@@ -519,4 +519,17 @@ pub enum ExplorerEvent {
     QueueOpened,
     /// The New menu's kinds were read: [`Explorer::new_kinds`](super::Explorer::new_kinds).
     NewKindsChanged,
+
+    // ---- Menu actions (actions_types.rs says what each carries) ----
+    /// What a menu action has to tell the person: done, failed, or what it needs next.
+    Action(super::ActionNotice),
+    /// The ncdu export's progress, Stop, and result.
+    Export(super::ExportNotice),
+    /// Work for the workspace: a new window, a script in the terminal, a tool to install.
+    Request(super::Request),
+    /// A folder's sizes were measured, started, stopped or came with an archive's listing
+    /// ([`Explorer::size_run`](super::Explorer::size_run)). The list, grid, status bar and preview redraw.
+    SizesChanged { path: String },
+    /// The remotes shown in File Explorer on demand changed ([`Explorer::on_demand`](super::Explorer::on_demand)).
+    OnDemandChanged,
 }
