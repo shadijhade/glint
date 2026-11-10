@@ -61,6 +61,24 @@ pub mod quick_look;
 pub mod shell;
 pub mod sources;
 pub mod states;
+/// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx). Wave 9 slot.
+#[cfg(feature = "preview-tables")]
+pub mod sqlite;
+/// Workbooks and Parquet as tables (SheetPreview in FilePreview.tsx). Wave 9 slot.
+#[cfg(feature = "preview-tables")]
+pub mod sheet;
+/// Jupyter notebooks as they read (NotebookView.tsx). Wave 9 slot.
+#[cfg(feature = "preview-tables")]
+pub mod notebook;
+/// A program's sections, imports and exports (BinaryPreview.tsx). Wave 9 slot.
+#[cfg(feature = "preview-tables")]
+pub mod program;
+/// Contacts, calendars, mail, design files (SmallPreviews.tsx). Wave 9 slot.
+#[cfg(feature = "preview-small")]
+pub mod small;
+/// Who signed a program, and whether Windows trusts it (SignatureChip.tsx). Wave 9 slot.
+#[cfg(feature = "preview-small")]
+pub mod signature;
 #[cfg(test)]
 mod tests;
 
