@@ -1654,6 +1654,11 @@ impl Render for Workspace {
                 state::update(cx, |settings| settings.show_hidden = !settings.show_hidden)
             }))
             .on_action(cx.listener(|_, _: &actions::CompareFiles, window, cx| Self::compare_selected(window, cx)))
+            .on_action(
+                cx.listener(|_, _: &actions::ComparePanes, _, cx| {
+                    Self::explorer(cx, |e, cx| e.toggle_compare_panes(cx))
+                }),
+            )
             .on_action(cx.listener(|_, _: &actions::DiskUsage, _, cx| Self::toggle_disk_usage(cx)))
             // File operations, on the active tab's selection.
             .on_action(cx.listener(|_, _: &actions::Copy, _, cx| {

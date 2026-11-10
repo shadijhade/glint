@@ -374,16 +374,9 @@ impl CommandBar {
         self.choose_view(ViewMode::Grid, cx);
     }
 
-    /// Highlight the differences between the two panes, or stop.
-    // PORT ME(compare): the compare part owns `compare_panes`; its `ComparePanes` handler should do this, and the
-    // bar can then dispatch the action instead.
+    /// Highlight the differences between the two panes, or stop (the explorer computes the comparison).
     fn toggle_compare_panes(&self, cx: &mut App) {
-        self.explorer.update(cx, |e, cx| {
-            if e.is_dual() {
-                e.compare_panes = !e.compare_panes;
-                cx.notify();
-            }
-        });
+        self.explorer.update(cx, |e, cx| e.toggle_compare_panes(cx));
     }
 
     /// Restore from the Recycle Bin: the selection goes back where each item was deleted from.

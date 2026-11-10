@@ -407,7 +407,7 @@ impl Env {
 }
 
 fn entries(dir: &str) -> Vec<FileEntry> {
-    let mut docx = file(dir, "report.docx", 4096, 3);
+    let mut docx = file(dir, "report.doc", 4096, 3);
     docx.attrs = 0;
     let mut offline = file(dir, "cloud.txt", 10, 5);
     offline.attrs |= attr::OFFLINE;
@@ -435,6 +435,7 @@ fn entries(dir: &str) -> Vec<FileEntry> {
         file(dir, "blob.zzqq", 600, 9),
         file(dir, "pack.zip", 700, 8),
         file(dir, "movie.mp4", 800, 10),
+        file(dir, "book.mobi", 160, 21),
         file(dir, "تقرير الربع.txt", 900, 11),
         file(dir, "صورة.bmp", 1000, 12),
         file(dir, "table.csv", 100, 15),
@@ -513,7 +514,7 @@ fn nothing_selected_shows_the_folders_card(cx: &mut TestAppContext) {
     let mut env = setup(cx);
     assert_eq!(env.shown(), Shown::Nothing);
     assert!(env.has("Select a file to preview it"));
-    assert!(env.has("24 items"), "the folder's item count is said");
+    assert!(env.has("25 items"), "the folder's item count is said");
     assert!(env.entry_view().is_none());
     // The pane is a named region.
     assert!(env.has("Preview pane"));
@@ -946,7 +947,7 @@ fn a_folder_offers_to_calculate_folder_sizes_and_shows_its_size_once_measured(cx
     );
     // Nothing selected: the folder's card says what the whole folder came to.
     env.explorer.update(&mut env.visual, |e, cx| e.select_only(None, cx));
-    env.until("the folder's total", |env| env.has("24 items · 8.0 KB in total"));
+    env.until("the folder's total", |env| env.has("25 items · 8.0 KB in total"));
 }
 
 #[gpui_kit::test]
@@ -1064,9 +1065,9 @@ fn a_binary_file_goes_to_windows_previewer_over_its_bytes(cx: &mut TestAppContex
 fn the_host_follows_the_box_hides_for_dialogs_and_menus_and_lets_go_when_the_item_changes(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut env = setup(cx);
-    env.select("report.docx");
+    env.select("report.doc");
     assert_eq!(env.body(), Some(Body::Shell(super::choose::Fallback::Icon)));
-    let path = env.path("report.docx");
+    let path = env.path("report.doc");
     assert_eq!(env.fake.count(&format!("show {PANE} {path}")), 1);
     let first = env.fake.rect.get().expect("shown over a rectangle");
 
@@ -1128,7 +1129,7 @@ fn the_host_follows_the_box_hides_for_dialogs_and_menus_and_lets_go_when_the_ite
 fn a_type_with_no_previewer_keeps_its_icon_and_the_hosts_reason(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut env = setup(cx);
-    env.select("report.docx");
+    env.select("report.doc");
     let sender = env
         .fake
         .senders
@@ -1158,7 +1159,7 @@ fn a_window_without_a_handle_has_no_previewer_and_says_nothing(cx: &mut TestAppC
     let _guard = testing::lock();
     let mut env = setup(cx);
     env.fake.no_window.set(true);
-    env.select("report.docx");
+    env.select("report.doc");
     let host = env.body_as::<ShellHost>().expect("the host is the body");
     host.read_with(&env.visual, |h, _| {
         assert_eq!(*h.state(), State::Unavailable(String::new()))
@@ -1171,7 +1172,8 @@ fn a_window_without_a_handle_has_no_previewer_and_says_nothing(cx: &mut TestAppC
 fn kinds_not_ported_yet_fall_back_to_windows_previewer_over_the_icon(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut env = setup(cx);
-    env.select("movie.mp4");
+    // MOBI books are the reader's next part; Windows' previewer stands in.
+    env.select("book.mobi");
     let view = env.entry_view().expect("shown");
     view.read_with(&env.visual, |v, _| {
         assert_eq!(v.body(), Some(Body::Shell(super::choose::Fallback::Icon)))
@@ -1179,7 +1181,7 @@ fn kinds_not_ported_yet_fall_back_to_windows_previewer_over_the_icon(cx: &mut Te
     assert!(env
         .fake
         .logged()
-        .contains(&format!("show {PANE} {}", env.path("movie.mp4"))));
+        .contains(&format!("show {PANE} {}", env.path("book.mobi"))));
 }
 
 // ---- Pictures -----------------------------------------------------------------------------------------------
@@ -1443,8 +1445,8 @@ fn quick_look_can_be_maximized_and_closed_with_its_buttons(cx: &mut TestAppConte
 fn quick_look_takes_windows_previewer_from_the_pane_and_gives_it_back(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut env = setup(cx);
-    env.select("report.docx");
-    let path = env.path("report.docx");
+    env.select("report.doc");
+    let path = env.path("report.doc");
     assert_eq!(env.fake.count(&format!("show {PANE} {path}")), 1);
     env.visual.update(quick_look::toggle);
     env.visual.run_until_parked();

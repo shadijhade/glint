@@ -167,6 +167,25 @@
 
 **Left for later:** Git marks in the grid (FileGrid.tsx drew them), the status bar's sized hover built from joined pieces (translate as whole sentences), a second window for Open in new window (a new tab meanwhile), the terminal pane (Run task, scripts in a terminal, Terminal here), Compare panes (no handler for Ctrl+Shift+M, nothing draws the highlights), a Columns view key (Ctrl+Shift+9), design files checked against real .kra/.ora/.procreate/.sketch files, Quick Look's Page keys for the small, text and Markdown previews, `dialogs/vault.rs` merged into action_run (done) and `batch_rename`/`gallery_months` sharing one local-date helper, two tests that fail now and then under a full parallel run (core_bridge's message-pump job test, the preview data tree test).
 
+## Wave 10: native previews with no new crate, compare panes: done 2026-11-10
+
+*6 ports (Sonnet; 12 agents with reviews, ~71 min, 2.8M tokens), all passed review first time. Integrated by the coordinator: the preview chooser's Player, Pdf, Book, Docx and Model bodies (video, sound and PDFs in archives are shown from a copy the view extracts), Quick Look's Page keys for each, the atlas released for frames and drawings, a Word document Glint can't lay out falling back to Windows' previewer, Ctrl+Shift+M and the command bar through `Explorer::toggle_compare_panes`. glint-ui 1,729 tests pass; clippy clean. `image`, `zip` and `roxmltree` became glint-ui dependencies (already in the build).*
+
+| Part | From | Status |
+| :--- | :--- | :--- |
+| `player`: Media Foundation's media engine (frames through a D3D11 texture), Trim, waveform, transcript, scrubbing | VideoPreview, AudioPreview, Waveform, VideoScrub | done |
+| `pdf`: Windows.Data.Pdf pages, zoom, page jump, copy text, find | PdfPreview (was WebView2's viewer) | done |
+| `rich`, `book`, `docx`: EPUB, FB2, comics; Word documents | BookView, DocxView | done (no MOBI) |
+| mail: sanitised HTML bodies, remote content off, cid pictures, Outlook RTF | SmallPreviews (Email) | done |
+| `model3d`: STL, OBJ, PLY, glTF/GLB, 3MF; software renderer, orbit | ModelView | done |
+| compare panes and diff-only in the explorer and list; Git marks in the grid | Explorer.tsx, FileGrid.tsx | done |
+
+**Tried for real** (show: captures): a 640 x 360 H.264 clip's first frame with the controls and Trim; Alarm01.wav with its waveform from a real decode; a two-page PDF drawn by Windows.Data.Pdf; a Word document's heading, bold and italic runs and a table; an STL cube shaded.
+
+**Found while trying, top of the next wave:** a right-to-left paragraph that wraps breaks inside a word and its second line runs past the start edge (the Word preview's Arabic paragraph). GPUI's wrapped lines don't reorder each line on its own (the RTL patch covered single lines: "wrapped lines" was its open item), so every wrapped Arabic paragraph is affected (Markdown, notebooks, mail, books, Word).
+
+**Left for later:** MOBI/AZW (a reader of its own), Read aloud, a book's last place and text size kept between runs, video scrub thumbnails on grid tiles (`player::Scrub` exists), the compare bar (counts, Sync, deep compare: no core command), HTML mail's right-to-left alignment, a plain/HTML switch and a "load remote pictures" switch, tiled PDF rendering past 8 MP, Arabic strings for all of the above.
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).
