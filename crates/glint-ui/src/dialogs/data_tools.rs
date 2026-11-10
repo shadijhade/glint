@@ -19,7 +19,7 @@
 //! * `MenuEvent::QueryTogether { paths }` is `dialogs::data_tools::query_together(window, cx, paths)`. It wants two
 //!   or more data files and says so in a notification otherwise.
 //! * `MenuEvent::ConvertData { paths }` is `dialogs::data_tools::convert_data(window, cx, paths)`.
-//! * The preview pane's Query and Profile views (`PORT ME(preview)` in components/preview/mod.rs) are
+//! * The preview pane's Query and Profile views (built in components/preview/frame.rs) are
 //!   [`QueryView::new`] over `vec![path]` (with the database's draft, if the schema view asked for one) and
 //!   [`ProfileView::new`]. Both take a [`Backend`] and a [`Tooling`]; `data_tools::core_backend(cx)` and
 //!   `Tooling::new(action_run::tools_model(window, cx))` are the app's.

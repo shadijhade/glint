@@ -1,7 +1,7 @@
 {
   "name": "glint",
   "private": true,
-  "version": "0.9.5",
+  "version": "0.10.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,8 @@
     "licenses": "node scripts/licenses.mjs",
     "msix": "node scripts/msix.mjs",
     "gpui:installer": "node scripts/gpui-installer.mjs",
+    "installer-art": "node scripts/installer-art.mjs",
+    "test:signing": "node scripts/lib/minisign-compare.test.mjs",
     "site": "npm --prefix site run dev",
     "bench": "node scripts/bench.mjs"
   },

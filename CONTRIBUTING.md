@@ -69,7 +69,7 @@ The first build compiles all Rust dependencies and takes a few minutes; later on
 | `src/lib/highlight.tsx`, `highlighter.ts` | Code highlighting: the languages, and Prism with its grammars, loaded the first time code is shown |
 | `quick.html`, `src/quick.tsx` | The quick search window's own page |
 | `src-tauri/src/openers.rs`, `calc.rs`, `zoxide.rs`, `snap.rs` | Open in… (the editors and terminals found), the calculator in `Ctrl+K` (fend), folder history shared with zoxide, and Windows 11's snap layouts on the maximize button |
-| `src-tauri/index/`, `src-tauri/src/index.rs` | The opt-in instant-search service (NTFS MFT + USN journal): names, folder sizes, maps, what grew and what moved ([docs/instant-search.md](docs/instant-search.md)); turning it on and off |
+| `crates/shadui-index/`, `src-tauri/src/index.rs` | The opt-in instant-search service (NTFS MFT + USN journal): names, folder sizes, maps, what grew and what moved ([docs/instant-search.md](docs/instant-search.md)); turning it on and off |
 | `src-tauri/binaries/` | Bundled `rg`, `fd` and `pdu` executables |
 | `src-tauri/installer/` | The NSIS installer: Tauri's template with Glint's pages, its hooks, its look and artwork, and the **Extra tools** page ([docs/releasing.md](docs/releasing.md#the-installer)) |
 | `src-tauri/src/webview.rs` | Before the window opens: on a PC without WebView2, offering to install it (Microsoft's installer, checked for Microsoft's signature) |

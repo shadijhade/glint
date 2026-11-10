@@ -9,8 +9,7 @@
 //!
 //! # Where this goes (for the coordinator)
 //!
-//! `hex.rs`, at the `PORT ME(coordinator): the signature chip` after the `pe-subsystem` chip, in the row of
-//! chips of a program's header: `.child(cx.new(|cx| SignatureChip::new(path.clone(), cx)))` (the chip is
+//! `frame.rs` builds it for a program's header (it was to go after the `pe-subsystem` chip): `.child(cx.new(|cx| SignatureChip::new(path.clone(), cx)))` (the chip is
 //! `inline-flex`, `min-w-0`, so it truncates in a wrapping row). The chip needs no event. A program inside an
 //! archive has no path Windows can check; the TypeScript asked all the same, and so does this.
 

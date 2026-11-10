@@ -2,7 +2,7 @@
 # The old app (src-tauri) keeps its own workspace and isn't a member.
 [workspace]
 resolver = "2"
-members = ["crates/glint-model", "crates/glint-core", "crates/glint-ui", "crates/glint"]
+members = ["crates/glint-model", "crates/glint-core", "crates/glint-ui", "crates/glint", "crates/shadui-index"]
 exclude = ["src-tauri", "vendor"]
 
 [workspace.package]
@@ -35,3 +35,9 @@ debug = false
 # agents still filled 45 GB with full-debug test binaries and their incremental caches.
 [profile.dev]
 debug = "line-tables-only"
+
+# The instant search service (moved here from src-tauri/index) was built with src-tauri's release profile (fat LTO,
+# one codegen unit). LTO is a whole-profile setting and isn't switched on here (it would slow every Glint build);
+# the service gets one codegen unit, which per-package settings can do.
+[profile.release.package.shadui-index]
+codegen-units = 1

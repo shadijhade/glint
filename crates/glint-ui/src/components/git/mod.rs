@@ -35,14 +35,14 @@
 //! - An `ignored` item (`.gitignore` leaves it out) draws no pill; the row is dimmed to 55% (as hidden and cut
 //!   items are) and the name's tooltip is [`words::name_tooltip`]`(name, ignored)`, which adds "Git: left out by
 //!   .gitignore".
-//! - The file list's `PORT ME(git)` in `cells.rs` is both of these; the grid draws them on its tiles too (file_grid/tile.rs), as FileGrid.tsx did.
+//! - The file list's `cells.rs` draws both of these; the grid draws them on its tiles too (file_grid/tile.rs), as FileGrid.tsx did.
 //!
 //! **The `git:` filters and Group by Git.** They need the marks, and the explorer builds the rows without them
-//! (`RowSpec` has no marks). Pass [`marks`] as the `git` argument of `glint_model::entries::matcher` (the filter box:
-//! `git:changed`, `git:new`, `git:staged`, `git:modified`, `git:conflicted`, `git:ignored`) and of
-//! `glint_model::groups::group_rows` (Group by "Git status"). `PORT ME(coordinator)`: that means `RowSpec` gets a
-//! `git: Option<Arc<GitMarks>>` and `Tab::rows` are rebuilt when [`model::GitEvent::Changed`] arrives for a tab whose
-//! filter holds `git:` or whose group is Git. Without a repository `git:…` matches nothing, as in the TypeScript.
+//! (the explorer's `RowSpec` takes them as `git`). The window passes [`marks`] to `Explorer::set_git_marks` when
+//! [`model::GitEvent::Changed`] arrives; the explorer reads them into the `git` argument of
+//! `glint_model::entries::matcher` (the filter box: `git:changed`, `git:new`, `git:staged`, `git:modified`,
+//! `git:conflicted`, `git:ignored`) and of `glint_model::groups::group_rows` (Group by "Git status"), and rebuilds
+//! the tab's rows when its filter holds `git:` or its group is Git. Without a repository `git:…` matches nothing, as in the TypeScript.
 //!
 //! **The status bar.** [`status_line`]`(cx, tab)` is the work button's Git words ("git · 12 ms", "git · waits for
 //! trust", "git · F5 for status") and its hover text; the bar draws it after "· ", from the `xl` width up, beside
@@ -50,7 +50,7 @@
 //! took" (label, branch or "repo", milliseconds), after "Folder sizes".
 //!
 //! **The branch chip.** One [`chip::GitChip::new`]`(tab, cx)` per tab, made once, goes in the address bar after the
-//! breadcrumbs (where `address_bar/mod.rs` has `PORT ME(git)`), `ms-1`, hidden below 26 rem of bar (the
+//! breadcrumbs (`address_bar/mod.rs`), `ms-1`, hidden below 26 rem of bar (the
 //! TypeScript's `@max-[26rem]:hidden`). It draws nothing while [`chip::GitChip::is_shown`] is false, so leave no gap
 //! for it then. [`in_repository`]`(cx, tab)` is what `AddressBar::set_in_repository` takes (the `git:` hint). The
 //! popover hangs under the chip from its start edge; it closes on Escape, a press outside, or any button in it. Its

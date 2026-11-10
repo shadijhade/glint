@@ -1407,7 +1407,7 @@ pub struct Tooling {
     /// tests that don't care); [`Tooling::new`] counts none.
     assume_ready: bool,
     /// Tests say which tools are there instead (the settings' `Backend` can't be faked from outside it:
-    /// `PORT ME(coordinator)`: `pub use backend::Fetch` in settings/mod.rs, then a fake can be written).
+    /// a fake `Fetch` can be written now that settings/mod.rs exports it, but nothing does yet).
     #[cfg(test)]
     forced: Option<Vec<&'static str>>,
 }

@@ -6,13 +6,13 @@ description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
 publish = false
-# The app; src/bin/shadui-index.rs is the instant search service bundled with it.
+# The app; the instant search service (shadui-index) now lives in ../crates/shadui-index.
 default-run = "shadui-ripgrep"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [workspace]
-members = ["index"]
+members = []
 
 # The app and the instant search service share one version: the app offers to update the service
 # whenever the two differ, so every release bumps both (see docs/releasing.md).
@@ -46,7 +46,7 @@ tauri-plugin-dialog = "2.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 notify = "8"
-shadui-index = { path = "index" }
+shadui-index = { path = "../crates/shadui-index" }
 # The File X-Ray's checksums: RustCrypto's SHA-256 (with the CPU's SHA instructions where it has them)
 # and crc32fast, both already in the build through Tauri and flate2, and BLAKE3, which the duplicate
 # finder hashes content with too (several times SHA-256's speed, with SIMD).

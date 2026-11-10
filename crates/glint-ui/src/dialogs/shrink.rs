@@ -15,8 +15,7 @@
 //! * `MenuEvent::MakeSmaller { paths }` is `dialogs::shrink::open(window, cx, paths, compress)`. The files among
 //!   `paths` are the ones Make smaller works on; folders among them (it asks the active folder's listing, as the
 //!   menus got them from there) are offered Compress instead. `compress` runs for "Compress to 7z" with the
-//!   folders (`compressEntries(folders, "7z")`): `PORT ME(coordinator)`: the same as the Compress > 7z file
-//!   menu item. "In place" opens `dialogs::compress_in_place` itself.
+//!   folders (`compressEntries(folders, "7z")`): the same as the Compress > 7z file menu item (workspace.rs). "In place" opens `dialogs::compress_in_place` itself.
 //! * `MenuEvent::BackToJpeg { paths }` is `dialogs::shrink::back_to_jpeg(window, cx, paths)`. It makes a JPEG
 //!   beside each `.jxl` file, with no dialog, and Ctrl+Z takes them back.
 //!

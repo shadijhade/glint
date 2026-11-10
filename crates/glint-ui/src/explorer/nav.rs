@@ -1,7 +1,7 @@
 //! Navigation: opening folders, history, re-reading, prefetching and the drives.
 //! Ported from explorer.ts: `navigate`, `getAccess` (in open.rs), `goBack`, `goForward`, `goUp`, `reload`,
 //! `reloadFolder`, `reread`, `refresh`, `refreshDrives`, `prefetchFolder`, `takePrefetched`, `hoverFolder`,
-//! `leaveFolder`.
+//! `leaveFolder`, and `showArchiveReading` (a big archive read whole says how far along it is, with Stop).
 //!
 //! **Stale results.** Every tab counts its navigations. A listing that comes back for an older number than
 //! the tab's newest was superseded (the person clicked elsewhere meanwhile, or the tab closed) and is
@@ -10,12 +10,21 @@
 use super::model::Explorer;
 use super::source::Effect;
 use super::types::*;
+use crate::startup::ReadingNote;
 use glint_model::archives::needs_password;
 use glint_model::columns::FolderKind;
 use glint_model::paths::{in_archive_path, is_folder_path, parent_path, same_path, THIS_PC};
-use gpui_kit::{AsyncApp, Context, Task, WeakEntity};
+use gpui_kit::{App, AppContext as _, AsyncApp, Context, Global, Task, WeakEntity};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// A folder that takes this long to list may be an archive being read whole: the notice looks then.
+const READING_FIRST: Duration = Duration::from_millis(400);
+/// And asks again this often while the folder is still being listed.
+const READING_EVERY: Duration = Duration::from_millis(250);
 
 /// A prefetched listing is good for this long (and only while the folder's own date is unchanged).
 const PREFETCH_FRESH: Duration = Duration::from_millis(2000);
@@ -25,6 +34,90 @@ const PREFETCH_MOST: usize = 8;
 const HISTORY_MOST: usize = 100;
 /// The pointer rests on a folder this long before it's read ahead.
 const HOVER_FOR: Duration = Duration::from_millis(80);
+
+// ---- A big archive read whole -----------------------------------------------------------------------------
+
+/// How far the first read of an archive has come: the archive's path, and compressed bytes read of its size
+/// (`ReadProgress`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArchiveRead {
+    archive: String,
+    done: u64,
+    total: u64,
+}
+
+/// What the archive-reading notice asks glint-core: how far the read has come, and to stop it. The app uses
+/// [`ArchiveProbe::core`]; a test puts its own in a global.
+#[derive(Clone)]
+struct ArchiveProbe {
+    progress: ReadProgress,
+    cancel: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+/// Asks how far the read of the archive a path is in has come, if one is under way.
+type ReadProgress = Arc<dyn Fn(&str) -> Option<ArchiveRead> + Send + Sync>;
+
+impl Global for ArchiveProbe {}
+
+impl ArchiveProbe {
+    /// glint-core's own (`archive_progress`, `cancel_archive_read`): quick looks at what its reads keep.
+    fn core() -> Self {
+        ArchiveProbe {
+            progress: Arc::new(|path| {
+                let found = glint_core::archive::archive_progress(path.to_string())?;
+                // Core keeps the fields private; it is serialised for the interface, so it is read that way.
+                let value = serde_json::to_value(&found).ok()?;
+                Some(ArchiveRead {
+                    archive: value.get("path")?.as_str()?.to_string(),
+                    done: value.get("done")?.as_u64()?,
+                    total: value.get("total").and_then(|t| t.as_u64()).unwrap_or(0),
+                })
+            }),
+            cancel: Arc::new(|path| glint_core::archive::cancel_archive_read(path.to_string())),
+        }
+    }
+}
+
+fn archive_probe(cx: &App) -> ArchiveProbe {
+    cx.try_global::<ArchiveProbe>()
+        .cloned()
+        .unwrap_or_else(ArchiveProbe::core)
+}
+
+/// The folders whose reading Stop was pressed on, in lower case: their notice is not shown again while the read
+/// winds down.
+#[derive(Default)]
+struct ReadingStops(HashSet<String>);
+
+impl Global for ReadingStops {}
+
+fn stop_key(target: &str) -> String {
+    target.to_lowercase()
+}
+
+/// Watches one navigation for an archive being read whole; [`ReadingWatch::finish`] ends it.
+struct ReadingWatch {
+    target: String,
+    /// The notice was shown.
+    shown: Rc<Cell<bool>>,
+    /// Looks every so often; dropped (cancelled) when the navigation ends.
+    _poll: Task<()>,
+}
+
+impl ReadingWatch {
+    /// The folder is listed or failed: the looking stops and the notice goes.
+    fn finish(self, cx: &mut AsyncApp) {
+        let ReadingWatch { target, shown, _poll } = self;
+        drop(_poll);
+        cx.update(|cx| {
+            let stopped = cx.default_global::<ReadingStops>().0.remove(&stop_key(&target));
+            // Stop already took the notice away.
+            if shown.get() && !stopped {
+                crate::startup::archive_reading(cx, ReadingNote::Ended { target, shown: true });
+            }
+        });
+    }
+}
 
 /// A folder read ahead: the listing, once it's in, and the folder's own date from before it was read.
 pub(super) struct PrefetchEntry {
@@ -141,17 +234,72 @@ impl Explorer {
         }
         let claim = (target != THIS_PC).then(|| self.claim_prefetch(&target)).flatten();
         let source = self.source.clone();
+        // Listing a big .tar.gz reads it whole: while it does, a notice says how far along that is, with Stop.
+        let watch = (target != THIS_PC).then(|| self.watch_archive_reading(&target, cx));
         cx.spawn(async move |this, cx| {
             let outcome = if target == THIS_PC {
                 None
             } else {
                 Some(read_folder(&*source, &target, claim).await)
             };
+            if let Some(watch) = watch {
+                watch.finish(cx);
+            }
             this.update(cx, |this, cx| {
                 this.finish_navigation(id, seq, started, target, options, outcome, cx)
             })
             .unwrap_or(false)
         })
+    }
+
+    /// Looks, after a moment and then every so often, whether `target` is an archive being read whole, and says
+    /// how far along that is ([`ReadingNote`]) until the returned watch is finished (`showArchiveReading`).
+    fn watch_archive_reading(&mut self, target: &str, cx: &mut Context<Self>) -> ReadingWatch {
+        let shown = Rc::new(Cell::new(false));
+        let seen = shown.clone();
+        let asked = target.to_string();
+        let poll = cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(READING_FIRST).await;
+            loop {
+                let probe = cx.update(|cx| archive_probe(cx));
+                let looking = asked.clone();
+                // Off the UI thread: core's reads keep their state behind a lock.
+                let progress = cx.background_spawn(async move { (probe.progress)(&looking) }).await;
+                let stopped = cx.update(|cx| {
+                    cx.try_global::<ReadingStops>()
+                        .is_some_and(|stops| stops.0.contains(&stop_key(&asked)))
+                });
+                if stopped {
+                    return;
+                }
+                if let Some(read) = progress {
+                    seen.set(true);
+                    let note = ReadingNote::Progress {
+                        target: asked.clone(),
+                        archive: read.archive,
+                        done: read.done,
+                        total: read.total,
+                    };
+                    cx.update(|cx| crate::startup::archive_reading(cx, note));
+                }
+                cx.background_executor().timer(READING_EVERY).await;
+            }
+        });
+        ReadingWatch {
+            target: target.to_string(),
+            shown,
+            _poll: poll,
+        }
+    }
+
+    /// Stop on the archive-reading notice: the first read of the archive `target` is in is cancelled (its
+    /// listing then fails with "cancelled", which says nothing), and the notice isn't shown again meanwhile. The
+    /// caller takes the notice down ([`crate::startup`] does) once this has returned.
+    pub fn stop_archive_reading(&mut self, target: &str, cx: &mut Context<Self>) {
+        cx.default_global::<ReadingStops>().0.insert(stop_key(target));
+        let probe = archive_probe(cx);
+        let target = target.to_string();
+        cx.background_spawn(async move { (probe.cancel)(&target) }).detach();
     }
 
     /// [`Explorer::navigate_task`], detached: opens the folder and doesn't wait.
@@ -830,5 +978,160 @@ mod tests {
             failure_notice("Access is denied", "C:\\x", TabId(1), &select),
             Some(Notice::CannotOpen { .. })
         ));
+    }
+}
+
+/// The notice for an archive read whole: shown after a moment, kept up to date, stoppable, and gone when the
+/// folder is.
+#[cfg(test)]
+mod reading_tests {
+    use super::*;
+    use crate::explorer::fake::{file, FakeDisk};
+    use crate::startup::ReadingSink;
+    use crate::testing;
+    use gpui_kit::TestAppContext;
+    use std::cell::RefCell;
+    use std::sync::Mutex;
+
+    const ARCHIVE: &str = r"C:\big.tar.gz";
+
+    /// An explorer on a fake disk whose `big.tar.gz` takes its time (`gate.close()` ends it), a probe that says
+    /// what `reads` holds, and every note the notice was told.
+    struct Rig {
+        explorer: gpui_kit::Entity<Explorer>,
+        gate: async_channel::Sender<()>,
+        reads: Arc<Mutex<Option<ArchiveRead>>>,
+        cancelled: Arc<Mutex<Vec<String>>>,
+        notes: Rc<RefCell<Vec<ReadingNote>>>,
+    }
+
+    fn rig(cx: &mut TestAppContext) -> Rig {
+        cx.update(testing::init);
+        let disk = FakeDisk::new();
+        disk.folder(ARCHIVE, vec![file(ARCHIVE, "inside.txt", 1, 1)]);
+        let gate = disk.hold(ARCHIVE);
+        let reads = Arc::new(Mutex::new(None));
+        let cancelled = Arc::new(Mutex::new(Vec::new()));
+        let notes = Rc::new(RefCell::new(Vec::new()));
+        let (asked, stopped, heard) = (reads.clone(), cancelled.clone(), notes.clone());
+        cx.update(|cx| {
+            cx.set_global(ArchiveProbe {
+                progress: Arc::new(move |_| asked.lock().unwrap().clone()),
+                cancel: Arc::new(move |path| stopped.lock().unwrap().push(path.to_string())),
+            });
+            cx.set_global(ReadingSink(Rc::new(move |note| heard.borrow_mut().push(note.clone()))));
+        });
+        let explorer = cx.update(|cx| cx.new(|cx| Explorer::new(disk.source(), cx)));
+        Rig {
+            explorer,
+            gate,
+            reads,
+            cancelled,
+            notes,
+        }
+    }
+
+    impl Rig {
+        fn navigate(&self, cx: &mut TestAppContext) -> Task<bool> {
+            self.explorer
+                .update(cx, |e, cx| e.navigate_task(ARCHIVE, NavOptions::default(), cx))
+        }
+
+        fn wait(&self, cx: &mut TestAppContext, millis: u64) {
+            cx.executor().advance_clock(Duration::from_millis(millis));
+            cx.run_until_parked();
+        }
+
+        fn reading(&self, done: u64, total: u64) {
+            *self.reads.lock().unwrap() = Some(ArchiveRead {
+                archive: ARCHIVE.to_string(),
+                done,
+                total,
+            });
+        }
+    }
+
+    fn progress(done: u64, total: u64) -> ReadingNote {
+        ReadingNote::Progress {
+            target: ARCHIVE.to_string(),
+            archive: ARCHIVE.to_string(),
+            done,
+            total,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_folder_that_takes_a_moment_says_how_far_the_archive_read_has_come(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let rig = rig(cx);
+        let opening = rig.navigate(cx);
+        // Not before 400 ms: a quick folder never shows it.
+        rig.reading(10, 100);
+        rig.wait(cx, 300);
+        assert!(rig.notes.borrow().is_empty());
+        rig.wait(cx, 150);
+        assert_eq!(*rig.notes.borrow(), [progress(10, 100)]);
+        // Then every 250 ms, with where it has got to.
+        rig.reading(60, 100);
+        rig.wait(cx, 250);
+        assert_eq!(rig.notes.borrow().last(), Some(&progress(60, 100)));
+        // The folder arrives: the notice goes.
+        rig.gate.close();
+        assert!(cx.foreground_executor().block_test(opening));
+        assert_eq!(
+            rig.notes.borrow().last(),
+            Some(&ReadingNote::Ended {
+                target: ARCHIVE.to_string(),
+                shown: true
+            })
+        );
+        // And nothing is looked at afterwards.
+        let told = rig.notes.borrow().len();
+        rig.wait(cx, 1000);
+        assert_eq!(rig.notes.borrow().len(), told);
+    }
+
+    #[gpui_kit::test]
+    fn a_slow_folder_that_is_not_an_archive_read_shows_nothing(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let rig = rig(cx);
+        let opening = rig.navigate(cx);
+        // Core has no read of an archive going: nothing to say, however long it takes.
+        rig.wait(cx, 2000);
+        rig.gate.close();
+        assert!(cx.foreground_executor().block_test(opening));
+        assert!(rig.notes.borrow().is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn stop_cancels_the_read_and_the_notice_is_not_shown_again_meanwhile(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let rig = rig(cx);
+        let opening = rig.navigate(cx);
+        rig.reading(10, 100);
+        rig.wait(cx, 450);
+        assert_eq!(rig.notes.borrow().len(), 1);
+        // Stop (the notice's button): core is asked to stop reading, whatever case the path is in.
+        rig.explorer
+            .update(cx, |e, cx| e.stop_archive_reading(r"C:\BIG.tar.gz", cx));
+        cx.run_until_parked();
+        assert_eq!(*rig.cancelled.lock().unwrap(), [r"C:\BIG.tar.gz"]);
+        // The read winds down slowly; the notice does not come back.
+        rig.reading(20, 100);
+        rig.wait(cx, 1000);
+        assert_eq!(rig.notes.borrow().len(), 1);
+        // Its listing then fails with "cancelled", which says nothing, and the next time starts clean.
+        rig.gate.close();
+        let _ = cx.foreground_executor().block_test(opening);
+        assert_eq!(rig.notes.borrow().len(), 1, "the notice was taken down by Stop itself");
+        cx.update(|cx| assert!(cx.global::<ReadingStops>().0.is_empty()));
+    }
+
+    #[gpui_kit::test]
+    fn the_core_probe_reads_nothing_where_no_archive_is_being_read(_cx: &mut TestAppContext) {
+        let probe = ArchiveProbe::core();
+        assert_eq!((probe.progress)(r"C:\nothing-is-reading-this.tar.gz"), None);
+        // Cancelling a read that is not there does nothing.
+        (probe.cancel)(r"C:\nothing-is-reading-this.tar.gz");
     }
 }

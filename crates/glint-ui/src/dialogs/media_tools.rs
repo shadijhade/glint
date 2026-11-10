@@ -3,7 +3,7 @@
 //!
 //! Ported from src/components/explorer/MediaTools.tsx. These are not dialogs but two small views the preview
 //! pane places under and in place of a video or recording's player (`FilePreview.tsx` did). The player itself
-//! is the preview pane's (`PORT ME(video)` in `components/preview/choose.rs`); these two talk to it with events and
+//! is the preview pane's (`Body::Player` in `components/preview/choose.rs`); these two talk to it with events and
 //! calls, so they work with whatever plays. The run uses `dialogs::action_run` (the Undo offer, the install
 //! card).
 //!

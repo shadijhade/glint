@@ -1,5 +1,5 @@
 //! The instant search service (and its installer), bundled next to the app. See the shadui-index
-//! crate in index/ for what it does; the app runs it elevated once, to install it, when you turn
+//! crate (crates/shadui-index) for what it does; the app runs it elevated once, to install it, when you turn
 //! instant search on.
 
 fn main() {

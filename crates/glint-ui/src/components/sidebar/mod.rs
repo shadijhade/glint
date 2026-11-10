@@ -9,6 +9,7 @@
 //! | `TreeKids`, `TreeRow`, `TreeArrow`            | `Row::Folder` rows, drawn by [`Sidebar::draw_folder`]      |
 //! | `onTreeKey`                                   | [`Sidebar::on_key_down`]                                  |
 //! | `useCloudSpace`, `useSavedCount`              | [`Sidebar::ask_cloud_space`], [`Sidebar::recount`]         |
+//! | `TagsSection`, `allTags`                      | [`rows::shown_tags`], [`Sidebar::read_tags`], [`Sidebar::draw_tag`] |
 //! | `folderMenu` for a place, `onPlaceContextMenu` | [`SidebarRequest::ContextMenu`]: the window's shared menu |
 //! | `data-drop`, `dropTarget`                     | [`drop::target_of`], [`Sidebar::drag_over`], [`Sidebar::drop_on`] |
 //!
@@ -33,6 +34,7 @@ mod rows;
 mod tree;
 
 use crate::core_bridge;
+use crate::dialogs::tags;
 use crate::explorer::{explorer, Explorer, NavOptions};
 use crate::kit::prelude::*;
 use crate::persistence::Persistence;
@@ -43,7 +45,7 @@ use glint_model::entries::{with_details, FileEntry, RawEntry};
 use glint_model::file_types::kind_of;
 use glint_model::paths::{same_path, RECYCLE_BIN, THIS_PC};
 use glint_model::store::{RemoteKind, SavedSearch};
-use rows::{build_rows, count_key, reads_files, Glyph, Inputs, Label, Place, Row, Space};
+use rows::{build_rows, count_key, reads_files, shown_tags, tag_search, Glyph, Inputs, Label, Place, Row, Space};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -71,9 +73,9 @@ const SPACE_FRESH_FOR: Duration = Duration::from_secs(10 * 60);
 #[derive(Clone, Debug, PartialEq)]
 pub enum SidebarEvent {
     /// A saved search was clicked: open its folder in the active tab, put its query in the search box and run it
-    /// (`runSavedSearch`). PORT ME(find): the find part does this.
+    /// (`runSavedSearch`; the window has the explorer do it). A tag is one too: `tag:"name"` at This PC.
     RunSavedSearch(SavedSearch),
-    /// "Add a connection" was clicked (`addRemote`). PORT ME(remotes): open the connection dialog.
+    /// "Add a connection" was clicked (`addRemote`); the window opens the connection dialog.
     AddConnection,
     /// No longer emitted: "Edit the connection…" is the shared menu's `MenuEvent::EditConnection` now. Kept only
     /// until the window's match on this enum drops it.
@@ -94,7 +96,7 @@ pub enum SidebarRequest {
     /// The window opens `components::menus::MenuHost::open_folder_menu(&path, position, ..)`.
     ContextMenu { path: String, position: Point<Pixels> },
     /// Files dropped on a paired PC's place: send them to it (`sendToDevice(device, paths)`). `id` is the
-    /// connection's id. PORT ME(coordinator): the devices part sends them; no explorer call does yet.
+    /// connection's id. The window hands them to the devices part (`dialogs::nearby`).
     SendToDevice { id: String, paths: Vec<String> },
 }
 
@@ -109,6 +111,11 @@ pub type SavedCountSource = Arc<
     dyn Fn(String, Vec<String>) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send>> + Send + Sync,
 >;
 
+/// Every tag on the drives instant search covers, with how many items have it, most used first (`tags_all`); an
+/// error where instant search is off or from before tags.
+pub type TagsSource =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Vec<(String, u64)>, String>> + Send>> + Send + Sync>;
+
 /// Where the sidebar reads what is not in the explorer or the saved state: glint-core in the app, fakes in tests.
 #[derive(Clone)]
 pub struct Sources {
@@ -118,6 +125,8 @@ pub struct Sources {
     pub cloud_space: CloudSpaceSource,
     /// What a saved search finds.
     pub saved_count: SavedCountSource,
+    /// The tags on the drives instant search covers.
+    pub tags: TagsSource,
 }
 
 impl Sources {
@@ -148,6 +157,7 @@ impl Sources {
                     }))
                 })
             }),
+            tags: Arc::new(|| Box::pin(glint_core::tags::tags_all())),
         }
     }
 }
@@ -168,6 +178,10 @@ pub struct Sidebar {
     asking: HashSet<String>,
     /// Saved searches' counts, by [`count_key`].
     counts: HashMap<String, String>,
+    /// Every tag instant search lists, with its count (empty where it lists none), and how many times it was asked
+    /// (an older answer arriving late is dropped).
+    indexed_tags: Vec<(String, u64)>,
+    tags_asked: u64,
     // What the last refresh saw, to do each thing once per change (the TypeScript's effect dependencies).
     last_hidden: bool,
     last_reveal: Option<(bool, bool, String)>,
@@ -204,6 +218,15 @@ impl Sidebar {
             cx.observe(&explorer, |this, _, cx| this.refresh(cx)),
             cx.observe_global::<Persistence>(|this, cx| this.refresh(cx)),
             cx.observe_global::<UiState>(|this, cx| this.refresh(cx)),
+            // A tag was set on something: the recent tags changed, and instant search lists what it has now.
+            {
+                let tags = tags::hub(cx);
+                cx.subscribe(&tags, |this, _, _: &tags::TagsChanged, cx| {
+                    this.read_tags(cx);
+                    // The recent tags changed even if instant search's list did not.
+                    this.refresh(cx);
+                })
+            },
             // Coming back to the window: the saved searches' counts are read again.
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
@@ -223,6 +246,8 @@ impl Sidebar {
             spaces_at: HashMap::new(),
             asking: HashSet::new(),
             counts: HashMap::new(),
+            indexed_tags: Vec::new(),
+            tags_asked: 0,
             last_hidden: state::settings(cx).show_hidden,
             last_reveal: None,
             last_listing: None,
@@ -235,6 +260,7 @@ impl Sidebar {
             eject_focus: HashMap::new(),
             _subscriptions: subscriptions,
         };
+        this.read_tags(cx);
         this.refresh(cx);
         this
     }
@@ -325,6 +351,8 @@ impl Sidebar {
             self.ask_cloud_space(remote, cx);
         }
 
+        // Instant search's tags, else the ones used here lately.
+        let shown = shown_tags(&self.indexed_tags, tags::hub(cx).read(cx).recent());
         let built = build_rows(&Inputs {
             path: &path,
             known: &known,
@@ -332,6 +360,7 @@ impl Sidebar {
             pinned: &pinned,
             saved: &saved,
             remotes: &remotes,
+            tags: &shown,
             folder_tree,
             tree: &self.tree,
             spaces: &self.spaces,
@@ -494,6 +523,28 @@ impl Sidebar {
         }
     }
 
+    /// Asks instant search for every tag it lists, with its count (`allTags`, asked again whenever the recent tags
+    /// change). Where it can't (it is off, or from before tags) the recent tags show instead.
+    fn read_tags(&mut self, cx: &mut Context<Self>) {
+        self.tags_asked += 1;
+        let asked = self.tags_asked;
+        let reading = (self.sources.tags)();
+        cx.spawn(async move |this, cx| {
+            let found = core_bridge::run(reading).await.and_then(|inner| inner);
+            let _ = this.update(cx, |this, cx| {
+                if this.tags_asked != asked {
+                    return;
+                }
+                let listed = found.unwrap_or_default();
+                if this.indexed_tags != listed {
+                    this.indexed_tags = listed;
+                    this.refresh(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     // ---- Doing things -----------------------------------------------------------------------------------
 
     /// What a click, Enter or Space on a row does.
@@ -512,6 +563,7 @@ impl Sidebar {
                 query: s.query,
                 folder: s.folder,
             })),
+            Row::Tag(tag) => cx.emit(SidebarEvent::RunSavedSearch(tag_search(&tag.name))),
             Row::AddConnection => cx.emit(SidebarEvent::AddConnection),
             Row::Heading { .. } | Row::Note { .. } => {}
         }
@@ -824,6 +876,7 @@ impl Sidebar {
             Row::Folder(f) => self.draw_folder(ix, f, &t, Look { focused, dropping }, cx),
             Row::Note { depth, reason } => self.draw_note(*depth, reason, &t),
             Row::Search(s) => self.draw_search(ix, s, &t, focused, cx),
+            Row::Tag(tag) => self.draw_tag(ix, tag, &t, focused, cx),
             Row::AddConnection => self.draw_add(ix, &t, focused, cx),
         }
     }
@@ -1293,6 +1346,54 @@ impl Sidebar {
             .child(button)
             .child(remove)
             .into_any_element()
+    }
+
+    /// A tag: its color's dot, its name, and how many items have it where instant search says. A click finds what
+    /// has it, on every drive.
+    fn draw_tag(&self, ix: usize, tag: &rows::Tag, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+        let name = SharedString::from(tag.name.clone());
+        let tagged = t!("What's tagged “{tag}”", tag = tag.name.clone());
+        let title: SharedString = match tag.count {
+            Some(count) => format!("{tagged} ({count})").into(),
+            None => tagged,
+        };
+        let accent = t.accent;
+        let button = row_start()
+            .id(("tag", ix))
+            .role(Role::Button)
+            .aria_label(name.clone())
+            .aria_description(title.clone())
+            .test_support()
+            .w_full()
+            .gap(space(2.5))
+            .px(space(2.))
+            .py(space(1.5))
+            .rounded(theme::size::RADIUS)
+            .border_1()
+            .border_color(ring(t, focused))
+            .cursor_pointer()
+            .text_color(t.foreground.opacity(0.9))
+            .hover(move |s| s.bg(accent))
+            .on_click(cx.listener(move |this, _, window, cx| this.click(ix, window, cx)))
+            .tooltip(tooltip_of(title, SharedString::default()))
+            .child(
+                div()
+                    .size(space(4.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().size(space(2.5)).rounded_full().bg(tags::tag_color(&tag.name))),
+            )
+            .child(div().flex_1().min_w_0().truncate().child(isolate(name)))
+            .children(tag.count.map(|count| {
+                div()
+                    .flex_none()
+                    .text_size(theme::size::XS)
+                    .text_color(t.muted_foreground)
+                    .child(SharedString::from(count.to_string()))
+            }));
+        div().w_full().pb(space(0.25)).child(button).into_any_element()
     }
 
     fn draw_add(&self, ix: usize, t: &Tokens, focused: bool, cx: &mut Context<Self>) -> AnyElement {

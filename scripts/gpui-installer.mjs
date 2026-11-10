@@ -10,6 +10,7 @@
 //
 // Usage: node scripts/gpui-installer.mjs [--dry-run] [--exe <Glint.exe>] [--no-build] [--out <file>]
 //                                        [--service <shadui-index.exe> | --no-service] [--service-sig <file>]
+//                                        [--service-signed]
 //
 //   --dry-run     checks that everything the installer packs is there (and where makensis is), prints what it
 //                 would build and the makensis command, and builds nothing. Exit code 1 if something's missing.
@@ -17,26 +18,30 @@
 //                 release build). The installer gets the workspace version either way.
 //   --no-build    packs target/<profile>/Glint.exe as it is, without running cargo.
 //   --out <path>  where to write the setup (default <target>/release/bundle/Glint-setup.exe).
-//   --service     the instant search service to carry (default: shadui-index.exe in <target>/release, then in
-//                 src-tauri/target/release); --no-service leaves it out. --service-sig is its update signature
-//                 (default: the .sig next to it, then src-tauri/target/service-signature/); without one an
-//                 installed service updates only with administrator approval.
+//   --service     the instant search service to carry (default: shadui-index.exe in <target>/release, which
+//                 `cargo build --release -p shadui-index` writes); --no-service leaves it out. --service-sig is its update
+//                 signature (default: the .sig next to it, then <target>/service-signature/); without one an
+//                 installed service updates only with administrator approval. --service-signed says the service
+//                 was code-signed already, before its update signature was made (scripts/release.mjs does that),
+//                 so it is packed as it is and its signature kept.
 //
 // Environment: CARGO_TARGET_DIR (default <repo>/target/ui), MAKENSIS (a makensis.exe to use).
 //
 // Signing: set GLINT_SIGN_COMMAND to a command line with %1 where a file's path goes, such as
 // `signtool sign /fd SHA256 /a "%1"`; it is then run on Glint.exe, rg.exe, fd.exe, pdu.exe and the service
-// before they are packed, on the uninstaller (makensis's !uninstfinalize) and on the finished setup. Left
-// unset, nothing is signed and the setup says so. The script never reads a key: the command does whatever the
-// person who runs the release has set it up to do. Signing the service changes it after its update signature
-// was made, so the script drops that signature when it signs the service.
+// before they are packed, on the uninstaller (makensis's !uninstfinalize) and on the finished setup, and then
+// checks that everything it signed carries a valid signature. Left unset, nothing is signed and the setup says
+// so. The script never reads a key: the command does whatever the person who runs the release has set it up to
+// do. Signing the service changes it after its update signature was made, so unless --service-signed says the
+// service was signed first, the script drops that signature when it signs the service.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { checkSignatures } from "./lib/codesign.mjs";
+import { root, workspaceVersion } from "./lib/project.mjs";
 
-const root = resolve(import.meta.dirname, "..");
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
@@ -62,9 +67,12 @@ const out = resolve(option("--out") ?? join(bundleDir, "Glint-setup.exe"));
 const signCommand = process.env.GLINT_SIGN_COMMAND?.trim() || "";
 
 // The workspace version (the one Glint.exe's version info and the updater's comparison use).
-const manifest = readFileSync(join(root, "Cargo.toml"), "utf8");
-const version = manifest.match(/\[workspace\.package\][^[]*?\nversion\s*=\s*"(\d+\.\d+\.\d+)"/)?.[1];
-if (!version) fail("Couldn't read [workspace.package] version (x.y.z) from Cargo.toml.");
+let version;
+try {
+    version = workspaceVersion();
+} catch (e) {
+    fail(e.message);
+}
 
 // 2. makensis: MAKENSIS, the PATH, where Tauri's bundler keeps one, NSIS's own folders.
 function findMakensis() {
@@ -96,24 +104,15 @@ for (const kind of ["header", "sidebar"]) for (const scale of [100, 125, 150, 17
 for (const file of art) if (!existsSync(join(installerDir, "art", file))) problem(`crates/glint/installer/art/${file} is missing (scripts/installer-art.mjs draws them).`);
 if (!existsSync(join(root, "crates", "glint", "resources", "icon.ico"))) problem("crates/glint/resources/icon.ico is missing.");
 
-// The Extra tools page lists the tools Glint can install. While the old app is still in the tree its copy
-// of the page is the one glint-core's test checks against its tool list, so the two must not drift.
-const oldTools = join(root, "src-tauri", "installer", "tools.nsh");
-if (existsSync(oldTools) && existsSync(join(installerDir, "tools.nsh"))) {
-    if (!readFileSync(oldTools).equals(readFileSync(join(installerDir, "tools.nsh")))) {
-        note("crates/glint/installer/tools.nsh differs from src-tauri/installer/tools.nsh: copy the newer one over the other (glint-core's tools test reads the old one until src-tauri goes).");
-    }
-}
-
 // 4. What the installer carries.
 const exeOption = option("--exe");
 const glintExe = exeOption ? resolve(exeOption) : join(releaseDir, "Glint.exe");
 const willBuild = !exeOption && !flag("--no-build");
-/** rg.exe, fd.exe and pdu.exe: next to the built Glint.exe (crates/glint/build.rs puts them there), else the official ones in src-tauri/binaries. */
+/** rg.exe, fd.exe and pdu.exe: next to the built Glint.exe (crates/glint/build.rs puts them there), else the official ones in crates/glint/binaries. */
 function tool(name) {
     const beside = join(resolve(glintExe, ".."), `${name}.exe`);
     if (existsSync(beside)) return beside;
-    const official = join(root, "src-tauri", "binaries", `${name}-x86_64-pc-windows-msvc.exe`);
+    const official = join(root, "crates", "glint", "binaries", `${name}-x86_64-pc-windows-msvc.exe`);
     return existsSync(official) ? official : undefined;
 }
 const files = [
@@ -133,12 +132,12 @@ let service;
 let serviceSig;
 if (!flag("--no-service")) {
     const given = option("--service");
-    service = [given && resolve(given), join(releaseDir, "shadui-index.exe"), join(root, "src-tauri", "target", "release", "shadui-index.exe")]
+    service = [given && resolve(given), join(releaseDir, "shadui-index.exe")]
         .find((p) => p && existsSync(p));
     if (given && !service) problem(`--service ${given} doesn't exist.`);
     if (service) {
         const givenSig = option("--service-sig");
-        serviceSig = [givenSig && resolve(givenSig), `${service}.sig`, join(root, "src-tauri", "target", "service-signature", "shadui-index.exe.sig")]
+        serviceSig = [givenSig && resolve(givenSig), `${service}.sig`, join(targetDir, "service-signature", "shadui-index.exe.sig")]
             .find((p) => p && existsSync(p));
         if (givenSig && !serviceSig) problem(`--service-sig ${givenSig} doesn't exist.`);
         if (serviceSig && statSync(serviceSig).size < 64) serviceSig = undefined; // release.mjs's placeholder text, not a signature
@@ -149,7 +148,7 @@ if (!flag("--no-service")) {
 }
 
 // 5. The commands.
-const cargoArgs = ["build", "--release", "-p", "glint"];
+const cargoArgs = ["build", "--release", "-p", "glint", ...(flag("--no-service") ? [] : ["-p", "shadui-index"])];
 const nsisArgs = (setup) => [
     "/V3",
     `/DSTAGE=${stage}`,
@@ -157,7 +156,7 @@ const nsisArgs = (setup) => [
     `/DVERSION=${version}`,
     `/DVERSIONWITHBUILD=${version}.0`,
     ...(service ? ["/DHAVE_SERVICE"] : []),
-    ...(service && serviceSig && !signCommand ? ["/DHAVE_SERVICE_SIG"] : []),
+    ...(service && serviceSig && (!signCommand || flag("--service-signed")) ? ["/DHAVE_SERVICE_SIG"] : []),
     ...(signCommand ? [`/DUNINSTALLERSIGNCOMMAND=${signCommand}`] : []),
     script,
 ];
@@ -212,7 +211,7 @@ for (const file of files) {
 }
 if (service) {
     copyFileSync(service, join(stage, "shadui-index.exe"));
-    if (signCommand) {
+    if (signCommand && !flag("--service-signed")) {
         sign(join(stage, "shadui-index.exe"));
         if (serviceSig) note("The service was code-signed after its update signature was made, so the signature is left out (docs/releasing.md).");
     } else if (serviceSig) {
@@ -235,9 +234,18 @@ const warnings = lines.filter((l) => /warning/i.test(l));
 if (warnings.length) console.log(`makensis warned ${warnings.length} time${warnings.length === 1 ? "" : "s"}:\n${warnings.map((w) => `  ${w}`).join("\n")}`);
 console.log(lines.slice(-14).join("\n"));
 sign(out);
+if (signCommand) {
+    // Everything that was signed, before the stage is gone, and the setup itself.
+    const signed = [...readdirSync(stage).filter((f) => f.endsWith(".exe")).map((f) => join(stage, f)), out];
+    try {
+        console.log(checkSignatures(signed, bundleDir));
+    } catch (e) {
+        fail(e.message);
+    }
+}
 rmSync(stage, { recursive: true, force: true });
 
 const size = statSync(out).size;
 const sha = createHash("sha256").update(readFileSync(out)).digest("hex");
-console.log(`\n✓ ${out}\n  ${(size / 1048576).toFixed(1)} MB, SHA-256 ${sha}${signCommand ? "" : "\n  Not code-signed, and no update signature: both are the release pipeline's (docs/releasing.md)."}`);
+console.log(`\n✓ ${out}\n  ${(size / 1048576).toFixed(1)} MB, SHA-256 ${sha}${signCommand ? "" : "\n  Not code-signed. The update signature and latest.json are npm run release's (docs/releasing.md)."}`);
 console.log("  Nothing was installed or run.");

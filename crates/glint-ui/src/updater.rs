@@ -73,8 +73,8 @@ pub const LATEST_RELEASE_API: &str = "https://api.github.com/repos/shadijhade/gl
 /// The releases page (`RELEASES`): a version's notes are at `…/tag/v<version>`.
 pub const RELEASES: &str = "https://github.com/shadijhade/glint/releases";
 
-/// The minisign public key the releases are signed with, base64 as tauri.conf.json holds it
-/// (`plugins.updater.pubkey`). A test compares the two while src-tauri exists.
+/// The minisign public key the releases are signed with, base64 as Tauri's config held it (`plugins.updater.pubkey`).
+/// The instant search service trusts the same key (crates/shadui-index/update-pubkey.txt); a test compares them.
 pub const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENFMzYxRjUwQTI4MTYxQzcKUldUSFlZR2lVQjgyenRlb0tmR1RMMEprZWxKdTNHZVhON0hNU1haSGNUYzdSY0czYkt0dXJLaXgK";
 
 /// How often Glint looks again (`UPDATE_CHECK_MS`).
@@ -1916,24 +1916,13 @@ pub(crate) mod tests {
     // ---- Signatures
 
     #[test]
-    fn the_key_built_in_is_a_key_the_signer_can_use_and_matches_tauri_conf() {
+    fn the_key_built_in_is_a_key_the_signer_can_use_and_is_the_services() {
         let text = minisign_text(PUBLIC_KEY).expect("base64 of text");
         assert!(PublicKey::decode(&text).is_ok(), "{text}");
-        // While src-tauri exists, its config is the other copy of the key.
-        let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/tauri.conf.json");
-        if let Ok(config) = std::fs::read_to_string(config) {
-            let config: serde_json::Value = serde_json::from_str(&config).expect("tauri.conf.json");
-            assert_eq!(
-                config["plugins"]["updater"]["pubkey"].as_str(),
-                Some(PUBLIC_KEY),
-                "the key in tauri.conf.json changed: change it here too"
-            );
-            assert_eq!(
-                config["plugins"]["updater"]["endpoints"][0].as_str(),
-                Some(MANIFEST_URL),
-                "the update feed in tauri.conf.json changed: change it here too"
-            );
-        }
+        // The service checks its updates against the same key: a release signs both with one key.
+        let service = Path::new(env!("CARGO_MANIFEST_DIR")).join("../shadui-index/update-pubkey.txt");
+        let service = std::fs::read_to_string(service).expect("crates/shadui-index/update-pubkey.txt");
+        assert_eq!(service.trim(), PUBLIC_KEY, "the service's update key changed: change it here too");
     }
 
     #[test]

@@ -280,10 +280,8 @@ pub(super) fn note_centered(id: &'static str, text: SharedString, cx: &App) -> A
         .into_any_element()
 }
 
-/// The file's kind, large, with why it isn't shown (`BigIcon`).
-///
-/// PORT ME(coordinator): the archive password form (`PasswordForm`) that the TypeScript showed under a note
-/// asking for one; the password dialog (`dialogs::password`) is the place it opens from.
+/// The file's kind, large, with why it isn't shown (`BigIcon`). (The archive password form the TypeScript showed
+/// under a note asking for one is `probe.rs`'s `Failed` body.)
 pub(super) fn big_icon(path: &str, note: Option<SharedString>, cx: &App) -> AnyElement {
     let kind = glint_model::file_types::kind_of(&entry_of(path));
     let tone = theme::kind_tone(kind, cx);

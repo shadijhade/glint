@@ -6,8 +6,8 @@
 //! Everything here is plain data and plain functions, so the ranking and the lists are tested without a
 //! window. A [`Command`] says what it does as a [`Run`] value (not a closure), which the view carries out.
 
-use crate::components::menus::kinds::*;
 use crate::actions::{self, Binding};
+use crate::components::menus::kinds::*;
 use crate::components::menus::{CompressFormat, MediaTool, MenuEvent, PdfTool};
 use crate::explorer::{Drive, KnownId, TabId};
 use crate::kit::prelude::*;
@@ -64,6 +64,23 @@ pub enum Change {
     Tiles(TileSize),
     /// Dark or light theme.
     Theme(Theme),
+    /// Every pane the same width again (`setSettings({ dualSplit: null })`).
+    EvenPanes,
+    /// What isn't selected, and only that (`invertSelection`).
+    InvertSelection,
+    /// Get access to the tab's closed folder (`getAccess`).
+    GetAccess(TabId),
+    /// The tab goes to the other pane (`moveTabToOtherPane`).
+    MoveTab(TabId),
+}
+
+/// Which part of the Send, receive or share dialog a row opens (`showShare`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShareView {
+    /// What is being sent to other PCs: the tickets, and Stop.
+    Send,
+    /// What is shared on this network: the links, and Stop.
+    Network,
 }
 
 /// What choosing a result does. The view carries it out after closing the palette.
@@ -111,6 +128,10 @@ pub enum Run {
     AddRemote,
     /// Folder rules, for one folder or none (`openRules`).
     Rules(Option<String>),
+    /// Windows' own Properties dialog for this path (`properties`).
+    Properties(String),
+    /// The Send, receive or share dialog on one of its parts (`showShare`).
+    Share(ShareView),
 }
 
 /// One line of the list.
@@ -277,6 +298,30 @@ pub struct Inputs {
     pub openers: Vec<Opener>,
     /// What this folder's projects can run (read in the background).
     pub tasks: Vec<TaskGroup>,
+    /// The folder is closed to this account and nothing of it was listed (`shut && !listing`): nothing to measure.
+    pub unlisted: bool,
+    /// Windows' Get access can open the closed folder (it isn't on another computer, nor refused).
+    pub can_get_access: bool,
+    /// The panes aren't of equal width (`dualSplit !== null`).
+    pub uneven: bool,
+    /// The tab is at the top of an archive file on disk (the archive's path is the tab's and its own outer), and
+    /// whether that format holds one file only (`SINGLE_FILE`): what "Extract all" is offered for.
+    pub archive_top: Option<ArchiveTop>,
+    /// File Explorer's New menu kinds on this PC: extension with its dot, and name (`newKinds`).
+    pub new_kinds: Vec<(String, String)>,
+    /// Something is being sent to another PC.
+    pub sending: bool,
+    /// Something is shared on this network.
+    pub serving: bool,
+}
+
+/// The archive file a tab is at the top of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveTop {
+    /// The archive file on disk (`archive.outer`).
+    pub outer: String,
+    /// Its format holds a single file (`SINGLE_FILE.includes(archive.format)`).
+    pub single_file: bool,
 }
 
 /// How much a folder is used: its visits here (frecency) and its zoxide score, together (`usedScore`).
@@ -424,6 +469,17 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         }
     };
 
+    if let Some(tab) = inputs.tab {
+        push(
+            inputs.can_get_access,
+            Command::change(
+                "get-access",
+                t!("Get access to this folder"),
+                I::ShieldCheck,
+                Change::GetAccess(tab),
+            ),
+        );
+    }
     push(
         true,
         Command::action(
@@ -442,6 +498,32 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         Command::action("search-text", t!("Search text in this folder"), I::TextSearch, || {
             Box::new(actions::TextSearch)
         }),
+    );
+    push(
+        bin && inputs.chosen,
+        menu(
+            "restore",
+            t!("Restore the selection where it was deleted from"),
+            I::RotateCcw,
+            MenuEvent::Restore {
+                paths: inputs.selected.clone(),
+            },
+        ),
+    );
+    push(
+        bin && inputs.chosen,
+        Command::action("purge", t!("Delete the selection for good"), I::Trash, || {
+            Box::new(actions::DeletePermanently)
+        }),
+    );
+    push(
+        in_folder && !inputs.finding && !inputs.unlisted,
+        menu(
+            "sizes",
+            t!("Calculate folder sizes"),
+            I::HardDrive,
+            MenuEvent::FolderSizes,
+        ),
     );
     push(
         can_grid && grid,
@@ -586,6 +668,17 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         Command::action("new-tab", t!("New tab"), I::Plus, || Box::new(actions::NewTab)),
     );
     push(
+        true,
+        menu(
+            "new-window",
+            t!("New window"),
+            I::AppWindow,
+            MenuEvent::OpenInNewWindow {
+                path: inputs.path.clone(),
+            },
+        ),
+    );
+    push(
         inputs.tabs > 1 || inputs.dual,
         Command::action("close-tab", t!("Close tab"), I::X, || Box::new(actions::CloseTab)),
     );
@@ -602,6 +695,17 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         push(
             true,
             Command::change("duplicate-tab", t!("Duplicate tab"), I::Copy, Change::Duplicate(tab)),
+        );
+    }
+    if let Some(tab) = inputs.tab {
+        push(
+            inputs.dual && inputs.tabs > 1,
+            Command::change(
+                "move-tab",
+                t!("Move the tab to the other pane"),
+                I::ArrowRightLeft,
+                Change::MoveTab(tab),
+            ),
         );
     }
     push(
@@ -698,8 +802,29 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             Run::Navigate(place.other.clone().unwrap_or_default()),
         ),
     );
+    push(
+        inputs.dual && inputs.uneven,
+        Command::change("even-panes", t!("Even out the panes"), I::Columns2, Change::EvenPanes),
+    );
     for command in nearby_and_files(inputs, &place) {
         push(true, command);
+    }
+    if let Some(top) = &inputs.archive_top {
+        push(
+            true,
+            menu(
+                "extract-all",
+                if top.single_file {
+                    t!("Extract the file next to the archive")
+                } else {
+                    t!("Extract all: everything into a folder next to the archive")
+                },
+                I::ArchiveRestore,
+                MenuEvent::ExtractHere {
+                    path: top.outer.clone(),
+                },
+            ),
+        );
     }
     for command in to_the_other_pane(inputs, &place) {
         push(true, command);
@@ -737,6 +862,15 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         ),
     );
     push(
+        in_folder || inputs.finding,
+        Command::change(
+            "invert-selection",
+            t!("Invert selection"),
+            I::ListChecks,
+            Change::InvertSelection,
+        ),
+    );
+    push(
         writable && !inputs.finding && !inputs.shut,
         Command::action(
             "batch-rename",
@@ -757,6 +891,26 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
     );
     push(
         writable && !inputs.finding && !inputs.shut,
+        menu(
+            "new-file",
+            t!("New text document"),
+            I::FilePlus,
+            MenuEvent::NewTextDocument,
+        ),
+    );
+    for (ext, name) in &inputs.new_kinds {
+        push(
+            writable && !inputs.finding && !inputs.shut,
+            menu(
+                &format!("new-{ext}"),
+                t!("New {kind}", kind = name),
+                I::FilePlus,
+                MenuEvent::NewOfKind { ext: ext.clone() },
+            ),
+        );
+    }
+    push(
+        writable && !inputs.finding && !inputs.shut,
         Command::new(
             "paste-queued",
             t!("Paste with the copy queue: pause, resume, and each copy checked"),
@@ -769,6 +923,18 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
     );
     for command in inspect_and_share(inputs, &place) {
         push(true, command);
+    }
+    if let Some(outer) = &inputs.archive_outer {
+        push(
+            true,
+            Command::new(
+                "archive-properties",
+                t!("Archive properties"),
+                I::Info,
+                Kind::Action,
+                Run::Properties(outer.clone()),
+            ),
+        );
     }
     push(
         writable,
@@ -1420,6 +1586,26 @@ fn inspect_and_share(inputs: &Inputs, place: &Place) -> Vec<Command> {
             t!("Receive from another PC here"),
             I::Download,
             MenuEvent::ReceiveHere { folder: folder.clone() },
+        ),
+    );
+    add(
+        inputs.sending,
+        Command::new(
+            "sending",
+            t!("Sending to another PC: the tickets, and Stop"),
+            I::Send,
+            Kind::Action,
+            Run::Share(ShareView::Send),
+        ),
+    );
+    add(
+        inputs.serving,
+        Command::new(
+            "serving",
+            t!("Shared on this network: the links, and Stop"),
+            I::Wifi,
+            Kind::Action,
+            Run::Share(ShareView::Network),
         ),
     );
     let targets = if chosen {

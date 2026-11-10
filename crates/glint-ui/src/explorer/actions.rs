@@ -371,8 +371,8 @@ impl Explorer {
         }
         let mut args = script.args;
         args.extend(paths);
-        // PORT ME(coordinator): the terminal pane is not ported yet; `runInTerminal` opens a tab in it and types
-        // `TerminalJob::line(shell)` once its shell is up.
+        // The workspace's terminal pane opens a tab for the job and types `TerminalJob::line(shell)` once its
+        // shell is up.
         cx.emit(ExplorerEvent::Request(Request::Terminal(TerminalJob {
             cwd,
             title: script.name,

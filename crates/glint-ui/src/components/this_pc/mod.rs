@@ -29,11 +29,12 @@
 //! ("Copy to Downloads"). A drop copies the files into it, or moves them with Shift. A CD or DVD drive, a place
 //! that is read-only, and a folder the files are already in refuse the drop.
 //!
-//! **What isn't here yet** (each marked `PORT ME` where it belongs):
+//! **What isn't here yet** (marked `PORT ME` where it belongs):
 //! - The instant search card above the folders (the TypeScript's `InstantSearchCard`). It needs the index
 //!   state, which the explorer model doesn't hold yet.
-//! - The disk-usage map, recent changes and duplicates: their windows come with their own parts; this view
-//!   only says which drive was asked for.
+//!
+//! The disk-usage map, recent changes and duplicates are the window's (`ThisPcEvent`s); this view only says
+//! which drive was asked for.
 
 mod model;
 #[cfg(test)]

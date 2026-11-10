@@ -31,8 +31,8 @@
 //!
 //! # Wiring (for the preview pane)
 //!
-//! - **Which arm.** `choose.rs`'s `Some(PreviewKind::Video)` and `Some(PreviewKind::Audio)` (the `PORT ME(video)`
-//!   and `PORT ME(audio)` ones) get a body such as `Body::Player(Kind)`; the frame builds it with
+//! - **Which arm.** `choose.rs`'s `Some(PreviewKind::Video)` and `Some(PreviewKind::Audio)` arms give
+//!   `Body::Player(Kind)`; the frame builds it with
 //!   `cx.new(|cx| PlayerView::new(entry.clone(), Kind::Video, window, cx))` (or `Kind::Audio`). It does what
 //!   `PictureView` does for a file in an archive (extracts it first, with the same spinner), so archived media
 //!   take this arm too (the fallback for them is `Body::Icon` today).

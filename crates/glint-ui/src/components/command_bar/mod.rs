@@ -104,13 +104,11 @@ pub enum CommandBarEvent {
     /// Folder sizes: measure every folder here (`stop` false), or stop measuring (`stop` true, when the bar said
     /// it was running). The window tells the bar when it starts and ends with
     /// [`CommandBar::set_folder_sizes_running`].
-    // PORT ME(sizes): the explorer has no folder sizes part yet (`calcSizes`, `stopSizes`).
     FolderSizes {
         /// Stop what is running.
         stop: bool,
     },
     /// Run a project's task in the terminal pane, in the project's folder, typed as it'd be typed (`runTask`).
-    // PORT ME(terminal): the terminal pane isn't ported yet.
     RunTask {
         /// The project's folder.
         folder: String,
