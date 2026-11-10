@@ -1,5 +1,5 @@
 //! Markdown rendered with the kit's TextView.
-//! Ported from MarkdownView.tsx and `MarkdownPreview` in FilePreview.tsx (without Mermaid and math).
+//! Ported from MarkdownView.tsx and `MarkdownPreview` in FilePreview.tsx.
 //!
 //! What the TypeScript had, and where it is here:
 //!
@@ -10,13 +10,17 @@
 //! | `safeHref`, the `follow` of a link               | [`link_action`], run by the TextView's link handler            |
 //! | links within the file scroll to their heading    | [`headings`] and `reveal_range`                                |
 //! | code blocks highlighted                          | the TextView's own (syntect), by the fence's language          |
+//! | `MermaidView` (```mermaid)                       | `diagram::DiagramBlock` (feature `diagrams`): merman, drawn as a picture; the source and the reason when it can't be |
+//! | the same for ```dot, ```graphviz, ```gv          | `diagram::DiagramBlock`: layout-rs (new: the TypeScript drew only Mermaid) |
+//! | `MathView` (`$…$`, `$$…$$`, ```math)             | `math::MathInline` and `math::MathBlock`: RaTeX, inline on the text's baseline, display centred; the LaTeX in a tinted span when it doesn't parse |
 //! | `SHOWS_START`, "This file is empty."             | the same notes                                                 |
 //! | a binary file                                    | a [`HexPreview`] in its place                                  |
 //!
 //! Not ported:
-//! - Mermaid and math. A ```mermaid block and a ```math block show as code, and `$…$` shows as its text.
-//!   PORT ME(mermaid): the diagram (merman, see docs/gpui/previews-native.md section 5).
-//!   PORT ME(math): the formula (RaTeX, section 7).
+//! - Without the `diagrams` feature a ```mermaid block and a ```math block show as code, and `$…$` shows as its
+//!   text. With it they are drawn (see [`super::diagram`], [`super::math`] and [`super::svg_image`] for how, and
+//!   for what differs from Mermaid's and Temml's own drawing). The blocks, and the inline formulas, are the
+//!   TextView's plugin nodes: selecting and copying them gives their source.
 //! - Raw HTML in the Markdown (the TypeScript kept an allow-list of GitHub's tags): the TextView's Markdown
 //!   parser shows what it understands. NOTE(port): READMEs that lean on `<div align="center">` and `<img>`
 //!   will look plainer; the TextView's HTML mode (`TextView::html`) is the way to bring those back.
@@ -32,7 +36,7 @@ use crate::{actions, core_bridge, t, theme};
 use glint_core::fsx::TextPreview as TextRead;
 use glint_model::markdown::safe_href;
 use glint_model::paths::{linked_path, parent_path, volume_of};
-use gpui_kit::{Image, ImageFormat, ImageSource, Resource, SharedUri, Task, WeakEntity};
+use gpui_kit::{EntityId, Image, ImageFormat, ImageSource, Resource, SharedUri, Task, WeakEntity};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -343,6 +347,24 @@ fn image_source(folder: String, root: String) -> impl Fn(&SharedUri) -> ImageSou
     move |uri| picture_source(uri.as_ref(), &folder, &root, &written)
 }
 
+// ---- Diagrams and math --------------------------------------------------------------------------------------
+
+/// The parse of the plugins below never changes with what they capture, so the TextView keeps its parsed
+/// document when they are rebuilt every frame (`MarkdownExtensions::parser_revision`).
+const HOOKS_REVISION: u64 = 0x474c_494e_5401;
+
+/// The TextView's plugins for ```mermaid, ```dot, ```math and `$…$`, waking the view `wake` when a picture is
+/// ready.
+pub fn hooks(wake: EntityId) -> gpui_kit::base::text::MarkdownExtensions {
+    use super::diagram::DiagramBlock;
+    use super::math::{MathBlock, MathInline};
+    gpui_kit::base::text::MarkdownExtensions::default()
+        .parser_revision(HOOKS_REVISION)
+        .plugin(DiagramBlock { wake })
+        .plugin(MathBlock { wake })
+        .plugin(MathInline { wake })
+}
+
 // ---- The previewer ----------------------------------------------------------------------------------------
 
 /// What the previewer is showing.
@@ -391,6 +413,11 @@ impl MarkdownPreview {
             generation: 0,
             _read: Task::ready(()),
         };
+        // Pictures still being drawn for a view that is gone are not wanted.
+        {
+            let id = cx.entity_id();
+            cx.on_release(move |_, _| super::svg_image::forget(id)).detach();
+        }
         this.read(window, cx);
         this
     }
@@ -446,6 +473,7 @@ impl MarkdownPreview {
     fn read(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
+        super::svg_image::forget(cx.entity_id());
         self.load = Load::Waiting;
         self.started = Instant::now();
         let read = (self.source)(self.path.clone(), None);
@@ -485,17 +513,16 @@ impl MarkdownPreview {
 
     /// The document's view: pictures beside it, links that open the web outside and files here, headings that
     /// scroll.
-    fn document(&self, shown: &Shown) -> TextView {
+    fn document(&self, shown: &Shown, wake: EntityId) -> TextView {
         let folder = parent_path(&self.path);
         // The Git view's repository root isn't known here: the drive's root, for links that start with /.
         let root = format!("{}\\", volume_of(&self.path));
         let state: WeakEntity<TextViewState> = shown.state.downgrade();
         let headings = shown.headings.clone();
         let (link_folder, link_root) = (folder.clone(), root.clone());
-        // PORT ME(mermaid) / PORT ME(math): ```mermaid and ```math blocks, and $…$, take a block renderer and an
-        // inline plugin here (`markdown_block_parser`/`markdown_block_renderer`, `MarkdownPlugin`).
-        TextView::new(&shown.state)
-            .selectable(true)
+        let view = TextView::new(&shown.state);
+        let view = view.markdown_extensions(hooks(wake));
+        view.selectable(true)
             .scrollable(true)
             .image_source(image_source(folder, root))
             .on_link_click(
@@ -559,7 +586,7 @@ impl Render for MarkdownPreview {
                             .min_h_0()
                             .px(space(5.))
                             .py(space(4.))
-                            .child(self.document(shown).size_full()),
+                            .child(self.document(shown, cx.entity_id()).size_full()),
                     )
                     .children(note)
                     .into_any_element()
@@ -862,5 +889,203 @@ mod tests {
         settle(&mut visual, |cx| {
             view.read_with(cx, |v, _| matches!(v.load, Load::Binary(_)))
         });
+    }
+
+    // ---- Diagrams and math (feature `diagrams`) ---------------------------------------------------------------
+
+    mod drawn {
+        use super::*;
+        use crate::components::preview::{diagram, math, svg_image};
+        use gpui_kit::Role;
+
+        /// (role, label, description, height) of every element the last frame drew that has a label.
+        fn elements(cx: &mut VisualTestContext) -> Vec<(Option<Role>, String, Option<String>, f32)> {
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                window
+                    .elements()
+                    .into_iter()
+                    .filter_map(|e| {
+                        let label = e.label()?.to_string();
+                        Some((
+                            e.role(),
+                            label,
+                            e.description().map(str::to_string),
+                            f32::from(e.bounds().size.height),
+                        ))
+                    })
+                    .collect()
+            })
+        }
+
+        fn with_label(
+            cx: &mut VisualTestContext,
+            role: Role,
+            label: impl Fn(&str) -> bool,
+        ) -> Vec<(String, Option<String>, f32)> {
+            elements(cx)
+                .into_iter()
+                .filter(|(r, l, _, _)| *r == Some(role) && label(l))
+                .map(|(_, l, d, h)| (l, d, h))
+                .collect()
+        }
+
+        fn wait(cx: &mut VisualTestContext, what: &str, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
+            for _ in 0..1200 {
+                cx.run_until_parked();
+                if done(cx) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("never happened: {what}: {:?}", elements(cx));
+        }
+
+        fn show(cx: &mut TestAppContext, text: &str) -> (Entity<MarkdownPreview>, VisualTestContext) {
+            svg_image::clear();
+            let (view, mut visual) = open(cx, "C:\\docs\\README.md", fake(read_of(text)));
+            settle(&mut visual, |cx| {
+                view.read_with(cx, |v, _| matches!(v.load, Load::Shown(_)))
+            });
+            (view, visual)
+        }
+
+        const FLOW: &str = "flowchart TD\n  A[Start] --> B{Is it ok?}\n  B -->|yes| C[Done]\n  B -->|no| D[Again]";
+        const DOT: &str = "digraph G { rankdir=LR; a -> b [label=\"edge\"]; b -> c; c -> a; }";
+
+        #[gpui_kit::test]
+        fn mermaid_and_dot_blocks_are_drawn_as_pictures(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            testing::set_rtl(false);
+            let text = format!(
+                "# Diagrams\n\nBefore.\n\n```mermaid\n{FLOW}\n```\n\nBetween.\n\n```dot\n{DOT}\n```\n\nAfter.\n"
+            );
+            let (view, mut visual) = show(cx, &text);
+            wait(&mut visual, "both pictures", |cx| {
+                !with_label(cx, Role::Image, |l| l == "A Mermaid diagram").is_empty()
+                    && !with_label(cx, Role::Image, |l| l == "A Graphviz graph").is_empty()
+            });
+            // The pictures have a size, so the document made room for them.
+            for (name, _, height) in with_label(&mut visual, Role::Image, |l| l.starts_with("A ")) {
+                assert!(height > 40., "{name} is {height} high");
+            }
+            // The words around them are still the document's, and the sources are still its text (copyable).
+            let drawn = view.read_with(&visual, |v, cx| v.rendered_text(cx)).unwrap_or_default();
+            assert!(
+                drawn.contains("Before.") && drawn.contains("Between.") && drawn.contains("After."),
+                "{drawn}"
+            );
+            assert!(drawn.contains("flowchart TD") && drawn.contains("digraph G"), "{drawn}");
+            // Both are in the cache, as pictures.
+            let dark = false;
+            assert!(
+                svg_image::peek(&diagram::key_of(diagram::Language::Mermaid, FLOW, dark)).is_some_and(|o| o.is_ok())
+            );
+            assert!(svg_image::peek(&diagram::key_of(diagram::Language::Dot, DOT, dark)).is_some_and(|o| o.is_ok()));
+        }
+
+        #[gpui_kit::test]
+        fn a_diagram_that_cannot_be_drawn_says_why_and_shows_its_source(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            testing::set_rtl(false);
+            let text = "```mermaid\nthis is not a diagram at all ->->\n```\n\n```dot\ndigraph { a -> }\n```\n";
+            let (_view, mut visual) = show(cx, text);
+            wait(&mut visual, "both banners", |cx| {
+                with_label(cx, Role::Status, |l| l.starts_with("Not a diagram Mermaid can draw: ")).len() == 1
+                    && with_label(cx, Role::Status, |l| l.starts_with("Not a graph Graphviz can draw: ")).len() == 1
+            });
+            // Each banner has its diagnostic, and the source is shown below it.
+            let sources = with_label(&mut visual, Role::Group, |l| l == "Source");
+            assert_eq!(sources.len(), 2, "{:?}", elements(&mut visual));
+            // No empty box: nothing is labelled as a picture.
+            assert!(with_label(&mut visual, Role::Image, |_| true).is_empty());
+        }
+
+        #[gpui_kit::test]
+        fn formulas_flow_with_the_text_and_display_formulas_are_blocks(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            testing::set_rtl(false);
+            let text = "The area is $x^2 + y^2$ here.\n\n$$\n\\sum_{i=1}^{n} i\n$$\n\n```math\n\\frac{a}{b}\n```\n\nPrices: $5 and $10.\n";
+            let (view, mut visual) = show(cx, text);
+            wait(&mut visual, "three formulas", |cx| {
+                let math = with_label(cx, Role::Math, |_| true);
+                math.len() == 3 && svg_image::held().0 >= 3
+            });
+            let math: Vec<String> = with_label(&mut visual, Role::Math, |_| true)
+                .into_iter()
+                .map(|(l, _, _)| l)
+                .collect();
+            assert!(math.contains(&"x^2 + y^2".to_string()), "{math:?}");
+            assert!(math.contains(&"\\sum_{i=1}^{n} i".to_string()), "{math:?}");
+            assert!(math.contains(&"\\frac{a}{b}".to_string()), "{math:?}");
+            // Two prices are not a formula: their dollars are text.
+            let drawn = view.read_with(&visual, |v, cx| v.rendered_text(cx)).unwrap_or_default();
+            assert!(drawn.contains("Prices: $5 and $10."), "{drawn}");
+            // The text around the inline one is still readable text.
+            assert!(drawn.contains("The area is") && drawn.contains("here."), "{drawn}");
+            // They were made (pictures in the cache), not left as their LaTeX.
+            assert!(svg_image::held().0 >= 3);
+            assert!(svg_image::peek(&math::key_of("\\frac{a}{b}", true, 16. * 1.15, false)).is_some_and(|o| o.is_ok()));
+        }
+
+        #[gpui_kit::test]
+        fn a_formula_that_does_not_parse_shows_its_latex_with_the_reason(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            testing::set_rtl(false);
+            let (_view, mut visual) = show(cx, "Broken: $\\frac{1}{$ and fine: $x$.\n\n$$\n\\notacommand{x}\n$$\n");
+            wait(&mut visual, "the failures", |cx| {
+                with_label(cx, Role::Math, |l| l == "\\frac{1}{")
+                    .first()
+                    .is_some_and(|(_, d, _)| d.is_some())
+                    && with_label(cx, Role::Math, |l| l == "\\notacommand{x}")
+                        .first()
+                        .is_some_and(|(_, d, _)| d.is_some())
+            });
+            // The one that parses has no reason attached.
+            let fine = with_label(&mut visual, Role::Math, |l| l == "x");
+            assert!(fine.iter().all(|(_, description, _)| description.is_none()), "{fine:?}");
+        }
+
+        #[gpui_kit::test]
+        fn arabic_text_labels_and_formulas_in_an_arabic_window(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            testing::set_rtl(true);
+            let flow = "flowchart LR\n  A[مرحبا] --> B[بالعالم أهلا وسهلا]";
+            let text = format!(
+                "# عنوان\n\nالمعادلة $x^2$ هنا.\n\n```mermaid\n{flow}\n```\n\nوهذه معادلة بحروف: $\\text{{مرحبا}}$\n"
+            );
+            let (view, mut visual) = show(cx, &text);
+            wait(&mut visual, "the diagram", |cx| {
+                !with_label(cx, Role::Image, |l| l == "A Mermaid diagram").is_empty()
+            });
+            let svg = diagram::svg_of(diagram::Language::Mermaid, flow, false, None).expect("it draws");
+            // The Arabic label is in the picture, and its line was placed without a `dy` (resvg misplaces the first
+            // letter of a right-to-left run that has one).
+            assert!(svg.contains("مرحبا"));
+            let at = svg.find("مرحبا").unwrap_or(0);
+            let tag_start = svg[..at].rfind("<tspan").unwrap_or(0);
+            assert!(!svg[tag_start..at].contains("dy="), "{}", &svg[tag_start..at]);
+            // A formula with Arabic letters inside is shown as its LaTeX, and says why.
+            wait(&mut visual, "the Arabic formula", |cx| {
+                with_label(cx, Role::Math, |l| l.contains("مرحبا"))
+                    .first()
+                    .is_some_and(|(_, d, _)| d.as_deref().is_some_and(|d| d.contains("Arabic")))
+            });
+            let drawn = view.read_with(&visual, |v, cx| v.rendered_text(cx)).unwrap_or_default();
+            assert!(drawn.contains("عنوان") && drawn.contains("المعادلة"), "{drawn}");
+            testing::set_rtl(false);
+        }
+
+        #[gpui_kit::test]
+        fn the_same_diagram_is_drawn_once(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            testing::set_rtl(false);
+            let text = format!("```mermaid\n{FLOW}\n```\n\nAgain:\n\n```mermaid\n{FLOW}\n```\n");
+            let (_view, mut visual) = show(cx, &text);
+            wait(&mut visual, "both pictures", |cx| {
+                with_label(cx, Role::Image, |l| l == "A Mermaid diagram").len() == 2
+            });
+            assert_eq!(svg_image::held().0, 1);
+        }
     }
 }

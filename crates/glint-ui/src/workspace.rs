@@ -39,6 +39,7 @@ use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
 use crate::components::status_bar::StatusBar;
 use crate::components::tab_strip::{PaneDropZone, TabStrip};
+use crate::components::terminal::{TerminalPane, TerminalPaneEvent};
 use crate::components::text_search::{TextSearch, TextSearchEvent};
 use crate::components::this_pc::{ThisPc, ThisPcEvent};
 use crate::components::{palette, settings};
@@ -113,6 +114,8 @@ pub struct Workspace {
     sharing: Option<Entity<dialogs::share::Sharing>>,
     /// The command bar above the panes.
     command_bar: Entity<CommandBar>,
+    /// The terminal pane under the panes (Ctrl+`), drawn only while it is open.
+    terminal: Entity<TerminalPane>,
     /// Whether the bar was last told folder sizes are being measured.
     sizing: bool,
     /// The extra tools' state, for installing one a menu or a script asks for (made at first use).
@@ -166,6 +169,19 @@ impl Workspace {
         });
         let command_bar = cx.new(|cx| CommandBar::new(window, cx));
         subscriptions.push(cx.subscribe_in(&command_bar, window, Self::on_command_bar_event));
+        // The terminal pane: the window lays out again as it opens, closes or gains a tab; closed, the keyboard goes
+        // back to the files.
+        let terminal = cx.new(|cx| TerminalPane::new(window, cx));
+        subscriptions.push(cx.observe(&terminal, |_, _, cx| cx.notify()));
+        subscriptions.push(
+            cx.subscribe_in(
+                &terminal,
+                window,
+                |this, _, event: &TerminalPaneEvent, window, cx| match event {
+                    TerminalPaneEvent::Hidden => this.focus_files(window, cx),
+                },
+            ),
+        );
 
         subscriptions.push(cx.subscribe_in(&address, window, Self::on_address_event));
         subscriptions.push(cx.subscribe_in(&sidebar, window, Self::on_sidebar_event));
@@ -293,6 +309,7 @@ impl Workspace {
             text_mode: false,
             sharing,
             command_bar,
+            terminal,
             sizing: false,
             tools: None,
             readmes: [None, None],
@@ -305,6 +322,11 @@ impl Workspace {
     /// Text search, once it has been asked for, and whether it is on screen (the self-test reads them).
     pub fn text_search(&self) -> (Option<Entity<TextSearch>>, bool) {
         (self.text.clone(), self.text_mode)
+    }
+
+    /// The terminal pane (the self-test opens it and types into it).
+    pub fn terminal(&self) -> Entity<TerminalPane> {
+        self.terminal.clone()
     }
 
     /// Whether the copy queue still has a copy or move going (quitting asks first).
@@ -775,7 +797,10 @@ impl Workspace {
             CommandBarEvent::FolderSizes { stop } => {
                 Self::explorer(cx, |e, cx| if *stop { e.stop_sizes() } else { e.calc_sizes(cx) })
             }
-            CommandBarEvent::RunTask { .. } => Self::not_yet(window, cx, t!("Running tasks in the terminal")),
+            // A project's task typed into the terminal pane, in the project's folder.
+            CommandBarEvent::RunTask { folder, command } => self
+                .terminal
+                .update(cx, |terminal, cx| terminal.run_task(folder, command, window, cx)),
         }
     }
 
@@ -784,7 +809,10 @@ impl Workspace {
         match request {
             // PORT ME(coordinator): a second window; a new tab meanwhile, so the folder still opens.
             explorer::Request::NewWindow { path } => Self::explorer(cx, |e, cx| e.open_in_new_tab(&path, cx)),
-            explorer::Request::Terminal(_) => Self::not_yet(window, cx, t!("The terminal")),
+            // A script run in a terminal tab of its own.
+            explorer::Request::Terminal(job) => self
+                .terminal
+                .update(cx, |terminal, cx| terminal.run_job(&job, window, cx)),
             explorer::Request::InstallTool { tool } => self.install_tool(tool, window, cx),
         }
     }
@@ -1507,11 +1535,13 @@ impl Workspace {
         } else {
             self.pane(0, t, cx)
         };
-        // The command bar spans the panes' column (not the sidebar, not the preview pane), as in the web app.
+        // The command bar spans the panes' column (not the sidebar, not the preview pane), as in the web app; the
+        // terminal pane sits under the panes in the same column (it draws nothing while closed).
         let files = col()
             .size_full()
             .child(self.command_bar.clone())
             .child(div().flex_1().min_h_0().child(files))
+            .child(div().flex_none().child(self.terminal.clone()))
             .into_any_element();
         let files = match &self.preview {
             None => files,
@@ -1659,6 +1689,9 @@ impl Render for Workspace {
                     Self::explorer(cx, |e, cx| e.toggle_compare_panes(cx))
                 }),
             )
+            .on_action(cx.listener(|this, _: &actions::ToggleTerminal, window, cx| {
+                this.terminal.update(cx, |terminal, cx| terminal.toggle(window, cx))
+            }))
             .on_action(cx.listener(|_, _: &actions::DiskUsage, _, cx| Self::toggle_disk_usage(cx)))
             // File operations, on the active tab's selection.
             .on_action(cx.listener(|_, _: &actions::Copy, _, cx| {

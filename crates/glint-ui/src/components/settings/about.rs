@@ -1,5 +1,10 @@
 //! Settings → About: Glint's name and version, updates, the shortcuts sheet, diagnostics, the settings file and
 //! Reset (the About section, `UpdateRow` and `copyDiagnostics` of SettingsView.tsx).
+//!
+//! **Updates** are `crate::updater`'s model (feature `updater` until the coordinator integrates it): the row
+//! shows "Check for updates" with how the last check went, or "Version X is available" with What's new and
+//! Install (a percent while it downloads), as `UpdateRow` did. It reads the shared model lazily, so a Settings
+//! opened before the model exists (tests) draws the check and waits.
 
 use super::backend::Backend;
 use super::transfer::Transfer;
@@ -8,6 +13,9 @@ use crate::kit::prelude::*;
 use crate::{actions, state, t, theme};
 use glint_model::store::Settings;
 use std::sync::Arc;
+
+#[cfg(feature = "updater")]
+use crate::updater::{self, Install, Policy, Status, Updater};
 
 /// Glint's page, for the GitHub button (`REPO_URL`).
 pub const REPO_URL: &str = "https://github.com/shadijhade/glint";
@@ -19,17 +27,44 @@ pub struct About {
     version: SharedString,
     /// The Microsoft Store's copy: the Store keeps it up to date, so there is nothing to check.
     store: bool,
+    /// The update model, once the app has made one.
+    #[cfg(feature = "updater")]
+    updater: Option<Entity<Updater>>,
+    /// Redraws this card when the update model changes.
+    #[cfg(feature = "updater")]
+    _watching: Option<Subscription>,
 }
 
 impl About {
     /// The card; `store` is whether this is the Microsoft Store's copy.
     pub fn new(backend: Arc<dyn Backend>, store: bool, cx: &mut Context<Self>) -> Self {
         let transfer = cx.new(|_| Transfer::new(backend.clone()));
-        Self {
+        // Only the updater feature changes it.
+        #[cfg_attr(not(feature = "updater"), allow(unused_mut))]
+        let mut about = Self {
             backend,
             transfer,
             version: env!("CARGO_PKG_VERSION").into(),
             store,
+            #[cfg(feature = "updater")]
+            updater: None,
+            #[cfg(feature = "updater")]
+            _watching: None,
+        };
+        #[cfg(feature = "updater")]
+        about.attach_updater(cx);
+        about
+    }
+
+    /// Starts watching the shared update model, once it exists.
+    #[cfg(feature = "updater")]
+    fn attach_updater(&mut self, cx: &mut Context<Self>) {
+        if self.updater.is_some() {
+            return;
+        }
+        if let Some(updater) = updater::try_shared(cx) {
+            self._watching = Some(cx.observe(&updater, |_, _, cx| cx.notify()));
+            self.updater = Some(updater);
         }
     }
 
@@ -69,8 +104,142 @@ impl About {
     }
 }
 
+#[cfg(feature = "updater")]
+impl About {
+    /// The updates row (`UpdateRow`): what the update model knows, with its buttons.
+    fn update_row(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let hint_only = |hint: SharedString| widgets::setting_row(t!("Updates"), Some(hint), Vec::new(), t);
+        let Some(model) = self.updater.clone() else {
+            // No model yet (a window made without the app's start-up): drawn, and waiting.
+            if self.store {
+                return hint_only(t!("The Microsoft Store keeps Glint up to date"));
+            }
+            return widgets::setting_row(
+                t!("Updates"),
+                None,
+                vec![
+                    widgets::button("about-update", t!("Check for updates"), Some(IconName::RefreshCw))
+                        .disabled(true)
+                        .into_any_element(),
+                ],
+                t,
+            );
+        };
+        let (policy, status, install, available, error) = {
+            let model = model.read(cx);
+            (
+                model.policy(),
+                model.status().clone(),
+                model.install_state().clone(),
+                model.available().cloned(),
+                model.install_error().map(str::to_string),
+            )
+        };
+        if self.store || policy == Policy::Store {
+            return hint_only(t!("The Microsoft Store keeps Glint up to date"));
+        }
+        if policy == Policy::Off {
+            return hint_only(t!("Updates are off in a debug build"));
+        }
+        if let Some(available) = available {
+            let installable = available.installer.is_some() && policy == Policy::SelfUpdating;
+            let base = if installable {
+                t!("Installing it restarts the app")
+            } else {
+                t!("Download the installer from GitHub")
+            };
+            // A failed install is said plainly; otherwise the notes, when the release has words for them.
+            let hint: SharedString = match (&error, available.notes.as_deref().and_then(updater::notes_text)) {
+                (Some(reason), _) => t!("Couldn't install: {reason}", reason = reason.clone()),
+                (None, Some(notes)) => format!("{base}. {notes}").into(),
+                (None, None) => base,
+            };
+            let working = install.working();
+            let label = match &install {
+                Install::Downloading { .. } => match install.percent() {
+                    Some(percent) => t!("Downloading {percent}%", percent = percent),
+                    None => t!("Downloading…"),
+                },
+                Install::Verifying => t!("Checking…"),
+                Install::Launching => t!("Installing…"),
+                Install::Ready | Install::None if installable => t!("Install"),
+                Install::Ready | Install::None => t!("Download"),
+            };
+            let url = available.url.clone();
+            let install_model = model.clone();
+            return widgets::setting_row(
+                t!("Version {version} is available", version = available.version.clone()),
+                Some(hint),
+                vec![
+                    widgets::quiet_button("about-whats-new", t!("What's new"))
+                        .on_click(move |_, _, cx| cx.open_url(&url))
+                        .into_any_element(),
+                    widgets::primary_button("about-install", label, Some(IconName::Sparkles))
+                        .loading(working)
+                        .disabled(working)
+                        .on_click(move |_, _, cx| install_model.update(cx, |updater, cx| updater.install(cx)))
+                        .into_any_element(),
+                ],
+                t,
+            );
+        }
+        // Offline, a request fails with words like "error sending request": say that plainly.
+        let hint: Option<SharedString> = match &status {
+            Status::Idle | Status::Store | Status::Off => None,
+            Status::Checking => Some(t!("Checking…")),
+            Status::Latest => Some(t!("You have the latest version")),
+            Status::Failed(reason) if updater::looks_offline(reason) => {
+                Some(t!("Couldn't reach GitHub to check. Are you online?"))
+            }
+            Status::Failed(reason) => Some(t!("Couldn't check: {reason}", reason = reason.clone())),
+        };
+        let checking = status == Status::Checking;
+        widgets::setting_row(
+            t!("Updates"),
+            hint,
+            vec![
+                widgets::button("about-update", t!("Check for updates"), Some(IconName::RefreshCw))
+                    .loading(checking)
+                    .disabled(checking)
+                    .on_click(move |_, _, cx| model.update(cx, |updater, cx| updater.check(true, cx)))
+                    .into_any_element(),
+            ],
+            t,
+        )
+    }
+}
+
+#[cfg(not(feature = "updater"))]
+impl About {
+    /// The updates row while the updater isn't built in: drawn as the TypeScript draws it, and waiting. The
+    /// Store's copy has no button: the Store updates it.
+    fn update_row(&self, t: &theme::Tokens, _cx: &mut Context<Self>) -> AnyElement {
+        if self.store {
+            return widgets::setting_row(
+                t!("Updates"),
+                Some(t!("The Microsoft Store keeps Glint up to date")),
+                Vec::new(),
+                t,
+            );
+        }
+        widgets::setting_row(
+            t!("Updates"),
+            None,
+            vec![
+                widgets::button("about-update", t!("Check for updates"), Some(IconName::RefreshCw))
+                    .disabled(true)
+                    .tooltip(t!("Updating comes with its part of the port."))
+                    .into_any_element(),
+            ],
+            t,
+        )
+    }
+}
+
 impl Render for About {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "updater")]
+        self.attach_updater(cx);
         let t = theme::tokens(cx).clone();
         let pink = theme::tailwind("pink-500").unwrap_or(t.primary);
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -122,31 +291,7 @@ impl Render for About {
                 )
                 .into_any_element(),
         );
-        // PORT ME(updater): the updater (lib/updater.ts: check, "Version X is available" with What's new and
-        // Install, and the progress) isn't built yet, so the row is drawn as the TypeScript draws it and the
-        // button waits. The Store's copy has no button: the Store updates it.
-        rows.push(if self.store {
-            widgets::setting_row(
-                t!("Updates"),
-                Some(t!("The Microsoft Store keeps Glint up to date")),
-                Vec::new(),
-                &t,
-            )
-            .into_any_element()
-        } else {
-            widgets::setting_row(
-                t!("Updates"),
-                None,
-                vec![
-                    widgets::button("about-update", t!("Check for updates"), Some(IconName::RefreshCw))
-                        .disabled(true)
-                        .tooltip(t!("Updating comes with its part of the port."))
-                        .into_any_element(),
-                ],
-                &t,
-            )
-            .into_any_element()
-        });
+        rows.push(self.update_row(&t, cx));
         rows.push(
             widgets::setting_row(
                 t!("Keyboard shortcuts"),

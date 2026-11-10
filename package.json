@@ -12,6 +12,7 @@
     "notes": "node scripts/notes.mjs",
     "licenses": "node scripts/licenses.mjs",
     "msix": "node scripts/msix.mjs",
+    "gpui:installer": "node scripts/gpui-installer.mjs",
     "site": "npm --prefix site run dev",
     "bench": "node scripts/bench.mjs"
   },

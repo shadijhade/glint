@@ -71,6 +71,8 @@ pub(super) struct Frame {
     pub viewer: EntityId,
     /// A fingerprint of the thumbnails last asked for, so the service is told only when the set changes.
     pub shown: Rc<Cell<u64>>,
+    /// The scrub overlay of the video tile the pointer is on, and that tile's path.
+    pub scrub: Option<(String, Entity<crate::components::preview::player::Scrub>)>,
     pub on_down: Handler<(usize, MouseDownEvent)>,
     pub on_right_up: Handler<(usize, MouseUpEvent)>,
     pub on_hover: Handler<(usize, bool)>,
@@ -286,6 +288,10 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
         square = square.child(corner_mark(i, "lock", lock_mark(entry, t), cx));
     }
 
+    if let Some((_, over)) = frame.scrub.as_ref().filter(|(path, _)| *path == entry.path) {
+        square = square.child(over.clone());
+    }
+
     let location = if frame.located && !frame.gallery {
         where_of(&frame.scope, entry)
     } else {
@@ -359,7 +365,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                     on_up(&(i, event.clone()), window, cx)
                 })
                 // Hovering a folder reads it ahead (`hoverFolder` and `leaveFolder`).
-                .when(entry.dir, |tile| {
+                .when(entry.dir || super::scrub::scrubbable(entry), |tile| {
                     tile.on_hover(move |hovered, window, cx| on_hover(&(i, *hovered), window, cx))
                 })
                 .tooltip(move |window, cx| {

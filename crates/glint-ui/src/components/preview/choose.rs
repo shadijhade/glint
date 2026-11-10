@@ -126,6 +126,10 @@ pub enum Body {
     Docx,
     /// A 3D model drawn and turned (`preview::model3d`).
     Model,
+    /// A Typst document typeset in process (`preview::typst_view`).
+    Typst,
+    /// An asciinema recording played (`preview::cast`).
+    Cast,
     /// Windows' own previewer for the type, over `fallback`.
     Shell(Fallback),
     /// The kind's icon and nothing else.
@@ -214,6 +218,7 @@ pub fn is_profilable(entry: &FileEntry) -> bool {
 pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
     let mut views = Vec::new();
     let notebook = is_notebook(entry);
+    let typst = entry.ext == "typ";
     let small = small_of(entry);
     let sheet = is_sheet(entry);
     let choice = |view, label: SharedString, title: SharedString| ViewChoice { view, label, title };
@@ -224,6 +229,13 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
             t!("The notebook as it reads, its outputs included"),
         ));
         views.push(choice(View::Source, t!("Source"), t!("The notebook's JSON as written")));
+    } else if typst {
+        views.push(choice(
+            View::File,
+            t!("Typeset"),
+            t!("The document as Typst typesets it"),
+        ));
+        views.push(choice(View::Source, t!("Source"), t!("The Typst source as written")));
     } else if small.is_some() {
         views.push(choice(
             View::File,
@@ -365,8 +377,7 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         return Choice::of(if source { Body::Text } else { Body::Notebook });
     }
     if readable && !archived && entry.ext == "typ" {
-        // PORT ME(typst): the document typeset (TypstView).
-        return Choice::later(Body::Text, "typst");
+        return Choice::of(if source { Body::Text } else { Body::Typst });
     }
     if readable && !archived && one_of(entry, &MODELS) {
         return Choice::of(Body::Model);
@@ -378,8 +389,7 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         return Choice::of(if source { Body::Text } else { Body::Data });
     }
     if readable && entry.ext == "cast" {
-        // PORT ME(cast): the recording played (CastPreview).
-        return Choice::later(Body::Text, "cast");
+        return Choice::of(Body::Cast);
     }
     if readable && !archived && one_of(entry, &DOCX_EXTS) && entry.size <= DOCX_MAX {
         return Choice::of(Body::Docx);

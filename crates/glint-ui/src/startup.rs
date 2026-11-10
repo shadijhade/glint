@@ -51,6 +51,8 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     start_explorer(cx);
     // The disk usage maps, reading glint-core (after the explorer, whose tabs they follow).
     crate::components::disk_usage::init(cx);
+    // The system fonts Typst sets documents in, found once in the background (Typst previews, PDF export).
+    crate::typst_engine::warm_fonts();
     // Git's status for the folders shown, and File Explorer's on-demand folders the menus offer to hide.
     crate::components::git::init(cx);
     explorer::explorer(cx).update(cx, |e, cx| e.refresh_on_demand(cx).detach());

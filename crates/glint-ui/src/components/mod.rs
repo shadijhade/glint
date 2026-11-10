@@ -38,10 +38,9 @@ pub mod sidebar;
 pub mod status_bar;
 /// The tabs in the title bar (TabStrip.tsx).
 pub mod tab_strip;
+/// The terminal pane: shells in tabs under the files (TerminalPanel.tsx).
+pub mod terminal;
 /// Searching inside files: the query, its options, the results and the history (Search.tsx, Results.tsx, History.tsx).
 pub mod text_search;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
-/// The terminal pane: shells in tabs under the files (TerminalPanel.tsx). Wave 11 slot.
-#[cfg(feature = "terminal")]
-pub mod terminal;
