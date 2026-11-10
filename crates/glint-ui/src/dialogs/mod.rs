@@ -19,6 +19,18 @@
 use crate::kit::prelude::*;
 
 pub mod drive_health;
+/// Renaming several items at once (BatchRenameDialog.tsx). Wave 6 slot.
+#[cfg(feature = "dialog-batch-rename")]
+pub mod batch_rename;
+/// Tags for files and folders (TagsDialog.tsx). Wave 6 slot.
+#[cfg(feature = "dialog-tags")]
+pub mod tags;
+/// A password asked for or set (PasswordDialog.tsx). Wave 6 slot.
+#[cfg(feature = "dialog-password")]
+pub mod password;
+/// Encrypting and decrypting with age (VaultDialog.tsx). Wave 6 slot.
+#[cfg(feature = "dialog-vault")]
+pub mod vault;
 /// A file's history (HistoryDialog.tsx).
 pub mod history;
 /// What holds a file open, and stopping it (LocksDialog.tsx).
