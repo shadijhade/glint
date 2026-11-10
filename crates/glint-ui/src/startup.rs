@@ -11,6 +11,7 @@
 //! which every GPUI callback and entity update already holds: called from one of those, they panic. A posted
 //! job runs from the message pump, outside them. (The tray's callbacks already run there.)
 
+use crate::components::quick_search;
 use crate::kit::prelude::*;
 use crate::platform::{launch, preview_host, tray, window_state};
 use crate::{core_bridge, explorer, persistence, state, t, workspace};
@@ -40,6 +41,7 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     preview_host::init();
     // Instant search's state for the status bar (it polls core's index service in the background).
     crate::components::status_bar::init(cx);
+    start_quick_search(cx);
     start_explorer(cx);
     start_tray(cx, request.tray);
     keep_jump_list(cx);
@@ -92,7 +94,13 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     let first = explorer::explorer(cx).update(cx, |explorer, cx| explorer.init_explorer(targets, cx));
     cx.spawn(async move |cx| {
         first.await;
-        cx.update(hear_later_launches);
+        cx.update(|cx| {
+            hear_later_launches(cx);
+            // The Quick Search window is made ahead of time now, so the shortcut shows it at once.
+            quick_search::warm(cx);
+            // Debug builds: GLINT_SELFTEST drives the real app through file operations (selftest.rs).
+            crate::selftest::start(cx);
+        });
     })
     .detach();
 
@@ -132,13 +140,15 @@ fn reveal_main() {
 /// PORT ME: the old app first asked when quitting would cut a copy short or lose Compare's edits
 /// (`mayQuit`); the copy queue and Compare parts add that question here.
 fn close_to_tray(window: &mut Window, cx: &mut App) {
-    window.on_window_should_close(cx, |window, _| {
+    window.on_window_should_close(cx, |window, cx| {
         let Some(hwnd) = core_bridge::hwnd_of(window) else {
             return true;
         };
         // GetWindowPlacement sends the window nothing, so this is safe inside the callback.
         window_state::save_hwnd(hwnd);
         if !tray::keep_running() {
+            // Quitting: the hidden Quick Search window goes too, or it would keep the app alive.
+            quick_search::close(cx);
             return true;
         }
         let raw = hwnd.0 as isize;
@@ -151,6 +161,11 @@ fn close_to_tray(window: &mut Window, cx: &mut App) {
         });
         false
     });
+}
+
+/// The main window, once it exists.
+pub(crate) fn main_window(cx: &App) -> Option<AnyWindowHandle> {
+    cx.try_global::<MainWindow>().map(|main| main.0)
 }
 
 /// A notice in the main window (nothing before it exists).
@@ -192,12 +207,34 @@ fn hear_later_launches(cx: &mut App) {
     .detach();
 }
 
-/// The shortcut, the tray menu's Quick search, a launch with `--quick-search`.
-///
-/// PORT ME: the Quick Search window is its own part; until it exists the main window comes forward and says so.
+/// The shortcut, the tray menu's Quick search, a launch with `--quick-search`: the Quick Search window comes or
+/// goes (`summon` toggled in the web app too).
 fn quick_search(cx: &mut App) {
-    core_bridge::post_to_ui(reveal_main);
-    not_yet(cx, t!("Quick search"));
+    quick_search::toggle(cx);
+}
+
+/// The Quick Search window's hub: "show it in Glint" opens the folder (or the file's folder, the file selected)
+/// in a new tab and brings the main window forward.
+fn start_quick_search(cx: &mut App) {
+    let hub = quick_search::init(cx);
+    cx.subscribe(&hub, |_, event: &quick_search::QuickSearchEvent, cx| {
+        if let quick_search::QuickSearchEvent::Reveal { path, dir } = event {
+            let target = if *dir {
+                explorer::LaunchTarget {
+                    path: path.clone(),
+                    select: None,
+                }
+            } else {
+                explorer::LaunchTarget {
+                    path: glint_model::paths::parent_path(path),
+                    select: Some(path.clone()),
+                }
+            };
+            explorer::explorer(cx).update(cx, |explorer, cx| explorer.open_requested(vec![target], cx));
+            core_bridge::post_to_ui(reveal_main);
+        }
+    })
+    .detach();
 }
 
 /// What the tray's menu and the shortcut ask of GPUI (opening the window happens in the callback itself).
