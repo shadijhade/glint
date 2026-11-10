@@ -206,6 +206,23 @@
 
 *4 tasks (Sonnet; 8 agents, ~54 min, 1.5M tokens), all passed review.* The NSIS installer for the GPUI build (`crates/glint/installer/`, `npm run gpui:installer`; packaging tried with the debug build, never run); the updater (`updater.rs`, behind `updater` until wired: latest.json, minisign-checked installer, passive install); `tests/e2e/run.ps1` (UI Automation against a debug Glint.exe); video scrubbing on grid tiles; books' places and text size in books.json. **The end-to-end checks found three app bugs** (next wave): Enter in the rename box also opens the item under its old name; after the rename box closes nothing has the keyboard; a file dropped from File Explorer is ignored after a key press until the mouse moves over the window.
 
+## Wave 12B: wrapped right-to-left text and the three end-to-end bugs: done 2026-11-10
+
+*2 tasks (Sonnet), both passed review; committed with the updater's wiring as 2a7c94a.* The vendored GPUI wraps a right-to-left paragraph at spaces in reading order and shapes each row alone (13 tests on the real DirectWrite); Enter in the rename box no longer opens the item; the list takes the keyboard back after a rename; drops from other apps work after a key press (file drags count as mouse input). End-to-end: 18 passed. The updater runs from start-up, asks before quitting to install, and has the toolbar's Update button.
+
+## Who works where (since 2026-11-10)
+
+| Lane | Who | Folder | Branch | Owns | Status |
+|---|---|---|---|---|---|
+| Coordinator and the Sonnet swarm | Claude Code | `.claude\worktrees\gpui-migration` | `gpui-migration` | everything not listed below | waves 1–12 done |
+| Antigravity | Antigravity's agent (the user's credits) | `D:\glint-antigravity` | `gpui-antigravity` | each task's "You own" list in [ANTIGRAVITY.md](ANTIGRAVITY.md): AG-1 parity audit, AG-2 the service into `crates/shadui-index`, AG-3 the release pipeline, AG-4 Arabic (only on the user's word) | AG-1 not started |
+
+**Rules for the lane split:** while a task is open, the swarm's prompts list its files as not theirs to touch. Antigravity commits only to `gpui-antigravity`, with an `Agent: Antigravity` last line, and keeps `docs/gpui/antigravity/AG-<n>.md` and `LOG.md`.
+
+**To review:** `git log --oneline gpui-migration..gpui-antigravity`, `git diff gpui-migration...gpui-antigravity --stat`, the reports. Then the full tests here, and `git merge --no-ff gpui-antigravity`.
+
+**Merged from Antigravity up to:** nothing yet.
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).
