@@ -12,7 +12,7 @@
 //! | `mediaDetailsMany`                      | [`Source::details`], asked once when the pattern wants a detail   |
 //! | `batchRename`                           | [`Source::rename`] (core's two-phase, all-or-nothing renamer)     |
 //! | `BatchRenameDialog`                     | [`BatchRenameDialog`], opened with [`open`]                       |
-//! | the "Renamed..." toast and its Undo     | [`renamed`] (a notification with an Undo button)                  |
+//! | the "Renamed..." toast and its Undo     | [`renamed`] (a notification with an Undo button; Ctrl+Z too)     |
 //! | `lastUndo` and "Undo last batch"        | [`LastBatch`], a global the dialog's header button reads          |
 //!
 //! **The preview is computed here, not by core.** The TypeScript worked out every new name in the page and
@@ -25,11 +25,12 @@
 //!   for ordinary patterns and `$1`, `$&`, `$<name>` in the replacement, but lookaround and back-references
 //!   are refused (the error is shown, nothing is renamed), and `\d`, `\w`, `\b` are Unicode-aware.
 //! - Start # and Step are whole numbers (`Number("2.5")` was 2.5 there; here it is 2).
-//! - Ctrl+Z: the explorer's Undo steps can't hold a whole batch yet (`UndoAction` has a single `Rename`), so
-//!   the way back is the Undo button of the notification and the dialog's "Undo last batch" button.
-//!   PORT ME(coordinator): see [`renamed`] for the one line that joins Ctrl+Z once `UndoAction` has a batch.
+//! - Ctrl+Z takes a batch back too, as the TypeScript's `rememberUndo` did: [`renamed`] keeps an
+//!   `UndoAction::RenameBatch` (the pairs of `undo_ops`) as the step "rename of 3 items", the notification's
+//!   Undo button and the dialog's "Undo last batch" run that same step, and the explorer runs it through core's
+//!   all-or-nothing renamer, says how it went and reads the folders again.
 
-use crate::explorer::try_explorer;
+use crate::explorer::{try_explorer, BatchPair, UndoAction, UndoId};
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
 use glint_core::batch_rename::{BatchRenameResult, RenamePair};
@@ -633,6 +634,8 @@ pub struct Applied {
     pub undo_ops: Vec<RenamePair>,
     /// The folders the items were in, to read again.
     pub folders: Vec<String>,
+    /// The explorer's Undo step that takes it back (Ctrl+Z), once [`renamed`] has kept it.
+    pub step: Option<UndoId>,
 }
 
 impl Applied {
@@ -648,6 +651,7 @@ impl Applied {
             elapsed_ms: done.elapsed_ms,
             undo_ops: done.undo_ops,
             folders,
+            step: None,
         }
     }
 
@@ -671,9 +675,10 @@ impl Applied {
     }
 }
 
-/// The last batch, while Undo can still take it back: the dialog's "Undo last batch" (`lastUndo`).
+/// The last batch, while Undo can still take it back: the dialog's "Undo last batch" (`lastUndo`). It has its
+/// `step` set; the button is only drawn while the explorer still holds that step (Ctrl+Z may have used it).
 #[derive(Default)]
-pub struct LastBatch(pub Option<(Applied, Source)>);
+pub struct LastBatch(pub Option<Applied>);
 
 impl Global for LastBatch {}
 
@@ -896,8 +901,6 @@ pub fn gather(paths: &[String], cx: &App) -> (Vec<Item>, HashSet<String>) {
 
 /// The notification that offers Undo (the TypeScript's success toast with an action).
 struct RenamedToast;
-/// What undoing said: a newer one replaces it.
-struct UndoneToast;
 
 /// How long the Undo offer stays, as the web app's toasts.
 const UNDO_FOR: Duration = Duration::from_secs(8);
@@ -913,30 +916,47 @@ fn reload_folders(folders: &[String], cx: &mut App) {
     }
 }
 
-/// Says a batch was done (`Renamed 3 items in 1.2 ms`) with an Undo button, keeps it for "Undo last batch",
-/// and reads the folders again.
-///
-/// PORT ME(coordinator): once `UndoAction` has a batch rename (the pairs of `applied.undo_ops`, run by
-/// core's `batch_rename`, which is atomic), add here
-/// `explorer.update(cx, |e, cx| e.remember_undo(applied.label(), UndoAction::RenameBatch(..), cx))` so Ctrl+Z
-/// takes it back too. `UndoAction::Rename` is one item's rename and can't swap names back safely.
-pub fn renamed(applied: Applied, source: Source, window: &mut Window, cx: &mut App) {
+/// Keeps how to take the batch back, so Ctrl+Z does (`rememberUndo(`rename of ${what}`, ...)`): the explorer's
+/// step holds the pairs that put every name back, and runs them through core's all-or-nothing renamer. `None`
+/// when the batch changed nothing (no way back) or there is no explorer.
+fn remember(applied: &Applied, cx: &mut App) -> Option<UndoId> {
+    if applied.undo_ops.is_empty() {
+        return None;
+    }
+    let explorer = try_explorer(cx)?;
+    let pairs = applied
+        .undo_ops
+        .iter()
+        .map(|pair| BatchPair {
+            from: pair.from.clone(),
+            to: pair.to.clone(),
+        })
+        .collect();
+    let label = applied.label();
+    Some(explorer.update(cx, |explorer, cx| {
+        explorer.remember_undo(label, UndoAction::RenameBatch(pairs), cx)
+    }))
+}
+
+/// Says a batch was done (`Renamed 3 items in 1.2 ms`) with an Undo button, keeps it for Ctrl+Z and for "Undo
+/// last batch", and reads the folders again.
+pub fn renamed(mut applied: Applied, window: &mut Window, cx: &mut App) {
     reload_folders(&applied.folders, cx);
-    cx.set_global(LastBatch(Some((applied.clone(), source.clone()))));
-    let message = applied.message();
-    let mut note = Notification::success(message).id::<RenamedToast>();
-    if !applied.undo_ops.is_empty() {
-        let offered = applied.clone();
-        let source = source.clone();
+    applied.step = remember(&applied, cx);
+    cx.set_global(LastBatch(applied.step.map(|_| applied.clone())));
+    let mut note = Notification::success(applied.message()).id::<RenamedToast>();
+    if let Some(step) = applied.step {
         note = note.action(move |_, _, _| {
-            let (applied, source) = (offered.clone(), source.clone());
             Button::new("batch-rename-undo")
                 .label(t!("Undo"))
-                .on_click(move |_, window, cx| undo_batch(applied.clone(), source.clone(), window, cx))
+                .on_click(move |_, window, cx| {
+                    window.remove_notification::<RenamedToast>(cx);
+                    undo_batch(step, cx);
+                })
         });
     }
     window.push_notification(note, cx);
-    if !applied.undo_ops.is_empty() {
+    if applied.step.is_some() {
         let handle = window.window_handle();
         cx.spawn(async move |cx| {
             cx.background_executor().timer(UNDO_FOR).await;
@@ -946,33 +966,13 @@ pub fn renamed(applied: Applied, source: Source, window: &mut Window, cx: &mut A
     }
 }
 
-/// Puts the names of a batch back (`undo`): core renames every pair back, or none. Says how it went.
-pub fn undo_batch(applied: Applied, source: Source, window: &mut Window, cx: &mut App) {
-    window.remove_notification::<RenamedToast>(cx);
-    // Used up whatever comes of it, as the TypeScript's `finally` did.
+/// Puts the names of a batch back (`undo`), as Ctrl+Z would: the explorer runs the step, says how it went and
+/// reads the folders again. The batch is used up whatever comes of it, as the TypeScript's `finally` did.
+pub fn undo_batch(step: UndoId, cx: &mut App) {
     cx.set_global(LastBatch(None));
-    let label = applied.label();
-    let undoing = (source.rename)(applied.undo_ops.clone());
-    window
-        .spawn(cx, async move |cx| {
-            let result = core_bridge::run(undoing).await.and_then(|inner| inner);
-            let _ = cx.update(|window, cx| match result {
-                Ok(_) => {
-                    reload_folders(&applied.folders, cx);
-                    window.push_notification(
-                        Notification::success(t!("Undid the {label}", label = label)).id::<UndoneToast>(),
-                        cx,
-                    );
-                }
-                Err(message) => window.push_notification(
-                    Notification::error(message)
-                        .title(t!("Couldn't undo the {label}", label = label))
-                        .id::<UndoneToast>(),
-                    cx,
-                ),
-            });
-        })
-        .detach();
+    if let Some(explorer) = try_explorer(cx) {
+        explorer.update(cx, |explorer, cx| explorer.undo(Some(step), cx).detach());
+    }
 }
 
 // ---- The dialog -----------------------------------------------------------------------------------------
@@ -1126,7 +1126,7 @@ impl BatchRenameDialog {
                             if view.upgrade().is_some() {
                                 window.close_dialog(cx);
                             }
-                            renamed(Applied::of(done, &asked), source, window, cx);
+                            renamed(Applied::of(done, &asked), window, cx);
                         }
                         Err(message) => window
                             .push_notification(Notification::error(message).title(t!("Couldn't rename the items")), cx),
@@ -1544,7 +1544,16 @@ impl Render for BatchRenameDialog {
             )
         };
         let can_apply = self.model.read(cx).can_apply();
-        let last = cx.try_global::<LastBatch>().and_then(|last| last.0.clone());
+        // The last batch, if the explorer still has the step that takes it back.
+        let last = cx
+            .try_global::<LastBatch>()
+            .and_then(|last| last.0.clone())
+            .and_then(|applied| {
+                let step = applied.step?;
+                try_explorer(cx)
+                    .is_some_and(|explorer| explorer.read(cx).has_undo(step))
+                    .then_some((applied, step))
+            });
         let changed = sim.changed_count;
 
         let header = row_start()
@@ -1558,7 +1567,7 @@ impl Render for BatchRenameDialog {
                     .text_color(t.muted_foreground)
                     .child(t!("Every item is renamed, or none is, and Undo puts the names back")),
             )
-            .children(last.map(|(applied, source)| {
+            .children(last.map(|(applied, step)| {
                 let what = applied.what();
                 Button::new("batch-rename-undo-last")
                     .outline()
@@ -1570,7 +1579,7 @@ impl Render for BatchRenameDialog {
                     .disabled(running)
                     .on_click(move |_, window, cx| {
                         window.close_dialog(cx);
-                        undo_batch(applied.clone(), source.clone(), window, cx);
+                        undo_batch(step, cx);
                     })
             }))
             .child(
@@ -2058,6 +2067,7 @@ mod tests {
             elapsed_ms,
             undo_ops: Vec::new(),
             folders: Vec::new(),
+            step: None,
         };
         assert_eq!(applied(2, 1.5).message(), "Renamed 2 items in 1.5 ms");
         assert_eq!(applied(1, 0.04).message(), "Renamed 1 item in 0.0 ms");
@@ -2160,6 +2170,24 @@ mod tests {
     fn window(cx: &mut TestAppContext) -> VisualTestContext {
         cx.update(testing::init);
         testing::open_window(cx, |_, cx| cx.new(|_| Host)).0
+    }
+
+    /// The explorer Ctrl+Z reaches, on a fake disk, with a fake for the steps core would do.
+    fn with_explorer(cx: &mut VisualTestContext) -> (Entity<explorer::Explorer>, Arc<explorer::FakeUndoRunner>) {
+        let disk = FakeDisk::new();
+        disk.folder("C:\\", Vec::new());
+        disk.folder("C:\\Photos", vec![file("C:\\Photos", "Trip 0001.jpg", 1, 1)]);
+        let source = disk.source();
+        cx.update(|_, cx| {
+            explorer::init_with(cx, source);
+            let runner = explorer::FakeUndoRunner::install(cx);
+            (explorer::explorer(cx), runner)
+        })
+    }
+
+    /// What Ctrl+Z would take back now.
+    fn next_undo(cx: &mut VisualTestContext, explorer: &Entity<explorer::Explorer>) -> Option<String> {
+        explorer.read_with(cx, |e, _| e.next_undo().map(|(_, label)| label.to_string()))
     }
 
     fn role_of(cx: &mut VisualTestContext, label: &str) -> Option<Role> {
@@ -2469,6 +2497,7 @@ mod tests {
         let _guard = testing::lock();
         let mut visual = window(cx);
         visual.update(|_, cx| cx.set_global(LastBatch(None)));
+        let (explorer, runner) = with_explorer(&mut visual);
         let fake = Fake::default();
         let view = open_items(&mut visual, &fake, photos(), &[]);
         let (find, replace) = view.read_with(&visual, |v, _| (v.find.clone(), v.replace.clone()));
@@ -2491,9 +2520,14 @@ mod tests {
             ]
         );
         settle(&mut visual, "the dialog closing", |cx| !is_open(cx));
-        // The batch is kept for "Undo last batch".
-        let kept = visual.update(|_, cx| cx.global::<LastBatch>().0.as_ref().map(|(a, _)| a.renamed));
-        assert_eq!(kept, Some(2));
+        // The batch is kept for "Undo last batch", and for Ctrl+Z under the TypeScript's label.
+        let kept = visual.update(|_, cx| cx.global::<LastBatch>().0.as_ref().map(|a| (a.renamed, a.step)));
+        let step = kept.and_then(|(_, step)| step).expect("the batch has a step");
+        assert_eq!(kept.map(|(renamed, _)| renamed), Some(2));
+        assert_eq!(
+            explorer.read_with(&visual, |e, _| e.next_undo().map(|(id, l)| (id, l.to_string()))),
+            Some((step, "rename of 2 items".to_string()))
+        );
         // The person is told, with an Undo button.
         settle(&mut visual, "the notification", |cx| has(cx, "Undo"));
         assert_eq!(role_of(&mut visual, "Undo"), Some(Role::Button));
@@ -2504,19 +2538,72 @@ mod tests {
             window.render_frame(cx);
             window.click("batch-rename-undo", cx);
         });
-        settle(&mut visual, "the undo", |_| fake.batches().len() == 2);
-        let back = &fake.batches()[1];
+        settle(&mut visual, "the undo", |_| runner.renamed().len() == 1);
+        let back = &runner.renamed()[0];
         assert_eq!(back[0].from, "C:\\Photos\\Trip 0001.jpg");
         assert_eq!(back[0].to, "C:\\Photos\\IMG_0001.jpg");
-        // What undoing said is on screen (a second notification; the headless clock never finishes the
-        // first one's exit animation, so it stays in the tree).
-        settle(&mut visual, "what undoing said", |cx| {
-            cx.update(|window, cx| {
-                window.render_frame(cx);
-                window.find_all_by_role(Role::Alert).len() >= 2
-            })
-        });
+        assert_eq!(back.len(), 2);
+        // The names went back through the explorer's step, not through the dialog's own source.
+        assert_eq!(fake.batches().len(), 1);
+        assert_eq!(next_undo(&mut visual, &explorer), None);
         assert!(visual.update(|_, cx| cx.global::<LastBatch>().0.is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_z_takes_the_batch_back_and_withdraws_the_dialogs_undo_last_batch(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        visual.update(|_, cx| cx.set_global(LastBatch(None)));
+        let (explorer, runner) = with_explorer(&mut visual);
+        // Something else was done first: the batch is the newer step.
+        explorer.update(&mut visual, |e, cx| {
+            e.remember_undo(
+                "copy of 1 item",
+                explorer::UndoAction::Recycle(vec!["C:\\Photos\\x".into()]),
+                cx,
+            );
+        });
+        let fake = Fake::default();
+        let view = open_items(&mut visual, &fake, photos(), &[]);
+        let (find, replace) = view.read_with(&visual, |v, _| (v.find.clone(), v.replace.clone()));
+        type_into(&mut visual, &find, "IMG_");
+        type_into(&mut visual, &replace, "Trip ");
+        visual.update(|window, cx| window.click("batch-rename-apply", cx));
+        settle(&mut visual, "the dialog closing", |cx| {
+            !is_open(cx) && !fake.batches().is_empty()
+        });
+        assert_eq!(next_undo(&mut visual, &explorer).as_deref(), Some("rename of 2 items"));
+
+        // Ctrl+Z: the batch goes back first, the copy is still there to undo after it.
+        let task = explorer.update(&mut visual, |e, cx| e.undo(None, cx));
+        visual.foreground_executor().block_test(task);
+        visual.run_until_parked();
+        assert_eq!(runner.renamed().len(), 1);
+        assert_eq!(runner.renamed()[0][0].to, "C:\\Photos\\IMG_0001.jpg");
+        assert_eq!(next_undo(&mut visual, &explorer).as_deref(), Some("copy of 1 item"));
+
+        // The dialog no longer offers to undo what Ctrl+Z already took back.
+        let _again = open_items(&mut visual, &fake, photos(), &[]);
+        assert!(!has(&mut visual, "Undo last batch: 2 items"));
+    }
+
+    #[gpui_kit::test]
+    fn a_batch_that_changed_nothing_has_no_undo_to_offer(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        visual.update(|_, cx| cx.set_global(LastBatch(None)));
+        let (explorer, _runner) = with_explorer(&mut visual);
+        let applied = Applied {
+            renamed: 0,
+            elapsed_ms: 0.0,
+            undo_ops: Vec::new(),
+            folders: Vec::new(),
+            step: None,
+        };
+        visual.update(|window, cx| renamed(applied, window, cx));
+        assert_eq!(next_undo(&mut visual, &explorer), None);
+        assert!(visual.update(|_, cx| cx.global::<LastBatch>().0.is_none()));
+        assert!(!has(&mut visual, "Undo"));
     }
 
     #[gpui_kit::test]
@@ -2573,8 +2660,9 @@ mod tests {
     fn the_last_batch_can_be_undone_from_the_dialogs_header(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let mut visual = window(cx);
+        let (explorer, runner) = with_explorer(&mut visual);
         let fake = Fake::default();
-        let applied = Applied {
+        let mut applied = Applied {
             renamed: 3,
             elapsed_ms: 2.0,
             undo_ops: vec![RenamePair {
@@ -2582,19 +2670,22 @@ mod tests {
                 to: "C:\\a\\old.txt".into(),
             }],
             folders: vec!["C:\\a".into()],
+            step: None,
         };
-        let source = fake.source();
-        visual.update(|_, cx| cx.set_global(LastBatch(Some((applied, source)))));
+        applied.step = visual.update(|_, cx| remember(&applied, cx));
+        visual.update(|_, cx| cx.set_global(LastBatch(Some(applied))));
         let _view = open_items(&mut visual, &fake, photos(), &[]);
         assert_eq!(role_of(&mut visual, "Undo last batch: 3 items"), Some(Role::Button));
         visual.update(|window, cx| {
             window.render_frame(cx);
             window.click("batch-rename-undo-last", cx);
         });
-        settle(&mut visual, "the undo", |_| fake.batches().len() == 1);
-        assert_eq!(fake.batches()[0][0].to, "C:\\a\\old.txt");
+        settle(&mut visual, "the undo", |_| runner.renamed().len() == 1);
+        assert_eq!(runner.renamed()[0][0].to.as_str(), "C:\\a\\old.txt");
+        assert!(fake.batches().is_empty());
         settle(&mut visual, "the dialog closing", |cx| !is_open(cx));
         assert!(visual.update(|_, cx| cx.global::<LastBatch>().0.is_none()));
+        assert_eq!(next_undo(&mut visual, &explorer), None);
     }
 
     #[gpui_kit::test]

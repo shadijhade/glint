@@ -14,14 +14,16 @@
 //!
 //! **Closing the dialog stops the work** (the TypeScript's cleanup called `wof_cancel`): the view's `Drop` does it.
 //!
-//! NOTE(port): the TypeScript offered Undo as a toast and as a step for Ctrl+Z (`rememberUndo`). The explorer's
-//! undo steps are data (`explorer::UndoAction`) and have no step that calls `wof_undo`, so a finished compression
-//! offers an Undo button in the result instead. PORT ME(coordinator): an `UndoAction::Wof(id)` that runs
-//! `glint_core::wof::wof_undo`, and a `remember_undo` here once it exists.
+//! **Undo.** A finished compression that core can take back (`Report::undo`) is kept as the explorer's step
+//! "compressing 12 files in place" (`UndoAction::Wof(id)`, which runs `glint_core::wof::wof_undo`), so Ctrl+Z
+//! decompresses the files as the TypeScript's `rememberUndo` did, and a notification offers Undo for 8 s
+//! (`offerUndo`). The result's own Undo button runs the same take-back with this dialog's progress, so it drops
+//! the explorer's step first (core undoes a run once).
 //!
 //! Enter does not start the compression (the TypeScript's `onSubmit` did): the dialog layer keeps Enter for the
 //! dialog's own buttons, and this dialog has no box to type in. Tab to Compress and press Enter or Space.
 
+use crate::explorer::{self, UndoAction, UndoId};
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
 use glint_core::host::ipc::Channel;
@@ -171,6 +173,82 @@ pub struct CompressInPlaceDialog {
     measure_error: Option<SharedString>,
     algorithm: Algorithm,
     phase: Phase,
+    /// The explorer's Undo step for the compression that just finished, while it is still offered.
+    step: Option<UndoId>,
+}
+
+/// What a run does to the files.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunKind {
+    Compress,
+    Decompress,
+    /// The result's Undo: decompresses what the compression compressed.
+    TakeBack,
+}
+
+impl RunKind {
+    /// Whether the run shows as a decompression (the Done view says so).
+    fn decompresses(self) -> bool {
+        self != RunKind::Compress
+    }
+}
+
+/// The notification that offers Undo for a compression, keyed by its step.
+struct CompressedToast;
+
+/// How long the Undo offer stays, as the web app's 8 s toast.
+const UNDO_FOR: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Keeps how to take the compression back, for Ctrl+Z (`rememberUndo(what, ...)` in `offerWofUndo`): the files
+/// that run compressed are decompressed. `None` when there is no explorer to keep it in.
+fn remember_undo(id: u64, what: &str, cx: &mut App) -> Option<UndoId> {
+    let explorer = explorer::try_explorer(cx)?;
+    let what = what.to_string();
+    Some(explorer.update(cx, |explorer, cx| explorer.remember_undo(what, UndoAction::Wof(id), cx)))
+}
+
+/// Says what was compressed with an Undo button (`offerUndo`): it takes the step back, as Ctrl+Z would.
+fn offer_undo(said: String, step: UndoId, window: &mut Window, cx: &mut App) {
+    let key = step.0 as usize;
+    let note = Notification::success(SharedString::from(said))
+        .id1::<CompressedToast>(key)
+        .action(move |_, _, _| {
+            Button::new("compress-undo-toast")
+                .label(t!("Undo"))
+                .on_click(move |_, window, cx| {
+                    window.remove_notification1::<CompressedToast>(key, cx);
+                    if let Some(explorer) = explorer::try_explorer(cx) {
+                        explorer.update(cx, |explorer, cx| explorer.undo(Some(step), cx).detach());
+                    }
+                })
+        });
+    window.push_notification(note, cx);
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(UNDO_FOR).await;
+        let _ = handle.update(cx, |_, window, cx| {
+            window.remove_notification1::<CompressedToast>(key, cx)
+        });
+    })
+    .detach();
+}
+
+/// Keeps a finished compression for Ctrl+Z as "compressing 12 files in place" and offers Undo with a
+/// notification (`offerWofUndo`): the explorer's step.
+fn offer_run(id: u64, done: usize, window: &mut Window, cx: &mut App) -> Option<UndoId> {
+    let what = t!("compressing {what} in place", what = plural(done, "file")).to_string();
+    let step = remember_undo(id, &what, cx)?;
+    offer_undo(capitalized(&what), step, window, cx);
+    Some(step)
+}
+
+/// `text` with its first letter in capitals (`what.charAt(0).toUpperCase() + what.slice(1)`).
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 impl Drop for CompressInPlaceDialog {
@@ -213,6 +291,7 @@ impl CompressInPlaceDialog {
             measure_error: None,
             algorithm: Algorithm::Xpress8k,
             phase: Phase::Setup,
+            step: None,
         }
     }
 
@@ -275,7 +354,12 @@ impl CompressInPlaceDialog {
         } else {
             self.backend.compress(self.paths.clone(), self.algorithm, channel)
         };
-        self.watch(total, decompress, receiver, call, window, cx);
+        let kind = if decompress {
+            RunKind::Decompress
+        } else {
+            RunKind::Compress
+        };
+        self.watch(total, kind, receiver, call, window, cx);
     }
 
     /// Takes back the compression that just finished (the result's Undo).
@@ -291,21 +375,30 @@ impl CompressInPlaceDialog {
             return;
         };
         let total = report.done;
+        // This takes it back with progress; the explorer's step (and its notification) must not run it again.
+        if let Some(step) = self.step.take() {
+            if let Some(explorer) = explorer::try_explorer(cx) {
+                explorer.update(cx, |explorer, cx| explorer.forget_undo(step, cx));
+            }
+            window.remove_notification1::<CompressedToast>(step.0 as usize, cx);
+        }
         let (channel, receiver) = core_bridge::stream::<Progress>();
         let call = self.backend.undo(id, channel);
-        self.watch(total, true, receiver, call, window, cx);
+        self.watch(total, RunKind::TakeBack, receiver, call, window, cx);
     }
 
-    /// Shows the run's progress as it comes (at most once a frame) and its result when it ends.
+    /// Shows the run's progress as it comes (at most once a frame) and its result when it ends. A finished
+    /// compression is kept for Ctrl+Z and offered with Undo.
     fn watch(
         &mut self,
         total: usize,
-        decompress: bool,
+        kind: RunKind,
         receiver: async_channel::Receiver<Progress>,
         call: Fut<Report>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let decompress = kind.decompresses();
         self.phase = Phase::Running {
             progress: Progress {
                 done: 0,
@@ -334,8 +427,15 @@ impl CompressInPlaceDialog {
         })
         .detach();
         cx.spawn_in(window, async move |this, cx| {
+            // `offerWofUndo`: core gives an id only when it compressed anything. A run stopped by closing the
+            // dialog still has files compressed, so the Undo is kept even when the dialog is gone.
             let result = call.await;
-            let _ = this.update(cx, |this, cx| {
+            let undo_of = match &result {
+                Ok(report) if kind == RunKind::Compress => report.undo.map(|id| (id, report.done)),
+                _ => None,
+            };
+            let alive = this.update_in(cx, |this, window, cx| {
+                this.step = undo_of.and_then(|(id, done)| offer_run(id, done, window, cx));
                 this.phase = match result {
                     Ok(report) => Phase::Done { report, decompress },
                     Err(reason) => Phase::Failed {
@@ -345,6 +445,9 @@ impl CompressInPlaceDialog {
                 };
                 cx.notify();
             });
+            if let (Err(_), Some((id, done))) = (alive, undo_of) {
+                let _ = cx.update(|window, cx| offer_run(id, done, window, cx));
+            }
         })
         .detach();
     }
@@ -1221,6 +1324,143 @@ mod tests {
         // Close ends it; Undo is offered because core gave an undo id.
         assert!(has_id(&mut visual, "compress-close") && has_id(&mut visual, "compress-undo"));
         assert!(!has_id(&mut visual, "compress-start"), "the start button is gone");
+    }
+
+    /// The explorer Ctrl+Z reaches, on a fake disk, with a fake for the steps core would do.
+    fn with_explorer(cx: &mut VisualTestContext) -> (Entity<explorer::Explorer>, Arc<explorer::FakeUndoRunner>) {
+        let disk = explorer::fake::FakeDisk::new();
+        disk.folder("C:\\", Vec::new());
+        let source = disk.source();
+        cx.update(|_, cx| {
+            explorer::init_with(cx, source);
+            let runner = explorer::FakeUndoRunner::install(cx);
+            (explorer::explorer(cx), runner)
+        })
+    }
+
+    fn next_undo(cx: &mut VisualTestContext, explorer: &Entity<explorer::Explorer>) -> Option<String> {
+        explorer.read_with(cx, |e, _| e.next_undo().map(|(_, label)| label.to_string()))
+    }
+
+    #[gpui_kit::test]
+    fn a_finished_compression_is_one_ctrl_z_and_a_toast_with_undo(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let (explorer, runner) = with_explorer(&mut visual);
+        explorer.update(&mut visual, |e, cx| {
+            e.remember_undo(
+                "copy of 1 item",
+                explorer::UndoAction::Recycle(vec!["C:\\x".into()]),
+                cx,
+            );
+        });
+        let fake = Fake::new(measure(), Ok(report()));
+        let _view = open_view(&mut visual, &["C:\\Games\\Big"], &fake);
+        settle(&mut visual, |cx| has(cx, "12 files to compress, 100 MB in all"));
+        click(&mut visual, "compress-start");
+        settle(&mut visual, |cx| has(cx, "Compressed 12 files"));
+        // Kept for Ctrl+Z under the page's label, above the older step.
+        assert_eq!(
+            next_undo(&mut visual, &explorer).as_deref(),
+            Some("compressing 12 files in place")
+        );
+        // The notification says it with a capital and offers Undo (the dialog is modal: it is closed first).
+        visual.update(|window, cx| window.press("escape", cx));
+        visual.run_until_parked();
+        settle(&mut visual, |cx| has_id(cx, "compress-undo-toast"));
+
+        // Ctrl+Z decompresses with core's `wof_undo` (the runner), not through the dialog's backend.
+        let task = explorer.update(&mut visual, |e, cx| e.undo(None, cx));
+        visual.foreground_executor().block_test(task);
+        visual.run_until_parked();
+        assert_eq!(runner.wof_asked(), [7]);
+        assert!(!fake.asked().iter().any(|a| a.starts_with("undo")));
+        assert_eq!(next_undo(&mut visual, &explorer).as_deref(), Some("copy of 1 item"));
+    }
+
+    #[gpui_kit::test]
+    fn the_toasts_undo_takes_the_compression_back_through_the_same_step(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let (explorer, runner) = with_explorer(&mut visual);
+        let fake = Fake::new(measure(), Ok(report()));
+        let _view = open_view(&mut visual, &["C:\\Games\\Big"], &fake);
+        settle(&mut visual, |cx| has(cx, "12 files to compress, 100 MB in all"));
+        click(&mut visual, "compress-start");
+        settle(&mut visual, |cx| has(cx, "Compressed 12 files"));
+        // The dialog is modal: it is closed, and the toast's Undo is under the pointer.
+        visual.update(|window, cx| window.press("escape", cx));
+        visual.run_until_parked();
+        settle(&mut visual, |cx| has_id(cx, "compress-undo-toast"));
+        click(&mut visual, "compress-undo-toast");
+        settle(&mut visual, |_| runner.wof_asked() == [7]);
+        assert_eq!(next_undo(&mut visual, &explorer), None);
+    }
+
+    #[gpui_kit::test]
+    fn the_results_own_undo_uses_up_the_step_so_ctrl_z_does_not_undo_twice(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let (explorer, runner) = with_explorer(&mut visual);
+        let fake = Fake::new(measure(), Ok(report()));
+        let _view = open_view(&mut visual, &["C:\\Games\\Big"], &fake);
+        settle(&mut visual, |cx| has(cx, "12 files to compress, 100 MB in all"));
+        click(&mut visual, "compress-start");
+        settle(&mut visual, |cx| has(cx, "Compressed 12 files"));
+        assert!(next_undo(&mut visual, &explorer).is_some());
+        *fake.report.lock().unwrap() = Some(Ok(Report {
+            done: 12,
+            before: 60 * MB,
+            after: 100 * MB,
+            ..Default::default()
+        }));
+        click(&mut visual, "compress-undo");
+        settle(&mut visual, |cx| has(cx, "Decompressed 12 files"));
+        // The dialog ran core's undo with its progress; the explorer's step is gone and ran nothing.
+        assert!(fake.asked().contains(&"undo 7".to_string()));
+        assert_eq!(next_undo(&mut visual, &explorer), None);
+        assert!(runner.wof_asked().is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn only_a_compression_core_can_take_back_is_kept(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let (explorer, _runner) = with_explorer(&mut visual);
+        // Nothing compressed, so core gave no undo id: nothing to keep or offer.
+        let fake = Fake::new(
+            measure(),
+            Ok(Report {
+                done: 0,
+                undo: None,
+                ..report()
+            }),
+        );
+        let _view = open_view(&mut visual, &["C:\\Games\\Big"], &fake);
+        settle(&mut visual, |cx| has(cx, "12 files to compress, 100 MB in all"));
+        click(&mut visual, "compress-start");
+        settle(&mut visual, |cx| has_id(cx, "compress-close"));
+        assert_eq!(next_undo(&mut visual, &explorer), None);
+        assert!(!has_id(&mut visual, "compress-undo-toast"));
+
+        // A decompression is not kept either.
+        let fake = Fake::new(
+            Measure {
+                wof: 4,
+                files: 0,
+                ..measure()
+            },
+            Ok(Report {
+                done: 4,
+                undo: Some(9),
+                ..Default::default()
+            }),
+        );
+        let _view = open_view(&mut visual, &["C:\\Games\\Small"], &fake);
+        settle(&mut visual, |cx| has_id(cx, "compress-decompress"));
+        click(&mut visual, "compress-decompress");
+        settle(&mut visual, |cx| has(cx, "Decompressed 4 files"));
+        assert_eq!(next_undo(&mut visual, &explorer), None);
     }
 
     #[gpui_kit::test]

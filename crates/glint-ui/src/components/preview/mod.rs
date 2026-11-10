@@ -34,11 +34,12 @@
 //!
 //! # Not ported yet
 //!
-//! Each is marked `PORT ME(<kind>)` where it belongs: MOBI/AZW books, and HTML mail laid out as a page (its text
-//! and pictures are shown). Until then those files get what the TypeScript showed when its own previewer failed:
-//! Windows' previewer over the file's icon, or the file as text. (Wave 9 brought tables, notebooks, program headers,
-//! contacts, calendars, mail, the Changes, Query and Profile views; wave 10 the player, PDF pages, books, Word
-//! documents and 3D models; wave 11 Mermaid and Graphviz diagrams, math, Typst documents and cast recordings.)
+//! Each is marked `PORT ME(<kind>)` where it belongs: HTML mail laid out as a page (its text and pictures are
+//! shown). Until then those files get what the TypeScript showed when its own previewer failed: Windows' previewer
+//! over the file's icon, or the file as text. (Wave 9 brought tables, notebooks, program headers, contacts,
+//! calendars, mail, the Changes, Query and Profile views; wave 10 the player, PDF pages, books, Word documents and
+//! 3D models; wave 11 Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 the MOBI,
+//! AZW and AZW3 books, read by [`mobi`].)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
 pub mod data;
@@ -49,7 +50,7 @@ pub mod markdown;
 /// Text and code, highlighted (FilePreview.tsx's text view, highlighter.ts).
 pub mod text;
 
-/// Books: EPUB, FB2 and comics, read page by page (BookView.tsx).
+/// Books: EPUB, MOBI/AZW, FB2 and comics, read page by page (BookView.tsx).
 pub mod book;
 pub mod cards;
 /// asciinema recordings played (CastPreview.tsx).
@@ -63,6 +64,8 @@ pub mod docx;
 pub mod frame;
 /// Math in Markdown, LaTeX syntax (RaTeX).
 pub mod math;
+/// MOBI, AZW and AZW3 books: PalmDOC, HUFF/CDIC, the MOBI and EXTH headers and KF8, read for the book view (foliate's mobi.js).
+pub mod mobi;
 /// 3D models: STL, OBJ, PLY, glTF/GLB and 3MF, drawn and turned (ModelView.tsx).
 pub mod model3d;
 /// Jupyter notebooks as they read (NotebookView.tsx).

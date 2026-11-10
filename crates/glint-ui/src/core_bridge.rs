@@ -99,7 +99,8 @@ impl EventEmitter<CoreEvent> for CoreEvents {}
 /// Start-up step 5: makes the app handle, registers core's states (what src-tauri's `setup` registered with
 /// `manage`), starts its background housekeeping and begins draining its events.
 pub fn init(cx: &mut App) {
-    init_with(cx, true);
+    // A secondary window leaves the housekeeping (crash reports, sweeps of old temp folders) to the main one.
+    init_with(cx, !crate::platform::secondary::is_secondary());
 }
 
 /// [`init`], with the background housekeeping (crash reports, sweeps of old temp folders…) optional, so tests

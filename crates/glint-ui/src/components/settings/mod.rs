@@ -562,6 +562,17 @@ fn app_backend(cx: &App) -> Arc<dyn Backend> {
     Arc::new(CoreBackend::new(cx.global::<core_bridge::Core>().app.clone()))
 }
 
+/// Settings are the main window's to keep (`open_main_settings`). In a secondary window (`platform::secondary`)
+/// this asks the main window to open them, at `section` when given, and answers true: the caller opens nothing.
+/// In the main window it answers false and does nothing.
+pub fn handed_to_main(window: &mut Window, cx: &mut App, section: Option<&str>) -> bool {
+    if !crate::platform::secondary::is_secondary() {
+        return false;
+    }
+    crate::platform::secondary::open_main_settings(window, cx, section);
+    true
+}
+
 /// Opens Settings at the top (the `OpenSettings` action, Ctrl+, and the toolbar's gear). If it is already open,
 /// that one is returned.
 pub fn open(window: &mut Window, cx: &mut App) -> Entity<SettingsView> {

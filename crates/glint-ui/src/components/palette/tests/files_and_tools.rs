@@ -528,3 +528,36 @@ fn connections_and_rules_are_always_there_and_nearby_follows_the_selection() {
         }
     );
 }
+
+#[test]
+fn converting_to_utf8_is_offered_for_a_selection_of_text_files_only() {
+    // Text files: one or many, each its own file.
+    let one = actions(&with_selected(&["old.txt"]));
+    let convert = find(&one, "to-utf8").expect("a text file is offered it");
+    assert_eq!(
+        convert.label.as_ref(),
+        "Convert the selected text files to UTF-8 (old Arabic, Cyrillic and other encodings)"
+    );
+    match &convert.run {
+        Run::ToUtf8(paths) => assert_eq!(paths, &vec![path("old.txt")]),
+        other => panic!("it should convert the selection, not {other:?}"),
+    }
+    let many = actions(&with_selected(&["a.txt", "b.csv", "c.md"]));
+    match &find(&many, "to-utf8").expect("text files").run {
+        Run::ToUtf8(paths) => assert_eq!(paths, &["a.txt", "b.csv", "c.md"].map(path).to_vec()),
+        other => panic!("{other:?}"),
+    }
+    // Nothing selected, a folder, a picture, or one of several that is not text: not offered.
+    for names in [&[][..], &["sub/"], &["a.png"], &["a.txt", "b.png"], &["a.txt", "sub/"]] {
+        let commands = actions(&with_selected(names));
+        assert!(find(&commands, "to-utf8").is_none(), "{names:?}");
+    }
+    // A file inside an archive is not rewritten.
+    let mut inside = with_selected(&[]);
+    let mut entry = file(r"C:\work\bundle.zip", "a.txt", 10, 0);
+    entry.attrs |= glint_model::entries::attr::IN_ARCHIVE;
+    inside.selected = vec![entry.path.clone()];
+    inside.chosen_entries = vec![entry];
+    inside.chosen = true;
+    assert!(find(&actions(&inside), "to-utf8").is_none());
+}

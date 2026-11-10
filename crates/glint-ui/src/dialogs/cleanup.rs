@@ -36,7 +36,7 @@
 //! Enter chooses the row (or a whole group when on its heading).
 
 use crate::components::file_grid::thumbnail::{self, Look, Thumbnails, Want};
-use crate::explorer::{self, FileOp, LaunchTarget};
+use crate::explorer::{self, BatchPair, FileOp, LaunchTarget, UndoAction, UndoId};
 use crate::kit::prelude::*;
 use crate::{core_bridge, i18n, t, theme};
 use glint_core::batch_rename::{BatchRenameResult, RenamePair};
@@ -843,13 +843,10 @@ pub enum Outcome {
 pub enum CleanupEvent {
     /// `Couldn't recycle the files` (or folders), with the reason.
     RecycleFailed { folders: bool, reason: SharedString },
-    /// Files got their real extension: `Gave 2 files their real extension`, with an Undo that renames these
-    /// pairs back. `folders` are where the files are, to read again.
-    GaveExtensions {
-        renamed: usize,
-        undo_ops: Vec<RenamePair>,
-        folders: Vec<String>,
-    },
+    /// Files got their real extension: `Gave 2 files their real extension`, with an Undo that is the explorer's
+    /// step `step` (which renames the pairs back: Ctrl+Z runs it too). `None` when the batch changed nothing or
+    /// there is no explorer to keep a step in: nothing to offer.
+    GaveExtensions { renamed: usize, step: Option<UndoId> },
     /// `Couldn't rename them`, with the reason.
     RenameFailed { reason: SharedString },
     /// A tool is installed.
@@ -1243,11 +1240,9 @@ impl Cleanup {
         .detach();
     }
 
-    /// Gives each chosen misnamed file its real extension, all or none, with Undo (`giveExtensions`).
-    ///
-    /// PORT ME(coordinator): once `UndoAction` has a batch rename, remember it here with
-    /// `explorer.remember_undo("extensions of {what}", ..)` so Ctrl+Z takes it back as the page's did (the
-    /// notification's Undo works already).
+    /// Gives each chosen misnamed file its real extension, all or none, with Undo (`giveExtensions`): the
+    /// explorer keeps "extensions of 3 files" as a step, so Ctrl+Z takes it back as the page's did, and the
+    /// notification's Undo runs that same step.
     pub fn give_extensions(&mut self, cx: &mut Context<Self>) {
         let going: Vec<Item> = self
             .chosen_items()
@@ -1267,23 +1262,16 @@ impl Cleanup {
                 to: with_extension(&item.path, &item.fix),
             })
             .collect();
-        let mut folders: Vec<String> = Vec::new();
-        for item in &going {
-            let folder = parent_path(&item.path);
-            if !folders.iter().any(|known| known.eq_ignore_ascii_case(&folder)) {
-                folders.push(folder);
-            }
-        }
         let asked = (self.source.rename)(pairs);
         cx.spawn(async move |this, cx| {
             let answer = core_bridge::run(asked).await.and_then(|inner| inner);
             let _ = this.update(cx, |this, cx| {
                 match answer {
                     Ok(done) => {
+                        let step = remember_extensions(done.renamed, &done.undo_ops, cx);
                         cx.emit(CleanupEvent::GaveExtensions {
                             renamed: done.renamed,
-                            undo_ops: done.undo_ops,
-                            folders,
+                            step,
                         });
                         let gone: HashSet<String> = going.iter().map(|item| item.path.clone()).collect();
                         this.drop_items(at, &gone, cx);
@@ -1392,32 +1380,34 @@ impl Cleanup {
 
 /// The notification that offers Undo for extensions given.
 struct GaveExtensionsToast;
-/// What undoing said: a newer one replaces it.
-struct UndoneToast;
 
 /// How long the Undo offer stays, as the web app's toasts.
 const UNDO_FOR: Duration = Duration::from_secs(8);
 
-/// Reads these folders again.
-fn reload_folders(folders: &[String], cx: &mut App) {
-    if let Some(explorer) = explorer::try_explorer(cx) {
-        explorer.update(cx, |explorer, cx| {
-            for folder in folders {
-                explorer.reload_folder(folder, cx);
-            }
-        });
+/// Keeps how to put the names back, for Ctrl+Z (`rememberUndo(`extensions of ${what}`, ...)`): the explorer's
+/// step holds the pairs of core's `undo_ops` and runs them through the all-or-nothing renamer. `None` when
+/// nothing was renamed (no way back) or there is no explorer.
+fn remember_extensions(renamed: usize, undo_ops: &[RenamePair], cx: &mut App) -> Option<UndoId> {
+    if undo_ops.is_empty() {
+        return None;
     }
+    let explorer = explorer::try_explorer(cx)?;
+    let pairs = undo_ops
+        .iter()
+        .map(|pair| BatchPair {
+            from: pair.from.clone(),
+            to: pair.to.clone(),
+        })
+        .collect();
+    let label = t!("extensions of {what}", what = plural(renamed, "file")).to_string();
+    Some(explorer.update(cx, |explorer, cx| {
+        explorer.remember_undo(label, UndoAction::RenameBatch(pairs), cx)
+    }))
 }
 
-/// Says extensions were given, with an Undo button that renames the files back.
-fn gave_extensions(
-    source: &Source,
-    renamed: usize,
-    undo_ops: Vec<RenamePair>,
-    folders: Vec<String>,
-    window: &mut Window,
-    cx: &mut App,
-) {
+/// Says extensions were given, with an Undo button that is the explorer's step (it renames the files back,
+/// says how it went and reads their folders again).
+fn gave_extensions(renamed: usize, step: Option<UndoId>, window: &mut Window, cx: &mut App) {
     let what = plural(renamed, "file");
     let title = if renamed == 1 {
         t!("Gave {what} its real extension", what = what)
@@ -1425,62 +1415,29 @@ fn gave_extensions(
         t!("Gave {what} their real extension", what = what)
     };
     let mut note = Notification::success(title).id::<GaveExtensionsToast>();
-    if !undo_ops.is_empty() {
-        let (source, label) = (source.clone(), t!("extensions of {what}", what = what));
-        note = note.action(move |_, _, _| {
-            let (source, undo_ops, folders, label) = (source.clone(), undo_ops.clone(), folders.clone(), label.clone());
-            Button::new("cleanup-undo")
-                .label(t!("Undo"))
-                .on_click(move |_, window, cx| {
-                    undo_extensions(&source, &label, undo_ops.clone(), folders.clone(), window, cx)
-                })
-        });
+    let Some(step) = step else {
         window.push_notification(note, cx);
-        let handle = window.window_handle();
-        cx.spawn(async move |cx| {
-            cx.background_executor().timer(UNDO_FOR).await;
-            let _ = handle.update(cx, |_, window, cx| {
-                window.remove_notification::<GaveExtensionsToast>(cx)
-            });
-        })
-        .detach();
-    } else {
-        window.push_notification(note, cx);
-    }
-}
-
-/// Puts the names back (core renames every pair back, or none) and says how it went.
-fn undo_extensions(
-    source: &Source,
-    label: &SharedString,
-    undo_ops: Vec<RenamePair>,
-    folders: Vec<String>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    window.remove_notification::<GaveExtensionsToast>(cx);
-    let label = label.clone();
-    let undoing = (source.rename)(undo_ops);
-    window
-        .spawn(cx, async move |cx| {
-            let result = core_bridge::run(undoing).await.and_then(|inner| inner);
-            let _ = cx.update(|window, cx| match result {
-                Ok(_) => {
-                    reload_folders(&folders, cx);
-                    window.push_notification(
-                        Notification::success(t!("Undid the {label}", label = label)).id::<UndoneToast>(),
-                        cx,
-                    );
+        return;
+    };
+    note = note.action(move |_, _, _| {
+        Button::new("cleanup-undo")
+            .label(t!("Undo"))
+            .on_click(move |_, window, cx| {
+                window.remove_notification::<GaveExtensionsToast>(cx);
+                if let Some(explorer) = explorer::try_explorer(cx) {
+                    explorer.update(cx, |explorer, cx| explorer.undo(Some(step), cx).detach());
                 }
-                Err(message) => window.push_notification(
-                    Notification::error(message)
-                        .title(t!("Couldn't undo the {label}", label = label))
-                        .id::<UndoneToast>(),
-                    cx,
-                ),
-            });
-        })
-        .detach();
+            })
+    });
+    window.push_notification(note, cx);
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(UNDO_FOR).await;
+        let _ = handle.update(cx, |_, window, cx| {
+            window.remove_notification::<GaveExtensionsToast>(cx)
+        });
+    })
+    .detach();
 }
 
 // ---- The dialog ------------------------------------------------------------------------------------------------
@@ -1742,14 +1699,7 @@ impl CleanupDialog {
                 }),
                 cx,
             ),
-            CleanupEvent::GaveExtensions {
-                renamed,
-                undo_ops,
-                folders,
-            } => {
-                let source = self.model.read(cx).source.clone();
-                gave_extensions(&source, *renamed, undo_ops.clone(), folders.clone(), window, cx);
-            }
+            CleanupEvent::GaveExtensions { renamed, step } => gave_extensions(*renamed, *step, window, cx),
             CleanupEvent::RenameFailed { reason } => window.push_notification(
                 Notification::error(reason.clone()).title(t!("Couldn't rename them")),
                 cx,
@@ -3751,6 +3701,10 @@ mod tests {
     fn wrong_extensions_are_renamed_all_or_none_with_an_undo(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let mut visual = window(cx);
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Pics", Vec::new());
+        with_explorer(&mut visual, &disk);
+        let runner = visual.update(|_, cx| explorer::FakeUndoRunner::install(cx));
         let fake = Fake::new();
         let wrong = |path: &str, fix: &str| Item {
             path: path.into(),
@@ -3796,15 +3750,80 @@ mod tests {
             ]
         );
         settle(&mut visual, |cx| has(cx, "Every file here has the right extension"));
-        // The toast offers Undo, which renames them back.
+        // Ctrl+Z has it too, under the page's label.
+        let explorer = visual.update(|_, cx| explorer::explorer(cx));
+        assert_eq!(
+            explorer.read_with(&visual, |e, _| e.next_undo().map(|(_, label)| label.to_string())),
+            Some("extensions of 3 files".to_string())
+        );
+        // The toast offers Undo, which is that same step: it renames them back.
         settle(&mut visual, |cx| has(cx, "Undo"));
         assert_eq!(role_of(&mut visual, "Undo"), Some(Role::Button));
         // The dialog is modal: the person closes it, and the toast's Undo is under the pointer.
         visual.update(|window, cx| window.press("escape", cx));
         visual.run_until_parked();
         click(&mut visual, "cleanup-undo");
-        settle(&mut visual, |_| lock(&fake.renames).len() == 2);
-        assert_eq!(asked(1)[0], pair("C:\\Pics\\a.png", "C:\\Pics\\a.JPG"));
+        settle(&mut visual, |_| runner.renamed().len() == 1);
+        // The explorer's step (core's renamer), not the dialog's source, took the names back, all in one call.
+        assert_eq!(lock(&fake.renames).len(), 1);
+        let back = runner.renamed();
+        assert_eq!(back[0].len(), 3);
+        assert_eq!(
+            (back[0][0].from.as_str(), back[0][0].to.as_str()),
+            ("C:\\Pics\\a.png", "C:\\Pics\\a.JPG")
+        );
+        assert!(explorer.read_with(&visual, |e, _| e.next_undo().is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_z_takes_the_extensions_back_under_an_older_step(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let disk = FakeDisk::new();
+        disk.folder("C:\\Pics", Vec::new());
+        with_explorer(&mut visual, &disk);
+        let runner = visual.update(|_, cx| explorer::FakeUndoRunner::install(cx));
+        let explorer = visual.update(|_, cx| explorer::explorer(cx));
+        // A step from before: the extensions are the newer one.
+        explorer.update(&mut visual, |e, cx| {
+            e.remember_undo(
+                "copy of 1 item",
+                explorer::UndoAction::Recycle(vec!["C:\\Pics\\x".into()]),
+                cx,
+            );
+        });
+        let fake = Fake::new();
+        fake.answer(
+            Kind::Misnamed,
+            Answer::Found(scan_of(vec![Item {
+                path: "C:\\Pics\\تقرير.JPG".into(),
+                size: 10,
+                date: 5,
+                fix: "png".into(),
+                note: "It is really a png".into(),
+                ..Default::default()
+            }])),
+        );
+        let _view = open_dialog(&mut visual, "C:\\Pics", Kind::Misnamed, &fake);
+        settle(&mut visual, |cx| has(cx, "تقرير.JPG"));
+        click(&mut visual, ("cleanup-helper", 0_usize));
+        click(&mut visual, "cleanup-give");
+        settle(&mut visual, |_| lock(&fake.renames).len() == 1);
+        let next = |cx: &mut VisualTestContext| {
+            explorer.read_with(cx, |e, _| e.next_undo().map(|(_, label)| label.to_string()))
+        };
+        settle(&mut visual, |cx| next(cx).as_deref() == Some("extensions of 1 file"));
+        // Ctrl+Z: the names go back through the explorer's step, the older step stays.
+        let task = explorer.update(&mut visual, |e, cx| e.undo(None, cx));
+        visual.foreground_executor().block_test(task);
+        visual.run_until_parked();
+        let back = runner.renamed();
+        assert_eq!(back.len(), 1);
+        assert_eq!(
+            (back[0][0].from.as_str(), back[0][0].to.as_str()),
+            ("C:\\Pics\\تقرير.png", "C:\\Pics\\تقرير.JPG")
+        );
+        assert_eq!(next(&mut visual).as_deref(), Some("copy of 1 item"));
     }
 
     #[gpui_kit::test]

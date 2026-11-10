@@ -125,6 +125,14 @@ impl QueueKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct UndoId(pub u64);
 
+/// One name change of a batch rename: the item at `from` is to be called `to` (a path in the same folder).
+/// The same pairs glint-core's `batch_rename` takes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchPair {
+    pub from: String,
+    pub to: String,
+}
+
 /// What takes a step back: the `run` closure of the TypeScript's `UndoStep`, as data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UndoAction {
@@ -137,42 +145,175 @@ pub enum UndoAction {
     Restore(Vec<MoveItem>),
     /// A rename taken back: the item at `path` gets `name` again.
     Rename { path: String, name: String },
+    /// A batch rename taken back (Batch rename's, and Cleanup's "give the real extension"): these are the pairs
+    /// that put every name back (`undoOps`, `to` being the name the item has now), run by glint-core's
+    /// all-or-nothing renamer, which can swap names that a plain rename cannot. Not a file operation of
+    /// Windows' file engine: see [`UndoAction::runs`].
+    RenameBatch(Vec<BatchPair>),
+    /// A compression in place taken back: the files that run compressed are decompressed again. The number is
+    /// the run's `Report::undo` id, which glint-core's `wof_undo` takes (once: a second try says it has been
+    /// undone already).
+    Wof(u64),
     /// Several actions taken back as one step, one Ctrl+Z and one label: undone last-recorded first (a run that
     /// replaced files records `[Restore(replaced), Recycle(made)]`: what was made is recycled, then the
     /// originals come back).
     Sequence(Vec<UndoAction>),
 }
 
+/// One piece of work that taking a step back is made of, in the order it runs (see [`UndoAction::runs`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UndoRun {
+    /// Through Windows' file engine.
+    File(FileOp),
+    /// Through glint-core's batch renamer.
+    RenameBatch(Vec<BatchPair>),
+    /// Through glint-core's `wof_undo`.
+    Wof(u64),
+}
+
 impl UndoAction {
-    /// The file operations that do it, in the order they run (a `Sequence` runs its last action first).
-    pub fn ops(&self) -> Vec<FileOp> {
+    /// Everything that taking it back runs, in the order it runs (a `Sequence` runs its last action first).
+    pub fn runs(&self) -> Vec<UndoRun> {
         match self {
-            UndoAction::Sequence(actions) => actions.iter().rev().flat_map(UndoAction::ops).collect(),
-            single => vec![single.op()],
+            UndoAction::Sequence(actions) => actions.iter().rev().flat_map(UndoAction::runs).collect(),
+            UndoAction::RenameBatch(pairs) => vec![UndoRun::RenameBatch(pairs.clone())],
+            UndoAction::Wof(id) => vec![UndoRun::Wof(*id)],
+            single => single.op().map(UndoRun::File).into_iter().collect(),
         }
     }
 
-    /// The file operation that does a single action. A `Sequence` has several: use [`UndoAction::ops`]; this
-    /// gives its first.
-    pub fn op(&self) -> FileOp {
+    /// The file operations among [`UndoAction::runs`], in the order they run (a `Sequence` runs its last action
+    /// first). A batch rename or a compression is not one: it has none.
+    pub fn ops(&self) -> Vec<FileOp> {
+        self.runs()
+            .into_iter()
+            .filter_map(|run| match run {
+                UndoRun::File(op) => Some(op),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The file operation that does a single action: `None` for a batch rename, a compression, and a `Sequence`
+    /// (which has several: use [`UndoAction::ops`]).
+    pub fn op(&self) -> Option<FileOp> {
         match self {
-            UndoAction::Sequence(actions) => actions.last().map(UndoAction::op).unwrap_or(FileOp::Delete {
-                paths: Vec::new(),
-                permanent: false,
-                confirm: false,
-            }),
-            UndoAction::Recycle(paths) => FileOp::Delete {
+            UndoAction::Sequence(_) | UndoAction::RenameBatch(_) | UndoAction::Wof(_) => None,
+            UndoAction::Recycle(paths) => Some(FileOp::Delete {
                 paths: paths.clone(),
                 permanent: false,
                 confirm: false,
-            },
-            UndoAction::MoveBack(items) => FileOp::MoveBack { items: items.clone() },
-            UndoAction::Restore(items) => FileOp::Restore { items: items.clone() },
-            UndoAction::Rename { path, name } => FileOp::Rename {
+            }),
+            UndoAction::MoveBack(items) => Some(FileOp::MoveBack { items: items.clone() }),
+            UndoAction::Restore(items) => Some(FileOp::Restore { items: items.clone() }),
+            UndoAction::Rename { path, name } => Some(FileOp::Rename {
                 path: path.clone(),
                 name: name.clone(),
-            },
+            }),
         }
+    }
+
+    /// The folders a batch rename in this action touches, each once (the explorer reads them again after
+    /// taking it back).
+    pub fn renamed_folders(&self) -> Vec<String> {
+        let mut folders: Vec<String> = Vec::new();
+        let mut add = |path: &str| {
+            let folder = glint_model::paths::parent_path(path);
+            if !folders.iter().any(|known| known.eq_ignore_ascii_case(&folder)) {
+                folders.push(folder);
+            }
+        };
+        fn walk(action: &UndoAction, add: &mut dyn FnMut(&str)) {
+            match action {
+                UndoAction::RenameBatch(pairs) => pairs.iter().for_each(|pair| add(&pair.from)),
+                UndoAction::Sequence(actions) => actions.iter().for_each(|a| walk(a, add)),
+                _ => {}
+            }
+        }
+        walk(self, &mut add);
+        folders
+    }
+}
+
+/// What taking back a compression in place left undone (`Report` of `wof_undo`): files that wouldn't
+/// decompress.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WofUndone {
+    /// How many files failed to decompress.
+    pub failed_count: usize,
+    /// Why the first one failed.
+    pub first_failure: Option<String>,
+}
+
+/// A future the explorer awaits on the UI thread while an undo runs.
+pub type UndoFut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
+
+/// Where the undo steps that are not Windows' file engine get done: glint-core in the app, a fake in tests
+/// (install one with [`Explorer::set_undo_runner`](super::Explorer::set_undo_runner)).
+pub trait UndoRunner: Send + Sync {
+    /// Renames every pair or none (glint-core's `batch_rename`).
+    fn rename_batch(&self, pairs: Vec<BatchPair>) -> UndoFut<Result<(), String>>;
+    /// Decompresses the files that compression run `id` compressed (`wof_undo`).
+    fn wof_undo(&self, id: u64) -> UndoFut<Result<WofUndone, String>>;
+}
+
+/// An [`UndoRunner`] for tests: it writes down what it was asked and answers as told.
+#[cfg(test)]
+#[derive(Default)]
+pub struct FakeUndoRunner {
+    /// Every batch it was asked to rename, in order.
+    pub batches: std::sync::Mutex<Vec<Vec<BatchPair>>>,
+    /// Every compression run it was asked to take back, in order.
+    pub wofs: std::sync::Mutex<Vec<u64>>,
+    /// What the next call says, once: it fails with this.
+    pub fail: std::sync::Mutex<Option<String>>,
+    /// What a taken-back compression leaves undone.
+    pub undone: std::sync::Mutex<WofUndone>,
+}
+
+#[cfg(test)]
+impl FakeUndoRunner {
+    /// A fake that does everything, installed for the app `cx`.
+    pub fn install(cx: &mut gpui_kit::App) -> std::sync::Arc<FakeUndoRunner> {
+        let fake = std::sync::Arc::new(FakeUndoRunner::default());
+        super::Explorer::set_undo_runner(cx, fake.clone());
+        fake
+    }
+
+    /// The batches asked for, in order.
+    pub fn renamed(&self) -> Vec<Vec<BatchPair>> {
+        self.batches.lock().map(|b| b.clone()).unwrap_or_default()
+    }
+
+    /// The compression runs asked for, in order.
+    pub fn wof_asked(&self) -> Vec<u64> {
+        self.wofs.lock().map(|w| w.clone()).unwrap_or_default()
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.fail.lock().ok().and_then(|mut f| f.take())
+    }
+}
+
+#[cfg(test)]
+impl UndoRunner for FakeUndoRunner {
+    fn rename_batch(&self, pairs: Vec<BatchPair>) -> UndoFut<Result<(), String>> {
+        if let Ok(mut asked) = self.batches.lock() {
+            asked.push(pairs);
+        }
+        let answer = self.failure().map_or(Ok(()), Err);
+        Box::pin(async move { answer })
+    }
+
+    fn wof_undo(&self, id: u64) -> UndoFut<Result<WofUndone, String>> {
+        if let Ok(mut asked) = self.wofs.lock() {
+            asked.push(id);
+        }
+        let answer = match self.failure() {
+            Some(message) => Err(message),
+            None => Ok(self.undone.lock().map(|u| u.clone()).unwrap_or_default()),
+        };
+        Box::pin(async move { answer })
     }
 }
 

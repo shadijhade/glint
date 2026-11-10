@@ -6,6 +6,12 @@
 //! ([`preview_host`]); drops belong to the window, so the workspace owns its drop target. This file is where
 //! they meet: a service exposes calls and events, and the wiring between them lives here and nowhere else.
 //!
+//! **A secondary window** (a second Glint.exe, `platform::secondary`) goes through the same [`start`] and brings up
+//! only what [`services`] says: no folder rules, tray, shortcut, Jump List, taskbar buttons, later launches, hidden
+//! Quick Search window, self-test or service update; the window is placed where its command line says instead of
+//! where the main window was, and it closes when the main process ends. What it keeps is nothing: see
+//! `platform::secondary` and `persistence`.
+//!
 //! **Win32 calls on the main window go through [`core_bridge::post_to_ui`].** ShowWindow, SetWindowPlacement
 //! and SetForegroundWindow send GPUI's window procedure messages at once, and its handlers take the app,
 //! which every GPUI callback and entity update already holds: called from one of those, they panic. A posted
@@ -16,7 +22,7 @@ use crate::components::settings::tools::describe_progress;
 use crate::components::settings::{Backend as _, CoreBackend, Fetch, Fut as SettingsFut};
 use crate::kit::prelude::*;
 use crate::platform::window_state::ProgressState;
-use crate::platform::{launch, preview_host, tray, window_state};
+use crate::platform::{launch, preview_host, secondary, tray, window_state};
 use crate::{core_bridge, explorer, persistence, state, t, workspace};
 use glint_model::paths::{base_name, THIS_PC};
 use std::rc::Rc;
@@ -47,15 +53,20 @@ impl Global for MainWindow {}
 /// Start-up after `core_bridge::init`: the services that need core, then the main window, then the first
 /// folders. `request` is what this copy was started with (folders, `--tray`, `--quick-search`).
 pub(crate) fn start(cx: &mut App, request: launch::Request) {
+    let secondary_window = secondary::current();
+    let services = services(secondary_window.is_some());
     preview_host::init();
     // Instant search's state for the status bar (it polls core's index service in the background).
     crate::components::status_bar::init(cx);
     start_quick_search(cx);
-    start_rules(cx);
+    if services.rules {
+        start_rules(cx);
+    }
     start_explorer(cx);
     // The disk usage maps, reading glint-core (after the explorer, whose tabs they follow).
     crate::components::disk_usage::init(cx);
-    // Early, before the saved state is first written: the updater tells a first start after an update by it.
+    // Early, before the saved state is first written: the updater tells a first start after an update by it. (A
+    // secondary window's stays idle; see `Updater::start`.)
     start_updater(cx);
     // The system fonts Typst sets documents in, found once in the background (Typst previews, PDF export).
     crate::typst_engine::warm_fonts();
@@ -64,8 +75,12 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     explorer::explorer(cx).update(cx, |e, cx| e.refresh_on_demand(cx).detach());
     // The saved remote connections, handed to core so their folders open (`initRemotes`).
     crate::dialogs::remote::push_to_core(cx);
-    start_tray(cx, request.tray);
-    keep_jump_list(cx);
+    if services.tray {
+        start_tray(cx, request.tray);
+    }
+    if services.jump_list {
+        keep_jump_list(cx);
+    }
 
     let (window, main_workspace) = match workspace::open_main_window(cx) {
         Ok(opened) => opened,
@@ -84,9 +99,15 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
         }
         close_to_tray(window, cx);
     });
-    // Opened hidden: put where it was last time, then shown, unless it starts in the tray.
-    place_main_window(cx, !request.tray);
-    keep_thumb_buttons(cx);
+    match &secondary_window {
+        // Opened hidden: put where its command line says, then shown.
+        Some(secondary_window) => place_secondary_window(secondary_window),
+        // Opened hidden: put where it was last time, then shown, unless it starts in the tray.
+        None => place_main_window(cx, !request.tray),
+    }
+    if services.thumb_buttons {
+        keep_thumb_buttons(cx);
+    }
 
     if let Some(aside) = persistence::corrupt_file_set_aside(cx) {
         let name = aside
@@ -104,7 +125,8 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     }
 
     // The first folders (last time's tabs, or what Glint was started with), then later launches: those wait
-    // for the first ones, since the restored session would replace tabs placed before it.
+    // for the first ones, since the restored session would replace tabs placed before it. (A secondary window has
+    // no session to restore: its one folder is its one tab.)
     let targets = request
         .open
         .into_iter()
@@ -114,24 +136,71 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
         })
         .collect();
     let first = explorer::explorer(cx).update(cx, |explorer, cx| explorer.init_explorer(targets, cx));
+    // The main Glint ending ends this window (Quit; a main window hidden in the tray is still running).
+    secondary::follow_main_process(cx, |cx| cx.quit());
     cx.spawn(async move |cx| {
         first.await;
         cx.update(|cx| {
-            hear_later_launches(cx);
+            if services.later_launches {
+                hear_later_launches(cx);
+            }
             // The Quick Search window is made ahead of time now, so the shortcut shows it at once.
-            quick_search::warm(cx);
+            if services.quick_search_window {
+                quick_search::warm(cx);
+            }
             // Debug builds: GLINT_SELFTEST drives the real app through file operations (selftest.rs).
-            crate::selftest::start(cx);
+            if services.selftest {
+                crate::selftest::start(cx);
+            }
             // After the app updated, instant search's service follows (once per start, quietly if it can).
-            if let Some(main) = main_window(cx) {
-                let _ = main.update(cx, |_, window, cx| crate::notices::service_update(window, cx));
+            if services.service_update {
+                if let Some(main) = main_window(cx) {
+                    let _ = main.update(cx, |_, window, cx| crate::notices::service_update(window, cx));
+                }
             }
         });
     })
     .detach();
 
-    if request.quick_search {
+    if request.quick_search && services.quick_search_window {
         quick_search(cx);
+    }
+}
+
+/// What [`start`] brings up. The main window has all of it; a secondary window none (the main process keeps
+/// the rules, the tray and the shortcut, the Jump List, the later launches and the service; the self-test is
+/// the main window's too).
+#[derive(Debug, PartialEq, Eq)]
+struct Services {
+    /// The folder rules, handed to core to watch.
+    rules: bool,
+    /// The tray icon, the global shortcut and Start with Windows.
+    tray: bool,
+    /// The taskbar's Jump List.
+    jump_list: bool,
+    /// Back, Forward and Up under the taskbar button's preview.
+    thumb_buttons: bool,
+    /// Folders handed over by later launches, and Settings asked for by a secondary window.
+    later_launches: bool,
+    /// The hidden Quick Search window made ahead of time (and `--quick-search`).
+    quick_search_window: bool,
+    /// The debug self-test.
+    selftest: bool,
+    /// The instant search service following the app's update.
+    service_update: bool,
+}
+
+fn services(secondary: bool) -> Services {
+    let main = !secondary;
+    Services {
+        rules: main,
+        tray: main,
+        jump_list: main,
+        thumb_buttons: main,
+        later_launches: main,
+        quick_search_window: main,
+        selftest: main,
+        service_update: main,
     }
 }
 
@@ -148,6 +217,17 @@ fn place_main_window(cx: &App, show: bool) {
         if show {
             window_state::show_hwnd(hwnd);
         }
+    });
+}
+
+/// Puts the hidden secondary window where its command line says (its corner at `--at`, else centred; `--size`
+/// else the size it opened with), then shows it. Nothing is kept for next time.
+fn place_secondary_window(window: &secondary::SecondaryWindow) {
+    let (size, at) = (window.size, window.at);
+    core_bridge::post_to_ui(move || {
+        let Some(hwnd) = main_hwnd() else { return };
+        window_state::place_secondary(hwnd, size, at);
+        window_state::show_hwnd(hwnd);
     });
 }
 
@@ -230,7 +310,9 @@ fn ask_before_quitting(window: &mut Window, cx: &mut App, then: AfterYes) {
 
 /// Closes the main window after the questions: the hidden Quick Search window goes too, and the app quits.
 fn quit_now(window: &mut Window, cx: &mut App) {
-    crate::book_places::shared().flush();
+    if !secondary::is_secondary() {
+        crate::book_places::shared().flush();
+    }
     quick_search::close(cx);
     window.remove_window();
 }
@@ -311,8 +393,26 @@ fn hear_later_launches(cx: &mut App) {
             core_bridge::post_to_ui(reveal_main);
         }
         launch::LaunchEvent::QuickSearch => quick_search(cx),
+        // A secondary window's Settings are opened here, where they are kept (`open-settings`).
+        launch::LaunchEvent::Settings { section } => {
+            open_settings_in_main(cx, section.as_deref());
+            core_bridge::post_to_ui(reveal_main);
+        }
     })
     .detach();
+}
+
+/// Settings in the main window, at `section` when one is named.
+fn open_settings_in_main(cx: &mut App, section: Option<&str>) {
+    let (Some(main), Some(workspace)) = (main_window(cx), main_workspace(cx)) else {
+        return;
+    };
+    let section = section.map(str::to_string);
+    let _ = main.update(cx, move |_, window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_settings_at(section.as_deref(), window, cx)
+        })
+    });
 }
 
 /// The shortcut, the tray menu's Quick search, a launch with `--quick-search`: the Quick Search window comes or
@@ -467,7 +567,9 @@ fn configure_tray(cx: &mut App, in_tray: bool) {
 /// The tray menu's Quit Glint: the window's place is kept (a hidden one's was as it hid), then GPUI quits,
 /// which saves the state.
 fn quit(cx: &mut App) {
-    crate::book_places::shared().flush();
+    if !secondary::is_secondary() {
+        crate::book_places::shared().flush();
+    }
     if let Some(hwnd) = main_hwnd() {
         window_state::save_hwnd(hwnd);
     }
@@ -1074,6 +1176,33 @@ mod tests {
             from_index: false,
             can_get_access,
         }
+    }
+
+    #[test]
+    fn a_secondary_window_brings_up_none_of_the_main_windows_services() {
+        let none = Services {
+            rules: false,
+            tray: false,
+            jump_list: false,
+            thumb_buttons: false,
+            later_launches: false,
+            quick_search_window: false,
+            selftest: false,
+            service_update: false,
+        };
+        assert_eq!(services(true), none);
+        let all = services(false);
+        assert!(
+            all.rules
+                && all.tray
+                && all.jump_list
+                && all.thumb_buttons
+                && all.later_launches
+                && all.quick_search_window
+                && all.selftest
+                && all.service_update,
+            "the main window has every one: {all:?}"
+        );
     }
 
     #[gpui_kit::test]

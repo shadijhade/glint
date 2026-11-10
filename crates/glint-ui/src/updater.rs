@@ -16,6 +16,9 @@
 //!   (the installer replaces rg, fd and pdu) and runs the setup passively with the arguments the Tauri updater used
 //!   (`/P /UPDATE /R /ARGS …`, which hooks.nsh's update mode and the relaunch rely on), then quits.
 //! - The Microsoft Store's copy never updates itself (the Store does), and neither does a debug build ([`Policy`]).
+//! - A secondary window (`platform::secondary`) never looks, greets or writes the marks: the main process updates
+//!   Glint, and two copies would both download the setup program. The model exists there (Settings → About reads it)
+//!   and stays idle.
 //!
 //! **Where each piece is**
 //!
@@ -973,6 +976,10 @@ impl Updater {
     /// At start: reads what was remembered, greets a first start after an update (`greetUpdate`), clears away
     /// old downloads, checks, and keeps checking every [`CHECK_EVERY`].
     pub fn start(&mut self, cx: &mut Context<Self>) {
+        // A secondary window leaves the updating (and the marks file) to the main process.
+        if crate::platform::secondary::is_secondary() {
+            return;
+        }
         let marks_path = self.config.marks.clone();
         let work_dir = self.config.work_dir.clone();
         let returning = self.config.returning;
@@ -1048,6 +1055,9 @@ impl Updater {
     /// Settings (`manual`), the outcome shows there. Nothing happens once one is found, while checking, or in a
     /// copy that never updates (`checkForUpdates`).
     pub fn check(&mut self, manual: bool, cx: &mut Context<Self>) {
+        if crate::platform::secondary::is_secondary() {
+            return;
+        }
         if self.available.is_some()
             || self.status == Status::Checking
             || matches!(self.status, Status::Store | Status::Off)
@@ -1922,7 +1932,11 @@ pub(crate) mod tests {
         // The service checks its updates against the same key: a release signs both with one key.
         let service = Path::new(env!("CARGO_MANIFEST_DIR")).join("../shadui-index/update-pubkey.txt");
         let service = std::fs::read_to_string(service).expect("crates/shadui-index/update-pubkey.txt");
-        assert_eq!(service.trim(), PUBLIC_KEY, "the service's update key changed: change it here too");
+        assert_eq!(
+            service.trim(),
+            PUBLIC_KEY,
+            "the service's update key changed: change it here too"
+        );
     }
 
     #[test]
@@ -2225,6 +2239,25 @@ pub(crate) mod tests {
         // Found: no more looking.
         check(cx, &rig, false);
         assert_eq!(rig.fake.asked(), vec!["manifest"]);
+        let _ = std::fs::remove_dir_all(&rig.dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_secondary_window_never_looks_for_updates_greets_or_writes_the_marks(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let _secondary = crate::platform::secondary::as_secondary(crate::platform::secondary::window_on("C:\\"));
+        let rig = rig(cx, Policy::SelfUpdating, "0.9.5", false);
+        rig.fake.serve("0.99.0", SIG_GOOD);
+        cx.update(|cx| rig.updater.update(cx, |u, cx| u.start(cx)));
+        cx.update(|cx| rig.updater.update(cx, |u, cx| u.check(true, cx)));
+        for _ in 0..20 {
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(rig.fake.asked().is_empty(), "nothing asked of the feed or GitHub");
+        assert!(read(cx, &rig, |u| u.available().is_none() && *u.status() == Status::Idle));
+        assert!(rig.events.borrow().is_empty());
+        assert!(!rig.dir.join("updater.json").exists(), "no marks written");
         let _ = std::fs::remove_dir_all(&rig.dir);
     }
 

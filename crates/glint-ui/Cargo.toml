@@ -76,6 +76,12 @@ windows = { workspace = true, features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_Input_KeyboardAndMouse",
     "ApplicationModel",
+    # Read aloud (platform/speech.rs): Windows' speech synthesizer, played by a media player.
+    "Media_SpeechSynthesis",
+    "Media_Playback",
+    "Media_Core",
+    "Storage_Streams",
+    "Foundation_Collections",
     # The batch rename dialog's local dates.
     "Win32_System_Time",
     # Wave 10's native previews: PDF pages (Windows.Data.Pdf), video and audio (Media Foundation's media engine,

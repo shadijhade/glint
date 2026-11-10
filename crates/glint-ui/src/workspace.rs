@@ -47,7 +47,7 @@ use crate::components::this_pc::{ThisPc, ThisPcEvent};
 use crate::components::{palette, settings};
 use crate::explorer::{self, ExplorerEvent};
 use crate::kit::prelude::*;
-use crate::platform::{dragdrop, pickers};
+use crate::platform::{dragdrop, pickers, secondary};
 use crate::{actions, core_bridge, dialogs, notices, state, t, theme};
 use glint_core::host::Manager as _;
 use glint_model::entries::FileEntry;
@@ -810,8 +810,9 @@ impl Workspace {
     /// What the explorer asks of the window: another window, the terminal, a tool installed.
     fn on_request(&mut self, request: explorer::Request, window: &mut Window, cx: &mut Context<Self>) {
         match request {
-            // PORT ME(coordinator): a second window; a new tab meanwhile, so the folder still opens.
-            explorer::Request::NewWindow { path } => Self::explorer(cx, |e, cx| e.open_in_new_tab(&path, cx)),
+            // Another Glint.exe in secondary mode on the folder, centred (`open_window`); the tab strip asks for
+            // one at a drop point itself. A failure says so in this window.
+            explorer::Request::NewWindow { path } => secondary::open_window(window, cx, &path, None, |_, _| {}),
             // A script run in a terminal tab of its own.
             explorer::Request::Terminal(job) => self
                 .terminal
@@ -1375,7 +1376,17 @@ impl Workspace {
 
     /// Settings, with what it hands back (connecting a cloud, folder rules) answered here.
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let view = settings::open(window, cx);
+        self.open_settings_at(None, window, cx)
+    }
+
+    /// Settings scrolled to `section` ("about"; a secondary window asked the main one for it, which is how
+    /// `open-settings` reached `openSettings(section)`). A secondary window has none of its own: it asks the
+    /// main window.
+    pub fn open_settings_at(&mut self, section: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if settings::handed_to_main(window, cx, section) {
+            return;
+        }
+        let view = settings::open_at(window, cx, section);
         self.settings_events =
             Some(
                 cx.subscribe_in(&view, window, |_, _, event: &SettingsEvent, window, cx| match event {
@@ -1666,6 +1677,10 @@ impl Render for Workspace {
                 dialogs::history::open(window, cx, &action.query)
             }))
             .on_action(cx.listener(|this, _: &actions::OpenSettings, window, cx| this.open_settings(window, cx)))
+            // Ctrl+N: another window on the folder shown.
+            .on_action(cx.listener(|_, _: &actions::NewWindow, _, cx| {
+                Self::explorer(cx, |e, cx| e.open_in_new_window(None, cx))
+            }))
             .on_action(cx.listener(|_, _: &actions::CommandPalette, window, cx| palette::toggle(window, cx)));
         if self.text_mode {
             // Text search instead of the files: no tabs, no sidebar, no status bar (as the web app hid them); the
@@ -1824,6 +1839,10 @@ mod tests {
     use gpui_kit::{Bounds, TestAppContext, VisualTestContext};
 
     fn open(cx: &mut TestAppContext, rtl: bool) -> VisualTestContext {
+        open_workspace(cx, rtl).0
+    }
+
+    fn open_workspace(cx: &mut TestAppContext, rtl: bool) -> (VisualTestContext, Entity<Workspace>) {
         let disk = FakeDisk::new();
         disk.folder(
             "C:\\Work",
@@ -1839,7 +1858,7 @@ mod tests {
         });
         // After init, which starts every test in English.
         testing::set_rtl(rtl);
-        let (mut visual, _) = testing::open_window(cx, |window, cx| cx.new(|cx| Workspace::new(window, cx)));
+        let (mut visual, workspace) = testing::open_window(cx, |window, cx| cx.new(|cx| Workspace::new(window, cx)));
         visual.update(|_, cx| {
             explorer::explorer(cx).update(cx, |e, cx| {
                 e.init_explorer(
@@ -1853,7 +1872,7 @@ mod tests {
             })
         });
         visual.run_until_parked();
-        visual
+        (visual, workspace)
     }
 
     /// The bounds of an element by its id (labels change with the language), from a freshly completed frame.
@@ -1986,5 +2005,99 @@ mod tests {
         assert_eq!(role_of(&mut visual, &t!("Files")), Some(Role::ListBox));
         assert_eq!(role_of(&mut visual, &t!("Places")), Some(Role::Navigation));
         testing::set_rtl(false);
+    }
+
+    /// The windows the app's spawner was asked for, parsed.
+    fn record_windows(visual: &mut VisualTestContext) -> std::sync::Arc<std::sync::Mutex<Vec<secondary::Spawn>>> {
+        let spawned = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = spawned.clone();
+        visual.update(|_, cx| {
+            secondary::use_spawner(
+                cx,
+                std::sync::Arc::new(move |spawn: &secondary::Spawn| {
+                    seen.lock().unwrap_or_else(|e| e.into_inner()).push(spawn.clone());
+                    Ok(())
+                }),
+            )
+        });
+        spawned
+    }
+
+    fn settle(visual: &mut VisualTestContext) {
+        for _ in 0..40 {
+            visual.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[gpui_kit::test]
+    fn new_window_starts_another_glint_on_the_folder_shown_or_the_one_asked_for(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = open(cx, false);
+        let spawned = record_windows(&mut visual);
+        // Ctrl+N: the folder shown.
+        visual.dispatch_action(actions::NewWindow);
+        settle(&mut visual);
+        // "Open in new window" on a folder, from the menus and the palette.
+        visual
+            .update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.open_in_new_window(Some("C:\\Work\\src"), cx)));
+        settle(&mut visual);
+        let windows: Vec<_> = spawned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|spawn| (spawn.exe.clone(), secondary::parse(spawn.args.clone())))
+            .collect();
+        assert_eq!(windows.len(), 2);
+        for (exe, _) in &windows {
+            assert_eq!(*exe, std::env::current_exe().expect("this program"));
+        }
+        let folders: Vec<_> = windows
+            .iter()
+            .filter_map(|(_, parsed)| parsed.clone().ok().flatten())
+            .map(|w| w.folder)
+            .collect();
+        assert_eq!(folders, ["C:\\Work", "C:\\Work\\src"]);
+        // The key is Ctrl+N, as Explorer.tsx handled it.
+        assert!(actions::BINDINGS
+            .iter()
+            .any(|b| b.keys == "ctrl-n" && b.context == "Workspace" && (b.action)().name() == "glint::NewWindow"));
+    }
+
+    #[gpui_kit::test]
+    fn settings_in_a_secondary_window_go_to_the_main_window(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        visual.update(|_, cx| {
+            secondary::use_main_ask(
+                cx,
+                std::sync::Arc::new(move |section: Option<String>| {
+                    seen.lock().unwrap_or_else(|e| e.into_inner()).push(section);
+                    true
+                }),
+            )
+        });
+        let _secondary = secondary::as_secondary(secondary::window_on("C:\\Work"));
+        // Ctrl+, in the secondary window: asked of the main one, and no Settings dialog here.
+        visual.dispatch_action(actions::OpenSettings);
+        settle(&mut visual);
+        assert_eq!(asked.lock().unwrap_or_else(|e| e.into_inner()).as_slice(), [None]);
+        visual.update(|window, cx| assert!(!window.has_active_dialog(cx)));
+        // The main window opens a section it was asked for.
+        drop(_secondary);
+        visual.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.open_settings_at(Some("about"), window, cx)
+            });
+        });
+        settle(&mut visual);
+        visual.update(|window, cx| assert!(window.has_active_dialog(cx), "Settings opened here"));
+        assert_eq!(
+            asked.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            1,
+            "and nothing was asked"
+        );
     }
 }

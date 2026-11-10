@@ -14,6 +14,12 @@
 //! - [`init`] drains that channel into a GPUI entity ([`LaunchEvents`]), so requests that arrived while
 //!   the window was still opening are delivered, in order, as soon as the workspace listens.
 //!
+//! **Second windows.** `Glint.exe --window <folder> [--at <x>,<y>] [--size <w>x<h>] [--main <pid>]` (see
+//! [`crate::platform::secondary`]) is a secondary window: [`begin`] doesn't take the single-instance name for it
+//! and sends nothing to File Explorer, so File Explorer's opens still go to the main instance. A secondary
+//! window asks the main instance to open Settings with a [`Request`] whose `settings` is set
+//! ([`ask_main_for_settings`]); the main instance answers with [`LaunchEvent::Settings`].
+//!
 //! The coordinator calls [`begin`] first in `main`/`run()` (before GPUI), gives
 //! [`Startup::Run`]'s request to the workspace (its `open` targets are the first tabs), calls
 //! [`set_main_window`] once the main window exists and [`init`] with the app.
@@ -44,6 +50,17 @@ pub struct Request {
     pub tray: bool,
     /// `--quick-search`: the taskbar's Quick search task.
     pub quick_search: bool,
+    /// From a secondary window: open Settings in this (the main) window, at a section when one is named
+    /// (`open_main_settings`).
+    pub settings: Option<SettingsAsk>,
+}
+
+/// A secondary window's request for the main window's Settings.
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, Clone)]
+#[serde(default)]
+pub struct SettingsAsk {
+    /// The section to scroll to ("about"), or none for the top.
+    pub section: Option<String>,
 }
 
 impl Request {
@@ -418,6 +435,22 @@ const FORWARD_PATIENCE: Duration = Duration::from_secs(3);
 /// Debug builds use a name of their own, so a build run from a target folder neither takes over from nor
 /// hands its folders to an installed Glint (which the web app avoided by not enforcing it at all).
 pub fn begin() -> Startup {
+    // A second window of Glint (`--window <folder>`): its own process, no single instance, nothing handed on.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    match secondary_startup(args) {
+        Ok(Some((window, startup))) => {
+            crate::platform::secondary::enter(window);
+            return startup;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("glint: {error}");
+            return Startup::Exit;
+        }
+    }
     let request = Request::from_env();
     if !request.explorer.is_empty() {
         hand_to_explorer(&request.explorer);
@@ -425,11 +458,51 @@ pub fn begin() -> Startup {
             return Startup::Exit;
         }
     }
-    begin_with(
-        if cfg!(debug_assertions) { "debug" } else { "v1" },
-        request,
-        FORWARD_PATIENCE,
-    )
+    begin_with(instance_name(), request, FORWARD_PATIENCE)
+}
+
+/// The secondary window a command line asks for, and how it starts: its folder is its one tab, and nothing else
+/// of a launch applies. `Ok(None)` for a plain start; an error for a `--window` command line that isn't one.
+fn secondary_startup(
+    args: Vec<String>,
+) -> Result<Option<(crate::platform::secondary::SecondaryWindow, Startup)>, crate::platform::secondary::ArgError> {
+    let Some(window) = crate::platform::secondary::parse(args)? else {
+        return Ok(None);
+    };
+    let request = Request {
+        open: vec![Target {
+            path: window.folder.clone(),
+            select: None,
+        }],
+        ..Request::default()
+    };
+    Ok(Some((window, Startup::Run(request))))
+}
+
+/// The name this build's instances are known by: debug builds have a name of their own.
+fn instance_name() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "v1"
+    }
+}
+
+/// From a secondary window: asks the main instance to open Settings (at `section` when given) and come to the
+/// front. Blocks up to [`FORWARD_PATIENCE`]: call it off the UI thread. True once the main instance took it.
+pub fn ask_main_for_settings(section: Option<&str>) -> bool {
+    ask_main_for_settings_with(instance_name(), section, FORWARD_PATIENCE)
+}
+
+/// [`ask_main_for_settings`] to the instance named `name`, for tests.
+fn ask_main_for_settings_with(name: &str, section: Option<&str>, patience: Duration) -> bool {
+    let request = Request {
+        settings: Some(SettingsAsk {
+            section: section.map(str::to_string),
+        }),
+        ..Request::default()
+    };
+    forward(name, &request, patience)
 }
 
 /// The part of [`begin`] that is about instances, with the name and patience as parameters for tests.
@@ -741,6 +814,9 @@ pub enum LaunchEvent {
     Open(Vec<Target>),
     /// The taskbar's Quick search task: summon quick search (the window is not brought forward).
     QuickSearch,
+    /// A secondary window asked for Settings (`open-settings`): open them here, at the section when one is named.
+    /// The window has already been brought forward.
+    Settings { section: Option<String> },
 }
 
 /// The entity [`LaunchEvent`]s are emitted from. It holds nothing: it exists to be subscribed to.
@@ -793,6 +869,9 @@ fn deliver(request: Request, cx: &mut Context<LaunchEvents>) {
     // The window came forward before this update (see `init`).
     if !request.open.is_empty() {
         cx.emit(LaunchEvent::Open(request.open));
+    }
+    if let Some(ask) = request.settings {
+        cx.emit(LaunchEvent::Settings { section: ask.section });
     }
 }
 
@@ -1093,5 +1172,99 @@ mod tests {
             "an empty request is a valid plain relaunch"
         );
         assert_eq!(next(&first), Some(Request::default()));
+    }
+
+    #[test]
+    fn a_window_command_line_starts_a_secondary_window_that_takes_no_name_and_gives_nothing_to_file_explorer() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let (window, startup) = secondary_startup(args(&["--window", r"C:\Work", "--at", "5,6", "--main", "77"]))
+            .expect("a good line")
+            .expect("a window");
+        assert_eq!(window.folder, r"C:\Work");
+        assert_eq!(window.main, Some(77));
+        // Its folder is its one tab, and no other part of a launch is in the request.
+        assert_eq!(
+            startup,
+            Startup::Run(Request {
+                open: vec![Target {
+                    path: r"C:\Work".into(),
+                    select: None
+                }],
+                ..Request::default()
+            })
+        );
+        // A plain start is not one, and a bad line is refused rather than run as a plain start.
+        assert!(secondary_startup(args(&[r"C:\Work"])).expect("fine").is_none());
+        assert!(secondary_startup(args(&["--at", "1,2"])).is_err());
+        assert!(secondary_startup(args(&["--window", r"C:\Work", "--tray"])).is_err());
+    }
+
+    #[test]
+    fn a_secondary_windows_settings_request_reaches_the_main_instance_with_its_section() {
+        let name = unique("settings");
+        let Some(Claim::First(main)) = claim(&name) else {
+            panic!("the first claim should win")
+        };
+        assert!(ask_main_for_settings_with(&name, Some("about"), Duration::from_secs(2)));
+        assert_eq!(
+            next(&main),
+            Some(Request {
+                settings: Some(SettingsAsk {
+                    section: Some("about".into())
+                }),
+                ..Request::default()
+            })
+        );
+        assert!(ask_main_for_settings_with(&name, None, Duration::from_secs(2)));
+        let plain = next(&main).expect("the second request");
+        assert_eq!(plain.settings, Some(SettingsAsk { section: None }));
+        // It is Settings and nothing else: no folder, no quick search.
+        assert!(plain.open.is_empty() && !plain.quick_search && plain.explorer.is_empty());
+        // With no main instance listening it gives up and says so.
+        assert!(!ask_main_for_settings_with(
+            &unique("nobody-home"),
+            None,
+            Duration::from_millis(150)
+        ));
+    }
+
+    #[gpui_kit::test]
+    fn the_main_instance_answers_a_settings_request_with_an_event_after_its_folders(cx: &mut gpui_kit::TestAppContext) {
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let hub = cx.update(|cx| cx.new(|_| LaunchEvents));
+        cx.update(|cx| {
+            let seen = events.clone();
+            cx.subscribe(&hub, move |_, event: &LaunchEvent, _| {
+                seen.borrow_mut().push(event.clone())
+            })
+            .detach();
+            hub.update(cx, |_, cx| {
+                deliver(
+                    Request {
+                        open: vec![Target {
+                            path: r"C:\Work".into(),
+                            select: None,
+                        }],
+                        settings: Some(SettingsAsk {
+                            section: Some("about".into()),
+                        }),
+                        ..Request::default()
+                    },
+                    cx,
+                )
+            });
+        });
+        assert_eq!(
+            events.borrow().as_slice(),
+            [
+                LaunchEvent::Open(vec![Target {
+                    path: r"C:\Work".into(),
+                    select: None
+                }]),
+                LaunchEvent::Settings {
+                    section: Some("about".into())
+                },
+            ]
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Books: EPUB, FB2 and comics, read page by page (`BookView` in BookView.tsx).
+//! Books: EPUB, MOBI/AZW, FB2 and comics, read page by page (`BookView` in BookView.tsx).
 //!
 //! The TypeScript opened every kind of book in foliate-js. Here each format has a reader that turns a chapter
 //! into the [`rich`](super::rich) model, which [`BookView`] draws. Nothing is a new crate: the container is `zip`,
@@ -10,6 +10,7 @@
 //! | foliate's `epub.js` (container, OPF, nav)   | [`open_epub`]: `META-INF/container.xml`, the OPF's manifest and spine, the nav document or the NCX |
 //! | foliate's `fb2.js`                          | [`open_fb2`] (and `.fbz`, a zipped FB2)                       |
 //! | foliate's `comic-book.js`                   | [`open_cbz`]: the images in natural order, `ComicInfo.xml`'s manga flag |
+//! | foliate's `mobi.js` (MOBI, AZW, AZW3)       | [`open_mobi`](super::mobi::open_mobi) (`mobi.rs`)             |
 //! | the chapter's XHTML in an iframe            | [`xhtml_document`]: the chapter mapped to blocks, with a small CSS reading ([`Css`]) for `direction`, `text-align`, bold and italic |
 //! | `book.dir` and `page-progression-direction` | [`Book::rtl`]: a right-to-left book turns its pages the other way (the arrow keys and the buttons swap) |
 //! | `toc`, the contents button                  | [`Book::toc`], the panel at the start edge                    |
@@ -18,13 +19,12 @@
 //! | the keys                                    | [`BookView::on_key_down`]                                     |
 //! | `showTextStart`                             | [`Book::start`]: the "bodymatter" landmark, else the first section |
 //! | the fraction                                | [`BookView::fraction`]: weighted by the chapters' sizes       |
+//! | `readAloud` (speechSynthesis)               | [`BookView::read_aloud`]: [`spoken_text`] from the top block, spoken by a [`Speaker`] (`platform/speech.rs`) |
 //!
 //! # Where the previewer is placed (for the coordinator)
 //!
-//! - **Which `choose.rs` arm.** The arm `Choice::later(Body::Shell(Fallback::Icon), "book")` for
-//!   `readable && !archived && one_of(entry, &BOOKS)` becomes a `Body::Book` (new variant) when
-//!   [`can_read`]`(&entry.ext)` is true; `mobi`, `azw3` and `azw` keep the Windows previewer over the icon (see
-//!   Not ported).
+//! - **Which `choose.rs` arm.** `readable && !archived && one_of(entry, &BOOKS)` is a `Body::Book`: every extension
+//!   of [`BOOK_EXTS`] is read ([`can_read`]), the MOBI family by [`mobi`](super::mobi).
 //! - **Make it.** `cx.new(|cx| BookView::new(path, window, cx))` in `frame.rs`'s `build`.
 //! - **When the selection moves.** A new `BookView` per file (its `key` changes with the path), or
 //!   [`BookView::set_path`] on the same view.
@@ -35,11 +35,11 @@
 //!
 //! # Not ported
 //!
-//! - **MOBI, AZW, AZW3.** foliate read them with its own `mobi.js` (PalmDOC/Huffman text and KF8's skeleton and
-//!   fragment tables, about 1,500 lines of JavaScript). That is not done here: [`can_read`] says no and the files
-//!   keep the Windows previewer. PORT ME(mobi): a reader for PalmDOC (LZ77), MOBI headers and KF8's FDST/skeleton.
-//! - **Read aloud** (`speechSynthesis`): Windows' speech synthesis needs `windows` features glint-ui doesn't have
-//!   (`Media_SpeechSynthesis`, `Media_Playback`). PORT ME(speech): the button, reading the chapter's text.
+//! - **MOBI, AZW, AZW3** are read by [`mobi`](super::mobi) (foliate's `mobi.js`: PalmDOC and HUFF/CDIC text, the
+//!   MOBI and EXTH headers, KF8's skeleton and fragment tables). A book with DRM says so ([`BookError::Drm`]);
+//!   nothing tries to remove it. Fonts, audio and video inside the book are not used.
+//! - **Read aloud** is made ([`BookView::read_aloud`]), with one difference: the book's language comes from its
+//!   text's script ([`language_of`]), because [`Book`] does not carry the language its metadata names.
 //! - **Places and the text size** are kept between runs by [`crate::book_places`] (`books.json` beside
 //!   `state.json`), the last 200 books.
 //! - **Pages.** The chapter scrolls (the design note's first milestone); foliate's page-by-page columns are not
@@ -57,6 +57,7 @@ use super::rich::{
 };
 use super::text::{big_icon, redraw_after_delay, waiting};
 use crate::kit::prelude::*;
+use crate::platform::speech::{self, Speaker};
 use crate::{actions, t, theme};
 use gpui_kit::{
     img, uniform_list, Image, ImageSource, KeyDownEvent, ObjectFit, ScrollStrategy, StyledImage as _, Task,
@@ -67,14 +68,15 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The e-books the reader opens (`BOOK_EXTS`).
 pub const BOOK_EXTS: [&str; 7] = ["epub", "mobi", "azw3", "azw", "fb2", "fbz", "cbz"];
 
-/// Whether this view reads books of this extension (`BOOK_EXTS` less the MOBI family).
+/// Whether this view reads books of this extension (all of `BOOK_EXTS`; the MOBI family is read by
+/// [`mobi`](super::mobi)).
 pub fn can_read(ext: &str) -> bool {
-    matches!(ext, "epub" | "fb2" | "fbz" | "cbz")
+    matches!(ext, "epub" | "mobi" | "azw3" | "azw" | "fb2" | "fbz" | "cbz")
 }
 
 /// The most of one file read out of a book (a chapter's XHTML, a stylesheet).
@@ -850,7 +852,7 @@ struct Walker<'a> {
 
 /// A chapter's XHTML as a document. `chapter` is its path inside the zip (links and pictures are relative to it);
 /// `arch` is where its pictures and style sheets are read from.
-fn xhtml_document(text: &str, chapter: &str, arch: Option<&Archive>) -> Document {
+pub(super) fn xhtml_document(text: &str, chapter: &str, arch: Option<&Archive>) -> Document {
     let fixed = fix_entities(text);
     let Some(xml) = parse_xml(&fixed) else {
         return fallback_document(text);
@@ -1164,7 +1166,8 @@ impl Walker<'_> {
             size: None,
             alt: alt.to_string(),
         };
-        if href.len() > 5 && href[..5].eq_ignore_ascii_case("data:") {
+        // (`get`, not a slice: the address is the book's text, and byte 5 may be inside a character.)
+        if href.len() > 5 && href.get(..5).is_some_and(|head| head.eq_ignore_ascii_case("data:")) {
             let bytes = href.split_once(',').and_then(|(_, data)| base64_decode(data));
             return match bytes {
                 Some(bytes) if bytes.len() <= self.budget => {
@@ -1488,8 +1491,8 @@ pub enum Chapter {
     Page(Arc<Image>),
 }
 
-/// Where a book's chapters come from: read when asked for.
-trait Source: Send + Sync {
+/// Where a book's chapters come from: read when asked for. ([`mobi`](super::mobi) makes its own.)
+pub(super) trait Source: Send + Sync {
     /// Chapter `ix`, read and mapped.
     fn chapter(&self, ix: usize) -> Result<Chapter, String>;
     /// The chapter a file path inside the book is.
@@ -1554,7 +1557,7 @@ pub struct Book {
     pub cover: Option<Arc<Image>>,
     /// A comic: each chapter is one picture.
     pub pages: bool,
-    source: Arc<dyn Source>,
+    pub(super) source: Arc<dyn Source>,
 }
 
 impl Book {
@@ -1589,6 +1592,7 @@ pub fn open_book(path: &str) -> Result<Book, BookError> {
             open_fb2(&bytes)
         }
         "cbz" => open_cbz(path),
+        "mobi" | "azw" | "azw3" => super::mobi::open_mobi(path),
         _ => Err(BookError::Unsupported),
     }?;
     if book.title.trim().is_empty() {
@@ -2415,6 +2419,97 @@ pub fn set_text_size(percent: u32) {
     crate::book_places::shared().set_text_size(percent);
 }
 
+// ---- Read aloud ------------------------------------------------------------------------------------------------
+
+/// What is read aloud: the text of the chapter from block `from` on (where the reader is), in order, a line for each
+/// paragraph, heading, list item, quotation, code block and table row (cells joined by a comma). The text is cut at
+/// [`speech::MAX_CHARS`] as the TypeScript cut at 32,000. Pictures, rules and markers ("•", "3.") are not read.
+pub fn spoken_text(doc: &Document, from: usize) -> String {
+    fn push(block: &Block, out: &mut String) {
+        match block {
+            Block::Heading { text, .. }
+            | Block::Paragraph(text)
+            | Block::Item { text, .. }
+            | Block::Quote { text, .. } => {
+                out.push_str(text.plain().trim());
+                out.push('\n');
+            }
+            Block::Code(code) => {
+                out.push_str(code.trim());
+                out.push('\n');
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    let cells: Vec<String> = row
+                        .cells
+                        .iter()
+                        .map(|cell| {
+                            let mut inner = String::new();
+                            for block in &cell.blocks {
+                                push(block, &mut inner);
+                            }
+                            inner.split_whitespace().collect::<Vec<_>>().join(" ")
+                        })
+                        .filter(|cell| !cell.is_empty())
+                        .collect();
+                    if !cells.is_empty() {
+                        out.push_str(&cells.join(", "));
+                        out.push('\n');
+                    }
+                }
+            }
+            Block::Picture(_) | Block::Rule | Block::PageBreak => {}
+        }
+    }
+    let mut out = String::new();
+    for block in doc.blocks.iter().skip(from) {
+        push(block, &mut out);
+        if out.chars().count() >= speech::MAX_CHARS {
+            break;
+        }
+    }
+    out.trim().chars().take(speech::MAX_CHARS).collect()
+}
+
+/// The language to speak `text` in, from its script: the letters of its first lines decide (`ar`, `he`, `ru`, `el`,
+/// `ja`, `ko`, `zh`, `th`, `hi`). A Latin text, or one with no letters, gives "" and the PC's own voice speaks it.
+/// `rtl` (the book turns from the right) makes a text with no letters Arabic, the most common right-to-left book.
+/// NOTE(port): the TypeScript used the book's `language` metadata; [`Book`] does not keep it.
+pub fn language_of(text: &str, rtl: bool) -> &'static str {
+    let mut counts = [0usize; 9];
+    for ch in text.chars().filter(|c| c.is_alphabetic()).take(400) {
+        let slot = match ch as u32 {
+            0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => 0,
+            0x0590..=0x05FF | 0xFB1D..=0xFB4F => 1,
+            0x0400..=0x052F => 2,
+            0x0370..=0x03FF | 0x1F00..=0x1FFF => 3,
+            0x3040..=0x30FF => 4,
+            0xAC00..=0xD7AF | 0x1100..=0x11FF => 5,
+            0x4E00..=0x9FFF | 0x3400..=0x4DBF => 6,
+            0x0E00..=0x0E7F => 7,
+            0x0900..=0x097F => 8,
+            _ => continue,
+        };
+        counts[slot] += 1;
+    }
+    const CODES: [&str; 9] = ["ar", "he", "ru", "el", "ja", "ko", "zh", "th", "hi"];
+    // Japanese text mixes kana with Han: some kana makes it Japanese.
+    if counts[4] > 0 && counts[4] * 8 >= counts[6] {
+        return "ja";
+    }
+    let best = counts
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| **n > 0)
+        .max_by_key(|(_, n)| **n)
+        .map(|(i, _)| CODES[i]);
+    match best {
+        Some(code) => code,
+        None if rtl => "ar",
+        None => "",
+    }
+}
+
 // ---- The previewer ---------------------------------------------------------------------------------------------
 
 /// Opens a book from its path: [`open_book`] in the app, a fake in tests that don't want files.
@@ -2454,8 +2549,13 @@ pub struct BookView {
     toc_scroll: UniformListScrollHandle,
     size: u32,
     focus: FocusHandle,
+    /// Reads the chapter aloud (Windows' voices in the app).
+    speaker: Arc<dyn Speaker>,
+    /// Whether the chapter is being read aloud (the button shows Stop).
+    speaking: bool,
     _read: Task<()>,
     _chapter: Task<()>,
+    _speech: Task<()>,
     _subscriptions: Vec<Subscription>,
     _release: Subscription,
 }
@@ -2495,6 +2595,7 @@ impl BookView {
         });
         // The comic page on screen is let go of when the view goes.
         let release = cx.on_release(|this, cx| {
+            this.speaker.stop();
             this.release_page(cx);
             this.release_cover(cx);
         });
@@ -2516,8 +2617,11 @@ impl BookView {
             toc_scroll: UniformListScrollHandle::new(),
             size: text_size(),
             focus: cx.focus_handle(),
+            speaker: speech::system(),
+            speaking: false,
             _read: Task::ready(()),
             _chapter: Task::ready(()),
+            _speech: Task::ready(()),
             _subscriptions: vec![subscription],
             _release: release,
         };
@@ -2563,7 +2667,74 @@ impl BookView {
         self.show_toc
     }
 
+    /// Reads aloud through `speaker` from now on (tests give a fake one). What the old one said stops.
+    pub fn set_speaker(&mut self, speaker: Arc<dyn Speaker>, cx: &mut Context<Self>) {
+        self.stop_reading(cx);
+        self.speaker = speaker;
+    }
+
+    /// Whether the chapter is being read aloud.
+    pub fn speaking(&self) -> bool {
+        self.speaking
+    }
+
+    /// The Read aloud button: starts reading the chapter from where the reader is, in a voice for the book's
+    /// language; while it reads, stops. A chapter with no text (a picture, a comic page) does nothing.
+    pub fn read_aloud(&mut self, cx: &mut Context<Self>) {
+        if self.speaking {
+            self.stop_reading(cx);
+            return;
+        }
+        let Some(book) = self.book.clone() else {
+            return;
+        };
+        if book.pages {
+            return;
+        }
+        let rich = self.rich.read(cx);
+        let text = spoken_text(rich.document(), rich.top_block());
+        if text.is_empty() {
+            return;
+        }
+        self.speaker.speak(&text, language_of(&text, book.rtl));
+        self.speaking = true;
+        self.watch_speech(cx);
+        cx.notify();
+    }
+
+    /// Stops the voice, when it is speaking: the chapter changed, the book changed, the button was pressed, the
+    /// preview goes.
+    fn stop_reading(&mut self, cx: &mut Context<Self>) {
+        self._speech = Task::ready(());
+        if self.speaking {
+            self.speaker.stop();
+            self.speaking = false;
+            cx.notify();
+        }
+    }
+
+    /// Looks now and then whether the voice has reached the end, so the button goes back to Read aloud.
+    fn watch_speech(&mut self, cx: &mut Context<Self>) {
+        self._speech = cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(300)).await;
+            match this.update(cx, |this, cx| this.refresh_speaking(cx)) {
+                Ok(true) => {}
+                _ => break,
+            }
+        });
+    }
+
+    /// Takes in that the voice ended by itself. Returns whether it is still speaking.
+    fn refresh_speaking(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.speaking && !self.speaker.is_speaking() {
+            self.speaking = false;
+            cx.notify();
+        }
+        self.speaking
+    }
+
     fn read(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stop_reading(cx);
         self.generation += 1;
         let generation = self.generation;
         self.release_page(cx);
@@ -2636,6 +2807,7 @@ impl BookView {
         if ix >= book.count {
             return;
         }
+        self.stop_reading(cx);
         self.chapter = ix;
         self.wanted += 1;
         let wanted = self.wanted;
@@ -2978,6 +3150,25 @@ impl BookView {
             .children((!book.pages).then(|| {
                 small("book-bigger", IconName::Plus, t!("Bigger text"))
                     .on_click(cx.listener(|this, _, _, cx| this.bump(10, cx)))
+            }))
+            .children((!book.pages).then(|| {
+                let (glyph, name, tip) = if self.speaking {
+                    (IconName::Square, t!("Stop reading aloud"), t!("Stop reading aloud"))
+                } else {
+                    (
+                        IconName::Volume2,
+                        t!("Read aloud"),
+                        t!("Read this chapter aloud, with a voice on this PC"),
+                    )
+                };
+                Button::new("book-read-aloud")
+                    .ghost()
+                    .xsmall()
+                    .icon(glyph)
+                    .accessibility_label(name)
+                    .tooltip(tip)
+                    .selected(self.speaking)
+                    .on_click(cx.listener(|this, _, _, cx| this.read_aloud(cx)))
             }))
             .into_any_element()
     }
@@ -3576,12 +3767,17 @@ mod tests {
         );
         // It has no package, so it is unsupported, not locked.
         assert_eq!(open_book(&fonts).err(), Some(BookError::Unsupported));
-        assert_eq!(open_book("C:\\no\\such\\book.mobi").err(), Some(BookError::Unsupported));
+        assert_eq!(open_book("C:\\no\\such\\book.xyz").err(), Some(BookError::Unsupported));
         assert!(matches!(
             open_book("C:\\no\\such\\book.epub").err(),
             Some(BookError::Broken(_))
         ));
-        assert!(can_read("epub") && can_read("cbz") && !can_read("mobi") && !can_read("azw3"));
+        assert!(matches!(
+            open_book("C:\\no\\such\\book.mobi").err(),
+            Some(BookError::Broken(_))
+        ));
+        assert!(can_read("epub") && can_read("cbz") && can_read("mobi") && can_read("azw3") && can_read("azw"));
+        assert!(!can_read("pdf"));
         assert_eq!(BookError::Unsupported.message(), "Glint can't read this kind of book.");
         assert_eq!(
             BookError::Drm.message(),
@@ -3741,6 +3937,8 @@ mod tests {
             IconName::ChevronLeft,
             IconName::ChevronRight,
             IconName::Image,
+            IconName::Volume2,
+            IconName::Square,
         ] {
             let path = name.path();
             assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");
@@ -3993,6 +4191,305 @@ mod tests {
         view.update(&mut visual, |v, cx| v.follow("OEBPS/text/missing.xhtml", cx));
         frames(&mut visual);
         assert_eq!(view.read_with(&visual, |v, _| v.chapter()), 1);
+    }
+
+    // ---- Read aloud -----------------------------------------------------------------------------------------
+
+    fn plain(text: &str) -> Text {
+        let mut out = Text::new(Dir::Auto);
+        out.push(text, &Style::default());
+        out
+    }
+
+    #[test]
+    fn what_is_read_aloud_is_the_text_in_order_from_the_top_block() {
+        let cell = |text: &str| Cell {
+            blocks: vec![Block::Paragraph(plain(text))],
+            span: 1,
+            shade: None,
+        };
+        let mut builder = Builder::new();
+        builder.push(Block::Heading {
+            level: 1,
+            text: plain("The chapter"),
+        });
+        builder.push(Block::Paragraph(plain("  First paragraph.  ")));
+        builder.push(Block::Item {
+            depth: 0,
+            marker: "3.".into(),
+            text: plain("A list item"),
+        });
+        builder.push(Block::Rule);
+        builder.push(Block::Picture(picture_of(rich::TEST_PNG.to_vec(), "a picture", None)));
+        builder.push(Block::Quote {
+            depth: 1,
+            text: plain("A quotation"),
+        });
+        builder.push(Block::Code("let x = 1;\n".into()));
+        builder.push(Block::Table(Table {
+            rows: vec![
+                Row {
+                    cells: vec![cell("Name"), cell("Value")],
+                    header: true,
+                },
+                Row {
+                    cells: vec![cell("a"), cell("1")],
+                    header: false,
+                },
+            ],
+            rtl: false,
+        }));
+        builder.push(Block::PageBreak);
+        builder.push(Block::Paragraph(plain("مرحبا بالعالم")));
+        let doc = builder.finish();
+        // Everything, in order: markers, pictures and rules are left out, a table row is read as a line.
+        assert_eq!(
+            spoken_text(&doc, 0),
+            "The chapter\nFirst paragraph.\nA list item\nA quotation\nlet x = 1;\nName, Value\na, 1\nمرحبا بالعالم"
+        );
+        // From where the reader is: the blocks before it are not read.
+        let from = doc
+            .blocks
+            .iter()
+            .position(|b| matches!(b, Block::Quote { .. }))
+            .expect("the quotation");
+        assert_eq!(
+            spoken_text(&doc, from),
+            "A quotation\nlet x = 1;\nName, Value\na, 1\nمرحبا بالعالم"
+        );
+        // Past the end, and in a document with nothing to say, nothing is read.
+        assert_eq!(spoken_text(&doc, 100), "");
+        assert_eq!(spoken_text(&Document::default(), 0), "");
+        let mut only_pictures = Builder::new();
+        only_pictures.push(Block::Picture(picture_of(rich::TEST_PNG.to_vec(), "alt", None)));
+        assert_eq!(spoken_text(&only_pictures.finish(), 0), "");
+    }
+
+    #[test]
+    fn a_long_chapter_is_cut_where_the_typescript_cut_it() {
+        let mut builder = Builder::new();
+        for i in 0..2_000 {
+            builder.push(Block::Paragraph(plain(&format!(
+                "Paragraph number {i} of the long chapter."
+            ))));
+        }
+        let text = spoken_text(&builder.finish(), 0);
+        assert_eq!(text.chars().count(), speech::MAX_CHARS);
+        assert!(text.starts_with("Paragraph number 0 of"));
+    }
+
+    #[test]
+    fn the_language_to_speak_comes_from_the_script_of_the_text() {
+        assert_eq!(language_of("بسم الله الرحمن الرحيم", false), "ar");
+        assert_eq!(language_of("שלום עולם", false), "he");
+        assert_eq!(language_of("Привет, мир", false), "ru");
+        assert_eq!(language_of("Γειά σου κόσμε", false), "el");
+        assert_eq!(language_of("こんにちは世界の皆さん", false), "ja");
+        assert_eq!(language_of("你好，世界", false), "zh");
+        assert_eq!(language_of("안녕하세요", false), "ko");
+        // Mostly one script, a few words of another: the larger one.
+        assert_eq!(
+            language_of(
+                "Hello world, and then some Arabic: بسم الله الرحمن الرحيم والصلاة",
+                false
+            ),
+            "ar"
+        );
+        // Latin text and text with no letters leave the choice to the PC's voice.
+        assert_eq!(language_of("Hello, world.", false), "");
+        assert_eq!(language_of("1234 — 5678", false), "");
+        assert_eq!(language_of("1234", true), "ar");
+        assert_eq!(language_of("", false), "");
+    }
+
+    /// A book view over the Arabic EPUB at `chapter`, speaking through a fake speaker.
+    fn reading(
+        cx: &mut TestAppContext,
+        folder: &Folder,
+        chapter: usize,
+        first_block: &str,
+    ) -> (Entity<BookView>, VisualTestContext, Arc<speech::FakeSpeaker>) {
+        let path = arabic_epub(folder);
+        remember(&path, Place { chapter, block: 0 });
+        let (view, mut visual) = open(cx, path);
+        on_chapter(&view, &mut visual, chapter, first_block);
+        let fake = speech::FakeSpeaker::new();
+        view.update(&mut visual, |v, cx| v.set_speaker(fake.clone(), cx));
+        (view, visual, fake)
+    }
+
+    #[gpui_kit::test]
+    fn the_read_aloud_button_reads_the_chapter_and_turns_into_stop(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        set_text_size(100);
+        let folder = Folder::new();
+        let (view, mut visual, fake) = reading(cx, &folder, 1, "الفصل الثاني");
+        assert!(has(&mut visual, "Read aloud"));
+        assert!(!has(&mut visual, "Stop reading aloud"));
+        assert!(fake.spoken().is_empty());
+
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        frames(&mut visual);
+        // The chapter's text from its first block, with a voice for the book's language.
+        let expected = view.read_with(&visual, |v, cx| {
+            let rich = v.text_view().read(cx);
+            spoken_text(rich.document(), rich.top_block())
+        });
+        assert!(expected.starts_with("الفصل الثاني\nبند أول\nبند ثان\nبند فرعي\nHello — world\nالهدف"));
+        assert_eq!(fake.spoken(), vec![(expected, "ar".to_string())]);
+        assert!(view.read_with(&visual, |v, _| v.speaking()));
+        // The button now says Stop, and a press stops the voice.
+        assert!(has(&mut visual, "Stop reading aloud"));
+        assert!(!has(&mut visual, "Read aloud"));
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        frames(&mut visual);
+        assert_eq!(fake.stops(), 1);
+        assert!(!fake.is_speaking());
+        assert!(!view.read_with(&visual, |v, _| v.speaking()));
+        assert!(has(&mut visual, "Read aloud"));
+        // Asked again, it reads again (the same text, only one new request).
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        assert_eq!(fake.spoken().len(), 2);
+    }
+
+    #[gpui_kit::test]
+    fn reading_starts_where_the_reader_is(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        set_text_size(100);
+        let folder = Folder::new();
+        let (view, mut visual, fake) = reading(cx, &folder, 0, "الفصل الأول");
+        press(&mut visual, &view, "pagedown");
+        let top = view.read_with(&visual, |v, cx| v.text_view().read(cx).top_block());
+        assert!(top > 0, "a page down scrolled the chapter");
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        let (all, from_top) = view.read_with(&visual, |v, cx| {
+            let doc = v.text_view().read(cx).document();
+            (spoken_text(doc, 0), spoken_text(doc, top))
+        });
+        let spoken = fake.spoken();
+        assert_eq!(spoken.len(), 1);
+        assert_eq!(spoken[0].0, from_top);
+        assert!(spoken[0].0.len() < all.len(), "the text above the reader is not read");
+        assert!(all.ends_with(&spoken[0].0));
+    }
+
+    #[gpui_kit::test]
+    fn the_button_goes_back_when_the_voice_reaches_the_end(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        set_text_size(100);
+        let folder = Folder::new();
+        let (view, mut visual, fake) = reading(cx, &folder, 1, "الفصل الثاني");
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        assert!(
+            view.update(&mut visual, |v, cx| v.refresh_speaking(cx)),
+            "still speaking"
+        );
+        fake.finish();
+        assert!(!view.update(&mut visual, |v, cx| v.refresh_speaking(cx)));
+        frames(&mut visual);
+        assert!(!view.read_with(&visual, |v, _| v.speaking()));
+        assert!(has(&mut visual, "Read aloud"));
+        assert_eq!(fake.stops(), 0, "a voice that ended has nothing to stop");
+    }
+
+    #[gpui_kit::test]
+    fn the_voice_stops_when_the_chapter_changes(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        set_text_size(100);
+        let folder = Folder::new();
+        let (view, mut visual, fake) = reading(cx, &folder, 0, "الفصل الأول");
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        assert!(fake.is_speaking());
+        // A page turn inside the chapter keeps reading; the next chapter stops it.
+        press(&mut visual, &view, "pagedown");
+        assert!(fake.is_speaking());
+        press_until(&mut visual, &view, "pagedown", 1);
+        on_chapter(&view, &mut visual, 1, "الفصل الثاني");
+        assert!(!fake.is_speaking());
+        assert_eq!(fake.stops(), 1);
+        assert!(!view.read_with(&visual, |v, _| v.speaking()));
+        assert!(has(&mut visual, "Read aloud"));
+        // A jump by the contents does the same.
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        assert!(fake.is_speaking());
+        view.update(&mut visual, |v, cx| v.go_to_row(0, cx));
+        on_chapter(&view, &mut visual, 0, "الفصل الأول");
+        assert!(!fake.is_speaking());
+        assert_eq!(fake.stops(), 2);
+    }
+
+    #[gpui_kit::test]
+    fn the_voice_stops_when_another_book_opens(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        set_text_size(100);
+        let folder = Folder::new();
+        let (view, mut visual, fake) = reading(cx, &folder, 1, "الفصل الثاني");
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        assert!(fake.is_speaking());
+        // Another book in the same view.
+        let other = folder.zip("c.cbz", &[("1.png", rich::TEST_PNG)]);
+        visual.update(|window, cx| view.update(cx, |v, cx| v.set_path(other, window, cx)));
+        visual.run_until_parked();
+        assert!(!fake.is_speaking());
+        assert!(!view.read_with(&visual, |v, _| v.speaking()));
+        // A comic has no text to read: no button.
+        settle(&mut visual, |cx| has(cx, "Page 1 of 1"));
+        assert!(!has(&mut visual, "Read aloud"));
+    }
+
+    #[gpui_kit::test]
+    fn the_voice_stops_when_the_preview_goes(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        set_text_size(100);
+        let folder = Folder::new();
+        let path = arabic_epub(&folder);
+        remember(&path, Place { chapter: 1, block: 0 });
+        let (_root, mut visual) = open(cx, path.clone());
+        // A second view that nothing but this test holds: when it is let go of, the preview has gone.
+        let preview = visual.update(|window, cx| cx.new(|cx| BookView::new(path, window, cx)));
+        for _ in 0..600 {
+            visual.run_until_parked();
+            if preview.read_with(&visual, |v, cx| !v.text_view().read(cx).document().blocks.is_empty()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let fake = speech::FakeSpeaker::new();
+        preview.update(&mut visual, |v, cx| {
+            v.set_speaker(fake.clone(), cx);
+            v.read_aloud(cx);
+        });
+        assert!(fake.is_speaking());
+        let before = fake.stops();
+        drop(preview);
+        // The entity is released at the next flush of effects.
+        visual.update(|_, _| {});
+        visual.run_until_parked();
+        assert!(!fake.is_speaking());
+        assert!(fake.stops() > before);
+    }
+
+    #[gpui_kit::test]
+    fn a_chapter_with_nothing_to_say_is_not_spoken(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        let folder = Folder::new();
+        let (view, mut visual, fake) = reading(cx, &folder, 1, "الفصل الثاني");
+        // A view with no book yet, or whose chapter is blank, does nothing.
+        view.update(&mut visual, |v, cx| {
+            v.rich.update(cx, |rich, cx| {
+                rich.set_document(Arc::new(Document::default()), false, cx)
+            });
+            v.read_aloud(cx);
+        });
+        assert!(fake.spoken().is_empty());
+        assert!(!view.read_with(&visual, |v, _| v.speaking()));
     }
 
     #[gpui_kit::test]
