@@ -1030,6 +1030,12 @@ impl Workspace {
 
     /// What a menu asked for that the menus don't do themselves.
     fn on_menu_event(&mut self, _: &Entity<MenuHost>, event: &MenuEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_command(event, window, cx)
+    }
+
+    /// Runs one of the menus' commands as if it were chosen from a menu: the menus, and the Ctrl+K palette through
+    /// [`run_menu_command`].
+    pub fn menu_command(&mut self, event: &MenuEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             // PORT ME(preview pane): hide the native preview while a menu covers it (preview_host::hide/reveal).
             // A menu covers the preview pane: Windows' previewer (a window of its own) steps aside meanwhile.
@@ -1586,6 +1592,14 @@ impl Workspace {
         } else {
             group.child(sidebar).child(content)
         }
+    }
+}
+
+/// Runs one of the menus' commands in the main window, as if it were chosen from a menu (the Ctrl+K palette offers
+/// them). Does nothing before the main window exists.
+pub fn run_menu_command(event: MenuEvent, window: &mut Window, cx: &mut App) {
+    if let Some(main) = crate::startup::main_workspace(cx) {
+        main.update(cx, |workspace, cx| workspace.menu_command(&event, window, cx));
     }
 }
 
