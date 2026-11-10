@@ -21,6 +21,7 @@
 
 use super::action_run::{self, FooterSpec, Fut, Launch, ResultWords, Run};
 use crate::kit::prelude::*;
+use crate::platform::pickers::{self, Filter, Options};
 use crate::{core_bridge, t, theme};
 use glint_core::actions::{Progress, Report};
 use glint_core::songtags::{SongEdit, SongTags};
@@ -229,7 +230,7 @@ pub trait Backend: Send + Sync {
     /// Stops the run under way (`song_cancel`).
     fn cancel(&self);
     /// A picture file the person picks (`None`: cancelled). `owner` is the window's handle.
-    fn pick_cover(&self, owner: isize) -> Fut<Option<String>>;
+    fn pick_cover(&self, owner: isize) -> pickers::Fut<Result<Option<String>, String>>;
 }
 
 /// glint-core's song tags, owned by the main window as the shell dialogs it opens are.
@@ -261,8 +262,8 @@ impl Backend for CoreBackend {
         glint_core::songtags::song_cancel();
     }
 
-    fn pick_cover(&self, owner: isize) -> Fut<Option<String>> {
-        Box::pin(pick_picture(t!("Choose a cover").to_string(), owner))
+    fn pick_cover(&self, owner: isize) -> pickers::Fut<Result<Option<String>, String>> {
+        pick_picture(t!("Choose a cover").to_string(), owner)
     }
 }
 
@@ -277,72 +278,20 @@ impl Backend for Unavailable {
         Box::pin(async { Err("Glint's core isn't running".to_string()) })
     }
     fn cancel(&self) {}
-    fn pick_cover(&self, _: isize) -> Fut<Option<String>> {
+    fn pick_cover(&self, _: isize) -> pickers::Fut<Result<Option<String>, String>> {
         Box::pin(async { Ok(None) })
     }
 }
 
 /// Windows' file picker, asked for a picture (jpg, jpeg, png, gif, bmp), owned by `owner` (a window handle, 0
-/// for none). It runs a modal loop, so it is posted to the UI thread's message pump and never runs inside a GPUI
-/// callback; the answer comes back through a channel.
-///
-/// TODO(coordinator): from a shared `platform::pickers` once it exists (Settings keeps its own, which takes
-/// one extension only).
-async fn pick_picture(title: String, owner: isize) -> Result<Option<String>, String> {
-    let (answer, heard) = async_channel::bounded(1);
-    core_bridge::post_to_ui(move || {
-        let _ = answer.try_send(show_picker(&title, owner));
-    });
-    heard
-        .recv()
-        .await
-        .map_err(|_| "the picker was closed without an answer".to_string())?
-}
-
-fn show_picker(title: &str, owner: isize) -> Result<Option<String>, String> {
-    // SAFETY: COM calls on the UI thread, which GPUI has already put in a single-threaded apartment (a second
-    // CoInitializeEx with the same mode is harmless; a different mode is reported and ignored). The owner is a
-    // window handle that may be stale, which the dialog tolerates by showing unowned. Every string handed to
-    // COM outlives the call, and the one COM gives back is freed once.
-    unsafe {
-        let _ =
-            windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
-        picker(title, windows::Win32::Foundation::HWND(owner as *mut _)).map_err(|error| error.message())
-    }
-}
-
-/// # Safety
-/// UI thread; see [`show_picker`].
-unsafe fn picker(title: &str, owner: windows::Win32::Foundation::HWND) -> windows::core::Result<Option<String>> {
-    use windows::core::{Interface as _, HSTRING, PCWSTR};
-    use windows::Win32::Foundation::ERROR_CANCELLED;
-    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
-    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-    use windows::Win32::UI::Shell::{
-        FileOpenDialog, IFileDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH,
-    };
-
-    let dialog: IFileDialog =
-        CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?.cast()?;
-    dialog.SetTitle(&HSTRING::from(title))?;
-    dialog.SetOptions(dialog.GetOptions()? | FOS_FORCEFILESYSTEM)?;
-    let name = HSTRING::from(t!("Pictures").as_ref());
-    let spec = HSTRING::from("*.jpg;*.jpeg;*.png;*.gif;*.bmp");
-    let types = [COMDLG_FILTERSPEC {
-        pszName: PCWSTR(name.as_ptr()),
-        pszSpec: PCWSTR(spec.as_ptr()),
-    }];
-    dialog.SetFileTypes(&types)?;
-    match dialog.Show(Some(owner)) {
-        Ok(()) => {}
-        Err(error) if error.code() == windows::core::HRESULT::from_win32(ERROR_CANCELLED.0) => return Ok(None),
-        Err(error) => return Err(error),
-    }
-    let item = dialog.GetResult()?;
-    let path = item.GetDisplayName(SIGDN_FILESYSPATH)?;
-    let text = path.to_string().ok();
-    CoTaskMemFree(Some(path.0 as *const _));
-    Ok(text)
+/// for none): the shared `platform::pickers`, which runs the modal loop off any GPUI callback.
+fn pick_picture(title: String, owner: isize) -> pickers::Fut<Result<Option<String>, String>> {
+    pickers::open_file(
+        Options::new()
+            .title(title)
+            .filter(Filter::new(t!("Pictures"), &["jpg", "jpeg", "png", "gif", "bmp"]))
+            .owner(owner),
+    )
 }
 
 // ---- The dialog -----------------------------------------------------------------------------------------------
@@ -572,7 +521,7 @@ impl SongDialog {
 
     /// Asks for a picture to be the cover (`pickFile`).
     fn choose_cover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let owner = core_bridge::hwnd_of(window).map_or(0, |hwnd| hwnd.0 as isize);
+        let owner = pickers::owner_of(window);
         let pick = self.backend.pick_cover(owner);
         cx.spawn_in(window, async move |this, cx| {
             let picked = pick.await;
@@ -892,7 +841,6 @@ mod tests {
     struct Fake {
         tags: Result<Vec<SongTags>, String>,
         report: Report,
-        cover: Option<String>,
         writes: Mutex<Vec<Vec<SongEdit>>>,
         cancelled: Mutex<usize>,
     }
@@ -906,7 +854,6 @@ mod tests {
                     elapsed_ms: 800.,
                     ..Default::default()
                 },
-                cover: Some("C:\\pics\\front.jpg".into()),
                 writes: Mutex::new(Vec::new()),
                 cancelled: Mutex::new(0),
             }
@@ -943,9 +890,9 @@ mod tests {
             }
         }
 
-        fn pick_cover(&self, _: isize) -> Fut<Option<String>> {
-            let cover = self.cover.clone();
-            Box::pin(async move { Ok(cover) })
+        fn pick_cover(&self, _: isize) -> pickers::Fut<Result<Option<String>, String>> {
+            // Through the shared pickers, whose fake answers the test queues.
+            pick_picture("Choose a cover".to_string(), 0)
         }
     }
 
@@ -1244,12 +1191,24 @@ mod tests {
             Some(Role::Status)
         );
         assert_eq!(role_of(&mut visual, "Some have one"), Some(Role::Status));
+        pickers::fake::answer_with(vec![
+            Ok(vec!["C:\\pics\\front.jpg".to_string()]),
+            Ok(vec![]),
+            Ok(vec!["C:\\pics\\front.jpg".to_string()]),
+        ]);
         click(&mut visual, "song-cover-choose");
         settle(&mut visual, |cx| has(cx, "front.jpg"));
         click(&mut visual, "song-cover-remove");
         assert!(has(&mut visual, "Taken out"));
+        // Cancelling the picker changes nothing.
+        click(&mut visual, "song-cover-choose");
+        assert!(has(&mut visual, "Taken out"));
         click(&mut visual, "song-cover-choose");
         settle(&mut visual, |cx| has(cx, "front.jpg"));
+        let asked = pickers::fake::asked();
+        assert_eq!(asked.len(), 3);
+        let filter = &asked[0].options.filters[0];
+        assert_eq!(filter.extensions, ["jpg", "jpeg", "png", "gif", "bmp"]);
         assert!(!disabled(&mut visual, "song-start"), "a new cover is a change");
         click(&mut visual, "song-start");
         settle(&mut visual, |cx| has(cx, "Made 1 song"));

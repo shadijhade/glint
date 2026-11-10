@@ -20,8 +20,9 @@
 //!
 //! - **Finding** (`runFind`, `clearFind`, `leaveFind`, `findsAsTyped`): the box emits [`AddressBarEvent`]s
 //!   and filters the folder as you type (`Explorer::set_filter`); the find part runs the searches.
-//! - **Git:** the chip after the breadcrumbs, and `git:` in the box's hints in a repository
-//!   ([`AddressBar::set_in_repository`] is how the git part says so).
+//! - **Git:** the branch chip after the breadcrumbs (one [`GitChip`](crate::components::git::GitChip) per tab,
+//!   hidden below 26 rem of bar), and `git:` in the box's hints in a repository. The bar follows the Git model
+//!   itself (it must exist, `git::init`, when the bar is made); [`AddressBar::set_in_repository`] is for tests.
 //! - **Dragging and dropping:** dropping files on a breadcrumb, dragging a breadcrumb out.
 //!
 //! # Right to left
@@ -35,6 +36,7 @@ mod flyout;
 mod keys;
 mod search;
 
+use crate::components::git::{self, GitChip};
 use crate::core_bridge::Core;
 use crate::explorer::{self, CoreSource, Drive, DriveKind, Explorer, KnownFolder, NavOptions, Refresh, Source, TabId};
 use crate::kit::prelude::*;
@@ -199,6 +201,8 @@ struct Layout {
     narrow: bool,
     /// Narrower than 9 rem: the "…" goes too.
     tiny: bool,
+    /// Narrower than 26 rem: the Git chip gives way (`@max-[26rem]:hidden`).
+    no_chip: bool,
 }
 
 /// The address bar. See the module notes; build it with [`AddressBar::new`] and place it in the toolbar.
@@ -241,6 +245,8 @@ pub struct AddressBar {
     /// The crumb dragged files are held over, lit while they are.
     drop_over: Option<usize>,
     in_repository: bool,
+    /// The branch chip of each tab, made when the tab first shows (a chip follows its tab's folder).
+    chips: HashMap<TabId, Entity<GitChip>>,
     /// What the box's placeholder says now ("Search {folder}").
     placeholder: SharedString,
 
@@ -280,6 +286,10 @@ impl AddressBar {
             cx.observe_global::<theme::GlintTheme>(|_, cx| cx.notify()),
             cx.observe_global::<i18n::Current>(|this, cx| this.sync_view(cx)),
         ];
+        // Repositories come and go as the folders open: the chip and the `git:` hint follow the Git model.
+        if let Some(model) = git::try_shared(cx) {
+            subscriptions.push(cx.observe(&model, |this, _, cx| this.sync_git(cx)));
+        }
         subscriptions.shrink_to_fit();
         let mut bar = Self {
             focus: cx.focus_handle(),
@@ -308,9 +318,11 @@ impl AddressBar {
             crumb_press: None,
             drop_over: None,
             in_repository: false,
+            chips: HashMap::new(),
             placeholder,
             _subscriptions: subscriptions,
         };
+        bar.in_repository = git::try_shared(cx).is_some() && git::in_repository(cx, bar.seen.tab);
         // A bar built while the explorer is already asking for a path starts typing in it.
         if bar.seen.editing {
             bar.begin_editing(window, cx);
@@ -353,12 +365,18 @@ impl AddressBar {
     }
 
     /// The folder shown is in a Git repository, so the search box's hints include `git:` (`useGit(...).view`).
-    /// PORT ME(git): the git part calls this as repositories come and go.
+    /// The bar asks the Git model itself ([`git::in_repository`]); this is for a bar without one.
     pub fn set_in_repository(&mut self, in_repository: bool, cx: &mut Context<Self>) {
         if self.in_repository != in_repository {
             self.in_repository = in_repository;
             cx.notify();
         }
+    }
+
+    /// Git's view of the active tab changed: the `git:` hint is offered in a repository (`git::in_repository`).
+    fn sync_git(&mut self, cx: &mut Context<Self>) {
+        let in_repository = git::in_repository(cx, self.seen.tab);
+        self.set_in_repository(in_repository, cx);
     }
 
     // ---- Following the explorer -------------------------------------------------------------------------
@@ -384,6 +402,9 @@ impl AddressBar {
             self.end_editing(window, cx);
         }
         self.sync_search(window, cx);
+        if git::try_shared(cx).is_some() {
+            self.sync_git(cx);
+        }
         if changed {
             cx.notify();
         }
@@ -1187,11 +1208,12 @@ impl AddressBar {
             move |bounds, window, cx| {
                 let width = bounds.size.width;
                 let rem = window.rem_size();
-                let (narrow, tiny) = (width < rem * 16., width < rem * 9.);
+                let (narrow, tiny, no_chip) = (width < rem * 16., width < rem * 9., width < rem * 26.);
                 let mut m = measure.borrow_mut();
-                if m.layout.narrow != narrow || m.layout.tiny != tiny {
+                if m.layout.narrow != narrow || m.layout.tiny != tiny || m.layout.no_chip != no_chip {
                     m.layout.narrow = narrow;
                     m.layout.tiny = tiny;
+                    m.layout.no_chip = no_chip;
                     drop(m);
                     let entity = entity.clone();
                     cx.defer(move |cx| {
@@ -1246,6 +1268,9 @@ impl AddressBar {
                 .child(icon(if copied { IconName::Check } else { IconName::Copy }).size_3p5())
         });
 
+        // The branch chip of this tab, after the crumbs; it draws nothing outside a repository, and leaves no gap.
+        let chip = self.chip_of(seen.tab, layout.no_chip, cx);
+
         row_start()
             .id("address-crumb-bar")
             .test_support()
@@ -1262,9 +1287,27 @@ impl AddressBar {
             .children(roots_chevron)
             .children(dots)
             .child(crumbs_row)
-            // PORT ME(git): the Git chip (`GitChip`) goes here, after the crumbs.
+            .children(chip)
             .child(empty)
             .children(copy)
+    }
+
+    /// The Git chip of `tab` (it has its own gap), or nothing: while the tab's folder isn't in a repository, or the bar is
+    /// narrower than 26 rem. One chip per tab is made when the tab first shows, and dropped with the tab.
+    fn chip_of(&mut self, tab: TabId, hidden: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Without a Git model (`git::init` not run) there is nothing for a chip to show.
+        git::try_shared(cx)?;
+        let explorer = self.explorer.clone();
+        self.chips.retain(|id, _| explorer.read(cx).tab(*id).is_some());
+        let chip = match self.chips.get(&tab) {
+            Some(chip) => chip.clone(),
+            None => {
+                let chip = cx.new(|cx| GitChip::new(tab, cx));
+                self.chips.insert(tab, chip.clone());
+                chip
+            }
+        };
+        (!hidden && chip.read(cx).is_shown(cx)).then(|| div().flex_none().child(chip).into_any_element())
     }
 
     /// One folder of the path: its button and the chevron after it. Folded ones stay in the row, invisible,

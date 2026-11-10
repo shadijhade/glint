@@ -5,25 +5,35 @@
 
 use super::choose::{Body, View};
 use super::frame::{chosen, EntryView};
+use super::notebook::NotebookView;
 use super::pane::{PreviewPane, Shown};
 use super::picture::PictureView;
 use super::probe::{Probed, TextProbe};
+use super::program::ProgramPreview;
 use super::quick_look;
+use super::sheet::SheetPreview;
 use super::shell::{self, ShellHost, State, PANE, QUICK_LOOK};
+use super::small::SmallPreview;
 use super::sources::{self, ArchiveFacts, Counts, Media, Native, Probe, Sources};
+use super::sqlite::{SqliteEvent, SqlitePreview};
 use crate::components::file_grid::thumbnail::{self, NoThumbs};
+use crate::components::git::model::{Fut, Source as GitSource, View as GitView};
+use crate::components::git::{self, ChangesView};
+use crate::dialogs::data_tools::{ProfileView, QueryView};
 use crate::explorer::fake::{file, folder, FakeDisk};
-use crate::explorer::{self, Explorer, NavOptions};
+use crate::explorer::{self, CompressFormat, Explorer, Measured, NavOptions};
 use crate::kit::prelude::*;
 use crate::platform::preview_host::{Event, PreviewError};
 use crate::testing;
-use glint_model::entries::{attr, FileEntry};
+use glint_model::entries::{attr, FileEntry, GitMark};
+use glint_model::groups::GitMarks;
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{BackgroundExecutor, Entity, TestAppContext, VisualTestContext};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// A 24-bit BMP of one color: the simplest picture to make by hand, and one GPUI decodes.
@@ -219,11 +229,55 @@ impl Fake {
     }
 }
 
+/// Git's answers for the folder on screen: the marks it says its files have (none: not a repository).
+#[derive(Clone, Default)]
+pub(crate) struct GitFake(Arc<Mutex<Option<GitMarks>>>);
+
+impl GitFake {
+    fn marks(&self) -> Option<GitMarks> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+}
+
+impl GitSource for GitFake {
+    fn view(&self, folder: String, _: String, _: Vec<String>, _: bool) -> Fut<Option<GitView>> {
+        let marks = self.marks();
+        Box::pin(async move {
+            Ok(marks.map(|marks| GitView {
+                root: folder,
+                branch: Some("main".into()),
+                marks: Arc::new(marks),
+                ..Default::default()
+            }))
+        })
+    }
+
+    fn cancel(&self, _: &str) {}
+
+    fn watch(&self, _: Vec<String>) {}
+
+    fn diff(&self, _: String) -> Fut<Option<glint_core::git::FileDiff>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn head_copy(&self, _: String) -> Fut<Option<String>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn head_discard(&self, _: String) {}
+
+    fn card(&self, _: String) -> Fut<Option<glint_core::repo::RepoCard>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
 /// The pane in a window over a fake disk, with real pictures in a temp folder.
 pub(crate) struct Env {
     pub visual: VisualTestContext,
     pub executor: BackgroundExecutor,
     pub fake: Rc<Fake>,
+    pub disk: FakeDisk,
+    pub git: GitFake,
     pub explorer: Entity<Explorer>,
     pub pane: Entity<PreviewPane>,
     pub dir: PathBuf,
@@ -324,6 +378,25 @@ impl Env {
         body.downcast::<T>().ok()
     }
 
+    /// Says Git has these marks (lowercase name, mark) for the folder on screen, and lets the model hear it.
+    pub fn git_marks(&mut self, marks: &[(&str, GitMark)]) {
+        let mut all = GitMarks::new();
+        for (name, mark) in marks {
+            all.insert((*name).to_string(), *mark);
+        }
+        *self.git.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(all);
+        let tab = self.explorer.read_with(&self.visual, |e, _| e.active_tab_id());
+        let folder = self.folder.clone();
+        // (A folder that was not a repository has no run to refresh: the model is asked outright.)
+        self.visual
+            .update(|_, cx| git::shared(cx).update(cx, |git, cx| git.refresh(tab, &folder, true, cx)));
+        let probe = self.path("notes.txt");
+        self.until("git has the marks", |env| {
+            env.visual
+                .update(|_, cx| git::mark_of(cx, &probe).is_some() || marks.is_empty())
+        });
+    }
+
     pub fn picture(&mut self) -> Entity<PictureView> {
         self.body_as::<PictureView>().expect("a picture is shown")
     }
@@ -364,6 +437,13 @@ fn entries(dir: &str) -> Vec<FileEntry> {
         file(dir, "movie.mp4", 800, 10),
         file(dir, "تقرير الربع.txt", 900, 11),
         file(dir, "صورة.bmp", 1000, 12),
+        file(dir, "table.csv", 100, 15),
+        file(dir, "sheet.xlsx", 110, 16),
+        file(dir, "lab.ipynb", 120, 17),
+        file(dir, "tool.exe", 130, 18),
+        file(dir, "base.sqlite", 140, 19),
+        file(dir, "card.vcf", 150, 20),
+        file(dir, "rows.parquet", 160, 21),
         docx,
         offline,
         secret,
@@ -388,10 +468,13 @@ pub(crate) fn setup(cx: &mut TestAppContext) -> Env {
     disk.folder(&folder_path, entries(&folder_path));
     disk.folder(&format!("{folder_path}\\sub"), vec![]);
     let fake = Rc::new(Fake::default());
+    let git = GitFake::default();
+    let git_source = git.clone();
     cx.update(|cx| {
         explorer::init_with(cx, disk.source());
         sources::init_with(cx, fake.sources());
         thumbnail::init_with(cx, Rc::new(NoThumbs));
+        git::init_with(cx, Rc::new(git_source));
     });
     let executor = cx.executor();
     let (mut visual, pane) = testing::open_window(cx, |window, cx| cx.new(|cx| PreviewPane::new(window, cx)));
@@ -405,6 +488,8 @@ pub(crate) fn setup(cx: &mut TestAppContext) -> Env {
         visual,
         executor,
         fake,
+        disk,
+        git,
         explorer,
         pane,
         dir,
@@ -428,7 +513,7 @@ fn nothing_selected_shows_the_folders_card(cx: &mut TestAppContext) {
     let mut env = setup(cx);
     assert_eq!(env.shown(), Shown::Nothing);
     assert!(env.has("Select a file to preview it"));
-    assert!(env.has("17 items"), "the folder's item count is said");
+    assert!(env.has("24 items"), "the folder's item count is said");
     assert!(env.entry_view().is_none());
     // The pane is a named region.
     assert!(env.has("Preview pane"));
@@ -609,6 +694,333 @@ fn json_is_a_tree_with_a_text_view(cx: &mut TestAppContext) {
     assert_eq!(env.body(), Some(Body::Text));
     let view = env.visual.update(|_, cx| chosen(cx));
     view.update(&mut env.visual, |c, _| c.view = View::File);
+}
+
+// ---- The previewers of the tables, programs and small files -------------------------------------------------
+
+#[gpui_kit::test]
+fn each_new_previewer_is_built_for_its_kind(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("sheet.xlsx");
+    assert_eq!(env.body(), Some(Body::Sheet));
+    assert!(env.body_as::<SheetPreview>().is_some());
+    env.select("rows.parquet");
+    assert_eq!(env.body(), Some(Body::Sheet));
+    env.select("lab.ipynb");
+    assert_eq!(env.body(), Some(Body::Notebook));
+    assert!(env.body_as::<NotebookView>().is_some());
+    env.select("tool.exe");
+    assert_eq!(env.body(), Some(Body::Program));
+    assert!(env.body_as::<ProgramPreview>().is_some());
+    env.select("base.sqlite");
+    assert_eq!(env.body(), Some(Body::Sqlite));
+    assert!(env.body_as::<SqlitePreview>().is_some());
+    env.select("card.vcf");
+    assert!(matches!(env.body(), Some(Body::Small(_))));
+    assert!(env.body_as::<SmallPreview>().is_some());
+}
+
+#[gpui_kit::test]
+fn a_program_is_handed_the_signature_chip_for_its_header(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("tool.exe");
+    let program = env.body_as::<ProgramPreview>().expect("a program is shown");
+    assert!(program.read_with(&env.visual, |p, _| p.has_signature()));
+}
+
+#[gpui_kit::test]
+fn a_workbook_shows_a_table_or_windows_previewer(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("sheet.xlsx");
+    assert!(env.has("Table") && env.has("Previewer") && env.has("Query") && env.has("Hex"));
+    assert!(!env.has("Profile"), "a workbook is not a DuckDB table");
+    // Previewer is the second button: Windows' own, over the icon.
+    env.click(("preview-view", 1usize));
+    assert_eq!(env.body(), Some(Body::Shell(super::choose::Fallback::Icon)));
+    assert!(env
+        .fake
+        .logged()
+        .contains(&format!("show {PANE} {}", env.path("sheet.xlsx"))));
+    // Parquet has no Previewer.
+    env.select("rows.parquet");
+    assert_eq!(
+        env.body(),
+        Some(Body::Sheet),
+        "the view is shown as the file as it is where it has none"
+    );
+    assert!(env.has("Profile") && !env.has("Previewer"));
+    let view = env.visual.update(|_, cx| chosen(cx));
+    view.update(&mut env.visual, |c, _| c.view = View::File);
+}
+
+#[gpui_kit::test]
+fn a_notebook_has_a_source_view_that_is_its_json(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("lab.ipynb");
+    assert!(env.has("Notebook") && env.has("Source"));
+    env.click(("preview-view", 1usize));
+    assert_eq!(env.body(), Some(Body::Text));
+    let view = env.visual.update(|_, cx| chosen(cx));
+    view.update(&mut env.visual, |c, _| c.view = View::File);
+}
+
+#[gpui_kit::test]
+fn a_table_file_takes_sql_and_a_profile(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("table.csv");
+    assert_eq!(env.body(), Some(Body::Data));
+    assert!(env.has("Table") && env.has("Text") && env.has("Query") && env.has("Profile") && env.has("Hex"));
+    // Table, Text, Query, Profile, Hex.
+    env.click(("preview-view", 2usize));
+    assert_eq!(env.body(), Some(Body::Query));
+    assert!(env.body_as::<QueryView>().is_some());
+    env.click(("preview-view", 3usize));
+    assert_eq!(env.body(), Some(Body::Profile));
+    assert!(env.body_as::<ProfileView>().is_some());
+    // A file with no Query view is shown as it is when the choice was Profile.
+    env.select("notes.txt");
+    assert_eq!(env.body(), Some(Body::Text));
+    let view = env.visual.update(|_, cx| chosen(cx));
+    view.update(&mut env.visual, |c, _| c.view = View::File);
+}
+
+#[gpui_kit::test]
+fn a_databases_rows_button_opens_the_query_view_with_its_sql(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("base.sqlite");
+    assert!(env.has("Query"));
+    let preview = env.body_as::<SqlitePreview>().expect("a database is shown");
+    let sql = "SELECT * FROM notes LIMIT 1000".to_string();
+    let path = env.path("base.sqlite");
+    preview.update(&mut env.visual, |_, cx| {
+        cx.emit(SqliteEvent::ShowQuery {
+            path: path.clone(),
+            sql: sql.clone(),
+        })
+    });
+    env.visual.run_until_parked();
+    assert_eq!(env.body(), Some(Body::Query), "the frame switched to its Query view");
+    let frame = env.entry_view().expect("shown");
+    frame.read_with(&env.visual, |v, _| assert_eq!(v.draft(), Some(sql.as_str())));
+    assert!(env.body_as::<QueryView>().is_some());
+    let view = env.visual.update(|_, cx| chosen(cx));
+    view.update(&mut env.visual, |c, _| c.view = View::File);
+}
+
+#[gpui_kit::test]
+fn a_file_git_has_a_change_for_has_a_changes_view(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("notes.txt");
+    assert!(!env.has("Changes"), "outside a repository there are no changes to show");
+    env.git_marks(&[("notes.txt", GitMark::Modified), ("readme.md", GitMark::Ignored)]);
+    assert!(env.has("Changes"), "the button arrives with the mark");
+    let index = {
+        let frame = env.entry_view().expect("shown");
+        frame.read_with(&env.visual, |v, _| assert!(v.has_changes()));
+        // File, Changes, Hex.
+        1usize
+    };
+    env.click(("preview-view", index));
+    assert_eq!(env.body(), Some(Body::Changes));
+    assert!(env.body_as::<ChangesView>().is_some());
+    // An ignored file has none, and neither has a folder.
+    env.select("readme.md");
+    assert!(!env.has("Changes"));
+    env.select("sub");
+    assert!(!env.has("Changes"));
+    let view = env.visual.update(|_, cx| chosen(cx));
+    view.update(&mut env.visual, |c, _| c.view = View::File);
+}
+
+// ---- Compare, File X-Ray and Zip ----------------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn x_ray_is_offered_for_files_on_disk_and_opens_its_dialog(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("notes.txt");
+    assert!(env.has_id("preview-xray"));
+    assert!(
+        !env.has_id("preview-compare"),
+        "one file alone has nothing to compare with"
+    );
+    env.click("preview-xray");
+    assert!(env.dialog_open());
+    // Not for a folder, a file in an archive or the Recycle Bin.
+    env.visual.update(|window, cx| window.close_dialog(cx));
+    for name in ["sub", "inside.txt", "gone.txt"] {
+        env.select(name);
+        assert!(!env.has_id("preview-xray"), "{name}");
+    }
+}
+
+#[gpui_kit::test]
+fn two_files_selected_can_be_compared_from_the_pane_and_from_quick_look(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    let (a, b) = (env.path("notes.txt"), env.path("readme.md"));
+    env.explorer.update(&mut env.visual, |e, cx| {
+        e.set_selection([a.as_str(), b.as_str()], Some(&a), Some(&a), cx);
+    });
+    env.settle();
+    assert!(matches!(env.shown(), Shown::Many(_)));
+    assert!(env.has_id("preview-compare") && env.has_id("preview-zip") && env.has_id("preview-rename"));
+    // Quick Look shows the focused one, with the pair to compare in its header.
+    env.visual.update(quick_look::toggle);
+    env.visual.run_until_parked();
+    let ql = env.visual.update(|_, cx| quick_look::current(cx)).expect("it is open");
+    let frame = ql.read_with(&env.visual, |q, _| q.view().clone());
+    let pair = frame
+        .read_with(&env.visual, |v, _| v.compare_pair().cloned())
+        .expect("a pair");
+    assert_eq!((pair.left.as_str(), pair.right.as_str()), (a.as_str(), b.as_str()));
+    assert!(env.has("Compare “notes.txt” and “readme.md”"));
+    env.visual.update(quick_look::toggle);
+    env.visual.run_until_parked();
+    // The pane's Compare opens the two files side by side.
+    env.click("preview-compare");
+    assert!(env.dialog_open(), "the comparison opened");
+}
+
+#[gpui_kit::test]
+fn a_folder_in_the_selection_leaves_compare_out_and_zip_packs_the_items(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    let paths = [env.path("sub"), env.path("notes.txt")];
+    env.explorer.update(&mut env.visual, |e, cx| {
+        e.set_selection(paths.iter().map(String::as_str), None, None, cx);
+    });
+    env.settle();
+    assert!(env.has_id("preview-zip"));
+    assert!(!env.has_id("preview-compare"), "a folder can't be compared");
+    env.click("preview-zip");
+    env.until("the zip was asked for", |env| !env.disk.compressions().is_empty());
+    let (request, _) = env.disk.compressions().remove(0);
+    assert_eq!(request.format, CompressFormat::Zip);
+    assert_eq!(request.paths.len(), 2);
+}
+
+#[gpui_kit::test]
+fn items_that_cannot_be_changed_are_not_offered_zip_or_compare(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    let paths = [env.path("gone.txt"), env.path("notes.txt")];
+    env.explorer.update(&mut env.visual, |e, cx| {
+        e.set_selection(paths.iter().map(String::as_str), None, None, cx);
+    });
+    env.settle();
+    assert!(matches!(env.shown(), Shown::Many(_)));
+    assert!(!env.has_id("preview-zip") && !env.has_id("preview-compare") && !env.has_id("preview-rename"));
+}
+
+// ---- Folder sizes and the repository's card -----------------------------------------------------------------
+
+#[gpui_kit::test]
+fn a_folder_offers_to_calculate_folder_sizes_and_shows_its_size_once_measured(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.disk.set_measured(
+        &env.folder.clone(),
+        Measured {
+            total: 8192,
+            sizes: vec![("sub".to_string(), 4096)],
+            elapsed: 3.0,
+            engine: "pdu".to_string(),
+        },
+    );
+    env.select("sub");
+    assert!(env.has("Calculate folder sizes"));
+    assert!(!env.has("4.0 KB in total"));
+    env.click("preview-folder-sizes");
+    env.until("the size arrives", |env| env.has("4.0 KB in total"));
+    assert!(
+        !env.has("Calculate folder sizes"),
+        "a measured folder has its size instead"
+    );
+    // Nothing selected: the folder's card says what the whole folder came to.
+    env.explorer.update(&mut env.visual, |e, cx| e.select_only(None, cx));
+    env.until("the folder's total", |env| env.has("24 items · 8.0 KB in total"));
+}
+
+#[gpui_kit::test]
+fn a_folder_in_the_recycle_bin_has_its_own_size_and_no_button(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    env.select("old");
+    let size = glint_model::format::format_size(123_456);
+    assert!(env.has(&format!("{size} in total")));
+    assert!(!env.has("Calculate folder sizes"));
+}
+
+#[gpui_kit::test]
+fn a_folder_that_is_not_where_the_tab_is_has_no_calculate_button(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let env = setup(cx);
+    // A search result's folder is somewhere else than the folder on screen: sizing here would not reach it.
+    let (mut visual, _card) = testing::open_window(cx, |window, cx| {
+        cx.new(|cx| super::cards::FolderCard::new(folder(r"C:\elsewhere", "far"), window, cx))
+    });
+    visual.run_until_parked();
+    let found = visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.try_find_by_label("Calculate folder sizes").is_some()
+    });
+    assert!(!found);
+    drop(env);
+}
+
+#[gpui_kit::test]
+fn a_folder_with_a_git_folder_has_the_repository_card_under_its_counts(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    *env.fake.counts.borrow_mut() = Some(Ok(Counts {
+        folders: 1,
+        files: 2,
+        bytes: 3000,
+        repo: true,
+    }));
+    env.select("sub");
+    let card = env.body_as::<super::cards::FolderCard>().expect("a folder");
+    env.until("the card is made", |env| {
+        card.read_with(&env.visual, |c, _| c.repo().is_some())
+    });
+    // Not for a folder in the Recycle Bin.
+    env.select("old");
+    let card = env.body_as::<super::cards::FolderCard>().expect("a folder");
+    env.settle();
+    card.read_with(&env.visual, |c, _| assert!(c.repo().is_none()));
+}
+
+#[gpui_kit::test]
+fn the_folder_card_of_a_repositorys_own_folder_has_the_repository_card(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = setup(cx);
+    assert!(env.pane.read_with(&env.visual, |p, _| p.repo_card().is_none()));
+    // The folder shown gets a .git: the pane scans its listing for one.
+    let dir = env.folder.clone();
+    let mut entries = entries(&dir);
+    entries.push(folder(&dir, ".git"));
+    env.disk.folder(&dir, entries);
+    env.explorer.update(&mut env.visual, |e, cx| e.refresh(cx));
+    env.until("the pane knows it is a repository", |env| {
+        env.pane.read_with(&env.visual, |p, _| p.summary().repo)
+    });
+    env.until("its card is made", |env| {
+        env.pane.read_with(&env.visual, |p, _| p.repo_card().is_some())
+    });
+    // Selecting a file lets it go, and clearing the selection brings it back.
+    env.select("notes.txt");
+    assert!(env.pane.read_with(&env.visual, |p, _| p.repo_card().is_none()));
+    env.explorer.update(&mut env.visual, |e, cx| e.select_only(None, cx));
+    env.visual.run_until_parked();
+    assert!(env.pane.read_with(&env.visual, |p, _| p.repo_card().is_some()));
 }
 
 // ---- Windows' own previewers --------------------------------------------------------------------------------
@@ -1264,7 +1676,11 @@ fn every_icon_the_preview_draws_is_embedded() {
         IconName::FileLock,
         IconName::FolderLock,
         IconName::FolderOpen,
+        IconName::FileArchive,
+        IconName::FingerprintPattern,
         IconName::FolderSearch,
+        IconName::GitCompareArrows,
+        IconName::HardDrive,
         IconName::Images,
         IconName::LoaderCircle,
         IconName::Maximize2,

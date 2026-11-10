@@ -5,6 +5,7 @@ use super::index::{Index, Source, State, Volume};
 use super::summary::Thumbs;
 use super::{summary, StatusBar};
 use crate::components::file_grid::thumbnail::{self, Ask, Fut, ThumbSource, Want};
+use crate::components::file_list::fake_git::{repo_view, FakeGit};
 use crate::explorer::fake::{file, folder, hidden, FakeDisk};
 use crate::explorer::{self, Drive, DriveKind, Explorer, NavOptions};
 use crate::kit::prelude::*;
@@ -113,6 +114,7 @@ struct Setup {
     explorer: Entity<Explorer>,
     answer: Answer,
     enables: Arc<AtomicUsize>,
+    disk: FakeDisk,
 }
 
 /// The skeleton's globals, a fake disk, a fake index answering `answer`, and a window holding the status bar.
@@ -127,6 +129,17 @@ fn setup_with(
     enable: Result<Index, String>,
     thumbs: Option<Rc<dyn ThumbSource>>,
 ) -> Setup {
+    setup_full(cx, answer, enable, thumbs, None)
+}
+
+/// [`setup_with`], and a fake Git behind the Git model when given (made before the bar, as start-up does).
+fn setup_full(
+    cx: &mut TestAppContext,
+    answer: Index,
+    enable: Result<Index, String>,
+    thumbs: Option<Rc<dyn ThumbSource>>,
+    git: Option<&FakeGit>,
+) -> Setup {
     cx.update(testing::init);
     let disk = FakeDisk::new();
     standard_disk(&disk);
@@ -134,6 +147,9 @@ fn setup_with(
     let (source, answer, enables) = fake_index(answer, enable);
     cx.update(|cx| {
         explorer::init_with(cx, disk.source());
+        if let Some(git) = git {
+            git.install(cx);
+        }
         super::init_with(cx, source);
         if let Some(thumbs) = thumbs {
             thumbnail::init_with(cx, thumbs);
@@ -151,6 +167,7 @@ fn setup_with(
         explorer,
         answer,
         enables,
+        disk,
     };
     // This PC's drives come from the explorer's own refresh, as start-up does it.
     let explorer = setup.explorer.clone();
@@ -522,4 +539,126 @@ fn an_arabic_name_and_the_mirrored_bar_render_without_trouble(cx: &mut TestAppCo
     click(&mut setup, "status-bar-details");
     assert_eq!(role_of(&mut setup.visual, "What's in this folder"), Some(Role::Group));
     testing::set_rtl(false);
+}
+
+// ---- Git status and folder sizes ------------------------------------------------------------------------------
+
+/// A label (a status piece, a stage) that starts with `start`, drawn now.
+fn label_starting(setup: &mut Setup, start: &str) -> Option<String> {
+    setup.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .elements()
+            .iter()
+            .filter_map(|element| element.label())
+            .find(|label| label.starts_with(start))
+            .map(str::to_string)
+    })
+}
+
+#[gpui_kit::test]
+fn the_work_line_says_how_long_git_status_took_in_a_repository_and_nothing_outside_one(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let git = FakeGit::default();
+    git.put(
+        "C:\\a",
+        repo_view(&[("notes.md", glint_model::entries::GitMark::Modified)]),
+    );
+    let mut setup = setup_full(
+        cx,
+        index(State::Off, vec![]),
+        Ok(index(State::On, vec![])),
+        None,
+        Some(&git),
+    );
+    go(&mut setup, "C:\\a");
+    settle(&mut setup.visual, |cx| has(cx, "git · 12 ms"));
+    assert_eq!(role_of(&mut setup.visual, "git · 12 ms"), Some(Role::Status));
+    // The hover text says what Git found.
+    let description = setup
+        .visual
+        .update(|window, _| window.find_by_label("git · 12 ms").description().map(str::to_string));
+    assert_eq!(
+        description.as_deref(),
+        Some("Git status of this folder in 12 ms: 1 changed in here and below, on main.")
+    );
+    // Outside a repository there is no Git line.
+    go(&mut setup, "C:\\b");
+    settle(&mut setup.visual, |cx| !has(cx, "git · 12 ms"));
+    assert!(!has(&mut setup.visual, "git · 12 ms"));
+}
+
+#[gpui_kit::test]
+fn the_details_time_git_status_after_the_folder_sizes_and_before_the_thumbnails(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let git = FakeGit::default();
+    git.put("C:\\a", repo_view(&[]));
+    let mut setup = setup_full(
+        cx,
+        index(State::Off, vec![]),
+        Ok(index(State::On, vec![])),
+        None,
+        Some(&git),
+    );
+    go(&mut setup, "C:\\a");
+    settle(&mut setup.visual, |cx| has(cx, "git · 12 ms"));
+    with_explorer(&mut setup, |e, cx| e.calc_sizes(cx));
+    click(&mut setup, "status-bar-details");
+    let stages: Vec<String> = setup.visual.update(|window, cx| {
+        window.render_frame(cx);
+        window
+            .elements()
+            .iter()
+            .filter_map(|element| element.label())
+            .filter(|label| label.contains(" · ") && label.contains(": "))
+            .map(str::to_string)
+            .collect()
+    });
+    let at = |what: &str| stages.iter().position(|label| label.starts_with(what));
+    let (read, sizes, status) = (at("Folder read"), at("Folder sizes (pdu)"), at("Git status"));
+    assert!(
+        read.is_some() && read < sizes && sizes < status,
+        "folder read, then folder sizes, then Git status: {stages:?}"
+    );
+    assert!(
+        stages.iter().any(|label| label == "Git status · main: 12 ms"),
+        "the branch is the detail: {stages:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn the_work_line_says_what_the_folder_sizes_took_once_they_are_measured(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    go(&mut setup, "C:\\a");
+    assert!(
+        label_starting(&mut setup, "pdu sized").is_none(),
+        "nothing measured yet"
+    );
+    let gate = setup.disk.hold_sizes();
+    with_explorer(&mut setup, |e, cx| e.calc_sizes(cx));
+    assert!(
+        label_starting(&mut setup, "pdu sized").is_none(),
+        "not while it is being measured"
+    );
+    drop(gate);
+    settle(&mut setup.visual, |cx| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .elements()
+                .iter()
+                .any(|e| e.label().is_some_and(|l| l.starts_with("pdu sized")))
+        })
+    });
+    let said = label_starting(&mut setup, "pdu sized").unwrap_or_default();
+    // The files in the folder, and the one inside `sub`; the fake disk measures in 1.5 ms.
+    assert_eq!(said, "pdu sized 601 B in 1.5 ms");
+    assert_eq!(bar_summary(&setup).sized.map(|s| s.total), Some(601));
+    // The breakdown counts the folder's bytes now: `sub` holds one byte.
+    let folders = bar_summary(&setup)
+        .spectrum
+        .into_iter()
+        .find(|category| category.group == summary::FOLDERS);
+    assert_eq!(folders.map(|category| category.bytes), Some(1));
 }

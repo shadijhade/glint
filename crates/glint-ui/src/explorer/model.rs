@@ -9,7 +9,7 @@
 
 use super::memory::Memory;
 use super::ops_state::OpsState;
-use super::rows::{build_rows, RowSpec, Rows};
+use super::rows::{build_rows, reads_git, RowMarks, RowSpec, Rows};
 use super::source::Source;
 use super::tab::Tab;
 use super::types::*;
@@ -609,21 +609,63 @@ impl Explorer {
     /// The row spec for a tab under the current settings.
     fn row_spec(&self, id: TabId, prefs: &Prefs) -> Option<RowSpec> {
         let tab = self.tabs.get(&id)?;
+        // Only the list has headers: the grid and the columns view show items plain.
+        let group = if tab.view == ViewMode::List {
+            tab.group
+        } else {
+            GroupBy::None
+        };
         Some(RowSpec {
             sort: tab.sort,
             folders_first: prefs.folders_first,
             show_hidden: prefs.show_hidden,
             filter: tab.filter.clone(),
-            // Only the list has headers: the grid and the columns view show items plain.
-            group: if tab.view == ViewMode::List {
-                tab.group
-            } else {
-                GroupBy::None
-            },
+            group,
             // A listing arrives sorted; a search's results are sorted here.
             presorted: tab.find.is_none(),
             sizes: self.row_sizes(tab),
+            // Search results have no marks (`useGit(...).view.marks` is undefined while a search shows).
+            git: tab
+                .git
+                .clone()
+                .filter(|_| tab.find.is_none() && same_path(&tab.git_for, &tab.path) && reads_git(&tab.filter, group))
+                .map(|marks| RowMarks { marks }),
         })
+    }
+
+    /// Tells the explorer what Git says of the items in `tab`'s folder (`Git` model's marks, by lowercase name; `None`
+    /// outside a repository). The `git:` filter (`git:changed`, `git:new`, `git:staged`, `git:modified`,
+    /// `git:conflicted`, `git:ignored`) and Group by Git read them: the tab's rows are rebuilt when it has either,
+    /// and not otherwise. They are the marks of the folder the tab is in when they are given: once the tab opens
+    /// another folder they are ignored until the window gives it the new ones. Call it whenever Git's view of the tab
+    /// changes (`GitEvent::Changed(tab)`):
+    ///
+    /// ```ignore
+    /// let marks = components::git::marks(cx, tab);
+    /// explorer.update(cx, |explorer, cx| explorer.set_git_marks(tab, marks, cx));
+    /// ```
+    pub fn set_git_marks(
+        &mut self,
+        id: TabId,
+        marks: Option<Arc<glint_model::entries::GitMarks>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get_mut(&id) else {
+            return;
+        };
+        let same = match (&tab.git, &marks) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
+            _ => false,
+        };
+        if same && same_path(&tab.git_for, &tab.path) {
+            return;
+        }
+        tab.git = marks;
+        tab.git_for = tab.path.clone();
+        // Only the rows that read the marks change with them; a rebuild with the same spec is skipped.
+        self.rebuild_rows(id, cx);
+        cx.notify();
     }
 
     /// Rebuilds a tab's rows if their inputs changed (the listing, the sort, a setting, the filter). A

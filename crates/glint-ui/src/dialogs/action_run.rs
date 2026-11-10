@@ -98,6 +98,11 @@ impl Where {
     }
 }
 
+/// Whether the chosen output can't be used (`badOutput`).
+pub fn bad_output(output: &Where) -> bool {
+    output.bad()
+}
+
 /// Which of the three the person picked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WhereKind {
@@ -835,17 +840,15 @@ impl ActionRun {
     }
 }
 
-/// The undo steps a run's report left in the explorer.
+/// The undo step a run's report left in the explorer.
 struct UndoSteps {
     explorer: Entity<explorer::Explorer>,
-    /// The files it replaced coming back from the Recycle Bin, if any were replaced.
-    restore: Option<explorer::UndoId>,
-    /// What it made going to the Recycle Bin.
-    recycle: explorer::UndoId,
+    /// The one step: what it made going to the Recycle Bin, then the files it replaced coming back from it.
+    step: explorer::UndoId,
 }
 
 /// Records how to take back what `report` made: what it made is recycled and the files it replaced come back
-/// from the Recycle Bin. `None` when it made nothing or there is no explorer.
+/// from the Recycle Bin, as one step. `None` when it made nothing or there is no explorer.
 fn record_undo(report: &Report, what: &str, cx: &mut App) -> Option<UndoSteps> {
     if report.made.is_empty() {
         return None;
@@ -860,29 +863,26 @@ fn record_undo(report: &Report, what: &str, cx: &mut App) -> Option<UndoSteps> {
             name: base_name(&r.path).to_string(),
         })
         .collect();
-    let made = report.made.clone();
-    let (restore, recycle) = explorer.update(cx, |explorer, cx| {
-        let restore = (!back.is_empty()).then(|| explorer.remember_undo(what, explorer::UndoAction::Restore(back), cx));
-        (
-            restore,
-            explorer.remember_undo(what, explorer::UndoAction::Recycle(made), cx),
-        )
-    });
-    Some(UndoSteps {
-        explorer,
-        restore,
-        recycle,
-    })
+    let action = undo_action(report.made.clone(), back);
+    let step = explorer.update(cx, |explorer, cx| explorer.remember_undo(what, action, cx));
+    Some(UndoSteps { explorer, step })
+}
+
+/// What takes a run back: recycle what it made; and when it replaced files, bring them back after (a
+/// `Sequence` undoes its last action first).
+fn undo_action(made: Vec<String>, replaced: Vec<explorer::MoveItem>) -> explorer::UndoAction {
+    if replaced.is_empty() {
+        explorer::UndoAction::Recycle(made)
+    } else {
+        explorer::UndoAction::Sequence(vec![
+            explorer::UndoAction::Restore(replaced),
+            explorer::UndoAction::Recycle(made),
+        ])
+    }
 }
 
 /// Keeps how to take back what `report` made, for Ctrl+Z (`offerActionUndo`): what it made is recycled and the
-/// files it replaced come back from the Recycle Bin.
-///
-/// NOTE(port): the TypeScript took both back in one step, and offered the step in a toast with an Undo button.
-/// The explorer's undo steps hold one action each (`UndoAction`), so the replaced files' restore is its own
-/// step, below the recycling of what was made: Ctrl+Z recycles what was made, the next brings the originals
-/// back. [`offer_undo`]'s button does both. `PORT ME(coordinator)`: a step that holds several actions
-/// (`UndoAction::Sequence` in explorer/ops_types.rs and undo.rs) would make this one Ctrl+Z.
+/// files it replaced come back from the Recycle Bin, in one step (one Ctrl+Z, as the TypeScript's one step).
 pub fn remember_undo(report: &Report, what: &str, cx: &mut App) {
     let _ = record_undo(report, what, cx);
 }
@@ -891,21 +891,16 @@ pub fn remember_undo(report: &Report, what: &str, cx: &mut App) {
 struct ActionUndoToast;
 
 /// [`remember_undo`], and the notification that offers Undo for 8 s as the web app's toast did (`offerActionUndo`):
-/// its button takes back both steps.
+/// its button takes the step back.
 pub fn offer_undo(report: &Report, what: &str, window: &mut Window, cx: &mut App) {
-    let Some(UndoSteps {
-        explorer,
-        restore,
-        recycle,
-    }) = record_undo(report, what, cx)
-    else {
+    let Some(UndoSteps { explorer, step }) = record_undo(report, what, cx) else {
         return;
     };
     let mut label = what.to_string();
     if let Some(first) = label.get(..1) {
         label = first.to_uppercase() + &label[1..];
     }
-    let key = recycle.0 as usize;
+    let key = step.0 as usize;
     let note = Notification::success(SharedString::from(label))
         .id1::<ActionUndoToast>(key)
         .action(move |_, _, _| {
@@ -913,16 +908,7 @@ pub fn offer_undo(report: &Report, what: &str, window: &mut Window, cx: &mut App
             Button::new("action-undo")
                 .label(t!("Undo"))
                 .on_click(move |_, window, cx| {
-                    let first = explorer.update(cx, |e, cx| e.undo(Some(recycle), cx));
-                    let explorer = explorer.clone();
-                    cx.spawn(async move |cx| {
-                        first.await;
-                        if let Some(restore) = restore {
-                            let second = explorer.update(cx, |e, cx| e.undo(Some(restore), cx));
-                            second.await;
-                        }
-                    })
-                    .detach();
+                    explorer.update(cx, |e, cx| e.undo(Some(step), cx)).detach();
                     window.remove_notification1::<ActionUndoToast>(key, cx);
                 })
         });
@@ -1514,4 +1500,89 @@ impl Tooling {
 /// Redraws `view` whenever `tooling`'s tools change (an install finishing makes the action available).
 pub fn watch_tools<V: 'static>(tooling: &Tooling, cx: &mut Context<V>) -> Option<Subscription> {
     tooling.model().map(|tools| cx.observe(tools, |_, _, cx| cx.notify()))
+}
+
+#[cfg(test)]
+mod undo_tests {
+    use super::*;
+    use crate::explorer::fake::{file, FakeDisk};
+    use crate::testing;
+    use glint_core::actions::Recycled;
+    use gpui_kit::TestAppContext;
+
+    fn report(replaced: bool) -> Report {
+        Report {
+            made: vec!["C:\\a\\x.min.png".into()],
+            recycled: if replaced {
+                vec![Recycled {
+                    path: "C:\\a\\x.png".into(),
+                    bin: "C:\\bin\\x.png".into(),
+                }]
+            } else {
+                Vec::new()
+            },
+            failed: Vec::new(),
+            before: 0,
+            after: 0,
+            stopped: false,
+            elapsed_ms: 0.0,
+        }
+    }
+
+    fn setup(cx: &mut TestAppContext) -> (FakeDisk, Entity<explorer::Explorer>) {
+        cx.update(testing::init);
+        let disk = FakeDisk::new();
+        disk.folder("C:\\", Vec::new());
+        disk.folder("C:\\a", vec![file("C:\\a", "x.min.png", 1, 1)]);
+        disk.folder("C:\\bin", vec![file("C:\\bin", "x.png", 1, 1)]);
+        let source = disk.source();
+        cx.update(|cx| explorer::init_with(cx, source));
+        let e = cx.update(|cx| explorer::explorer(cx));
+        (disk, e)
+    }
+
+    #[gpui_kit::test]
+    fn a_run_that_made_files_is_one_recycle_step(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (disk, e) = setup(cx);
+        cx.update(|cx| remember_undo(&report(false), "compression of 1 file", cx));
+        assert_eq!(
+            e.read_with(cx, |e, _| e.next_undo().map(|(_, l)| l.to_string()))
+                .as_deref(),
+            Some("compression of 1 file")
+        );
+        let task = e.update(cx, |e, cx| e.undo(None, cx));
+        cx.foreground_executor().block_test(task);
+        cx.run_until_parked();
+        assert_eq!(disk.ops().len(), 1);
+        assert!(matches!(disk.ops()[0], explorer::FileOp::Delete { .. }));
+    }
+
+    #[gpui_kit::test]
+    fn a_run_that_replaced_files_is_one_ctrl_z(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (disk, e) = setup(cx);
+        cx.update(|cx| remember_undo(&report(true), "compression of 1 file", cx));
+        let task = e.update(cx, |e, cx| e.undo(None, cx));
+        cx.foreground_executor().block_test(task);
+        cx.run_until_parked();
+        // What was made is recycled, then the original comes back from the bin: both in the one press.
+        let ops = disk.ops();
+        assert_eq!(ops.len(), 2);
+        assert!(matches!(ops[0], explorer::FileOp::Delete { .. }));
+        assert!(!disk.exists("C:\\a\\x.min.png") && disk.exists("C:\\a\\x.png"));
+        match &ops[1] {
+            explorer::FileOp::Restore { items } => {
+                assert_eq!(items[0].path, "C:\\bin\\x.png");
+                assert_eq!((items[0].folder.as_str(), items[0].name.as_str()), ("C:\\a", "x.png"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Nothing is left to undo, and nothing was made when nothing was made.
+        assert!(e.read_with(cx, |e, _| e.next_undo().is_none()));
+        let mut none = report(true);
+        none.made.clear();
+        cx.update(|cx| remember_undo(&none, "x", cx));
+        assert!(e.read_with(cx, |e, _| e.next_undo().is_none()));
+    }
 }

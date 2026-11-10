@@ -53,9 +53,17 @@ impl Explorer {
         cx.emit(ExplorerEvent::Operation(OpNotice::DismissUndo));
         let label = step.label;
         let busy = self.begin_busy(Working::Undoing(label.clone()), cx);
-        let running = self.source.file_op(step.action.op());
+        let ops = step.action.ops();
+        let source = self.source.clone();
         cx.spawn(async move |this, cx| {
-            let result = running.await;
+            // One after the other; the first to fail stops the rest.
+            let mut result = Ok(());
+            for op in ops {
+                if let Err(message) = source.file_op(op).await {
+                    result = Err(message);
+                    break;
+                }
+            }
             this.update(cx, |this, cx| {
                 this.end_busy(busy, cx);
                 cx.emit(ExplorerEvent::Operation(match result {
@@ -68,5 +76,122 @@ impl Explorer {
             })
             .ok();
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::fake::*;
+    use crate::testing;
+    use gpui_kit::{AppContext as _, TestAppContext};
+
+    fn item(name: &str) -> MoveItem {
+        MoveItem {
+            path: format!("C:\\bin\\{name}"),
+            folder: "C:\\a".into(),
+            name: name.into(),
+        }
+    }
+
+    fn sequence() -> UndoAction {
+        UndoAction::Sequence(vec![
+            UndoAction::Restore(vec![item("old.txt")]),
+            UndoAction::Recycle(vec!["C:\\a\\new.txt".into()]),
+        ])
+    }
+
+    #[test]
+    fn a_sequence_runs_its_last_recorded_action_first() {
+        let ops = sequence().ops();
+        assert_eq!(
+            ops,
+            [
+                FileOp::Delete {
+                    paths: vec!["C:\\a\\new.txt".into()],
+                    permanent: false,
+                    confirm: false
+                },
+                FileOp::Restore {
+                    items: vec![item("old.txt")]
+                },
+            ]
+        );
+        // Nested sequences flatten in the same order; a single action is one op.
+        let nested = UndoAction::Sequence(vec![UndoAction::Recycle(vec!["x".into()]), sequence()]);
+        assert_eq!(nested.ops().len(), 3);
+        assert_eq!(
+            nested.ops()[2],
+            FileOp::Delete {
+                paths: vec!["x".into()],
+                permanent: false,
+                confirm: false
+            }
+        );
+        assert_eq!(UndoAction::Recycle(vec![]).ops().len(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn one_undo_takes_back_a_whole_sequence_with_one_label(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        cx.update(testing::init);
+        let disk = FakeDisk::new();
+        disk.folder("C:\\", vec![folder("C:\\", "a"), folder("C:\\", "bin")]);
+        disk.folder("C:\\a", vec![file("C:\\a", "new.txt", 1, 1)]);
+        disk.folder("C:\\bin", vec![file("C:\\bin", "old.txt", 1, 1)]);
+        let explorer = cx.update(|cx| cx.new(|cx| Explorer::new(disk.source(), cx)));
+        let id = explorer.update(cx, |e, cx| e.remember_undo("run of 1 file", sequence(), cx));
+        cx.run_until_parked();
+        let ((got, label), steps) = explorer.read_with(cx, |e, _| {
+            (
+                e.next_undo().map(|(i, l)| (i, l.to_string())).unwrap(),
+                e.ops.undo.len(),
+            )
+        });
+        assert_eq!((got, label.as_str(), steps), (id, "run of 1 file", 1));
+
+        let task = explorer.update(cx, |e, cx| e.undo(None, cx));
+        cx.foreground_executor().block_test(task);
+        cx.run_until_parked();
+        let ran = disk.ops();
+        assert_eq!(ran.len(), 2);
+        assert!(matches!(ran[0], FileOp::Delete { .. }));
+        assert!(matches!(ran[1], FileOp::Restore { .. }));
+        // The made file is gone and the replaced one is back.
+        assert!(!disk.exists("C:\\a\\new.txt"));
+        assert!(disk.exists("C:\\a\\old.txt"));
+        assert!(explorer.read_with(cx, |e, _| e.next_undo().is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn a_failing_step_of_a_sequence_stops_the_rest_and_is_told(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        cx.update(testing::init);
+        let disk = FakeDisk::new();
+        disk.folder("C:\\", vec![]);
+        let explorer = cx.update(|cx| cx.new(|cx| Explorer::new(disk.source(), cx)));
+        let told = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = told.clone();
+        cx.update(|cx| {
+            cx.subscribe(&explorer, move |_, event: &ExplorerEvent, _| {
+                if let ExplorerEvent::Operation(n) = event {
+                    sink.borrow_mut().push(n.clone())
+                }
+            })
+            .detach();
+        });
+        explorer.update(cx, |e, cx| e.remember_undo("run", sequence(), cx));
+        disk.fail_next("In use");
+        let task = explorer.update(cx, |e, cx| e.undo(None, cx));
+        cx.foreground_executor().block_test(task);
+        cx.run_until_parked();
+        // Only the first step was tried; the restore after it never ran.
+        let ran = disk.ops();
+        assert_eq!(ran.len(), 1);
+        assert!(matches!(ran[0], FileOp::Delete { .. }));
+        assert!(told.borrow().contains(&OpNotice::UndoFailed {
+            label: "run".into(),
+            message: "In use".into()
+        }));
     }
 }

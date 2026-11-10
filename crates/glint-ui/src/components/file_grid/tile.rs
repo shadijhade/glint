@@ -11,7 +11,7 @@ use glint_model::format::{format_full_date, format_size};
 use glint_model::grid::GridTile;
 use glint_model::paths::parent_path;
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
@@ -47,6 +47,10 @@ pub(super) struct Frame {
     pub col_w: f32,
     /// Items from many folders (search results, the Recycle Bin's) say where each is, under its name.
     pub located: bool,
+    /// The open folder's subfolders measured by "Folder sizes", by name (none for search results).
+    pub sizes: Option<Arc<HashMap<String, u64>>>,
+    /// The sizes are being measured now: a folder with none yet says "…".
+    pub measuring: bool,
     pub recycled: bool,
     /// The Gallery's tiles are its photos alone: where each is shows in the list, and in its preview.
     pub gallery: bool,
@@ -96,16 +100,20 @@ pub(super) fn where_of(scope: &str, entry: &FileEntry) -> String {
     }
 }
 
-/// The size line under a tile: a file's size, a folder's only where the listing has it (search results, the
-/// Recycle Bin: `sizeOf` with `located`).
-fn size_text(entry: &FileEntry, located: bool) -> String {
+/// The size line under a tile: a file's size, a folder's where the listing has it (search results, the Recycle Bin:
+/// `sizeOf` with `located`) or "Folder sizes" measured it, and "…" for a folder still being measured.
+fn size_text(entry: &FileEntry, located: bool, sizes: Option<&HashMap<String, u64>>, measuring: bool) -> String {
     if entry.dir {
-        // PORT ME(sizes): a folder's size measured as it opens (`sizes?.sizes.get(entry.name)`), and "…" while
-        // that runs.
-        if located && entry.size > 0 {
-            return format_size(entry.size);
-        }
-        return String::new();
+        let size = if located {
+            (entry.size > 0).then_some(entry.size)
+        } else {
+            sizes.and_then(|sizes| sizes.get(&entry.name).copied())
+        };
+        return match size {
+            Some(size) => format_size(size),
+            None if measuring => "…".to_string(),
+            None => String::new(),
+        };
     }
     format_size(entry.size)
 }
@@ -253,7 +261,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
     } else {
         String::new()
     };
-    let size = size_text(entry, frame.located);
+    let size = size_text(entry, frame.located, frame.sizes.as_deref(), frame.measuring);
     let line = if location.is_empty() { size } else { location };
 
     let on_down = frame.on_down.clone();
@@ -475,11 +483,27 @@ mod tests {
     #[test]
     fn a_folders_size_shows_only_where_the_listing_has_it() {
         let mut dir = folder("C:\\x", "d");
-        assert_eq!(size_text(&dir, false), "");
-        assert_eq!(size_text(&dir, true), "");
+        assert_eq!(size_text(&dir, false, None, false), "");
+        assert_eq!(size_text(&dir, true, None, false), "");
         dir.size = 2048;
-        assert_eq!(size_text(&dir, false), "");
-        assert_eq!(size_text(&dir, true), "2.0 KB");
-        assert_eq!(size_text(&file("C:\\x", "a", 1024, 1), false), "1.0 KB");
+        assert_eq!(size_text(&dir, false, None, false), "");
+        assert_eq!(size_text(&dir, true, None, false), "2.0 KB");
+        assert_eq!(size_text(&file("C:\\x", "a", 1024, 1), false, None, false), "1.0 KB");
+    }
+
+    #[test]
+    fn a_folder_measured_here_shows_its_size_and_one_being_measured_shows_an_ellipsis() {
+        let dir = folder("C:\\x", "d");
+        let measured = HashMap::from([("d".to_string(), 3 * 1024u64)]);
+        assert_eq!(size_text(&dir, false, Some(&measured), false), "3.0 KB");
+        assert_eq!(
+            size_text(&dir, false, Some(&measured), true),
+            "3.0 KB",
+            "a size it has stays"
+        );
+        let other = folder("C:\\x", "other");
+        assert_eq!(size_text(&other, false, Some(&measured), true), "…");
+        assert_eq!(size_text(&other, false, Some(&measured), false), "");
+        assert_eq!(size_text(&file("C:\\x", "a", 1024, 1), false, None, true), "1.0 KB");
     }
 }

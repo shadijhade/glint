@@ -56,8 +56,9 @@
 //!
 //! # Not here yet
 //!
-//! Each is marked `PORT ME(<part>)` where it belongs: renaming in place, the diff and Git badges, folders' measured
-//! sizes, and the search's, Gallery's and Recent's empty states. The context menu's content is the workspace's: the
+//! Each is marked `PORT ME(<part>)` where it belongs: renaming in place, the diff and Git badges, and the search's,
+//! Gallery's and Recent's empty states. A folder's tile says its size once "Folder sizes" measured it, and "…" while
+//! that runs (`Explorer::size_run`). The context menu's content is the workspace's: the
 //! grid only emits [`FileGridEvent::ContextMenu`] (from the keyboard at the focused tile's bottom-start corner).
 
 mod empty;
@@ -1120,6 +1121,9 @@ impl Render for FileGrid {
         let cut = explorer.cut_paths().clone();
         let saved = explorer.saved_scroll(tab_id, &format!("{view_key}:grid"));
         let located = search || recycled;
+        // The sizes "Folder sizes" measured for this folder (a search's results come from many folders).
+        let run = explorer.size_run(&tab.path).filter(|_| !search);
+        let (sizes, measuring) = (run.map(|run| run.sizes.clone()), run.is_some_and(|run| run.running));
 
         // The layout: tiles from the tile-size setting and the text size, as many to a row as the width holds.
         let tile = tile_layout(rem, state::settings(cx).tile_size.as_str());
@@ -1224,6 +1228,8 @@ impl Render for FileGrid {
             lines: line_count,
             col_w,
             located,
+            sizes,
+            measuring,
             recycled,
             gallery,
             scope,

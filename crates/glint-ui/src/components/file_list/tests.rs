@@ -1703,3 +1703,194 @@ fn the_menu_key_follows_the_focused_row_when_the_list_is_scrolled(cx: &mut TestA
     assert!(at.y > area.origin.y && at.y <= area.bottom(), "{at:?} in {area:?}");
     assert!(f32::from(area.bottom() - at.y) < 2., "{at:?} in {area:?}");
 }
+
+// ---- Git marks, folder sizes ----------------------------------------------------------------------------------
+
+use super::fake_git::{repo_view, FakeGit};
+use glint_model::entries::GitMark;
+
+/// `C:\x` of a repository: a folder, files (one named in Arabic) and one `.gitignore` leaves out.
+fn repo_disk() -> FakeDisk {
+    let disk = FakeDisk::new();
+    disk.folder(
+        "C:\\x",
+        vec![
+            folder("C:\\x", "docs"),
+            file("C:\\x", "alpha.txt", 100, 0),
+            file("C:\\x", "beta.md", 3000, 0),
+            file("C:\\x", "berry.png", 20_000, 0),
+            file("C:\\x", "target.log", 5, 0),
+            file("C:\\x", "ملف.txt", 7, 0),
+        ],
+    );
+    disk.folder("C:\\x\\docs", vec![file("C:\\x\\docs", "inner.txt", 1, 0)]);
+    disk.folder("C:\\plain", vec![file("C:\\plain", "notes.txt", 5, 0)]);
+    disk
+}
+
+/// What Git says of `repo_disk`'s folder.
+fn repo_marks() -> Vec<(&'static str, GitMark)> {
+    vec![
+        ("docs", GitMark::Conflicted),
+        ("alpha.txt", GitMark::Modified),
+        ("beta.md", GitMark::Untracked),
+        ("berry.png", GitMark::Staged),
+        ("target.log", GitMark::Ignored),
+        ("ملف.txt", GitMark::Modified),
+    ]
+}
+
+/// [`open`] on a fake Git that says `C:\x` is in a repository with `marks`.
+fn open_repo(cx: &mut TestAppContext, disk: &FakeDisk, marks: &[(&str, GitMark)]) -> Ui {
+    cx.update(testing::init);
+    cx.update(|cx| explorer::init_with(cx, disk.source()));
+    let git = FakeGit::default();
+    git.put("C:\\x", repo_view(marks));
+    cx.update(|cx| git.install(cx));
+    let explorer = cx.update(|cx| explorer::explorer(cx));
+    let task = explorer.update(cx, |e, cx| e.navigate_task("C:\\x", NavOptions::default(), cx));
+    cx.foreground_executor().block_test(task);
+    let (mut visual, list) = testing::open_window(cx, |window, cx| cx.new(|cx| FileList::new(0, window, cx)));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    visual.update(|window, _| window.activate_window());
+    let mut ui = Ui {
+        visual,
+        list,
+        explorer,
+        events,
+    };
+    ui.focus();
+    ui.settle();
+    ui
+}
+
+impl Ui {
+    /// Frames until the background work (Git's answer, the sizes) has landed.
+    fn settle(&mut self) {
+        for _ in 0..8 {
+            self.frame();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// What the row `i` says besides its name.
+    fn said(&mut self, i: usize) -> Option<String> {
+        self.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("file-row", i))
+                .and_then(|row| row.description().map(str::to_string))
+        })
+    }
+}
+
+#[gpui_kit::test]
+fn a_row_shows_a_pill_after_its_name_for_each_git_mark(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open_repo(cx, &repo_disk(), &repo_marks());
+    assert_eq!(ui.role_of("Conflict: docs"), Some(Role::Group));
+    assert_eq!(ui.role_of("Changed: alpha.txt"), Some(Role::Group));
+    assert_eq!(ui.role_of("New: beta.md"), Some(Role::Group));
+    assert_eq!(ui.role_of("Staged: berry.png"), Some(Role::Group));
+    // A name in Arabic is told apart as well.
+    assert_eq!(ui.role_of("Changed: ملف.txt"), Some(Role::Group));
+    // The ignored one has no pill, and the pill says what it says of the item on hover.
+    ui.visual.update(|window, _| {
+        assert!(window.try_find_by_label("Ignored: target.log").is_none());
+        let pill = window.find_by_label("Changed: alpha.txt");
+        assert_eq!(pill.description(), Some("Git: changed since it was committed"));
+        let folder = window.find_by_label("Conflict: docs");
+        assert_eq!(folder.description(), Some("Git: a merge left conflicts in here"));
+    });
+    // The rows are still the same rows.
+    assert_eq!(
+        ui.labels(),
+        ["docs", "alpha.txt", "berry.png", "beta.md", "target.log", "ملف.txt"]
+    );
+}
+
+#[gpui_kit::test]
+fn the_pills_are_in_the_mirrored_interface_too(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    testing::set_rtl(true);
+    let mut ui = open_repo(cx, &repo_disk(), &repo_marks());
+    assert_eq!(ui.role_of("Staged: berry.png"), Some(Role::Group));
+    assert_eq!(ui.role_of("Changed: ملف.txt"), Some(Role::Group));
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn a_folder_outside_the_repository_has_no_pills(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open_repo(cx, &repo_disk(), &repo_marks());
+    assert!(ui.role_of("Changed: alpha.txt").is_some());
+    let explorer = ui.explorer.clone();
+    ui.visual.update(|_, cx| {
+        explorer.update(cx, |e, cx| {
+            e.navigate("C:\\plain".to_string(), NavOptions::default(), cx)
+        })
+    });
+    ui.settle();
+    assert_eq!(ui.labels(), ["notes.txt"]);
+    let pills = ui.visual.update(|window, _| window.find_all_by_role(Role::Group).len());
+    assert_eq!(pills, 0);
+}
+
+#[gpui_kit::test]
+fn the_git_filter_and_group_by_git_follow_the_marks_the_window_hands_over(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut ui = open_repo(cx, &repo_disk(), &repo_marks());
+    let explorer = ui.explorer.clone();
+    let tab = explorer.read_with(&ui.visual, |e, _| e.active_tab_id());
+    // The window tells the explorer what Git said (it does so on `GitEvent::Changed`).
+    let marks = ui.visual.update(|_, cx| crate::components::git::marks(cx, tab));
+    assert!(marks.is_some(), "Git has the folder's marks");
+    ui.visual.update(|_, cx| {
+        explorer.update(cx, |e, cx| {
+            e.set_git_marks(tab, marks.clone(), cx);
+            e.set_filter("git:modified", None, cx);
+        })
+    });
+    ui.frame();
+    assert_eq!(ui.labels(), ["alpha.txt", "ملف.txt"]);
+    ui.visual.update(|_, cx| {
+        explorer.update(cx, |e, cx| {
+            e.set_filter("", None, cx);
+            e.set_group(GroupBy::Git, cx);
+        })
+    });
+    ui.frame();
+    // The rows are grouped under the marks, in this order; the first group's header is drawn.
+    let headers: Vec<String> = explorer.read_with(&ui.visual, |e, _| {
+        e.tab(tab)
+            .and_then(|t| t.rows.groups())
+            .map(|g| g.headers.iter().map(|h| h.label.to_string()).collect())
+            .unwrap_or_default()
+    });
+    assert_eq!(headers, ["Conflicts", "Changed", "Staged", "New", "Ignored"]);
+    assert_eq!(
+        ui.labels(),
+        ["docs", "alpha.txt", "ملف.txt", "berry.png", "beta.md", "target.log"]
+    );
+    assert!(ui.role_of("Conflicts").is_some());
+}
+
+/// A folder whose subfolder is measured: `C:\x\docs` holds `inner.txt` (1 byte).
+#[gpui_kit::test]
+fn a_folder_row_shows_its_measured_size_and_an_ellipsis_while_it_is_measured(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = small_disk();
+    let mut ui = open(cx, &disk, "C:\\x");
+    // Nothing has measured the folder yet: no size, no ellipsis.
+    assert_eq!(ui.said(0).as_deref(), Some("File folder"));
+    let gate = disk.hold_sizes();
+    let explorer = ui.explorer.clone();
+    ui.visual.update(|_, cx| explorer.update(cx, |e, cx| e.calc_sizes(cx)));
+    ui.frame();
+    assert_eq!(ui.said(0).as_deref(), Some("File folder, …"), "while it is measured");
+    // Files keep their sizes meanwhile.
+    assert_eq!(ui.said(1).as_deref(), Some("TXT file, 100 B"));
+    drop(gate);
+    ui.settle();
+    assert_eq!(ui.said(0).as_deref(), Some("File folder, 1 B"));
+}

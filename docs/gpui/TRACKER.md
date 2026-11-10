@@ -147,6 +147,26 @@
 
 **Left for later:** the CommandBar (New, Sort, View, Disk usage... the toolbar has only Disk usage and the mode switch), comparing folders with an earlier version, Open with for files not in archives (its app, an editor, Windows' picker), the remaining menu events (`other =>` in `on_menu_event`: run in sandbox, new window, open file location, forget recent, reveal, folder sizes, batch rename folder, wallpaper, rotate, cloud pin, ncdu export, scripts, tools, on-demand), the video/audio player with the trim bar, the preview pane's Query and Profile views (`data_tools::QueryView`/`ProfileView` exist), Arabic catalog entries for all wave 8 strings, moving text search's own keys into `actions::BINDINGS`, a shared save picker (CSV/JSON filters) and file picker, a kit Slider, one-step Undo for runs that replaced files, Remote's Save guarded against a double press, Cloud setup's Other clouds waiting for the delete, virtualizing Cloud setup's service list, `glint_core::remote::sftp::UNKNOWN_HOST` exported, the two action-parts modules (`media::parts`, `action_run`) merged.
 
+## Wave 9: command bar, git, views, previews, menu actions, pickers: done 2026-11-10
+
+*7 ports (Sonnet; 16 agents with reviews, ~54 min, 3.4M tokens), all passed review (views polish after one fix round), then 3 integration agents (8 with reviews, ~66 min, 1.5M tokens) wired the component files while the coordinator wired the window: the command bar above the panes (it took over Disk usage; Folder sizes says Stop while measuring), the Columns view, the Gallery's months, frequent folders above Recent, the README card above a folder's files, Git's marks to the explorer's rows (`set_git_marks` on `GitEvent::Changed`), every remaining menu event (open with, sandbox, reveal, Recent, folder sizes, wallpaper, rotate, cloud pin, ncdu export through Windows' save picker, scripts, tools, on-demand folders), the explorer's Action/Export/Request events with their notices. glint-ui 1,540 tests, glint-core 300, glint-model 233 pass; clippy clean.*
+
+| Part | From | Status |
+| :--- | :--- | :--- |
+| `command_bar`: buttons, fold levels, Tools/Run/View/New menus | CommandBar.tsx | done |
+| `git`: model, row marks, status line, chip, repository and README cards, Changes view | git.ts, GitChip, RepoCard, ReadmeCard, ChangesView | done |
+| `columns_view`, `gallery_months`, `frequent_folders` | ColumnsView, GalleryMonths, FrequentFolders | done |
+| previews: SQLite, workbooks and Parquet, notebooks, program headers | DataPreview (SqlitePreview, SheetPreview), NotebookView, BinaryPreview | done |
+| previews: contacts, calendars, mail, design files; the signature chip | SmallPreviews, SignatureChip | done |
+| explorer: remaining menu actions, folder sizes; `platform::pickers` | explorer.ts, the menus' actions | done |
+| wave 8 fixes: one action-parts module, guarded Save, cloud setup order, no-core notice; one-press Undo (`UndoAction::Sequence`) | review findings | done |
+
+**Tried for real** (`GLINT_SELFTEST=wave9:<folder>` in a scratch Git repository, plus `show:` captures): folder sizes from the instant-search index ("index sized 3.2 MB in 0.6 ms", the photos folder 1.6 MB); Git's line ("git · 77 ms") and a.txt's Changed badge; the command bar; SQLite schema with Rows and Query; a notebook (Markdown with Arabic, highlighted code, output); notepad.exe's sections and imports with "Signed by Microsoft Windows" from the real signature check; contacts with an Arabic name; a mail with its headers and an Arabic line. Wave 8's and the ops self-tests pass again.
+
+**Found while trying:** extracting right after compressing in the same tab cancelled the compress (core runs a tab's archive jobs in one lane, as the TypeScript did) and the half-written zip was removed; the self-test now waits for the compress to end. Worth a look on master too: starting archive work in a tab stops what that tab was compressing. The pickers' futures are `Send` now, so Settings needs no unsafe wrapper.
+
+**Left for later:** Git marks in the grid (FileGrid.tsx drew them), the status bar's sized hover built from joined pieces (translate as whole sentences), a second window for Open in new window (a new tab meanwhile), the terminal pane (Run task, scripts in a terminal, Terminal here), Compare panes (no handler for Ctrl+Shift+M, nothing draws the highlights), a Columns view key (Ctrl+Shift+9), design files checked against real .kra/.ora/.procreate/.sketch files, Quick Look's Page keys for the small, text and Markdown previews, `dialogs/vault.rs` merged into action_run (done) and `batch_rename`/`gallery_months` sharing one local-date helper, two tests that fail now and then under a full parallel run (core_bridge's message-pump job test, the preview data tree test).
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).

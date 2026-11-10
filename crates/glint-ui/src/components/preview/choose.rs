@@ -6,11 +6,13 @@
 //! and the body is the TypeScript's own fallback for it (Windows' previewer over the file's icon, or the
 //! file as text).
 
+use crate::dialogs::data_tools::DUCK_READS;
 use crate::t;
 use glint_model::entries::{
     is_archive_file, is_archived, is_closed, is_list_only, is_locked, is_online_only, FileEntry,
 };
 use glint_model::file_types::{data_format, is_known_type, is_markdown, kind_of, PreviewKind};
+use glint_model::small_kinds::{small_kind_of, SmallKind};
 use gpui_kit::SharedString;
 
 /// Word documents laid out without Office, up to a size (`DOCX_EXTS`, `DOCX_MAX`).
@@ -35,15 +37,21 @@ const PE: [&str; 11] = [
 const DOCX_MAX: u64 = 40 * 1024 * 1024;
 const DATA_MAX: u64 = 64 * 1024 * 1024;
 
-/// A file's other views (`View`): as it is, as written, or its bytes. (Git's Changes, SQL's Query and
-/// DuckDB's Profile come with their parts.)
+/// A file's other views (`View`): as it is, as written, what Git changed in it, SQL over it, each column of it
+/// described, or its bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {
     /// The file as it reads (Rendered, Tree) or as it is.
     #[default]
     File,
-    /// The file as written (Markdown's source, a tree's text).
+    /// The file as written (Markdown's source, a tree's text, a workbook in Windows' previewer).
     Source,
+    /// What changed since the last commit (Git).
+    Changes,
+    /// SQL over a table or a database, reading only.
+    Query,
+    /// Each column of a data file described from all its rows (DuckDB).
+    Profile,
     /// Its bytes, in hexadecimal.
     Hex,
 }
@@ -89,6 +97,22 @@ pub enum Body {
     Markdown,
     /// JSON, YAML and TOML as a tree, CSV and TSV as a table (`preview::data`).
     Data,
+    /// A SQLite database: its tables and SQL (`preview::sqlite`).
+    Sqlite,
+    /// A workbook or Parquet file as a table (`preview::sheet`).
+    Sheet,
+    /// A Jupyter notebook as it reads (`preview::notebook`).
+    Notebook,
+    /// A program's sections, imports and exports (`preview::program`).
+    Program,
+    /// Contacts, calendars, mail, design files, Graphviz and Mermaid sources (`preview::small`).
+    Small(SmallKind),
+    /// What Git changed in the file since the last commit (`git::changes`).
+    Changes,
+    /// SQL over the file (`dialogs::data_tools::QueryView`).
+    Query,
+    /// Each column of the file described (`dialogs::data_tools::ProfileView`).
+    Profile,
     /// The bytes (`preview::hex`).
     Hex,
     /// Windows' own previewer for the type, over `fallback`.
@@ -139,60 +163,119 @@ fn data_kind(entry: &FileEntry) -> bool {
             || (!is_archived(entry) && one_of(entry, &TABULAR)))
 }
 
-/// The views the header offers (more than one shows the "Show" group): the file as it reads, as written, its
-/// bytes. Only views that can be drawn today are offered.
-pub fn views(entry: &FileEntry) -> Vec<ViewChoice> {
+/// A Jupyter notebook, to read as it reads (a readable file on disk).
+fn is_notebook(entry: &FileEntry) -> bool {
+    readable(entry) && !is_archived(entry) && entry.ext == "ipynb"
+}
+
+/// A contact, calendar entry, message, design file or diagram source, read from disk.
+fn small_of(entry: &FileEntry) -> Option<SmallKind> {
+    if readable(entry) && !is_archived(entry) {
+        small_kind_of(&entry.ext)
+    } else {
+        None
+    }
+}
+
+/// A workbook or Parquet file, read from disk (`sheet`).
+fn is_sheet(entry: &FileEntry) -> bool {
+    readable(entry) && !is_archived(entry) && one_of(entry, &SHEETS)
+}
+
+/// A workbook, which Windows' previewer shows too (Excel's, with Office installed), but not Parquet (`workbook`).
+fn is_workbook(entry: &FileEntry) -> bool {
+    is_sheet(entry) && entry.ext != "parquet"
+}
+
+/// Tables and databases take SQL, from disk (`queryable`).
+pub fn is_queryable(entry: &FileEntry) -> bool {
+    readable(entry) && !is_archived(entry) && (is_sheet(entry) || one_of(entry, &TABULAR) || one_of(entry, &SQLITE))
+}
+
+/// Data files DuckDB describes column by column (`DUCK_READS`, except plain text).
+pub fn is_profilable(entry: &FileEntry) -> bool {
+    readable(entry) && !is_archived(entry) && entry.ext != "txt" && DUCK_READS.contains(&entry.ext.as_str())
+}
+
+/// The views the header offers (more than one shows the "Show" group): the file as it reads, as written, what
+/// Git changed in it (`changed`: Git has a change for it, see `git::has_changes_view`), SQL over it, each column
+/// of it, its bytes (`views`).
+pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
     let mut views = Vec::new();
-    if rendered_markdown(entry) {
-        views.push(ViewChoice {
-            view: View::File,
-            label: t!("Rendered"),
-            title: t!("The Markdown as it reads"),
-        });
-        views.push(ViewChoice {
-            view: View::Source,
-            label: t!("Source"),
-            title: t!("The Markdown as written"),
-        });
+    let notebook = is_notebook(entry);
+    let small = small_of(entry);
+    let sheet = is_sheet(entry);
+    let choice = |view, label: SharedString, title: SharedString| ViewChoice { view, label, title };
+    if notebook {
+        views.push(choice(
+            View::File,
+            t!("Notebook"),
+            t!("The notebook as it reads, its outputs included"),
+        ));
+        views.push(choice(View::Source, t!("Source"), t!("The notebook's JSON as written")));
+    } else if small.is_some() {
+        views.push(choice(
+            View::File,
+            t!("Preview"),
+            t!("What it holds, as Glint reads it"),
+        ));
+        // Outlook messages and design files are not text.
+        if !matches!(small, Some(SmallKind::Outlook | SmallKind::Design)) {
+            views.push(choice(View::Source, t!("Text"), t!("The file as written")));
+        }
+    } else if rendered_markdown(entry) {
+        views.push(choice(View::File, t!("Rendered"), t!("The Markdown as it reads")));
+        views.push(choice(View::Source, t!("Source"), t!("The Markdown as written")));
     } else if data_kind(entry) {
-        views.push(ViewChoice {
-            view: View::File,
-            label: if data_format(entry).is_some() {
-                t!("Tree")
-            } else {
-                t!("Table")
-            },
-            title: if data_format(entry).is_some() {
+        let tree = data_format(entry).is_some();
+        views.push(choice(
+            View::File,
+            if tree { t!("Tree") } else { t!("Table") },
+            if tree {
                 t!("Its values as a tree, with a jq filter")
             } else {
                 t!("Its rows, read by Glint")
             },
-        });
-        views.push(ViewChoice {
-            view: View::Source,
-            label: t!("Text"),
-            title: t!("The file as written"),
-        });
+        ));
+        views.push(choice(View::Source, t!("Text"), t!("The file as written")));
+    } else if sheet {
+        views.push(choice(View::File, t!("Table"), t!("Its rows, read by Glint")));
+        if is_workbook(entry) {
+            views.push(choice(
+                View::Source,
+                t!("Previewer"),
+                t!("As Windows' previewer for it shows it (Excel's, with Office installed)"),
+            ));
+        }
     } else {
-        views.push(ViewChoice {
-            view: View::File,
-            label: t!("File"),
-            title: t!("The file as it is"),
-        });
+        views.push(choice(View::File, t!("File"), t!("The file as it is")));
+    }
+    if changed && !entry.dir && !is_archived(entry) {
+        views.push(choice(
+            View::Changes,
+            t!("Changes"),
+            t!("What changed since the last commit (Git)"),
+        ));
+    }
+    if is_queryable(entry) {
+        views.push(choice(View::Query, t!("Query"), t!("SQL over it, reading only")));
+    }
+    if is_profilable(entry) {
+        views.push(choice(
+            View::Profile,
+            t!("Profile"),
+            t!("Each column described from all its rows (DuckDB)"),
+        ));
     }
     if readable(entry) {
-        views.push(ViewChoice {
-            view: View::Hex,
-            label: t!("Hex"),
-            title: t!("Its bytes, in hexadecimal"),
-        });
+        views.push(choice(View::Hex, t!("Hex"), t!("Its bytes, in hexadecimal")));
     }
     views
 }
 
 /// The view shown: the one chosen when this file has it, else the file as it is (`view`).
-pub fn effective_view(entry: &FileEntry, chosen: View) -> View {
-    if views(entry).iter().any(|v| v.view == chosen) {
+pub fn effective_view(entry: &FileEntry, chosen: View, changed: bool) -> View {
+    if views(entry, changed).iter().any(|v| v.view == chosen) {
         chosen
     } else {
         View::File
@@ -206,6 +289,13 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
     let source = view == View::Source;
     if view == View::Hex && readable {
         return Choice::of(Body::Hex);
+    }
+    // The views that are the same tool whatever the file is; `effective_view` only passes the ones it has.
+    match view {
+        View::Changes if !entry.dir && !archived => return Choice::of(Body::Changes),
+        View::Query if is_queryable(entry) => return Choice::of(Body::Query),
+        View::Profile if is_profilable(entry) => return Choice::of(Body::Profile),
+        _ => {}
     }
     if entry.dir {
         return Choice::of(Body::Folder);
@@ -226,12 +316,9 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         // PORT ME(book): the reader (BookView.tsx: EPUB, MOBI, FB2, comics).
         return Choice::later(Body::Shell(Fallback::Icon), "book");
     }
-    if readable && !archived && glint_model::small_kinds::small_kind_of(&entry.ext).is_some() {
-        // PORT ME(small previews): SmallPreviews.tsx (contacts, calendars, mail, design files, Graphviz, Mermaid).
-        return Choice::later(
-            Body::Shell(Fallback::Icon),
-            "small previews: contacts, calendars, mail, design files, Graphviz and Mermaid",
-        );
+    // Its Text view is the file as it is, which goes on down the chain.
+    if let Some(kind) = small_of(entry).filter(|_| !source) {
+        return Choice::of(Body::Small(kind));
     }
     if is_archive_file(entry) {
         return Choice::of(Body::Archive);
@@ -275,19 +362,21 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         _ => {}
     }
     if !archived && one_of(entry, &SQLITE) {
-        // PORT ME(sqlite): tables and SQL (SqlitePreview).
-        return Choice::later(Body::Shell(Fallback::Icon), "sqlite");
+        return Choice::of(Body::Sqlite);
     }
     if !archived && one_of(entry, &TABULAR) && data_format(entry).is_none() {
         return Choice::of(if source { Body::Text } else { Body::Data });
     }
-    if readable && !archived && one_of(entry, &SHEETS) {
-        // PORT ME(sheet): workbooks and Parquet as tables (SheetPreview).
-        return Choice::later(Body::Shell(Fallback::Icon), "sheet");
+    if is_sheet(entry) {
+        // A workbook's Previewer view is Windows' own, over its icon.
+        return Choice::of(if source && is_workbook(entry) {
+            Body::Shell(Fallback::Icon)
+        } else {
+            Body::Sheet
+        });
     }
-    if readable && !archived && entry.ext == "ipynb" {
-        // PORT ME(notebook): the notebook as it reads (NotebookView).
-        return Choice::later(Body::Text, "notebook");
+    if is_notebook(entry) {
+        return Choice::of(if source { Body::Text } else { Body::Notebook });
     }
     if readable && !archived && entry.ext == "typ" {
         // PORT ME(typst): the document typeset (TypstView).
@@ -316,8 +405,7 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         return Choice::of(Body::Text);
     }
     if !archived && one_of(entry, &PE) {
-        // PORT ME(program headers): a program's sections, imports and exports (BinaryPreview).
-        return Choice::later(Body::Hex, "program headers");
+        return Choice::of(Body::Program);
     }
     // Word, Excel, PowerPoint, fonts…: Windows' own previewer, where there's one.
     if !archived {
@@ -334,7 +422,7 @@ mod tests {
 
     fn body(name: &str) -> Body {
         let entry = file("C:\\x", name, 10, 1);
-        choose(&entry, effective_view(&entry, View::File)).body
+        choose(&entry, effective_view(&entry, View::File, false)).body
     }
 
     fn marked(name: &str, attrs: u32) -> FileEntry {
@@ -357,7 +445,19 @@ mod tests {
         // An extension nobody knows is tried as text; the probe tells binary from text.
         assert_eq!(body("thing.zzqq"), Body::Text);
         assert_eq!(body("pack.zip"), Body::Archive);
-        assert_eq!(body("tool.exe"), Body::Hex);
+        assert_eq!(body("tool.exe"), Body::Program);
+        assert_eq!(body("lib.dll"), Body::Program);
+        assert_eq!(body("app.db"), Body::Sqlite);
+        assert_eq!(body("book.xlsx"), Body::Sheet);
+        assert_eq!(body("rows.parquet"), Body::Sheet);
+        assert_eq!(body("lab.ipynb"), Body::Notebook);
+        assert_eq!(body("card.vcf"), Body::Small(SmallKind::Contact));
+        assert_eq!(body("invite.ics"), Body::Small(SmallKind::Calendar));
+        assert_eq!(body("mail.eml"), Body::Small(SmallKind::Email));
+        assert_eq!(body("mail.msg"), Body::Small(SmallKind::Outlook));
+        assert_eq!(body("art.kra"), Body::Small(SmallKind::Design));
+        assert_eq!(body("graph.dot"), Body::Small(SmallKind::Graphviz));
+        assert_eq!(body("flow.mmd"), Body::Small(SmallKind::Mermaid));
         assert_eq!(body("letter.doc"), Body::Shell(Fallback::Icon));
         assert_eq!(body("font.ttf"), Body::Shell(Fallback::Icon));
     }
@@ -371,17 +471,18 @@ mod tests {
         assert_eq!(later("paper.pdf").later, Some("pdf pages"));
         assert_eq!(later("book.epub").later, Some("book"));
         assert_eq!(later("model.stl").later, Some("3d"));
-        assert_eq!(later("sheet.xlsx").later, Some("sheet"));
         assert_eq!(later("letter.docx").later, Some("docx"));
-        assert_eq!(
-            later("lab.ipynb"),
-            Choice {
-                body: Body::Text,
-                later: Some("notebook")
-            }
-        );
-        assert!(later("card.vcf").later.is_some());
-        assert_eq!(later("notes.md").later, None);
+        // What has its previewer now says nothing is missing.
+        for ready in [
+            "notes.md",
+            "sheet.xlsx",
+            "lab.ipynb",
+            "card.vcf",
+            "tool.exe",
+            "app.sqlite",
+        ] {
+            assert_eq!(later(ready).later, None, "{ready}");
+        }
     }
 
     #[test]
@@ -414,7 +515,10 @@ mod tests {
     #[test]
     fn markdown_and_data_have_source_and_hex_views() {
         let md = file("C:\\x", "a.md", 10, 1);
-        let labels: Vec<_> = views(&md).iter().map(|v| (v.view, v.label.to_string())).collect();
+        let labels: Vec<_> = views(&md, false)
+            .iter()
+            .map(|v| (v.view, v.label.to_string()))
+            .collect();
         assert_eq!(
             labels,
             [
@@ -426,18 +530,18 @@ mod tests {
         assert_eq!(choose(&md, View::Source).body, Body::Text);
         assert_eq!(choose(&md, View::Hex).body, Body::Hex);
         let json = file("C:\\x", "a.json", 10, 1);
-        assert_eq!(views(&json)[0].label, "Tree");
+        assert_eq!(views(&json, false)[0].label, "Tree");
         assert_eq!(choose(&json, View::Source).body, Body::Text);
         let csv = file("C:\\x", "a.csv", 10, 1);
-        assert_eq!(views(&csv)[0].label, "Table");
+        assert_eq!(views(&csv, false)[0].label, "Table");
         assert_eq!(choose(&csv, View::Source).body, Body::Text);
         // A plain file has File and Hex: a chosen Source view isn't one of them, so it is shown as it is.
         let txt = file("C:\\x", "a.txt", 10, 1);
-        assert_eq!(views(&txt).len(), 2);
-        assert_eq!(effective_view(&txt, View::Source), View::File);
-        assert_eq!(effective_view(&txt, View::Hex), View::Hex);
+        assert_eq!(views(&txt, false).len(), 2);
+        assert_eq!(effective_view(&txt, View::Source, false), View::File);
+        assert_eq!(effective_view(&txt, View::Hex, false), View::Hex);
         // A folder has no bytes to show.
-        assert_eq!(effective_view(&folder("C:\\x", "d"), View::Hex), View::File);
+        assert_eq!(effective_view(&folder("C:\\x", "d"), View::Hex, false), View::File);
     }
 
     #[test]
@@ -445,6 +549,139 @@ mod tests {
         let mut big = file("C:\\x", "huge.json", 10, 1);
         big.size = 65 * 1024 * 1024;
         assert_eq!(choose(&big, View::File).body, Body::Text);
-        assert_eq!(views(&big).len(), 2);
+        // No tree, but DuckDB reads a JSON file of any size: File, Profile and Hex.
+        let order: Vec<_> = views(&big, false).into_iter().map(|v| v.view).collect();
+        assert_eq!(order, [View::File, View::Profile, View::Hex]);
+    }
+
+    fn labels(entry: &FileEntry, changed: bool) -> Vec<(View, String)> {
+        views(entry, changed)
+            .iter()
+            .map(|v| (v.view, v.label.to_string()))
+            .collect()
+    }
+
+    fn pairs(list: &[(View, &str)]) -> Vec<(View, String)> {
+        list.iter().map(|(view, label)| (*view, label.to_string())).collect()
+    }
+
+    #[test]
+    fn a_workbook_has_a_table_and_windows_previewer_and_parquet_only_the_table() {
+        let book = file("C:\\x", "a.xlsx", 10, 1);
+        assert_eq!(
+            labels(&book, false),
+            pairs(&[
+                (View::File, "Table"),
+                (View::Source, "Previewer"),
+                (View::Query, "Query"),
+                (View::Hex, "Hex")
+            ])
+        );
+        assert_eq!(choose(&book, View::File).body, Body::Sheet);
+        assert_eq!(choose(&book, View::Source).body, Body::Shell(Fallback::Icon));
+        let parquet = file("C:\\x", "a.parquet", 10, 1);
+        assert_eq!(
+            labels(&parquet, false),
+            pairs(&[
+                (View::File, "Table"),
+                (View::Query, "Query"),
+                (View::Profile, "Profile"),
+                (View::Hex, "Hex")
+            ])
+        );
+        assert_eq!(choose(&parquet, View::Source).body, Body::Sheet);
+    }
+
+    #[test]
+    fn a_notebook_has_its_reading_and_its_json() {
+        let book = file("C:\\x", "a.ipynb", 10, 1);
+        assert_eq!(
+            labels(&book, false),
+            pairs(&[(View::File, "Notebook"), (View::Source, "Source"), (View::Hex, "Hex")])
+        );
+        assert_eq!(views(&book, false)[1].title, "The notebook's JSON as written");
+        assert_eq!(choose(&book, View::File).body, Body::Notebook);
+        assert_eq!(choose(&book, View::Source).body, Body::Text);
+    }
+
+    #[test]
+    fn small_files_have_a_preview_and_a_text_view_unless_they_are_not_text() {
+        let contact = file("C:\\x", "a.vcf", 10, 1);
+        assert_eq!(
+            labels(&contact, false),
+            pairs(&[(View::File, "Preview"), (View::Source, "Text"), (View::Hex, "Hex")])
+        );
+        assert_eq!(choose(&contact, View::Source).body, Body::Text);
+        for binary in ["a.msg", "a.kra"] {
+            let entry = file("C:\\x", binary, 10, 1);
+            assert_eq!(
+                labels(&entry, false),
+                pairs(&[(View::File, "Preview"), (View::Hex, "Hex")]),
+                "{binary}"
+            );
+        }
+        // In an archive they are not read from disk, so not as a contact.
+        let inside = marked("a.vcf", attr::IN_ARCHIVE);
+        assert_ne!(choose(&inside, View::File).body, Body::Small(SmallKind::Contact));
+    }
+
+    #[test]
+    fn tables_and_databases_take_sql_and_data_files_a_profile() {
+        let has = |name: &str, view: View| views(&file("C:\\x", name, 10, 1), false).iter().any(|v| v.view == view);
+        for name in ["a.csv", "a.tsv", "a.jsonl", "a.xlsx", "a.parquet", "a.sqlite", "a.db"] {
+            assert!(has(name, View::Query), "{name} takes SQL");
+        }
+        for name in ["a.json", "a.txt", "a.md", "a.exe"] {
+            assert!(!has(name, View::Query), "{name} takes no SQL");
+        }
+        for name in ["a.csv", "a.tsv", "a.json", "a.jsonl", "a.parquet", "a.psv", "a.tab"] {
+            assert!(has(name, View::Profile), "{name} is profiled");
+        }
+        for name in ["a.txt", "a.xlsx", "a.sqlite", "a.md"] {
+            assert!(!has(name, View::Profile), "{name} is not profiled");
+        }
+        let csv = file("C:\\x", "a.csv", 10, 1);
+        assert_eq!(choose(&csv, View::Query).body, Body::Query);
+        assert_eq!(choose(&csv, View::Profile).body, Body::Profile);
+        let db = file("C:\\x", "a.sqlite", 10, 1);
+        assert_eq!(choose(&db, View::Query).body, Body::Query);
+        // A view the file has not got is not drawn even when asked for.
+        assert_eq!(choose(&db, View::Profile).body, Body::Sqlite);
+        // Nothing inside an archive is read from disk.
+        let inside = marked("a.csv", attr::IN_ARCHIVE);
+        assert!(!views(&inside, false).iter().any(|v| v.view == View::Query));
+    }
+
+    #[test]
+    fn a_changed_file_offers_what_changed_and_a_folder_or_archived_file_never_does() {
+        let txt = file("C:\\x", "a.txt", 10, 1);
+        assert_eq!(
+            labels(&txt, true),
+            pairs(&[(View::File, "File"), (View::Changes, "Changes"), (View::Hex, "Hex")])
+        );
+        assert_eq!(views(&txt, true)[1].title, "What changed since the last commit (Git)");
+        assert_eq!(effective_view(&txt, View::Changes, true), View::Changes);
+        assert_eq!(effective_view(&txt, View::Changes, false), View::File);
+        assert_eq!(choose(&txt, View::Changes).body, Body::Changes);
+        // Changes come before Query and Profile.
+        let csv = file("C:\\x", "a.csv", 10, 1);
+        let order: Vec<_> = labels(&csv, true).into_iter().map(|(view, _)| view).collect();
+        assert_eq!(
+            order,
+            [
+                View::File,
+                View::Source,
+                View::Changes,
+                View::Query,
+                View::Profile,
+                View::Hex
+            ]
+        );
+        assert!(!views(&folder("C:\\x", "d"), true)
+            .iter()
+            .any(|v| v.view == View::Changes));
+        let inside = marked("a.txt", attr::IN_ARCHIVE);
+        assert!(!views(&inside, true).iter().any(|v| v.view == View::Changes));
+        assert_ne!(choose(&inside, View::Changes).body, Body::Changes);
     }
 }

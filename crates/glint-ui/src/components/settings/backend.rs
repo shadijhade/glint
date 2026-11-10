@@ -9,8 +9,8 @@
 //! the index's volumes). Those cross here as JSON, the way the old app's `invoke` received them, and become the
 //! plain types below.
 
-use super::picker::{self, Ask};
 use crate::core_bridge;
+use crate::platform::pickers::{self, Filter, Options};
 use glint_core::host::{self, Manager as _};
 use glint_core::{agents, content, devices, meaning, media_ai, openers, rclone, term, verbs};
 use serde_json::Value;
@@ -19,6 +19,11 @@ use std::pin::Pin;
 
 /// A question to the PC, answered later.
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
+
+/// A picker's answer as a [`Fut`] (the pickers' futures are `Send` already: they hold only a channel).
+pub(crate) fn from_picker(picked: pickers::Fut<Result<Option<String>, String>>) -> Fut<Option<String>> {
+    picked
+}
 
 /// How an install or download is going: what it's doing, and bytes when it knows them (`ToolProgress`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -446,22 +451,27 @@ impl Backend for CoreBackend {
     }
 
     fn pick_folder(&self, title: String, start: Option<String>, owner: isize) -> Fut<Option<String>> {
-        Box::pin(picker::pick(Ask::Folder, title, start, owner))
+        let mut options = Options::new().title(title).owner(owner);
+        if let Some(start) = start.filter(|s| !s.trim().is_empty()) {
+            options = options.start(start);
+        }
+        from_picker(pickers::open_folder(options))
     }
 
     fn pick_settings_file(&self, owner: isize) -> Fut<Option<String>> {
-        let title = crate::t!("Import settings").to_string();
-        Box::pin(picker::pick(Ask::Open("Glint settings", "json"), title, None, owner))
+        let options = Options::new()
+            .title(crate::t!("Import settings"))
+            .filter(Filter::new("Glint settings", &["json"]))
+            .owner(owner);
+        from_picker(pickers::open_file(options))
     }
 
     fn save_settings_file(&self, file_name: String, owner: isize) -> Fut<Option<String>> {
-        let title = crate::t!("Export settings").to_string();
-        Box::pin(picker::pick(
-            Ask::Save("Glint settings", "json", file_name),
-            title,
-            None,
-            owner,
-        ))
+        let options = Options::new()
+            .title(crate::t!("Export settings"))
+            .filter(Filter::new("Glint settings", &["json"]))
+            .owner(owner);
+        from_picker(pickers::save_file(options, &file_name))
     }
 
     fn known_folder(&self, which: Known) -> Option<String> {

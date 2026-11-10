@@ -15,9 +15,13 @@
 //!
 //! **Keyboard.** The breakdown's segments are tab stops: Enter or Space filters to the kind, as a click does.
 //!
-//! **Not yet** (each comes with its part, marked `PORT ME` where it belongs): Git status (git), the folder sizes and
-//! the disk-usage map (disk usage), and the X-Ray, batch rename and Zip buttons. Those buttons are left out until
-//! their parts exist.
+//! The work line also says how long Git status took in the folder (`git · 12 ms`, from the xl width) and, once
+//! "Folder sizes" has measured the folder, `index sized 1.2 GB in 3 ms`; the popover's "How long it took" has a
+//! "Folder sizes" and a "Git status" stage for them. The bar redraws when the Git model changes (it must exist,
+//! `git::init`, when the bar is made).
+//!
+//! **Not yet** (each comes with its part, marked `PORT ME` where it belongs): the X-Ray, batch rename and Zip
+//! buttons. Those buttons are left out until their parts exist.
 //!
 //! **Narrow windows.** The TypeScript used container queries (`@lg:` and so on) to drop the least important words
 //! first. GPUI has none, so the bar reads the window's width in rems instead: the same breakpoints, measured on the
@@ -29,13 +33,14 @@ mod summary;
 mod tests;
 
 use crate::components::file_grid::thumbnail::{self, Thumbnails};
+use crate::components::git;
 use crate::explorer::{self, Explorer};
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
 use index::{Index, IndexModel, Source, Volume};
 use summary::{
     chip_active, chip_title, counts, drives, items, segment_title, stages, thumbs_line, thumbs_stage, thumbs_title,
-    Category, Summary, Thumbs, Work,
+    Category, Stage, Summary, Thumbs, Work,
 };
 
 /// The widths the bar drops words at, in rems (the TypeScript's `@2xs`, `@md`, `@lg` and `@xl` containers).
@@ -90,7 +95,7 @@ impl StatusBar {
         model.update(cx, |model, cx| model.refresh(cx));
         let thumbs = thumbnail::thumbnails(cx);
         let usage = crate::components::disk_usage::shared(cx);
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             // Any change to the explorer may change what the bar says; the summary is made on the next frame.
             cx.observe(&explorer, |this: &mut Self, _, cx| {
                 this.dirty = true;
@@ -105,6 +110,10 @@ impl StatusBar {
             // A thumbnail that arrives changes the thumbnails' line.
             cx.observe(&thumbs, |_: &mut Self, _, cx| cx.notify()),
         ];
+        // Git's status of the folder arrived: the work line and the popover's stages say how long it took.
+        if let Some(model) = git::try_shared(cx) {
+            subscriptions.push(cx.observe(&model, |_: &mut Self, _, cx| cx.notify()));
+        }
         StatusBar {
             explorer,
             index: model,
@@ -125,7 +134,9 @@ impl StatusBar {
     fn refresh_summary(&mut self, cx: &App) {
         let summary = {
             let explorer = self.explorer.read(cx);
-            Summary::of(explorer.active_tab(), explorer.drives().len())
+            let tab = explorer.active_tab();
+            let sizes = tab.and_then(|tab| explorer.size_run(&tab.path));
+            Summary::of_sized(tab, explorer.drives().len(), sizes)
         };
         if summary.tab != self.summary.tab {
             self.details_open = false;
@@ -231,6 +242,23 @@ impl Wide {
             extra_large: at(EXTRA_LARGE),
         }
     }
+}
+
+/// "· git · 12 ms", with what Git found in the folder on hover, while the tab has a Git view of its folder.
+fn git_piece(cx: &App, tab: crate::explorer::TabId) -> Option<AnyElement> {
+    let line = git::status_line(cx, tab)?;
+    let title = line.title.clone();
+    Some(
+        div()
+            .id("status-git")
+            .role(Role::Status)
+            .aria_label(line.said.clone())
+            .aria_description(line.title)
+            .test_support()
+            .tooltip(move |window, cx| crate::kit::tooltip(title.clone(), window, cx))
+            .child(format!("· {}", line.said))
+            .into_any_element(),
+    )
 }
 
 /// "Indexing C: 45%…", or without a percentage while the total isn't known.
@@ -459,18 +487,35 @@ impl StatusBar {
                     .child(div().child(shown.clone()))
                     .into_any_element(),
             ),
-            Work::Disk { lead, shown, title } => (
-                Some(title.clone()),
-                row_start()
-                    .items_center()
-                    .gap(space(1.))
-                    .child(icon(IconName::Zap).size_3().text_color(t.primary).flex_none())
-                    .children(wide.large.then(|| div().child(lead.clone())))
-                    .child(div().child(shown.clone()))
-                    // PORT ME(disk usage): "sized … in …" once the folder sizes are read (xl only).
-                    // PORT ME(git): the Git status line (xl only).
-                    .into_any_element(),
-            ),
+            Work::Disk {
+                lead,
+                shown,
+                sized,
+                title,
+            } => {
+                // From the xl width on: how the folder sizes were measured, and how long Git status took.
+                let sized = sized
+                    .as_ref()
+                    .filter(|_| wide.extra_large)
+                    .map(|sized| self.sized_piece(sized));
+                let git = self
+                    .summary
+                    .tab
+                    .filter(|_| wide.extra_large)
+                    .and_then(|tab| git_piece(cx, tab));
+                (
+                    Some(title.clone()),
+                    row_start()
+                        .items_center()
+                        .gap(space(1.))
+                        .child(icon(IconName::Zap).size_3().text_color(t.primary).flex_none())
+                        .children(wide.large.then(|| div().child(lead.clone())))
+                        .child(div().child(shown.clone()))
+                        .children(sized)
+                        .children(git)
+                        .into_any_element(),
+                )
+            }
             // Nothing to say about the folder yet: the button still opens the popover, with its breakdown.
             Work::Nothing | Work::Search { .. } => (None, div().into_any_element()),
         };
@@ -503,6 +548,25 @@ impl StatusBar {
             None => trigger,
         };
         trigger.into_any_element()
+    }
+
+    /// The active tab, when Git's view is of the folder the tab is in now (not the one it has just left).
+    fn git_tab(&self, cx: &App) -> Option<crate::explorer::TabId> {
+        let tab = self.summary.tab?;
+        let run = git::try_shared(cx)?.read(cx).run(tab)?;
+        let path = &self.explorer.read(cx).tab(tab)?.path;
+        glint_model::paths::same_path(&run.folder, path).then_some(tab)
+    }
+
+    /// "· index sized 1.2 GB in 3 ms", after the time to screen, once "Folder sizes" has measured the folder.
+    fn sized_piece(&self, sized: &SharedString) -> AnyElement {
+        div()
+            .id("status-sized")
+            .role(Role::Status)
+            .aria_label(sized.clone())
+            .test_support()
+            .child(format!("· {sized}"))
+            .into_any_element()
     }
 
     /// Instant search's button: turns it on (the TypeScript's "Turn on instant search").
@@ -629,11 +693,15 @@ impl StatusBar {
                 )
         });
 
+        // Folder read, on screen and folder sizes; then Git status, then the thumbnails.
         let mut stage_rows = stages(s);
+        stage_rows.extend(
+            self.git_tab(cx)
+                .and_then(|tab| git::stage(cx, tab))
+                .map(|(label, detail, ms)| Stage { label, detail, ms }),
+        );
         stage_rows.extend(thumbs.and_then(thumbs_stage));
         let max_ms = stage_rows.iter().map(|stage| stage.ms).fold(1.0_f64, f64::max);
-        // PORT ME(disk usage): the "Folder sizes" stage.
-        // PORT ME(git): the "Git status" stage.
         let timing = (!stage_rows.is_empty()).then(|| {
             col()
                 .gap(space(1.5))
