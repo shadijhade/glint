@@ -26,3 +26,6 @@ pub mod status_bar;
 pub mod tab_strip;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
+/// The preview pane and Quick Look. Wave 7 slot.
+#[cfg(feature = "preview")]
+pub mod preview;
