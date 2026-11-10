@@ -14,8 +14,6 @@ name = "glint_ui"
 # wave its features go and the modules are always built. (Wave 3's went with its integration.)
 [features]
 default = []
-# Wave 12.
-updater = ["dep:minisign-verify", "dep:reqwest"]
 
 [dependencies]
 # syntect: syntax highlighting for the text and code previews (pure Rust: fancy-regex, two-face's grammars).
@@ -49,8 +47,8 @@ typst-kit = { version = "=0.15.1", default-features = false, features = ["scan-f
 markdown = { version = "1.0.0" }
 # Wave 12, already in the build (the index service's self-update, glint-core's downloads): the updater checks the
 # installer's minisign signature with the key the releases are signed with, and downloads over rustls.
-minisign-verify = { version = "0.3", optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy", "stream"], optional = true }
+minisign-verify = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy", "stream"] }
 windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",

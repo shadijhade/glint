@@ -2,6 +2,7 @@ use crate::{FontId, GlyphId, Pixels, PlatformTextSystem, Point, SharedString, Si
 use collections::{FxHashMap, FxHashSet};
 use itertools::Itertools;
 use smallvec::SmallVec;
+use unicode_segmentation::UnicodeSegmentation;
 use std::{
     borrow::Borrow,
     cell::RefCell,
@@ -268,7 +269,12 @@ impl LineLayout {
     }
 
     fn bidi_closest_index_for_x(&self, x: Pixels) -> usize {
-        let clusters = self.clusters();
+        self.closest_among(&self.clusters(), Some(self.len), x)
+    }
+
+    /// The caret position, among `clusters`, closest to `x`: the start of one of them, or `end` (the
+    /// end of the text, if the clusters reach it).
+    fn closest_among(&self, clusters: &[Cluster], end: Option<usize>, x: Pixels) -> usize {
         let by_start: FxHashMap<usize, &Cluster> = clusters.iter().map(|c| (c.start, c)).collect();
         let by_end: FxHashMap<usize, &Cluster> =
             clusters.iter().filter(|c| c.end > c.start).map(|c| (c.end, c)).collect();
@@ -279,13 +285,21 @@ impl LineLayout {
         clusters
             .iter()
             .map(|c| c.start)
-            .chain([self.len])
+            .chain(end)
             .min_by_key(|&ix| {
-                let distance = (self.bidi_caret_x(&clusters, &by_start, &by_end, ix) - x).abs();
+                let distance = (self.bidi_caret_x(clusters, &by_start, &by_end, ix) - x).abs();
                 let own = under.is_some_and(|c| ix == c.start || ix == c.end);
                 (distance.round(), !own)
             })
             .unwrap_or(0)
+    }
+
+    /// Where a caret at `index` goes, looking only at `clusters` (one row of a wrapped paragraph).
+    fn caret_x_among(&self, clusters: &[Cluster], index: usize) -> Pixels {
+        let by_start: FxHashMap<usize, &Cluster> = clusters.iter().map(|c| (c.start, c)).collect();
+        let by_end: FxHashMap<usize, &Cluster> =
+            clusters.iter().filter(|c| c.end > c.start).map(|c| (c.end, c)).collect();
+        self.bidi_caret_x(clusters, &by_start, &by_end, index)
     }
 
     /// The corresponding Font at the given index
@@ -565,6 +579,10 @@ impl WrappedLineLayout {
     ) -> Result<usize, usize> {
         let wrapped_line_ix = (position.y / line_height) as usize;
 
+        if let Some(rows) = self.rtl_rows() {
+            return self.rtl_index_for_position(&rows, wrapped_line_ix, position.x, closest);
+        }
+
         let wrapped_line_start_index;
         let wrapped_line_start_x;
         if wrapped_line_ix > 0 {
@@ -617,6 +635,19 @@ impl WrappedLineLayout {
 
     /// Returns the pixel position for the given byte index.
     pub fn position_for_index(&self, index: usize, line_height: Pixels) -> Option<Point<Pixels>> {
+        if let Some(rows) = self.rtl_rows() {
+            if index > self.len() {
+                return None;
+            }
+            // A row starts at its first character in reading order, so an index that ends one row
+            // starts the next.
+            let row_ix = rows.iter().rposition(|row| row.start_ix <= index).unwrap_or(0);
+            let row = &rows[row_ix];
+            let layout = &self.unwrapped_layout;
+            let clusters = self.rtl_row_clusters(row);
+            let x = layout.caret_x_among(&clusters, index) - row.left;
+            return Some(point(x, row_ix as f32 * line_height));
+        }
         let mut line_start_ix = 0;
         let line_end_indices = self
             .wrap_boundaries
@@ -643,6 +674,94 @@ impl WrappedLineLayout {
         }
 
         None
+    }
+}
+
+/// One row of a wrapped paragraph that has right-to-left text, as the hit testing sees it.
+struct RtlRow {
+    /// The text it shows, in utf-8 bytes, in reading order.
+    start_ix: usize,
+    end_ix: usize,
+    /// Where it is on the concatenated line.
+    left: Pixels,
+    right: Pixels,
+}
+
+impl WrappedLineLayout {
+    /// The rows of a layout that has right-to-left glyphs (wrapped or not), or `None` for any other:
+    /// a row's text is not a run of the glyphs' indices there (the first glyph on screen can be the
+    /// last one read), so the left-to-right shortcuts don't hold.
+    fn rtl_rows(&self) -> Option<Vec<RtlRow>> {
+        if !self.unwrapped_layout.has_rtl() {
+            return None;
+        }
+        let layout = &self.unwrapped_layout;
+        // Each row: its lowest glyph index (where it starts reading) and where its first glyph is.
+        let mut starts: Vec<(usize, Pixels)> = Vec::with_capacity(self.wrap_boundaries.len() + 1);
+        let mut boundaries = self.wrap_boundaries.iter().peekable();
+        let mut lowest = usize::MAX;
+        let mut left = Pixels::ZERO;
+        for (run_ix, run) in layout.runs.iter().enumerate() {
+            for (glyph_ix, glyph) in run.glyphs.iter().enumerate() {
+                if boundaries.peek() == Some(&&WrapBoundary { run_ix, glyph_ix }) {
+                    boundaries.next();
+                    starts.push((lowest, left));
+                    lowest = usize::MAX;
+                    left = glyph.position.x;
+                }
+                lowest = lowest.min(glyph.index);
+            }
+        }
+        starts.push((lowest, left));
+        let rows = (0..starts.len())
+            .map(|ix| RtlRow {
+                start_ix: if ix == 0 { 0 } else { starts[ix].0 },
+                end_ix: starts.get(ix + 1).map_or(layout.len, |next| next.0),
+                left: starts[ix].1,
+                right: starts.get(ix + 1).map_or(layout.width, |next| next.1),
+            })
+            .collect();
+        Some(rows)
+    }
+
+    /// The clusters of the row, from the whole line's.
+    fn rtl_row_clusters(&self, row: &RtlRow) -> Vec<Cluster> {
+        self.unwrapped_layout
+            .clusters()
+            .into_iter()
+            .filter(|cluster| cluster.start >= row.start_ix && cluster.start < row.end_ix)
+            .collect()
+    }
+
+    /// `_index_for_position` for a layout wrapped around right-to-left text. `x` is from the row's
+    /// start (its left edge); beyond either edge the answer is the caret at that edge, `Err`.
+    fn rtl_index_for_position(
+        &self,
+        rows: &[RtlRow],
+        row_ix: usize,
+        x: Pixels,
+        closest: bool,
+    ) -> Result<usize, usize> {
+        let Some(row) = rows.get(row_ix) else {
+            return Err(0);
+        };
+        let layout = &self.unwrapped_layout;
+        let clusters = self.rtl_row_clusters(row);
+        let end = (row_ix + 1 == rows.len()).then_some(layout.len);
+        let x_in_line = x + row.left;
+        if x_in_line < row.left {
+            Err(layout.closest_among(&clusters, end, row.left))
+        } else if x_in_line >= row.right {
+            Err(layout.closest_among(&clusters, end, row.right))
+        } else if closest {
+            Ok(layout.closest_among(&clusters, end, x_in_line))
+        } else {
+            clusters
+                .iter()
+                .find(|cluster| cluster.left <= x_in_line && x_in_line < cluster.right)
+                .map(|cluster| cluster.start)
+                .ok_or(row.end_ix)
+        }
     }
 }
 
@@ -804,16 +923,47 @@ impl LineLayoutCache {
         } else {
             drop(state);
             let text = SharedString::from(text);
-            let unwrapped_layout = self.layout_line::<&SharedString>(&text, font_size, runs, None);
-            let wrap_boundaries = if let Some(wrap_width) = wrap_width {
-                unwrapped_layout.compute_wrap_boundaries(
-                    text.as_ref(),
-                    wrap_width,
-                    max_lines,
-                    &mut self.wrap_scratch.borrow_mut(),
-                )
-            } else {
-                SmallVec::new()
+            // Right-to-left text that wraps: the break points come from the text's reading order and
+            // every row is laid out (and reordered) as a line of its own. An English paragraph, with or
+            // without a few Arabic words, that fits or never gets here, wraps the way it always did.
+            let rtl_base = wrap_width.is_some() && paragraph_reads_right_to_left(&text);
+            let mut rows = None;
+            let mut unwrapped_layout = None;
+            if let Some(wrap_width) = wrap_width {
+                if rtl_base {
+                    rows = self.layout_rtl_rows(&text, None, font_size, runs, wrap_width, max_lines);
+                } else {
+                    let whole = self.layout_line::<&SharedString>(&text, font_size, runs, None);
+                    if whole.width > wrap_width && has_rtl_text(&text) {
+                        rows = self.layout_rtl_rows(
+                            &text,
+                            Some(&*whole),
+                            font_size,
+                            runs,
+                            wrap_width,
+                            max_lines,
+                        );
+                    }
+                    unwrapped_layout = Some(whole);
+                }
+            }
+            let (unwrapped_layout, wrap_boundaries) = match rows {
+                Some((layout, boundaries)) => (Arc::new(layout), boundaries),
+                None => {
+                    let layout = unwrapped_layout.unwrap_or_else(|| {
+                        self.layout_line::<&SharedString>(&text, font_size, runs, None)
+                    });
+                    let boundaries = match wrap_width {
+                        Some(wrap_width) => layout.compute_wrap_boundaries(
+                            text.as_ref(),
+                            wrap_width,
+                            max_lines,
+                            &mut self.wrap_scratch.borrow_mut(),
+                        ),
+                        None => SmallVec::new(),
+                    };
+                    (layout, boundaries)
+                }
             };
             let layout = Arc::new(WrappedLineLayout {
                 unwrapped_layout,
@@ -898,6 +1048,225 @@ impl LineLayoutCache {
         }
     }
 
+    /// `text` laid out as a line in a right-to-left embedding, its glyphs indexed as if the embedding's
+    /// control characters (which have no glyphs of their own) were not there.
+    fn layout_embedded(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> Arc<LineLayout> {
+        const RLE: char = '\u{202B}';
+        const PDF: char = '\u{202C}';
+        let mut embedded = String::with_capacity(text.len() + 6);
+        embedded.push(RLE);
+        embedded.push_str(text);
+        embedded.push(PDF);
+        let mut embedded_runs: SmallVec<[FontRun; 4]> = SmallVec::from(runs);
+        if let Some(first) = embedded_runs.first_mut() {
+            first.len += RLE.len_utf8();
+        }
+        if let Some(last) = embedded_runs.last_mut() {
+            last.len += PDF.len_utf8();
+        }
+        let layout = self.layout_line::<&str>(&embedded, font_size, &embedded_runs, None);
+
+        let offset = RLE.len_utf8();
+        let mut stripped = LineLayout {
+            font_size: layout.font_size,
+            width: layout.width,
+            ascent: layout.ascent,
+            descent: layout.descent,
+            runs: Vec::with_capacity(layout.runs.len()),
+            len: text.len(),
+        };
+        for run in &layout.runs {
+            let glyphs: Vec<ShapedGlyph> = run
+                .glyphs
+                .iter()
+                .filter(|glyph| glyph.index >= offset && glyph.index < offset + text.len())
+                .map(|glyph| ShapedGlyph {
+                    index: glyph.index - offset,
+                    ..glyph.clone()
+                })
+                .collect();
+            if !glyphs.is_empty() {
+                stripped.runs.push(ShapedRun {
+                    font_id: run.font_id,
+                    glyphs,
+                });
+            }
+        }
+        // The platform hands the runs over in reading order, each at its place on the line; painting
+        // and hit testing want them left to right, with the row's first glyph at its start.
+        stripped
+            .runs
+            .sort_by_key(|run| run.glyphs.first().map(|glyph| glyph.position.x));
+        Arc::new(stripped)
+    }
+
+    /// Wraps a paragraph that has right-to-left text the way a browser does: the breaks are found in
+    /// reading order (the text's own break opportunities, at grapheme and shaping-cluster boundaries,
+    /// with the width of each piece taken from the shaped glyph advances keyed by their logical index),
+    /// then every row is laid out as a line of its own, so the platform reorders it by itself. The rows'
+    /// glyphs are concatenated, each row starting at its own x, so the boundary-based painting and hit
+    /// testing work on the result. A row's trailing spaces hang: they have glyphs but no width.
+    ///
+    /// `None` when the text doesn't split into rows after all; the caller then wraps the old way.
+    fn layout_rtl_rows(
+        &self,
+        text: &str,
+        whole: Option<&LineLayout>,
+        font_size: Pixels,
+        runs: &[FontRun],
+        wrap_width: Pixels,
+        max_lines: Option<usize>,
+    ) -> Option<(LineLayout, SmallVec<[WrapBoundary; 1]>)> {
+        // A paragraph that reads right to left sets each row in a right-to-left embedding (RLE ... PDF),
+        // which is how the platform learns the paragraph's direction: the first words go on the right,
+        // an English phrase keeps its place in the reading order, the full stop lands on the left.
+        let embed = whole.is_none();
+        let embedded_whole;
+        let whole = match whole {
+            Some(whole) => whole,
+            None => {
+                embedded_whole = self.layout_embedded(text, font_size, runs);
+                &*embedded_whole
+            }
+        };
+        let units = break_units(text, whole);
+        let rows = rows_by_width(text.len(), &units, wrap_width, max_lines);
+        if rows.len() < 2 {
+            // It fits (or can't be split): one row, still in its embedding.
+            return embed.then(|| {
+                (
+                    LineLayout {
+                        font_size,
+                        width: whole.width,
+                        ascent: whole.ascent,
+                        descent: whole.descent,
+                        runs: whole.runs.clone(),
+                        len: text.len(),
+                    },
+                    SmallVec::new(),
+                )
+            });
+        }
+
+        let mut out_runs: Vec<ShapedRun> = Vec::new();
+        let mut boundaries = SmallVec::new();
+        let mut x = px(0.);
+        let mut ascent = px(0.);
+        let mut descent = px(0.);
+        for (row_ix, row_range) in rows.iter().enumerate() {
+            let (start, end) = (row_range.start, row_range.end);
+            let is_last = row_ix + 1 == rows.len();
+            let visible_end = if is_last {
+                end
+            } else {
+                start + text[start..end].trim_end_matches(' ').len()
+            };
+            let row_runs = slice_font_runs(runs, start..end);
+            let row = if embed {
+                self.layout_embedded(&text[start..end], font_size, &row_runs)
+            } else {
+                self.layout_line::<&str>(&text[start..end], font_size, &row_runs, None)
+            };
+            if row.runs.first().is_none_or(|run| run.glyphs.is_empty()) {
+                return None;
+            }
+
+            // The trailing spaces hang: they keep their glyphs but take no room, and sit at the end
+            // of the row, where the next one begins. The platform put them next to the text's end,
+            // on the right in a left-to-right row and on the left in a right-to-left one.
+            let hung_from = visible_end - start;
+            let mut width = row.width;
+            let mut shift = px(0.);
+            if visible_end < end {
+                let hung = row
+                    .clusters()
+                    .iter()
+                    .filter(|cluster| cluster.start >= hung_from)
+                    .fold(px(0.), |sum, cluster| sum + (cluster.right - cluster.left));
+                width = (row.width - hung).max(px(0.));
+                let lowest_x = |hanging: bool| {
+                    row.runs
+                        .iter()
+                        .flat_map(|run| &run.glyphs)
+                        .filter(|glyph| (glyph.index >= hung_from) == hanging)
+                        .map(|glyph| glyph.position.x)
+                        .fold(None, |lowest: Option<Pixels>, x| Some(lowest.map_or(x, |l| l.min(x))))
+                };
+                if let (Some(hanging), Some(content)) = (lowest_x(true), lowest_x(false))
+                    && hanging < content
+                {
+                    shift = hung;
+                }
+            }
+
+            if row_ix > 0 {
+                boundaries.push(WrapBoundary {
+                    run_ix: out_runs.len(),
+                    glyph_ix: 0,
+                });
+            }
+            // The row's glyphs in visual order, then the hanging spaces, which are not part of it.
+            let mut hanging: Vec<(FontId, ShapedGlyph)> = Vec::new();
+            for run in &row.runs {
+                let mut glyphs = Vec::with_capacity(run.glyphs.len());
+                for glyph in &run.glyphs {
+                    let hangs = glyph.index >= hung_from;
+                    let placed = ShapedGlyph {
+                        id: glyph.id,
+                        position: point(
+                            if hangs {
+                                x + width
+                            } else {
+                                x + glyph.position.x - shift
+                            },
+                            glyph.position.y,
+                        ),
+                        index: start + glyph.index,
+                        is_emoji: glyph.is_emoji,
+                    };
+                    if hangs {
+                        hanging.push((run.font_id, placed));
+                    } else {
+                        glyphs.push(placed);
+                    }
+                }
+                if !glyphs.is_empty() {
+                    out_runs.push(ShapedRun {
+                        font_id: run.font_id,
+                        glyphs,
+                    });
+                }
+            }
+            hanging.sort_by_key(|(_, glyph)| glyph.index);
+            for (font_id, glyph) in hanging {
+                match out_runs.last_mut() {
+                    Some(last) if last.font_id == font_id && last.glyphs.last().is_some_and(|g| g.index >= start + hung_from) => {
+                        last.glyphs.push(glyph)
+                    }
+                    _ => out_runs.push(ShapedRun {
+                        font_id,
+                        glyphs: vec![glyph],
+                    }),
+                }
+            }
+            x += width;
+            ascent = ascent.max(row.ascent);
+            descent = descent.max(row.descent);
+        }
+
+        Some((
+            LineLayout {
+                font_size,
+                width: x,
+                ascent,
+                descent,
+                runs: out_runs,
+                len: text.len(),
+            },
+            boundaries,
+        ))
+    }
+
     fn clear_if_font_generation_changed(&self) -> usize {
         let font_generation = self.font_generation.load(Ordering::Acquire);
         if self.cached_font_generation.load(Ordering::Acquire) == font_generation {
@@ -914,6 +1283,182 @@ impl LineLayoutCache {
             .store(font_generation, Ordering::Release);
         font_generation
     }
+}
+
+/// Whether `text` has characters that read right to left (Hebrew, Arabic, Syriac, Thaana, NKo and
+/// the other right-to-left scripts, and the explicit right-to-left marks).
+fn has_rtl_text(text: &str) -> bool {
+    text.chars().any(|c| {
+        matches!(
+            c as u32,
+            0x0590..=0x08FF
+                | 0xFB1D..=0xFDFF
+                | 0xFE70..=0xFEFF
+                | 0x10800..=0x10FFF
+                | 0x1E800..=0x1EFFF
+                | 0x200F
+                | 0x202B
+                | 0x202E
+                | 0x2067
+        )
+    })
+}
+
+/// Whether a paragraph's first strong character reads right to left (Unicode's rule for a paragraph
+/// without a direction of its own), so it is set in a right-to-left embedding. Text that has direction
+/// controls of its own is left alone.
+fn paragraph_reads_right_to_left(text: &str) -> bool {
+    if !has_rtl_text(text) {
+        return false;
+    }
+    if text
+        .chars()
+        .any(|c| matches!(c as u32, 0x202A..=0x202E | 0x2066..=0x2069))
+    {
+        return false;
+    }
+    for c in text.chars() {
+        match c as u32 {
+            0x200F => return true,
+            0x200E => return false,
+            _ if c.is_alphabetic() => {
+                return matches!(
+                    c as u32,
+                    0x0590..=0x08FF
+                        | 0xFB1D..=0xFDFF
+                        | 0xFE70..=0xFEFF
+                        | 0x10800..=0x10FFF
+                        | 0x1E800..=0x1EFFF
+                );
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A stretch of text that wrapping may start a row at: a shaping cluster (or several, where a grapheme
+/// takes more than one) with its width, as shaped on the paragraph's single line.
+#[derive(Debug)]
+struct BreakUnit {
+    /// Where it starts, in utf-8 bytes.
+    start: usize,
+    width: Pixels,
+    /// Only spaces: they hang at the end of a row instead of counting against its width.
+    space: bool,
+    /// Whether the text allows a break right before it.
+    can_break: bool,
+}
+
+/// The paragraph's break units in reading order. Their widths come from the glyph advances of the
+/// paragraph shaped as one line, keyed by logical index (the x positions there are in visual order).
+fn break_units(text: &str, whole: &LineLayout) -> Vec<BreakUnit> {
+    let mut widths: Vec<(usize, Pixels)> = whole
+        .clusters()
+        .iter()
+        .map(|cluster| (cluster.start, (cluster.right - cluster.left).max(px(0.))))
+        .collect();
+    widths.sort_by_key(|(start, _)| *start);
+    let graphemes: FxHashSet<usize> = text.grapheme_indices(true).map(|(ix, _)| ix).collect();
+    let breaks: FxHashSet<usize> = LineWrapper::break_indices(text).collect();
+
+    // A unit starts where a cluster does, if that is a grapheme boundary too: shaping and graphemes
+    // both stay whole.
+    let mut units: Vec<BreakUnit> = Vec::new();
+    for (start, width) in widths {
+        match units.last_mut() {
+            Some(last) if last.start == start || !graphemes.contains(&start) => last.width += width,
+            _ => units.push(BreakUnit {
+                start,
+                width,
+                space: false,
+                can_break: false,
+            }),
+        }
+    }
+    if let Some(first) = units.first_mut() {
+        first.start = 0;
+    }
+    for ix in 0..units.len() {
+        let end = units.get(ix + 1).map_or(text.len(), |next| next.start);
+        let start = units[ix].start;
+        units[ix].space = text[start..end].chars().all(|c| c == ' ');
+        units[ix].can_break = start > 0 && breaks.contains(&start);
+    }
+    units
+}
+
+/// The rows (byte ranges) a paragraph breaks into at `wrap_width`: as many units as fit, breaking at
+/// the last break opportunity, or inside the word if it alone is wider than a row. A row's trailing
+/// spaces don't count against it. With `max_lines`, the last row takes whatever is left.
+fn rows_by_width(
+    text_len: usize,
+    units: &[BreakUnit],
+    wrap_width: Pixels,
+    max_lines: Option<usize>,
+) -> Vec<Range<usize>> {
+    let mut rows: Vec<Range<usize>> = Vec::new();
+    let mut row_start = 0;
+    let mut total = px(0.);
+    let mut candidate: Option<(usize, Pixels)> = None;
+    let mut has_content = false;
+    'units: for (ix, unit) in units.iter().enumerate() {
+        if unit.can_break && has_content && ix > row_start {
+            candidate = Some((ix, total));
+        }
+        total += unit.width;
+        if unit.space {
+            continue;
+        }
+        has_content = true;
+        while total > wrap_width && ix > row_start {
+            if max_lines.is_some_and(|max| rows.len() >= max.saturating_sub(1)) {
+                break 'units;
+            }
+            match candidate.take() {
+                Some((at, width_before)) => {
+                    rows.push(row_start..at);
+                    row_start = at;
+                    total -= width_before;
+                }
+                None => {
+                    rows.push(row_start..ix);
+                    row_start = ix;
+                    total = unit.width;
+                }
+            }
+        }
+    }
+    rows.push(row_start..units.len());
+    rows.into_iter()
+        .map(|unit_range| {
+            let start = units.get(unit_range.start).map_or(text_len, |unit| unit.start);
+            let end = units.get(unit_range.end).map_or(text_len, |unit| unit.start);
+            start..end
+        })
+        .collect()
+}
+
+/// The font runs that cover `range` of the text, rebased to start at its first byte.
+fn slice_font_runs(runs: &[FontRun], range: Range<usize>) -> SmallVec<[FontRun; 4]> {
+    let mut sliced = SmallVec::new();
+    let mut run_start = 0;
+    for run in runs {
+        let run_end = run_start + run.len;
+        let start = run_start.max(range.start);
+        let end = run_end.min(range.end);
+        if start < end {
+            sliced.push(FontRun {
+                len: end - start,
+                font_id: run.font_id,
+            });
+        }
+        if run_end >= range.end {
+            break;
+        }
+        run_start = run_end;
+    }
+    sliced
 }
 
 // Combining marks (e.g. Thai vowel signs, Arabic diacritics) are shaped by

@@ -489,7 +489,6 @@ fn the_icons_settings_draws_are_in_the_embedded_assets(_cx: &mut TestAppContext)
 // ---- About: updates ----------------------------------------------------------------------------------
 
 /// The update model of `updater`'s tests, shared with the Settings that was already open.
-#[cfg(feature = "updater")]
 fn with_updates(
     cx: &mut VisualTestContext,
     policy: crate::updater::Policy,
@@ -503,7 +502,6 @@ fn with_updates(
 }
 
 /// The hint under the row called `row` (what a screen reader reads after its name).
-#[cfg(feature = "updater")]
 fn hint_of(cx: &mut VisualTestContext, row: &str) -> Option<String> {
     let id = SharedString::from(format!("settings-row-{row}"));
     cx.update(|window, cx| {
@@ -512,7 +510,6 @@ fn hint_of(cx: &mut VisualTestContext, row: &str) -> Option<String> {
     })
 }
 
-#[cfg(feature = "updater")]
 #[gpui_kit::test]
 fn about_checks_for_updates_and_says_how_it_went(cx: &mut TestAppContext) {
     let _guard = testing::lock();
@@ -548,7 +545,6 @@ fn about_checks_for_updates_and_says_how_it_went(cx: &mut TestAppContext) {
     });
 }
 
-#[cfg(feature = "updater")]
 #[gpui_kit::test]
 fn about_offers_a_newer_version_and_installs_it(cx: &mut TestAppContext) {
     let _guard = testing::lock();
@@ -576,7 +572,6 @@ fn about_offers_a_newer_version_and_installs_it(cx: &mut TestAppContext) {
     settle(&mut visual, |_| *rig.quit.borrow() == 1);
 }
 
-#[cfg(feature = "updater")]
 #[gpui_kit::test]
 fn about_says_plainly_when_an_update_was_refused(cx: &mut TestAppContext) {
     let _guard = testing::lock();
@@ -607,7 +602,6 @@ fn about_says_plainly_when_an_update_was_refused(cx: &mut TestAppContext) {
 }
 
 /// About in a copy that never updates itself: the reason, and no check.
-#[cfg(feature = "updater")]
 fn about_without_updates(cx: &mut TestAppContext, policy: crate::updater::Policy, hint: &str) {
     let _guard = testing::lock();
     let fake = Arc::new(Fake::new());
@@ -621,7 +615,6 @@ fn about_without_updates(cx: &mut TestAppContext, policy: crate::updater::Policy
     assert!(rig.fake.asked().is_empty());
 }
 
-#[cfg(feature = "updater")]
 #[gpui_kit::test]
 fn about_has_no_check_in_the_stores_copy(cx: &mut TestAppContext) {
     about_without_updates(
@@ -631,13 +624,11 @@ fn about_has_no_check_in_the_stores_copy(cx: &mut TestAppContext) {
     );
 }
 
-#[cfg(feature = "updater")]
 #[gpui_kit::test]
 fn about_has_no_check_in_a_debug_build(cx: &mut TestAppContext) {
     about_without_updates(cx, crate::updater::Policy::Off, "Updates are off in a debug build");
 }
 
-#[cfg(feature = "updater")]
 #[gpui_kit::test]
 fn about_updates_row_mirrors_in_arabic(cx: &mut TestAppContext) {
     let _guard = testing::lock();

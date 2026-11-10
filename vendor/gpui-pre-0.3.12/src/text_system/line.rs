@@ -518,6 +518,65 @@ impl WrappedLine {
     }
 }
 
+/// Finds the decoration run a glyph is in. The runs cover the text in order and glyphs normally come in
+/// text order too, so it mostly just moves forward; glyphs of right-to-left text come in screen order,
+/// where the text index goes back, and then it starts over from the first run.
+struct DecorationCursor<'a> {
+    runs: &'a [DecorationRun],
+    /// The next run to look at, and the text covered by the one before it.
+    next: usize,
+    start: usize,
+    end: usize,
+    /// The length of the text: where the glyphs past the last run (if any) end.
+    len: usize,
+}
+
+impl<'a> DecorationCursor<'a> {
+    fn new(runs: &'a [DecorationRun], len: usize) -> Self {
+        Self {
+            runs,
+            next: 0,
+            start: 0,
+            end: 0,
+            len,
+        }
+    }
+
+    /// Whether the index is in the run the last `seek` found.
+    fn covers(&self, index: usize) -> bool {
+        self.start <= index && index < self.end
+    }
+
+    /// `None` if `index` is still in the run found last, else the run it is in (`None` inside, if no
+    /// run covers it) and where that run starts. Runs that cover no glyph start are skipped.
+    #[allow(clippy::type_complexity)]
+    fn seek(&mut self, index: usize) -> Option<Option<(&'a DecorationRun, usize)>> {
+        if self.covers(index) {
+            return None;
+        }
+        if index < self.start {
+            self.next = 0;
+            self.end = 0;
+        }
+        let mut run_start = self.end;
+        loop {
+            let Some(run) = self.runs.get(self.next) else {
+                self.start = run_start;
+                self.end = self.len.max(run_start);
+                return Some(None);
+            };
+            self.next += 1;
+            let run_end = run_start + run.len as usize;
+            if index < run_end {
+                self.start = run_start;
+                self.end = run_end;
+                return Some(Some((run, run_start)));
+            }
+            run_start = run_end;
+        }
+    }
+}
+
 fn paint_line(
     origin: Point<Pixels>,
     layout: &LineLayout,
@@ -548,9 +607,8 @@ fn paint_line(
         let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
         let baseline_offset = point(px(0.), padding_top + layout.ascent);
         let underline_y_offset = underline_y_offset(line_height, layout.ascent, layout.descent);
-        let mut decoration_runs = decoration_runs.iter();
+        let mut decorations = DecorationCursor::new(decoration_runs, layout.len);
         let mut wraps = wrap_boundaries.iter().peekable();
-        let mut run_end = 0;
         let mut color = black();
         let mut current_underline: Option<(Point<Pixels>, UnderlineStyle, Range<usize>)> = None;
         let mut current_strikethrough: Option<(Point<Pixels>, StrikethroughStyle)> = None;
@@ -593,7 +651,7 @@ fn paint_line(
                             underline_style,
                             window,
                         );
-                        if glyph.index < run_end {
+                        if decorations.covers(glyph.index) {
                             underline_origin.x = origin.x;
                             underline_origin.y += line_height;
                         } else {
@@ -611,7 +669,7 @@ fn paint_line(
                             glyph_origin.x - strikethrough_origin.x,
                             strikethrough_style,
                         );
-                        if glyph.index < run_end {
+                        if decorations.covers(glyph.index) {
                             strikethrough_origin.x = origin.x;
                             strikethrough_origin.y += line_height;
                         } else {
@@ -634,26 +692,19 @@ fn paint_line(
                 let mut finished_underline: Option<(Point<Pixels>, UnderlineStyle, Range<usize>)> =
                     None;
                 let mut finished_strikethrough: Option<(Point<Pixels>, StrikethroughStyle)> = None;
-                if glyph.index >= run_end {
-                    let mut style_run = decoration_runs.next();
-
-                    // ignore style runs that apply to a partial glyph
-                    while let Some(run) = style_run {
-                        if glyph.index < run_end + (run.len as usize) {
-                            break;
-                        }
-                        run_end += run.len as usize;
-                        style_run = decoration_runs.next();
-                    }
-
-                    if let Some(style_run) = style_run {
-                        let style_run_start = run_end;
+                // The style run the glyph is in. Glyphs are in the order they show on screen, which
+                // for right-to-left text is not the order of the text, so this may go back.
+                if let Some(found) = decorations.seek(glyph.index) {
+                    if let Some((style_run, style_run_start)) = found {
                         if let Some((_, underline_style, underline_range)) = &mut current_underline
                         {
                             if style_run.underline.as_ref() != Some(underline_style) {
                                 finished_underline = current_underline.take();
                             } else {
-                                underline_range.end = style_run_start + style_run.len as usize;
+                                underline_range.start = underline_range.start.min(style_run_start);
+                                underline_range.end = underline_range
+                                    .end
+                                    .max(style_run_start + style_run.len as usize);
                             }
                         }
                         if let Some(run_underline) = style_run.underline.as_ref() {
@@ -686,10 +737,8 @@ fn paint_line(
                             ));
                         }
 
-                        run_end += style_run.len as usize;
                         color = style_run.color;
                     } else {
-                        run_end = layout.len;
                         finished_underline = current_underline.take();
                         finished_strikethrough = current_strikethrough.take();
                     }
@@ -808,9 +857,8 @@ fn paint_line_background(
         wrap_boundaries,
     );
     window.paint_layer(line_bounds, |window| {
-        let mut decoration_runs = decoration_runs.iter();
+        let mut decorations = DecorationCursor::new(decoration_runs, layout.len);
         let mut wraps = wrap_boundaries.iter().peekable();
-        let mut run_end = 0;
         let mut current_background: Option<(Point<Pixels>, Hsla)> = None;
         let text_system = cx.text_system().clone();
         let mut glyph_origin = point(
@@ -846,7 +894,7 @@ fn paint_line_background(
                             },
                             *background_color,
                         ));
-                        if glyph.index < run_end {
+                        if decorations.covers(glyph.index) {
                             background_origin.x = origin.x;
                             background_origin.y += line_height;
                         } else {
@@ -867,19 +915,8 @@ fn paint_line_background(
                 prev_glyph_position = glyph.position;
 
                 let mut finished_background: Option<(Point<Pixels>, Hsla)> = None;
-                if glyph.index >= run_end {
-                    let mut style_run = decoration_runs.next();
-
-                    // ignore style runs that apply to a partial glyph
-                    while let Some(run) = style_run {
-                        if glyph.index < run_end + (run.len as usize) {
-                            break;
-                        }
-                        run_end += run.len as usize;
-                        style_run = decoration_runs.next();
-                    }
-
-                    if let Some(style_run) = style_run {
+                if let Some(found) = decorations.seek(glyph.index) {
+                    if let Some((style_run, _)) = found {
                         if let Some((_, background_color)) = &mut current_background
                             && style_run.background_color.as_ref() != Some(background_color)
                         {
@@ -891,9 +928,7 @@ fn paint_line_background(
                                 run_background,
                             ));
                         }
-                        run_end += style_run.len as usize;
                     } else {
-                        run_end = layout.len;
                         finished_background = current_background.take();
                     }
                 }

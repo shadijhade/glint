@@ -156,7 +156,7 @@ Add-Check 'rename-undo' 'Rename from the item menu opens the real rename box, re
     Assert-Eventually { (Test-RowsShown @('beta.txt', 'moveme.txt')) -and (Test-RowGone 'renamed.txt') } 'the list shows the original names again'
 }
 
-Add-Check 'rename-cancel-focus' 'after Escape closes the rename box the keyboard still works (Ctrl+L)' -Known "when the rename box is closed with Escape nothing is left holding the keyboard focus, so shortcuts and the buttons that run actions (Ctrl+L, the palette button...) do nothing until a click in the list" {
+Add-Check 'rename-cancel-focus' 'after Escape closes the rename box the keyboard still works (Ctrl+L)' {
     Select-Row 'gamma.md'
     Send-Key 'f2'
     Assert-Eventually { Get-RenameBox } 'F2 opens the rename box'
@@ -167,7 +167,7 @@ Add-Check 'rename-cancel-focus' 'after Escape closes the rename box the keyboard
     Assert-Eventually { Find-El -Type Edit -Name 'Address' } 'Ctrl+L still opens the address box' 3
 }
 
-Add-Check 'rename-enter' 'Enter in the rename box commits the name and does nothing else' -Known "Enter in the rename box also runs the list's Open on the old name (file_list/rename.rs stops only Escape; gpui's Input propagates Enter), so a renamed folder is 'opened' under its old name and a renamed file would launch its app" {
+Add-Check 'rename-enter' 'Enter in the rename box commits the name and does nothing else' {
     Select-Row 'target2'
     Send-Key 'f2'
     Assert-Eventually { Get-RenameBox } 'F2 opens the rename box on a folder (a folder, so a stray Open is harmless)'
@@ -249,7 +249,7 @@ Add-Check 'drop-from-explorer' 'a file dragged out of a real File Explorer windo
     Assert-Eventually { (Get-OpenMenu) -eq $null } 'no menu or dialog opened by the drop'
 }
 
-Add-Check 'drop-after-key' 'a file dragged in from File Explorer is also accepted after a key was pressed in Glint' -Known "after any key press in Glint a drop from another app is ignored (the drag even says 'Copy to target') until the mouse has moved over Glint's window; the app's own drags are unaffected" {
+Add-Check 'drop-after-key' 'a file dragged in from File Explorer is also accepted after a key was pressed in Glint' {
     $arrived = Invoke-ExplorerDrop -Prep key
     if ($null -eq $arrived) { return }
     Assert-True $arrived 'the file dropped from File Explorer arrived in the target folder'
