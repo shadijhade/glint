@@ -122,6 +122,8 @@ pub struct Explorer {
     pub diff_only: bool,
     pub(super) drives: Arc<[Drive]>,
     pub(super) known: Arc<[KnownFolder]>,
+    /// The Gallery's folders last handed to glint-core ([`Explorer::push_gallery_folders`]).
+    pub(super) gallery_sent: Option<Vec<String>>,
     /// Remote connections' names by lower-case id, for [`tab_name`] (the remotes part sets them).
     pub(super) remote_names: HashMap<String, String>,
     /// The address bar is being typed in (reset by anything that changes the folder shown).
@@ -188,6 +190,7 @@ impl Explorer {
             diff_only: false,
             drives: Arc::from(Vec::new()),
             known: Arc::from(Vec::new()),
+            gallery_sent: None,
             remote_names: HashMap::new(),
             editing_address: false,
             quick_look: false,
@@ -532,10 +535,32 @@ impl Explorer {
 
     /// The settings (or the folders' own views) changed: sort, group, columns and rows follow.
     pub(super) fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
+        self.push_gallery_folders(cx);
         self.refresh_views(cx);
         // Show hidden items changes what is compared.
         self.refresh_comparison(cx);
         cx.notify();
+    }
+
+    /// Hands glint-core the Gallery's folders when they change: Pictures and Videos, and the ones added in Settings
+    /// (`initGallery`). The Gallery lists the photos and videos below them.
+    pub(super) fn push_gallery_folders(&mut self, cx: &mut Context<Self>) {
+        let known: Vec<String> = self
+            .known
+            .iter()
+            .filter(|k| matches!(k.id, KnownId::Pictures | KnownId::Videos))
+            .map(|k| k.path.clone())
+            .collect();
+        let added = crate::state::settings(cx).gallery_folders.clone();
+        let mut folders = known.clone();
+        folders.extend(added.into_iter().filter(|f| !known.iter().any(|k| same_path(k, f))));
+        if self.gallery_sent.as_ref() == Some(&folders) {
+            return;
+        }
+        self.gallery_sent = Some(folders.clone());
+        if let Some(core) = cx.try_global::<core_bridge::Core>() {
+            glint_core::gallery::gallery_set_folders(core.app.clone(), folders);
+        }
     }
 
     /// Resolves every tab's sort, group and columns from the settings and the folders' own views, and rebuilds
