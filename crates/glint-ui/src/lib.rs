@@ -24,6 +24,9 @@ pub mod explorer;
 pub mod i18n;
 pub mod kit;
 pub mod notices;
+/// Typst in process: a World over the disk and the system fonts, compiling to pages and PDF. Wave 11 slot.
+#[cfg(feature = "typst")]
+pub mod typst_engine;
 pub mod persistence;
 pub mod platform;
 mod selftest;

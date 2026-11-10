@@ -42,3 +42,6 @@ pub mod tab_strip;
 pub mod text_search;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
+/// The terminal pane: shells in tabs under the files (TerminalPanel.tsx). Wave 11 slot.
+#[cfg(feature = "terminal")]
+pub mod terminal;
