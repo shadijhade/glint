@@ -9,6 +9,8 @@
 //! `GLINT_SELFTEST=show:<file>` opens the file's folder with it selected and the preview pane on, and stays
 //! open for a look (a capture). Release builds ignore the variable.
 //!
+//! `GLINT_SELFTEST=wave9:<folder>`: folder sizes and Git's marks (see `wave9_checks`).
+//!
 //! `GLINT_SELFTEST=wave8:<folder>` (a scratch folder holding `a.txt` with the word "needle" in it, and `b.txt`):
 //! text search finds the needle (Ctrl+Shift+F, then a search as a recent one runs) and goes back to the files;
 //! the disk usage map comes up and goes again; Compare opens on the two files; the two are compressed into
@@ -79,19 +81,20 @@ pub(crate) fn start(cx: &mut App) {
         .detach();
         return;
     }
-    let (folder, wave8) = match (script.strip_prefix("ops:"), script.strip_prefix("wave8:")) {
-        (Some(folder), _) => (PathBuf::from(folder), false),
-        (_, Some(folder)) => (PathBuf::from(folder), true),
-        _ => {
-            eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
-            return;
-        }
+    let Some((name, folder)) = script.split_once(':') else {
+        eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
+        return;
     };
+    let (name, folder) = (name.to_string(), PathBuf::from(folder));
+    if !["ops", "wave8", "wave9"].contains(&name.as_str()) {
+        eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
+        return;
+    }
     cx.spawn(async move |cx| {
-        let log = if wave8 {
-            wave8_checks(&folder, cx).await
-        } else {
-            ops(&folder, cx).await
+        let log = match name.as_str() {
+            "wave8" => wave8_checks(&folder, cx).await,
+            "wave9" => wave9_checks(&folder, cx).await,
+            _ => ops(&folder, cx).await,
         };
         let _ = std::fs::write(folder.join("selftest.log"), log.join("\r\n"));
         cx.update(|cx| cx.quit());
@@ -402,7 +405,24 @@ async fn wave8_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     check(&mut log, "compare opens", comparing);
     in_main(cx, |window, cx| window.close_dialog(cx));
 
-    // 5. The two compressed into a.zip, and that extracted beside it.
+    // 5. The two compressed into a.zip, and that extracted beside it. What the explorer says meanwhile is logged.
+    let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let sink = heard.clone();
+    let _listening = cx.update(|cx| {
+        let explorer = explorer::explorer(cx);
+        cx.subscribe(&explorer, move |_, event: &explorer::ExplorerEvent, _| {
+            let said = match event {
+                explorer::ExplorerEvent::Archive(n) => Some(format!("archive: {n:?}")),
+                explorer::ExplorerEvent::Operation(n) => Some(format!("operation: {n:?}")),
+                explorer::ExplorerEvent::Notice(n) => Some(format!("notice: {n:?}")),
+                explorer::ExplorerEvent::Action(n) => Some(format!("action: {n:?}")),
+                _ => None,
+            };
+            if let Some(said) = said {
+                sink.borrow_mut().push(said);
+            }
+        })
+    });
     let paths = vec![a.clone(), b.clone()];
     cx.update(|cx| {
         explorer::explorer(cx).update(cx, |e, cx| {
@@ -412,6 +432,12 @@ async fn wave8_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     let zip = folder.join("a.zip");
     let zipped = wait_for(cx, Duration::from_secs(30), |_| zip.exists()).await;
     check(&mut log, &format!("compress: {:?}", names(folder)), zipped);
+    // The zip stays where it was made.
+    cx.background_executor().timer(Duration::from_millis(1500)).await;
+    log.push(format!("     1.5 s later: {:?}", names(folder)));
+    for said in heard.borrow_mut().drain(..) {
+        log.push(format!("     {said}"));
+    }
     if zipped {
         let zip_path = zip.to_string_lossy().into_owned();
         cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.extract_here(&zip_path, cx).detach()));
@@ -425,6 +451,89 @@ async fn wave8_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
             &format!("extract: {:?} in a: {:?}", names(folder), names(&out)),
             extracted,
         );
+        for said in heard.borrow_mut().drain(..) {
+            log.push(format!("     {said}"));
+        }
     }
+    log
+}
+
+/// `GLINT_SELFTEST=wave9:<folder>` (a scratch folder that is a Git repository with `a.txt` changed since its
+/// commit, and a `photos` folder with files in it): folder sizes are measured and `photos` gets its size; Git's
+/// status line comes and `a.txt` carries its "Changed" badge.
+async fn wave9_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
+    use crate::components::git;
+    let mut log = Vec::new();
+    let dir = folder.to_string_lossy().into_owned();
+    let check = |log: &mut Vec<String>, step: &str, ok: bool| {
+        log.push(format!("{} {step}", if ok { "OK  " } else { "FAIL" }));
+        ok
+    };
+
+    // 1. The folder is open in the active tab.
+    let target = dir.clone();
+    cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.navigate(target, Default::default(), cx)));
+    let opened = wait_for(cx, Duration::from_secs(10), |cx| {
+        cx.update(|cx| {
+            let e = explorer::explorer(cx).read(cx);
+            e.active_tab()
+                .is_some_and(|t| t.path.eq_ignore_ascii_case(&dir) && t.rows.len() >= 2)
+        })
+    })
+    .await;
+    if !check(&mut log, &format!("open the folder: {:?}", names(folder)), opened) {
+        return log;
+    }
+
+    // 2. Folder sizes (the command bar's Folder sizes, the folder menu's).
+    cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.calc_sizes(cx)));
+    let sized = wait_for(cx, Duration::from_secs(30), |cx| {
+        cx.update(|cx| {
+            let e = explorer::explorer(cx).read(cx);
+            let path = e.active_tab().map(|t| t.path.clone()).unwrap_or_default();
+            e.size_run(&path).is_some_and(|run| !run.running)
+                && e.folder_size(&path, "photos").is_some_and(|size| size > 0)
+        })
+    })
+    .await;
+    let said = cx.update(|cx| {
+        let e = explorer::explorer(cx).read(cx);
+        let path = e.active_tab().map(|t| t.path.clone()).unwrap_or_default();
+        let line = e
+            .size_run(&path)
+            .and_then(|run| run.sized())
+            .map(|line| format!("{} sized {} B in {:.1} ms", line.engine, line.total, line.elapsed))
+            .unwrap_or_default();
+        format!("{line}; photos: {:?} B", e.folder_size(&path, "photos"))
+    });
+    check(&mut log, &format!("folder sizes: {said}"), sized);
+
+    // 3. Git: the status bar's line, and a.txt's badge.
+    let read = wait_for(cx, Duration::from_secs(20), |cx| {
+        cx.update(|cx| {
+            let tab = explorer::explorer(cx).read(cx).active_tab_id();
+            git::marks(cx, tab).is_some_and(|marks| !marks.is_empty())
+        })
+    })
+    .await;
+    let (line, badge) = cx.update(|cx| {
+        let e = explorer::explorer(cx).read(cx);
+        let tab = e.active_tab_id();
+        let line = git::status_line(cx, tab)
+            .map(|l| l.said.to_string())
+            .unwrap_or_default();
+        let marks = git::marks(cx, tab);
+        let badge = e
+            .active_tab()
+            .and_then(|t| t.rows.iter().find(|r| r.name == "a.txt"))
+            .and_then(|entry| git::row_git(entry, marks.as_deref()).badge)
+            .map(|b| b.label.to_string());
+        (line, badge)
+    });
+    check(
+        &mut log,
+        &format!("git: {line}; a.txt: {badge:?}"),
+        read && badge.as_deref() == Some("Changed"),
+    );
     log
 }

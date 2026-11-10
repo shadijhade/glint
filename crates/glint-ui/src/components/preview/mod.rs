@@ -35,11 +35,11 @@
 //! # Not ported yet
 //!
 //! Each is marked `PORT ME(<kind>)` where it belongs: video and audio (and their Trim, Waveform, Transcript), PDF
-//! pages, books, Word documents, 3D models, notebooks, Typst, cast recordings, SQLite and workbooks as tables,
-//! program headers, the small previews (contacts, calendars, mail, design files, Graphviz, Mermaid), the Changes,
-//! Query and Profile views, Compare, File X-Ray, the repository card and folder sizes. Until then those files get
-//! what the TypeScript showed when its own previewer failed: Windows' previewer over the file's icon, or the
-//! file as text.
+//! pages, books, Word documents, 3D models, Typst, cast recordings, Graphviz and Mermaid drawings, and HTML mail
+//! drawn as a page (the text is shown). Until then those files get what the TypeScript showed when its own
+//! previewer failed: Windows' previewer over the file's icon, or the file as text. (Wave 9 brought SQLite and
+//! workbook tables, notebooks, program headers with the signature chip, contacts, calendars, mail, the Changes,
+//! Query and Profile views, Compare, File X-Ray, the repository card and folder sizes.)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
 pub mod data;
@@ -54,25 +54,25 @@ pub mod cards;
 pub mod choose;
 pub mod details;
 pub mod frame;
+/// Jupyter notebooks as they read (NotebookView.tsx).
+pub mod notebook;
 pub mod pane;
 pub mod picture;
 pub mod probe;
-pub mod quick_look;
-pub mod shell;
-pub mod sources;
-pub mod states;
-/// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).
-pub mod sqlite;
-/// Workbooks and Parquet as tables (SheetPreview in FilePreview.tsx).
-pub mod sheet;
-/// Jupyter notebooks as they read (NotebookView.tsx).
-pub mod notebook;
 /// A program's sections, imports and exports (BinaryPreview.tsx).
 pub mod program;
-/// Contacts, calendars, mail, design files (SmallPreviews.tsx).
-pub mod small;
+pub mod quick_look;
+/// Workbooks and Parquet as tables (SheetPreview in FilePreview.tsx).
+pub mod sheet;
+pub mod shell;
 /// Who signed a program, and whether Windows trusts it (SignatureChip.tsx).
 pub mod signature;
+/// Contacts, calendars, mail, design files (SmallPreviews.tsx).
+pub mod small;
+pub mod sources;
+/// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).
+pub mod sqlite;
+pub mod states;
 #[cfg(test)]
 mod tests;
 

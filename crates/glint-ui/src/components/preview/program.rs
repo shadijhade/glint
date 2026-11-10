@@ -12,11 +12,10 @@
 //! | the Sections, Imports and Exports tabs       | [`PeTab`]                                                     |
 //! | `SignatureChip` in the header                | [`ProgramPreview::set_signature`]: the chip is another module's (`signature.rs`) |
 //!
-//! `preview::hex` already holds a port of this previewer (`BinaryPreview`, written with the hex view). This
-//! one is the same screen with two differences: the Imports tab is virtualized (a library can import 64 names
-//! and a program 128 libraries, and every name is a button, so drawing them all each frame was thousands of
-//! buttons), and the header has a place for the signature chip. The pieces that need no change are used from
-//! `hex` rather than copied. Once the frame builds this one, `hex::BinaryPreview` is not needed.
+//! This screen replaced `hex::BinaryPreview`, a first port written with the hex view: the Imports tab is
+//! virtualized (a library can import 64 names and a program 128 libraries, and every name is a button, so
+//! drawing them all each frame was thousands of buttons), and the header has a place for the signature chip
+//! (the frame builds it). The pieces both needed (the source, the tabs, the filters) stay in `hex`.
 //!
 //! The read is glint-core's `inspect_pe`, which reads the headers only (the first bytes of the file), so a
 //! program of any size is quick. Sections are capped at 96, imports at 128 libraries of 64 names each and
@@ -151,6 +150,11 @@ impl ProgramPreview {
     pub fn set_signature(&mut self, chip: Option<AnyView>, cx: &mut Context<Self>) {
         self.signature = chip;
         cx.notify();
+    }
+
+    /// Whether the frame handed over a signature chip.
+    pub fn has_signature(&self) -> bool {
+        self.signature.is_some()
     }
 
     /// Switches tab; the filter box says what it filters.

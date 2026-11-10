@@ -137,12 +137,30 @@ pub enum UndoAction {
     Restore(Vec<MoveItem>),
     /// A rename taken back: the item at `path` gets `name` again.
     Rename { path: String, name: String },
+    /// Several actions taken back as one step, one Ctrl+Z and one label: undone last-recorded first (a run that
+    /// replaced files records `[Restore(replaced), Recycle(made)]`: what was made is recycled, then the
+    /// originals come back).
+    Sequence(Vec<UndoAction>),
 }
 
 impl UndoAction {
-    /// The file operation that does it.
+    /// The file operations that do it, in the order they run (a `Sequence` runs its last action first).
+    pub fn ops(&self) -> Vec<FileOp> {
+        match self {
+            UndoAction::Sequence(actions) => actions.iter().rev().flat_map(UndoAction::ops).collect(),
+            single => vec![single.op()],
+        }
+    }
+
+    /// The file operation that does a single action. A `Sequence` has several: use [`UndoAction::ops`]; this
+    /// gives its first.
     pub fn op(&self) -> FileOp {
         match self {
+            UndoAction::Sequence(actions) => actions.last().map(UndoAction::op).unwrap_or(FileOp::Delete {
+                paths: Vec::new(),
+                permanent: false,
+                confirm: false,
+            }),
             UndoAction::Recycle(paths) => FileOp::Delete {
                 paths: paths.clone(),
                 permanent: false,

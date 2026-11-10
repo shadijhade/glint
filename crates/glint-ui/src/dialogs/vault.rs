@@ -1,6 +1,7 @@
 //! Encrypting and decrypting with age: "Encrypt…" and "Decrypt…".
 //! Ported from src/components/explorer/VaultDialog.tsx, with the parts of ActionParts.tsx and actions.ts it used
-//! (where what is made goes, the run's progress, its result and its buttons), kept private here.
+//! (where what is made goes, the run, Ctrl+Z), which now live in `dialogs::action_run`; the run's progress, result
+//! and footer are drawn here.
 //!
 //! | TypeScript                           | Here                                                                 |
 //! |--------------------------------------|----------------------------------------------------------------------|
@@ -8,16 +9,17 @@
 //! | `openVault(entries, mode)`           | [`open`]                                                              |
 //! | `VaultDialog` / `VaultModal`         | [`VaultDialog`]                                                       |
 //! | `invoke("vault_run")`, `vault_cancel`| [`Backend::run`], [`Backend::cancel`]                                 |
-//! | `useActionRun`                       | [`Run`]                                                               |
+//! | `useActionRun`                       | [`Run`] (action_run)                                                               |
 //! | `WhereChooser`, `badOutput`          | [`Where`], [`bad_output`]                                             |
 //! | `RunProgress`, `RunResult`, `RunFooter` | the dialog's own progress, result and footer                       |
-//! | `offerActionUndo`                    | [`remember_undo`] (Ctrl+Z; see the note there)                        |
+//! | `offerActionUndo`                    | [`remember_undo`] (action_run; one Ctrl+Z step)                       |
 //!
 //! **How the coordinator wires it.** `MenuEvent::Vault { paths, decrypt }` (the Encrypt… and Decrypt… items):
 //! call `dialogs::vault::open(window, cx, paths, decrypt)`. It keeps the paths the mode takes (the menus have
 //! checked what is on disk, a file or folder, and not a Recycle Bin item, archive member or online-only file
 //! already, as `onDisk` did) and says so in a notification when none is left.
 
+use crate::dialogs::action_run::{bad_output, remember_undo, where_they_are, Run, Where, WhereKind};
 use crate::kit::prelude::*;
 use crate::{core_bridge, explorer, t, theme};
 use glint_core::actions::{Output, Progress, Report};
@@ -25,7 +27,6 @@ use glint_core::host::Manager as _;
 use glint_core::vault::VaultTask;
 use glint_model::format::{format_count, format_duration, plural};
 use glint_model::paths::{base_name, parent_path};
-use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -153,54 +154,6 @@ pub fn recipients(text: &str) -> Vec<String> {
         .collect()
 }
 
-// ---- Where what is made goes (WhereChooser, badOutput) -------------------------------------------------
-
-/// Where what a file action makes goes (`ActionOutput`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Where {
-    /// Next to each file, its name and `suffix`.
-    Beside { suffix: String },
-    /// Into a folder of this name next to them.
-    Folder { name: String },
-    /// In their place, the files moved to the Recycle Bin.
-    Replace,
-}
-
-impl Where {
-    /// core's `Output`.
-    pub fn output(&self) -> Output {
-        match self {
-            Where::Beside { suffix } => Output::Beside { suffix: suffix.clone() },
-            Where::Folder { name } => Output::Folder { name: name.clone() },
-            Where::Replace => Output::Replace,
-        }
-    }
-}
-
-/// Whether a suffix or folder name can't be used: a character Windows names can't hold, or ending in a dot or
-/// space (`NOT_IN_NAMES`).
-fn not_in_names(text: &str) -> bool {
-    text.chars()
-        .any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
-        || text.ends_with(['.', ' '])
-}
-
-/// Whether the chosen output can't be used (`badOutput`).
-pub fn bad_output(output: &Where) -> bool {
-    match output {
-        Where::Beside { suffix } => not_in_names(suffix),
-        Where::Folder { name } => name.trim().is_empty() || not_in_names(name),
-        Where::Replace => false,
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WhereKind {
-    Beside,
-    Folder,
-    Replace,
-}
-
 /// Which way to lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lock {
@@ -217,53 +170,6 @@ pub enum Mode {
     Encrypt,
     /// Unlock `.age` files.
     Decrypt,
-}
-
-// ---- The run (useActionRun) ----------------------------------------------------------------------------
-
-/// Where a run stands.
-#[derive(Clone, Debug)]
-pub enum Run {
-    /// Not started: the choices are on screen.
-    Setup,
-    /// Under way, with how far.
-    Running(Progress),
-    /// Finished, with the report.
-    Done(Report),
-    /// Failed as a whole, with why.
-    Failed(SharedString),
-}
-
-/// Keeps how to take back what `report` made, for Ctrl+Z (`offerActionUndo`): what it made is recycled and the
-/// files it replaced come back from the Recycle Bin.
-///
-/// NOTE(port): the TypeScript took both back in one step, and offered the step in a toast with an Undo button.
-/// The explorer's undo steps hold one action each, so the replaced files' restore is its own step, below the
-/// recycling of what was made: Ctrl+Z recycles what was made, the next brings the originals back.
-pub fn remember_undo(report: &Report, what: &str, cx: &mut App) {
-    if report.made.is_empty() {
-        return;
-    }
-    let Some(explorer) = explorer::try_explorer(cx) else {
-        return;
-    };
-    let back: Vec<explorer::MoveItem> = report
-        .recycled
-        .iter()
-        .map(|r| explorer::MoveItem {
-            path: r.bin.clone(),
-            folder: parent_path(&r.path),
-            name: base_name(&r.path).to_string(),
-        })
-        .collect();
-    let made = report.made.clone();
-    let what = what.to_string();
-    explorer.update(cx, |explorer, cx| {
-        if !back.is_empty() {
-            explorer.remember_undo(what.clone(), explorer::UndoAction::Restore(back), cx);
-        }
-        explorer.remember_undo(what, explorer::UndoAction::Recycle(made), cx);
-    });
 }
 
 // ---- The dialog -------------------------------------------------------------------------------------------
@@ -1063,15 +969,6 @@ pub fn title(files: &[String], mode: Mode) -> SharedString {
     match mode {
         Mode::Encrypt => t!("Encrypt {what}", what = what),
         Mode::Decrypt => t!("Decrypt {what}", what = what),
-    }
-}
-
-/// Where the files are: their folder, or how many folders.
-pub fn where_they_are(files: &[String]) -> SharedString {
-    let folders: HashSet<String> = files.iter().map(|f| parent_path(f).to_lowercase()).collect();
-    match (folders.len(), files.first()) {
-        (1, Some(first)) => parent_path(first).into(),
-        _ => t!("In {n} folders", n = format_count(folders.len())),
     }
 }
 

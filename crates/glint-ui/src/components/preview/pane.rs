@@ -11,8 +11,10 @@ use super::frame::{EntryView, Place};
 use super::picture::release_retired;
 use super::states::centered;
 use crate::components::file_grid::thumbnail::{self, Thumbnails, Want};
-use crate::dialogs::batch_rename;
-use crate::explorer::{self, Explorer, ExplorerEvent, Rows, Selection, Tab};
+use crate::components::git::RepoCard;
+use crate::dialogs::action_run::tools_model;
+use crate::dialogs::{batch_rename, check, compare_files};
+use crate::explorer::{self, CompressFormat, Explorer, ExplorerEvent, Rows, Selection, Tab};
 use crate::kit::prelude::*;
 use crate::{state, t, theme};
 use glint_model::entries::{is_archived, is_closed, is_recycled, is_remote, FileEntry};
@@ -65,8 +67,9 @@ impl Scan {
 }
 
 impl Summary {
-    /// What `tab` shows, with what its listing was scanned for.
-    fn of(tab: &Tab, scan: Scan) -> Summary {
+    /// What `tab` shows, with what its listing was scanned for and the total its folder sizes came to (the bin's
+    /// own total comes first: `binTotal ?? sizeRun?.total`).
+    fn of(tab: &Tab, scan: Scan, sized: Option<u64>) -> Summary {
         let find = tab.find.is_some();
         Summary {
             path: tab
@@ -74,7 +77,7 @@ impl Summary {
                 .as_ref()
                 .map_or_else(|| tab.path.clone(), |find| find.scope.clone()),
             items: tab.rows.len(),
-            total: scan.total,
+            total: scan.total.or(sized),
             no_access: tab.is_closed() && !find,
             repo: scan.repo,
         }
@@ -176,10 +179,12 @@ struct Fingerprint {
     anchor: Option<String>,
     summary_path: String,
     closed: bool,
+    /// The folder sizes measured for the folder, once done.
+    sized: Option<u64>,
 }
 
 impl Fingerprint {
-    fn of(tab: &Tab) -> Fingerprint {
+    fn of(tab: &Tab, sized: Option<u64>) -> Fingerprint {
         Fingerprint {
             tab: tab.id,
             entries: tab
@@ -193,6 +198,7 @@ impl Fingerprint {
             anchor: tab.selection.anchor().map(str::to_string),
             summary_path: tab.find.as_ref().map_or_else(|| tab.path.clone(), |f| f.scope.clone()),
             closed: tab.is_closed(),
+            sized,
         }
     }
 }
@@ -204,6 +210,8 @@ pub struct PreviewPane {
     summary: Summary,
     shown: Shown,
     view: Option<Entity<EntryView>>,
+    /// The repository's card, while the folder's card shows for a repository's own folder.
+    repo_card: Option<Entity<RepoCard>>,
     seen: Option<Fingerprint>,
     /// The scan of the listing shown, with the listing's address and the path it is for.
     scanned: Option<(usize, String, Scan)>,
@@ -228,6 +236,7 @@ impl PreviewPane {
                     | ExplorerEvent::ListingChanged { .. }
                     | ExplorerEvent::TabsChanged
                     | ExplorerEvent::PaneFocused
+                    | ExplorerEvent::SizesChanged { .. }
                     | ExplorerEvent::TabChanged(_) => this.refresh(window, cx),
                     _ => {}
                 },
@@ -238,6 +247,7 @@ impl PreviewPane {
             summary: Summary::default(),
             shown: Shown::Nothing,
             view: None,
+            repo_card: None,
             seen: None,
             scanned: None,
             generation: 0,
@@ -271,7 +281,15 @@ impl PreviewPane {
             let Some(tab) = explorer.active_tab() else {
                 return;
             };
-            let fingerprint = Fingerprint::of(tab);
+            // What the folder came to once its sizes were measured (not for a search, which has no sizes).
+            let sized = if tab.find.is_none() {
+                explorer
+                    .size_run(&tab.path)
+                    .and_then(|run| run.sized().map(|line| line.total))
+            } else {
+                None
+            };
+            let fingerprint = Fingerprint::of(tab, sized);
             // The scan is kept while the listing and the path are the same.
             let scan = match &self.scanned {
                 Some((entries, path, scan)) if *entries == fingerprint.entries && *path == fingerprint.summary_path => {
@@ -282,7 +300,7 @@ impl PreviewPane {
             let summary_of = if self.seen.as_ref() == Some(&fingerprint) {
                 None
             } else {
-                Some(Summary::of(tab, scan))
+                Some(Summary::of(tab, scan, sized))
             };
             (fingerprint, scan, tab.rows.clone(), tab.selection.clone(), summary_of)
         };
@@ -361,7 +379,43 @@ impl PreviewPane {
         if self.shown != shown {
             self.shown = shown;
         }
+        self.sync_repo(window, cx);
         cx.notify();
+    }
+
+    /// Whether the folder's card is the plain one (not the Recycle Bin's, the Gallery's, Recent's, This PC's or
+    /// a closed folder's) and so has the repository's card under it when the folder is one.
+    fn plain_folder_card(&self) -> bool {
+        let summary = &self.summary;
+        !summary.no_access
+            && !is_recycle_bin(&summary.path)
+            && !is_gallery(&summary.path)
+            && !is_recent(&summary.path)
+            && summary.path != THIS_PC
+    }
+
+    /// Keeps the repository's card (it reads onefetch and tokei) only while it is on screen: nothing selected in a
+    /// repository's own folder.
+    fn sync_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = matches!(self.shown, Shown::Nothing) && self.summary.repo && self.plain_folder_card();
+        match (wanted, &self.repo_card) {
+            (true, Some(card)) => {
+                let path = self.summary.path.clone();
+                card.update(cx, |card, cx| card.set_path(path, cx));
+            }
+            (true, None) => {
+                let path = self.summary.path.clone();
+                let tools = tools_model(window, cx);
+                self.repo_card = Some(cx.new(|cx| RepoCard::new(path, tools, cx)));
+            }
+            (false, Some(_)) => self.repo_card = None,
+            (false, None) => {}
+        }
+    }
+
+    /// The repository's card, while it shows.
+    pub fn repo_card(&self) -> Option<&Entity<RepoCard>> {
+        self.repo_card.as_ref()
     }
 }
 
@@ -456,17 +510,43 @@ impl PreviewPane {
         });
         let title = t!("{n} items selected", n = format_count(many.count));
         let paths = many.paths.clone();
+        // Two files, on disk, can be compared; any items on disk can be renamed and zipped.
+        let pair = (many.count == 2 && many.files == 2 && many.paths.len() == 2)
+            .then(|| (many.paths[0].clone(), many.paths[1].clone()));
         let buttons = many.writable.then(|| {
-            // PORT ME(compare): "Compare" for two files (compareFiles); PORT ME(zip): "Zip" (compressEntries).
-            row().flex_wrap().justify_center().gap(space(1.5)).mt(space(1.)).child(
-                Button::new("preview-rename")
-                    .outline()
-                    .small()
-                    .icon(IconName::PenLine)
-                    .label(t!("Rename"))
-                    .accessibility_label(t!("Rename"))
-                    .on_click(move |_, window, cx| batch_rename::open(window, cx, paths.clone())),
-            )
+            let zip_paths = paths.clone();
+            row()
+                .flex_wrap()
+                .justify_center()
+                .gap(space(1.5))
+                .mt(space(1.))
+                .children(pair.map(|(left, right)| {
+                    Button::new("preview-compare")
+                        .outline()
+                        .small()
+                        .icon(IconName::GitCompareArrows)
+                        .label(t!("Compare"))
+                        .accessibility_label(t!("Compare"))
+                        .on_click(move |_, window, cx| compare_files::open(window, cx, left.clone(), right.clone()))
+                }))
+                .child(
+                    Button::new("preview-rename")
+                        .outline()
+                        .small()
+                        .icon(IconName::PenLine)
+                        .label(t!("Rename"))
+                        .accessibility_label(t!("Rename"))
+                        .on_click(move |_, window, cx| batch_rename::open(window, cx, paths.clone())),
+                )
+                .child(
+                    Button::new("preview-zip")
+                        .outline()
+                        .small()
+                        .icon(IconName::FileArchive)
+                        .label(t!("Zip"))
+                        .accessibility_label(t!("Zip"))
+                        .on_click(move |_, window, cx| zip(window, cx, zip_paths.clone())),
+                )
         });
         centered(cx)
             .id("preview-many")
@@ -606,7 +686,6 @@ impl PreviewPane {
         } else {
             base_name(&summary.path).to_string()
         };
-        // PORT ME(repo): the repository's card (RepoCard) for a folder with a .git.
         card("preview-nothing")
             .aria_label(t!("Select a file to preview it"))
             .child(
@@ -625,8 +704,19 @@ impl PreviewPane {
                 None => items(summary.items),
             }))
             .child(hint(t!("Select a file to preview it")))
+            .children(self.repo_card.clone())
             .into_any_element()
     }
+}
+
+/// Zip: a .zip beside the items, after looking for secrets in them (`compressEntries`).
+fn zip(window: &mut Window, cx: &mut App, paths: Vec<String>) {
+    check::secrets_check_first(window, cx, paths.clone(), t!("Compress anyway"), move |_, cx| {
+        let paths = paths.clone();
+        explorer::explorer(cx).update(cx, |explorer, cx| {
+            explorer.compress(paths, CompressFormat::Zip, None, cx).detach()
+        });
+    });
 }
 
 // ---- The setting ------------------------------------------------------------------------------------------

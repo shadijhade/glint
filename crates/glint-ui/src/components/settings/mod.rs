@@ -42,7 +42,6 @@ pub mod instant;
 pub mod integration;
 pub mod media;
 pub mod pattern;
-mod picker;
 mod shortcut;
 pub mod tools;
 pub mod transfer;
@@ -55,6 +54,7 @@ mod tests_general;
 #[cfg(test)]
 mod tests_services;
 
+pub(crate) use backend::from_picker;
 pub use backend::{Backend, CoreBackend, Fetch, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
 pub use clouds::Request as CloudsRequest;
 

@@ -3,6 +3,7 @@
 
 use super::{FileList, Frame, Track};
 use crate::components::file_grid::thumbnail::thumbnail_square;
+use crate::components::git;
 use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
 use crate::{i18n, t};
@@ -14,6 +15,7 @@ use glint_model::file_types::{kind_of, type_label};
 use glint_model::format::{format_date, format_full_date, format_size};
 use glint_model::groups::GroupHeader;
 use glint_model::paths::parent_path;
+use std::collections::HashMap;
 
 /// The height of a line, 1.75 rem (`rowHeight`: 28 px at the usual size).
 pub const ROW_HEIGHT: Rems = rems(1.75);
@@ -25,13 +27,26 @@ const BAR_FROM: f64 = 40.;
 pub const BIGGEST_OF: usize = 4000;
 
 /// A folder's size: the index's total for a search result (or the Recycle Bin's, with `located`), else its size
-/// measured here (`sizeOf`). PORT ME(sizes): folders sized as they open come from the sizes part; until then a
-/// folder in a plain listing has none.
-pub fn size_of(entry: &FileEntry, located: bool) -> Option<u64> {
+/// measured here (`sizes`: the subfolders of the open folder, by name, from `Explorer::size_run`) (`sizeOf`). A
+/// folder nobody has measured has none.
+pub fn size_of(entry: &FileEntry, located: bool, sizes: Option<&HashMap<String, u64>>) -> Option<u64> {
     if entry.dir {
-        (located && entry.size > 0).then_some(entry.size)
+        if located {
+            (entry.size > 0).then_some(entry.size)
+        } else {
+            sizes.and_then(|sizes| sizes.get(&entry.name).copied())
+        }
     } else {
         Some(entry.size)
+    }
+}
+
+/// What the Size column says: the size, or "…" for a folder whose size is still being measured, else nothing.
+pub fn size_words(entry: &FileEntry, size: Option<u64>, measuring: bool) -> String {
+    match size {
+        Some(size) => format_size(size),
+        None if entry.dir && measuring => "…".to_string(),
+        None => String::new(),
     }
 }
 
@@ -66,9 +81,9 @@ pub fn size_percent(size: Option<u64>, max: u64) -> u32 {
 }
 
 /// The biggest size among the first rows, which the bars are shares of.
-pub fn biggest(rows: &crate::explorer::Rows, located: bool) -> u64 {
+pub fn biggest(rows: &crate::explorer::Rows, located: bool, sizes: Option<&HashMap<String, u64>>) -> u64 {
     (0..rows.len().min(BIGGEST_OF))
-        .filter_map(|i| rows.get(i).and_then(|e| size_of(e, located)))
+        .filter_map(|i| rows.get(i).and_then(|e| size_of(e, located, sizes)))
         .max()
         .unwrap_or(0)
 }
@@ -112,12 +127,14 @@ impl FileList {
         let selected = frame.selected.contains(&entry.path);
         let focused = frame.focus_path.as_deref() == Some(entry.path.as_str());
         let flashed = frame.flashed.contains(&entry.path);
-        let size = size_of(entry, frame.located);
+        let size = size_of(entry, frame.located, frame.sizes.as_deref());
         let percent = size_percent(size, frame.max_size);
         let hot = !frame.recycled && entry.modified > 0 && (0..HOT_FOR_MS).contains(&(frame.now - entry.modified));
-        // Hidden and cut items are dimmed (PORT ME(git): so are the ones .gitignore leaves out); an item being
-        // dragged out is dimmer still (45%); a folder files are dragged over (see `drop_path`) is tinted and outlined.
-        let dim = is_hidden(entry) || frame.cut.contains(&entry.path);
+        // What Git says of the item: a badge after its name, and the ones .gitignore leaves out are dimmed.
+        let tracked = git::row_git(entry, frame.git.as_deref());
+        // Hidden and cut items are dimmed, and so are the ones .gitignore leaves out; an item being dragged out is
+        // dimmer still (45%); a folder files are dragged over (see `drop_path`) is tinted and outlined.
+        let dim = is_dim(entry, frame.cut.contains(&entry.path), tracked.ignored);
         let dragged = frame.dragging.contains(&entry.path);
         let dropping = frame.drop_row.as_deref() == Some(entry.path.as_str());
         let kind = kind_of(entry);
@@ -130,10 +147,7 @@ impl FileList {
         } else {
             format_full_date(entry.modified).into()
         };
-        let size_text = match size {
-            Some(size) => format_size(size),
-            None => String::new(),
-        };
+        let size_text = size_words(entry, size, frame.measuring);
 
         // The name: its icon (a picture's or a video's own small image once it is in), then the name, or the box
         // it is renamed in.
@@ -146,7 +160,11 @@ impl FileList {
                 .flex_none()
                 .into_any_element(),
         };
-        let name_tip = isolate(entry.name.clone());
+        let name_tip: SharedString = if tracked.ignored {
+            git::name_tooltip(&entry.name, true)
+        } else {
+            isolate(entry.name.clone())
+        };
         let mut name_cell = row_start()
             .id(("file-list-name", i))
             .gap(space(2.))
@@ -158,7 +176,10 @@ impl FileList {
             Some(rename) => name_cell.child(self.rename_input(rename, cx)),
             None => name_cell.child(div().min_w_0().truncate().child(isolate(entry.name.clone()))),
         };
-        // PORT ME(compare): the "Only here / Newer / Different / Older" badges. PORT ME(git): the Git badges.
+        // PORT ME(compare): the "Only here / Newer / Different / Older" badges (the Git badge goes after them).
+        if let Some(badge) = &tracked.badge {
+            name_cell = name_cell.child(git::row::badge_element(("file-list-git", i), &entry.name, badge, cx));
+        }
         // PORT ME(tags): the tag dots.
         if let Some(state) = cloud_state(entry) {
             let (name, label, color) = cloud_mark(state, t);
@@ -307,6 +328,11 @@ impl FileList {
         };
         line.test_support().into_any_element()
     }
+}
+
+/// Whether a row is dimmed: hidden items, items cut to the clipboard and the ones `.gitignore` leaves out.
+pub(super) fn is_dim(entry: &FileEntry, cut: bool, ignored: bool) -> bool {
+    is_hidden(entry) || cut || ignored
 }
 
 /// How dim a row is drawn: hidden and cut items to 55%, an item being dragged out to 45% (`opacity-55`,
@@ -459,15 +485,35 @@ mod tests {
     fn a_folder_has_a_size_only_where_the_index_gave_one() {
         let dir = folder("C:\\x", "docs");
         assert_eq!(
-            size_of(&dir, false),
+            size_of(&dir, false, None),
             None,
-            "folders in a plain listing wait for the sizes part"
+            "a folder in a plain listing has none until it is measured"
         );
-        assert_eq!(size_of(&dir, true), None, "fd's results come without a size (0)");
+        assert_eq!(size_of(&dir, true, None), None, "fd's results come without a size (0)");
         let mut sized = folder("C:\\x", "docs");
         sized.size = 4096;
-        assert_eq!(size_of(&sized, true), Some(4096));
-        assert_eq!(size_of(&file("C:\\x", "a.txt", 10, 0), false), Some(10));
+        assert_eq!(size_of(&sized, true, None), Some(4096));
+        assert_eq!(size_of(&file("C:\\x", "a.txt", 10, 0), false, None), Some(10));
+        // A folder measured here has the size measured, and a search result keeps the index's.
+        let measured = HashMap::from([("docs".to_string(), 7_000u64)]);
+        assert_eq!(size_of(&dir, false, Some(&measured)), Some(7_000));
+        assert_eq!(size_of(&dir, true, Some(&measured)), None);
+        assert_eq!(size_of(&sized, true, Some(&measured)), Some(4096));
+        assert_eq!(size_of(&folder("C:\\x", "other"), false, Some(&measured)), None);
+    }
+
+    #[test]
+    fn a_folder_being_measured_says_so_until_it_has_a_size() {
+        let dir = folder("C:\\x", "docs");
+        assert_eq!(size_words(&dir, None, true), "…");
+        assert_eq!(size_words(&dir, None, false), "");
+        assert_eq!(
+            size_words(&dir, Some(2048), true),
+            "2.0 KB",
+            "a measured folder keeps its size"
+        );
+        let a_file = file("C:\\x", "a.txt", 10, 0);
+        assert_eq!(size_words(&a_file, Some(10), true), "10 B");
     }
 
     #[test]
@@ -495,6 +541,17 @@ mod tests {
         assert_eq!(size_percent(Some(5), 0), 0);
         // Halves round up, as Math.round does.
         assert_eq!(size_percent(Some(405), 1000), 41);
+    }
+
+    #[test]
+    fn hidden_cut_and_git_ignored_items_are_dimmed() {
+        let plain = file("C:\\x", "a.txt", 1, 0);
+        assert!(!is_dim(&plain, false, false));
+        assert!(is_dim(&plain, true, false), "cut");
+        assert!(is_dim(&plain, false, true), ".gitignore leaves it out");
+        let mut hidden = file("C:\\x", ".secret", 1, 0);
+        hidden.attrs |= attr::HIDDEN;
+        assert!(is_dim(&hidden, false, false));
     }
 
     #[test]

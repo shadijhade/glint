@@ -8,7 +8,8 @@
 //! | Toolbar                 | the mode switch (Files, Text), the [`AddressBar`], Sharing, Disk usage |
 //! | Drive health button     | **temporary** (This PC's tiles and banner open it too)               |
 //! | Sidebar                 | the [`Sidebar`]: places and the folder tree                          |
-//! | Each pane               | [`ThisPc`], the [`DiskUsage`] map, or the [`FileGrid`] or the [`FileList`] |
+//! | Command bar             | the [`CommandBar`] above the panes (New, Cut, Copy, Paste, views, tools) |
+//! | Each pane               | [`ThisPc`], the [`DiskUsage`] map, the [`FileGrid`], the [`FileList`] or the [`ColumnsView`]; [`FrequentFolders`] above Recent, [`GalleryMonths`] beside the Gallery |
 //! | Status bar              | the [`StatusBar`]                                                    |
 //! | Text mode (Ctrl+Shift+F) | [`TextSearch`] instead of the sidebar, the panes and the status bar |
 //! | Over everything         | the [`CopyQueue`] panel and the [`MenuHost`]'s menus                 |
@@ -22,11 +23,16 @@
 //! - The window's background material (Mica) follows the theme: while it is on, chrome is see-through.
 
 use crate::components::address_bar::{AddressBar, AddressBarEvent};
+use crate::components::columns_view::ColumnsView;
+use crate::components::command_bar::{CommandBar, CommandBarEvent};
 use crate::components::copy_queue::{CopyQueue, CopyQueueEvent};
 use crate::components::disk_usage::{self, DiskUsage, DiskUsageEvent};
 use crate::components::file_grid::{FileGrid, FileGridEvent};
 use crate::components::file_list::DragFromArchive;
 use crate::components::file_list::{FileList, FileListEvent};
+use crate::components::frequent_folders::{self, FrequentFolders, FrequentFoldersEvent};
+use crate::components::gallery_months::GalleryMonths;
+use crate::components::git::{self, GitEvent, ReadmeCard};
 use crate::components::menus::{self, MenuEvent, MenuHost};
 use crate::components::preview::{self, PreviewPane};
 use crate::components::settings::SettingsEvent;
@@ -38,7 +44,7 @@ use crate::components::this_pc::{ThisPc, ThisPcEvent};
 use crate::components::{palette, settings};
 use crate::explorer::{self, ExplorerEvent};
 use crate::kit::prelude::*;
-use crate::platform::dragdrop;
+use crate::platform::{dragdrop, pickers};
 use crate::{actions, core_bridge, dialogs, notices, state, t, theme};
 use glint_core::host::Manager as _;
 use glint_model::entries::FileEntry;
@@ -61,6 +67,12 @@ struct PaneViews {
     this_pc: Entity<ThisPc>,
     /// The map of what fills the tab's folder, while the tab shows it (`disk_usage::visible`).
     usage: Entity<DiskUsage>,
+    /// The folder above and the focused folder on each side of the list, in the Columns view.
+    columns: Entity<ColumnsView>,
+    /// The Gallery's months, at the end edge of its list or grid.
+    months: Entity<GalleryMonths>,
+    /// The folders used most, above Recent.
+    frequent: Entity<FrequentFolders>,
 }
 
 /// Which of a pane's views is on screen.
@@ -70,6 +82,8 @@ enum Shown {
     DiskUsage,
     Grid,
     List,
+    /// The list between the folder above and the focused folder.
+    Columns,
 }
 
 /// The main window's content.
@@ -97,6 +111,14 @@ pub struct Workspace {
     text_mode: bool,
     /// What is shared or being sent, for the toolbar's Sharing button (None without core, as in tests).
     sharing: Option<Entity<dialogs::share::Sharing>>,
+    /// The command bar above the panes.
+    command_bar: Entity<CommandBar>,
+    /// Whether the bar was last told folder sizes are being measured.
+    sizing: bool,
+    /// The extra tools' state, for installing one a menu or a script asks for (made at first use).
+    tools: Option<Entity<settings::tools::Tools>>,
+    /// Each pane's README card above its files, with the README's path, while the folder has one.
+    readmes: [Option<(String, Entity<ReadmeCard>)>; 2],
     /// What each pane showed at the last look, so a grid going out of sight lets its thumbnails go.
     shown: [Option<Shown>; 2],
     /// Files dragged over the window from File Explorer and other apps arrive here, as long as it lives
@@ -127,12 +149,23 @@ impl Workspace {
         let status = cx.new(|cx| StatusBar::new(window, cx));
         let queue = cx.new(|cx| CopyQueue::new(window, cx));
         let menus = cx.new(MenuHost::new);
-        let panes = [0, 1].map(|pane| PaneViews {
-            list: cx.new(|cx| FileList::new(pane, window, cx)),
-            grid: cx.new(|cx| FileGrid::new(pane, window, cx)),
-            this_pc: cx.new(|cx| ThisPc::new(pane, window, cx)),
-            usage: cx.new(|cx| DiskUsage::new(pane, window, cx)),
+        let panes = [0, 1].map(|pane| {
+            let list = cx.new(|cx| FileList::new(pane, window, cx));
+            let columns = cx.new(|cx| ColumnsView::new(pane, window, cx));
+            // The Columns view draws the pane's own list between its two side columns.
+            columns.update(cx, |columns, cx| columns.set_center(list.clone().into(), cx));
+            PaneViews {
+                list,
+                grid: cx.new(|cx| FileGrid::new(pane, window, cx)),
+                this_pc: cx.new(|cx| ThisPc::new(pane, window, cx)),
+                usage: cx.new(|cx| DiskUsage::new(pane, window, cx)),
+                columns,
+                months: cx.new(|cx| GalleryMonths::new(pane, window, cx)),
+                frequent: cx.new(|cx| FrequentFolders::new(pane, window, cx)),
+            }
         });
+        let command_bar = cx.new(|cx| CommandBar::new(window, cx));
+        subscriptions.push(cx.subscribe_in(&command_bar, window, Self::on_command_bar_event));
 
         subscriptions.push(cx.subscribe_in(&address, window, Self::on_address_event));
         subscriptions.push(cx.subscribe_in(&sidebar, window, Self::on_sidebar_event));
@@ -162,7 +195,27 @@ impl Workspace {
                     this.on_usage_event(pane, event, window, cx)
                 }),
             );
+            // A right-click on a frequent folder: the shared folder menu, as on This PC's tiles.
+            subscriptions.push(cx.subscribe_in(
+                &views.frequent,
+                window,
+                |this, _, event: &FrequentFoldersEvent, window, cx| {
+                    match event {
+                        FrequentFoldersEvent::ContextMenu { path, position } => this
+                            .menus
+                            .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
+                    }
+                },
+            ));
         }
+        // Git read a tab's folder again: its marks go to the explorer's rows (the git: filter, Group by Git).
+        let git = git::shared(cx);
+        subscriptions.push(cx.subscribe(&git, |_, _, event: &GitEvent, cx| match event {
+            GitEvent::Changed(tab) => {
+                let marks = git::marks(cx, *tab);
+                Self::explorer(cx, |e, cx| e.set_git_marks(*tab, marks, cx));
+            }
+        }));
         // A tab's map turned on or off changes what its pane shows.
         let usage = disk_usage::shared(cx);
         subscriptions.push(cx.observe_in(&usage, window, |this, _, window, cx| this.follow_panes(window, cx)));
@@ -200,6 +253,21 @@ impl Workspace {
                     Self::explorer(cx, |e, cx| e.run_archive_job(job, cx).detach())
                 }
                 ExplorerEvent::Archive(notice) => notices::archive(notice, window, cx),
+                // The menus' other actions and exports say how they went; a few ask the window for something.
+                ExplorerEvent::Action(notice) => notices::action(notice, window, cx),
+                ExplorerEvent::Export(notice) => notices::export(notice, window, cx),
+                ExplorerEvent::Request(request) => this.on_request(request.clone(), window, cx),
+                // File Explorer's on-demand folders changed: the menus offer Show or Hide by them.
+                ExplorerEvent::OnDemandChanged => {
+                    let ids: Vec<String> = explorer::explorer(cx)
+                        .read(cx)
+                        .on_demand()
+                        .iter()
+                        .map(|m| m.id.clone())
+                        .collect();
+                    this.menus
+                        .update(cx, |menus, _| menus.update_data(|data| data.on_demand = ids));
+                }
                 // Opening an item in the Recycle Bin asks for Quick Look through the explorer's flag.
                 ExplorerEvent::TabChanged(_) | ExplorerEvent::SelectionChanged(_) | ExplorerEvent::TabsChanged => {
                     preview::quick_look::sync(window, cx)
@@ -224,6 +292,10 @@ impl Workspace {
             text: None,
             text_mode: false,
             sharing,
+            command_bar,
+            sizing: false,
+            tools: None,
+            readmes: [None, None],
             shown: [None, None],
             _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
@@ -254,6 +326,8 @@ impl Workspace {
             Shown::DiskUsage
         } else if tab.view == ViewMode::Grid {
             Shown::Grid
+        } else if tab.view == ViewMode::Columns {
+            Shown::Columns
         } else {
             Shown::List
         })
@@ -272,20 +346,70 @@ impl Workspace {
             if self.shown[pane] == Some(Shown::Grid) && now != Some(Shown::Grid) {
                 self.panes[pane].grid.update(cx, |grid, cx| grid.pause(cx));
             }
-            if self.shown[pane] == Some(Shown::List) && now != Some(Shown::List) {
+            // The Columns view draws the list too: going between the two keeps it.
+            let lists = |shown: Option<Shown>| matches!(shown, Some(Shown::List) | Some(Shown::Columns));
+            if lists(self.shown[pane]) && !lists(now) {
                 self.panes[pane].list.update(cx, |list, cx| list.pause(cx));
             }
             self.shown[pane] = now;
         }
+        self.sync_readmes(window, cx);
+        // The command bar's Folder sizes says Stop while they are measured.
+        let sizing = explorer::explorer(cx).read(cx).is_sizing();
+        if sizing != self.sizing {
+            self.sizing = sizing;
+            self.command_bar
+                .update(cx, |bar, cx| bar.set_folder_sizes_running(sizing, cx));
+        }
         self.sync_preview(window, cx);
         cx.notify();
+    }
+
+    /// Each pane's README card, as the web app showed it above the files: the setting on, a folder on a drive
+    /// read from disk (not from the index), no search, no map, and a README in it.
+    fn sync_readmes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let show = state::settings(cx).show_readme;
+        for pane in 0..2 {
+            let wanted: Option<FileEntry> = {
+                let explorer = explorer::explorer(cx);
+                let explorer = explorer.read(cx);
+                explorer
+                    .pane_tab(pane)
+                    .filter(|tab| {
+                        show && pane < explorer.shown_panes().len()
+                            && tab.find.is_none()
+                            && glint_model::paths::is_folder_path(&tab.path)
+                            && !disk_usage::shows(cx, tab.id)
+                    })
+                    .and_then(|tab| tab.listing.as_ref())
+                    .filter(|listing| !listing.from_index)
+                    .and_then(|listing| git::readme_of(&listing.entries).cloned())
+            };
+            match (wanted, &self.readmes[pane]) {
+                (Some(entry), Some((path, card))) => {
+                    if *path != entry.path {
+                        let path = entry.path.clone();
+                        card.update(cx, |card, cx| card.set_entry(entry, window, cx));
+                        if let Some(kept) = self.readmes[pane].as_mut() {
+                            kept.0 = path;
+                        }
+                    }
+                }
+                (Some(entry), None) => {
+                    let path = entry.path.clone();
+                    self.readmes[pane] = Some((path, cx.new(|cx| ReadmeCard::new(entry, window, cx))));
+                }
+                (None, Some(_)) => self.readmes[pane] = None,
+                (None, None) => {}
+            }
+        }
     }
 
     /// Whether pane `pane`'s view `shown` has the keyboard (This PC's: the window keeps it, see `focus_files`).
     fn view_focused(&self, pane: usize, shown: Option<Shown>, window: &Window, cx: &App) -> bool {
         let views = &self.panes[pane];
         match shown {
-            Some(Shown::List) => views.list.focus_handle(cx).contains_focused(window, cx),
+            Some(Shown::List) | Some(Shown::Columns) => views.list.focus_handle(cx).contains_focused(window, cx),
             Some(Shown::Grid) => views.grid.read(cx).focus_handle().contains_focused(window, cx),
             Some(Shown::DiskUsage) => views.usage.read(cx).focus_handle().contains_focused(window, cx),
             Some(Shown::ThisPc) => self.focus.is_focused(window) || views.this_pc.read(cx).has_focus(window),
@@ -324,7 +448,9 @@ impl Workspace {
                 let handle = self.panes[pane].grid.read(cx).focus_handle().clone();
                 window.focus(&handle, cx);
             }
-            Some(Shown::List) => self.panes[pane].list.update(cx, |list, cx| list.focus(window, cx)),
+            Some(Shown::List) | Some(Shown::Columns) => {
+                self.panes[pane].list.update(cx, |list, cx| list.focus(window, cx))
+            }
             // This PC's tiles take the keyboard when clicked or tabbed to; the window keeps it meanwhile.
             Some(Shown::ThisPc) | None => window.focus(&self.focus, cx),
         }
@@ -631,6 +757,81 @@ impl Workspace {
             .is_some_and(|tab| tab.find.is_none() && glint_model::paths::is_folder_path(&tab.path))
     }
 
+    // ---- The command bar, requests, tools -----------------------------------------------------------------------
+
+    fn on_command_bar_event(
+        &mut self,
+        _: &Entity<CommandBar>,
+        event: &CommandBarEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            // Its menus choose what the item and folder menus choose: the same handler does it.
+            CommandBarEvent::Menu(menu) => {
+                let menus = self.menus.clone();
+                self.on_menu_event(&menus, menu, window, cx)
+            }
+            CommandBarEvent::FolderSizes { stop } => {
+                Self::explorer(cx, |e, cx| if *stop { e.stop_sizes() } else { e.calc_sizes(cx) })
+            }
+            CommandBarEvent::RunTask { .. } => Self::not_yet(window, cx, t!("Running tasks in the terminal")),
+        }
+    }
+
+    /// What the explorer asks of the window: another window, the terminal, a tool installed.
+    fn on_request(&mut self, request: explorer::Request, window: &mut Window, cx: &mut Context<Self>) {
+        match request {
+            // PORT ME(coordinator): a second window; a new tab meanwhile, so the folder still opens.
+            explorer::Request::NewWindow { path } => Self::explorer(cx, |e, cx| e.open_in_new_tab(&path, cx)),
+            explorer::Request::Terminal(_) => Self::not_yet(window, cx, t!("The terminal")),
+            explorer::Request::InstallTool { tool } => self.install_tool(tool, window, cx),
+        }
+    }
+
+    /// Installs one of the extra tools (Settings' Tools does it, with its progress and its result notices).
+    fn install_tool(&mut self, tool: String, window: &mut Window, cx: &mut Context<Self>) {
+        let tools = match &self.tools {
+            Some(tools) => tools.clone(),
+            None => {
+                let Some(core) = cx.try_global::<core_bridge::Core>() else {
+                    return;
+                };
+                let backend: std::sync::Arc<dyn settings::Backend> =
+                    std::sync::Arc::new(settings::CoreBackend::new(core.app.clone()));
+                let tools = cx.new(|cx| settings::tools::Tools::new(backend, window, cx));
+                self.tools = Some(tools.clone());
+                tools
+            }
+        };
+        tools.update(cx, |tools, cx| tools.install(tool, window, cx));
+    }
+
+    /// The ncdu export: where to save it (Windows' save picker), then the export, with its progress.
+    fn export_ncdu(folder: String, window: &mut Window, cx: &mut Context<Self>) {
+        let name = explorer::Explorer::ncdu_file_name(&folder);
+        let options = pickers::Options::new()
+            .title(t!("Export"))
+            .filter(pickers::Filter::new(t!("ncdu export"), &["ncdu", "json"]))
+            .owner(pickers::owner_of(window));
+        let chosen = pickers::save_file(options, &name);
+        cx.spawn(async move |_, cx| {
+            if let Ok(Some(dest)) = chosen.await {
+                cx.update(|cx| Self::explorer(cx, |e, cx| e.export_ncdu(&folder, &dest, cx).detach()));
+            }
+        })
+        .detach();
+    }
+
+    /// Whether `path` is inside an archive or on a remote connection (opening it extracts a copy first).
+    fn needs_a_copy(path: &str, cx: &App) -> bool {
+        path.starts_with(glint_model::paths::REMOTE)
+            || explorer::explorer(cx)
+                .read(cx)
+                .active_tab()
+                .is_some_and(|tab| tab.archive().is_some())
+    }
+
     // ---- The views' events ----------------------------------------------------------------------------------
 
     fn on_address_event(
@@ -916,12 +1117,74 @@ impl Workspace {
             MenuEvent::ShareOnNetwork { path } => dialogs::share::offer_on_network(window, cx, path.clone()),
             MenuEvent::ShareWithWindows { paths } => dialogs::share::share_with_windows(window, cx, paths.clone()),
             MenuEvent::ReceiveHere { folder } => dialogs::share::open_receive(window, cx, folder.clone()),
-            other => {
-                // The parts not built yet: named by the menu's own word for them until they are.
-                let name = format!("{other:?}");
-                let what = name.split([' ', '{', '(']).next().unwrap_or("That").to_string();
-                Self::not_yet(window, cx, what.into());
+            // Opening, showing, Recent.
+            MenuEvent::OpenWithItsApp {
+                path,
+                extract_first: false,
+            } => Self::explorer(cx, |e, cx| {
+                e.open_on_disk(path, explorer::OpenHow::Default, cx).detach()
+            }),
+            MenuEvent::OpenWithEditor {
+                path,
+                editor,
+                extract_first: false,
+            } => Self::explorer(cx, |e, cx| {
+                e.open_on_disk(path, explorer::OpenHow::Editor(editor.clone()), cx)
+                    .detach()
+            }),
+            MenuEvent::OpenWithPicker { path } => {
+                if Self::needs_a_copy(path, cx) {
+                    Self::open_archived(path, explorer::OpenHow::Picker, cx)
+                } else {
+                    Self::explorer(cx, |e, cx| e.open_on_disk(path, explorer::OpenHow::Picker, cx).detach())
+                }
             }
+            MenuEvent::RunInSandbox { path } => Self::explorer(cx, |e, cx| e.run_in_sandbox(path, cx).detach()),
+            MenuEvent::OpenInNewWindow { path } => Self::explorer(cx, |e, cx| e.open_in_new_window(Some(path), cx)),
+            MenuEvent::OpenFileLocation { path } => {
+                self.leave_text(window, cx);
+                Self::explorer(cx, |e, cx| e.reveal_in_app(path, cx).detach())
+            }
+            MenuEvent::ForgetRecent { paths } => {
+                Self::explorer(cx, |e, cx| e.forget_recent(paths.clone(), cx).detach())
+            }
+            MenuEvent::RevealInFileExplorer { paths } => {
+                Self::explorer(cx, |e, cx| e.reveal_in_file_explorer(paths.clone(), cx).detach())
+            }
+            MenuEvent::RevealArchive { archive } => Self::explorer(cx, |e, cx| {
+                e.reveal_in_file_explorer(vec![archive.clone()], cx).detach()
+            }),
+            // Folders and pictures.
+            MenuEvent::FolderSizes => Self::explorer(cx, |e, cx| {
+                if e.is_sizing() {
+                    e.stop_sizes()
+                } else {
+                    e.calc_sizes(cx)
+                }
+            }),
+            MenuEvent::BatchRenameFolder => Self::explorer(cx, |e, cx| e.batch_rename_folder(cx)),
+            MenuEvent::SetWallpaper { path } => Self::explorer(cx, |e, cx| e.set_wallpaper(path, cx).detach()),
+            MenuEvent::Rotate { paths, clockwise } => {
+                Self::explorer(cx, |e, cx| e.rotate_pictures(paths.clone(), *clockwise, cx).detach())
+            }
+            MenuEvent::CloudPin { paths, state } => {
+                let state = match state {
+                    menus::CloudPin::Keep => explorer::PinState::Keep,
+                    menus::CloudPin::Free => explorer::PinState::Free,
+                    menus::CloudPin::Auto => explorer::PinState::Auto,
+                };
+                Self::explorer(cx, |e, cx| e.cloud_pin(paths.clone(), state, cx).detach())
+            }
+            MenuEvent::ExportNcdu { folder } => Self::export_ncdu(folder.clone(), window, cx),
+            // Scripts and tools.
+            MenuEvent::RunScript { script, cwd, paths } => {
+                Self::explorer(cx, |e, cx| e.run_script(script, cwd, paths.clone(), cx).detach())
+            }
+            MenuEvent::InstallTool { tool } => self.install_tool(tool.clone(), window, cx),
+            MenuEvent::OpenScriptsFolder => Self::explorer(cx, |e, cx| e.open_scripts_folder(cx).detach()),
+            // File Explorer's on-demand folders.
+            MenuEvent::ShowOnDemand { id, name } => Self::explorer(cx, |e, cx| e.show_on_demand(id, name, cx).detach()),
+            MenuEvent::HideOnDemand { id } => Self::explorer(cx, |e, cx| e.hide_on_demand(id, cx).detach()),
         }
     }
 
@@ -1131,7 +1394,6 @@ impl Workspace {
                     .when(!self.text_mode, |area| area.child(self.address.clone())),
             )
             .children(self.sharing_button(cx))
-            .when(!self.text_mode, |bar| bar.child(self.disk_usage_button(cx)))
             // TEMPORARY: This PC's tiles and banner open it too; this button goes with the Settings part.
             .child(
                 Button::new("drive-health")
@@ -1161,39 +1423,54 @@ impl Workspace {
         )
     }
 
-    /// Disk usage, or back to the file list (the web app's command bar button).
-    fn disk_usage_button(&self, cx: &App) -> AnyElement {
-        let tab = explorer::explorer(cx).read(cx).active_tab_id();
-        let mapped = disk_usage::shows(cx, tab);
-        let label = if mapped {
-            t!("Back to the file list")
-        } else {
-            t!("Disk usage")
-        };
-        Button::new("disk-usage")
-            .ghost()
-            .small()
-            .icon(IconName::LayoutDashboard)
-            .selected(mapped)
-            .disabled(!Self::can_map(cx))
-            .accessibility_label(label.clone())
-            .tooltip(if mapped {
-                label
-            } else {
-                t!("Disk usage: a map of what fills this folder, from the instant search index when it has it, otherwise measured with pdu")
-            })
-            .on_click(|_, _, cx| Self::toggle_disk_usage(cx))
-            .into_any_element()
-    }
-
     /// Pane `pane`: the view its tab asks for, and the zone a dragged tab can be dropped on.
     fn pane(&self, pane: usize, t: &theme::Tokens, cx: &App) -> AnyElement {
         let views = &self.panes[pane];
         let view: AnyElement = match Self::shown_in(pane, cx) {
             Some(Shown::ThisPc) => views.this_pc.clone().into_any_element(),
             Some(Shown::DiskUsage) => views.usage.clone().into_any_element(),
+            Some(Shown::Columns) => views.columns.clone().into_any_element(),
             Some(Shown::Grid) => views.grid.clone().into_any_element(),
             Some(Shown::List) | None => views.list.clone().into_any_element(),
+        };
+        let (recent, gallery) = {
+            let explorer = explorer::explorer(cx);
+            let explorer = explorer.read(cx);
+            let tab = explorer.pane_tab(pane);
+            (
+                tab.is_some_and(frequent_folders::shown_for),
+                tab.is_some_and(|tab| glint_model::paths::is_gallery(&tab.path)),
+            )
+        };
+        let shows_rows = matches!(Self::shown_in(pane, cx), Some(Shown::List) | Some(Shown::Grid) | None);
+        // The Gallery's months at the end edge (they draw nothing when narrow or with one month).
+        let view = if gallery && shows_rows {
+            row_start()
+                .size_full()
+                .child(div().flex_1().min_w_0().h_full().child(view))
+                .child(div().h_full().flex_none().child(views.months.clone()))
+                .into_any_element()
+        } else {
+            view
+        };
+        // The README above the folder's files (it draws nothing for an empty or binary one).
+        let view = match (&self.readmes[pane], shows_rows) {
+            (Some((_, card)), true) => col()
+                .size_full()
+                .child(div().flex_none().child(card.clone()))
+                .child(div().flex_1().min_h_0().child(view))
+                .into_any_element(),
+            _ => view,
+        };
+        // The folders used most above Recent's list (nothing drawn when there are none).
+        let view = if recent && shows_rows {
+            col()
+                .size_full()
+                .child(div().flex_none().child(views.frequent.clone()))
+                .child(div().flex_1().min_h_0().child(view))
+                .into_any_element()
+        } else {
+            view
         };
         div()
             .id(("pane", pane))
@@ -1230,6 +1507,12 @@ impl Workspace {
         } else {
             self.pane(0, t, cx)
         };
+        // The command bar spans the panes' column (not the sidebar, not the preview pane), as in the web app.
+        let files = col()
+            .size_full()
+            .child(self.command_bar.clone())
+            .child(div().flex_1().min_h_0().child(files))
+            .into_any_element();
         let files = match &self.preview {
             None => files,
             Some(pane) => {

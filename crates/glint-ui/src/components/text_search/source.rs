@@ -9,8 +9,10 @@
 //! searched. The matches then arrive as core's `search-event`s (`{ id, type, lines }`), which
 //! [`super::model::Search`] hears through `core_bridge::subscribe` and parses off the UI thread.
 
+use crate::components::settings::from_picker;
 use crate::components::settings::{Backend as SettingsBackend, CoreBackend as SettingsCoreBackend};
 use crate::core_bridge;
+use crate::platform::pickers::{self, Filter, Options};
 use glint_core::host::{AppHandle, Manager as _, Window};
 use glint_model::store::SearchOptions;
 use std::future::Future;
@@ -247,10 +249,61 @@ impl Source for CoreSource {
         self.settings.pick_folder(title, start, owner)
     }
 
-    // PORT ME(coordinator): a save picker with the CSV and JSON filters (`save({ filters })`). Settings' picker
-    // knows one kind of file, so this asks for "Glint settings" (json) with the name `search-results.csv`:
-    // typing either extension works, the filter's label is the only wrong thing.
     fn pick_export(&self, file_name: String, owner: isize) -> Fut<Option<String>> {
-        self.settings.save_settings_file(file_name, owner)
+        export_picker(file_name, owner)
+    }
+}
+
+/// The save picker for the results: CSV and JSON, the one matching the file name first (it decides the
+/// extension a name typed without one gets).
+fn export_picker(file_name: String, owner: isize) -> Fut<Option<String>> {
+    let csv = Filter::new(crate::t!("CSV"), &["csv"]);
+    let json = Filter::new(crate::t!("JSON"), &["json"]);
+    let (first, second) = if file_name.to_lowercase().ends_with(".json") {
+        (json, csv)
+    } else {
+        (csv, json)
+    };
+    let options = Options::new().owner(owner).filter(first).filter(second);
+    from_picker(pickers::save_file(options, &file_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::pickers::fake;
+
+    fn block<T>(mut future: Fut<T>) -> Result<T, String> {
+        use std::task::{Context, Poll, Waker};
+        let mut cx = Context::from_waker(Waker::noop());
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("the fake picker answers at once"),
+        }
+    }
+
+    #[test]
+    fn the_export_picker_offers_csv_then_json_and_returns_the_choice() {
+        let _guard = crate::testing::lock();
+        fake::answer_with(vec![Ok(vec!["D:/r.csv".into()]), Ok(vec![]), Err("no window".into())]);
+        assert_eq!(
+            block(export_picker("search-results.csv".into(), 7)),
+            Ok(Some("D:/r.csv".to_string()))
+        );
+        assert_eq!(block(export_picker("search-results.csv".into(), 7)), Ok(None));
+        assert_eq!(block(export_picker("a.json".into(), 0)), Err("no window".to_string()));
+        let asked = fake::asked();
+        let names = |ix: usize| -> Vec<String> {
+            asked[ix]
+                .options
+                .filters
+                .iter()
+                .map(|f| f.extensions[0].clone())
+                .collect()
+        };
+        assert_eq!(names(0), ["csv", "json"]);
+        assert_eq!(asked[0].options.owner, 7);
+        // A .json file name puts the JSON filter first.
+        assert_eq!(names(2), ["json", "csv"]);
     }
 }

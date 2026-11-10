@@ -1945,16 +1945,11 @@ mod tests {
         click(&mut visual, "media-start");
         settle(&mut visual, |cx| has(cx, "Made 1 file"));
         let explorer = visual.update(|_, cx| crate::explorer::explorer(cx));
-        // Two steps: what was made recycled, then the original restored.
+        // One step: what was made recycled and the original restored together.
         let label = explorer.read_with(&visual, |e, _| e.next_undo().map(|(_, label)| label.to_string()));
         assert_eq!(label.as_deref(), Some("conversion of 1 file"));
         visual.update(|_, cx| explorer.update(cx, |e, cx| e.undo(None, cx).detach()));
         visual.run_until_parked();
-        let label = explorer.read_with(&visual, |e, _| e.next_undo().map(|(_, label)| label.to_string()));
-        assert_eq!(
-            label.as_deref(),
-            Some("conversion of 1 file"),
-            "the restore of the original is next"
-        );
+        assert!(explorer.read_with(&visual, |e, _| e.next_undo().is_none()));
     }
 }

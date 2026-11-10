@@ -1,18 +1,20 @@
 //! What the file operations tell the person, worded as the web app's toasts were: the explorer's
 //! [`OpNotice`]s as notifications (with an Undo button where one is offered), the slow-work notice and the
 //! taskbar button while an operation runs ([`BusyEvent`]), the questions asked before acting ([`Ask`]), and
-//! what archive work says ([`ArchiveNotice`]): its progress with a Stop button, what it skipped, what it made.
+//! what archive work says ([`ArchiveNotice`]): its progress with a Stop button, what it skipped, what it made;
+//! what the menus' other actions say ([`ActionNotice`]) and an export's progress ([`ExportNotice`]).
 //!
 //! The workspace calls these from its subscription to the explorer, with the main window at hand.
 
 use crate::explorer::{
-    self, ArchiveFailure, ArchiveNotice, Ask, BusyEvent, Doing, Failing, FindNotice, OpNotice, OtherPane, QueueKind,
-    SkippedVerb, Subject, UndoId, Working,
+    self, ActionFailure, ActionNotice, ArchiveFailure, ArchiveNotice, Ask, BusyEvent, Doing, ExportNotice,
+    ExportProgress, Failing, FindNotice, OpNotice, OtherPane, PinState, QueueKind, SkippedVerb, Subject, UndoId,
+    Working,
 };
 use crate::kit::prelude::*;
 use crate::platform::window_state::{self, ProgressState};
 use crate::{dialogs, t};
-use glint_model::format::plural;
+use glint_model::format::{format_count, plural};
 use glint_model::paths::base_name;
 use std::time::Duration;
 
@@ -475,5 +477,225 @@ pub fn archive(notice: &ArchiveNotice, window: &mut Window, cx: &mut App) {
             }),
             cx,
         ),
+    }
+}
+
+/// "“name”" for one path, else "3 items".
+fn paths_subject(paths: &[String]) -> String {
+    match paths {
+        [one] => format!("“{}”", name_of(one)),
+        _ => items(paths.len()),
+    }
+}
+
+/// The first letter in capitals ("“a” …" keeps its quote first).
+fn capitalized(text: String) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => text,
+    }
+}
+
+/// Takes `T`'s notification down after `after`.
+fn remove_after<T: 'static>(after: Duration, window: &mut Window, cx: &mut App) {
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(after).await;
+        let _ = handle.update(cx, |_, window, cx| window.remove_notification::<T>(cx));
+    })
+    .detach();
+}
+
+/// "Windows Sandbox isn't on" (15 s).
+struct SandboxToast;
+/// "Took … out of Recent" (2.5 s).
+struct RecentToast;
+/// An export's progress, keyed by its job.
+struct ExportToast;
+
+/// What the menus' other actions say: opening, Windows Sandbox, the desktop background, Recent, what's kept
+/// on this device, File Explorer's on-demand folders, scripts.
+pub fn action(notice: &ActionNotice, window: &mut Window, cx: &mut App) {
+    let note = match notice {
+        ActionNotice::Failed { what, message } => {
+            let title = match what {
+                ActionFailure::OpenFile => t!("Couldn't open the file"),
+                ActionFailure::AppPicker => t!("Couldn't open the app picker"),
+                ActionFailure::Sandbox => t!("Couldn't run it in Windows Sandbox"),
+                ActionFailure::FileExplorer => t!("Couldn't open File Explorer"),
+                ActionFailure::OptionalFeatures => t!("Couldn't open Windows' optional features"),
+                ActionFailure::Recent => t!("Couldn't take it out of Recent"),
+                ActionFailure::Wallpaper => t!("Couldn't set the desktop background"),
+                ActionFailure::FreeUpSpace => t!("Couldn't free up space"),
+                ActionFailure::CloudKept => t!("Couldn't change what's kept on this device"),
+                ActionFailure::FolderSizes => t!("Couldn't calculate folder sizes"),
+                ActionFailure::ScriptsFolder => t!("Couldn't open the Scripts folder"),
+                ActionFailure::ShowOnDemand => t!("Couldn't show it in File Explorer"),
+                ActionFailure::HideOnDemand => t!("Couldn't take it out of File Explorer"),
+            };
+            Notification::error(message.clone()).title(title)
+        }
+        ActionNotice::SandboxOpening => Notification::success(t!(
+            "A copy, in a Windows of its own without the network: closing the sandbox throws away everything it did."
+        ))
+        .title(t!("Opening it in Windows Sandbox")),
+        ActionNotice::SandboxNotOn => {
+            let note = Notification::info(t!(
+                "It comes with Windows 11 Pro, Enterprise and Education: turn on “Windows Sandbox” in Windows' optional features (Windows restarts once)."
+            ))
+            .title(t!("Windows Sandbox isn't on"))
+            .id::<SandboxToast>()
+            .autohide(false)
+            .action(|_, _, _| {
+                Button::new("optional-features")
+                    .label(t!("Optional features"))
+                    .on_click(|_, window, cx| {
+                        window.remove_notification::<SandboxToast>(cx);
+                        explorer::explorer(cx).update(cx, |e, cx| e.open_optional_features(cx).detach());
+                    })
+            });
+            window.push_notification(note, cx);
+            remove_after::<SandboxToast>(Duration::from_secs(15), window, cx);
+            return;
+        }
+        ActionNotice::WallpaperSet { path } => {
+            Notification::success(t!("“{name}” is now your desktop background", name = name_of(path)))
+        }
+        ActionNotice::RotateFailed { count, detail } => Notification::error(detail.clone())
+            .title(t!("Couldn't rotate {what}", what = plural(*count, "picture"))),
+        ActionNotice::TookOutOfRecent { paths } => {
+            let message = match paths.as_slice() {
+                [one] => t!("Took “{name}” out of Recent", name = name_of(one)),
+                _ => t!("Took {what} out of Recent", what = items(paths.len())),
+            };
+            window.push_notification(Notification::success(message).id::<RecentToast>(), cx);
+            remove_after::<RecentToast>(Duration::from_millis(2500), window, cx);
+            return;
+        }
+        ActionNotice::CloudPinned { state, paths } => {
+            let what = paths_subject(paths);
+            let message = match state {
+                PinState::Keep => t!("Keeping {items} on this device", items = what),
+                PinState::Free => t!("Freeing up space from {items}", items = what),
+                PinState::Auto => t!("{items} no longer always kept on this device", items = what),
+            };
+            Notification::success(capitalized(message.to_string()))
+        }
+        ActionNotice::OnDemandShown { name, folder } => {
+            let folder = folder.clone();
+            Notification::success(t!(
+                "Its files download when an app opens them, while Glint runs. It's read-only there."
+            ))
+            .title(t!("“{name}” is in File Explorer", name = name.clone()))
+            .action(move |_, _, _| {
+                let folder = folder.clone();
+                Button::new("open-on-demand").label(t!("Open")).on_click(move |_, _, cx| {
+                    let folder = folder.clone();
+                    explorer::explorer(cx).update(cx, |e, cx| e.open_in_file_explorer(&folder, cx).detach());
+                })
+            })
+        }
+        ActionNotice::ScriptTooLong {
+            name,
+            paths,
+            length,
+            longest,
+        } => Notification::error(t!(
+            "The {paths} paths take {length} characters, and a command line holds about {longest}. Choose fewer, or run it on their folder.",
+            paths = format_count(*paths),
+            length = format_count(*length),
+            longest = format_count(*longest)
+        ))
+        .title(t!("Too much for “{name}”'s command line", name = name.clone())),
+        ActionNotice::ScriptGone { path } => Notification::error(t!("It may have been moved or deleted."))
+            .title(t!("Couldn't find the script “{name}”", name = name_of(path))),
+    };
+    window.push_notification(note, cx);
+}
+
+/// The export notice: "Exporting “Data”… 40%" or "… 1,200 items", with Stop.
+fn exporting(id: u64, name: &str, done: u64, total: u64) -> Notification {
+    let message = match ExportNotice::progress(done, total) {
+        ExportProgress::Percent(percent) => {
+            t!(
+                "Exporting “{name}”… {percent}%",
+                name = name.to_string(),
+                percent = percent
+            )
+        }
+        ExportProgress::Items(done) => t!(
+            "Exporting “{name}”… {count} items",
+            name = name.to_string(),
+            count = format_count(usize::try_from(done).unwrap_or(usize::MAX))
+        ),
+        ExportProgress::Starting => t!("Exporting “{name}”…", name = name.to_string()),
+    };
+    Notification::info(message)
+        .id1::<ExportToast>(id as usize)
+        .autohide(false)
+        .action(move |_, _, _| {
+            Button::new(("stop-export", id as usize))
+                .label(t!("Stop"))
+                .on_click(move |_, _, cx| {
+                    explorer::explorer(cx).update(cx, |e, _| e.stop_archive_work(id));
+                })
+        })
+}
+
+/// An export's progress (with the taskbar button), its failure, and where it went.
+pub fn export(notice: &ExportNotice, window: &mut Window, cx: &mut App) {
+    let taskbar = |window: &Window, done: u64, total: u64| {
+        if total > 0 {
+            window_state::taskbar_progress(window, ProgressState::Normal, Some(done), Some(total));
+        } else {
+            window_state::taskbar_progress(window, ProgressState::Indeterminate, None, None);
+        }
+    };
+    match notice {
+        ExportNotice::Shown { id, name, done, total } => {
+            window.push_notification(exporting(*id, name, *done, *total), cx);
+            taskbar(window, *done, *total);
+        }
+        ExportNotice::Progress {
+            id,
+            name,
+            done,
+            total,
+            shown,
+        } => {
+            taskbar(window, *done, *total);
+            if *shown {
+                window.push_notification(exporting(*id, name, *done, *total), cx);
+            }
+        }
+        ExportNotice::Ended { id, was_shown, idle } => {
+            if *was_shown {
+                window.remove_notification1::<ExportToast>(*id as usize, cx);
+            }
+            if *idle {
+                window_state::taskbar_progress(window, ProgressState::None, None, None);
+            }
+        }
+        ExportNotice::Failed { name, message } => window.push_notification(
+            Notification::error(message.clone()).title(t!("Couldn't export “{name}”", name = name.clone())),
+            cx,
+        ),
+        ExportNotice::Done { name, dest } => {
+            let dest = dest.clone();
+            let note = Notification::success(t!(
+                "Exported “{name}” as “{file}”",
+                name = name.clone(),
+                file = name_of(&dest)
+            ))
+            .action(move |_, _, _| {
+                let dest = dest.clone();
+                Button::new("show-export").label(t!("Show")).on_click(move |_, _, cx| {
+                    let dest = dest.clone();
+                    explorer::explorer(cx).update(cx, |e, cx| e.reveal_in_app(&dest, cx).detach());
+                })
+            });
+            window.push_notification(note, cx);
+        }
     }
 }

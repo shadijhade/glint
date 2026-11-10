@@ -10,7 +10,7 @@
 //!
 //! [`build_rows`] is a pure function of its inputs so a huge folder can be ordered on a background thread.
 
-use glint_model::entries::{entry_order, is_hidden, matcher, FileEntry, SizeOf, Sort, SortKey};
+use glint_model::entries::{entry_order, is_hidden, matcher, FileEntry, GitMarks, SizeOf, Sort, SortKey};
 use glint_model::groups::{group_rows, GroupBy, GroupHeader, Grouped, SizeOf as GroupSizeOf};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -33,6 +33,19 @@ impl PartialEq for RowSizes {
     }
 }
 
+/// The Git marks of the folder (lowercase name to mark) that the `git:` filter and Group by Git read. Equal when they
+/// are the very same map or say the same, so a spec compare of a repository's marks stays cheap when nothing changed.
+#[derive(Clone, Debug)]
+pub struct RowMarks {
+    pub marks: Arc<GitMarks>,
+}
+
+impl PartialEq for RowMarks {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.marks, &other.marks) || self.marks == other.marks
+    }
+}
+
 /// Everything that decides which rows a listing makes, and in what order. Two equal specs make equal rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowSpec {
@@ -49,6 +62,9 @@ pub struct RowSpec {
     pub presorted: bool,
     /// The measured folder sizes, set only while the sort or the grouping is by size.
     pub sizes: Option<RowSizes>,
+    /// The folder's Git marks, set only while the filter holds `git:` or the list is grouped by Git (no search
+    /// results: they have none), so a change of marks rebuilds only the rows that read them.
+    pub git: Option<RowMarks>,
 }
 
 impl Default for RowSpec {
@@ -64,6 +80,7 @@ impl Default for RowSpec {
             group: GroupBy::None,
             presorted: true,
             sizes: None,
+            git: None,
         }
     }
 }
@@ -154,6 +171,11 @@ impl Rows {
     }
 }
 
+/// Whether a filter or a grouping reads the folder's Git marks (`git:` in the box, Group by Git).
+pub fn reads_git(filter: &str, group: GroupBy) -> bool {
+    group == GroupBy::Git || filter.to_lowercase().contains("git:")
+}
+
 /// Makes the rows for `entries` under `spec`. `now` is the time for Group by date (ms since the epoch).
 ///
 /// The same steps as the TypeScript's three memos, in order: sort (skipped for the engine's own order),
@@ -161,7 +183,8 @@ impl Rows {
 pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows {
     let by_default = spec.presorted && spec.folders_first && spec.sort.key == SortKey::Name && !spec.sort.desc;
     // `matcher` is `None` for text that filters nothing (empty, or asking the models).
-    let test = matcher(&spec.filter, None, None);
+    let marks = spec.git.as_ref().map(|git| &*git.marks);
+    let test = matcher(&spec.filter, marks, None);
     let mut hidden = 0usize;
     let narrowing = test.is_some() || !spec.show_hidden;
 
@@ -238,7 +261,7 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         spec.group,
         now,
         group_size.as_ref().map(|f| f as &GroupSizeOf),
-        None,
+        marks,
     );
     Rows {
         entries: Arc::from(rows),
@@ -469,5 +492,102 @@ mod tests {
         // Every row is on a line, and the lines hold one entry per row plus one per header.
         let groups = rows.groups().map(|g| (g.lines.len(), g.headers.len()));
         assert_eq!(groups.map(|(lines, headers)| lines - headers), Some(6));
+    }
+
+    // ---- Git ----------------------------------------------------------------------------------------------
+
+    fn marks() -> RowMarks {
+        use glint_model::entries::GitMark;
+        RowMarks {
+            marks: Arc::new(
+                [
+                    ("a2.txt".to_string(), GitMark::Modified),
+                    ("zed.md".to_string(), GitMark::Untracked),
+                    ("src".to_string(), GitMark::Conflicted),
+                    ("a10.txt".to_string(), GitMark::Ignored),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn the_git_filter_keeps_the_items_git_marked_and_matches_nothing_without_marks() {
+        let spec = |filter: &str, git: Option<RowMarks>| RowSpec {
+            filter: filter.into(),
+            show_hidden: true,
+            git,
+            ..Default::default()
+        };
+        assert_eq!(
+            names(&build_rows(&listing(), &spec("git:modified", Some(marks())), 0)),
+            ["a2.txt"]
+        );
+        assert_eq!(
+            names(&build_rows(&listing(), &spec("git:new", Some(marks())), 0)),
+            ["zed.md"]
+        );
+        assert_eq!(
+            names(&build_rows(&listing(), &spec("git:conflicted", Some(marks())), 0)),
+            ["src"]
+        );
+        assert_eq!(
+            names(&build_rows(&listing(), &spec("git:ignored", Some(marks())), 0)),
+            ["a10.txt"]
+        );
+        assert_eq!(
+            names(&build_rows(&listing(), &spec("git:changed", Some(marks())), 0)),
+            ["src", "a2.txt", "zed.md"],
+            "changed is everything Git has something to say about, but what it leaves out"
+        );
+        assert!(
+            build_rows(&listing(), &spec("git:changed", None), 0).is_empty(),
+            "outside a repository a git: filter matches nothing"
+        );
+    }
+
+    #[test]
+    fn grouping_by_git_puts_each_item_under_its_mark() {
+        let spec = RowSpec {
+            group: GroupBy::Git,
+            show_hidden: true,
+            git: Some(marks()),
+            ..Default::default()
+        };
+        let rows = build_rows(&listing(), &spec, 0);
+        let labels: Vec<String> = rows
+            .groups()
+            .map(|g| g.headers.iter().map(|h| h.label.to_string()).collect())
+            .unwrap_or_default();
+        assert_eq!(labels, ["Conflicts", "Changed", "New", "Unchanged", "Ignored"]);
+        assert_eq!(
+            names(&rows),
+            ["src", "a2.txt", "zed.md", "docs", ".secret", "a10.txt"],
+            "group by group, each keeping the sort"
+        );
+        // Without marks everything is unchanged.
+        let plain = build_rows(&listing(), &RowSpec { git: None, ..spec }, 0);
+        let labels: Vec<String> = plain
+            .groups()
+            .map(|g| g.headers.iter().map(|h| h.label.to_string()).collect())
+            .unwrap_or_default();
+        assert_eq!(labels, ["Unchanged"]);
+    }
+
+    #[test]
+    fn specs_with_the_same_marks_are_equal_and_with_other_marks_are_not() {
+        use glint_model::entries::GitMark;
+        let one = marks();
+        let same_content = RowMarks {
+            marks: Arc::new((*one.marks).clone()),
+        };
+        assert_eq!(one, same_content, "a copy that says the same is the same");
+        let mut other = (*one.marks).clone();
+        other.insert("docs".into(), GitMark::Staged);
+        assert_ne!(one, RowMarks { marks: Arc::new(other) });
+        assert!(reads_git("", GroupBy::Git));
+        assert!(reads_git("x GIT:new", GroupBy::None));
+        assert!(!reads_git("report", GroupBy::Kind));
     }
 }

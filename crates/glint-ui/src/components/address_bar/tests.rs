@@ -2,6 +2,7 @@
 //! real window, real clicks and keys.
 
 use super::*;
+use crate::components::file_list::fake_git::{repo_view, FakeGit};
 use crate::explorer::fake::{file, folder, hidden, FakeDisk};
 use crate::explorer::{Drive, DriveKind};
 use crate::testing;
@@ -72,11 +73,21 @@ fn disk() -> FakeDisk {
 }
 
 fn rig(cx: &mut TestAppContext, rtl: bool, width: f32, start: &str) -> Rig {
+    rig_with(cx, rtl, width, start, None)
+}
+
+/// [`rig`], with a fake Git behind the Git model when given (made before the bar, as start-up does).
+fn rig_with(cx: &mut TestAppContext, rtl: bool, width: f32, start: &str, git: Option<&FakeGit>) -> Rig {
     cx.update(testing::init);
     // After init, which starts every test in English.
     testing::set_rtl(rtl);
     let disk = disk();
-    cx.update(|cx| explorer::init_with(cx, disk.source()));
+    cx.update(|cx| {
+        explorer::init_with(cx, disk.source());
+        if let Some(git) = git {
+            git.install(cx);
+        }
+    });
     let source = disk.source();
     let width = px(width);
     let (mut visual, host) = testing::open_window(cx, move |window, cx| {
@@ -938,4 +949,88 @@ fn the_recycle_bin_crumb_takes_no_drop_in_arabic(cx: &mut TestAppContext) {
         },
     );
     assert_eq!(answers.get(), Answer::Refuse);
+}
+
+// ---- Git ------------------------------------------------------------------------------------------------------
+
+/// A fake Git that says `C:\Users\me` is in a repository on main.
+fn repository_at_me() -> FakeGit {
+    let git = FakeGit::default();
+    git.put("C:\\Users\\me", repo_view(&[]));
+    git
+}
+
+/// Runs the executors and draws frames until `done` holds.
+fn settle_until(rig: &mut Rig, mut done: impl FnMut(&mut Rig) -> bool) {
+    for _ in 0..400 {
+        rig.settle();
+        if done(rig) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    panic!("never happened");
+}
+
+#[gpui_kit::test]
+fn the_branch_chip_follows_the_crumbs_in_a_repository_and_only_there(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let git = repository_at_me();
+    let mut rig = rig_with(cx, false, 900., "C:\\Users", Some(&git));
+    assert!(!rig.has("Git: on main"), "C:\\Users is in no repository");
+    rig.go("C:\\Users\\me");
+    settle_until(&mut rig, |rig| rig.has("Git: on main"));
+    assert_eq!(rig.role("Git: on main"), Some(Role::Button));
+    // It sits after the last crumb, at its end.
+    let crumb = rig.x("me");
+    let chip = rig.x("Git: on main");
+    assert!(chip > crumb, "{chip:?} after {crumb:?}");
+    // Going into a folder of the repository keeps it; leaving the repository takes it away.
+    rig.go("C:\\Users\\me\\Documents");
+    rig.go("C:\\Users\\other");
+    settle_until(&mut rig, |rig| !rig.has("Git: on main"));
+    assert!(!rig.has("Git: on main"));
+}
+
+#[gpui_kit::test]
+fn the_chip_gives_way_below_26_rem(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let git = repository_at_me();
+    // 360 px is 22.5 rem of bar: too narrow for the chip.
+    let mut narrow = rig_with(cx, false, 360., "C:\\Users\\me", Some(&git));
+    for _ in 0..40 {
+        narrow.settle();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    assert_eq!(narrow.path(), "C:\\Users\\me");
+    assert!(!narrow.has("Git: on main"), "a bar under 26 rem has no chip");
+}
+
+#[gpui_kit::test]
+fn the_chip_is_there_in_the_arabic_interface_too(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let git = repository_at_me();
+    let mut rig = rig_with(cx, true, 900., "C:\\Users\\me", Some(&git));
+    settle_until(&mut rig, |rig| rig.has("Git: on main"));
+    // Right to left: the crumbs are packed at the right, so the chip is to the left of them.
+    let (crumb, chip) = (rig.x("me"), rig.x("Git: on main"));
+    assert!(chip < crumb, "{chip:?} is before {crumb:?} when mirrored");
+}
+
+#[gpui_kit::test]
+fn the_search_box_offers_git_filters_in_a_repository_by_itself(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let git = repository_at_me();
+    let mut rig = rig_with(cx, false, 900., "C:\\Users", Some(&git));
+    rig.focus_search();
+    assert!(!rig.has("git:changed"));
+    rig.go("C:\\Users\\me");
+    settle_until(&mut rig, |rig| {
+        rig.bar.read_with(&rig.visual, |bar, _| bar.in_repository)
+    });
+    rig.focus_search();
+    assert!(
+        rig.has("git:changed"),
+        "the hint follows Git without anyone calling set_in_repository"
+    );
 }

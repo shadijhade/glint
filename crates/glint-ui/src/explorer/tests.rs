@@ -10,6 +10,7 @@ use glint_model::store::{Session, SessionPane, StartFolder};
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// An explorer on a fake disk, and every event it raised.
@@ -893,6 +894,110 @@ fn the_filter_narrows_the_rows_and_a_new_folder_clears_it(cx: &mut TestAppContex
     assert!(h.go(cx, "C:\\b"));
     h.read(cx, |e| assert!(e.active_tab().expect("a tab").filter.is_empty()));
     assert_eq!(h.names(cx).len(), 2);
+}
+
+/// What Git says of `C:` in the standard disk: `file2.txt` changed, `notes.md` new, `sub` staged.
+fn git_marks_of_a() -> Arc<glint_model::entries::GitMarks> {
+    use glint_model::entries::GitMark;
+    Arc::new(
+        [
+            ("file2.txt".to_string(), GitMark::Modified),
+            ("notes.md".to_string(), GitMark::Untracked),
+            ("sub".to_string(), GitMark::Staged),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+fn rows_changed(h: &Harness) -> usize {
+    h.events
+        .borrow()
+        .iter()
+        .filter(|e| matches!(e, ExplorerEvent::RowsChanged(_)))
+        .count()
+}
+
+#[gpui_kit::test]
+fn the_git_filter_follows_the_marks_the_window_hands_over(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\a"));
+    let tab = h.read(cx, |e| e.active_tab_id());
+    // Without marks (not in a repository) a git: filter matches nothing.
+    h.run(cx, |e, cx| e.set_filter("git:changed", None, cx));
+    assert!(h.names(cx).is_empty());
+
+    let marks = git_marks_of_a();
+    h.run(cx, |e, cx| e.set_git_marks(tab, Some(marks.clone()), cx));
+    assert_eq!(h.names(cx), ["sub", "file2.txt", "notes.md"]);
+    h.run(cx, |e, cx| e.set_filter("git:modified", None, cx));
+    assert_eq!(h.names(cx), ["file2.txt"]);
+    h.read(cx, |e| {
+        assert_eq!(e.tab(tab).and_then(|t| t.git_marks()).map(|m| m.len()), Some(3));
+    });
+
+    // Git sees one more change in the folder: the rows are built again.
+    let mut more = (*marks).clone();
+    more.insert("file10.txt".into(), glint_model::entries::GitMark::Modified);
+    h.run(cx, |e, cx| e.set_git_marks(tab, Some(Arc::new(more)), cx));
+    assert_eq!(h.names(cx), ["file2.txt", "file10.txt"]);
+
+    // The repository is gone (the folder was moved out of it): nothing matches again.
+    h.run(cx, |e, cx| e.set_git_marks(tab, None, cx));
+    assert!(h.names(cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn marks_that_nothing_reads_rebuild_no_rows_and_the_same_marks_again_change_nothing(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\a"));
+    let tab = h.read(cx, |e| e.active_tab_id());
+    let before = rows_changed(&h);
+    h.run(cx, |e, cx| e.set_git_marks(tab, Some(git_marks_of_a()), cx));
+    assert_eq!(rows_changed(&h), before, "a plain list doesn't read the marks");
+    assert_eq!(h.names(cx), ["sub", "file2.txt", "file10.txt", "notes.md"]);
+
+    h.run(cx, |e, cx| e.set_filter("git:new", None, cx));
+    assert_eq!(h.names(cx), ["notes.md"]);
+    let before = rows_changed(&h);
+    // A copy of the same marks is no change.
+    h.run(cx, |e, cx| {
+        e.set_git_marks(tab, Some(Arc::new((*git_marks_of_a()).clone())), cx)
+    });
+    assert_eq!(rows_changed(&h), before);
+    // A tab that isn't there is ignored.
+    h.run(cx, |e, cx| e.set_git_marks(TabId(99), Some(git_marks_of_a()), cx));
+}
+
+#[gpui_kit::test]
+fn group_by_git_orders_the_list_under_conflicts_changed_staged_new_and_the_rest(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\a"));
+    let tab = h.read(cx, |e| e.active_tab_id());
+    h.run(cx, |e, cx| e.set_group(GroupBy::Git, cx));
+    let labels = |h: &Harness, cx: &TestAppContext| -> Vec<String> {
+        h.read(cx, |e| {
+            e.tab(tab)
+                .and_then(|t| t.rows.groups())
+                .map(|g| g.headers.iter().map(|header| header.label.to_string()).collect())
+                .unwrap_or_default()
+        })
+    };
+    assert_eq!(labels(&h, cx), ["Unchanged"], "outside a repository nothing is marked");
+
+    h.run(cx, |e, cx| e.set_git_marks(tab, Some(git_marks_of_a()), cx));
+    assert_eq!(labels(&h, cx), ["Changed", "Staged", "New", "Unchanged"]);
+    assert_eq!(h.names(cx), ["file2.txt", "sub", "notes.md", "file10.txt"]);
+
+    // The grid draws no headers, and a search's results have no marks.
+    h.run(cx, |e, cx| e.set_view(ViewMode::Grid, None, cx));
+    h.read(cx, |e| assert!(e.tab(tab).is_some_and(|t| t.rows.groups().is_none())));
 }
 
 #[gpui_kit::test]

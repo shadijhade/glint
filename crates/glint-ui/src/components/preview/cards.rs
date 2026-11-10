@@ -4,13 +4,16 @@
 
 use super::sources::{sources, ArchiveFacts, Counts, Sources};
 use super::states::{big_icon, centered, icon_and_text, sentence, Waiting};
+use crate::components::git::RepoCard;
+use crate::dialogs::action_run::tools_model;
 use crate::dialogs::password::PasswordForm;
-use crate::explorer::{self, NavOptions};
+use crate::explorer::{self, ExplorerEvent, NavOptions};
 use crate::kit::prelude::*;
 use crate::{t, theme};
 use glint_model::entries::{attr, FileEntry};
 use glint_model::format::{format_count, format_size};
-use gpui_kit::Task;
+use glint_model::paths::{parent_path, same_path};
+use gpui_kit::{Subscription, Task};
 
 /// A state that is a line or two and an icon, with nothing to load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,28 +90,54 @@ pub fn items(n: usize) -> String {
 
 // ---- A folder ---------------------------------------------------------------------------------------------
 
-/// A folder: what is directly inside it (`FolderPreview`).
+/// A folder: what is directly inside it, how big it is once measured, and for a repository's own folder its
+/// card (`FolderPreview`).
 pub struct FolderCard {
     entry: FileEntry,
     counts: Option<Result<Counts, String>>,
+    /// A folder with a `.git` (not in the Recycle Bin) has the repository's card under its counts.
+    repo: Option<Entity<RepoCard>>,
     _task: Task<()>,
+    /// Folder sizes arriving (the explorer measures them) redraw the card.
+    _sizes: Option<Subscription>,
 }
 
 impl FolderCard {
-    pub fn new(entry: FileEntry, cx: &mut Context<Self>) -> Self {
+    pub fn new(entry: FileEntry, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let running = (sources(cx).counts)(&entry.path);
-        let task = cx.spawn(async move |this, cx| {
+        let recycled = entry.attrs & attr::RECYCLED != 0;
+        let task = cx.spawn_in(window, async move |this, cx| {
             let counts = running.await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
+                // A repository's own folder has its .git (a file in a worktree): its card shows.
+                if !recycled && matches!(&counts, Ok(counts) if counts.repo) {
+                    let path = this.entry.path.clone();
+                    let tools = tools_model(window, cx);
+                    this.repo = Some(cx.new(|cx| RepoCard::new(path, tools, cx)));
+                }
                 this.counts = Some(counts);
                 cx.notify();
             })
             .ok();
         });
+        let sizes = explorer::try_explorer(cx).map(|explorer| {
+            cx.subscribe(&explorer, |_, _, event: &ExplorerEvent, cx| {
+                if matches!(
+                    event,
+                    ExplorerEvent::SizesChanged { .. }
+                        | ExplorerEvent::TabChanged(_)
+                        | ExplorerEvent::ListingChanged { .. }
+                ) {
+                    cx.notify();
+                }
+            })
+        });
         FolderCard {
             entry,
             counts: None,
+            repo: None,
             _task: task,
+            _sizes: sizes,
         }
     }
 
@@ -116,13 +145,36 @@ impl FolderCard {
     pub fn counts(&self) -> Option<&Result<Counts, String>> {
         self.counts.as_ref()
     }
+
+    /// The repository's card, for a repository's own folder.
+    pub fn repo(&self) -> Option<&Entity<RepoCard>> {
+        self.repo.as_ref()
+    }
+
+    /// The folder's size when it has been measured here (the explorer's folder sizes), else a Recycle Bin item's
+    /// own, as Windows noted it (`sizes[parentPath(entry.path)]?.sizes.get(entry.name) ?? entry.size`); and
+    /// whether "Calculate folder sizes" is offered (the folder is in the one on screen) and is running now.
+    fn size(&self, cx: &App) -> (Option<u64>, bool, bool) {
+        let recycled = self.entry.attrs & attr::RECYCLED != 0;
+        let Some(explorer) = explorer::try_explorer(cx) else {
+            return (recycled.then_some(self.entry.size), false, false);
+        };
+        let explorer = explorer.read(cx);
+        let parent = parent_path(&self.entry.path);
+        let measured = explorer.folder_size(&parent, &self.entry.name);
+        (
+            measured.or(recycled.then_some(self.entry.size)),
+            same_path(&parent, explorer.current_path()),
+            explorer.is_sizing(),
+        )
+    }
 }
 
 impl Render for FolderCard {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
         // A folder in the Recycle Bin comes with its size, as Windows noted it.
-        let recycled = self.entry.attrs & attr::RECYCLED != 0;
+        let (size, can_calculate, sizing) = self.size(cx);
         let mut card = centered(cx)
             .id("preview-folder")
             .role(Role::Group)
@@ -162,20 +214,36 @@ impl Render for FolderCard {
                 );
             }
         }
-        if recycled {
+        if let Some(size) = size {
             card = card.child(
                 div()
                     .text_color(t.foreground)
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(line(
                         "preview-folder-total",
-                        t!("{size} in total", size = format_size(self.entry.size)),
+                        t!("{size} in total", size = format_size(size)),
                     )),
             );
+        } else if can_calculate {
+            // Sized by the index or pdu, for every folder here at once; while it runs the button waits.
+            card = card.child(
+                Button::new("preview-folder-sizes")
+                    .outline()
+                    .small()
+                    .icon(if sizing {
+                        IconName::LoaderCircle
+                    } else {
+                        IconName::HardDrive
+                    })
+                    .label(t!("Calculate folder sizes"))
+                    .accessibility_label(t!("Calculate folder sizes"))
+                    .disabled(sizing)
+                    .on_click(|_, _, cx| {
+                        explorer::explorer(cx).update(cx, |explorer, cx| explorer.calc_sizes(cx));
+                    }),
+            );
         }
-        // PORT ME(sizes): "Calculate folder sizes" (calcSizes) and the size once measured (`sizes`), and the
-        // repository's card (RepoCard) for a folder with a .git.
-        card
+        card.children(self.repo.clone())
     }
 }
 
