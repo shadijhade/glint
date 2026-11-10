@@ -71,7 +71,11 @@ async fn ops(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     let mut log = Vec::new();
     let dir = folder.to_string_lossy().into_owned();
     let check = |log: &mut Vec<String>, step: &str, ok: bool, folder: &Path| {
-        log.push(format!("{} {step}: {:?}", if ok { "OK  " } else { "FAIL" }, names(folder)));
+        log.push(format!(
+            "{} {step}: {:?}",
+            if ok { "OK  " } else { "FAIL" },
+            names(folder)
+        ));
         ok
     };
 
@@ -81,7 +85,8 @@ async fn ops(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     let opened = wait_for(cx, Duration::from_secs(10), |cx| {
         cx.update(|cx| {
             let e = explorer::explorer(cx).read(cx);
-            e.active_tab().is_some_and(|t| t.path.eq_ignore_ascii_case(&dir) && t.rows.len() >= 2)
+            e.active_tab()
+                .is_some_and(|t| t.path.eq_ignore_ascii_case(&dir) && t.rows.len() >= 2)
         })
     })
     .await;
@@ -98,7 +103,10 @@ async fn ops(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
         })
     });
     dispatch(cx, Box::new(actions::Copy));
-    let copied = wait_for(cx, Duration::from_secs(5), |_| glint_core::shell::clipboard_paths().len() >= 2).await;
+    let copied = wait_for(cx, Duration::from_secs(5), |_| {
+        glint_core::shell::clipboard_paths().len() >= 2
+    })
+    .await;
     check(&mut log, "copy to the clipboard", copied, folder);
     dispatch(cx, Box::new(actions::Paste));
     let pasted = wait_for(cx, Duration::from_secs(15), |_| names(folder).len() >= 4).await;
@@ -109,7 +117,12 @@ async fn ops(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.select_only(Some(&a), cx)));
     dispatch(cx, Box::new(actions::Rename));
     let renaming = wait_for(cx, Duration::from_secs(5), |cx| {
-        cx.update(|cx| explorer::explorer(cx).read(cx).active_tab().is_some_and(|t| t.renaming.is_some()))
+        cx.update(|cx| {
+            explorer::explorer(cx)
+                .read(cx)
+                .active_tab()
+                .is_some_and(|t| t.renaming.is_some())
+        })
     })
     .await;
     check(&mut log, "rename box opens", renaming, folder);

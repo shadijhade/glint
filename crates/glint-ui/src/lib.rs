@@ -19,6 +19,7 @@ pub mod actions;
 pub mod components;
 pub mod core_bridge;
 pub mod dialogs;
+pub mod drops;
 pub mod explorer;
 pub mod i18n;
 pub mod kit;
