@@ -65,6 +65,8 @@ pub struct RowSpec {
     /// The folder's Git marks, set only while the filter holds `git:` or the list is grouped by Git (no search
     /// results: they have none), so a change of marks rebuilds only the rows that read them.
     pub git: Option<RowMarks>,
+    /// Compare panes' "diff only": the pane's comparison, whose identical items the rows leave out.
+    pub diffs: Option<super::compare::RowDiffs>,
 }
 
 impl Default for RowSpec {
@@ -81,6 +83,7 @@ impl Default for RowSpec {
             presorted: true,
             sizes: None,
             git: None,
+            diffs: None,
         }
     }
 }
@@ -186,7 +189,8 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
     let marks = spec.git.as_ref().map(|git| &*git.marks);
     let test = matcher(&spec.filter, marks, None);
     let mut hidden = 0usize;
-    let narrowing = test.is_some() || !spec.show_hidden;
+    let diffs = spec.diffs.as_ref().map(|d| &d.comparison.diffs);
+    let narrowing = test.is_some() || !spec.show_hidden || diffs.is_some();
 
     let mut order: Option<Vec<u32>> = None;
     if narrowing {
@@ -194,6 +198,9 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         for (i, entry) in entries.iter().enumerate() {
             if !spec.show_hidden && is_hidden(entry) {
                 hidden += 1;
+                continue;
+            }
+            if diffs.is_some_and(|d| d.get(&entry.lower) == Some(&glint_model::entries::DiffStatus::Same)) {
                 continue;
             }
             if test.as_ref().is_some_and(|test| !test(entry)) {

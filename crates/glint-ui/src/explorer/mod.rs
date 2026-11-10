@@ -86,6 +86,7 @@
 //! | `actions_types.rs` | the menu actions' types: [`SizeRun`], [`ActionNotice`], [`ExportNotice`], [`Request`]… |
 //! | `actions.rs` | open with an app, Sandbox, new window, reveal, Recent, wallpaper, rotate, cloud pins, ncdu export, scripts, on demand |
 //! | `sizes.rs` | folder sizes (`calcSizes`, `autoSizes`, `stopSizes`) and what reads them |
+//! | `compare.rs` | compare panes: the [`Comparison`] of each pane, diff only, Ctrl+Shift+M (`toggleComparePanes`) |
 //! | `shell_win.rs` | the shell calls the actions make directly: `open`, and reveal in File Explorer |
 
 mod actions;
@@ -93,6 +94,7 @@ mod actions_types;
 mod archive;
 mod archive_types;
 mod clipboard;
+mod compare;
 mod create;
 mod find;
 mod find_types;
@@ -123,6 +125,8 @@ mod view;
 mod actions_tests;
 #[cfg(test)]
 mod archive_tests;
+#[cfg(test)]
+mod compare_tests;
 /// A fake disk for tests: views' tests use it too (`crate::explorer::fake::{FakeDisk, file, folder}`).
 #[cfg(test)]
 pub(crate) mod fake;
@@ -137,6 +141,7 @@ mod tests;
 
 pub use actions_types::*;
 pub use archive_types::*;
+pub use compare::{compare_listings, Comparison, RowDiffs};
 pub use find_types::{FindNotice, FindOptions, Found, SearchIndex, Wider};
 pub use memory::Memory;
 pub use model::Explorer;

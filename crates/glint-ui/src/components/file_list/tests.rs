@@ -13,6 +13,8 @@ use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 use std::cell::RefCell;
 
 /// A window with a list on a folder of a fake disk, and the events the list raised.
+mod diff_marks;
+
 struct Ui {
     visual: VisualTestContext,
     list: Entity<FileList>,

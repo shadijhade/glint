@@ -3,9 +3,13 @@
 //! list callback that draws the visible rows only reads it.
 
 use super::thumbnail::{thumbnail_square, Thumbnails, Want};
+use crate::components::{file_list::diff, git};
+use crate::explorer::Comparison;
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
-use glint_model::entries::{cloud_state, is_hidden, is_locked, is_recycled, CloudState, FileEntry};
+use glint_model::entries::{
+    cloud_state, is_hidden, is_locked, is_recycled, CloudState, DiffStatus, FileEntry, GitMarks,
+};
 use glint_model::file_types::{kind_of, type_label};
 use glint_model::format::{format_full_date, format_size};
 use glint_model::grid::GridTile;
@@ -51,6 +55,10 @@ pub(super) struct Frame {
     pub sizes: Option<Arc<HashMap<String, u64>>>,
     /// The sizes are being measured now: a folder with none yet says "…".
     pub measuring: bool,
+    /// What Git says of the folder's items (lowercase name to mark): a pill on the thumbnail, ignored ones faded.
+    pub git: Option<Arc<GitMarks>>,
+    /// How the items differ from the other pane's (compare panes): a pill on the thumbnail, the same ones faded.
+    pub diffs: Option<Arc<Comparison>>,
     pub recycled: bool,
     /// The Gallery's tiles are its photos alone: where each is shows in the list, and in its preview.
     pub gallery: bool,
@@ -140,8 +148,20 @@ fn tooltip_text(frame: &Frame, entry: &FileEntry) -> SharedString {
     } else {
         date
     });
-    // PORT ME(git): the Git line ("Git: left out by .gitignore", or the mark's title).
+    // Git's line: the mark's sentence (a folder's says it of what is in it), or why the tile is faded.
+    lines.extend(git_line(entry, frame.git.as_deref()));
     lines.join("\n").into()
+}
+
+/// The Git line of a tile's tooltip: the mark's sentence (a folder's says it of what is in it), or why the tile is
+/// faded; none for an item Git has nothing to say of.
+pub(super) fn git_line(entry: &FileEntry, marks: Option<&GitMarks>) -> Option<String> {
+    let tracked = git::row_git(entry, marks);
+    match tracked.badge {
+        Some(badge) => Some(badge.title.to_string()),
+        None if tracked.ignored => Some(t!("Git: left out by .gitignore").to_string()),
+        None => None,
+    }
 }
 
 /// The rows of tiles `range` (row numbers), as the list callback draws them. Also tells the thumbnail service what
@@ -248,7 +268,17 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
     let kind = kind_of(entry);
     let icon_px = thumb * if entry.dir { 2. / 3. } else { 7. / 12. };
     let mut square = thumbnail_square(&look, kind, thumb, icon_px, true, cx);
-    // PORT ME(compare, git): the diff badge (top end) and Git's mark (top start) over the thumbnail.
+    // How it differs from the other pane (top end) and Git's mark (top start) over the thumbnail.
+    let tracked = git::row_git(entry, frame.git.as_deref());
+    let status = frame.diffs.as_ref().and_then(|diffs| diffs.status(entry));
+    if let Some(badge) = status.and_then(diff::diff_badge) {
+        let pill = diff::badge_element(("file-grid-diff", i), &entry.name, &badge, cx);
+        square = square.child(top_badge(true, pill, t));
+    }
+    if let Some(badge) = &tracked.badge {
+        let pill = git::row::badge_element(("file-grid-git", i), &entry.name, badge, cx);
+        square = square.child(top_badge(false, pill, t));
+    }
     if let Some(state) = cloud_state(entry) {
         square = square.child(corner_mark(i, "cloud", cloud_mark(state, t), cx));
     }
@@ -270,7 +300,13 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
     let on_up = frame.on_right_up.clone();
     let on_hover = frame.on_hover.clone();
     let tip_frame = frame.clone();
-    let faded = faded(entry, &frame.cut, frame.dragging.as_deref());
+    let faded = faded(entry, &frame.cut, frame.dragging.as_deref(), tracked.ignored);
+    // The same in both panes: dimmer (`opacity-60`, which wins over the other dimming), unless selected.
+    let faded = if !selected && status == Some(DiffStatus::Same) {
+        Some(diff::SAME_OPACITY)
+    } else {
+        faded
+    };
     let name = entry.name.clone();
 
     div()
@@ -361,12 +397,17 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
         )
 }
 
-/// How dim a tile is drawn, if at all: hidden and cut items are dim, as Explorer does (`opacity-55`); the ones being
+/// How dim a tile is drawn, if at all: hidden and cut items, and the ones `.gitignore` leaves out, are dim, as Explorer does (`opacity-55`); the ones being
 /// dragged out of the window dimmer (`opacity-45`).
-pub(super) fn faded(entry: &FileEntry, cut: &HashSet<String>, dragging: Option<&HashSet<String>>) -> Option<f32> {
+pub(super) fn faded(
+    entry: &FileEntry,
+    cut: &HashSet<String>,
+    dragging: Option<&HashSet<String>>,
+    ignored: bool,
+) -> Option<f32> {
     if dragging.is_some_and(|paths| paths.contains(&entry.path)) {
         Some(0.45)
-    } else if is_hidden(entry) || cut.contains(&entry.path) {
+    } else if is_hidden(entry) || cut.contains(&entry.path) || ignored {
         Some(0.55)
     } else {
         None
@@ -420,6 +461,23 @@ fn lock_mark(entry: &FileEntry, t: &theme::Tokens) -> Mark {
     }
 }
 
+/// A pill over the thumbnail's top corner at the reading direction's end (`end_side`: the diff badge,
+/// `top-0.5 end-0.5`) or start (Git's mark, `top-0.5 start-0.5`), on the background so it reads over any picture.
+fn top_badge(end_side: bool, pill: impl IntoElement, t: &theme::Tokens) -> Div {
+    let corner = div()
+        .absolute()
+        .top(space(0.5))
+        .rounded(theme::size::RADIUS_SM)
+        .bg(t.background.opacity(0.9))
+        .child(pill);
+    // End is the right in English and the left in Arabic; start the other way round.
+    if end_side != i18n::is_rtl() {
+        corner.right(space(0.5))
+    } else {
+        corner.left(space(0.5))
+    }
+}
+
 /// A small mark on the thumbnail's bottom corner at the reading direction's end (`absolute bottom-0.5 end-0.5 size-4`).
 fn corner_mark(i: usize, what: &'static str, mark: Mark, _cx: &App) -> impl IntoElement {
     let corner = div()
@@ -462,14 +520,59 @@ mod tests {
         let hidden = crate::explorer::fake::hidden("C:\\x", "h.txt");
         let none = HashSet::new();
         let only = |entry: &FileEntry| HashSet::from([entry.path.clone()]);
-        assert_eq!(faded(&plain, &none, None), None);
-        assert_eq!(faded(&hidden, &none, None), Some(0.55));
-        assert_eq!(faded(&plain, &only(&plain), None), Some(0.55), "cut");
+        assert_eq!(faded(&plain, &none, None, false), None);
+        assert_eq!(faded(&hidden, &none, None, false), Some(0.55));
+        assert_eq!(faded(&plain, &only(&plain), None, false), Some(0.55), "cut");
         // Being dragged out is dimmer than hidden or cut, whichever else it is.
-        assert_eq!(faded(&plain, &none, Some(&only(&plain))), Some(0.45));
-        assert_eq!(faded(&hidden, &only(&hidden), Some(&only(&hidden))), Some(0.45));
+        assert_eq!(faded(&plain, &none, Some(&only(&plain)), false), Some(0.45));
+        assert_eq!(faded(&hidden, &only(&hidden), Some(&only(&hidden)), false), Some(0.45));
         // Another item being dragged doesn't dim this one.
-        assert_eq!(faded(&plain, &none, Some(&only(&hidden))), None);
+        assert_eq!(faded(&plain, &none, Some(&only(&hidden)), false), None);
+    }
+
+    #[test]
+    fn the_tooltip_says_what_git_says_of_a_tile_and_why_an_ignored_one_is_faded() {
+        use glint_model::entries::GitMark;
+        let marks: GitMarks = [
+            ("a.txt".to_string(), GitMark::Modified),
+            ("docs".to_string(), GitMark::Modified),
+            ("out.log".to_string(), GitMark::Ignored),
+            ("ملف.txt".to_string(), GitMark::Untracked),
+        ]
+        .into();
+        let say = |entry: &FileEntry| git_line(entry, Some(&marks));
+        assert_eq!(
+            say(&file("C:\\x", "a.txt", 1, 1)).as_deref(),
+            Some("Git: changed since it was committed")
+        );
+        assert_eq!(
+            say(&folder("C:\\x", "docs")).as_deref(),
+            Some("Git: something in here changed since it was committed"),
+            "a folder's says it of what is in it"
+        );
+        assert_eq!(
+            say(&file("C:\\x", "out.log", 1, 1)).as_deref(),
+            Some("Git: left out by .gitignore")
+        );
+        assert_eq!(
+            say(&file("C:\\x", "ملف.txt", 1, 1)).as_deref(),
+            Some("Git: new, not added yet")
+        );
+        assert_eq!(say(&file("C:\\x", "other.txt", 1, 1)), None);
+        assert_eq!(
+            git_line(&file("C:\\x", "a.txt", 1, 1), None),
+            None,
+            "outside a repository"
+        );
+    }
+
+    #[test]
+    fn an_ignored_tile_is_dim_like_a_hidden_one() {
+        let plain = file("C:\\x", "a.txt", 1, 1);
+        let none = HashSet::new();
+        assert_eq!(faded(&plain, &none, None, true), Some(0.55));
+        let dragged = HashSet::from([plain.path.clone()]);
+        assert_eq!(faded(&plain, &none, Some(&dragged), true), Some(0.45));
     }
 
     #[test]

@@ -12,6 +12,8 @@ pub(super) enum Empty {
     NoMatch { filter: String, bin: bool },
     /// The Recycle Bin has nothing in it.
     BinHasNothing,
+    /// Compare panes shows only the differences, and there are none: all `same` items match the other pane.
+    NoDifferences { same: usize },
     /// Everything here is hidden, and hidden items aren't shown.
     OnlyHidden,
     /// Nothing in the folder (or archive).
@@ -21,7 +23,7 @@ pub(super) enum Empty {
 impl Empty {
     /// The state for a listing that made no rows, from what the tab shows. `listed` is how many entries the
     /// listing has before hiding and filtering.
-    pub fn of(filter: &str, bin: bool, listed: usize, archive: bool) -> Empty {
+    pub fn of(filter: &str, bin: bool, listed: usize, archive: bool, diff_same: usize) -> Empty {
         if !filter.is_empty() {
             Empty::NoMatch {
                 filter: filter.to_string(),
@@ -29,6 +31,8 @@ impl Empty {
             }
         } else if bin && listed == 0 {
             Empty::BinHasNothing
+        } else if diff_same > 0 {
+            Empty::NoDifferences { same: diff_same }
         } else if listed > 0 {
             Empty::OnlyHidden
         } else {
@@ -88,6 +92,31 @@ pub(super) fn view(empty: &Empty, cx: &App) -> impl IntoElement {
             .child(note(t!(
                 "What you delete waits here, to be restored or deleted for good."
             ))),
+        Empty::NoDifferences { same } => {
+            let heading = t!("No differences in this pane");
+            let line = t!(
+                "All {n} items match the other pane.",
+                n = glint_model::format::format_count(*same)
+            );
+            centered
+                .aria_label(heading.clone())
+                .aria_description(line.clone())
+                .test_support()
+                .child(icon(IconName::GitCompareArrows).size_6().text_color(t.success))
+                .child(strong(heading))
+                .child(div().child(line))
+                .child(
+                    Button::new("file-grid-show-identical")
+                        .outline()
+                        .small()
+                        .label(t!("Show identical items"))
+                        .on_click(|_, _, cx| {
+                            if let Some(explorer) = crate::explorer::try_explorer(cx) {
+                                explorer.update(cx, |explorer, cx| explorer.toggle_diff_only(cx));
+                            }
+                        }),
+                )
+        }
         Empty::OnlyHidden => centered
             .aria_label(t!("This folder only has hidden items."))
             .test_support()
@@ -128,16 +157,25 @@ mod tests {
     #[test]
     fn the_message_follows_what_the_tab_shows() {
         assert_eq!(
-            Empty::of("zz", false, 5, false),
+            Empty::of("zz", false, 5, false, 0),
             Empty::NoMatch {
                 filter: "zz".into(),
                 bin: false
             }
         );
-        assert_eq!(Empty::of("", true, 0, false), Empty::BinHasNothing);
-        assert_eq!(Empty::of("", false, 3, false), Empty::OnlyHidden);
-        assert_eq!(Empty::of("", false, 0, true), Empty::Folder { archive: true });
+        assert_eq!(Empty::of("", true, 0, false, 0), Empty::BinHasNothing);
+        assert_eq!(Empty::of("", false, 3, false, 0), Empty::OnlyHidden);
+        assert_eq!(Empty::of("", false, 0, true, 0), Empty::Folder { archive: true });
         // A bin with things in it whose rows are all hidden or filtered isn't "empty".
-        assert_eq!(Empty::of("", true, 2, false), Empty::OnlyHidden);
+        assert_eq!(Empty::of("", true, 2, false, 0), Empty::OnlyHidden);
+        // Only the differences shown, and none: the identical ones are what the folder has (hidden ones too).
+        assert_eq!(Empty::of("", false, 4, false, 4), Empty::NoDifferences { same: 4 });
+        assert_eq!(
+            Empty::of("zz", false, 4, false, 4),
+            Empty::NoMatch {
+                filter: "zz".into(),
+                bin: false
+            }
+        );
     }
 }

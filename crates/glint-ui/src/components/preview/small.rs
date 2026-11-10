@@ -22,12 +22,17 @@
 //!
 //! # Not ported
 //!
-//! - **HTML mail is shown as text.** There is no HTML engine here, so a message with an HTML part and no text part
-//!   becomes the text of its HTML ([`html_to_text`]: no scripts, styles or pictures, paragraphs and lists kept as
-//!   lines), and says so. A message with both shows its text part. Pictures inside a message are never shown;
-//!   the line about pictures from the internet stays, because the HTML still names them.
-//! - Outlook messages whose body is only RTF (compressed RTF) show no body; messages attached inside a message
-//!   (`.msg` in a `.msg`) are not listed.
+//! - **HTML mail is drawn by the TextView's HTML subset** after [`sanitize_html`] (docs/gpui/previews-native.md section 8, without
+//!   ammonia or mail-parser): scripts, styles, frames, objects, forms, event attributes and all styles are dropped, so
+//!   a newsletter's colours, fonts, widths and background pictures are gone; layout tables draw as plain tables;
+//!   right-to-left paragraphs are not aligned (the TextView has no `dir`). Pictures from the internet are never
+//!   fetched and the note says so (PORT ME(remote images): a per-message "load pictures" switch); `cid:` pictures
+//!   come from the message ([`MailPictures`]); links open only on a click, only http, https, mailto and tel
+//!   ([`safe_link`]). A message with both parts shows the HTML, as the TypeScript did; HTML with nothing in it
+//!   falls back to the text. PORT ME(plain-text tab): a switch to the plain version.
+//! - Outlook bodies: PR_HTML, else PR_RTF_COMPRESSED ([`rtf_decompress`], LZFu) de-encapsulated to HTML
+//!   (the `fromhtml1` flag) or reduced to text ([`rtf_body`]). The last three bytes of the LZFu starting dictionary are
+//!   not known (see `LZFU_DICTIONARY`). Messages attached inside a message (`.msg` in a `.msg`) are not listed.
 //! - Graphviz and Mermaid files are not drawn: they show their source. PORT ME(graphviz): a renderer (the
 //!   TypeScript used `@hpcc-js/wasm-graphviz`). PORT ME(mermaid): merman (docs/gpui/previews-native.md section 5).
 //! - Dates in an event or a message are written with Windows' long date (`format_full_date`), which has seconds
@@ -37,14 +42,16 @@ use super::sources::{sources, Fut};
 use super::states::centered;
 use crate::kit::prelude::*;
 use crate::kit::{Editor, EditorState};
+use crate::kit::{TextView, TextViewState};
 use crate::{core_bridge, explorer, t, theme};
 use glint_model::entries::FileEntry;
 use glint_model::format::{format_date, format_full_date, format_size};
 use glint_model::small_kinds::{small_kind_of, SmallKind};
 use gpui_kit::{list, Image, ImageFormat, ImageSource, ListAlignment, ListState, ObjectFit, StyledImage as _, Task};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The biggest file read for a small preview.
 const MAX_BYTES: u64 = 32 << 20;
@@ -503,6 +510,11 @@ pub struct Message {
     pub text: String,
     /// The message had an HTML part and no text part: `text` is the HTML's text.
     pub html_only: bool,
+    /// The HTML body after [`sanitize_html`], ready for the TextView; empty when there is none (or nothing in it).
+    /// The TypeScript's choice of part: this is shown when it is there, the text when it is not.
+    pub html: String,
+    /// The pictures the HTML points at with `cid:`; each one's `name` is its Content-ID, cleaned ([`clean_cid`]).
+    pub inline: Vec<Attachment>,
     /// The HTML names pictures on the internet.
     pub remote: bool,
     pub attachments: Vec<Attachment>,
@@ -828,6 +840,7 @@ struct Collected {
     texts: Vec<String>,
     htmls: Vec<String>,
     attachments: Vec<Attachment>,
+    inline: Vec<Attachment>,
 }
 
 fn walk(bytes: &[u8], depth: usize, found: &mut Collected) {
@@ -856,7 +869,21 @@ fn walk(bytes: &[u8], depth: usize, found: &mut Collected) {
         }
         return;
     }
-    // A picture a message's HTML points at (`cid:`) is part of the message, not a file to open.
+    // A picture a message's HTML points at (`cid:`) is part of the message.
+    if kind.starts_with("image/") {
+        if let Some(id) = header(&headers, "content-id")
+            .map(clean_cid)
+            .filter(|id| !id.is_empty())
+        {
+            if found.inline.len() < 256 {
+                found.inline.push(Attachment {
+                    name: id,
+                    data: Arc::new(decoded.clone()),
+                });
+            }
+        }
+    }
+    // …and not a file to open.
     let inline = disposition == "inline"
         || (disposition.is_empty() && kind.starts_with("image/") && header(&headers, "content-id").is_some());
     if inline && header(&headers, "content-id").is_some() {
@@ -1161,7 +1188,7 @@ pub fn read_email(bytes: &[u8]) -> Message {
     walk(bytes, 0, &mut found);
     let text = found.texts.join("\n").replace("\r\n", "\n");
     let html = found.htmls.join("\n");
-    let html_only = text.trim().is_empty() && !html.trim().is_empty();
+    let (text, shown_html, html_only) = message_body(text, &html);
     let date_text = header(&headers, "date").unwrap_or_default();
     let date = parse_mail_date(date_text);
     Message {
@@ -1175,11 +1202,710 @@ pub fn read_email(bytes: &[u8]) -> Message {
         } else {
             date_text.to_string()
         },
-        text: if html_only { html_to_text(&html) } else { text },
+        text,
         html_only,
+        html: shown_html,
+        inline: found.inline,
         remote: remote_pictures(&html),
         attachments: found.attachments,
     }
+}
+
+// ---- Mail: HTML for the TextView -----------------------------------------------------------------------------
+
+/// The most of a message's HTML that is sanitised; the rest is dropped.
+const MAX_HTML: usize = 4 << 20;
+
+/// What a tag becomes in the TextView's HTML (`None`: the tag goes, what is inside it stays).
+fn mapped_tag(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "a" => "a",
+        "b" => "b",
+        "blockquote" => "blockquote",
+        "br" => "br",
+        "code" => "code",
+        "del" => "del",
+        "details" => "details",
+        "div" => "div",
+        "em" => "em",
+        "h1" => "h1",
+        "h2" => "h2",
+        "h3" => "h3",
+        "h4" => "h4",
+        "h5" => "h5",
+        "h6" => "h6",
+        "hr" => "hr",
+        "i" => "i",
+        "img" => "img",
+        "li" => "li",
+        "mark" => "mark",
+        "ol" => "ol",
+        "p" => "p",
+        "pre" => "pre",
+        "s" | "strike" => "s",
+        "span" | "font" | "small" | "big" | "sub" | "sup" | "label" | "abbr" | "cite" | "q" | "time" | "var"
+        | "kbd" | "samp" | "tt" | "nobr" => "span",
+        "strong" => "strong",
+        "summary" => "summary",
+        "table" => "table",
+        "thead" => "thead",
+        "tbody" | "tfoot" => "tbody",
+        "td" => "td",
+        "th" => "th",
+        "tr" => "tr",
+        "u" | "ins" => "u",
+        "ul" => "ul",
+        "center" | "dl" | "dt" | "dd" | "section" | "article" | "header" | "footer" | "main" | "nav" | "aside"
+        | "figure" | "figcaption" | "address" | "caption" | "menu" | "dir" => "div",
+        _ => return None,
+    })
+}
+
+/// Tags whose whole content goes with them: code, markup that isn't a message's words, and anything that can
+/// load or run something.
+fn drops_content(name: &str) -> bool {
+    matches!(
+        name,
+        "script"
+            | "style"
+            | "head"
+            | "title"
+            | "iframe"
+            | "frame"
+            | "frameset"
+            | "object"
+            | "embed"
+            | "applet"
+            | "noscript"
+            | "template"
+            | "svg"
+            | "math"
+            | "select"
+            | "textarea"
+            | "button"
+            | "option"
+            | "datalist"
+            | "audio"
+            | "video"
+            | "canvas"
+            | "map"
+            | "xml"
+    )
+}
+
+/// Tags that have no end.
+fn is_void(name: &str) -> bool {
+    matches!(name, "br" | "hr" | "img")
+}
+
+/// Character references decoded the way a browser would (the ones this reader knows).
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        match rest
+            .find(';')
+            .filter(|&e| e <= 10)
+            .and_then(|e| entity(&rest[..e]).map(|c| (c, e)))
+        {
+            Some((ch, e)) => {
+                out.push(ch);
+                rest = &rest[e + 1..];
+            }
+            None => out.push('&'),
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Text written back as an HTML attribute value (or as text).
+fn attribute_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// A tag as read from the HTML.
+struct Tag {
+    name: String,
+    closing: bool,
+    self_closing: bool,
+    attributes: Vec<(String, String)>,
+    /// Just after its `>`.
+    end: usize,
+}
+
+/// The tag that starts at `at` (a `<` followed by a letter, or `/` and a letter).
+fn read_tag(html: &str, at: usize) -> Tag {
+    let bytes = html.as_bytes();
+    let mut i = at + 1;
+    let closing = bytes.get(i) == Some(&b'/');
+    if closing {
+        i += 1;
+    }
+    let from = i;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'/' | b'>') {
+        i += 1;
+    }
+    let name = html[from..i].to_ascii_lowercase();
+    let mut attributes = Vec::new();
+    let mut self_closing = false;
+    loop {
+        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
+            self_closing = bytes[i] == b'/';
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] == b'>' {
+            i += 1;
+            break;
+        }
+        self_closing = false;
+        let from = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'=' | b'>' | b'/') {
+            i += 1;
+        }
+        if i == from {
+            // A stray character (`=` first): step over it.
+            i += 1;
+            continue;
+        }
+        let key = html[from..i].to_ascii_lowercase();
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let mut value = String::new();
+        if bytes.get(j) == Some(&b'=') {
+            j += 1;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            match bytes.get(j) {
+                Some(&q) if q == b'"' || q == b'\'' => {
+                    let start = j + 1;
+                    let stop = html[start..].find(q as char).map_or(html.len(), |e| start + e);
+                    value = decode_entities(&html[start..stop]);
+                    j = (stop + 1).min(html.len());
+                }
+                _ => {
+                    let start = j;
+                    while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'>' {
+                        j += 1;
+                    }
+                    value = decode_entities(&html[start..j]);
+                }
+            }
+            i = j;
+        }
+        attributes.push((key, value));
+    }
+    Tag {
+        name,
+        closing,
+        self_closing,
+        attributes,
+        end: i,
+    }
+}
+
+/// The address a link may open: the web's, a mail address, a telephone. Anything else (`javascript:`, `file:`,
+/// a path, a `#`) is nothing.
+pub fn safe_link(href: &str) -> Option<String> {
+    let clean: String = href.chars().filter(|c| !c.is_control() && !c.is_whitespace()).collect();
+    let (scheme, rest) = clean.split_once(':')?;
+    let scheme = scheme.to_ascii_lowercase();
+    let ok = match scheme.as_str() {
+        "http" | "https" => rest.starts_with("//") && rest.len() > 2,
+        "mailto" | "tel" => !rest.is_empty(),
+        _ => false,
+    };
+    ok.then(|| format!("{scheme}:{rest}"))
+}
+
+/// A picture that may stay: one of the message's own (`cid:`) or one written in it (`data:image/…`, not SVG).
+fn kept_picture(src: &str) -> Option<String> {
+    let clean = src.trim();
+    let lower = clean.to_ascii_lowercase();
+    let ok = lower.starts_with("cid:") || (lower.starts_with("data:image/") && !lower.starts_with("data:image/svg"));
+    ok.then(|| clean.to_string())
+}
+
+/// A message's HTML for the TextView: only the tags it draws, no scripts, styles, frames, objects or forms, no
+/// event attributes or styles at all, links only to the web, mail and telephones, and pictures only the
+/// message's own (`cid:`) or written in it. Pictures from the internet go (their alt text stays).
+pub fn sanitize_html(html: &str) -> String {
+    let mut end = html.len().min(MAX_HTML);
+    while !html.is_char_boundary(end) {
+        end -= 1;
+    }
+    let html = &html[..end];
+    let lower = html.to_ascii_lowercase();
+    let bytes = html.as_bytes();
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < html.len() {
+        let Some(found) = html[i..].find('<') else {
+            out.push_str(&html[i..]);
+            break;
+        };
+        out.push_str(&html[i..i + found]);
+        i += found;
+        if lower[i..].starts_with("<!--") {
+            i = lower[i + 4..].find("-->").map_or(html.len(), |e| i + 4 + e + 3);
+            continue;
+        }
+        let next = bytes.get(i + 1).copied().unwrap_or(0);
+        let is_tag =
+            next.is_ascii_alphabetic() || (next == b'/' && bytes.get(i + 2).is_some_and(u8::is_ascii_alphabetic));
+        if !is_tag {
+            if next == b'!' || next == b'?' {
+                // A doctype, an Outlook conditional, a processing instruction.
+                i = html[i..].find('>').map_or(html.len(), |e| i + e + 1);
+            } else {
+                out.push_str("&lt;");
+                i += 1;
+            }
+            continue;
+        }
+        let tag = read_tag(html, i);
+        i = tag.end;
+        if !tag.closing && !tag.self_closing && drops_content(&tag.name) {
+            let close = format!("</{}", tag.name);
+            let from = i.min(lower.len());
+            i = lower[from..].find(&close).map_or(html.len(), |e| {
+                lower[from + e..].find('>').map_or(html.len(), |g| from + e + g + 1)
+            });
+            continue;
+        }
+        let Some(name) = mapped_tag(&tag.name) else { continue };
+        if tag.closing {
+            if !is_void(name) {
+                out.push_str("</");
+                out.push_str(name);
+                out.push('>');
+            }
+            continue;
+        }
+        let attribute = |key: &str| tag.attributes.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        match name {
+            "img" => {
+                match attribute("src").and_then(kept_picture) {
+                    Some(src) => {
+                        out.push_str("<img src=\"");
+                        out.push_str(&attribute_text(&src));
+                        out.push('"');
+                        if let Some(alt) = attribute("alt") {
+                            out.push_str(" alt=\"");
+                            out.push_str(&attribute_text(alt));
+                            out.push('"');
+                        }
+                        out.push('>');
+                    }
+                    None => {
+                        if let Some(alt) = attribute("alt").map(str::trim).filter(|a| !a.is_empty()) {
+                            out.push_str(&attribute_text(alt));
+                        }
+                    }
+                }
+                continue;
+            }
+            "a" => {
+                out.push_str("<a");
+                if let Some(href) = attribute("href").and_then(safe_link) {
+                    out.push_str(" href=\"");
+                    out.push_str(&attribute_text(&href));
+                    out.push('"');
+                }
+                if let Some(title) = attribute("title") {
+                    out.push_str(" title=\"");
+                    out.push_str(&attribute_text(title));
+                    out.push('"');
+                }
+                out.push('>');
+                continue;
+            }
+            _ => {}
+        }
+        out.push('<');
+        out.push_str(name);
+        if matches!(name, "td" | "th") {
+            for key in ["colspan", "rowspan"] {
+                if let Some(n) = attribute(key).and_then(|v| v.trim().parse::<u32>().ok()) {
+                    out.push_str(&format!(" {key}=\"{}\"", n.clamp(1, 100)));
+                }
+            }
+        }
+        out.push('>');
+    }
+    out
+}
+
+/// A body worth showing: it has words or a picture.
+fn has_content(html: &str) -> bool {
+    html.contains("<img") || !html_to_text(html).trim().is_empty()
+}
+
+/// A message's text and HTML as they will be shown: the text (for a message of HTML alone, the HTML's words),
+/// the HTML sanitised (empty when it has nothing to show), and whether there was HTML and no text.
+fn message_body(text: String, raw_html: &str) -> (String, String, bool) {
+    let html_only = text.trim().is_empty() && !raw_html.trim().is_empty();
+    let html = sanitize_html(raw_html);
+    let html = if has_content(&html) { html } else { String::new() };
+    let text = if html_only { html_to_text(raw_html) } else { text };
+    (text, html, html_only)
+}
+
+/// A Content-ID, or the `cid:` of a picture, in one form: no brackets, no `cid:`, no `%` escapes, lower case.
+fn clean_cid(id: &str) -> String {
+    let id = id.trim();
+    let id = if id.len() >= 4 && id.is_char_boundary(4) && id[..4].eq_ignore_ascii_case("cid:") {
+        &id[4..]
+    } else {
+        id
+    };
+    let id = id.trim().trim_start_matches('<').trim_end_matches('>').trim();
+    String::from_utf8_lossy(&percent_bytes(id)).to_lowercase()
+}
+
+/// The pictures a message's HTML points at inside the message, made into images the first time they are drawn.
+pub struct MailPictures {
+    inline: Vec<Attachment>,
+    made: Mutex<HashMap<String, Arc<Image>>>,
+    written: Mutex<HashMap<String, Arc<Image>>>,
+}
+
+/// The nothing a picture that isn't loaded shows.
+fn blank_picture() -> Arc<Image> {
+    static BLANK: OnceLock<Arc<Image>> = OnceLock::new();
+    BLANK
+        .get_or_init(|| {
+            let png = super::markdown::base64_decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+            )
+            .unwrap_or_default();
+            Arc::new(Image::from_bytes(ImageFormat::Png, png))
+        })
+        .clone()
+}
+
+impl MailPictures {
+    pub fn new(inline: Vec<Attachment>) -> Self {
+        Self {
+            inline,
+            made: Mutex::new(HashMap::new()),
+            written: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// What a picture address in the message shows: its own picture, one written in it, or nothing (never a fetch).
+    pub fn source(&self, src: &str) -> ImageSource {
+        let src = src.trim_start();
+        let lower = src.to_ascii_lowercase();
+        if lower.starts_with("cid:") {
+            let id = clean_cid(src);
+            let Ok(mut made) = self.made.lock() else {
+                return ImageSource::Image(blank_picture());
+            };
+            if let Some(image) = made.get(&id) {
+                return ImageSource::Image(image.clone());
+            }
+            let image = match self.inline.iter().find(|a| a.name == id) {
+                Some(picture) => Arc::new(Image::from_bytes(sniff_photo(&picture.data), picture.data.to_vec())),
+                None => blank_picture(),
+            };
+            made.insert(id, image.clone());
+            return ImageSource::Image(image);
+        }
+        if lower.starts_with("data:image/") && !lower.starts_with("data:image/svg") {
+            return super::markdown::picture_source(src, "", "", &self.written);
+        }
+        ImageSource::Image(blank_picture())
+    }
+}
+
+// ---- Mail: compressed and plain RTF (Outlook's PR_RTF_COMPRESSED) ----------------------------------------------
+
+/// The text of the dictionary a compressed RTF stream starts with (MS-OXRTFCP 2.1.3.1.1). The whole prebuffer is 207
+/// bytes and the writing starts after it; this text is 204 of them and the last three are not known here (they
+/// follow `\tx` and are NULs): the spec's worked example decodes with it, and only a reference that reaches into
+/// those three bytes would come out wrong.
+const LZFU_DICTIONARY: &[u8] = b"{\\rtf1\\ansi\\mac\\deff0\\deftab720{\\fonttbl;}{\\f0\\fnil \\froman \\fswiss \\fmodern \\fscript \\fdecor MS Sans SerifSymbolArialTimes New RomanCourier{\\colortbl\\red0\\green0\\blue0\r\n\\par \\pard\\plain\\f0\\fs20\\b\\i\\ul\\tx";
+/// The most RTF read out of a compressed stream.
+const MAX_RTF: usize = 32 << 20;
+/// Where writing starts in the dictionary.
+const LZFU_PREBUFFER: usize = 207;
+
+/// Compressed RTF (`LZFu`, or stored `MELA`) as the RTF it holds.
+pub fn rtf_decompress(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 16 {
+        return None;
+    }
+    let compressed = u32_at(data, 0) as usize;
+    let raw = (u32_at(data, 4) as usize).min(MAX_RTF);
+    let kind = &data[8..12];
+    let end = data.len().min(compressed.saturating_add(4));
+    if kind == b"MELA" {
+        return Some(data[16..end.max(16)].iter().copied().take(raw).collect());
+    }
+    if kind != b"LZFu" {
+        return None;
+    }
+    let mut dictionary = [0u8; 4096];
+    dictionary[..LZFU_DICTIONARY.len()].copy_from_slice(LZFU_DICTIONARY);
+    let mut write = LZFU_PREBUFFER;
+    let mut out = Vec::with_capacity(raw.min(1 << 20));
+    let mut at = 16;
+    'run: while at < end && out.len() < raw {
+        let control = data[at];
+        at += 1;
+        for bit in 0..8 {
+            if out.len() >= raw {
+                break 'run;
+            }
+            if control >> bit & 1 == 1 {
+                if at + 1 >= end {
+                    break 'run;
+                }
+                let (high, low) = (data[at] as usize, data[at + 1] as usize);
+                at += 2;
+                let offset = high << 4 | low >> 4;
+                let length = (low & 15) + 2;
+                if offset == write {
+                    break 'run;
+                }
+                for k in 0..length {
+                    let byte = dictionary[(offset + k) & 4095];
+                    out.push(byte);
+                    dictionary[write] = byte;
+                    write = (write + 1) & 4095;
+                }
+            } else {
+                if at >= end {
+                    break 'run;
+                }
+                let byte = data[at];
+                at += 1;
+                out.push(byte);
+                dictionary[write] = byte;
+                write = (write + 1) & 4095;
+            }
+        }
+    }
+    out.truncate(raw);
+    Some(out)
+}
+
+/// What a group of RTF is doing.
+#[derive(Clone, Copy, Default)]
+struct RtfGroup {
+    /// Its words are not the message's (fonts, colours, a picture, a field's code…).
+    skip: bool,
+    /// `\htmlrtf`: RTF that only exists to make the HTML look right in RTF readers.
+    htmlrtf: bool,
+    /// Inside `{\*\htmltag…}`: the HTML itself.
+    html_tag: bool,
+    /// `\ucN`: characters to skip after `\uN`.
+    unicode_skip: usize,
+}
+
+struct RtfReader {
+    out: String,
+    pending: Vec<u8>,
+    charset: String,
+    from_html: bool,
+    /// Characters after a `\uN` still to leave out.
+    skipping: usize,
+}
+
+impl RtfReader {
+    fn flush(&mut self) {
+        if !self.pending.is_empty() {
+            let text = decode_charset(&self.pending, Some(&self.charset));
+            self.out.push_str(&text);
+            self.pending.clear();
+        }
+    }
+
+    fn visible(&self, group: &RtfGroup) -> bool {
+        !group.skip && (!self.from_html || group.html_tag || !group.htmlrtf)
+    }
+
+    fn text(&mut self, group: &RtfGroup, ch: char) {
+        if self.skipping > 0 {
+            self.skipping -= 1;
+        } else if self.visible(group) {
+            self.flush();
+            self.out.push(ch);
+        }
+    }
+
+    fn byte(&mut self, group: &RtfGroup, byte: u8) {
+        if self.skipping > 0 {
+            self.skipping -= 1;
+        } else if self.visible(group) {
+            self.pending.push(byte);
+        }
+    }
+}
+
+/// The charset label of a Windows code page.
+fn code_page_label(page: u32) -> String {
+    match page {
+        65001 => "utf-8".into(),
+        10000 => "macintosh".into(),
+        0 => "windows-1252".into(),
+        other => format!("windows-{other}"),
+    }
+}
+
+/// RTF as a message body: HTML when the RTF wraps HTML (`\fromhtml1`, what Outlook does with an HTML message it
+/// stores as RTF), otherwise the RTF's words as text. The flag says which.
+pub fn rtf_body(rtf: &[u8]) -> (String, bool) {
+    let find = |needle: &[u8]| rtf.windows(needle.len()).position(|w| w == needle);
+    let from_html = find(b"\\fromhtml").is_some();
+    let page = find(b"\\ansicpg").map_or(1252, |at| {
+        rtf[at + 8..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .fold(0u32, |n, b| n.saturating_mul(10).saturating_add(u32::from(b - b'0')))
+    });
+    let mut reader = RtfReader {
+        out: String::new(),
+        pending: Vec::new(),
+        charset: code_page_label(page),
+        from_html,
+        skipping: 0,
+    };
+    let mut stack = vec![RtfGroup {
+        unicode_skip: 1,
+        ..RtfGroup::default()
+    }];
+    let mut star = false;
+    let mut i = 0;
+    while i < rtf.len() && reader.out.len() < MAX_RTF {
+        let c = rtf[i];
+        let mut group = *stack.last().unwrap_or(&RtfGroup::default());
+        match c {
+            b'{' => {
+                reader.flush();
+                if stack.len() < 256 {
+                    stack.push(group);
+                }
+                star = false;
+                i += 1;
+            }
+            b'}' => {
+                reader.flush();
+                if stack.len() > 1 {
+                    stack.pop();
+                }
+                star = false;
+                i += 1;
+            }
+            b'\r' | b'\n' => i += 1,
+            b'\\' => {
+                i += 1;
+                let Some(&next) = rtf.get(i) else { break };
+                if !next.is_ascii_alphabetic() {
+                    i += 1;
+                    match next {
+                        b'\'' => {
+                            let hex = rtf.get(i..i + 2).and_then(|h| std::str::from_utf8(h).ok());
+                            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                                reader.byte(&group, byte);
+                                i += 2;
+                            }
+                        }
+                        b'*' => star = true,
+                        b'\\' | b'{' | b'}' => reader.text(&group, next as char),
+                        b'~' => reader.text(&group, '\u{a0}'),
+                        b'_' => reader.text(&group, '-'),
+                        b'\n' | b'\r' => reader.text(&group, '\n'),
+                        _ => {}
+                    }
+                    continue;
+                }
+                let start = i;
+                while i < rtf.len() && rtf[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                let word = std::str::from_utf8(&rtf[start..i]).unwrap_or_default();
+                let negative = rtf.get(i) == Some(&b'-');
+                if negative {
+                    i += 1;
+                }
+                let digits = i;
+                while i < rtf.len() && rtf[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let number: Option<i64> = std::str::from_utf8(&rtf[digits..i])
+                    .ok()
+                    .and_then(|d| d.parse().ok())
+                    .map(|n: i64| if negative { -n } else { n });
+                if rtf.get(i) == Some(&b' ') {
+                    i += 1;
+                }
+                let is_star = std::mem::take(&mut star);
+                match word {
+                    "htmltag" if is_star => {
+                        group.html_tag = true;
+                        group.skip = false;
+                    }
+                    _ if is_star => group.skip = true,
+                    "htmlrtf" => group.htmlrtf = number != Some(0),
+                    "fonttbl" | "colortbl" | "stylesheet" | "info" | "pict" | "header" | "footer" | "headerl"
+                    | "headerr" | "footerl" | "footerr" | "generator" | "listtable" | "listoverridetable"
+                    | "rsidtbl" | "fldinst" | "datafield" | "themedata" | "colorschememapping" | "latentstyles"
+                    | "xmlnstbl" | "object" | "private" | "revtbl" | "filetbl" | "template" | "falt" => {
+                        group.skip = true
+                    }
+                    "uc" => group.unicode_skip = number.unwrap_or(1).max(0) as usize,
+                    "u" => {
+                        let code = number.unwrap_or(0);
+                        let code = if code < 0 { code + 65536 } else { code };
+                        reader.skipping = 0;
+                        if let Some(ch) = u32::try_from(code).ok().and_then(char::from_u32) {
+                            reader.text(&group, ch);
+                        }
+                        reader.skipping = group.unicode_skip;
+                    }
+                    "par" | "line" | "sect" | "page" => reader.text(&group, '\n'),
+                    "tab" => reader.text(&group, '\t'),
+                    "emdash" => reader.text(&group, '—'),
+                    "endash" => reader.text(&group, '–'),
+                    "bullet" => reader.text(&group, '•'),
+                    "lquote" => reader.text(&group, '‘'),
+                    "rquote" => reader.text(&group, '’'),
+                    "ldblquote" => reader.text(&group, '“'),
+                    "rdblquote" => reader.text(&group, '”'),
+                    "emspace" | "enspace" => reader.text(&group, ' '),
+                    _ => {}
+                }
+                if let Some(top) = stack.last_mut() {
+                    *top = group;
+                }
+            }
+            byte => {
+                reader.byte(&group, byte);
+                i += 1;
+            }
+        }
+    }
+    reader.flush();
+    let text = if from_html {
+        reader.out
+    } else {
+        reader.out.trim().replace("\r\n", "\n")
+    };
+    (text, from_html)
 }
 
 // ---- Mail: Outlook messages (a compound file) ---------------------------------------------------------------
@@ -1514,13 +2240,32 @@ pub fn read_outlook(bytes: &[u8]) -> Result<Message, String> {
         msg_text(&cfb, root, 0x5D01).or_else(|| msg_text(&cfb, root, 0x0C1F).filter(|a| a.contains('@'))),
     );
 
-    let text = msg_text(&cfb, root, 0x1000).unwrap_or_default().replace("\r\n", "\n");
-    let html = msg_binary(&cfb, root, 0x1013)
-        .map(|b| decode_charset(&b, None))
+    let mut text = msg_text(&cfb, root, 0x1000).unwrap_or_default().replace("\r\n", "\n");
+    // PR_INTERNET_CPID: the code page the HTML body is written in.
+    let html_charset = top_props
+        .iter()
+        .find(|p| p.id == 0x3FDE && p.ty == 0x0003)
+        .map(|p| u32_at(&p.value, 0))
+        .filter(|&page| page != 0)
+        .map(code_page_label);
+    let mut html = msg_binary(&cfb, root, 0x1013)
+        .map(|b| decode_charset(&b, html_charset.as_deref()))
         .or_else(|| msg_text(&cfb, root, 0x1013))
         .unwrap_or_default();
-    let html_only = text.trim().is_empty() && !html.trim().is_empty();
+    // No HTML body: Outlook may keep the message as compressed RTF (HTML wrapped in RTF, or RTF alone).
+    if html.trim().is_empty() {
+        if let Some(rtf) = msg_binary(&cfb, root, 0x1009).and_then(|b| rtf_decompress(&b)) {
+            let (body, wraps_html) = rtf_body(&rtf);
+            if wraps_html {
+                html = body;
+            } else if text.trim().is_empty() {
+                text = body.replace("\r\n", "\n");
+            }
+        }
+    }
+    let (text, shown_html, html_only) = message_body(text, &html);
 
+    let mut inline = Vec::new();
     let mut attachments = Vec::new();
     for child in cfb.children(root) {
         if !cfb.name(child).starts_with("__attach_version1.0_#") {
@@ -1533,12 +2278,24 @@ pub fn read_outlook(bytes: &[u8]) -> Result<Message, String> {
         let hidden = properties(&props, 8)
             .iter()
             .any(|p| p.id == 0x7FFE && p.ty == 0x000B && u16_at(&p.value, 0) != 0);
-        if hidden {
-            continue;
-        }
         let Some(data) = msg_binary(&cfb, child, 0x3701) else {
             continue;
         };
+        // PR_ATTACH_CONTENT_ID: a picture the HTML points at with `cid:`.
+        if let Some(id) = msg_text(&cfb, child, 0x3712)
+            .map(|id| clean_cid(&id))
+            .filter(|id| !id.is_empty())
+        {
+            if inline.len() < 256 {
+                inline.push(Attachment {
+                    name: id,
+                    data: Arc::new(data.clone()),
+                });
+            }
+        }
+        if hidden {
+            continue;
+        }
         let name = msg_text(&cfb, child, 0x3707)
             .or_else(|| msg_text(&cfb, child, 0x3704))
             .or_else(|| msg_text(&cfb, child, 0x3001))
@@ -1556,8 +2313,10 @@ pub fn read_outlook(bytes: &[u8]) -> Result<Message, String> {
         cc: cc.join(", "),
         date,
         date_raw: String::new(),
-        text: if html_only { html_to_text(&html) } else { text },
+        text,
         html_only,
+        html: shown_html,
+        inline,
         remote: remote_pictures(&html),
         attachments,
     })
@@ -1662,15 +2421,17 @@ impl Problem {
 enum Loaded {
     Contacts(Vec<Card>),
     Events(Vec<Event>),
-    Mail(Message),
+    Mail(Box<Message>),
     Picture(PathBuf),
     Source(String),
 }
 
-/// A message on screen: it, its text in a read-only editor.
+/// A message on screen: it, its text in a read-only editor, and its HTML in a TextView when it has any.
+#[derive(Clone)]
 struct Mailbox {
     message: Arc<Message>,
     body: Entity<EditorState>,
+    html: Option<(Entity<TextViewState>, Arc<MailPictures>)>,
     cut: bool,
 }
 
@@ -1749,8 +2510,10 @@ fn read_small(kind: SmallKind, path: &str, size: u64) -> Result<Loaded, Problem>
                 Ok(Loaded::Events(events))
             }
         }
-        SmallKind::Email => Ok(Loaded::Mail(read_email(&bytes))),
-        SmallKind::Outlook => read_outlook(&bytes).map(Loaded::Mail).map_err(Problem::Outlook),
+        SmallKind::Email => Ok(Loaded::Mail(Box::new(read_email(&bytes)))),
+        SmallKind::Outlook => read_outlook(&bytes)
+            .map(|m| Loaded::Mail(Box::new(m)))
+            .map_err(Problem::Outlook),
         SmallKind::Graphviz | SmallKind::Mermaid => diagram_source(&bytes).map(Loaded::Source),
         SmallKind::Design => Err(Problem::NoPicture),
     }
@@ -1802,6 +2565,17 @@ impl SmallPreview {
     pub fn message(&self) -> Option<&Message> {
         match &self.load {
             Load::Mail(mail) => Some(&mail.message),
+            _ => None,
+        }
+    }
+
+    /// The message's words as drawn: the HTML's in the TextView, or the plain text in the editor.
+    pub fn mail_text(&self, cx: &App) -> Option<String> {
+        match &self.load {
+            Load::Mail(mail) => Some(match &mail.html {
+                Some((state, _)) => state.read(cx).rendered_text().as_str().to_string(),
+                None => mail.body.read(cx).value().to_string(),
+            }),
             _ => None,
         }
     }
@@ -1899,9 +2673,14 @@ impl SmallPreview {
                         .default_value(shown)
                 });
                 body.update(cx, |editor, cx| editor.set_readonly(true, cx));
+                let html = (!message.html.is_empty()).then(|| {
+                    let state = cx.new(|cx| TextViewState::html(&message.html, cx).selectable(true));
+                    (state, Arc::new(MailPictures::new(message.inline.clone())))
+                });
                 Load::Mail(Mailbox {
-                    message: Arc::new(message),
+                    message: Arc::new(*message),
                     body,
+                    html,
                     cut,
                 })
             }
@@ -2240,8 +3019,7 @@ impl SmallPreview {
             })
             .collect();
         let notes = [
-            message
-                .html_only
+            (message.html_only && message.html.is_empty())
                 .then(|| t!("This message is formatted; it is shown here as plain text.")),
             mail.cut.then(|| t!("Only the start of the message is shown.")),
             message
@@ -2320,17 +3098,46 @@ impl SmallPreview {
             .size_full()
             .min_h_0()
             .child(header)
-            .child(
-                div().flex_1().min_h_0().child(
-                    Editor::new(&mail.body)
-                        .readonly(true)
-                        .appearance(false)
-                        .bordered(false)
+            .child(match &mail.html {
+                Some((state, pictures)) => {
+                    let pictures = pictures.clone();
+                    div()
+                        .id("small-mail-body")
+                        .role(Role::Document)
                         .aria_label(t!("The message"))
-                        .text_size(theme::size::SM)
-                        .size_full(),
-                ),
-            )
+                        .test_support()
+                        .flex_1()
+                        .min_h_0()
+                        .px(space(3.))
+                        .py(space(2.))
+                        .child(
+                            TextView::new(state)
+                                .selectable(true)
+                                .scrollable(true)
+                                .image_source(move |uri| pictures.source(uri.as_ref()))
+                                // Links open only on a click, through the shell, and only the web's, mail and phones.
+                                .on_link_click(|url, _, _, cx| {
+                                    if let Some(address) = safe_link(url.as_ref()) {
+                                        cx.open_url(&address);
+                                    }
+                                }),
+                        )
+                        .into_any_element()
+                }
+                None => div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        Editor::new(&mail.body)
+                            .readonly(true)
+                            .appearance(false)
+                            .bordered(false)
+                            .aria_label(t!("The message"))
+                            .text_size(theme::size::SM)
+                            .size_full(),
+                    )
+                    .into_any_element(),
+            })
             .into_any_element()
     }
 }
@@ -2344,8 +3151,8 @@ impl Render for SmallPreview {
             Load::Contacts { .. } => self.cards("small-contacts", t!("Contacts"), cx),
             Load::Events(_) => self.cards("small-events", t!("Events"), cx),
             Load::Mail(mail) => {
-                let (message, body, cut) = (mail.message.clone(), mail.body.clone(), mail.cut);
-                self.mail(&Mailbox { message, body, cut }, cx)
+                let mail = mail.clone();
+                self.mail(&mail, cx)
             }
             Load::Picture(path) => div()
                 .id("small-picture")
@@ -2975,6 +3782,344 @@ mod tests {
         damaged.truncate(700);
         // A cut file doesn't crash the reader.
         let _ = read_outlook(&damaged);
+    }
+
+    // ---- HTML mail and RTF bodies --------------------------------------------------------------------------------
+
+    const MAIL_HTML: &str = "<!doctype html><html><head><style>p{color:red}</style><title>t</title></head>\
+        <body onload=\"evil()\"><script>alert(1)</script><!--[if mso]><p>conditional</p><![endif]-->\
+        <p style=\"background:url(http://x.test/a.png)\" onclick=\"evil()\">Hello <b>world</b> مرحبا بالعالم</p>\
+        <img src=\"https://x.test/p.gif\" alt=\"tracker\"><img src=\"http://x.test/q.gif\">\
+        <img src=\"cid:Logo@X\" alt=\"logo\">\
+        <a href=\"javascript:alert(1)\">bad</a> <a href=\"https://example.com/a?b=1&amp;c=2\">good</a>\
+        <iframe src=\"https://x.test\">frame text</iframe><object data=\"x\">obj text</object>\
+        <form action=\"https://x.test\">typed<input name=q><button>Go</button></form>\
+        <table><tr><td colspan=\"2\" bgcolor=\"white\">cell</td></tr></table></body></html>";
+
+    fn html_eml() -> String {
+        [
+            "From: a@example.com".to_string(),
+            "Subject: Marketing".to_string(),
+            "MIME-Version: 1.0".to_string(),
+            "Content-Type: multipart/related; boundary=\"r\"".to_string(),
+            String::new(),
+            "--r".to_string(),
+            "Content-Type: text/html; charset=utf-8".to_string(),
+            String::new(),
+            MAIL_HTML.to_string(),
+            "--r".to_string(),
+            "Content-Type: image/png".to_string(),
+            "Content-ID: <Logo@x>".to_string(),
+            "Content-Transfer-Encoding: base64".to_string(),
+            String::new(),
+            PNG_1X1.to_string(),
+            "--r--".to_string(),
+            String::new(),
+        ]
+        .join("\r\n")
+    }
+
+    #[test]
+    fn html_is_sanitised_for_the_textview() {
+        let html = sanitize_html(MAIL_HTML);
+        for gone in [
+            "script",
+            "alert",
+            "style",
+            "onload",
+            "onclick",
+            "iframe",
+            "frame text",
+            "object",
+            "obj text",
+            "form",
+            "input",
+            "button",
+            "javascript",
+            "conditional",
+            "x.test",
+            "bgcolor",
+            "<html",
+            "<head",
+            "<body",
+        ] {
+            assert!(!html.contains(gone), "{gone} is gone: {html}");
+        }
+        assert!(html.contains("<p>Hello <b>world</b> مرحبا بالعالم</p>"), "{html}");
+        // The picture from the internet is gone, its alt text stays; the message's own picture stays.
+        assert!(html.contains("tracker") && !html.contains("<img src=\"https"), "{html}");
+        assert!(html.contains("<img src=\"cid:Logo@X\" alt=\"logo\">"), "{html}");
+        // Links: the web's stay, a script's doesn't.
+        assert!(
+            html.contains("<a href=\"https://example.com/a?b=1&amp;c=2\">good</a>"),
+            "{html}"
+        );
+        assert!(html.contains("<a>bad</a>"), "{html}");
+        assert!(html.contains("typed"), "what is typed in a form stays as words");
+        assert!(html.contains("<td colspan=\"2\">cell</td>"), "{html}");
+        // Tricks: an entity-hidden scheme, a bare `<`, an unclosed tag.
+        assert_eq!(sanitize_html("<a href=\"jav&#x61;script:x\">x</a>"), "<a>x</a>");
+        assert_eq!(sanitize_html("<a href=\" JaVa\tScript:x\">x</a>"), "<a>x</a>");
+        assert_eq!(sanitize_html("1 < 2"), "1 &lt; 2");
+        assert_eq!(sanitize_html("<img src=\"data:image/svg+xml;base64,AAAA\">"), "");
+        assert!(sanitize_html("<img src=\"data:image/png;base64,AAAA\">").contains("data:image/png"));
+        assert_eq!(sanitize_html("<script>never ends"), "");
+        assert_eq!(sanitize_html("<p onclick=\"a>b\">x"), "<p>x");
+    }
+
+    #[test]
+    fn only_the_webs_mail_and_phones_links_open() {
+        assert_eq!(
+            safe_link("https://example.com/a").as_deref(),
+            Some("https://example.com/a")
+        );
+        assert_eq!(safe_link("HTTP://example.com").as_deref(), Some("http://example.com"));
+        assert_eq!(safe_link("mailto:a@b.c").as_deref(), Some("mailto:a@b.c"));
+        assert_eq!(safe_link("tel:+966555").as_deref(), Some("tel:+966555"));
+        for bad in [
+            "javascript:alert(1)",
+            "file:///C:/Windows/System32/calc.exe",
+            "\\\\server\\share\\a.exe",
+            "#top",
+            "page.html",
+            "ms-msdt:/id",
+            "https:",
+            "",
+        ] {
+            assert_eq!(safe_link(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_eml_with_html_keeps_its_html_and_its_cid_pictures() {
+        let message = read_email(html_eml().as_bytes());
+        assert!(message.html_only, "no text part");
+        assert!(message.remote, "the note about pictures from the internet");
+        assert!(message.html.contains("<b>world</b>") && !message.html.contains("alert"));
+        assert!(
+            message.text.contains("Hello world مرحبا بالعالم"),
+            "the plain version: {}",
+            message.text
+        );
+        assert!(message.attachments.is_empty(), "the logo is not a file to open");
+        assert_eq!(message.inline.len(), 1);
+        assert_eq!(message.inline[0].name, "logo@x", "the Content-ID, cleaned");
+        let pictures = MailPictures::new(message.inline.clone());
+        let made = |src: &str| match pictures.source(src) {
+            ImageSource::Image(image) => image,
+            _ => panic!("{src} is not an image"),
+        };
+        // The cid picture is the message's own (made once); another cid, the web and files are blank.
+        let logo = made("cid:Logo@X");
+        assert!(Arc::ptr_eq(&logo, &made("cid:logo@x")));
+        let blank = made("cid:nothing");
+        assert!(!Arc::ptr_eq(&logo, &blank));
+        for src in [
+            "https://x.test/p.gif",
+            "file:///C:/a.png",
+            "C:\\a.png",
+            "data:image/svg+xml;base64,AAAA",
+        ] {
+            assert!(Arc::ptr_eq(&made(src), &blank), "{src}");
+        }
+        // A message with both parts shows the HTML, the TypeScript's choice, and keeps the text for the editor.
+        let both = read_email(eml().as_bytes());
+        assert!(both.html.contains("<p>Hello"), "{}", both.html);
+        assert_eq!(both.text, "Hello سلام softbreak");
+        // HTML with nothing to show falls back to the text.
+        let hollow =
+            read_email(b"Subject: s\nContent-Type: text/html\n\n<script>alert(1)</script><style>p{}</style>\n");
+        assert!(hollow.html.is_empty());
+    }
+
+    /// Compressed RTF made the way Outlook does, with a reference into the starting dictionary first.
+    fn compress_rtf(rtf: &[u8]) -> Vec<u8> {
+        enum Token {
+            Ref(usize, usize),
+            Lit(u8),
+        }
+        let head = b"{\\rtf1\\ansi";
+        assert!(rtf.starts_with(head) && LZFU_DICTIONARY.starts_with(head));
+        let mut tokens = vec![Token::Ref(0, head.len())];
+        tokens.extend(rtf[head.len()..].iter().map(|&b| Token::Lit(b)));
+        let written = LZFU_PREBUFFER + rtf.len();
+        tokens.push(Token::Ref(written & 4095, 2));
+        let mut body = Vec::new();
+        for group in tokens.chunks(8) {
+            let mut control = 0u8;
+            let mut bytes = Vec::new();
+            for (bit, token) in group.iter().enumerate() {
+                match token {
+                    Token::Lit(b) => bytes.push(*b),
+                    Token::Ref(offset, length) => {
+                        control |= 1 << bit;
+                        bytes.push((offset >> 4) as u8);
+                        bytes.push((((offset & 15) << 4) | (length - 2)) as u8);
+                    }
+                }
+            }
+            body.push(control);
+            body.extend(bytes);
+        }
+        let mut out = Vec::new();
+        out.extend(((body.len() + 12) as u32).to_le_bytes());
+        out.extend((rtf.len() as u32).to_le_bytes());
+        out.extend(b"LZFu");
+        out.extend(0u32.to_le_bytes());
+        out.extend(body);
+        out
+    }
+
+    #[test]
+    fn compressed_rtf_is_decompressed() {
+        assert!(LZFU_DICTIONARY.len() <= LZFU_PREBUFFER);
+        let rtf = b"{\\rtf1\\ansi\\ansicpg1252 Hello, hello, hello \\par}";
+        assert_eq!(rtf_decompress(&compress_rtf(rtf)).as_deref(), Some(&rtf[..]));
+        // Stored uncompressed (MELA).
+        let mut stored = Vec::new();
+        stored.extend(((rtf.len() + 12) as u32).to_le_bytes());
+        stored.extend((rtf.len() as u32).to_le_bytes());
+        stored.extend(b"MELA");
+        stored.extend(0u32.to_le_bytes());
+        stored.extend(rtf);
+        assert_eq!(rtf_decompress(&stored).as_deref(), Some(&rtf[..]));
+        // Damaged or short data is refused or cut, never a panic.
+        assert_eq!(rtf_decompress(b"short"), None);
+        let mut cut = compress_rtf(rtf);
+        cut.truncate(30);
+        let _ = rtf_decompress(&cut);
+        let mut wrong = compress_rtf(rtf);
+        wrong[8..12].copy_from_slice(b"????");
+        assert_eq!(rtf_decompress(&wrong), None);
+    }
+
+    #[test]
+    fn the_specs_worked_example_decompresses() {
+        // MS-OXRTFCP's example: "{\rtf1\ansi\ansicpg1252\pard hello world}\r\n".
+        let stream: [u8; 49] = [
+            0x2d, 0, 0, 0, 0x2b, 0, 0, 0, 0x4c, 0x5a, 0x46, 0x75, 0xf1, 0xc5, 0xc7, 0xa7, 0x03, 0x00, 0x0a, 0x00, 0x72,
+            0x63, 0x70, 0x67, 0x31, 0x32, 0x35, 0x42, 0x32, 0x0a, 0xf3, 0x20, 0x68, 0x65, 0x6c, 0x09, 0x00, 0x20, 0x62,
+            0x77, 0x05, 0xb0, 0x6c, 0x64, 0x7d, 0x0a, 0x80, 0x0f, 0xa0,
+        ][..49]
+            .try_into()
+            .expect("49 bytes");
+        assert_eq!(
+            rtf_decompress(&stream).as_deref(),
+            Some(&b"{\\rtf1\\ansi\\ansicpg1252\\pard hello world}\r\n"[..])
+        );
+    }
+
+    #[test]
+    fn plain_rtf_is_reduced_to_text() {
+        let rtf = "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0 Arial;}}{\\colortbl;\\red0\\green0\\blue0;}\
+            {\\*\\generator Riched20;}\\pard\\f0\\fs20 Caf\\'e9 \\b bold\\b0\\par \
+            \\u1605?\\u1585?\\u1581?\\u1576?\\u1575?\\par Done \\{ok\\}\\line end}";
+        let (text, wraps_html) = rtf_body(rtf.as_bytes());
+        assert!(!wraps_html);
+        assert_eq!(text, "Café bold\nمرحبا\nDone {ok}\nend");
+        // Arabic in the code page 1256, as Outlook writes it.
+        let (text, _) = rtf_body(b"{\\rtf1\\ansi\\ansicpg1256 \\'e3\\'d1\\'cd\\'c8\\'c7}");
+        assert_eq!(text, "مرحبا");
+    }
+
+    #[test]
+    fn rtf_that_wraps_html_gives_the_html() {
+        let rtf = "{\\rtf1\\ansi\\ansicpg1252\\fromhtml1 \\deff0{\\fonttbl{\\f0 Arial;}}\
+            {\\*\\htmltag19 <html>}{\\*\\htmltag64 <p>}\\htmlrtf {\\htmlrtf0 Hello {\\*\\htmltag84 <b>}\\htmlrtf {\\b\\htmlrtf0 world\\htmlrtf }\\htmlrtf0 \
+            {\\*\\htmltag92 </b>} \\u1605?\\u1585?\\u1581?\\u1576?\\u1575?\\htmlrtf \\par\\htmlrtf0 }\
+            {\\*\\htmltag72 <script>alert(1)</script>}{\\*\\mhtmltag1 hidden}}";
+        let (html, wraps_html) = rtf_body(rtf.as_bytes());
+        assert!(wraps_html);
+        let clean = sanitize_html(&html);
+        assert!(clean.contains("<p>Hello <b>world</b> مرحبا"), "{clean}");
+        assert!(
+            !clean.contains("script") && !clean.contains("hidden") && !clean.contains("Arial"),
+            "{clean}"
+        );
+    }
+
+    fn rtf_only_msg(rtf: &[u8]) -> Vec<u8> {
+        build_cfb(vec![
+            stream("__substg1.0_0037001F", utf16("رسالة RTF")),
+            stream("__substg1.0_10090102", compress_rtf(rtf)),
+            stream("__substg1.0_0C1A001F", utf16("أحمد")),
+        ])
+    }
+
+    #[test]
+    fn an_outlook_message_with_only_rtf_gets_a_body() {
+        let plain = rtf_only_msg(b"{\\rtf1\\ansi\\ansicpg1252 Hello\\par \\u1605?\\u1585?\\u1581?\\u1576?\\u1575?}");
+        let message = read_outlook(&plain).expect("the message is read");
+        assert_eq!(message.subject, "رسالة RTF");
+        assert_eq!(message.text, "Hello\nمرحبا");
+        assert!(message.html.is_empty(), "plain RTF has no HTML");
+        let wrapped = rtf_only_msg(
+            b"{\\rtf1\\ansi\\fromhtml1 {\\*\\htmltag64 <p>}Body {\\*\\htmltag84 <i>}here{\\*\\htmltag92 </i>}{\\*\\htmltag72 <script>x()</script>}}",
+        );
+        let message = read_outlook(&wrapped).expect("the message is read");
+        assert!(message.html_only);
+        assert!(
+            message.html.contains("<i>here</i>") && !message.html.contains("script"),
+            "{}",
+            message.html
+        );
+        assert!(message.text.contains("Body here"), "{}", message.text);
+        // An HTML body (PR_HTML), when there is one, wins over RTF; its pictures come from the attachments.
+        let with_html = build_cfb(vec![
+            stream(
+                "__substg1.0_10130102",
+                b"<p>HTML body</p><img src=\"cid:pic@x\">".to_vec(),
+            ),
+            stream("__substg1.0_10090102", compress_rtf(b"{\\rtf1\\ansi RTF body}")),
+            storage(
+                "__attach_version1.0_#00000000",
+                vec![
+                    stream("__substg1.0_3712001F", utf16("<pic@x>")),
+                    stream("__substg1.0_37010102", b"png".to_vec()),
+                    stream("__properties_version1.0", props(8, &[(0x7FFE, 0x000B, 1)])),
+                ],
+            ),
+        ]);
+        let message = read_outlook(&with_html).expect("the message is read");
+        assert!(message.html.contains("HTML body") && !message.text.contains("RTF body"));
+        assert_eq!(message.inline.len(), 1);
+        assert_eq!(message.inline[0].name, "pic@x");
+        assert!(message.attachments.is_empty(), "a hidden picture isn't listed");
+    }
+
+    #[gpui_kit::test]
+    fn an_html_mail_is_drawn_without_its_script_in_an_arabic_window(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let dir = temp_dir("htmlmail");
+        let entry = entry_of(&dir, "ترويج.eml", html_eml().as_bytes());
+        cx.update(testing::init);
+        let (view, mut visual) = open(cx, entry, SmallKind::Email, true);
+        settle(&view, &mut visual);
+        for _ in 0..40 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.render_frame(cx));
+            if view
+                .read_with(&visual, |v, cx| v.mail_text(cx))
+                .is_some_and(|t| t.contains("world"))
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let drawn = view.read_with(&visual, |v, cx| v.mail_text(cx)).unwrap_or_default();
+        assert!(drawn.contains("Hello world مرحبا بالعالم"), "the body: {drawn}");
+        assert!(!drawn.contains("alert") && !drawn.contains("conditional"), "{drawn}");
+        assert!(has(&mut visual, "The message"));
+        assert!(has(
+            &mut visual,
+            "Pictures from the internet aren't loaded, so nobody learns it was opened."
+        ));
+        assert!(!has(
+            &mut visual,
+            "This message is formatted; it is shown here as plain text."
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        testing::set_rtl(false);
     }
 
     // ---- The views --------------------------------------------------------------------------------------------------

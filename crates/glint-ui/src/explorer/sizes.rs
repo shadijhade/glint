@@ -299,6 +299,8 @@ impl Explorer {
         for id in showing {
             self.rebuild_rows(id, cx);
         }
+        // Two folders of one name differ when their measured sizes do (compare panes).
+        self.refresh_comparison(cx);
         cx.notify();
     }
 }
