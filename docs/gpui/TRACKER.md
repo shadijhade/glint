@@ -88,6 +88,27 @@
 
 **Next for these parts:** the views use the explorer's new APIs (cut items dimmed, set_focus for Ctrl+arrows, set_selection for the marquee, set_editing_address, eject through the explorer, the focused row's bounds for the keyboard menu); Settings' "shortcut taken" hint (set_quick_taken from the tray's error); local dates in the history and versions dialogs (glint-model needs day, time and date formats); the quit path waiting for `busy_count()`; `reload_recycle_bins` when the window regains focus.
 
+## Wave 6: search, drops and the views' follow-ups: done 2026-11-10
+
+*16 agents, ~38 minutes, 3.3M tokens: 8 changes (7 Sonnet, 1 Haiku), all passed review first time. Integrated by the coordinator: search events wired to the explorer's find, the sidebar opens the shared folder menu, batch rename, tags, vault and the archive password are opened from the explorer's and the menus' events, the instant-search offer is worded with its Turn on button. 738 tests pass, clippy clean.*
+
+| Change | Model | Status |
+| :--- | :--- | :--- |
+| explorer part C: `find.rs` (run_find, as-typed, saved searches, cancelling everywhere the TypeScript did) | Sonnet | done: 24 tests |
+| file list: Ctrl+arrows and the marquee through the explorer, cut items dimmed, thumbnails, drops, drag-out, the keyboard menu at the focused row | Sonnet | done |
+| file grid: the same, plus SVG tiles drawn by Glint | Sonnet | done |
+| sidebar: the shared folder menu, drops, eject through the explorer | Sonnet | done |
+| tab strip and address bar: drops, spring-loaded tabs, the + after the last tab, crumbs take drops and drag out | Sonnet | done |
+| status bar and This PC: keyboard segments, the thumbnail line, tile drops, eject | Haiku | done |
+| dialog: batch rename | Sonnet | done (Ctrl+Z for a batch needs an UndoAction) |
+| dialogs: tags, password, vault | Sonnet | done (recent tags not kept across runs yet) |
+
+**Tried for real:** the self-test now also searches: "Copy" in the scratch folder, 2 found by the instant-search index. Copy, paste, rename and undo pass again; nothing reaches the Recycle Bin.
+
+**Process:** one agent ran `git rm --cached` on the file it was retiring and another `git diff --stat` (both against the rule, neither harmful); a stray `crates/target` appeared again, so `.cargo/config.toml` now pins every build to `target/ui`.
+
+**Not tried for real yet:** drops from File Explorer onto each view and drag-out (needs a real OLE drag: a UI Automation harness), the instant-search offer's Turn on.
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).

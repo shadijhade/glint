@@ -49,7 +49,7 @@
 use crate::explorer::{self, ExplorerEvent};
 use crate::kit::prelude::*;
 use crate::theme;
-use glint_model::entries::{is_list_only, is_locked, is_online_only, FileEntry};
+use glint_model::entries::{is_archived, is_list_only, is_locked, is_online_only, FileEntry};
 use glint_model::file_types::Kind;
 use glint_model::grid::thumb_step;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -70,6 +70,12 @@ const LATEST_FILES: usize = 5000;
 
 /// What a file with no thumbnail costs to remember: a little, so a folder of them can't grow this for ever.
 const NONE_COST: usize = 64;
+
+/// An SVG the grid draws itself, up to this size (`MAX_SVG`): Windows has no thumbnail handler for SVG as it comes.
+const MAX_SVG: u64 = 4 << 20;
+
+/// The width an SVG is first drawn at, only to learn its shape (see [`draw_vector`]).
+const PROBE_WIDTH: i32 = 64;
 
 // ---- The source ---------------------------------------------------------------------------------------
 
@@ -236,6 +242,8 @@ pub struct Want {
     pub step: u32,
     /// The square it fits in, CSS pixels: a stand-in from another size must not be far smaller.
     pub css_box: f32,
+    /// An SVG file the service draws itself instead of asking Windows ([`is_vector`]).
+    pub vector: bool,
 }
 
 impl Want {
@@ -253,6 +261,7 @@ impl Want {
             cached_only: is_online_only(entry),
             step: thumb_step(css_box, scale),
             css_box,
+            vector: is_vector(entry),
         })
     }
 
@@ -267,13 +276,53 @@ impl Want {
     }
 }
 
-/// Whether Windows can have a thumbnail of this item at all (the TypeScript's `enabled`).
-///
-/// PORT ME(svg): the web page drew an SVG itself (`MAX_SVG`, 4 MB), crisp at any size, because Windows has no
-/// thumbnail handler for SVG as it comes. Here an SVG is asked of Windows like any file and, having none, shows its
-/// icon. GPUI can draw an SVG file natively (`img(path)`); that wants a tile-side branch beside `Look`.
+/// Whether Windows can have a thumbnail of this item at all (the TypeScript's `enabled`). An SVG counts: the
+/// service draws it ([`is_vector`]) rather than asking Windows, which has no handler for SVG as it comes.
 pub fn is_eligible(entry: &FileEntry) -> bool {
     !entry.dir && !is_locked(entry) && !is_list_only(entry)
+}
+
+/// Whether the service draws this file itself: an SVG of up to 4 MB, not inside an archive (`vector` in
+/// Thumbnail.tsx). Unlike the web page, which would have fetched an online-only file through its placeholder (and so
+/// downloaded it), a cloud file that isn't on this PC is not drawn: it asks Windows' cache like any other file.
+pub fn is_vector(entry: &FileEntry) -> bool {
+    is_eligible(entry) && entry.ext == "svg" && !is_archived(entry) && !is_online_only(entry) && entry.size <= MAX_SVG
+}
+
+/// Draws the SVG file at `path` crisp for a square of `step` device pixels: parsed once, then rasterized at the
+/// size that fits the square with its shape kept (the web page drew it into an <img>, which fills the square the
+/// same way). `None` for a file that can't be read or isn't a drawing, which keeps its icon.
+fn draw_vector(path: &str, step: u32, renderer: SvgRenderer) -> Option<Arc<RenderImage>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    // One byte past the limit tells a file that grew since it was listed.
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_SVG + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if u64::try_from(bytes.len()).ok()? > MAX_SVG {
+        return None;
+    }
+    let svg = renderer.parse_svg(&bytes).ok()?;
+    let at = |width: i32| SvgSize::Size(size(DevicePixels(width), DevicePixels(width)));
+    // The drawing's shape is not known to the caller, and a very tall one drawn at the square's full width would
+    // be huge: a small drawing first gives the shape.
+    let probe = renderer.render_parsed(&svg, at(PROBE_WIDTH)).ok()?;
+    let (probe_w, probe_h) = pixels_of(&probe);
+    if probe_w == 0 {
+        return None;
+    }
+    let step = i32::try_from(step).ok()?;
+    // Wider than tall (or square): the square's width. Taller: the width at which its height is the square's.
+    let width = if probe_h <= probe_w {
+        step
+    } else {
+        let tall = f64::from(probe_h) / f64::from(probe_w);
+        // Rounded; at least one pixel, at most the square.
+        ((f64::from(step) / tall).round() as i32).clamp(1, step)
+    };
+    renderer.render_parsed(&svg, at(width)).ok()
 }
 
 /// A picture, sized for the square it goes in, in CSS pixels.
@@ -464,6 +513,8 @@ pub struct Thumbnails {
     showing: HashMap<Key, u32>,
     viewers: HashMap<EntityId, Shown>,
     wanted: HashMap<Key, Request>,
+    /// SVGs being drawn here (they are not asked of the source, so they are not in `wanted`).
+    drawing: HashSet<Key>,
     seq: u32,
     runs: HashMap<String, ThumbRun>,
     run_ids: u64,
@@ -522,6 +573,7 @@ impl Thumbnails {
             showing: HashMap::new(),
             viewers: HashMap::new(),
             wanted: HashMap::new(),
+            drawing: HashSet::new(),
             seq: 0,
             runs: HashMap::new(),
             run_ids: 0,
@@ -581,7 +633,7 @@ impl Thumbnails {
                 continue;
             }
             let is_new = fresh_for_lane || !old_keys.contains(key);
-            if is_new && !self.wanted.contains_key(key) {
+            if is_new && !self.wanted.contains_key(key) && !self.drawing.contains(key) {
                 to_ask.push((key.clone(), want.clone()));
             }
         }
@@ -647,6 +699,10 @@ impl Thumbnails {
     // ---- Asking and answering ---------------------------------------------------------------------
 
     fn ask(&mut self, key: Key, want: Want, lane: &str, retries: u8, cx: &mut Context<Self>) {
+        if want.vector {
+            self.draw(key, &want, cx);
+            return;
+        }
         self.seq = self.seq.wrapping_add(1).max(1);
         let seq = self.seq;
         let run = self.runs.get_mut(lane).map(|run| {
@@ -696,6 +752,32 @@ impl Thumbnails {
                 .await;
             this.update(cx, |this, cx| this.answered(key, seq, css_box, decoded, cx))
                 .ok();
+        })
+        .detach();
+    }
+
+    /// Draws an SVG file on a background thread (`Thumbnail.tsx` gave it to the browser as an <img>): no source,
+    /// no lane, and so no part in the status bar's thumbnail run.
+    fn draw(&mut self, key: Key, want: &Want, cx: &mut Context<Self>) {
+        self.drawing.insert(key.clone());
+        let renderer = cx.svg_renderer();
+        let (path, step, css_box) = (want.path.clone(), want.step, want.css_box);
+        cx.spawn(async move |this, cx| {
+            let drawn = cx
+                .background_executor()
+                .spawn(async move { draw_vector(&path, step, renderer) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.drawing.remove(&key);
+                // A drawing that failed keeps the file's icon, as the web page did when its <img> errored.
+                if !this.held.contains(&key) {
+                    this.hold(key, drawn, css_box);
+                }
+                this.evict();
+                cx.emit(Arrived);
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }
@@ -918,9 +1000,9 @@ impl Thumbnails {
         self.held.len()
     }
 
-    /// How many requests are out.
+    /// How many requests are out (SVGs being drawn included).
     pub fn pending_count(&self) -> usize {
-        self.wanted.len()
+        self.wanted.len() + self.drawing.len()
     }
 
     /// The decoded bytes held, against the budget.
@@ -959,7 +1041,7 @@ pub fn thumbnail_square(look: &Look, kind: &Kind, box_px: f32, icon_px: f32, bot
                 .w(px(drawn.width))
                 .h(px(drawn.height))
                 .flex_none()
-                .when(shadow, |picture| picture.rounded(px(3.)));
+                .when(shadow, |picture| picture.rounded(theme::size::RADIUS_SM));
             square.child(
                 div()
                     .absolute()
@@ -1052,6 +1134,7 @@ pub(super) mod tests {
             cached_only: false,
             step: 96,
             css_box: 96.0,
+            vector: false,
         }
     }
 

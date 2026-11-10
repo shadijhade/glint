@@ -3,8 +3,10 @@
 //! model asks core once when the view starts, as the app does; its answer doesn't matter here.
 
 use super::*;
+use crate::drops::dispatch;
 use crate::explorer::fake::{file, FakeDisk};
-use crate::explorer::{Explorer, KnownFolder, KnownId};
+use crate::explorer::{Explorer, FileOp, KnownFolder, KnownId};
+use crate::platform::dragdrop::{Answer, DropAnswers, DropEvent};
 use crate::state;
 use crate::testing;
 use glint_model::format::format_size;
@@ -375,4 +377,236 @@ fn a_known_folder_is_named_in_the_interface_language(cx: &mut TestAppContext) {
     // The catalog has Documents in Arabic: the tile says so, and its name is still exposed to screen readers.
     assert_eq!(role_of(&mut visual, "المستندات"), Some(Role::Button));
     testing::set_rtl(false);
+}
+
+/// Where tile `index` (folders first) was painted last: its middle, in window pixels, as the drop target sees it.
+fn tile_middle(visual: &mut VisualTestContext, view: &Entity<ThisPc>, index: usize) -> (f32, f32) {
+    frame(visual);
+    let center = view.read_with(&*visual, |v, _| {
+        let known = v.known.len();
+        let places = if index < known {
+            v.folder_bounds.borrow().get(index).cloned()
+        } else {
+            v.drive_bounds.borrow().get(index - known).cloned()
+        };
+        places.map(|bounds| bounds.center())
+    });
+    let center = center.expect("the tile is painted");
+    (f32::from(center.x), f32::from(center.y))
+}
+
+/// A drag of `paths` over the point (x, y), dropped there with `effect` if the tile takes it. Returns the answer
+/// the tile gave while the drag was over the point.
+fn drop_at(visual: &mut VisualTestContext, paths: &[&str], (x, y): (f32, f32), effect: DropEffect) -> Answer {
+    let files: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+    let answers = DropAnswers::default();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        dispatch(
+            DropEvent::Enter {
+                paths: files.clone(),
+                x,
+                y,
+                effect: DropEffect::Copy,
+            },
+            &answers,
+            window,
+            cx,
+        );
+        dispatch(DropEvent::Over { x, y, effect }, &answers, window, cx);
+    });
+    let answer = answers.get();
+    // What the target sends with the drop: none where the tile refused it.
+    let effect = if matches!(answer, Answer::Accept(_)) {
+        effect
+    } else {
+        DropEffect::None
+    };
+    visual.update(|window, cx| {
+        dispatch(
+            DropEvent::Drop {
+                paths: files.clone(),
+                x,
+                y,
+                effect,
+            },
+            &answers,
+            window,
+            cx,
+        );
+    });
+    settle(visual);
+    answer
+}
+
+#[gpui_kit::test]
+fn files_dropped_on_a_folder_tile_are_copied_into_it_and_the_drag_says_so(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, view, _explorer, disk) = setup(cx, standard_drives(), false);
+    let downloads = tile_middle(&mut visual, &view, 1);
+    let source = "C:\\Users\\me\\Desktop\\ملف.txt";
+    match drop_at(&mut visual, &[source], downloads, DropEffect::Copy) {
+        Answer::Accept(under) => {
+            assert_eq!(under.name, "Downloads");
+            assert_eq!(under.copy, "Copy to %1", "the words stand for the folder's name");
+            assert_eq!(under.moves, "Move to %1");
+        }
+        other => panic!("the folder takes the drop, got {other:?}"),
+    }
+    let copied = disk.ops().iter().any(|op| {
+        matches!(op, FileOp::Copy { sources, dest }
+            if dest == DOWNLOADS && sources.len() == 1 && sources[0] == source)
+    });
+    assert!(copied, "the file was copied into Downloads: {:?}", disk.ops());
+}
+
+#[gpui_kit::test]
+fn shift_on_a_drop_moves_the_files_and_the_words_are_arabic_in_arabic(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, view, _explorer, disk) = setup(cx, standard_drives(), true);
+    let downloads = tile_middle(&mut visual, &view, 1);
+    let answer = drop_at(
+        &mut visual,
+        &["C:\\Users\\me\\Desktop\\ملف.txt"],
+        downloads,
+        DropEffect::Move,
+    );
+    assert!(
+        matches!(&answer, Answer::Accept(under) if under.copy == "نسخ إلى %1" && under.moves == "نقل إلى %1"),
+        "the words are in Arabic: {answer:?}"
+    );
+    assert!(
+        disk.ops().iter().any(|op| matches!(op, FileOp::Move { .. })),
+        "Shift moved the file: {:?}",
+        disk.ops()
+    );
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn a_cd_drive_and_the_folder_the_files_are_in_refuse_a_drop(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let drives = vec![
+        drive("C:\\", "Windows", DriveKind::Fixed, "NTFS", 500, 200),
+        drive("D:\\", "", DriveKind::Cdrom, "", 0, 0),
+    ];
+    let (mut visual, view, _explorer, disk) = setup(cx, drives, false);
+    // The drives follow the two folders: the disc is at index 3.
+    let disc = tile_middle(&mut visual, &view, 3);
+    assert!(
+        matches!(
+            drop_at(&mut visual, &["C:\\Users\\me\\Desktop\\a.txt"], disc, DropEffect::Copy),
+            Answer::Refuse
+        ),
+        "a disc is read-only"
+    );
+    let downloads = tile_middle(&mut visual, &view, 1);
+    let already_there = format!("{DOWNLOADS}\\notes.txt");
+    assert!(
+        matches!(
+            drop_at(&mut visual, &[already_there.as_str()], downloads, DropEffect::Copy),
+            Answer::Refuse
+        ),
+        "the files are in that folder already"
+    );
+    assert!(disk.ops().is_empty(), "nothing was copied or moved: {:?}", disk.ops());
+}
+
+#[gpui_kit::test]
+fn the_tile_under_the_files_lights_up_and_lets_go_when_they_leave(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, view, _explorer, _disk) = setup(cx, standard_drives(), false);
+    let (x, y) = tile_middle(&mut visual, &view, 1);
+    let answers = DropAnswers::default();
+    let files = vec!["C:\\Users\\me\\Desktop\\a.txt".to_string()];
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        dispatch(
+            DropEvent::Enter {
+                paths: files.clone(),
+                x,
+                y,
+                effect: DropEffect::Copy,
+            },
+            &answers,
+            window,
+            cx,
+        );
+        dispatch(
+            DropEvent::Over {
+                x,
+                y,
+                effect: DropEffect::Copy,
+            },
+            &answers,
+            window,
+            cx,
+        );
+    });
+    assert_eq!(
+        view.read_with(&visual, |v, _| v.drop_over.get()),
+        Some(1),
+        "Downloads is lit"
+    );
+    // The pointer goes to the page's padding, where no tile is: the tile lets go.
+    visual.update(|window, cx| {
+        dispatch(
+            DropEvent::Over {
+                x: 5.,
+                y: 5.,
+                effect: DropEffect::Copy,
+            },
+            &answers,
+            window,
+            cx,
+        );
+    });
+    assert_eq!(view.read_with(&visual, |v, _| v.drop_over.get()), None);
+}
+
+#[gpui_kit::test]
+fn ejecting_a_drive_goes_through_the_explorer(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut visual, _view, _explorer, disk) = setup(cx, standard_drives(), false);
+    // E: is the third drive, after the two folders: index 4.
+    click(&mut visual, ("this-pc-eject", 4_usize));
+    assert_eq!(disk.ejected(), vec!["E:\\".to_string()]);
+}
+
+#[gpui_kit::test]
+fn the_arrow_keys_scroll_the_page_to_bring_the_focused_tile_into_view(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let drives: Vec<Drive> = (b'C'..=b'Z')
+        .map(|letter| {
+            drive(
+                &format!("{}:\\", letter as char),
+                "",
+                DriveKind::Fixed,
+                "NTFS",
+                500,
+                200,
+            )
+        })
+        .collect();
+    let (mut visual, view, _explorer, _disk) = setup(cx, drives, false);
+    assert_eq!(
+        view.read_with(&visual, |v, _| v.scroll.offset().y),
+        px(0.),
+        "the page starts at the top"
+    );
+    focus_first_tile(&mut visual);
+    press(&mut visual, "end");
+    frame(&mut visual);
+    let last = view
+        .read_with(&visual, |v, _| v.drive_bounds.borrow().last().cloned())
+        .expect("the last drive is painted");
+    let page = view.read_with(&visual, |v, _| v.scroll.bounds());
+    assert!(
+        view.read_with(&visual, |v, _| v.scroll.offset().y) < px(0.),
+        "the page scrolled down"
+    );
+    assert!(
+        last.top() >= page.top() && last.bottom() <= page.bottom(),
+        "the last tile is wholly in view"
+    );
 }

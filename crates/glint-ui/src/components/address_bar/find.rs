@@ -234,7 +234,7 @@ impl AddressBar {
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .font_family(mono_font(cx))
+                                .font_family(theme::mono_font(cx))
                                 .text_size(theme::size::XXS)
                                 .child(plain.query.clone()),
                         ),
@@ -273,7 +273,7 @@ impl AddressBar {
                             .child(
                                 div()
                                     .flex_none()
-                                    .font_family(mono_font(cx))
+                                    .font_family(theme::mono_font(cx))
                                     .text_size(theme::size::XXS)
                                     .text_color(t.primary)
                                     .child(example),

@@ -22,12 +22,17 @@
 
 use crate::explorer::{self, Drive, DriveKind, Explorer, Pane, Tab, TabId};
 use crate::kit::prelude::*;
+use crate::platform::dragdrop::{Answer, DropEffect, Under};
 use crate::theme::Tokens;
 use crate::{i18n, state, t, theme};
 use glint_model::paths::{
-    is_gallery, is_recent, is_recycle_bin, is_remote_path, is_root, is_shadow_path, same_path, THIS_PC,
+    in_archive_path, is_gallery, is_recent, is_recycle_bin, is_remote_path, is_root, is_shadow_path, same_path, THIS_PC,
 };
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// How long files held over a tab that isn't showing wait before it opens (`springTimer`, 450 ms).
+const SPRING_DELAY: Duration = Duration::from_millis(450);
 
 // ---- What is drawn ----------------------------------------------------------------------------------
 
@@ -71,6 +76,9 @@ struct TabData {
     glyph: Glyph,
     /// A loading folder or a running search: the icon pulses.
     busy: bool,
+    /// The folder files dropped on the tab go into: not a search, an archive, a closed folder, a remote
+    /// (read-only), This PC, Recent or the Gallery (`dropInto`).
+    drop_into: Option<String>,
 }
 
 /// A pane's strip as drawn.
@@ -181,6 +189,29 @@ fn tab_data(explorer: &Explorer, id: TabId) -> TabData {
         tooltip: tooltip.into(),
         glyph,
         busy: tab.is_some_and(|t| t.loading || t.find.as_ref().is_some_and(|f| f.running)),
+        drop_into: tab
+            .filter(|t| {
+                t.find.is_none()
+                    && t.path != THIS_PC
+                    && !t.listing.as_ref().is_some_and(|l| l.archive.is_some())
+                    && !t.is_closed()
+                    && !in_archive_path(&t.path)
+                    && !is_remote_path(&t.path)
+                    && !is_recent(&t.path)
+                    && !is_gallery(&t.path)
+            })
+            .map(|t| t.path.clone()),
+    }
+}
+
+/// What the drag's picture says a drop on a folder does ("Copy to Documents", "Move to Documents"): the words
+/// are Glint's, `%1` stands for the name. The address bar's crumbs use it too.
+pub(crate) fn drop_words(name: &str) -> Under {
+    Under {
+        name: name.to_string(),
+        copy: t!("Copy to %1").to_string(),
+        moves: t!("Move to %1").to_string(),
+        always_move: false,
     }
 }
 
@@ -220,27 +251,6 @@ impl Render for DragChip {
             .shadow_md()
             .child(icon(self.glyph.icon()).size_4().text_color(t.muted_foreground))
             .child(div().min_w_0().truncate().child(isolate(self.name.clone())))
-    }
-}
-
-/// A one-line tooltip.
-struct TextTip(SharedString);
-
-impl Render for TextTip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::tokens(cx).clone();
-        div()
-            .px(space(2.5))
-            .py(space(1.5))
-            .max_w(space(120.))
-            .rounded(theme::size::RADIUS_SM)
-            .border_1()
-            .border_color(t.border)
-            .bg(t.popover)
-            .text_color(t.popover_foreground)
-            .text_size(theme::size::XS)
-            .shadow_md()
-            .child(self.0.clone())
     }
 }
 
@@ -396,6 +406,10 @@ pub struct TabStrip {
     /// Where a dragged tab would drop.
     slot: Option<Slot>,
     pane_menu: Option<OpenMenu>,
+    /// The tab files are held over, lit while they are (`springTab`).
+    spring: Option<TabId>,
+    /// Opens the sprung tab when its delay passes.
+    spring_timer: Option<Task<()>>,
     /// The keyboard focus of each tab, for Tab, Enter and the arrows.
     focus: HashMap<TabId, FocusHandle>,
     _subscriptions: Vec<Subscription>,
@@ -412,6 +426,8 @@ impl TabStrip {
             scrolled_to: Vec::new(),
             slot: None,
             pane_menu: None,
+            spring: None,
+            spring_timer: None,
             focus: HashMap::new(),
             _subscriptions: subscriptions,
         }
@@ -466,6 +482,46 @@ impl TabStrip {
             _dismissed: dismissed,
         });
         cx.notify();
+    }
+
+    /// Files are held over `tab` (or over no tab: `None`): it lights, and one that isn't showing opens after
+    /// [`SPRING_DELAY`], so the files can go into its folder (`hoverTab`).
+    fn spring_to(&mut self, tab: Option<TabId>, cx: &mut Context<Self>) {
+        if self.spring == tab {
+            return;
+        }
+        self.spring = tab;
+        self.spring_timer = None;
+        cx.notify();
+        let Some(id) = tab else {
+            return;
+        };
+        let hidden = !self.explorer.read(cx).shown_panes().iter().any(|p| p.active == id);
+        if !hidden {
+            return;
+        }
+        self.spring_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SPRING_DELAY).await;
+            this.update(cx, |this, cx| {
+                // The drag may have ended, or moved on, while it waited.
+                if this.spring == Some(id) && cx.has_active_drag() {
+                    this.explorer.update(cx, |e, cx| e.activate_tab(id, cx));
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Files dropped on a tab go into its folder: copied, or moved when the drop moves.
+    fn drop_files_on(&mut self, dest: Option<&str>, paths: Vec<String>, cx: &mut Context<Self>) {
+        self.spring_to(None, cx);
+        let Some(dest) = dest else {
+            return;
+        };
+        let moves = crate::drops::effect(cx) == DropEffect::Move;
+        self.explorer
+            .update(cx, |e, cx| e.drop_files(paths, dest, moves, cx).detach());
     }
 
     /// A tab dropped on pane `pane`'s strip (`count` tabs): into the gap it was shown for, else at the end.
@@ -599,6 +655,12 @@ impl TabStrip {
         let border = t.border;
         let wheel_scroll = scroll.clone();
         let menu_explorer = self.explorer.clone();
+        let sprung = self.spring.filter(|_| cx.has_active_drag()) == Some(id);
+        let lit = sprung && (!selected || d.drop_into.is_some());
+        let loading_bar = sprung && !selected;
+        let drop_into = d.drop_into.clone();
+        let over_name = d.name.to_string();
+        let drop_dest = d.drop_into.clone();
         let drag = DraggedTab {
             id,
             from_pane: pane,
@@ -616,8 +678,10 @@ impl TabStrip {
             .group(group)
             .relative()
             .occlude()
-            .flex_1()
-            .flex_basis(px(0.))
+            // Tabs are as wide as they can be, and give way together when the strip is full.
+            .flex_grow_0()
+            .flex_shrink_1()
+            .flex_basis(space(52.))
             .min_w(space(24.))
             .max_w(space(52.))
             .h(space(7.))
@@ -639,6 +703,27 @@ impl TabStrip {
                     .text_color(if selected { t.foreground } else { t.muted_foreground })
                     .when(selected, move |d| d.bg(background))
                     .when(!selected, move |d| d.hover(move |s| s.bg(accent)))
+                    // Files held over it: lit, and shown soon when it isn't.
+                    .when(lit, move |d| {
+                        d.bg(primary.opacity(0.15)).text_color(primary).border_color(primary)
+                    })
+                    .when(loading_bar, move |d| {
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("tab-spring-{}", id.0)))
+                                .absolute()
+                                .bottom(space(0.5))
+                                .left(space(1.5))
+                                .h(space(0.5))
+                                .rounded_full()
+                                .bg(primary)
+                                .with_animation(
+                                    SharedString::from(format!("tab-spring-bar-{}", id.0)),
+                                    Animation::new(SPRING_DELAY),
+                                    |bar, delta| bar.w(relative(delta * 0.9)),
+                                ),
+                        )
+                    })
                     .when_some(mark, |d, edge| {
                         let left = (edge == Edge::Start) != rtl;
                         d.child(
@@ -646,7 +731,7 @@ impl TabStrip {
                                 .absolute()
                                 .top(space(0.5))
                                 .bottom(space(0.5))
-                                .w(px(2.))
+                                .w(space(0.5))
                                 .rounded_full()
                                 .bg(primary)
                                 .map(|m| if left { m.left(px(-1.)) } else { m.right(px(-1.)) }),
@@ -659,7 +744,7 @@ impl TabStrip {
                                 .top_0()
                                 .left(space(2.))
                                 .right(space(2.))
-                                .h(px(2.))
+                                .h(space(0.5))
                                 .rounded_full()
                                 .bg(primary),
                         )
@@ -671,7 +756,7 @@ impl TabStrip {
             .track_focus(&self.focus[&id])
             .tab_stop(true)
             .focus_visible(move |s| s.border_1().border_color(ring))
-            .tooltip(move |_, cx| cx.new(|_| TextTip(tip.clone())).into())
+            .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
             // Pressing a tab shows it, as the TypeScript's mousedown did; the keyboard focus stays where it was.
             .on_mouse_down(
                 MouseButton::Left,
@@ -696,6 +781,22 @@ impl TabStrip {
                     glyph: drag.glyph,
                 })
             })
+            // Files dragged over it: the tab under the pointer lights and, if it isn't showing, opens after a
+            // moment; a drop there goes into its folder (the drag's words say so). Every tab hears every move.
+            .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                let inside = event.bounds.contains(&event.event.position);
+                if inside {
+                    this.spring_to(Some(id), cx);
+                    if drop_into.is_some() {
+                        crate::drops::answer(cx, Answer::Accept(drop_words(&over_name)));
+                    }
+                } else if this.spring == Some(id) {
+                    this.spring_to(None, cx);
+                }
+            }))
+            .on_drop(cx.listener(move |this, drop: &ExternalPaths, _, cx| {
+                this.drop_files_on(drop_dest.as_deref(), crate::drops::paths(drop), cx);
+            }))
             // Tabs occlude the strip, so a tab dropped on a tab is dropped here.
             .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                 this.drop_tab(pane, count, dragged.id, cx);
@@ -795,11 +896,12 @@ impl Render for TabStrip {
                 .aria_label(list_label)
                 .flex()
                 .flex_row()
-                .flex_1()
+                // As wide as its tabs, and no wider: the + sits right after the last one, until they fill the strip.
+                .flex_initial()
                 .min_w_0()
                 .h_full()
                 .items_end()
-                .gap(px(2.))
+                .gap(space(0.5))
                 .overflow_x_scroll()
                 .track_scroll(&scroll)
                 // Double-clicking the empty strip makes a tab (the tabs themselves occlude it).
@@ -836,6 +938,29 @@ impl Render for TabStrip {
                     this.drop_tab(index, count, dragged.id, cx);
                 }))
                 .children(tabs);
+
+            // The empty room after the buttons: takes no mouse except a dragged tab, so the title bar still
+            // moves the window by it, and a tab dropped there goes to the end.
+            let filler = div()
+                .id(SharedString::from(format!("tab-filler-{index}")))
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                    if event.bounds.contains(&event.event.position) {
+                        let end = Some(Slot {
+                            pane: index,
+                            index: count,
+                        });
+                        if this.slot != end {
+                            this.slot = end;
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                    this.drop_tab(index, count, dragged.id, cx);
+                }));
 
             let new_tab = Button::new(SharedString::from(format!("new-tab-{index}")))
                 .ghost()
@@ -878,8 +1003,11 @@ impl Render for TabStrip {
                             .flex_shrink_0()
                             .items_center()
                             .self_center()
-                            .child(new_tab)
-                            .children(pane_button),
+                            .child(new_tab),
+                    )
+                    .child(filler)
+                    .children(
+                        pane_button.map(|button| row_start().occlude().flex_shrink_0().self_center().child(button)),
                     ),
             );
         }

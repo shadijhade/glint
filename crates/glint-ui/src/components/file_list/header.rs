@@ -11,10 +11,10 @@ use glint_model::entries::{Sort, SortKey};
 use glint_model::groups::GROUP_BYS;
 use glint_model::store::Column;
 
-/// The strip along a column's start edge that takes the drag, in pixels, and how far it sits outside the
-/// column (`-start-2.5`).
-const EDGE_WIDTH: f32 = 8.;
-const EDGE_OUTSET: f32 = 10.;
+/// The strip along a column's start edge that takes the drag (`w-2`), and how far it sits outside the column
+/// (`-start-2.5`), in spacing units.
+const EDGE_WIDTH: f32 = 2.;
+const EDGE_OUTSET: f32 = 2.5;
 
 impl FileList {
     /// The header row: the Name button, where each item is (in a list of items from many folders), and a
@@ -121,6 +121,10 @@ impl FileList {
             .cursor_pointer()
             .hover(|style| style.text_color(t.foreground))
             .when(active, |this| this.text_color(t.foreground))
+            .tooltip({
+                let tip = t!("Sort by {name}", name = label.to_lowercase());
+                move |window, cx| tooltip(tip.clone(), window, cx)
+            })
             .on_click(cx.listener(move |this, _, _, cx| this.sort_by(key, cx)))
             .child(div().min_w_0().truncate().child(isolate(label.clone())))
             .when(active, |this| this.child(icon(arrow).size(rems(0.875)).flex_none()));
@@ -149,16 +153,17 @@ impl FileList {
             .aria_orientation(Orientation::Vertical)
             .aria_label(t!("{name} column width", name = label))
             .aria_description(t!("double-click: as it was"))
+            .tooltip(|window, cx| tooltip(t!("double-click: as it was"), window, cx))
             .absolute()
             .top_0()
             .h_full()
-            .w(px(EDGE_WIDTH))
+            .w(space(EDGE_WIDTH))
             .cursor_col_resize()
             .hover(|style| style.bg(t.primary.opacity(0.4)));
         let edge = if i18n::is_rtl() {
-            edge.right(px(-EDGE_OUTSET))
+            edge.right(space(-EDGE_OUTSET))
         } else {
-            edge.left(px(-EDGE_OUTSET))
+            edge.left(space(-EDGE_OUTSET))
         };
         edge.on_mouse_down(
             MouseButton::Left,

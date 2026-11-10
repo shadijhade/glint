@@ -14,11 +14,6 @@ name = "glint_ui"
 # wave its features go and the modules are always built. (Wave 3's went with its integration.)
 [features]
 default = []
-# Wave 6.
-dialog-batch-rename = []
-dialog-tags = []
-dialog-password = []
-dialog-vault = []
 
 [dependencies]
 gpui-kit = "=0.9.1"
@@ -57,6 +52,8 @@ windows = { workspace = true, features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_Input_KeyboardAndMouse",
     "ApplicationModel",
+    # The batch rename dialog's local dates.
+    "Win32_System_Time",
 ] }
 
 # Headless window tests (gpui-kit's test module) need gpui-kit's test-support feature. It is a dev-dependency

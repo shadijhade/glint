@@ -26,15 +26,25 @@
 //! # Events
 //!
 //! The view emits [`FileListEvent`] for what belongs to another part (renaming, menus, dialogs); the
-//! coordinator wires them. See each variant.
+//! coordinator wires them. See each variant. Dragging a selection that is in an archive out of the window
+//! emits [`DragFromArchive`].
+//!
+//! # What the pointer does
+//!
+//! `pointer.rs`: a press that moves 6 px is a drag out of the window (`drag_out`); a press on the empty part is
+//! a marquee that selects the rows it crosses. `incoming.rs`: files dropped onto the list. `thumbs.rs`: pictures
+//! in the icon cell.
 
 mod cells;
 mod header;
+mod incoming;
 mod layout;
+mod pointer;
 mod rename;
 mod states;
 #[cfg(test)]
 mod tests;
+mod thumbs;
 mod typeahead;
 
 pub use cells::{drop_path, lock_reason, size_of, ROW_HEIGHT};
@@ -42,6 +52,7 @@ pub use layout::relative_to;
 pub use rename::{selection_end, INVALID_NAME_CHARS};
 
 use crate::actions;
+use crate::components::file_grid::thumbnail::{self, Thumbnails};
 use crate::explorer::{
     self, Explorer, ExplorerEvent, FindRun, LoadState, NavOptions, NoAccess, Rows, Selection, TabId, ViewMode,
 };
@@ -54,6 +65,8 @@ use glint_model::grid::grid_move;
 use glint_model::groups::GroupBy;
 use glint_model::paths::{is_gallery, is_recent, same_path, THIS_PC};
 use glint_model::store::Column;
+use incoming::DropAt;
+use pointer::{layout_rows, Marquee};
 use rename::RenameBox;
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -82,10 +95,12 @@ pub enum FileListEvent {
     CommitRename { path: String, name: String },
     /// Escape in the rename box: clear `Tab::renaming` (`updateTab({ renaming: null })`).
     CancelRename,
-    /// A right-click, or the menu key. `target` is the item pressed (already selected, as the web did), or
-    /// None on the empty part of the list (selection already cleared) and for the keyboard on a folder with
-    /// nothing focused. `at` is the pointer's position in the window, None for the keyboard (put the menu at
-    /// the focused row). `shift` was held: Windows' own menu at once, as in File Explorer.
+    /// A right-click, or the menu key (Shift+F10). `target` is the item pressed (already selected, as the web
+    /// did), or None on the empty part of the list (selection already cleared) and for the keyboard on a folder
+    /// with nothing focused. `at` is where the menu goes, in window coordinates: the pointer's position, or for
+    /// the keyboard the focused row's bottom-start corner (a little inside, 1.5 rem, as the web put it), else
+    /// near the list's top. `at` is None only if the list has not been laid out yet. `shift` was held:
+    /// Windows' own menu at once, as in File Explorer.
     ContextMenu {
         target: Option<String>,
         at: Option<Point<Pixels>>,
@@ -108,6 +123,21 @@ pub enum FileListEvent {
 
 impl EventEmitter<FileListEvent> for FileList {}
 
+/// The selection was dragged out of the window, and it is in an archive: extract it first (`dragFromArchive(paths)`,
+/// the archive part's), then drag the copies out with `platform::dragdrop::drag_out(.., copy_only: true)`. Items on
+/// disk are dragged out by the list itself.
+///
+/// A type of its own, not a [`FileListEvent`] variant, so the workspace's exhaustive `match` on that enum keeps
+/// compiling until it subscribes to this one: `cx.subscribe(&list, |.., event: &DragFromArchive, ..| ..)`. (It can
+/// be folded into the enum as `FileListEvent::DragFromArchive { paths }` with one new arm.)
+#[derive(Clone, Debug, PartialEq)]
+pub struct DragFromArchive {
+    /// The items dragged, as the explorer names them (inside the archive), in the list's order.
+    pub paths: Vec<String>,
+}
+
+impl EventEmitter<DragFromArchive> for FileList {}
+
 /// A column being dragged by its edge.
 struct Resize {
     name: Column,
@@ -123,6 +153,8 @@ struct Resize {
 /// them can be dragged; released without a drag, the row alone is selected (`press` in Explorer.tsx).
 struct Press {
     narrow_to: Option<String>,
+    /// Where the button went down, in window pixels: moving 6 px from here with it held is a drag.
+    at: Point<Pixels>,
 }
 
 /// Where a track of the row is and how wide.
@@ -197,6 +229,20 @@ pub(crate) struct Frame {
     pub max_size: u64,
     pub flashed: Arc<HashSet<String>>,
     pub now: i64,
+    /// Items cut to the clipboard: dimmed until pasted (`cut`).
+    pub cut: Arc<HashSet<String>>,
+    /// Items being dragged out of the window: dimmer still (`dragging`).
+    pub dragging: Arc<HashSet<String>>,
+    /// The folder row files are dragged over: lit (`dropTarget`).
+    pub drop_row: Option<String>,
+    /// How many lines the list has (rows, and a header per group).
+    pub lines: usize,
+    /// Small pictures in the icon cell (Settings' "list thumbnails"), the tab they are asked for, the square
+    /// they fit in (CSS pixels: one rem) and the window's device pixels per CSS pixel.
+    pub thumbnails: bool,
+    pub lane: String,
+    pub box_px: f32,
+    pub scale: f32,
 }
 
 /// What was worked out when the rows (or the tab) last changed.
@@ -232,6 +278,24 @@ pub struct FileList {
     /// The scroll was just restored: the focused row is not scrolled to (`restoring`).
     restoring: bool,
     prefetch: Option<Task<()>>,
+    /// This list, for the listeners the window calls back (a drag that leaves the list).
+    this: WeakEntity<Self>,
+    /// The thumbnail service: the pictures in the icon cell.
+    thumbs: Entity<Thumbnails>,
+    /// This list's id as the thumbnail service knows its viewer.
+    viewer: EntityId,
+    /// A fingerprint of the thumbnails last handed to the service (see `thumbs.rs`).
+    thumbs_shown: Rc<Cell<u64>>,
+    /// Where the list is on screen (the area under the header), measured by the canvas under it.
+    area: Rc<Cell<Bounds<Pixels>>>,
+    /// A press or a marquee is under way: the window-level mouse listeners act.
+    tracking: Rc<Cell<bool>>,
+    /// A rectangle being dragged over the empty part.
+    marquee: Option<Marquee>,
+    /// The items being dragged out of the window now.
+    dragging: Arc<HashSet<String>>,
+    /// Where a drop of the files being dragged over the list would land.
+    drop_at: Option<DropAt>,
     /// Tests only: an item shown as being renamed, as the explorer's rename part will make `Tab::renaming` say.
     #[cfg(test)]
     pretend_renaming: Option<String>,
@@ -245,10 +309,12 @@ impl FileList {
     pub fn new(pane: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let explorer = explorer::explorer(cx);
         let focus = cx.focus_handle();
-        let subscriptions = vec![
+        let thumbs = thumbnail::thumbnails(cx);
+        let viewer = cx.entity_id();
+        let mut subscriptions = vec![
             // Anything the explorer changes redraws; the kinds of change that make the rows different also say so.
             cx.observe(&explorer, |_, _, cx| cx.notify()),
-            cx.subscribe(&explorer, |this, _, event: &ExplorerEvent, _| {
+            cx.subscribe(&explorer, |this, _, event: &ExplorerEvent, cx| {
                 if matches!(
                     event,
                     ExplorerEvent::RowsChanged(_)
@@ -258,7 +324,13 @@ impl FileList {
                 ) {
                     this.dirty = true;
                 }
+                // Items were cut to the clipboard, or pasted: they are dimmed, or not.
+                if matches!(event, ExplorerEvent::CutChanged) {
+                    cx.notify();
+                }
             }),
+            // A picture arrived, or one was let go of.
+            cx.observe(&thumbs, |_, _, cx| cx.notify()),
             // Column widths and the text size are settings.
             cx.observe_global::<state::UiState>(|_, cx| cx.notify()),
             // A click or a key in this list makes its pane the one the toolbar and the keys act on.
@@ -267,6 +339,11 @@ impl FileList {
                 this.explorer.update(cx, |explorer, cx| explorer.focus_pane(pane, cx));
             }),
         ];
+        // The thumbnails shown are let go of when the list goes.
+        let service = thumbs.clone();
+        subscriptions.push(cx.on_release(move |_, cx| {
+            service.update(cx, |thumbs, cx| thumbs.release(viewer, cx));
+        }));
         Self {
             pane,
             explorer,
@@ -287,6 +364,14 @@ impl FileList {
                 max_size: 0,
                 flashed: Arc::new(HashSet::new()),
                 now: 0,
+                cut: Arc::new(HashSet::new()),
+                dragging: Arc::new(HashSet::new()),
+                drop_row: None,
+                lines: 0,
+                thumbnails: false,
+                lane: String::new(),
+                box_px: 16.,
+                scale: 1.,
             }),
             width: Rc::new(Cell::new(0.)),
             resizing: None,
@@ -296,6 +381,15 @@ impl FileList {
             saved_top: 0.,
             restoring: false,
             prefetch: None,
+            this: cx.weak_entity(),
+            thumbs,
+            viewer,
+            thumbs_shown: Rc::new(Cell::new(0)),
+            area: Rc::new(Cell::new(Bounds::default())),
+            tracking: Rc::new(Cell::new(false)),
+            marquee: None,
+            dragging: Arc::new(HashSet::new()),
+            drop_at: None,
             #[cfg(test)]
             pretend_renaming: None,
             _subscriptions: subscriptions,
@@ -395,6 +489,17 @@ impl FileList {
             self.shown.focus = None;
             self.shown.scrolled_to = None;
             self.dirty = true;
+            self.marquee = None;
+            // The folder changed under this tab: what its thumbnails waited for is dropped, and the burst is
+            // timed from here (`timeThumbnails`).
+            self.thumbs_shown.set(0);
+            if state::settings(cx).list_thumbnails {
+                let (lane, place) = (view.id.to_string(), view.place.clone());
+                self.thumbs.update(cx, |thumbs, cx| {
+                    thumbs.forget_lane(&lane, cx);
+                    thumbs.time(&lane, &place, cx);
+                });
+            }
         }
         if self.dirty {
             self.dirty = false;
@@ -427,10 +532,7 @@ impl FileList {
         if self.shown.scrolled_to != focus_index {
             if !restoring {
                 if let Some(index) = focus_index {
-                    let line = match view.rows.groups() {
-                        Some(groups) => groups.line_of.get(index).map_or(index, |&line| line.max(0) as usize),
-                        None => index,
-                    };
+                    let line = layout_rows::line_of_row(&view.rows, index);
                     self.scroll.scroll_to_item(line, ScrollStrategy::Nearest);
                 }
             }
@@ -508,7 +610,7 @@ impl FileList {
             .0
             .borrow()
             .last_item_size
-            .map_or(px(400.), |size| size.item.height);
+            .map_or(rems(25.).to_pixels(window.rem_size()), |size| size.item.height);
         let row = ROW_HEIGHT.to_pixels(window.rem_size());
         ((f32::from(viewport) / f32::from(row)).floor() as usize)
             .saturating_sub(1)
@@ -529,6 +631,12 @@ impl FileList {
         }
         let ctrl = modifiers.control || modifiers.platform;
         let key = keystroke.key.as_str();
+        // The menu key (Shift+F10 is an action of its own).
+        if key == "menu" {
+            self.keyboard_menu(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         let Some((rows, at)) = self.rows_and_focus(cx) else {
             return;
         };
@@ -629,8 +737,8 @@ impl FileList {
             if shift {
                 explorer.select_range(rows, to, ctrl, cx);
             } else if ctrl {
-                // PORT ME(coordinator): Explorer::set_focus(path): Ctrl+arrows move the cursor without
-                // selecting (`updateTab({ focus })`).
+                // Ctrl+arrows move the cursor without selecting (`updateTab({ focus })`).
+                explorer.set_focus(Some(&path), None, cx);
             } else {
                 explorer.select_only(Some(&path), cx);
             }
@@ -699,17 +807,44 @@ impl FileList {
     }
 
     /// The menu key and Shift+F10: the menu of what is selected, at the focused item, else the folder's
-    /// (`keyboardMenu`). The coordinator puts it up.
-    fn keyboard_menu(&mut self, cx: &mut Context<Self>) {
-        let target = self.explorer.read(cx).pane_tab(self.pane).and_then(|tab| {
-            let focus = tab.selection.focus()?;
-            tab.rows
-                .get(tab.rows.position_of(focus)?)
-                .map(|entry| entry.path.clone())
+    /// (`keyboardMenu`). The coordinator puts it up where `at` says: the focused row's bottom-start corner,
+    /// inset a little (1.5 rem, `left + 24`), else near the list's top (`top + 8`).
+    fn keyboard_menu(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some((target, line)) = self.explorer.read(cx).pane_tab(self.pane).map(|tab| {
+            let focused = tab
+                .selection
+                .focus()
+                .and_then(|focus| tab.rows.position_of(focus))
+                .and_then(|at| tab.rows.get(at).map(|entry| (entry.path.clone(), at)));
+            match focused {
+                Some((path, at)) => (Some(path), Some(layout_rows::line_of_row(&tab.rows, at))),
+                None => (None, None),
+            }
+        }) else {
+            return;
+        };
+        let area = self.area.get();
+        let at = (area.size.width > px(0.)).then(|| {
+            let inset = space(6.).to_pixels(window.rem_size());
+            let x = if crate::i18n::is_rtl() {
+                area.right() - inset
+            } else {
+                area.origin.x + inset
+            };
+            let y = match line {
+                Some(line) => {
+                    let row = ROW_HEIGHT.to_pixels(window.rem_size());
+                    // The bottom of the row, kept inside the list.
+                    let bottom = area.origin.y + row * (line as f32 + 1.) - px(self.scroll_top());
+                    bottom.clamp(area.origin.y, area.bottom())
+                }
+                None => area.origin.y + space(2.).to_pixels(window.rem_size()),
+            };
+            point(x, y)
         });
         cx.emit(FileListEvent::ContextMenu {
             target,
-            at: None,
+            at,
             shift: false,
         });
     }
@@ -772,15 +907,14 @@ impl FileList {
                     } else if additive {
                         explorer.toggle_selected(&entry.path, cx);
                     } else if keep {
-                        // PORT ME(coordinator): Explorer::set_focus(path, anchor: true): the pressed item takes
-                        // the focus and the anchor while the selection stays (`updateTab({ focus, anchor })`).
+                        // The pressed item takes the focus and the anchor while the selection stays, so all of it
+                        // can be dragged; it narrows on release (`updateTab({ focus, anchor })`).
+                        explorer.set_focus(Some(&entry.path), Some(&entry.path), cx);
                     } else {
                         explorer.select_only(Some(&entry.path), cx);
                     }
                 });
-                self.press = Some(Press {
-                    narrow_to: keep.then(|| entry.path.clone()),
-                });
+                self.begin_press(keep.then(|| entry.path.clone()), event.position);
                 if event.click_count >= 2 {
                     self.press = None;
                     self.explorer
@@ -791,16 +925,18 @@ impl FileList {
         }
     }
 
-    /// A press on the empty part of the list (`onBackgroundMouseDown`): without Ctrl or Shift it clears the
-    /// selection. PORT ME(marquee): dragging from here draws a rectangle that selects what it covers
-    /// (`startMarquee`); the explorer has no way to select an arbitrary set of paths yet.
+    /// A press on the empty part of the list (`onBackgroundMouseDown`, `startMarquee`): without Ctrl or Shift it
+    /// clears the selection, and dragging from here draws a rectangle that selects the rows it crosses (added to
+    /// what was selected with Ctrl), the list scrolling while the pointer is held near its top or bottom.
     fn background_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.take_focus(window, cx);
         match event.button {
             MouseButton::Left => {
-                if !event.modifiers.control && !event.modifiers.shift {
+                let additive = event.modifiers.control || event.modifiers.platform;
+                if !additive && !event.modifiers.shift {
                     self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
                 }
+                self.begin_marquee(event.position, additive, cx);
             }
             MouseButton::Right => {
                 self.explorer.update(cx, |explorer, cx| explorer.select_only(None, cx));
@@ -825,8 +961,9 @@ impl FileList {
     // ---- Drawing ----------------------------------------------------------------------------------------
 
     /// The lines of the list that are on screen.
-    fn render_lines(&mut self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_lines(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let frame = self.frame.clone();
+        self.show_thumbnails(&frame, &range, window, cx);
         let t = theme::tokens(cx).clone();
         range.map(|line| self.line_element(&frame, &t, line, cx)).collect()
     }
@@ -866,6 +1003,12 @@ impl Render for FileList {
         // What this frame's lines are drawn from.
         let tracks = self.tracks(&view, window, cx);
         let explorer = self.explorer.read(cx);
+        let (cut, flashed) = (explorer.cut_paths().clone(), explorer.flashed().clone());
+        let lines = layout_rows::line_count(&view.rows);
+        // Files being dragged over the list light the folder under them; nothing once the drag has left.
+        let drop_at = self.drop_at.clone().filter(|_| cx.has_active_drag());
+        let folder_drop = drop_at == Some(DropAt::Folder);
+        let thumbnails = state::settings(cx).list_thumbnails;
         let frame = Rc::new(Frame {
             rows: view.rows.clone(),
             selected: view.selection.clone(),
@@ -879,23 +1022,36 @@ impl Render for FileList {
                 .located
                 .then(|| Box::new(layout::relative_to(&view.scope)) as WhereOf),
             max_size: self.shown.max_size,
-            flashed: explorer.flashed().clone(),
+            flashed,
             now: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+            cut,
+            dragging: self.dragging.clone(),
+            drop_row: match &drop_at {
+                Some(DropAt::Row(path)) => Some(path.clone()),
+                _ => None,
+            },
+            lines,
+            thumbnails,
+            lane: view.id.to_string(),
+            box_px: f32::from(window.rem_size()),
+            scale: window.scale_factor(),
         });
         self.frame = frame.clone();
 
-        let lines = view.rows.groups().map_or(view.rows.len(), |groups| groups.lines.len());
         let header = self.header_row(&frame, &view, &t, cx);
         let state = self.state_view(&view, &t, cx);
 
         // The width the list is laid out at decides which columns fit; a canvas under it measures that, and
         // asks for another frame when it changes.
         let measured = self.width.clone();
+        let area_bounds = self.area.clone();
         let this = cx.weak_entity();
+        let canvas_this = self.tracker();
         let measure = canvas(
             move |bounds, window, _| {
+                area_bounds.set(bounds);
                 let width = f32::from(bounds.size.width);
                 if (measured.get() - width).abs() > 0.5 {
                     measured.set(width);
@@ -905,7 +1061,8 @@ impl Render for FileList {
                     });
                 }
             },
-            |_, _, _, _| {},
+            // A press or a marquee follows the pointer wherever it goes in the window.
+            move |_, _, window, _| canvas_this.track(window),
         )
         .absolute()
         .size_full();
@@ -918,6 +1075,7 @@ impl Render for FileList {
             .relative()
             .flex_1()
             .min_h_0()
+            .overflow_hidden()
             .child(measure)
             .child(
                 div()
@@ -942,12 +1100,29 @@ impl Render for FileList {
                         .top_0()
                         .left_0()
                         .right_0()
-                        .h(px(2.))
+                        .h(space(0.5))
                         .bg(t.primary)
                         .test_support(),
                 )
             })
             .when_some(state, |this, state| this.child(div().absolute().inset_0().child(state)))
+            // The rectangle dragged over the empty part (`startMarquee`'s `mark`).
+            .when_some(self.marquee_bounds(), |this, rect| {
+                this.child(
+                    div()
+                        .id("file-list-marquee")
+                        .absolute()
+                        .left(rect.origin.x)
+                        .top(rect.origin.y)
+                        .w(rect.size.width)
+                        .h(rect.size.height)
+                        .rounded(theme::size::RADIUS_SM)
+                        .border_1()
+                        .border_color(t.primary.opacity(0.8))
+                        .bg(t.primary.opacity(0.15))
+                        .test_support(),
+                )
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| this.background_down(event, window, cx)),
@@ -959,10 +1134,19 @@ impl Render for FileList {
             .test_support();
 
         root.track_focus(&self.focus)
+            // Files dragged over the list: the folder under them takes them (see `incoming.rs`).
+            .on_drag_move::<ExternalPaths>(
+                cx.listener(|this, event: &DragMoveEvent<ExternalPaths>, window, cx| {
+                    this.answer_drag(event, window, cx)
+                }),
+            )
+            .on_drop::<ExternalPaths>(
+                cx.listener(|this, dropped: &ExternalPaths, window, cx| this.take_drop(dropped, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &actions::OpenItem, _, cx| this.open_selected(cx)))
             .on_action(cx.listener(|this, _: &actions::OpenInNewTab, _, cx| this.open_in_tabs(cx)))
             .on_action(cx.listener(|this, _: &actions::SelectAll, _, cx| this.select_all(cx)))
-            .on_action(cx.listener(|this, _: &actions::ShowItemMenu, _, cx| this.keyboard_menu(cx)))
+            .on_action(cx.listener(|this, _: &actions::ShowItemMenu, window, cx| this.keyboard_menu(window, cx)))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_up(
                 MouseButton::Left,
@@ -974,6 +1158,18 @@ impl Render for FileList {
             )
             .child(header)
             .child(area)
+            // The folder shown takes the files: a dashed outline round the list.
+            .when(folder_drop, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(t.primary.opacity(0.05))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(t.primary.opacity(0.6)),
+                )
+            })
             // While an edge is held, a layer over the whole list takes the pointer: the drag follows it
             // wherever it goes in the list and ends when the button is let go.
             .when(self.resizing.is_some(), |this| {

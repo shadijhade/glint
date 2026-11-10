@@ -1,6 +1,7 @@
 //! A fake disk for the model tests: folders with entries, held in memory, behind the same [`Source`] the app
 //! uses for glint-core. Listings can be held back and released, to test results that arrive out of order.
 
+use super::find_types::{FindOptions, Found, SearchIndex};
 use super::ops_types::*;
 use super::source::{Access, Effect, Fut, Resolved, Source};
 use super::types::*;
@@ -87,6 +88,27 @@ struct State {
     clipboard_fail: Option<String>,
     /// File operations wait here until released (slow work).
     op_gate: Option<async_channel::Receiver<()>>,
+    // ---- Searching ----
+    /// Every search started, in order.
+    finds: Vec<FindCall>,
+    /// The lanes asked to end, in order.
+    cancelled: Vec<String>,
+    /// Searches a test drives by hand: the stream a query gets, by the query.
+    live_finds: HashMap<String, async_channel::Receiver<Found>>,
+    /// A search that is refused (a bad filter), once.
+    find_error: Option<String>,
+    index: Option<SearchIndex>,
+    /// How many times instant search was asked how it does.
+    index_asked: usize,
+}
+
+/// A search the fake was asked to start.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FindCall {
+    pub lane: String,
+    pub roots: Vec<String>,
+    pub query: String,
+    pub options: FindOptions,
 }
 
 /// Where the fake keeps what is in the Recycle Bin (the listing of the bin itself holds only their entries).
@@ -327,6 +349,41 @@ impl FakeDisk {
     /// Every job added to the copy queue: kind, sources, destination, verify.
     pub fn queued(&self) -> Vec<(QueueKind, Vec<String>, String, bool)> {
         self.state.borrow().queued.clone()
+    }
+
+    // ---- Searching: what a test sets up and checks ------------------------------------------------------
+
+    /// Hands the next search for exactly `query` to the test: what it sends to the returned sender is what that
+    /// search says, whenever the test says it. Without this a search looks through the fake folders.
+    pub fn live_find(&self, query: &str) -> async_channel::Sender<Found> {
+        let (sender, stream) = async_channel::unbounded();
+        self.state.borrow_mut().live_finds.insert(query.to_string(), stream);
+        sender
+    }
+
+    /// Every search started so far.
+    pub fn finds(&self) -> Vec<FindCall> {
+        self.state.borrow().finds.clone()
+    }
+
+    /// The lanes whose search was asked to end.
+    pub fn cancelled(&self) -> Vec<String> {
+        self.state.borrow().cancelled.clone()
+    }
+
+    /// Makes the next search refuse its query.
+    pub fn refuse_next_find(&self, message: &str) {
+        self.state.borrow_mut().find_error = Some(message.to_string());
+    }
+
+    /// How instant search stands (`None`: it can't be said).
+    pub fn set_search_index(&self, index: Option<SearchIndex>) {
+        self.state.borrow_mut().index = index;
+    }
+
+    /// How many times instant search was asked how it does.
+    pub fn index_asked(&self) -> usize {
+        self.state.borrow().index_asked
     }
 
     /// The drives asked to eject.
@@ -803,4 +860,100 @@ impl Source for FakeDisk {
             Ok(())
         })
     }
+
+    fn find(
+        &self,
+        lane: &str,
+        roots: Vec<String>,
+        query: String,
+        options: FindOptions,
+    ) -> Fut<Result<async_channel::Receiver<Found>, String>> {
+        let state = self.state.clone();
+        let call = FindCall {
+            lane: lane.to_string(),
+            roots,
+            query,
+            options,
+        };
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            state.finds.push(call.clone());
+            if let Some(message) = state.find_error.take() {
+                return Err(message);
+            }
+            if let Some(stream) = state.live_finds.remove(&call.query) {
+                return Ok(stream);
+            }
+            let (sender, stream) = async_channel::unbounded();
+            for found in walk(&state, &call) {
+                let _ = sender.try_send(found);
+            }
+            Ok(stream)
+        })
+    }
+
+    fn cancel_find(&self, lane: &str) {
+        self.state.borrow_mut().cancelled.push(lane.to_string());
+    }
+
+    fn search_index(&self) -> Fut<Option<SearchIndex>> {
+        let mut state = self.state.borrow_mut();
+        state.index_asked += 1;
+        let index = state.index.clone();
+        Box::pin(async move { index })
+    }
+}
+
+/// What a search says when the fake walks its folders (fd's way): every entry below the roots whose name has all
+/// the query's terms in it, sorted by path, cut at the result limit. The index answers instead when it has the
+/// drives.
+fn walk(state: &State, call: &FindCall) -> Vec<Found> {
+    let terms: Vec<String> = glint_model::entries::terms(&call.query.to_lowercase());
+    let covered = state
+        .index
+        .as_ref()
+        .is_some_and(|index| !call.roots.is_empty() && call.roots.iter().all(|root| index.indexed(root)));
+    let mut found: Vec<FileEntry> = Vec::new();
+    for (folder, listed) in &state.folders {
+        let below = |root: &str| {
+            let root = key(root);
+            *folder == root || folder.starts_with(&format!("{root}\\"))
+        };
+        if !call.roots.iter().any(|root| below(root))
+            || folder.starts_with(&key(RECYCLE_BIN))
+            || folder.starts_with(&key(BIN_STORE))
+        {
+            continue;
+        }
+        for entry in &listed.entries {
+            let skipped = call
+                .options
+                .exclude
+                .iter()
+                .any(|name| entry.name.eq_ignore_ascii_case(name));
+            let veiled = entry.attrs & attr::HIDDEN != 0 && !call.options.hidden;
+            if !skipped && !veiled && terms.iter().all(|term| entry.lower.contains(term.as_str())) {
+                found.push(entry.clone());
+            }
+        }
+    }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    let limited = call.options.max_results.is_some_and(|max| found.len() > max);
+    if let Some(max) = call.options.max_results {
+        found.truncate(max);
+    }
+    let count = found.len();
+    let mut said = vec![Found::Started {
+        engine: if covered { "index" } else { "fd" }.to_string(),
+    }];
+    if !found.is_empty() {
+        said.push(Found::Entries(found));
+    }
+    said.push(Found::Finished {
+        count,
+        elapsed: 1.0,
+        limited,
+        fuzzy: false,
+    });
+    said
 }
