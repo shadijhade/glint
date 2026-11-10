@@ -31,6 +31,11 @@ windows-core = "0.62"
 raw-window-handle = "0.6"
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Already in the build (GPUI, glint-core, usvg): pixels straight into a RenderImage (3D models, PDF pages), and the
+# zip and XML inside EPUB, Word, 3MF files.
+image = { version = "0.25", default-features = false }
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+roxmltree = "0.20"
 windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
