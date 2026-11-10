@@ -21,6 +21,27 @@ use crate::kit::prelude::*;
 /// Renaming several items at once (BatchRenameDialog.tsx).
 pub mod batch_rename;
 pub mod drive_health;
+/// Duplicate files (DuplicatesDialog.tsx). Wave 7 slot.
+#[cfg(feature = "dialog-duplicates")]
+pub mod duplicates;
+/// Recent changes on a drive (TimelineDialog.tsx). Wave 7 slot.
+#[cfg(feature = "dialog-timeline")]
+pub mod timeline;
+/// Cleaning up a drive or folder (CleanupDialog.tsx). Wave 7 slot.
+#[cfg(feature = "dialog-cleanup")]
+pub mod cleanup;
+/// A file's X-Ray (XRayDialog.tsx). Wave 7 slot.
+#[cfg(feature = "dialog-xray")]
+pub mod xray;
+/// Checking files: secrets, malware scans, YARA (CheckDialog.tsx). Wave 7 slot.
+#[cfg(feature = "dialog-check")]
+pub mod check;
+/// Folder rules (RulesDialog.tsx). Wave 7 slot.
+#[cfg(feature = "dialog-rules")]
+pub mod rules;
+/// Compressing in place with Windows' WOF (CompressInPlaceDialog.tsx). Wave 7 slot.
+#[cfg(feature = "dialog-compress-in-place")]
+pub mod compress_in_place;
 /// A file's history (HistoryDialog.tsx).
 pub mod history;
 /// What holds a file open, and stopping it (LocksDialog.tsx).
