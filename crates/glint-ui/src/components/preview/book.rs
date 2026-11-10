@@ -13,7 +13,7 @@
 //! | the chapter's XHTML in an iframe            | [`xhtml_document`]: the chapter mapped to blocks, with a small CSS reading ([`Css`]) for `direction`, `text-align`, bold and italic |
 //! | `book.dir` and `page-progression-direction` | [`Book::rtl`]: a right-to-left book turns its pages the other way (the arrow keys and the buttons swap) |
 //! | `toc`, the contents button                  | [`Book::toc`], the panel at the start edge                    |
-//! | `places()`, `remember()` (last 200 books)   | [`remembered`], [`remember`] (kept for this run only, see below) |
+//! | `places()`, `remember()` (last 200 books)   | [`remembered`], [`remember`] (kept between runs, see `book_places`) |
 //! | `startingSize()`, `css(size)`               | [`text_size`], [`set_text_size`] (70% to 200%, steps of 10)   |
 //! | the keys                                    | [`BookView::on_key_down`]                                     |
 //! | `showTextStart`                             | [`Book::start`]: the "bodymatter" landmark, else the first section |
@@ -40,8 +40,8 @@
 //!   keep the Windows previewer. PORT ME(mobi): a reader for PalmDOC (LZ77), MOBI headers and KF8's FDST/skeleton.
 //! - **Read aloud** (`speechSynthesis`): Windows' speech synthesis needs `windows` features glint-ui doesn't have
 //!   (`Media_SpeechSynthesis`, `Media_Playback`). PORT ME(speech): the button, reading the chapter's text.
-//! - **Places and the text size survive only this run.** PORT ME(coordinator): save [`Place`] per book (last 200)
-//!   and the size where `persistence.rs` keeps the rest; the TypeScript used `localStorage`.
+//! - **Places and the text size** are kept between runs by [`crate::book_places`] (`books.json` beside
+//!   `state.json`), the last 200 books.
 //! - **Pages.** The chapter scrolls (the design note's first milestone); foliate's page-by-page columns are not
 //!   made. Page Down moves a page and runs on into the next chapter.
 //! - **The book's CSS** is read only for `direction`, `text-align`, bold, italic, underline, strike and
@@ -66,7 +66,6 @@ use roxmltree::{Document as Xml, Node, ParsingOptions};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Read as _;
-use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -2394,45 +2393,26 @@ pub fn open_cbz(path: &str) -> Result<Book, BookError> {
 // ---- Where you were, and the text size -------------------------------------------------------------------------
 
 /// Where a book was left (`places()`): the chapter and the block at the top.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Place {
-    pub chapter: usize,
-    pub block: usize,
-}
+pub use crate::book_places::Place;
 
-static PLACES: Mutex<Vec<(String, Place)>> = Mutex::new(Vec::new());
-static SIZE: AtomicU32 = AtomicU32::new(100);
-
-/// Where the book at `path` was left, if it was this run.
+/// Where the book at `path` was left, in this run or an earlier one.
 pub fn remembered(path: &str) -> Option<Place> {
-    let key = path.to_lowercase();
-    PLACES
-        .lock()
-        .ok()?
-        .iter()
-        .find(|(p, _)| *p == key)
-        .map(|(_, place)| *place)
+    crate::book_places::shared().place(path)
 }
 
-/// Remembers where the book at `path` was left: the 200 most recent books are kept.
+/// Remembers where the book at `path` was left: the 200 most recent books are kept, and saved between runs.
 pub fn remember(path: &str, place: Place) {
-    let key = path.to_lowercase();
-    if let Ok(mut places) = PLACES.lock() {
-        places.retain(|(p, _)| *p != key);
-        places.push((key, place));
-        let extra = places.len().saturating_sub(200);
-        places.drain(..extra);
-    }
+    crate::book_places::shared().remember(path, place);
 }
 
 /// The text size in percent (`startingSize`).
 pub fn text_size() -> u32 {
-    SIZE.load(AtomicOrdering::Relaxed)
+    crate::book_places::shared().text_size()
 }
 
 /// Sets the text size, 70% to 200%.
 pub fn set_text_size(percent: u32) {
-    SIZE.store(percent.clamp(70, 200), AtomicOrdering::Relaxed);
+    crate::book_places::shared().set_text_size(percent);
 }
 
 // ---- The previewer ---------------------------------------------------------------------------------------------
@@ -3175,6 +3155,7 @@ mod tests {
     use gpui_kit::{TestAppContext, VisualTestContext};
     use std::io::Write as _;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering as AtomicOrdering;
     use std::time::Duration;
 
     /// A temp folder for the books a test writes, removed when it goes.

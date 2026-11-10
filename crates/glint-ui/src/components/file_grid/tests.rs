@@ -1186,3 +1186,113 @@ fn every_icon_the_grid_draws_is_in_the_embedded_assets() {
         assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");
     }
 }
+
+// ---- Scrubbing video tiles ---------------------------------------------------------------------------------
+
+mod scrubbing {
+    use super::*;
+    use crate::components::preview::player::{init_with, PlayerSources};
+    use std::cell::Cell;
+
+    /// Player sources that open nothing and answer every frame request with nothing, counting the requests.
+    fn quiet_sources(asked: Rc<Cell<usize>>) -> PlayerSources {
+        PlayerSources {
+            open: Rc::new(|_, _| unreachable!("a grid tile never plays")),
+            peaks: Rc::new(|_| Box::pin(async { None })),
+            heard: Rc::new(|_, _| Box::pin(async { None })),
+            cover: Rc::new(|_| Box::pin(async { None })),
+            extract: Rc::new(|_| Box::pin(async { Err("no".to_string()) })),
+            frames: Rc::new(move |_, _| {
+                asked.set(asked.get() + 1);
+                Box::pin(async { None })
+            }),
+        }
+    }
+
+    fn videos() -> FakeDisk {
+        let disk = FakeDisk::new();
+        let mut locked = file("C:\\x", "locked.mp4", 5, 3);
+        locked.attrs |= glint_model::entries::attr::ENCRYPTED;
+        disk.folder(
+            "C:\\x",
+            vec![
+                file("C:\\x", "a.mp4", 1_000, 1),
+                file("C:\\x", "b.mkv", 2_000, 2),
+                file("C:\\x", "c.txt", 10, 3),
+                locked,
+            ],
+        );
+        disk
+    }
+
+    fn tile_of(env: &mut Env, name: &str) -> usize {
+        env.tile_names().iter().position(|n| n == name).expect(name)
+    }
+
+    fn hover(env: &mut Env, tile: usize, hovered: bool) {
+        let grid = env.grid.clone();
+        env.visual.update(|window, cx| {
+            grid.update(cx, |grid, cx| grid.tile_hover(tile, hovered, window, cx));
+            window.render_frame(cx);
+        });
+    }
+
+    fn over(env: &Env) -> Option<String> {
+        env.grid
+            .read_with(&env.visual, |g, _| g.scrub.path().map(str::to_string))
+    }
+
+    #[gpui_kit::test]
+    fn only_the_video_tile_the_pointer_is_on_holds_a_scrub(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let asked = Rc::new(Cell::new(0));
+        let sources = quiet_sources(asked.clone());
+        let disk = videos();
+        cx.update(|cx| {
+            testing::init(cx);
+            init_with(cx, sources);
+        });
+        let mut env = env(cx, &disk, Rc::new(Fake::default()));
+        env.frame();
+        let (a, b, text, locked) = (
+            tile_of(&mut env, "a.mp4"),
+            tile_of(&mut env, "b.mkv"),
+            tile_of(&mut env, "c.txt"),
+            tile_of(&mut env, "locked.mp4"),
+        );
+        assert_eq!(over(&env), None, "nothing is made until the pointer arrives");
+        assert_eq!(asked.get(), 0);
+
+        hover(&mut env, a, true);
+        assert_eq!(over(&env).as_deref(), Some("C:\\x\\a.mp4"));
+        env.visual
+            .update(|window, _| assert!(window.try_find("video-scrub").is_some()));
+
+        // The next tile's overlay replaces it: never two.
+        hover(&mut env, b, true);
+        hover(&mut env, a, false);
+        assert_eq!(
+            over(&env).as_deref(),
+            Some("C:\\x\\b.mkv"),
+            "leaving a late tile keeps the new one"
+        );
+        env.visual
+            .update(|window, _| assert_eq!(window.find_all("video-scrub").len(), 1));
+
+        hover(&mut env, b, false);
+        assert_eq!(over(&env), None);
+        env.visual
+            .update(|window, _| assert!(window.try_find("video-scrub").is_none()));
+
+        // Not a video, and a video that can't be read.
+        hover(&mut env, text, true);
+        hover(&mut env, locked, true);
+        assert_eq!(over(&env), None);
+    }
+
+    #[test]
+    fn a_scrub_is_asked_for_in_device_pixels() {
+        use crate::components::preview::player::Scrub;
+        assert_eq!(Scrub::width_for(160., 1.5), 240);
+    }
+}

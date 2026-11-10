@@ -34,12 +34,11 @@
 //!
 //! # Not ported yet
 //!
-//! Each is marked `PORT ME(<kind>)` where it belongs: MOBI/AZW books, Typst documents and cast recordings (wave 11),
-//! Graphviz and Mermaid drawings and math (wave 11), and HTML mail laid out as a page (its text and pictures are
-//! shown). Until then those files get what the TypeScript showed when its own previewer failed: Windows' previewer
-//! over the file's icon, or the file as text. (Wave 9 brought tables, notebooks, program headers, contacts,
-//! calendars, mail, the Changes, Query and Profile views; wave 10 the player, PDF pages, books, Word documents and
-//! 3D models.)
+//! Each is marked `PORT ME(<kind>)` where it belongs: MOBI/AZW books, and HTML mail laid out as a page (its text
+//! and pictures are shown). Until then those files get what the TypeScript showed when its own previewer failed:
+//! Windows' previewer over the file's icon, or the file as text. (Wave 9 brought tables, notebooks, program headers,
+//! contacts, calendars, mail, the Changes, Query and Profile views; wave 10 the player, PDF pages, books, Word
+//! documents and 3D models; wave 11 Mermaid and Graphviz diagrams, math, Typst documents and cast recordings.)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
 pub mod data;
@@ -53,19 +52,16 @@ pub mod text;
 /// Books: EPUB, FB2 and comics, read page by page (BookView.tsx).
 pub mod book;
 pub mod cards;
-/// asciinema recordings played (CastPreview.tsx). Wave 11 slot.
-#[cfg(feature = "terminal")]
+/// asciinema recordings played (CastPreview.tsx).
 pub mod cast;
 pub mod choose;
 pub mod details;
-/// Mermaid and Graphviz diagrams, in Markdown and as files (merman, layout-rs). Wave 11 slot.
-#[cfg(feature = "diagrams")]
+/// Mermaid and Graphviz diagrams, in Markdown and as files (merman, layout-rs).
 pub mod diagram;
 /// Word documents laid out without Office (DocxView.tsx).
 pub mod docx;
 pub mod frame;
-/// Math in Markdown, LaTeX syntax (RaTeX). Wave 11 slot.
-#[cfg(feature = "diagrams")]
+/// Math in Markdown, LaTeX syntax (RaTeX).
 pub mod math;
 /// 3D models: STL, OBJ, PLY, glTF/GLB and 3MF, drawn and turned (ModelView.tsx).
 pub mod model3d;
@@ -94,13 +90,11 @@ pub mod sources;
 /// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).
 pub mod sqlite;
 pub mod states;
-/// SVG drawn as a GPUI image, cached by its source and size: the pipeline diagrams and math share (previews-native.md sections 4-7). Wave 11 slot.
-#[cfg(feature = "diagrams")]
+/// SVG drawn as a GPUI image, cached by its source and size: the pipeline diagrams and math share (previews-native.md sections 4-7).
 pub mod svg_image;
 #[cfg(test)]
 mod tests;
-/// Typst documents typeset (TypstView.tsx). Wave 11 slot.
-#[cfg(feature = "typst")]
+/// Typst documents typeset (TypstView.tsx).
 pub mod typst_view;
 
 pub use choose::{choose, effective_view, views, Body, Choice, Fallback, View};
