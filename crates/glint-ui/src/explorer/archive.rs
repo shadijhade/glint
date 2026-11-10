@@ -15,6 +15,7 @@
 //! Starting the drag of the extracted copies ([`platform::dragdrop::drag_out`](crate::platform::dragdrop)) and
 //! the notices' wording are the coordinator's; the doc of each method says what to do with its result.
 
+use super::actions_types::ExportNotice;
 use super::archive_types::*;
 use super::model::Explorer;
 use super::ops_types::*;
@@ -32,10 +33,14 @@ struct Run {
     /// The tab that started it: core cancels by tab.
     lane: String,
     doing: Doing,
+    /// An ncdu export of this folder (its name): told with [`ExportNotice`]s instead of archive notices.
+    export: Option<String>,
     /// Its notice is on screen.
     shown: bool,
     /// The last percent told.
     percent: Option<u8>,
+    /// The last count told (an export counts entries; it has no percent).
+    done: u64,
     /// Waits out the delay before the notice shows; dropped (cancelled) when the work ends.
     _timer: Task<()>,
     /// Carries core's progress to the model; dropped when the work ends.
@@ -70,6 +75,23 @@ impl Explorer {
     /// [`Explorer::end_archive_work`]. Returns its id (shared with the busy toasts' numbering), the tab's lane and
     /// where core reports progress to.
     fn begin_archive_work(&mut self, doing: Doing, cx: &mut Context<Self>) -> (u64, String, ProgressSink) {
+        self.begin_work(doing, None, cx)
+    }
+
+    /// An ncdu export starts: the same notice, progress and Stop, told as [`ExportNotice`]s (`staging` for
+    /// `exportAsNcdu`). Pair with [`Explorer::end_archive_work`].
+    pub(super) fn begin_export_work(&mut self, name: String, cx: &mut Context<Self>) -> (u64, String, ProgressSink) {
+        // Stoppable and shown after 400 ms, like any staging work.
+        let doing = Doing::Extracting(Subject::One(name.clone()));
+        self.begin_work(doing, Some(name), cx)
+    }
+
+    fn begin_work(
+        &mut self,
+        doing: Doing,
+        export: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> (u64, String, ProgressSink) {
         self.ops.busy_seq += 1;
         let id = self.ops.busy_seq;
         let lane = self.active_tab_id().to_string();
@@ -94,8 +116,10 @@ impl Explorer {
             Run {
                 lane: lane.clone(),
                 doing,
+                export,
                 shown: false,
                 percent: None,
+                done: 0,
                 _timer: timer,
                 _progress: progress,
             },
@@ -106,6 +130,15 @@ impl Explorer {
     fn show_archive_work(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(run) = self.archives.runs.get_mut(&id) {
             run.shown = true;
+            if let Some(name) = run.export.clone() {
+                cx.emit(ExplorerEvent::Export(ExportNotice::Shown {
+                    id,
+                    name,
+                    done: run.done,
+                    total: 0,
+                }));
+                return;
+            }
             cx.emit(ExplorerEvent::Archive(ArchiveNotice::Shown {
                 id,
                 doing: run.doing.clone(),
@@ -120,6 +153,21 @@ impl Explorer {
         let Some(run) = self.archives.runs.get_mut(&id) else {
             return;
         };
+        if let Some(name) = run.export.clone() {
+            // An export counts entries as it walks: every change of the count is told.
+            if run.done == progress.done && progress.total == 0 {
+                return;
+            }
+            run.done = progress.done;
+            cx.emit(ExplorerEvent::Export(ExportNotice::Progress {
+                id,
+                name,
+                done: progress.done,
+                total: progress.total,
+                shown: run.shown,
+            }));
+            return;
+        }
         let percent = progress.percent();
         if run.percent == Some(percent) {
             return;
@@ -136,10 +184,18 @@ impl Explorer {
     }
 
     /// The job ended: its notice goes, and the taskbar progress once nothing else runs.
-    fn end_archive_work(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub(super) fn end_archive_work(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(run) = self.archives.runs.remove(&id) else {
             return;
         };
+        if run.export.is_some() {
+            cx.emit(ExplorerEvent::Export(ExportNotice::Ended {
+                id,
+                was_shown: run.shown,
+                idle: self.is_idle(),
+            }));
+            return;
+        }
         cx.emit(ExplorerEvent::Archive(ArchiveNotice::Ended {
             id,
             was_shown: run.shown,

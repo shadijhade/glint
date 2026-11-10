@@ -4,8 +4,8 @@
 //! Ported from src/components/explorer/MediaTools.tsx. These are not dialogs but two small views the preview
 //! pane places under and in place of a video or recording's player (`FilePreview.tsx` did). The player itself
 //! is the preview pane's (`PORT ME(video)` in `components/preview/choose.rs`); these two talk to it with events and
-//! calls, so they work with whatever plays. The run uses `dialogs::media::parts` (the Undo offer, the install
-//! card), so this file needs the `dialog-media` feature too.
+//! calls, so they work with whatever plays. The run uses `dialogs::action_run` (the Undo offer, the install
+//! card).
 //!
 //! | TypeScript                                | Here                                                       |
 //! |-------------------------------------------|------------------------------------------------------------|
@@ -25,14 +25,14 @@
 //! subscribe to [`CantPlayEvent::Ready`] and play the copy at that path. `media_probe`'s `playable` says which
 //! videos need it (the preview pane already asks for it).
 
-use super::media::parts::{self, ToolGate};
+use super::action_run::Fut;
+use super::action_run::{self, Tooling};
 use crate::kit::prelude::*;
 use crate::{core_bridge, i18n, t, theme};
 use glint_core::actions::{Output, Progress, Report};
 use glint_core::media_tools::Task;
 use glint_model::paths::base_name;
 use gpui_kit::{Bounds, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels};
-use parts::Fut;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -109,14 +109,14 @@ impl Backend for CoreBackend {
         progress: glint_core::host::ipc::Channel<Progress>,
     ) -> Fut<Report> {
         let app = self.app.clone();
-        parts::on_core(async move {
-            let window = parts::main_window(&app)?;
+        action_run::on_core(async move {
+            let window = action_run::main_window(&app)?;
             glint_core::media_tools::media_run(window, vec![path], task, output, progress).await
         })
     }
 
     fn playable(&self, path: String, progress: glint_core::host::ipc::Channel<f32>) -> Fut<String> {
-        parts::on_core(glint_core::media_tools::media_playable(path, progress))
+        action_run::on_core(glint_core::media_tools::media_playable(path, progress))
     }
 
     fn cancel(&self) {
@@ -216,7 +216,7 @@ pub struct TrimBar {
     track: Rc<Cell<Bounds<Pixels>>>,
     focus: [FocusHandle; 2],
     backend: Arc<dyn Backend>,
-    gate: ToolGate,
+    gate: Tooling,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -231,7 +231,7 @@ impl TrimBar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let gate = ToolGate::new(backend.tools(), window, cx);
+        let gate = Tooling::from_backend(backend.tools(), window, cx);
         let subscriptions = gate.observe(cx, |_, cx| cx.notify()).into_iter().collect();
         Self {
             path,
@@ -429,14 +429,14 @@ impl TrimBar {
                 this.saving = None;
                 match result {
                     Ok(report) if !report.made.is_empty() => {
-                        parts::offer_undo(&report, &t!("trim of “{name}”", name = name), window, cx);
+                        action_run::offer_undo(&report, &t!("trim of “{name}”", name = name), window, cx);
                         let made = report.made[0].clone();
                         window.push_notification(
                             Notification::success(t!("Saved the part, {long} long", long = clock(kept))).action(
                                 move |_, _, _| {
                                     let made = made.clone();
                                     Button::new("trim-show").label(t!("Show")).on_click(move |_, _, cx| {
-                                        parts::reveal(&made, cx);
+                                        action_run::reveal(&made, cx);
                                     })
                                 },
                             ),
@@ -715,7 +715,7 @@ pub struct CantPlay {
     part: Option<f32>,
     error: Option<SharedString>,
     backend: Arc<dyn Backend>,
-    gate: ToolGate,
+    gate: Tooling,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -728,7 +728,7 @@ impl CantPlay {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let gate = ToolGate::new(backend.tools(), window, cx);
+        let gate = Tooling::from_backend(backend.tools(), window, cx);
         let subscriptions = gate
             .observe(cx, |this, cx| {
                 this.begin(cx);
@@ -1309,7 +1309,7 @@ mod tests {
         let (mut visual, bar) = self::bar(cx, &fake, true);
         open_bar(&mut visual, &bar, 30.);
         bar.update(&mut visual, |b, cx| {
-            b.gate = ToolGate::never();
+            b.gate = Tooling::never();
             cx.notify();
         });
         assert!(disabled(&mut visual, "trim-save"));

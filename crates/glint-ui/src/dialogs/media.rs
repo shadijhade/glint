@@ -1,9 +1,8 @@
 //! Media files: convert, trim, extract, subtitles (MediaDialog.tsx).
 //!
 //! Ported from src/components/explorer/MediaDialog.tsx, with the parts of ActionParts.tsx, actions.ts, studio.ts and
-//! tools.ts it used. **[`parts`] is shared:** the song, metadata and media-tools dialogs (SongDialog.tsx,
-//! MetadataDialog.tsx, MediaTools.tsx) build their runs, choosers, progress, results and buttons from it, so the
-//! four files are one family (see the note at [`parts`]).
+//! tools.ts it used. The run, choosers, progress, results and buttons are `dialogs::action_run`'s (ActionParts.tsx),
+//! shared with Convert, Make smaller, PDF tools and the song, metadata and media-tools views.
 //!
 //! | TypeScript                                     | Here                                                      |
 //! |------------------------------------------------|-----------------------------------------------------------|
@@ -13,7 +12,7 @@
 //! | `isVideoFile`, `isAudioFile`, `isMediaFile`    | [`is_video_file`], [`is_audio_file`], [`is_media_file`]   |
 //! | `seconds`, `clock`, `encoderName`              | [`seconds`], [`clock`], [`encoder_name`]                  |
 //! | `last` (the choices of last time)              | `LAST`, kept while Glint runs                             |
-//! | `useActionRun`, `WhereChooser`, `RunProgress`, `RunResult`, `RunFooter`, `Choices`, `ToolNeeded` | [`parts`]        |
+//! | `useActionRun`, `WhereChooser`, `RunProgress`, `RunResult`, `RunFooter`, `Choices`, `ToolNeeded` | [`action_run`]   |
 //!
 //! **How the coordinator wires it.** `MenuEvent::Media { paths, tool }` (the Media submenu's items and the
 //! actions Explorer.tsx offered): call `dialogs::media::open(window, cx, paths, tool)`. `MediaTool::Convert` and
@@ -24,980 +23,18 @@
 //! NOTE(port): the TypeScript's drop-downs (Height, GIF width, Frames) are rows of choices here: the kit has no
 //! drop-down, and five or six short options read as well as a list does.
 
+use super::action_run::{
+    self, Choice, Choices, FooterSpec, Fut, Launch, ResultWords, Run, Tooling, Where, WhereChooser,
+};
 use crate::components::menus::MediaTool;
-use crate::components::settings::tools::{self, Tools};
 use crate::components::settings::{Backend as SettingsBackend, CoreBackend as SettingsCoreBackend};
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
 use glint_core::actions::{Output, Progress, Report};
-use glint_core::host::Manager as _;
 use glint_core::media_tools::{AudioFormat, Encoders, Probe, Quality, Task, VideoFormat};
 use glint_model::format::{format_count, format_size, plural};
-use glint_model::paths::{base_name, parent_path};
-use parts::{Choice, Choices, Fut, Run, ToolGate, Where, WhereChooser};
-use std::collections::HashSet;
+use glint_model::paths::base_name;
 use std::sync::{Arc, Mutex};
-
-// ---- Shared by the four media dialogs ----------------------------------------------------------------------
-
-/// What the media, song, metadata and media-tools dialogs share: ActionParts.tsx (`useActionRun`,
-/// `WhereChooser`, `RunProgress`, `RunResult`, `RunFooter`, `Choices`), `offerActionUndo` and `badOutput` of
-/// actions.ts, `ToolNeeded` and `revealInApp`.
-///
-/// TODO(coordinator): this belongs in `dialogs/action_parts.rs`, where the convert, shrink, PDF and data dialogs
-/// can use it too. It is inline here because those files are not mine. Until it moves, `dialog-song`,
-/// `dialog-metadata` and `dialog-media-tools` need `dialog-media` (they `use super::media::parts`).
-pub mod parts {
-    use super::*;
-    use crate::explorer;
-    use gpui_kit::px as pixels;
-    use std::rc::Rc;
-
-    pub use crate::dialogs::vault::{bad_output, Fut, Run, Where};
-
-    // ---- ToolNeeded ----
-
-    /// The tools the dialog's install card reads (`useTool`, `ToolNeeded`): none in tests that don't care, and
-    /// then every tool counts as there.
-    pub struct ToolGate {
-        tools: Option<Entity<Tools>>,
-        /// Tests: the tools are never known, as before the first look.
-        #[cfg(test)]
-        never: bool,
-    }
-
-    impl ToolGate {
-        /// Looks for the tools through `backend` (none: nothing to wait for).
-        pub fn new<V: 'static>(
-            backend: Option<Arc<dyn SettingsBackend>>,
-            window: &mut Window,
-            cx: &mut Context<V>,
-        ) -> Self {
-            let tools = backend.map(|backend| cx.new(|cx| Tools::new(backend, window, cx)));
-            Self {
-                tools,
-                #[cfg(test)]
-                never: false,
-            }
-        }
-
-        /// Tests: a gate whose tools are never found, so [`ToolGate::ready`] stays false (the state before the
-        /// first look for the tools, or with one missing).
-        #[cfg(test)]
-        pub fn never() -> Self {
-            Self {
-                tools: None,
-                never: true,
-            }
-        }
-
-        /// Runs `on_change` whenever the tools are looked for again or one is installed. Keep the subscription.
-        pub fn observe<V: 'static>(
-            &self,
-            cx: &mut Context<V>,
-            on_change: impl Fn(&mut V, &mut Context<V>) + 'static,
-        ) -> Option<Subscription> {
-            let tools = self.tools.as_ref()?;
-            Some(cx.observe(tools, move |this, _, cx| on_change(this, cx)))
-        }
-
-        /// Whether the tool is there (`!!tool?.origin`). Before the tools are known it is not.
-        pub fn ready(&self, id: &str, cx: &App) -> bool {
-            #[cfg(test)]
-            if self.never {
-                return false;
-            }
-            match &self.tools {
-                None => true,
-                Some(tools) => tools.read(cx).tool(id).is_some_and(|tool| tool.origin.is_some()),
-            }
-        }
-
-        /// The card that says a tool is needed and installs it, or nothing once it is there.
-        pub fn card(&self, id: &str, why: SharedString, icon: IconName, cx: &App) -> Option<AnyElement> {
-            tools::needed(self.tools.as_ref()?, id, why, icon, cx)
-        }
-    }
-
-    // ---- Choices ----
-
-    /// One choice of a [`Choices`] row.
-    pub struct Choice<T> {
-        value: T,
-        label: SharedString,
-        hint: Option<SharedString>,
-        disabled: bool,
-    }
-
-    impl<T> Choice<T> {
-        /// A choice with its name.
-        pub fn new(value: T, label: impl Into<SharedString>) -> Self {
-            Self {
-                value,
-                label: label.into(),
-                hint: None,
-                disabled: false,
-            }
-        }
-
-        /// A line under the name.
-        pub fn hint(mut self, hint: impl Into<SharedString>) -> Self {
-            self.hint = Some(hint.into());
-            self
-        }
-
-        /// Can't be picked.
-        pub fn disabled(mut self, disabled: bool) -> Self {
-            self.disabled = disabled;
-            self
-        }
-    }
-
-    /// What picking a choice does.
-    type OnPick<T> = Rc<dyn Fn(&T, &mut Window, &mut App)>;
-
-    /// A row of choices, one picked, as Convert's formats are (`Choices`): a radio group of buttons with a name
-    /// and a hint each, `columns` to a row, in the reading direction.
-    #[derive(IntoElement)]
-    pub struct Choices<T: Copy + PartialEq + 'static> {
-        id: &'static str,
-        label: SharedString,
-        value: T,
-        options: Vec<Choice<T>>,
-        columns: usize,
-        on_pick: OnPick<T>,
-    }
-
-    impl<T: Copy + PartialEq + 'static> Choices<T> {
-        /// The group `label`, with `id` for its buttons (`(id, index)`), `value` picked.
-        pub fn new(id: &'static str, label: impl Into<SharedString>, value: T) -> Self {
-            Self {
-                id,
-                label: label.into(),
-                value,
-                options: Vec::new(),
-                columns: 2,
-                on_pick: Rc::new(|_, _, _| {}),
-            }
-        }
-
-        /// What can be picked.
-        pub fn options(mut self, options: Vec<Choice<T>>) -> Self {
-            self.options = options;
-            self
-        }
-
-        /// How many to a row (the TypeScript's `columns`, 2 unless said).
-        pub fn columns(mut self, columns: usize) -> Self {
-            self.columns = columns.max(1);
-            self
-        }
-
-        /// Runs with the value picked.
-        pub fn on_pick(mut self, on_pick: impl Fn(&T, &mut Window, &mut App) + 'static) -> Self {
-            self.on_pick = Rc::new(on_pick);
-            self
-        }
-    }
-
-    impl<T: Copy + PartialEq + 'static> RenderOnce for Choices<T> {
-        fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-            let t = theme::tokens(cx).clone();
-            let columns = self.columns.max(1);
-            let id = self.id;
-            let mut options = self.options.into_iter().enumerate().peekable();
-            let mut rows = Vec::new();
-            while options.peek().is_some() {
-                let mut row = row_start().items_stretch().gap(space(1.5));
-                let mut filled = 0;
-                for (ix, option) in options.by_ref().take(columns) {
-                    filled += 1;
-                    let chosen = option.value == self.value;
-                    let value = option.value;
-                    let on_pick = self.on_pick.clone();
-                    let name = match &option.hint {
-                        Some(hint) => format!("{}. {hint}", option.label),
-                        None => option.label.to_string(),
-                    };
-                    row = row.child(
-                        Button::new((id, ix))
-                            .custom(
-                                ButtonCustomVariant::new(cx)
-                                    .color(if chosen {
-                                        t.primary.opacity(0.1)
-                                    } else {
-                                        t.background.opacity(0.)
-                                    })
-                                    .foreground(t.foreground)
-                                    .hover(if chosen { t.primary.opacity(0.15) } else { t.accent })
-                                    .active(t.accent),
-                            )
-                            .flex_1()
-                            .min_w_0()
-                            .h_auto()
-                            .border_1()
-                            .border_color(if chosen { t.primary } else { t.border })
-                            .px(space(2.))
-                            .py(space(1.5))
-                            .role(Role::RadioButton)
-                            .toggled(chosen)
-                            .disabled(option.disabled)
-                            .accessibility_label(name)
-                            .on_click(move |_, window, cx| on_pick(&value, window, cx))
-                            .child(
-                                col()
-                                    .w_full()
-                                    .align_start()
-                                    .text_start()
-                                    .child(div().font_weight(FontWeight::MEDIUM).child(option.label))
-                                    .when_some(option.hint, |this, hint| {
-                                        this.child(
-                                            div()
-                                                .max_w_full()
-                                                .truncate()
-                                                .text_size(theme::size::XXS)
-                                                .text_color(t.muted_foreground)
-                                                .child(hint),
-                                        )
-                                    }),
-                            ),
-                    );
-                }
-                // A short last row keeps its buttons as wide as the others.
-                for _ in filled..columns {
-                    row = row.child(div().flex_1().min_w_0());
-                }
-                rows.push(row);
-            }
-            col()
-                .id(id)
-                .role(Role::RadioGroup)
-                .aria_label(self.label)
-                .test_support()
-                .gap(space(1.5))
-                .children(rows)
-        }
-    }
-
-    // ---- Where what is made goes ----
-
-    /// "Where": next to each file, into a folder there, or in their place (`WhereChooser`), with the two boxes.
-    /// An entity of its own: the dialog reads [`WhereChooser::output`] and re-draws when it changes.
-    pub struct WhereChooser {
-        slot: &'static str,
-        kind: WhereKind,
-        suffix: Entity<InputState>,
-        folder: Entity<InputState>,
-        noun: SharedString,
-        note: Option<SharedString>,
-        replace: bool,
-        _subscriptions: Vec<Subscription>,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum WhereKind {
-        Beside,
-        Folder,
-        Replace,
-    }
-
-    impl WhereChooser {
-        /// A chooser starting at `initial`, its elements named `slot`-where…
-        pub fn new(slot: &'static str, initial: &Where, window: &mut Window, cx: &mut Context<Self>) -> Self {
-            let (kind, suffix, folder) = match initial {
-                Where::Beside { suffix } => (WhereKind::Beside, suffix.clone(), "Converted".to_string()),
-                Where::Folder { name } => (WhereKind::Folder, String::new(), name.clone()),
-                Where::Replace => (WhereKind::Replace, String::new(), "Converted".to_string()),
-            };
-            let suffix = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("nothing"))
-                    .default_value(suffix)
-            });
-            let folder = cx.new(|cx| InputState::new(window, cx).default_value(folder));
-            let subscriptions = [&suffix, &folder]
-                .into_iter()
-                .map(|input| {
-                    cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            cx.notify();
-                        }
-                    })
-                })
-                .collect();
-            Self {
-                slot,
-                kind,
-                suffix,
-                folder,
-                noun: t!("file"),
-                note: None,
-                replace: true,
-                _subscriptions: subscriptions,
-            }
-        }
-
-        /// What the chooser says now.
-        pub fn output(&self, cx: &App) -> Where {
-            match self.kind {
-                WhereKind::Beside => Where::Beside {
-                    suffix: self.suffix.read(cx).value().to_string(),
-                },
-                WhereKind::Folder => Where::Folder {
-                    name: self.folder.read(cx).value().to_string(),
-                },
-                WhereKind::Replace => Where::Replace,
-            }
-        }
-
-        /// Whether the output can't be used (`badOutput`).
-        pub fn bad(&self, cx: &App) -> bool {
-            bad_output(&self.output(cx))
-        }
-
-        /// The suffix box, for focusing and tests.
-        pub fn suffix_input(&self) -> &Entity<InputState> {
-            &self.suffix
-        }
-
-        /// "Next to each {noun}…" and "the {noun}s moved to the Recycle Bin".
-        pub fn set_noun(&mut self, noun: SharedString, cx: &mut Context<Self>) {
-            if self.noun != noun {
-                self.noun = noun;
-                cx.notify();
-            }
-        }
-
-        /// The line under the choices (the default says a taken name gets "(2)").
-        pub fn set_note(&mut self, note: SharedString, cx: &mut Context<Self>) {
-            self.note = Some(note);
-            cx.notify();
-        }
-
-        /// Whether "In their place" is offered. Picked while it goes away, the choice falls back to "Next to".
-        pub fn set_replace_allowed(&mut self, allowed: bool, cx: &mut Context<Self>) {
-            self.replace = allowed;
-            if !allowed && self.kind == WhereKind::Replace {
-                self.kind = WhereKind::Beside;
-            }
-            cx.notify();
-        }
-
-        /// Changes the suffix when "Next to" is the choice (the dialog's mode asks for another).
-        ///
-        /// NOTE(port): the TypeScript changed its output but left the box showing the old suffix (the box kept
-        /// its own state from when it was made). Here the box shows what is used.
-        pub fn set_suffix(&mut self, suffix: &str, window: &mut Window, cx: &mut Context<Self>) {
-            if self.kind == WhereKind::Beside {
-                self.suffix.update(cx, |input, cx| input.set_value(suffix, window, cx));
-                cx.notify();
-            }
-        }
-
-        fn radio(&self, ix: usize, kind: WhereKind, label: SharedString, cx: &mut Context<Self>) -> impl IntoElement {
-            let chosen = self.kind == kind;
-            Button::new((self.slot, ix))
-                .ghost()
-                .compact()
-                .role(Role::RadioButton)
-                .toggled(chosen)
-                .accessibility_label(label)
-                .icon(if chosen { IconName::CircleDot } else { IconName::Circle })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.kind = kind;
-                    cx.notify();
-                }))
-        }
-    }
-
-    impl Render for WhereChooser {
-        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let t = theme::tokens(cx).clone();
-            let bad = self.bad(cx);
-            let small_box = |input: &Entity<InputState>, aria: SharedString, wide: f32, on: bool| {
-                div()
-                    .w(space(wide))
-                    .flex_none()
-                    .when(on && bad, |d| {
-                        d.border_1().border_color(t.destructive).rounded(theme::size::RADIUS)
-                    })
-                    .child(Input::new(input).aria_label(aria))
-            };
-            let beside = t!("Next to each {noun}, its name and", noun = self.noun.clone());
-            let folder = t!("Into a folder next to them:");
-            let replace = t!(
-                "In their place, the {noun}s moved to the Recycle Bin",
-                noun = self.noun.clone()
-            );
-            let note = self
-                .note
-                .clone()
-                .unwrap_or_else(|| t!("A name that's taken gets “(2)”, and Ctrl+Z takes it all back."));
-            col()
-                .id(SharedString::from(format!("{}-group", self.slot)))
-                .role(Role::RadioGroup)
-                .aria_label(t!("Where"))
-                .test_support()
-                .gap(space(1.5))
-                .child(
-                    div()
-                        .text_size(theme::size::XS)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(t.muted_foreground)
-                        .child(t!("Where")),
-                )
-                .child(
-                    align_row(2.)
-                        .child(self.radio(0, WhereKind::Beside, beside.clone(), cx))
-                        .child(div().flex_none().child(beside))
-                        .child(small_box(
-                            &self.suffix,
-                            t!("Added to the name"),
-                            28.,
-                            self.kind == WhereKind::Beside,
-                        )),
-                )
-                .child(
-                    align_row(2.)
-                        .child(self.radio(1, WhereKind::Folder, folder.clone(), cx))
-                        .child(div().flex_none().child(folder))
-                        .child(small_box(
-                            &self.folder,
-                            t!("Folder name"),
-                            36.,
-                            self.kind == WhereKind::Folder,
-                        )),
-                )
-                .when(self.replace, |this| {
-                    this.child(
-                        align_row(2.)
-                            .child(self.radio(2, WhereKind::Replace, replace.clone(), cx))
-                            .child(div().flex_1().min_w_0().child(replace)),
-                    )
-                })
-                .child(
-                    div()
-                        .ps(6.)
-                        .text_size(theme::size::XS)
-                        .text_color(t.muted_foreground)
-                        .child(note),
-                )
-        }
-    }
-
-    // ---- A run under way, its result and its buttons ----
-
-    /// The progress a run starts at.
-    pub fn starting(total: usize) -> Progress {
-        Progress {
-            done: 0,
-            total,
-            current: String::new(),
-            part: 0.,
-        }
-    }
-
-    /// How far a run is, as one line: "Working on 2 of 5 · clip.mp4 · 40%" (`RunProgress`).
-    pub fn progress_text(verb: &str, progress: &Progress) -> String {
-        let mut text = verb.to_string();
-        if progress.total > 1 {
-            let at = (progress.done + 1).min(progress.total);
-            text.push_str(&format!(" {} of {}", format_count(at), format_count(progress.total)));
-        }
-        if !progress.current.is_empty() {
-            text.push_str(&format!(" · {}", progress.current));
-        }
-        if progress.part > 0. {
-            text.push_str(&format!(" · {}%", (progress.part * 100.).round()));
-        }
-        text
-    }
-
-    /// The share of the whole run done: the jobs finished and how far the one under way is.
-    pub fn whole(progress: &Progress) -> f32 {
-        if progress.total == 0 {
-            0.
-        } else {
-            ((progress.done as f32 + progress.part.min(0.999)) / progress.total as f32).clamp(0., 1.)
-        }
-    }
-
-    /// A run under way: which of how many, and how far the one being made is (`RunProgress`).
-    pub fn progress_view(slot: &'static str, verb: &str, progress: &Progress, t: &theme::Tokens) -> impl IntoElement {
-        let text: SharedString = progress_text(verb, progress).into();
-        col()
-            .id(SharedString::from(format!("{slot}-progress")))
-            .role(Role::ProgressIndicator)
-            .aria_label(text.clone())
-            .test_support()
-            .gap(space(2.))
-            .py(space(6.))
-            .child(
-                align_row(2.)
-                    .text_color(t.muted_foreground)
-                    .child(Spinner::new())
-                    .child(div().flex_1().min_w_0().truncate().child(isolate(text))),
-            )
-            .child(
-                row_start()
-                    .h(space(1.5))
-                    .w_full()
-                    .overflow_hidden()
-                    .rounded_full()
-                    .bg(t.muted)
-                    .child(
-                        div()
-                            .h_full()
-                            .w(gpui_kit::relative(whole(progress)))
-                            .rounded_full()
-                            .bg(t.primary),
-                    ),
-            )
-    }
-
-    /// "12 MB → 4.1 MB (−66%)": the sizes before and after a run, when they are known.
-    pub fn sizes_line(before: u64, after: u64) -> Option<String> {
-        if before == 0 {
-            return None;
-        }
-        // Math.round of the share, then its size: halves go up, the sign is shown by itself.
-        let share = (100. * (before as f64 - after as f64) / before as f64 + 0.5)
-            .floor()
-            .abs();
-        Some(format!(
-            "{} → {} ({}{share}%)",
-            format_size(before),
-            format_size(after),
-            if after <= before { "−" } else { "+" }
-        ))
-    }
-
-    /// What a finished run did: made how many, the sizes before and after (when `sizes`), how long it took,
-    /// and what failed (`RunResult`).
-    pub fn result_view(
-        slot: &'static str,
-        noun: &str,
-        sizes: bool,
-        report: &Report,
-        t: &theme::Tokens,
-    ) -> impl IntoElement {
-        let made = report.made.len();
-        let mut headline = if made > 0 {
-            t!("Made {what}", what = plural(made, noun)).to_string()
-        } else {
-            t!("Nothing was made").to_string()
-        };
-        if report.stopped {
-            headline.push_str(&t!(" before it was stopped"));
-        }
-        let headline: SharedString = headline.into();
-        let detail = if made > 0 {
-            let took = glint_model::format::format_duration(report.elapsed_ms);
-            match sizes.then(|| sizes_line(report.before, report.after)).flatten() {
-                Some(sizes) => format!("{sizes} · {took}"),
-                None => took,
-            }
-        } else {
-            String::new()
-        };
-        let failed = report.failed.clone();
-        col()
-            .id(SharedString::from(format!("{slot}-result")))
-            .role(Role::Status)
-            .aria_label(headline.clone())
-            .test_support()
-            .gap(space(3.))
-            .child(
-                align_row(2.)
-                    .items_start()
-                    .child(
-                        icon(IconName::CircleCheck)
-                            .size_5()
-                            .flex_none()
-                            .text_color(if made > 0 { t.success } else { t.muted_foreground }),
-                    )
-                    .child(
-                        col()
-                            .align_start()
-                            .child(div().font_weight(FontWeight::MEDIUM).child(headline))
-                            .when(made > 0, |this| {
-                                this.child(
-                                    div()
-                                        .text_size(theme::size::XS)
-                                        .text_color(t.muted_foreground)
-                                        .child(detail),
-                                )
-                            }),
-                    ),
-            )
-            .when(!failed.is_empty(), |this| {
-                let title = t!("{what} not done:", what = plural(failed.len(), "file"));
-                this.child(
-                    col()
-                        .id(SharedString::from(format!("{slot}-failed")))
-                        .role(Role::List)
-                        .aria_label(title.clone())
-                        .test_support()
-                        .gap(space(0.5))
-                        .rounded(theme::size::RADIUS)
-                        .bg(t.warning.opacity(0.1))
-                        .px(space(3.))
-                        .py(space(2.))
-                        .text_size(theme::size::XS)
-                        .child(div().font_weight(FontWeight::MEDIUM).child(title))
-                        .children(failed.iter().take(6).enumerate().map(|(ix, (path, why))| {
-                            let line: SharedString = format!("{}: {why}", base_name(path)).into();
-                            div()
-                                .id((SharedString::from(format!("{slot}-failed")), ix))
-                                .role(Role::ListItem)
-                                .aria_label(line.clone())
-                                .test_support()
-                                .truncate()
-                                .child(isolate(line))
-                        }))
-                        .when(failed.len() > 6, |this| {
-                            this.child(t!("and {n} more", n = format_count(failed.len() - 6)))
-                        }),
-                )
-            })
-    }
-
-    /// What a run that failed as a whole shows (`RunResult`'s error).
-    pub fn error_view(
-        slot: &'static str,
-        failed_what: SharedString,
-        reason: &SharedString,
-        t: &theme::Tokens,
-    ) -> impl IntoElement {
-        col()
-            .id(SharedString::from(format!("{slot}-error")))
-            .role(Role::Alert)
-            .aria_label(format!("{failed_what}. {reason}"))
-            .test_support()
-            .items_center()
-            .gap(space(2.))
-            .py(space(6.))
-            .text_center()
-            .child(icon(IconName::TriangleAlert).size_6().text_color(t.destructive))
-            .child(div().font_weight(FontWeight::MEDIUM).child(failed_what))
-            .child(
-                div()
-                    .max_w(space(112.))
-                    .text_size(theme::size::XS)
-                    .text_color(t.muted_foreground)
-                    .child(reason.clone()),
-            )
-    }
-
-    /// The dialog's buttons (`RunFooter`): Stop while it runs; Show and Close after; Cancel and the action
-    /// before. The ids are `slot`-stop, -show, -close, -cancel and -start.
-    pub struct Footer<V: 'static> {
-        /// The dialog's name for ids.
-        pub slot: &'static str,
-        /// Where the run stands.
-        pub run: Run,
-        /// The action's name ("Convert").
-        pub label: SharedString,
-        /// Its icon.
-        pub icon: IconName,
-        /// Whether the action can be pressed now (the TypeScript's `!disabled`).
-        pub can_start: bool,
-        /// Starts the run.
-        pub start: fn(&mut V, &mut Window, &mut Context<V>),
-        /// Stops it (`onStop`).
-        pub stop: fn(&mut V),
-    }
-
-    impl<V: 'static> Footer<V> {
-        /// The row of buttons.
-        pub fn render(self, t: &theme::Tokens, cx: &mut Context<V>) -> Div {
-            let running = matches!(self.run, Run::Running(_));
-            let finished = matches!(self.run, Run::Done(_) | Run::Failed(_));
-            let first_made = match &self.run {
-                Run::Done(report) => report.made.first().cloned(),
-                _ => None,
-            };
-            let slot = self.slot;
-            let (start, stop) = (self.start, self.stop);
-            row_start()
-                .justify_end()
-                .gap(space(2.))
-                .pt(space(3.))
-                .border_t_1()
-                .border_color(t.border)
-                .when(running, |this| {
-                    this.child(
-                        Button::new(SharedString::from(format!("{slot}-stop")))
-                            .outline()
-                            .icon(IconName::Square)
-                            .label(t!("Stop"))
-                            .on_click(cx.listener(move |this, _, _, _| stop(this))),
-                    )
-                })
-                .when_some(first_made, |this, made| {
-                    this.child(
-                        Button::new(SharedString::from(format!("{slot}-show")))
-                            .outline()
-                            .icon(IconName::FolderInput)
-                            .label(t!("Show"))
-                            .on_click(move |_, window, cx| {
-                                window.close_dialog(cx);
-                                reveal(&made, cx);
-                            }),
-                    )
-                })
-                .when(finished, |this| {
-                    this.child(
-                        Button::new(SharedString::from(format!("{slot}-close")))
-                            .primary()
-                            .label(t!("Close"))
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    )
-                })
-                .when(!finished, |this| {
-                    this.child(
-                        Button::new(SharedString::from(format!("{slot}-cancel")))
-                            .outline()
-                            .label(t!("Cancel"))
-                            .disabled(running)
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("{slot}-start")))
-                            .primary()
-                            .icon(self.icon)
-                            .label(self.label)
-                            .disabled(running || !self.can_start)
-                            .on_click(cx.listener(move |this, _, window, cx| start(this, window, cx))),
-                    )
-                })
-        }
-    }
-
-    // ---- Running ----
-
-    /// A run to start: how many jobs, core's call, and its progress.
-    pub struct Launch {
-        /// How many jobs there are (the run's total until progress says).
-        pub total: usize,
-        /// Core's call.
-        pub call: Fut<Report>,
-        /// Its progress messages.
-        pub progress: async_channel::Receiver<Progress>,
-    }
-
-    /// Starts a run (`useActionRun().start`): sets the dialog's [`Run`] (found by `state`) to running, keeps it
-    /// up to date from the progress (at most once a frame), and when the call ends sets it to done or failed. A
-    /// run that made something offers Undo, worded `undo_label(report)` (`offerActionUndo`).
-    pub fn drive<V: 'static>(
-        this: &mut V,
-        window: &mut Window,
-        cx: &mut Context<V>,
-        launch: Launch,
-        state: fn(&mut V) -> &mut Run,
-        undo_label: impl FnOnce(&Report) -> String + 'static,
-    ) {
-        let Launch { total, call, progress } = launch;
-        *state(this) = Run::Running(starting(total));
-        cx.notify();
-        // Progress: only the newest message each time the task wakes, so a chatty run redraws once.
-        cx.spawn_in(window, async move |this, cx| {
-            while let Ok(mut latest) = progress.recv().await {
-                while let Ok(newer) = progress.try_recv() {
-                    latest = newer;
-                }
-                let alive = this.update(cx, |this, cx| {
-                    let run = state(this);
-                    if matches!(run, Run::Running(_)) {
-                        *run = Run::Running(latest);
-                        cx.notify();
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = call.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok(report) => {
-                        if !report.made.is_empty() {
-                            offer_undo(&report, &undo_label(&report), window, cx);
-                        }
-                        *state(this) = Run::Done(report);
-                    }
-                    Err(reason) => *state(this) = Run::Failed(reason.into()),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// The Undo offer of an action's notification.
-    struct ActionUndoToast;
-
-    /// Keeps how to take back what `report` made, for Ctrl+Z, and offers Undo in a notification
-    /// (`offerActionUndo`): what it made is recycled and the files it replaced come back from the Recycle Bin.
-    ///
-    /// NOTE(port): the TypeScript took both back in one step. The explorer's undo steps hold one action each, so
-    /// Ctrl+Z recycles what was made and the next one brings the originals back; the notification's Undo does
-    /// both.
-    pub fn offer_undo(report: &Report, what: &str, window: &mut Window, cx: &mut App) {
-        if report.made.is_empty() {
-            return;
-        }
-        let Some(explorer) = explorer::try_explorer(cx) else {
-            return;
-        };
-        let back: Vec<explorer::MoveItem> = report
-            .recycled
-            .iter()
-            .map(|r| explorer::MoveItem {
-                path: r.bin.clone(),
-                folder: parent_path(&r.path),
-                name: base_name(&r.path).to_string(),
-            })
-            .collect();
-        let made = report.made.clone();
-        let (restore, recycle) = explorer.update(cx, |explorer, cx| {
-            let restore =
-                (!back.is_empty()).then(|| explorer.remember_undo(what, explorer::UndoAction::Restore(back), cx));
-            (
-                restore,
-                explorer.remember_undo(what, explorer::UndoAction::Recycle(made), cx),
-            )
-        });
-        let mut label = what.to_string();
-        if let Some(first) = label.get(..1) {
-            label = first.to_uppercase() + &label[1..];
-        }
-        let key = recycle.0 as usize;
-        let note = Notification::success(SharedString::from(label))
-            .id1::<ActionUndoToast>(key)
-            .action(move |_, _, _| {
-                let explorer = explorer.clone();
-                Button::new("action-undo")
-                    .label(t!("Undo"))
-                    .on_click(move |_, window, cx| {
-                        let first = explorer.update(cx, |e, cx| e.undo(Some(recycle), cx));
-                        let explorer = explorer.clone();
-                        cx.spawn(async move |cx| {
-                            first.await;
-                            if let Some(restore) = restore {
-                                let second = explorer.update(cx, |e, cx| e.undo(Some(restore), cx));
-                                second.await;
-                            }
-                        })
-                        .detach();
-                        window.remove_notification1::<ActionUndoToast>(key, cx);
-                    })
-            });
-        window.push_notification(note, cx);
-        // The web app's toast stayed 8 s.
-        let handle = window.window_handle();
-        cx.spawn(async move |cx| {
-            cx.background_executor().timer(std::time::Duration::from_secs(8)).await;
-            let _ = handle.update(cx, |_, window, cx| {
-                window.remove_notification1::<ActionUndoToast>(key, cx)
-            });
-        })
-        .detach();
-    }
-
-    /// Shows `path` in its folder, selected (`revealInApp`).
-    pub fn reveal(path: &str, cx: &mut App) {
-        let Some(explorer) = explorer::try_explorer(cx) else {
-            return;
-        };
-        let path = path.to_string();
-        explorer.update(cx, |explorer, cx| {
-            let options = explorer::NavOptions::default().selecting(path.clone());
-            explorer.navigate(parent_path(&path), options, cx);
-        });
-    }
-
-    // ---- Small pieces of layout ----
-
-    /// A labelled row: a fixed-width label, then the content.
-    pub fn field(label: SharedString, content: impl IntoElement, t: &theme::Tokens) -> Div {
-        align_row(3.)
-            .child(
-                div()
-                    .w(space(20.))
-                    .flex_none()
-                    .text_size(theme::size::XS)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(t.muted_foreground)
-                    .child(label),
-            )
-            .child(div().flex_1().min_w_0().child(content))
-    }
-
-    /// A small heading over a section (`h3 text-xs font-semibold text-muted-foreground`).
-    pub fn heading(text: SharedString, t: &theme::Tokens) -> Div {
-        div()
-            .text_size(theme::size::XS)
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(t.muted_foreground)
-            .child(text)
-    }
-
-    /// A line of small, muted help text.
-    pub fn note(text: impl Into<SharedString>, t: &theme::Tokens) -> Div {
-        div()
-            .text_size(theme::size::XS)
-            .text_color(t.muted_foreground)
-            .child(text.into())
-    }
-
-    /// The folder line under a dialog's title: the folder they are in, or how many folders.
-    pub fn folder_line(id: &'static str, files: &[String], t: &theme::Tokens) -> impl IntoElement {
-        let text = crate::dialogs::vault::where_they_are(files);
-        div()
-            .id(id)
-            .role(Role::Group)
-            .aria_label(text.clone())
-            .test_support()
-            .text_size(theme::size::XS)
-            .text_color(t.muted_foreground)
-            .truncate()
-            .child(isolate(text))
-    }
-
-    /// The names of the distinct folders among `files`, lower-cased.
-    pub fn folders_of(files: &[String]) -> HashSet<String> {
-        files.iter().map(|f| parent_path(f).to_lowercase()).collect()
-    }
-
-    /// The height of a dialog's scrolling body: a share of the window, so a short window scrolls it.
-    pub fn body_height(window: &Window) -> Pixels {
-        (window.viewport_size().height * 0.72).max(pixels(240.))
-    }
-
-    /// The main window, which core's calls take as their owner, or why there is none.
-    pub fn main_window(app: &glint_core::host::AppHandle) -> Result<glint_core::host::Window, String> {
-        app.get_webview_window(crate::workspace::MAIN)
-            .ok_or_else(|| t!("Glint's window isn't open").to_string())
-    }
-
-    /// Runs `future` on core's runtime and flattens the join error into the call's own.
-    pub fn on_core<T: Send + 'static>(
-        future: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
-    ) -> Fut<T> {
-        let joined = core_bridge::run(future);
-        Box::pin(async move { joined.await.and_then(|inner| inner) })
-    }
-
-    /// The tools backend core offers (the install cards), or none when core isn't started.
-    pub fn core_tools(cx: &App) -> Option<Arc<dyn SettingsBackend>> {
-        let core = cx.try_global::<core_bridge::Core>()?;
-        Some(Arc::new(SettingsCoreBackend::new(core.app.clone())))
-    }
-}
 
 // ---- What FFmpeg reads (studio.ts) ------------------------------------------------------------------------
 
@@ -1276,7 +313,7 @@ impl CoreBackend {
 
 impl Backend for CoreBackend {
     fn probe(&self, path: String) -> Fut<(Probe, u64)> {
-        parts::on_core(async move {
+        action_run::on_core(async move {
             let probe = glint_core::media_tools::media_probe(path.clone()).await?;
             let size = glint_core::fsx::blocking(move || Ok(std::fs::metadata(&path).map_or(0, |m| m.len()))).await?;
             Ok((probe, size))
@@ -1284,7 +321,7 @@ impl Backend for CoreBackend {
     }
 
     fn encoders(&self) -> Fut<Encoders> {
-        parts::on_core(glint_core::media_tools::media_encoders())
+        action_run::on_core(glint_core::media_tools::media_encoders())
     }
 
     fn run(
@@ -1295,8 +332,8 @@ impl Backend for CoreBackend {
         progress: glint_core::host::ipc::Channel<Progress>,
     ) -> Fut<Report> {
         let app = self.app.clone();
-        parts::on_core(async move {
-            let window = parts::main_window(&app)?;
+        action_run::on_core(async move {
+            let window = action_run::main_window(&app)?;
             glint_core::media_tools::media_run(window, files, task, output, progress).await
         })
     }
@@ -1381,7 +418,7 @@ pub struct MediaDialog {
     place: Entity<WhereChooser>,
     run: Run,
     backend: Arc<dyn Backend>,
-    gate: ToolGate,
+    gate: Tooling,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1401,8 +438,8 @@ impl MediaDialog {
         let start = Where::Beside {
             suffix: mode.suffix().to_string(),
         };
-        let place = cx.new(|cx| WhereChooser::new("media-where", &start, window, cx));
-        let gate = ToolGate::new(backend.tools(), window, cx);
+        let place = cx.new(|cx| WhereChooser::starting_at("media-where", &start, window, cx));
+        let gate = Tooling::from_backend(backend.tools(), window, cx);
         let mut subscriptions = vec![cx.observe(&place, |_, _, cx| cx.notify())];
         for input in [&from, &to] {
             subscriptions.push(cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
@@ -1553,7 +590,7 @@ impl MediaDialog {
                 },
                 cx,
             );
-            place.set_replace_allowed(matches!(mode, MediaMode::Convert | MediaMode::Volume), cx);
+            place.offer_replace(matches!(mode, MediaMode::Convert | MediaMode::Volume), cx);
             if suffix {
                 place.set_suffix(mode.suffix(), window, cx);
             }
@@ -1654,16 +691,16 @@ impl MediaDialog {
             return;
         }
         let task = self.task(cx);
-        let output = self.place.read(cx).output(cx).output();
+        let output = self.place.read(cx).choice(cx).output();
         let usable = self.usable();
         let (channel, receiver) = core_bridge::stream::<Progress>();
         let call = self.backend.run(usable.clone(), task, output, channel);
         let verb = self.mode.undo_verb();
-        parts::drive(
+        action_run::drive(
             self,
             window,
             cx,
-            parts::Launch {
+            Launch {
                 total: usable.len(),
                 call,
                 progress: receiver,
@@ -1803,7 +840,7 @@ impl MediaDialog {
             .child(
                 col()
                     .gap(space(1.5))
-                    .child(parts::heading(t!("Into"), t))
+                    .child(action_run::section_title(t!("Into"), t))
                     .child(
                         Choices::new("media-format", t!("Format"), self.picked.format)
                             .columns(3)
@@ -1829,7 +866,7 @@ impl MediaDialog {
                             ),
                     )
                     .when_some(chosen_encoder, |this, encoder| {
-                        this.child(parts::note(
+                        this.child(action_run::help(
                             t!("Encoded with {name}.", name = encoder_name(Some(encoder))),
                             t,
                         ))
@@ -1838,7 +875,7 @@ impl MediaDialog {
             .child(
                 col()
                     .gap(space(1.5))
-                    .child(parts::heading(t!("Quality"), t))
+                    .child(action_run::section_title(t!("Quality"), t))
                     .child(
                         Choices::new("media-quality", t!("Quality"), self.picked.quality)
                             .columns(3)
@@ -1878,11 +915,11 @@ impl MediaDialog {
                                         .w(space(20.))
                                         .child(Input::new(&self.mb).small().aria_label(t!("Megabytes"))),
                                 )
-                                .child(parts::note(t!("MB each"), t)),
+                                .child(action_run::help(t!("MB each"), t)),
                         )
                     }),
             )
-            .child(parts::field(
+            .child(action_run::field(
                 t!("Height"),
                 Choices::new("media-height", t!("Height"), self.picked.height)
                     .columns(3)
@@ -1901,7 +938,7 @@ impl MediaDialog {
     fn audio_options(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         col()
             .gap(space(1.5))
-            .child(parts::heading(t!("The sound, as"), t))
+            .child(action_run::section_title(t!("The sound, as"), t))
             .child(
                 Choices::new("media-audio", t!("Format"), self.picked.audio)
                     .columns(3)
@@ -1936,7 +973,7 @@ impl MediaDialog {
                     ])
                     .on_pick(cx.listener(|this, webp: &bool, _, cx| this.choose(|p| p.webp = *webp, cx))),
             )
-            .child(parts::field(
+            .child(action_run::field(
                 t!("Width"),
                 Choices::new("media-gif-width", t!("Width"), self.picked.gif_width)
                     .columns(3)
@@ -1949,7 +986,7 @@ impl MediaDialog {
                     .on_pick(cx.listener(|this, w: &u32, _, cx| this.choose(|p| p.gif_width = *w, cx))),
                 t,
             ))
-            .child(parts::field(
+            .child(action_run::field(
                 t!("Frames"),
                 Choices::new("media-gif-fps", t!("Frames a second"), self.picked.fps)
                     .columns(3)
@@ -1997,7 +1034,7 @@ impl MediaDialog {
                         )
                     }),
             )
-            .child(parts::note(
+            .child(action_run::help(
                 t!("Keep it short: a GIF of a few seconds is already a few megabytes."),
                 t,
             ))
@@ -2014,7 +1051,7 @@ impl MediaDialog {
                     ])
                     .on_pick(cx.listener(|this, music: &bool, _, cx| this.choose(|p| p.music = *music, cx))),
             )
-            .child(parts::note(
+            .child(action_run::help(
                 t!("Measured first, then turned up or down in one even step (EBU R128), so recordings from different places sound as loud as each other without clipping. A video's picture is kept as it is."),
                 t,
             ))
@@ -2034,7 +1071,7 @@ impl MediaDialog {
                         this.choose(|p| p.translate = *translate, cx)
                     })),
             )
-            .child(parts::note(
+            .child(action_run::help(
                 t!("Heard on this PC by whisper.cpp (speech search's model); nothing is sent anywhere. Players find an .srt named like its video by themselves."),
                 t,
             ))
@@ -2137,12 +1174,18 @@ impl Render for MediaDialog {
                 } else {
                     t!("Working on")
                 };
-                parts::progress_view("media", &verb, &progress, &t).into_any_element()
+                action_run::run_progress("media-progress", &verb, &progress, &t).into_any_element()
             }
-            Run::Done(report) => {
-                parts::result_view("media", "file", self.mode == MediaMode::Convert, &report, &t).into_any_element()
+            Run::Done(report) => action_run::result_view(
+                "media-result",
+                &report,
+                &ResultWords::files(self.mode == MediaMode::Convert),
+                &t,
+            )
+            .into_any_element(),
+            Run::Failed(reason) => {
+                action_run::error_view("media-error", t!("Couldn't make it"), reason, &t).into_any_element()
             }
-            Run::Failed(reason) => parts::error_view("media", t!("Couldn't make it"), &reason, &t).into_any_element(),
         };
         let card = self.gate.card(
             "ffmpeg",
@@ -2150,16 +1193,21 @@ impl Render for MediaDialog {
             IconName::Film,
             cx,
         );
-        let footer = parts::Footer::<Self> {
-            slot: "media",
-            run: self.run.clone(),
-            label: self.mode.start_label(),
-            icon: self.mode.icon(),
-            can_start: self.can_start(cx),
-            start: Self::start,
-            stop: Self::stop,
-        }
-        .render(&t, cx);
+        let footer = action_run::footer(
+            FooterSpec {
+                prefix: "media",
+                start_label: self.mode.start_label(),
+                start_icon: self.mode.icon(),
+                can_start: self.can_start(cx),
+                stoppable: true,
+                show: self.run.first_made(),
+            },
+            &self.run,
+            Self::start,
+            |this, _, _| this.stop(),
+            &t,
+            cx,
+        );
         col()
             .id("media")
             .role(Role::Group)
@@ -2169,11 +1217,11 @@ impl Render for MediaDialog {
             .text_size(theme::size::SM)
             // The dialog layer is outside the workspace's tree, so the start-aligned text is set here too.
             .text_start()
-            .child(parts::folder_line("media-folder", &self.files, &t))
+            .child(action_run::folder_line("media-folder", &self.files, &t))
             .child(
                 div()
                     .id("media-body")
-                    .max_h(parts::body_height(window))
+                    .max_h(action_run::body_height(window))
                     .overflow_y_scrollbar()
                     .child(col().gap(space(4.)).children(card).child(body)),
             )
@@ -2522,21 +1570,30 @@ mod tests {
             current: current.into(),
             part,
         };
-        assert_eq!(parts::progress_text("Working on", &at(0, 1, "", 0.)), "Working on");
         assert_eq!(
-            parts::progress_text("Working on", &at(1, 3, "a.mp4", 0.5)),
+            action_run::progress_text("Working on", &at(0, 1, "", 0.), false, false),
+            "Working on"
+        );
+        assert_eq!(
+            action_run::progress_text("Working on", &at(1, 3, "a.mp4", 0.5), false, false),
             "Working on 2 of 3 · a.mp4 · 50%"
         );
         // The count never runs past the total.
-        assert_eq!(parts::progress_text("Saving", &at(3, 3, "", 0.)), "Saving 3 of 3");
-        assert!((parts::whole(&at(1, 4, "", 0.5)) - 0.375).abs() < 1e-6);
-        assert_eq!(parts::whole(&at(0, 0, "", 0.5)), 0.);
         assert_eq!(
-            parts::sizes_line(12 * 1024 * 1024, 4 * 1024 * 1024).as_deref(),
+            action_run::progress_text("Saving", &at(3, 3, "", 0.), false, false),
+            "Saving 3 of 3"
+        );
+        assert!((action_run::whole(&at(1, 4, "", 0.5)) - 0.375).abs() < 1e-6);
+        assert_eq!(action_run::whole(&at(0, 0, "", 0.5)), 0.);
+        assert_eq!(
+            action_run::sizes_line(12 * 1024 * 1024, 4 * 1024 * 1024).as_deref(),
             Some("12 MB → 4.0 MB (−67%)")
         );
-        assert_eq!(parts::sizes_line(1000, 1500).as_deref(), Some("1000 B → 1.5 KB (+50%)"));
-        assert_eq!(parts::sizes_line(0, 5), None);
+        assert_eq!(
+            action_run::sizes_line(1000, 1500).as_deref(),
+            Some("1000 B → 1.5 KB (+50%)")
+        );
+        assert_eq!(action_run::sizes_line(0, 5), None);
     }
 
     #[test]
@@ -2645,7 +1702,7 @@ mod tests {
         let fake = Arc::new(Fake::new(report(&["C:\\a\\clip.gif"])));
         let view = open_view(&mut visual, &["C:\\a\\clip.mp4"], MediaMode::Convert, &fake);
         let suffix = |cx: &VisualTestContext, view: &Entity<MediaDialog>| {
-            view.read_with(cx, |v, cx| v.place().read(cx).output(cx))
+            view.read_with(cx, |v, cx| v.place().read(cx).choice(cx))
         };
         assert_eq!(
             suffix(&visual, &view),
@@ -2737,7 +1794,7 @@ mod tests {
         click(&mut visual, "media-start");
         settle(&mut visual, |cx| has(cx, "Made 1 file"));
         assert_eq!(fake.calls()[0].0, ["C:\\a\\clip.mp4"]);
-        assert_eq!(parts::folders_of(&strings(&["C:\\a\\x", "C:\\A\\y"])).len(), 1);
+        assert_eq!(action_run::folders_of(&strings(&["C:\\a\\x", "C:\\A\\y"])).len(), 1);
         if let Ok(mut last) = LAST.lock() {
             *last = None;
         }
@@ -2812,7 +1869,7 @@ mod tests {
         let view = open_view(&mut visual, &["C:\\a\\clip.mp4"], MediaMode::Convert, &fake);
         // Before the tools are known (or with FFmpeg missing) nothing starts.
         view.update(&mut visual, |v, cx| {
-            v.gate = ToolGate::never();
+            v.gate = Tooling::never();
             cx.notify();
         });
         assert!(disabled(&mut visual, "media-start"));

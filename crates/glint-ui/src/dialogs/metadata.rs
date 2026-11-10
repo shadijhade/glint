@@ -1,8 +1,7 @@
 //! A file's metadata, read and cleaned (MetadataDialog.tsx).
 //!
 //! Ported from src/components/explorer/MetadataDialog.tsx. The run, its progress, result and buttons, the
-//! "Where" boxes and the choices are `dialogs::media::parts` (ActionParts.tsx), so this file needs the
-//! `dialog-media` feature too.
+//! "Where" boxes and the choices are `dialogs::action_run`'s (ActionParts.tsx).
 //!
 //! | TypeScript                               | Here                                                       |
 //! |------------------------------------------|------------------------------------------------------------|
@@ -20,14 +19,14 @@
 //! NOTE(port): the date box is text ("2024-06-01 12:00"), checked as a real date and time: the kit has no
 //! date-and-time picker, and the TypeScript's `datetime-local` input made the same kind of value.
 
-use super::media::parts::{self, Choice, Choices, ToolGate, Where, WhereChooser};
+use super::action_run::{self, Choice, Choices, FooterSpec, Launch, ResultWords, Tooling, Where, WhereChooser};
+use super::action_run::{Fut, Run};
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
 use glint_core::actions::{Output, Progress, Report};
 use glint_core::metadata::{MetaTask, Tag};
 use glint_model::format::{format_count, plural};
 use glint_model::paths::base_name;
-use parts::{Fut, Run};
 use std::sync::Arc;
 
 /// What ExifTool writes (metadata.rs's `EXIFTOOL_WRITES`).
@@ -225,7 +224,7 @@ impl CoreBackend {
 
 impl Backend for CoreBackend {
     fn read(&self, path: String) -> Fut<Vec<Tag>> {
-        parts::on_core(glint_core::metadata::meta_read(path))
+        action_run::on_core(glint_core::metadata::meta_read(path))
     }
 
     fn run(
@@ -236,8 +235,8 @@ impl Backend for CoreBackend {
         progress: glint_core::host::ipc::Channel<Progress>,
     ) -> Fut<Report> {
         let app = self.app.clone();
-        parts::on_core(async move {
-            let window = parts::main_window(&app)?;
+        action_run::on_core(async move {
+            let window = action_run::main_window(&app)?;
             glint_core::metadata::meta_run(window, files, task, output, progress).await
         })
     }
@@ -287,7 +286,7 @@ pub struct MetadataDialog {
     place: Entity<WhereChooser>,
     run: Run,
     backend: Arc<dyn Backend>,
-    gate: ToolGate,
+    gate: Tooling,
     needs_tool: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -310,7 +309,7 @@ impl MetadataDialog {
             },
             Mode::Date => Where::Replace,
         };
-        let place = cx.new(|cx| WhereChooser::new("meta-where", &start, window, cx));
+        let place = cx.new(|cx| WhereChooser::starting_at("meta-where", &start, window, cx));
         if mode == Mode::Scrub {
             place.update(cx, |place, cx| {
                 place.set_note(
@@ -319,7 +318,7 @@ impl MetadataDialog {
                 )
             });
         }
-        let gate = ToolGate::new(backend.tools(), window, cx);
+        let gate = Tooling::from_backend(backend.tools(), window, cx);
         let mut subscriptions = vec![cx.observe(&place, |_, _, cx| cx.notify())];
         for input in [&when, &hours, &minutes] {
             subscriptions.push(cx.subscribe_in(input, window, |_, _, event: &InputEvent, _, cx| {
@@ -448,15 +447,15 @@ impl MetadataDialog {
             return;
         }
         let task = self.task(cx);
-        let output = self.place.read(cx).output(cx).output();
+        let output = self.place.read(cx).choice(cx).output();
         let (channel, receiver) = core_bridge::stream::<Progress>();
         let call = self.backend.run(self.files.clone(), task, output, channel);
         let scrub = self.mode == Mode::Scrub;
-        parts::drive(
+        action_run::drive(
             self,
             window,
             cx,
-            parts::Launch {
+            Launch {
                 total: self.files.len(),
                 call,
                 progress: receiver,
@@ -610,7 +609,7 @@ impl MetadataDialog {
                     })),
             )
             .child(match self.date_mode {
-                DateMode::Set => parts::field(
+                DateMode::Set => action_run::field(
                     t!("Taken"),
                     col()
                         .gap(space(1.))
@@ -698,10 +697,14 @@ impl Render for MetadataDialog {
             Run::Setup => self.date_options(&t, cx).into_any_element(),
             Run::Running(progress) => {
                 let verb = if scrub { t!("Cleaning") } else { t!("Changing") };
-                parts::progress_view("meta", &verb, &progress, &t).into_any_element()
+                action_run::run_progress("meta-progress", &verb, &progress, &t).into_any_element()
             }
-            Run::Done(report) => parts::result_view("meta", "file", false, &report, &t).into_any_element(),
-            Run::Failed(reason) => parts::error_view("meta", t!("Couldn't change it"), &reason, &t).into_any_element(),
+            Run::Done(report) => {
+                action_run::result_view("meta-result", &report, &ResultWords::files(false), &t).into_any_element()
+            }
+            Run::Failed(reason) => {
+                action_run::error_view("meta-error", t!("Couldn't change it"), reason, &t).into_any_element()
+            }
         };
         let card = self.needs_tool.then(|| {
             self.gate.card(
@@ -711,24 +714,29 @@ impl Render for MetadataDialog {
                 cx,
             )
         });
-        let footer = parts::Footer::<Self> {
-            slot: "meta",
-            run: self.run.clone(),
-            label: if scrub {
-                t!("Remove personal info")
-            } else {
-                t!("Change the date")
+        let footer = action_run::footer(
+            FooterSpec {
+                prefix: "meta",
+                start_label: if scrub {
+                    t!("Remove personal info")
+                } else {
+                    t!("Change the date")
+                },
+                start_icon: if scrub {
+                    IconName::EyeOff
+                } else {
+                    IconName::CalendarClock
+                },
+                can_start: self.can_start(cx),
+                stoppable: true,
+                show: self.run.first_made(),
             },
-            icon: if scrub {
-                IconName::EyeOff
-            } else {
-                IconName::CalendarClock
-            },
-            can_start: self.can_start(cx),
-            start: Self::start,
-            stop: Self::stop,
-        }
-        .render(&t, cx);
+            &self.run,
+            Self::start,
+            |this, _, _| this.stop(),
+            &t,
+            cx,
+        );
         col()
             .id("meta")
             .role(Role::Group)
@@ -738,11 +746,11 @@ impl Render for MetadataDialog {
             .text_size(theme::size::SM)
             // The dialog layer is outside the workspace's tree, so the start-aligned text is set here too.
             .text_start()
-            .child(parts::folder_line("meta-folder", &self.files, &t))
+            .child(action_run::folder_line("meta-folder", &self.files, &t))
             .child(
                 div()
                     .id("meta-body")
-                    .max_h(parts::body_height(window))
+                    .max_h(action_run::body_height(window))
                     .overflow_y_scrollbar()
                     .child(col().gap(space(4.)).children(card.flatten()).child(body)),
             )
@@ -1095,7 +1103,7 @@ mod tests {
         assert_eq!(view.read_with(&visual, |v, _| v.tags().map(<[_]>::len)), Some(3));
         // Beside the file with " (clean)" to begin with; nothing else is asked.
         assert_eq!(
-            view.read_with(&visual, |v, cx| v.place().read(cx).output(cx)),
+            view.read_with(&visual, |v, cx| v.place().read(cx).choice(cx)),
             Where::Beside {
                 suffix: " (clean)".into()
             }
@@ -1140,7 +1148,7 @@ mod tests {
         let view = open_view(&mut visual, &["C:\\p\\a.jpg"], Mode::Scrub, &fake);
         // ExifTool isn't known to be there: nothing starts, and nothing is read.
         view.update(&mut visual, |v, cx| {
-            v.gate = ToolGate::never();
+            v.gate = Tooling::never();
             v.asked = false;
             v.tags = None;
             cx.notify();
@@ -1154,7 +1162,7 @@ mod tests {
         // Office files are cleaned in Glint itself: no tool is needed.
         let view = open_view(&mut visual, &["C:\\p\\a.docx", "C:\\p\\b.xlsx"], Mode::Scrub, &fake);
         view.update(&mut visual, |v, cx| {
-            v.gate = ToolGate::never();
+            v.gate = Tooling::never();
             cx.notify();
         });
         assert!(!disabled(&mut visual, "meta-start"));
@@ -1171,7 +1179,7 @@ mod tests {
         let view = open_view(&mut visual, &["C:\\p\\a.jpg", "C:\\p\\b.jpg"], Mode::Date, &fake);
         assert_eq!(role_of(&mut visual, "When it was taken: 2 files"), Some(Role::Group));
         assert_eq!(
-            view.read_with(&visual, |v, cx| v.place().read(cx).output(cx)),
+            view.read_with(&visual, |v, cx| v.place().read(cx).choice(cx)),
             Where::Replace
         );
         assert_eq!(role_of(&mut visual, "How"), Some(Role::RadioGroup));

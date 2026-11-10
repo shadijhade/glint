@@ -32,18 +32,13 @@ pub mod tab_strip;
 pub mod text_search;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
-/// The command bar under the address bar: New, Cut, Copy, Paste, Rename, Delete, Sort, View... (CommandBar.tsx). Wave 9 slot.
-#[cfg(feature = "command-bar")]
+/// The command bar under the address bar: New, Cut, Copy, Paste, Rename, Delete, Sort, View... (CommandBar.tsx).
 pub mod command_bar;
-/// Git: the branch chip, the repository and README cards, the Changes view, the marks in rows (GitChip.tsx, RepoCard.tsx, ReadmeCard.tsx, ChangesView.tsx). Wave 9 slot.
-#[cfg(feature = "git")]
+/// Git: the branch chip, the repository and README cards, the Changes view, the marks in rows (GitChip.tsx, RepoCard.tsx, ReadmeCard.tsx, ChangesView.tsx).
 pub mod git;
-/// Columns: the folders down to the one open, side by side (ColumnsView.tsx). Wave 9 slot.
-#[cfg(feature = "views-polish")]
+/// Columns: the folders down to the one open, side by side (ColumnsView.tsx).
 pub mod columns_view;
-/// The gallery's months, to jump through (GalleryMonths.tsx). Wave 9 slot.
-#[cfg(feature = "views-polish")]
+/// The gallery's months, to jump through (GalleryMonths.tsx).
 pub mod gallery_months;
-/// The folders used most (FrequentFolders.tsx). Wave 9 slot.
-#[cfg(feature = "views-polish")]
+/// The folders used most (FrequentFolders.tsx).
 pub mod frequent_folders;
