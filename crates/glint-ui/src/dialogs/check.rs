@@ -40,6 +40,13 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// A Defender scan is running somewhere (`scanning` of defender.ts). Defender scans one thing at a time (Stop
+/// cancels "the" scan), so a second one is refused with a notice instead of started.
+static DEFENDER_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// The notice that a Defender scan is already running (the web app's toast).
+struct DefenderBusyToast;
+
 /// A boxed core call.
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
@@ -214,6 +221,8 @@ pub struct Check {
     run: u64,
     stopped: Arc<AtomicBool>,
     rows: Arc<Vec<Row>>,
+    /// This check is the Defender scan [`DEFENDER_BUSY`] stands for.
+    holds_defender: bool,
 }
 
 impl Check {
@@ -228,6 +237,7 @@ impl Check {
             run: 0,
             stopped: Arc::new(AtomicBool::new(false)),
             rows: Arc::new(Vec::new()),
+            holds_defender: false,
         }
     }
 
@@ -268,7 +278,17 @@ impl Check {
         }
     }
 
+    /// Lets the next Defender scan start.
+    fn release_defender(&mut self) {
+        if std::mem::take(&mut self.holds_defender) {
+            DEFENDER_BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+
     fn set_outcome(&mut self, outcome: Outcome) {
+        if !matches!(outcome, Outcome::Running) {
+            self.release_defender();
+        }
         self.rows = Arc::new(match &outcome {
             Outcome::Done(found) => rows_of(found, &self.target(), self.what == What::Defender),
             _ => Vec::new(),
@@ -282,6 +302,10 @@ impl Check {
         let run = self.run;
         self.stopped = Arc::new(AtomicBool::new(false));
         self.set_outcome(Outcome::Running);
+        if self.what == What::Defender {
+            self.holds_defender = true;
+            DEFENDER_BUSY.store(true, Ordering::SeqCst);
+        }
         cx.notify();
         let work = scan(
             self.backend.clone(),
@@ -321,6 +345,7 @@ impl Drop for Check {
     fn drop(&mut self) {
         // The dialog closed: a scan still running is stopped, as `close` did.
         self.stop();
+        self.release_defender();
     }
 }
 
@@ -464,6 +489,14 @@ pub struct CheckDialog {
 impl CheckDialog {
     /// The view of `check`; it starts the check unless it is done already.
     pub fn new(check: Entity<Check>, tools: Option<Entity<Tools>>, then: Option<Then>, cx: &mut Context<Self>) -> Self {
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        super::refresh_on_f5(cx, |this, _, cx| {
+            this.check.update(cx, |check, cx| {
+                if *check.outcome() != Outcome::Running {
+                    check.start(cx)
+                }
+            });
+        });
         let mut subscriptions = vec![cx.observe(&check, |_, _, cx| cx.notify())];
         if let Some(tools) = &tools {
             subscriptions.push(cx.observe(tools, |_, _, cx| cx.notify()));
@@ -774,7 +807,7 @@ impl Render for CheckDialog {
                     .icon(IconName::RefreshCw)
                     .loading(running)
                     .disabled(running)
-                    .tooltip(t!("Refresh"))
+                    .tooltip(t!("Refresh (F5)"))
                     .accessibility_label(t!("Refresh"))
                     .on_click(cx.listener(|this, _, _, cx| this.check.update(cx, |check, cx| check.start(cx)))),
             );
@@ -865,8 +898,14 @@ impl Render for CheckDialog {
             )
             .into_any_element(),
             Outcome::Stopped | Outcome::Failed(_) => {
+                // Defender's words are defender.ts's toasts'.
+                let defender = what == What::Defender;
                 let (headline, reason) = match &outcome {
+                    Outcome::Failed(reason) if defender => {
+                        (t!("Couldn't scan with Microsoft Defender"), Some(reason.clone()))
+                    }
                     Outcome::Failed(reason) => (t!("Couldn't check"), Some(reason.clone())),
+                    _ if defender => (t!("Stopped scanning {name}", name = subject.clone()), None),
                     _ => (t!("Stopped"), None),
                 };
                 let label = match &reason {
@@ -939,8 +978,30 @@ impl Render for CheckDialog {
                     }
                     What::Yara => None,
                 };
+                // Defender says what it found first, then what it did about it.
+                let headline: Option<SharedString> = (what == What::Defender).then(|| {
+                    let n = found.threats.len();
+                    if n == 1 {
+                        t!("Microsoft Defender found a threat in {name}", name = subject.clone())
+                    } else {
+                        t!(
+                            "Microsoft Defender found {n} threats in {name}",
+                            n = n,
+                            name = subject.clone()
+                        )
+                    }
+                });
                 col()
                     .gap(space(2.))
+                    .children(headline.map(|headline| {
+                        div()
+                            .id("check-headline")
+                            .role(Role::Heading)
+                            .aria_label(headline.clone())
+                            .test_support()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(headline)
+                    }))
                     .children(warning.map(|warning| {
                         div()
                             .id("check-warning")
@@ -1056,6 +1117,13 @@ impl Render for CheckDialog {
 /// chosen in Settings, or a Microsoft Defender scan. Nothing opens for no paths.
 pub fn open(window: &mut Window, cx: &mut App, paths: Vec<String>, what: What) {
     if paths.is_empty() {
+        return;
+    }
+    if what == What::Defender && DEFENDER_BUSY.load(Ordering::SeqCst) {
+        window.push_notification(
+            Notification::info(t!("Microsoft Defender is already scanning")).id::<DefenderBusyToast>(),
+            cx,
+        );
         return;
     }
     let backend = core_backend(cx);
@@ -1490,6 +1558,98 @@ mod tests {
             &mut visual,
             "Microsoft Defender dealt with it as its settings say: Windows Security's Protection history lists it."
         ));
+    }
+
+    #[gpui_kit::test]
+    fn defender_says_what_it_found_in_the_web_apps_words(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let one = |name: &str| Threat {
+            name: name.into(),
+            resources: vec![],
+        };
+        let fake = Fake::new();
+        *fake.defender.lock().unwrap() = Ok(DefenderReport {
+            clean: false,
+            threats: vec![one("Virus:A")],
+            elapsed_ms: 800.0,
+        });
+        open_fake(&mut visual, &fake, &["C:\\dl\\eicar.com"], What::Defender, None);
+        settle(&mut visual, "one threat", |cx| {
+            has(cx, "Microsoft Defender found a threat in “eicar.com”")
+        });
+        visual.update(|window, cx| window.close_dialog(cx));
+        visual.run_until_parked();
+        *fake.defender.lock().unwrap() = Ok(DefenderReport {
+            clean: false,
+            threats: vec![one("Virus:A"), one("Virus:B")],
+            elapsed_ms: 800.0,
+        });
+        open_fake(&mut visual, &fake, &["C:\\dl\\a.zip"], What::Defender, None);
+        settle(&mut visual, "two threats", |cx| {
+            has(cx, "Microsoft Defender found 2 threats in “a.zip”")
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_or_stopped_defender_scan_says_so_as_a_defender_scan(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let fake = Fake::new();
+        *fake.defender.lock().unwrap() = Err("Defender isn't running".into());
+        open_fake(&mut visual, &fake, &["C:\\dl\\a.zip"], What::Defender, None);
+        settle(&mut visual, "the failure", |cx| {
+            has(cx, "Couldn't scan with Microsoft Defender. Defender isn't running")
+        });
+        visual.update(|window, cx| window.close_dialog(cx));
+        visual.run_until_parked();
+        // Secrets keep their own, shorter words.
+        let secrets = Fake::new();
+        *secrets.secrets.lock().unwrap() = Err("Kingfisher crashed".into());
+        open_fake(&mut visual, &secrets, &["C:\\dl\\a.zip"], What::Secrets, None);
+        settle(&mut visual, "the secrets failure", |cx| {
+            has(cx, "Couldn't check. Kingfisher crashed")
+        });
+        visual.update(|window, cx| window.close_dialog(cx));
+        visual.run_until_parked();
+        // Stop on a Defender scan: "Stopped scanning “a.zip”".
+        let gated = Fake::gated();
+        open_fake(&mut visual, &gated, &["C:\\dl\\a.zip"], What::Defender, None);
+        settle(&mut visual, "the scan", |cx| {
+            has(cx, "Microsoft Defender is scanning “a.zip”…")
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("check-stop", cx);
+        });
+        settle(&mut visual, "stopped", |cx| has(cx, "Stopped scanning “a.zip”"));
+    }
+
+    #[gpui_kit::test]
+    fn a_second_defender_scan_waits_for_the_one_running(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        DEFENDER_BUSY.store(false, Ordering::SeqCst);
+        let mut visual = window(cx);
+        let fake = Fake::gated();
+        open_fake(&mut visual, &fake, &["C:\\dl\\a.zip"], What::Defender, None);
+        settle(&mut visual, "the scan", |cx| {
+            has(cx, "Microsoft Defender is scanning “a.zip”…")
+        });
+        assert!(DEFENDER_BUSY.load(Ordering::SeqCst), "one is running");
+        let notices = |visual: &mut VisualTestContext| visual.update(|window, cx| window.notifications(cx).len());
+        assert_eq!(notices(&mut visual), 0);
+        visual.update(|window, cx| open(window, cx, vec!["C:\\dl\\b.zip".into()], What::Defender));
+        settle(&mut visual, "the notice", |cx| notices(cx) == 1);
+        assert!(
+            !has(&mut visual, "Microsoft Defender is scanning “b.zip”…"),
+            "the second scan didn't start"
+        );
+        // When the first one ends, the next may start.
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("check-stop", cx);
+        });
+        settle(&mut visual, "the end", |_| !DEFENDER_BUSY.load(Ordering::SeqCst));
     }
 
     #[gpui_kit::test]

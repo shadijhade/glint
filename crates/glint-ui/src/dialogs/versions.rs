@@ -415,6 +415,10 @@ pub struct VersionsDialog {
 
 impl VersionsDialog {
     pub fn new(versions: Entity<Versions>, on_request: OnRequest, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        super::refresh_on_f5(cx, |this, _, cx| {
+            this.versions.update(cx, |versions, cx| versions.load(cx));
+        });
         let redraw = cx.observe(&versions, |_, _, cx| cx.notify());
         let request = on_request.clone();
         let events = cx.subscribe_in(
@@ -855,7 +859,7 @@ impl Render for VersionsDialog {
             .xsmall()
             .icon(IconName::RefreshCw)
             .loading(state == State::Loading && !versions.is_empty())
-            .tooltip(t!("Refresh"))
+            .tooltip(t!("Refresh (F5)"))
             .accessibility_label(t!("Refresh"))
             .on_click(cx.listener(|this, _, _, cx| this.versions.update(cx, |m, cx| m.load(cx))));
 

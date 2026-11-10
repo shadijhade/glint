@@ -46,8 +46,9 @@ pub mod tools;
 pub mod transfer;
 mod widgets;
 
+/// Public to the crate so the accessibility sweep (a11y_tests) can open Settings over the same fake backend.
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 mod tests_general;
 #[cfg(test)]

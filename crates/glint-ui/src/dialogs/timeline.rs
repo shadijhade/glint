@@ -300,6 +300,10 @@ pub struct TimelineDialog {
 
 impl TimelineDialog {
     pub fn new(model: Entity<Timeline>, effects: Effects, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        super::refresh_on_f5(cx, |this, _, cx| {
+            this.model.update(cx, |model, cx| model.scan(None, cx));
+        });
         let query = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Filter files by name or path…")));
         let typed = cx.subscribe_in(&query, window, |this, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
@@ -398,7 +402,7 @@ impl TimelineDialog {
                     .ghost()
                     .xsmall()
                     .icon(IconName::RotateCw)
-                    .tooltip(t!("Refresh"))
+                    .tooltip(t!("Refresh (F5)"))
                     .accessibility_label(t!("Refresh"))
                     .loading(loading)
                     .on_click(cx.listener(|this, _, _, cx| {

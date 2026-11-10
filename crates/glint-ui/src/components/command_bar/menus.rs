@@ -258,8 +258,11 @@ pub fn view_menu(f: &Facts, fold: usize) -> Vec<Node> {
                 t!("Grid, with thumbnails"),
                 Some(&crate::actions::GridView as &dyn Action),
             ),
-            // Ctrl+Shift+9 in the TypeScript; nothing binds it here yet.
-            (ViewMode::Columns, t!("Columns"), None),
+            (
+                ViewMode::Columns,
+                t!("Columns"),
+                Some(&crate::actions::ColumnsView as &dyn Action),
+            ),
         ] {
             let mut entry = picked(label, IconName::Check, Pick::View(view), maker)
                 .checked(!f.mapped && f.view == view)

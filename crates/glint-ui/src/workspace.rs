@@ -522,6 +522,21 @@ impl Workspace {
         explorer::explorer(cx).update(cx, act);
     }
 
+    /// The mouse's side buttons (Mouse 4 Back, Mouse 5 Forward) walk the folder history of the pane under the
+    /// pointer, or the active pane's when the pointer is elsewhere.
+    fn side_button(pane: Option<usize>, back: bool, cx: &mut App) {
+        Self::explorer(cx, |e, cx| {
+            if let Some(pane) = pane {
+                e.focus_pane(pane, cx);
+            }
+            if back {
+                e.go_back(cx).detach()
+            } else {
+                e.go_forward(cx).detach()
+            }
+        });
+    }
+
     // ---- Text mode ------------------------------------------------------------------------------------------
 
     /// Text search in `folder` (the open folder when None): Ctrl+Shift+F, the mode switch, the folder menu's
@@ -1362,7 +1377,16 @@ impl Workspace {
     fn copy_paths(window: &mut Window, cx: &mut App) {
         let mut paths = Self::selection(cx);
         if paths.is_empty() {
-            paths.push(explorer::explorer(cx).read(cx).current_path().to_string());
+            // With nothing selected, the folder's own path (as the address bar's button says): not This PC's, nor a
+            // search's.
+            let explorer = explorer::explorer(cx).read(cx);
+            let in_folder = explorer
+                .active_tab()
+                .is_some_and(|tab| tab.find.is_none() && glint_model::paths::is_folder_path(&tab.path));
+            if !in_folder {
+                return;
+            }
+            paths.push(explorer.current_path().to_string());
         }
         let count = paths.len();
         cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\r\n")));
@@ -1478,6 +1502,7 @@ impl Workspace {
                 .small()
                 .icon(IconName::Share2)
                 .label(label)
+                .tooltip(t!("What you're sending or sharing: its ticket or link, and Stop"))
                 .on_click(move |_, window, cx| {
                     dialogs::share::open_view(window, cx, view);
                 })
@@ -1547,6 +1572,14 @@ impl Workspace {
             .size_full()
             .min_w_0()
             .bg(t.background)
+            .on_mouse_up(MouseButton::Navigate(NavigationDirection::Back), move |_, _, cx| {
+                cx.stop_propagation();
+                Self::side_button(Some(pane), true, cx);
+            })
+            .on_mouse_up(MouseButton::Navigate(NavigationDirection::Forward), move |_, _, cx| {
+                cx.stop_propagation();
+                Self::side_button(Some(pane), false, cx);
+            })
             .child(view)
             .child(PaneDropZone::new(pane))
             .into_any_element()
@@ -1651,6 +1684,9 @@ pub fn run_task(folder: String, command: String, window: &mut Window, cx: &mut A
     }
 }
 
+/// The notice that an archived item has no Properties (the web app's toast id "archive-properties").
+struct ArchivePropertiesToast;
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
@@ -1710,6 +1746,13 @@ impl Render for Workspace {
                 .child(self.menus.clone());
         }
         root
+            // The mouse's side buttons anywhere outside a pane (the panes answer for themselves).
+            .on_mouse_up(MouseButton::Navigate(NavigationDirection::Back), |_, _, cx| {
+                Self::side_button(None, true, cx)
+            })
+            .on_mouse_up(MouseButton::Navigate(NavigationDirection::Forward), |_, _, cx| {
+                Self::side_button(None, false, cx)
+            })
             // Tabs and panes.
             .on_action(cx.listener(|_, _: &actions::NewTab, _, cx| Self::explorer(cx, |e, cx| e.new_tab(None, cx))))
             .on_action(cx.listener(|_, _: &actions::CloseTab, _, cx| Self::explorer(cx, |e, cx| e.close_tab(None, cx))))
@@ -1747,6 +1790,7 @@ impl Render for Workspace {
             // The view.
             .on_action(cx.listener(|_, _: &actions::ListView, _, cx| Self::choose_view(ViewMode::List, cx)))
             .on_action(cx.listener(|_, _: &actions::GridView, _, cx| Self::choose_view(ViewMode::Grid, cx)))
+            .on_action(cx.listener(|_, _: &actions::ColumnsView, _, cx| Self::choose_view(ViewMode::Columns, cx)))
             .on_action(cx.listener(|_, _: &actions::GridLarger, _, cx| Self::explorer(cx, |e, cx| e.zoom_grid(1, cx))))
             .on_action(
                 cx.listener(|_, _: &actions::GridSmaller, _, cx| Self::explorer(cx, |e, cx| e.zoom_grid(-1, cx))),
@@ -1799,12 +1843,34 @@ impl Render for Workspace {
                     Self::explorer(cx, |e, cx| e.new_item(true, cx).detach())
                 }),
             )
-            .on_action(cx.listener(|_, _: &actions::Properties, _, cx| {
-                let path = Self::selection(cx)
-                    .into_iter()
-                    .next()
-                    .unwrap_or_else(|| explorer::explorer(cx).read(cx).current_path().to_string());
-                Self::show_properties(path, cx)
+            .on_action(cx.listener(|_, _: &actions::Properties, window, cx| {
+                // Properties are File Explorer's, for files on disk: an archived item's details are in the preview
+                // pane, and the Recycle Bin says what its items can do.
+                let (archived, in_bin) = {
+                    let explorer = explorer::explorer(cx).read(cx);
+                    (
+                        explorer.archive_of(None).is_some(),
+                        explorer.active_tab().is_some_and(|tab| tab.is_recycle_bin()),
+                    )
+                };
+                if archived {
+                    window.push_notification(
+                        Notification::info(t!(
+                            "For something inside an archive, the preview pane (Alt+P) shows its details."
+                        ))
+                        .title(t!("Properties are for files on disk"))
+                        .id::<ArchivePropertiesToast>(),
+                        cx,
+                    );
+                } else if in_bin {
+                    Self::explorer(cx, |e, cx| e.recycled_notice(cx));
+                } else {
+                    let path = Self::selection(cx)
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| explorer::explorer(cx).read(cx).current_path().to_string());
+                    Self::show_properties(path, cx)
+                }
             }))
             .on_action(cx.listener(|_, _: &actions::QuickLook, window, cx| preview::quick_look::toggle(window, cx)))
             .on_action(cx.listener(|_, _: &actions::TogglePreview, _, cx| preview::toggle_pane(cx)))
@@ -1858,7 +1924,7 @@ mod tests {
     use super::*;
     use crate::explorer::fake::{file, folder, FakeDisk};
     use crate::testing;
-    use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
+    use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     use gpui_kit::{Bounds, TestAppContext, VisualTestContext};
 
     fn open(cx: &mut TestAppContext, rtl: bool) -> VisualTestContext {
@@ -1874,6 +1940,12 @@ mod tests {
                 file("C:\\Work", "notes.txt", 120, 0),
                 file("C:\\Work", "todo.txt", 80, 0),
             ],
+        );
+        disk.folder("C:\\Work\\src", vec![file("C:\\Work\\src", "main.rs", 10, 0)]);
+        disk.archive_folder(
+            "C:\\Work\\pack.zip",
+            "C:\\Work\\pack.zip",
+            vec![file("C:\\Work\\pack.zip", "inner.txt", 5, 0)],
         );
         cx.update(|cx| {
             testing::init(cx);
@@ -2056,6 +2128,150 @@ mod tests {
             Some(("C:\\Work\\notes.txt".to_string(), "C:\\Work\\todo.txt".to_string())),
             "the two files, in the rows' order"
         );
+    }
+
+    /// The keys bound to `action` where the keyboard is in the window, written as GPUI parses them ("ctrl-l").
+    fn keys_for(visual: &mut VisualTestContext, workspace: &Entity<Workspace>, action: &dyn Action) -> Vec<String> {
+        visual.update(|window, cx| {
+            let focus = workspace.read(cx).focus.clone();
+            window
+                .bindings_for_action_in(action, &focus)
+                .iter()
+                .map(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .map(|keystroke| keystroke.unparse(gpui_kit::OperatingSystem::Windows))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect()
+        })
+    }
+
+    /// Puts the keyboard in the window, as a click on it would.
+    fn focus_window(visual: &mut VisualTestContext, workspace: &Entity<Workspace>) {
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            workspace.update(cx, |workspace, cx| window.focus(&workspace.focus, cx));
+            window.render_frame(cx);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn explorer_tsx_keys_beyond_the_shortcut_sheet_are_bound_in_the_window(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        focus_window(&mut visual, &workspace);
+        let has = |keys: &[String], wanted: &[&str]| wanted.iter().all(|key| keys.iter().any(|k| k == key));
+        // Ctrl+E and F3 find, Alt+D and F4 type a path, Ctrl+R refreshes: next to Ctrl+F, Ctrl+L and F5.
+        assert!(has(
+            &keys_for(&mut visual, &workspace, &actions::SearchHere),
+            &["ctrl-f", "ctrl-e", "f3"]
+        ));
+        assert!(has(
+            &keys_for(&mut visual, &workspace, &actions::FocusAddress),
+            &["ctrl-l", "alt-d", "f4"]
+        ));
+        assert!(has(
+            &keys_for(&mut visual, &workspace, &actions::Refresh),
+            &["f5", "ctrl-r"]
+        ));
+        // Ctrl+Shift+9 for columns; the grid zooms on Ctrl++ and Ctrl+_ as well as Ctrl+= and Ctrl+-.
+        assert!(has(
+            &keys_for(&mut visual, &workspace, &actions::ColumnsView),
+            &["ctrl-shift-9"]
+        ));
+        assert!(has(
+            &keys_for(&mut visual, &workspace, &actions::GridLarger),
+            &["ctrl-=", "ctrl-shift-=", "ctrl-+"]
+        ));
+        assert!(has(
+            &keys_for(&mut visual, &workspace, &actions::GridSmaller),
+            &["ctrl--", "ctrl-shift--"]
+        ));
+    }
+
+    #[gpui_kit::test]
+    fn the_keys_do_what_they_are_bound_to(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        focus_window(&mut visual, &workspace);
+        // Ctrl+Shift+9: the columns view.
+        visual.update(|window, cx| window.press("ctrl-shift-9", cx));
+        visual.run_until_parked();
+        let view = visual.update(|_, cx| explorer::explorer(cx).read(cx).active_tab().map(|t| t.view));
+        assert_eq!(view, Some(ViewMode::Columns));
+        // F4 opens the address for typing.
+        let editing = |visual: &mut VisualTestContext, workspace: &Entity<Workspace>| {
+            visual.update(|_, cx| workspace.read(cx).address.read(cx).is_editing())
+        };
+        assert!(!editing(&mut visual, &workspace));
+        visual.update(|window, cx| window.press("f4", cx));
+        visual.run_until_parked();
+        assert!(editing(&mut visual, &workspace), "F4 types a path");
+    }
+
+    #[gpui_kit::test]
+    fn the_mouses_side_buttons_walk_the_history(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, _workspace) = open_workspace(cx, false);
+        let path = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| explorer::explorer(cx).read(cx).current_path().to_string())
+        };
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| e.navigate("C:\\Work\\src", Default::default(), cx))
+        });
+        settle(&mut visual);
+        assert_eq!(path(&mut visual), "C:\\Work\\src");
+        let over_the_files = bounds_of(&mut visual, "content").center();
+        // Mouse 4 goes back, Mouse 5 forward.
+        visual.update(|window, cx| {
+            window.pointer_up(over_the_files, MouseButton::Navigate(NavigationDirection::Back), cx)
+        });
+        settle(&mut visual);
+        assert_eq!(path(&mut visual), "C:\\Work");
+        visual.update(|window, cx| {
+            window.pointer_up(over_the_files, MouseButton::Navigate(NavigationDirection::Forward), cx)
+        });
+        settle(&mut visual);
+        assert_eq!(path(&mut visual), "C:\\Work\\src");
+    }
+
+    #[gpui_kit::test]
+    fn properties_say_nothing_on_disk_and_point_at_the_preview_pane_inside_an_archive(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, _workspace) = open_workspace(cx, false);
+        let said = |visual: &mut VisualTestContext| visual.update(|window, cx| !window.notifications(cx).is_empty());
+        // On disk Windows' own dialog opens; nothing is said here.
+        visual.dispatch_action(actions::Properties);
+        settle(&mut visual);
+        assert!(!said(&mut visual));
+        // Inside an archive: File Explorer has none, the preview pane has the details.
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| e.navigate("C:\\Work\\pack.zip", Default::default(), cx))
+        });
+        settle(&mut visual);
+        visual.dispatch_action(actions::Properties);
+        settle(&mut visual);
+        assert!(said(&mut visual), "a notice points at the preview pane");
+    }
+
+    #[gpui_kit::test]
+    fn copy_path_with_nothing_selected_copies_the_folders_own_path(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, _workspace) = open_workspace(cx, false);
+        visual.dispatch_action(actions::CopyPath);
+        settle(&mut visual);
+        let copied = visual.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(copied.as_deref(), Some("C:\\Work"));
+        // With items selected, theirs.
+        visual
+            .update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.select_only(Some("C:\\Work\\notes.txt"), cx)));
+        visual.dispatch_action(actions::CopyPath);
+        settle(&mut visual);
+        let copied = visual.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(copied.as_deref(), Some("C:\\Work\\notes.txt"));
     }
 
     #[gpui_kit::test]

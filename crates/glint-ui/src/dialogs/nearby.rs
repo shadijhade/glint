@@ -960,6 +960,116 @@ pub fn send_to_device_with(
         .detach();
 }
 
+// ---- Files a paired PC sends here ------------------------------------------------------------------------
+
+/// A file a paired PC sent here (core's `device-received`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceFile {
+    /// The sending PC's name.
+    pub from: String,
+    /// Where the file landed.
+    pub path: String,
+}
+
+/// How long after the last file a burst is told (the TypeScript's 800 ms).
+const RECEIVED_WAIT: Duration = Duration::from_millis(800);
+
+/// What a burst of received files is told as, and the path Show goes to (`listenForDeviceFiles`'s `flush`): who
+/// sent them, once each, and the file's name when it is one, else how many.
+pub fn received_words(batch: &[DeviceFile]) -> Option<(String, String)> {
+    let last = batch.last()?;
+    let mut senders: Vec<&str> = Vec::new();
+    for file in batch {
+        if !senders.contains(&file.from.as_str()) {
+            senders.push(&file.from);
+        }
+    }
+    let from = senders.join(", ");
+    let title = if batch.len() == 1 {
+        t!("{from} sent you “{name}”", from = from, name = base_name(&last.path))
+    } else {
+        t!("{from} sent you {n} files", from = from, n = batch.len())
+    };
+    Some((title.to_string(), last.path.clone()))
+}
+
+/// How a notification is shown: in the main window.
+pub type Say = Rc<dyn Fn(&mut App, Notification)>;
+
+/// Gathers the files paired PCs send into one notice a burst, with Show for the last.
+pub struct DeviceInbox {
+    batch: Vec<DeviceFile>,
+    say: Say,
+}
+
+/// The notice of files that arrived (a newer one replaces it).
+struct ReceivedToast;
+
+impl DeviceInbox {
+    fn heard(&mut self, file: DeviceFile, cx: &mut Context<Self>) {
+        self.batch.push(file);
+        // Each file puts the telling off again, so a folder of them is one notice.
+        let waiting = self.batch.len();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RECEIVED_WAIT).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.batch.len() == waiting {
+                    this.tell(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn tell(&mut self, cx: &mut Context<Self>) {
+        let batch = std::mem::take(&mut self.batch);
+        let Some((title, path)) = received_words(&batch) else {
+            return;
+        };
+        let note = Notification::success(t!("In Downloads"))
+            .title(title)
+            .id::<ReceivedToast>()
+            .action(move |_, _, _| {
+                let path = path.clone();
+                Button::new("show-received")
+                    .label(t!("Show"))
+                    .on_click(move |_, _, cx| {
+                        if let Some(explorer) = explorer::try_explorer(cx) {
+                            let options = explorer::NavOptions::default().selecting(path.clone());
+                            explorer.update(cx, |explorer, cx| explorer.navigate(parent_path(&path), options, cx));
+                        }
+                    })
+            });
+        (self.say)(cx, note);
+    }
+}
+
+/// Starts telling of the files paired PCs send here (`listenForDeviceFiles`); `say` shows a notification in the
+/// main window. Does nothing if core isn't running.
+pub fn hear_device_files(cx: &mut App, say: Say) {
+    let Some(events) = cx.try_global::<core_bridge::Core>().map(|core| core.events.clone()) else {
+        return;
+    };
+    let inbox = cx.new(|_| DeviceInbox { batch: Vec::new(), say });
+    cx.subscribe(&events, move |_, event: &core_bridge::CoreEvent, cx| {
+        if event.name != "device-received" {
+            return;
+        }
+        let (Some(from), Some(path)) = (
+            event.payload.get("from").and_then(|v| v.as_str()),
+            event.payload.get("path").and_then(|v| v.as_str()),
+        ) else {
+            return;
+        };
+        let file = DeviceFile {
+            from: from.to_string(),
+            path: path.to_string(),
+        };
+        inbox.update(cx, |inbox, cx| inbox.heard(file, cx));
+    })
+    .detach();
+}
+
 // ---- Tests ------------------------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -972,6 +1082,32 @@ mod tests {
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    #[test]
+    fn files_a_paired_pc_sent_are_told_once_a_burst_with_who_sent_them() {
+        let _guard = testing::lock();
+        let file = |from: &str, path: &str| DeviceFile {
+            from: from.into(),
+            path: path.into(),
+        };
+        assert_eq!(received_words(&[]), None);
+        assert_eq!(
+            received_words(&[file("Laptop", "C:\\Users\\me\\Downloads\\Laptop\\plan.pdf")]),
+            Some((
+                "Laptop sent you “plan.pdf”".to_string(),
+                "C:\\Users\\me\\Downloads\\Laptop\\plan.pdf".to_string()
+            ))
+        );
+        // Several files: how many, from each sender once, and Show goes to the last.
+        assert_eq!(
+            received_words(&[
+                file("Laptop", "C:\\d\\a.txt"),
+                file("Desk", "C:\\d\\b.txt"),
+                file("Laptop", "C:\\d\\c.txt"),
+            ]),
+            Some(("Laptop, Desk sent you 3 files".to_string(), "C:\\d\\c.txt".to_string()))
+        );
+    }
 
     fn peer(alias: &str, fingerprint: &str, model: Option<&str>, kind: Option<&str>, ip: &str) -> Peer {
         Peer {

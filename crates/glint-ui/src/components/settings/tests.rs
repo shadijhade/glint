@@ -406,7 +406,7 @@ impl Render for Host {
 
 /// An app with the skeleton's globals and a saved state in a temporary folder, a window, and Settings open over
 /// `fake`.
-pub(super) fn open_settings(
+pub(crate) fn open_settings(
     cx: &mut TestAppContext,
     fake: &std::sync::Arc<Fake>,
     section: Option<&str>,
@@ -437,7 +437,7 @@ pub(super) fn open_settings(
 
 /// Lets the backend's answers (futures that are ready at once) come back to the views.
 #[track_caller]
-pub(super) fn settle(cx: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
+pub(crate) fn settle(cx: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
     for _ in 0..200 {
         cx.run_until_parked();
         if done(cx) {

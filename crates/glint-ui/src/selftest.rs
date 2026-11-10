@@ -150,6 +150,24 @@ pub(crate) fn start(cx: &mut App) {
         .detach();
         return;
     }
+    // `look17:pdf|<file.md>`: Export as PDF on the Markdown file (the PDF lands beside it), left open for a look.
+    if let Some(file) = script.strip_prefix("look17:pdf|") {
+        let file = file.to_string();
+        let folder = glint_model::paths::parent_path(&file);
+        explorer::explorer(cx).update(cx, |e, cx| e.navigate(folder, Default::default(), cx));
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_millis(900)).await;
+            cx.update(|cx| {
+                if let Some(main) = startup::main_window(cx) {
+                    let _ = main.update(cx, |_, window, cx| {
+                        crate::dialogs::doc_convert::export_pdf(window, cx, vec![file], false)
+                    });
+                }
+            });
+        })
+        .detach();
+        return;
+    }
     // `map:<folder>`: the folder's disk usage map, left open for a look.
     if let Some(folder) = script.strip_prefix("map:") {
         let folder = folder.to_string();

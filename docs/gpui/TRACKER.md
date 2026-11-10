@@ -378,6 +378,27 @@ The GPUI app imports none of it yet. That is wave 16 (`old_settings/`, without a
 - The failed drive's own message on This PC's card (the status bar's Volume has only a flag).
 - Arabic for the new strings (the TS lacked them too).
 
+## Wave 17: last parity gaps, accessibility and right-to-left sweep, math and diagrams in PDFs: done 2026-11-11
+
+*3 tasks (Sonnet; 6 agents, ~1.6 h, 1.2M tokens), all passed review on the first try.*
+
+- **parity-gaps:** went through each of the 84 strings in `docs/gpui/parity-strings.md`:
+  - 30 were already there, worded or built differently;
+  - 22 were missing and are ported: the duplicates dialog's clone note and "The copy to keep"; the 101-language meaning model's notices; Defender's messages; the backup toasts (core's backup-finished event was never heard); the data profile's tooltips; the hex view's 2- and 4-byte readings; "Properties are for files on disk"; the preview's view names; and others;
+  - 9 were not applicable (code, colours, a React error boundary);
+  - 1 was not done: the preview handle's name, which needs the kit.
+
+  Missing shortcuts were added (Mouse 4/5, F3/F4, Alt+D, Ctrl+E, Ctrl+R, F5 in dialogs, and keyed tooltips).
+- **a11y-rtl:** `a11y_tests.rs` sweeps the main views and the most-used dialogs: every control with an interactive role has a name, and the command bar, address bar, tab strip and status bar lay out from the right in Arabic. Every control it found without a name was fixed.
+- **md-pdf:** Markdown's Export as PDF draws math (ratex) and Mermaid and Graphviz diagrams as SVG images Typst lays out (in-memory files, never on disk). A formula that fails stays as its text.
+
+**Left, all in gpui-component, which isn't vendored:**
+- The dialog host's close button says "Close" in English and doesn't mirror in Arabic.
+- The title bar's caption buttons have no role or name in the tree.
+- The resize handle has no name.
+
+Narrator on the real app is the user's check.
+
 ## Antigravity (2026-11-10): closed before it started
 
 The user offered Antigravity to share the work. It hit its rate limit before doing anything; it left only an empty report. Its lane is closed and its worktree and branch are removed.

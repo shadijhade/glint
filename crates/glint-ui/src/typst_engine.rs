@@ -298,8 +298,15 @@ static LIBRARY: LazyLock<LazyHash<Library>> = LazyLock::new(|| LazyHash::new(<Li
 pub enum Input {
     /// A `.typ` file on disk; its folder is the root every path in it is relative to.
     File(PathBuf),
-    /// Typst markup in memory, called `name`, with files read from `dir` (the Markdown export).
-    Text { dir: PathBuf, name: String, text: String },
+    /// Typst markup in memory, called `name`, with files read from `dir` (the Markdown export). `files` are
+    /// pictures that exist only in memory (the formulas and diagrams the Markdown export drew): path under the
+    /// document's folder and bytes. They are served before the disk and are never written to it.
+    Text {
+        dir: PathBuf,
+        name: String,
+        text: String,
+        files: Vec<(String, Vec<u8>)>,
+    },
 }
 
 /// Reads the project's files from a folder, never from outside it.
@@ -368,7 +375,7 @@ struct GlintWorld {
 
 impl GlintWorld {
     fn new(input: Input, fonts: Arc<Fonts>, limits: Limits) -> Result<Self, Failure> {
-        let (root, name, memory_text) = match input {
+        let (root, name, memory_text, extra) = match input {
             Input::File(path) => {
                 let root = path
                     .parent()
@@ -379,15 +386,19 @@ impl GlintWorld {
                     .and_then(|n| n.to_str())
                     .map(str::to_string)
                     .ok_or_else(|| Failure::message("The file's name isn't text Typst can use"))?;
-                (root, name, None)
+                (root, name, None, Vec::new())
             }
-            Input::Text { dir, name, text } => (dir, name, Some(text)),
+            Input::Text { dir, name, text, files } => (dir, name, Some(text), files),
         };
         let vpath = VirtualPath::new(&name).map_err(|e| Failure::message(format!("{name}: {e}")))?;
         let main = RootedPath::new(VirtualRoot::Project, vpath).intern();
-        let memory = memory_text
+        let mut memory: Vec<(FileId, Bytes)> = memory_text
             .map(|text| vec![(main, Bytes::from_string(text))])
             .unwrap_or_default();
+        for (path, bytes) in extra {
+            let vpath = VirtualPath::new(&path).map_err(|e| Failure::message(format!("{path}: {e}")))?;
+            memory.push((RootedPath::new(VirtualRoot::Project, vpath).intern(), Bytes::new(bytes)));
+        }
         let real_root = fs::canonicalize(&root).ok();
         let disk = Disk {
             root,
@@ -776,6 +787,7 @@ pub mod from_markdown {
     use glint_model::markdown::{markdown_title, safe_href};
     use markdown::mdast::{AlignKind, Node};
     use markdown::{Constructs, ParseOptions};
+    use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
     /// What the conversion needs to know besides the text.
@@ -786,7 +798,32 @@ pub mod from_markdown {
         /// The folder pictures are found in. Without it every relative picture is trusted to be there; with it a
         /// picture that isn't there (or isn't a kind Typst draws) is replaced by its description.
         pub base_dir: Option<PathBuf>,
+        /// Draw `$..$` math, `$$..$$` math and Mermaid and Graphviz blocks as pictures (SVG, kept in memory) instead
+        /// of leaving them as source text. Drawing can take a while (diagrams), so it is off unless asked for.
+        pub graphics: bool,
+        /// The numbers ([`Figure::number`]) of drawn figures to leave as source after all (Typst could not draw
+        /// them; [`pdf_of_markdown`] fills this in).
+        pub rejected: Vec<usize>,
     }
+
+    /// A formula or diagram drawn as an SVG that the document shows with `#image`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Figure {
+        /// 1 for the first drawn figure.
+        pub number: usize,
+        /// Its path in the document's folder ("glint-figure-1.svg"); it only ever exists in memory.
+        pub name: String,
+        pub svg: Vec<u8>,
+    }
+
+    /// The most figures one document draws; the rest stay as source.
+    pub const MAX_FIGURES: usize = 150;
+    /// The size a formula is made at (px); the picture is then sized in `em` of the surrounding text.
+    const MATH_PX: f64 = 16.;
+    /// How much bigger a display formula is than the text.
+    const DISPLAY_SCALE: f64 = 1.15;
+    /// A diagram is at most this tall on the page (pt).
+    const FIGURE_MAX_HEIGHT_PT: f64 = 620.;
 
     /// A reading direction and the language Typst should typeset it as.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -928,15 +965,70 @@ pub mod from_markdown {
         pub dir: Dir,
         pub title: Option<String>,
         pub body: String,
+        /// The pictures the body refers to.
+        pub figures: Vec<Figure>,
     }
 
     /// Typst markup for the Markdown `source`, with the page set-up first ([`preamble`]).
     pub fn to_typst(source: &str, options: &Options) -> String {
+        to_typst_with_figures(source, options).0
+    }
+
+    /// [`to_typst`] and the pictures it refers to (they have to be given to Typst with it: [`Input::Text`]).
+    pub fn to_typst_with_figures(source: &str, options: &Options) -> (String, Vec<Figure>) {
         let converted = convert(source, options);
         let mut out = preamble(converted.dir, converted.title.as_deref());
         out.push_str(&converted.body);
         out.push('\n');
-        out
+        (out, converted.figures)
+    }
+
+    /// Markdown `source` typeset to a PDF, with formulas and diagrams drawn when `options.graphics` is set. Runs
+    /// the whole export on a thread of its own and waits: not for the UI thread. A figure Typst can't draw is put
+    /// back as its source text (the document is typeset again), so a bad formula never fails the export.
+    pub fn pdf_of_markdown(source: &str, options: &Options, limits: &Limits) -> Result<Vec<u8>, Failure> {
+        let source = source.to_string();
+        let mut options = options.clone();
+        let limits = limits.clone();
+        let handle = run_big("glint-markdown-pdf", move || {
+            let dir = options.base_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+            let input = |text: String, figures: &[Figure]| Input::Text {
+                dir: dir.clone(),
+                name: "document.typ".to_string(),
+                text,
+                files: figures.iter().map(|f| (f.name.clone(), f.svg.clone())).collect(),
+            };
+            for _ in 0..2 {
+                let (text, figures) = to_typst_with_figures(&source, &options);
+                match compile(input(text, &figures), &limits).and_then(|doc| doc.pdf()) {
+                    Ok(pdf) => return Ok(pdf),
+                    Err(failure) if failure.reason == Reason::Errors && !figures.is_empty() => {}
+                    Err(failure) => return Err(failure),
+                }
+                let bad: Vec<usize> = figures
+                    .iter()
+                    .filter(|figure| {
+                        let probe = format!(
+                            "#set page(width: auto, height: auto, margin: 0pt)\n#image({})\n",
+                            string_literal(&figure.name)
+                        );
+                        compile(input(probe, std::slice::from_ref(figure)), &limits).is_err()
+                    })
+                    .map(|figure| figure.number)
+                    .collect();
+                if bad.is_empty() {
+                    // Each one draws alone, so something else is wrong; the plain document is the fallback (and
+                    // its own error is the answer if it fails too).
+                    break;
+                }
+                options.rejected.extend(bad);
+            }
+            options.graphics = false;
+            let (text, figures) = to_typst_with_figures(&source, &options);
+            compile(input(text, &figures), &limits).and_then(|doc| doc.pdf())
+        })
+        .map_err(|e| Failure::message(format!("Couldn't start Typst: {e}")))?;
+        handle.join().unwrap_or_else(|_| Err(Failure::of(Reason::Crashed)))
     }
 
     /// The body alone: what [`to_typst`] writes after the page set-up.
@@ -944,6 +1036,9 @@ pub mod from_markdown {
         let parse = ParseOptions {
             constructs: Constructs {
                 frontmatter: true,
+                // Without drawing, `$` is only a character (as it always was).
+                math_flow: options.graphics,
+                math_text: options.graphics,
                 ..Constructs::gfm()
             },
             ..ParseOptions::default()
@@ -956,14 +1051,18 @@ pub mod from_markdown {
                     dir: Dir::Ltr,
                     title: options.title.clone(),
                     body: format!("#raw(block: true, {})", string_literal(source)),
+                    figures: Vec::new(),
                 }
             }
         };
         let mut converter = Converter {
             options,
+            source,
             definitions: HashMap::new(),
             footnotes: HashMap::new(),
             doc: Dir::Ltr,
+            figures: RefCell::new(Vec::new()),
+            drawn: Cell::new(0),
         };
         converter.collect(&tree);
         let children: &[Node] = tree.children().map_or(&[], Vec::as_slice);
@@ -977,6 +1076,7 @@ pub mod from_markdown {
             dir: converter.doc,
             title,
             body,
+            figures: converter.figures.into_inner(),
         }
     }
 
@@ -1013,11 +1113,17 @@ pub mod from_markdown {
 
     struct Converter<'a> {
         options: &'a Options,
+        /// The Markdown being converted (nodes carry offsets into it).
+        source: &'a str,
         /// `[label]: url "title"` definitions, by identifier.
         definitions: HashMap<String, (String, Option<String>)>,
         /// Footnote definitions' content, by identifier.
         footnotes: HashMap<String, Vec<Node>>,
         doc: Dir,
+        /// The pictures drawn so far.
+        figures: RefCell<Vec<Figure>>,
+        /// How many figures were drawn, including those left out again ([`Options::rejected`]).
+        drawn: Cell<usize>,
     }
 
     impl Converter<'_> {
@@ -1068,6 +1174,9 @@ pub mod from_markdown {
         fn block(&self, node: &Node) -> Option<String> {
             Some(match node {
                 Node::Paragraph(p) => {
+                    if let Some(display) = self.lone_display_math(&p.children) {
+                        return Some(display);
+                    }
                     let body = self.inlines(&p.children);
                     self.directed(&text_of(&p.children), body)
                 }
@@ -1109,6 +1218,9 @@ pub mod from_markdown {
                         .as_deref()
                         .and_then(|l| l.split_whitespace().next())
                         .filter(|l| !l.is_empty());
+                    if let Some(drawn) = lang.and_then(|lang| self.drawn_code(lang, &code.value)) {
+                        return Some(drawn);
+                    }
                     match lang {
                         Some(lang) => format!(
                             "#raw(block: true, lang: {}, {})",
@@ -1118,7 +1230,9 @@ pub mod from_markdown {
                         None => format!("#raw(block: true, {})", string_literal(&code.value)),
                     }
                 }
-                Node::Math(math) => format!("#raw(block: true, {})", string_literal(&math.value)),
+                Node::Math(math) => self
+                    .display_math(&math.value)
+                    .unwrap_or_else(|| format!("#raw(block: true, {})", string_literal(&math.value))),
                 Node::ThematicBreak(_) => "#line(length: 100%, stroke: 0.6pt + luma(170))".to_string(),
                 Node::Table(table) => self.table(table),
                 Node::Html(html) => {
@@ -1239,7 +1353,7 @@ pub mod from_markdown {
                         *start = false;
                     }
                     Node::InlineMath(m) => {
-                        out.push_str(&format!("#raw({})", string_literal(&m.value)));
+                        out.push_str(&self.inline_math(node, &m.value));
                         *start = false;
                     }
                     Node::Emphasis(e) => {
@@ -1300,6 +1414,115 @@ pub mod from_markdown {
             }
         }
 
+        // ---- Formulas and diagrams ----
+
+        /// Keeps a drawn SVG as a figure and says what to call it; None when this one is left out (too many, or
+        /// Typst couldn't draw it the first time).
+        fn keep(&self, svg: String) -> Option<String> {
+            let number = self.drawn.get() + 1;
+            if number > MAX_FIGURES {
+                return None;
+            }
+            self.drawn.set(number);
+            if self.options.rejected.contains(&number) {
+                return None;
+            }
+            let name = format!("glint-figure-{number}.svg");
+            self.figures.borrow_mut().push(Figure {
+                number,
+                name: name.clone(),
+                svg: svg.into_bytes(),
+            });
+            Some(name)
+        }
+
+        /// A formula in a line: a picture that sits on the text's baseline; the formula's source when it can't be
+        /// drawn.
+        fn inline_math(&self, node: &Node, value: &str) -> String {
+            let as_source = || format!("#raw({})", string_literal(value));
+            if !self.options.graphics {
+                return as_source();
+            }
+            let Some(range) = node.position().map(|p| p.start.offset..p.end.offset) else {
+                return as_source();
+            };
+            let Some(literal) = self.source.get(range.clone()) else {
+                return as_source();
+            };
+            let dollars = literal.chars().take_while(|&c| c == '$').count();
+            let inner = literal
+                .get(dollars..literal.len().saturating_sub(dollars))
+                .unwrap_or("");
+            let after = self.source.get(range.end..).and_then(|rest| rest.chars().next());
+            // "$5 and $10" is two prices: the text it always was.
+            if dollars == 0 || !crate::components::preview::math::looks_like_math(inner, after) {
+                return escape_markup(literal, false);
+            }
+            let made = guarded(|| crate::components::preview::math::make(value, dollars >= 2, MATH_PX, "#000000"));
+            let Some(made) = made else { return as_source() };
+            let (width, depth) = (made.width / MATH_PX, (made.height - made.baseline) / MATH_PX);
+            match self.keep(made.svg) {
+                // The `;` ends the call, so the text after it can't be read as part of it.
+                Some(name) => format!(
+                    "#box(baseline: {depth:.3}em, image({}, width: {width:.3}em, alt: {}));",
+                    string_literal(&name),
+                    string_literal(value)
+                ),
+                None => as_source(),
+            }
+        }
+
+        /// A paragraph that is only a `$$..$$` formula is a display formula, not one in a line.
+        fn lone_display_math(&self, children: &[Node]) -> Option<String> {
+            let [node @ Node::InlineMath(m)] = children else {
+                return None;
+            };
+            let position = node.position()?;
+            let literal = self.source.get(position.start.offset..position.end.offset)?;
+            if !self.options.graphics || !literal.starts_with("$$") {
+                return None;
+            }
+            self.display_math(&m.value)
+        }
+
+        /// A formula on a line of its own, centred.
+        fn display_math(&self, tex: &str) -> Option<String> {
+            if !self.options.graphics {
+                return None;
+            }
+            let made = guarded(|| crate::components::preview::math::make(tex, true, MATH_PX, "#000000"))?;
+            let width = made.width / MATH_PX * DISPLAY_SCALE;
+            let name = self.keep(made.svg)?;
+            Some(format!(
+                "#block(width: 100%, above: 1em, below: 1em, breakable: false)[#align(center)[#image({}, width: {width:.3}em, alt: {})]]",
+                string_literal(&name),
+                string_literal(tex)
+            ))
+        }
+
+        /// A ```` ```math ````, ```` ```mermaid ```` or ```` ```dot ```` block drawn; None leaves it as code.
+        fn drawn_code(&self, lang: &str, code: &str) -> Option<String> {
+            use crate::components::preview::diagram::{svg_of, Language};
+            if !self.options.graphics {
+                return None;
+            }
+            if lang.eq_ignore_ascii_case("math") {
+                return self.display_math(code);
+            }
+            let language = Language::of_fence(lang)?;
+            let svg = guarded(|| svg_of(language, code, false, None))?;
+            let (width, height) = svg_size(&svg)?;
+            // SVG pixels are 3/4 of a point; the picture is never wider than the text or taller than a page.
+            let natural = width * 0.75;
+            let by_height = FIGURE_MAX_HEIGHT_PT * width / height;
+            let name = self.keep(svg)?;
+            Some(format!(
+                "#block(width: 100%, above: 1em, below: 1em)[#align(center)[#layout(size => image({}, width: calc.min({natural:.2}pt, size.width, {by_height:.2}pt), alt: {}))]]",
+                string_literal(&name),
+                string_literal(&language.picture_name())
+            ))
+        }
+
         /// `children` as a link to `url` when it is one a PDF may carry (web and e-mail addresses); else the text.
         fn link(&self, url: &str, children: &[Node]) -> String {
             let text = self.inlines(children);
@@ -1348,6 +1571,51 @@ pub mod from_markdown {
                 format!("#image({}, alt: {})", string_literal(&relative), string_literal(alt))
             }
         }
+    }
+
+    /// Runs a drawing step, turning an error or a panic into None: a figure that can't be drawn stays as source.
+    fn guarded<T>(work: impl FnOnce() -> Result<T, String>) -> Option<T> {
+        catch_unwind(AssertUnwindSafe(work)).ok().and_then(Result::ok)
+    }
+
+    /// The size of an SVG in px: its `width` and `height`, else its `viewBox`. None when it has neither (or they
+    /// are percentages or zero).
+    pub fn svg_size(svg: &str) -> Option<(f64, f64)> {
+        let start = svg.find("<svg")?;
+        let tag = svg.get(start..)?;
+        let tag = tag.get(..tag.find('>')?)?;
+        let attribute = |name: &str| -> Option<&str> {
+            let key = format!(" {name}=\"");
+            let from = tag.find(&key)? + key.len();
+            tag.get(from..)?.split('"').next()
+        };
+        let length = |value: &str| -> Option<f64> {
+            let value = value.trim();
+            let number = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+            let scale = match value.get(number.len()..)? {
+                "" | "px" => 1.,
+                "pt" => 4. / 3.,
+                _ => return None,
+            };
+            number.trim().parse::<f64>().ok().map(|n| n * scale)
+        };
+        let from_attributes = attribute("width")
+            .zip(attribute("height"))
+            .and_then(|(w, h)| Some((length(w)?, length(h)?)));
+        let from_box = || {
+            let parts: Vec<f64> = attribute("viewBox")?
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|p| !p.is_empty())
+                .filter_map(|p| p.parse().ok())
+                .collect();
+            match parts.as_slice() {
+                [_, _, w, h] => Some((*w, *h)),
+                _ => None,
+            }
+        };
+        from_attributes
+            .or_else(from_box)
+            .filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0. && *h > 0.)
     }
 
     /// `%20` and its kind undone; a stray `%` stays.
@@ -1881,6 +2149,7 @@ mod tests {
         let options = Options {
             title: None,
             base_dir: Some(dir.0.clone()),
+            ..Options::default()
         };
         let out = from_markdown::convert("![here](here.png) ![gone](gone.png)", &options).body;
         assert_eq!(out, "#image(\"here.png\", alt: \"here\") #emph[gone]");
@@ -2048,7 +2317,7 @@ A short English line.
         assert_eq!(converted.title.as_deref(), Some("Read me"));
         let options = Options {
             title: Some("Given".into()),
-            base_dir: None,
+            ..Options::default()
         };
         assert_eq!(
             from_markdown::convert("# Read me", &options).title.as_deref(),
@@ -2081,6 +2350,7 @@ Footnote here[^n] and a [reference][r].\n\n[^n]: The footnote, with *emphasis*.\
         let options = Options {
             title: None,
             base_dir: Some(dir.0.clone()),
+            ..Options::default()
         };
         let typst = from_markdown::to_typst(EVERYTHING, &options);
         let path = dir.file("everything.typ", &typst);
@@ -2116,6 +2386,7 @@ Footnote here[^n] and a [reference][r].\n\n[^n]: The footnote, with *emphasis*.\
         let options = Options {
             title: None,
             base_dir: Some(dir.0.clone()),
+            ..Options::default()
         };
         let typst = from_markdown::to_typst("# Picture\n\n![red square](red.png)\n\nAfter.\n", &options);
         assert!(typst.contains("#image(\"red.png\", alt: \"red square\")"));
@@ -2126,11 +2397,222 @@ Footnote here[^n] and a [reference][r].\n\n[^n]: The footnote, with *emphasis*.\
                     dir: root,
                     name: "document.typ".into(),
                     text: typst,
+                    files: Vec::new(),
                 },
                 &Limits::unlimited(),
             )
         });
         let pdf = result.unwrap_or_else(|f| panic!("{f}"));
         assert!(pdf.starts_with(b"%PDF-"));
+    }
+
+    // ---- Math and diagrams in the Markdown PDF ----
+
+    const GRAPHICS: &str = "# Figures\n\nEuler said $e^{i\\pi}+1=0$ inline, and also $a$ again.\n\n\
+$$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$\n\n\
+```math\n\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2}\n```\n\n\
+```mermaid\nflowchart LR\n  A[Start] --> B[End]\n```\n\n\
+```dot\ndigraph G { a -> b; b -> c; }\n```\n\nThe end.\n";
+
+    fn drawn() -> Options {
+        Options {
+            graphics: true,
+            ..Options::default()
+        }
+    }
+
+    #[test]
+    fn math_and_diagrams_become_images_and_no_dollar_text_is_left() {
+        let (typst, figures) = from_markdown::to_typst_with_figures(GRAPHICS, &drawn());
+        // Two inline formulas, a display formula, a math block, a Mermaid diagram and a Graphviz graph.
+        assert_eq!(figures.len(), 6, "{typst}");
+        for figure in &figures {
+            assert!(typst.contains(&format!("image(\"{}\"", figure.name)), "{typst}");
+            assert!(String::from_utf8_lossy(&figure.svg).contains("<svg"));
+        }
+        let body = typst
+            .split_once("#set heading")
+            .map_or(typst.as_str(), |(_, rest)| rest);
+        assert!(!body.contains('$'), "raw $ text is left: {body}");
+        assert!(!body.contains("```"), "{body}");
+        assert!(!body.contains("#raw("), "no formula or diagram stays as source: {body}");
+        // Inline ones sit in the line, the others are centred blocks.
+        assert_eq!(typst.matches("#box(baseline: ").count(), 2);
+        assert!(typst.matches("#align(center)[").count() >= 4);
+        // Without asking for graphics nothing is drawn and the text is left as it was.
+        let (plain, none) = from_markdown::to_typst_with_figures(GRAPHICS, &Options::default());
+        assert!(none.is_empty());
+        assert!(plain.contains("\\$"), "{plain}");
+    }
+
+    #[test]
+    fn a_document_with_math_and_diagrams_is_typeset_and_written_as_a_pdf() {
+        let dir = Scratch::new("graphics-pdf");
+        let options = Options {
+            base_dir: Some(dir.0.clone()),
+            ..drawn()
+        };
+        let source = GRAPHICS.to_string();
+        let pdf = on_big(move || from_markdown::pdf_of_markdown(&source, &options, &Limits::unlimited()))
+            .unwrap_or_else(|f| panic!("{f}"));
+        assert!(pdf.starts_with(b"%PDF-"));
+        assert!(pdf.windows(5).any(|w| w == b"%%EOF"));
+        // The pictures only ever lived in memory.
+        let on_disk: Vec<_> = fs::read_dir(&dir.0).map(|d| d.flatten().collect()).unwrap_or_default();
+        assert!(on_disk.is_empty(), "{on_disk:?}");
+    }
+
+    #[test]
+    fn the_laid_out_page_has_ink_where_the_display_formula_and_the_diagrams_are() {
+        let dir = Scratch::new("graphics-page");
+        let (typst, figures) = from_markdown::to_typst_with_figures(GRAPHICS, &drawn());
+        let files: Vec<(String, Vec<u8>)> = figures.iter().map(|f| (f.name.clone(), f.svg.clone())).collect();
+        let root = dir.0.clone();
+        let (plain, with) = on_big(move || {
+            let text_only = from_markdown::to_typst("# Figures\n\nThe end.\n", &Options::default());
+            let page = |text: String, files: Vec<(String, Vec<u8>)>| {
+                let input = Input::Text {
+                    dir: root.clone(),
+                    name: "document.typ".into(),
+                    text,
+                    files,
+                };
+                let compiled = compile(input, &Limits::unlimited()).unwrap_or_else(|f| {
+                    panic!(
+                        "{f}\n{}",
+                        f.diagnostics
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                });
+                compiled.render(0, 1.0).unwrap_or_else(|| panic!("drawn"))
+            };
+            (page(text_only, Vec::new()), page(typst, files))
+        });
+        let (plain, with) = (ink_bands(&plain), ink_bands(&with));
+        assert!(with.len() > plain.len() + 3, "{with:?} vs {plain:?}");
+        // The display formula (a band alone on its line) is centred on the page.
+        let width = 595;
+        assert!(
+            with.iter().any(|&(_, _, first, last)| {
+                let middle = (first + last) / 2;
+                last - first > 20 && middle.abs_diff(width / 2) < 12 && last - first < width / 2
+            }),
+            "{with:?}"
+        );
+    }
+
+    #[test]
+    fn a_formula_that_does_not_parse_stays_as_text_and_the_pdf_is_still_written() {
+        let source = "Broken $\\frac{1$ and fine $y$ and $\\notacommand{x}$ here.\n\n$$\\frac{$$\n\n```mermaid\nnot a diagram at all %%%\n```\n";
+        let (typst, figures) = from_markdown::to_typst_with_figures(source, &drawn());
+        assert_eq!(figures.len(), 1, "only $y$ draws: {typst}");
+        assert!(typst.contains("#raw(\"\\\\frac{1\")"), "{typst}");
+        assert!(
+            typst.contains("#raw(block: true, lang: \"mermaid\""),
+            "the bad diagram stays code: {typst}"
+        );
+        let options = drawn();
+        let pdf = on_big(move || from_markdown::pdf_of_markdown(source, &options, &Limits::unlimited()))
+            .unwrap_or_else(|f| panic!("{f}"));
+        assert!(pdf.starts_with(b"%PDF-"));
+    }
+
+    #[test]
+    fn two_prices_are_not_a_formula_and_arabic_in_a_formula_stays_text() {
+        let (typst, figures) = from_markdown::to_typst_with_figures("It costs $5 and $10 today.", &drawn());
+        assert!(figures.is_empty());
+        assert!(typst.contains("\\$5 and \\$10"), "{typst}");
+        let (typst, figures) = from_markdown::to_typst_with_figures("Here $\\text{مرحبا}$ is Arabic.", &drawn());
+        assert!(figures.is_empty(), "RaTeX can't shape Arabic: {typst}");
+        assert!(typst.contains("#raw("), "{typst}");
+    }
+
+    #[test]
+    fn a_figure_left_out_by_number_is_put_back_as_its_source() {
+        let options = Options {
+            rejected: vec![1],
+            ..drawn()
+        };
+        let (typst, figures) = from_markdown::to_typst_with_figures("A $a$ and $b$.", &options);
+        assert_eq!(figures.len(), 1);
+        assert_eq!(figures[0].number, 2);
+        assert!(typst.contains("#raw(\"a\")"), "{typst}");
+    }
+
+    #[test]
+    fn arabic_paragraphs_with_formulas_keep_reading_right_to_left() {
+        let source = "هذا نص عربي طويل بما يكفي ليكون الاتجاه من اليمين إلى اليسار مع معادلة $x^2$ داخل السطر.\n\n$$\\frac{a}{b}$$\n";
+        let converted = from_markdown::convert(source, &drawn());
+        assert_eq!(converted.dir, Dir::Rtl("ar"));
+        assert_eq!(converted.figures.len(), 2);
+        assert!(converted.body.contains("#box(baseline: "), "{}", converted.body);
+        // The page is set right to left, so the formula's line is too.
+        let full = from_markdown::to_typst(source, &drawn());
+        assert!(full.contains("dir: rtl, lang: \"ar\")"), "{full}");
+        let dir = Scratch::new("graphics-rtl");
+        let options = Options {
+            base_dir: Some(dir.0.clone()),
+            ..drawn()
+        };
+        let pdf = on_big(move || from_markdown::pdf_of_markdown(source, &options, &Limits::unlimited()))
+            .unwrap_or_else(|f| panic!("{f}"));
+        assert!(pdf.starts_with(b"%PDF-"));
+    }
+
+    #[test]
+    fn an_svgs_size_comes_from_its_attributes_or_its_view_box() {
+        use from_markdown::svg_size;
+        assert_eq!(
+            svg_size("<svg width=\"120\" height=\"60\" xmlns=\"x\">"),
+            Some((120., 60.))
+        );
+        assert_eq!(svg_size("<svg width=\"30pt\" height=\"15pt\">"), Some((40., 20.)));
+        assert_eq!(
+            svg_size("<svg width=\"100%\" viewBox=\"0 0 300 150\" style=\"max-width: 300px\">"),
+            Some((300., 150.))
+        );
+        assert_eq!(svg_size("<svg stroke-width=\"2\" viewBox=\"0 0 8 4\">"), Some((8., 4.)));
+        assert_eq!(svg_size("<svg width=\"0\" height=\"0\">"), None);
+        assert_eq!(svg_size("<svg>"), None);
+        assert_eq!(svg_size("not svg"), None);
+    }
+
+    /// Typst's `box(baseline: d)` is what puts an inline formula's descent below the text's baseline: a box with
+    /// a positive baseline sits lower than one without.
+    #[test]
+    fn a_boxs_baseline_offset_moves_it_down() {
+        let dir = Scratch::new("baseline");
+        let body = |offset: &str| {
+            format!(
+                "#set page(width: 6cm, height: 3cm, margin: 0.5cm)\n#set text(size: 20pt)\nH#box(baseline: {offset}, rect(width: 6pt, height: 6pt, fill: rgb(\"#ff0000\"), stroke: none))H\n"
+            )
+        };
+        let low = dir.file("low.typ", &body("0.5em"));
+        let flat = dir.file("flat.typ", &body("0pt"));
+        let (low, flat) = on_big(move || {
+            let draw = |path: PathBuf| {
+                compile(Input::File(path), &Limits::unlimited())
+                    .unwrap_or_else(|f| panic!("{f}"))
+                    .render(0, 2.0)
+                    .unwrap_or_else(|| panic!("drawn"))
+            };
+            (draw(low), draw(flat))
+        });
+        let red_rows = |page: &Rendered| -> Vec<u32> {
+            page.rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p[0] > 200 && p[1] < 60 && p[2] < 60)
+                .map(|(i, _)| i as u32 / page.width)
+                .collect()
+        };
+        let (low, flat) = (red_rows(&low), red_rows(&flat));
+        assert!(!low.is_empty() && !flat.is_empty());
+        assert!(low[0] > flat[0] + 8, "{} vs {}", low[0], flat[0]);
     }
 }

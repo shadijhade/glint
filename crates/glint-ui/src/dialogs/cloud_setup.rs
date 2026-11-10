@@ -1624,11 +1624,15 @@ impl CloudSetup {
                             }),
                     )
                     .when(p.oauth, |this| {
+                        // The globe says it signs in in the browser: to the eye, and to a screen reader.
                         this.child(
-                            icon(IconName::Globe)
-                                .size_3p5()
+                            div()
+                                .id(("cloud-service-browser", i))
+                                .role(Role::Image)
+                                .aria_label(t!("Signs in in your browser"))
+                                .test_support()
                                 .flex_none()
-                                .text_color(t.muted_foreground),
+                                .child(icon(IconName::Globe).size_3p5().text_color(t.muted_foreground)),
                         )
                     }),
             )
@@ -2503,6 +2507,18 @@ mod tests {
             looked + 1,
             "looked for once the delete finished"
         );
+    }
+
+    #[gpui_kit::test]
+    fn a_service_that_signs_in_in_the_browser_says_so_by_its_globe(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let fake = Fake::new();
+        let (model, _, _) = open_it(&mut visual, &fake);
+        settle(&mut visual, "the services", |cx| {
+            phase_is(cx, &model, |p| matches!(p, Phase::Choose))
+        });
+        assert_eq!(role_of(&mut visual, "Signs in in your browser"), Some(Role::Image));
     }
 
     #[gpui_kit::test]

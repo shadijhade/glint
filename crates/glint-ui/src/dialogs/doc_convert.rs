@@ -28,10 +28,13 @@
 //! looks like Typst's, not exactly like the preview. Both go through `actions::run`, so the PDF lands beside the
 //! file (a name that's taken gets "(2)") and Undo takes it back, as before.
 //!
-//! NOTE(port): Math, Mermaid and Graphviz in Markdown are not drawn in the PDF: `$..$` stays as the text it is
-//! and a diagram stays as its source in a code block (the preview draws them with other crates); the print page
-//! of the TypeScript drew both. Without the `typst` feature the old paths stay: `.typ` files go through core's
-//! `doc_convert` (the Typst tool) and Markdown opens this dialog with PDF chosen.
+//! **Math and diagrams in the Markdown PDF.** The print page of the TypeScript drew `$..$` and `$$..$$` math and
+//! Mermaid blocks; here the same crates as the preview draw them (RaTeX for math, merman for Mermaid, layout-rs
+//! for Graphviz) into SVG, and Typst gets each SVG as an image served from memory, never written to disk
+//! (`from_markdown::Options::graphics`). Inline math sits on the text's baseline; display math, ```` ```math ````
+//! and diagram blocks are centred. A formula or diagram that doesn't draw (or that Typst can't read) stays as its
+//! source text and never fails the export. Without the `typst` feature the old paths stay: `.typ` files go through
+//! core's `doc_convert` (the Typst tool) and Markdown opens this dialog with PDF chosen.
 //!
 //! Enter in the dialog doesn't start the conversion (the TypeScript's modal submitted on Enter); the buttons do.
 
@@ -635,23 +638,26 @@ pub mod in_process {
     /// One file's PDF, made in `work`.
     fn make_pdf(file: &Path, part: &(dyn Fn(f32) + Sync), work: &Path) -> Result<PathBuf, String> {
         let name = file.to_string_lossy();
-        let input = if is_typst(&name) {
-            Input::File(file.to_path_buf())
+        let limits = Limits::new(EXPORT_BUDGET);
+        let pdf = if is_typst(&name) {
+            part(0.2);
+            typst_engine::pdf_of(Input::File(file.to_path_buf()), &limits)
         } else if is_markdown(&name) {
-            markdown_input(file)?
+            let (text, options) = markdown_source(file)?;
+            part(0.2);
+            from_markdown::pdf_of_markdown(&text, &options, &limits)
         } else {
             return Err(t!("It isn't a Typst or Markdown file").to_string());
-        };
-        part(0.2);
-        let pdf = typst_engine::pdf_of(input, &Limits::new(EXPORT_BUDGET)).map_err(failure_text)?;
+        }
+        .map_err(failure_text)?;
         part(0.9);
         let out = glint_core::actions::renamed(work, file, "pdf");
         std::fs::write(&out, pdf).map_err(|e| format!("{}: {e}", out.display()))?;
         Ok(out)
     }
 
-    /// The Markdown at `file` as Typst markup, to be typeset with pictures found beside the file.
-    fn markdown_input(file: &Path) -> Result<Input, String> {
+    /// The Markdown text at `file`, and how to typeset it: pictures found beside the file, math and diagrams drawn.
+    pub(super) fn markdown_source(file: &Path) -> Result<(String, from_markdown::Options), String> {
         let meta = std::fs::metadata(file).map_err(|e| format!("{}: {e}", file.display()))?;
         if meta.len() > MAX_MARKDOWN_BYTES {
             return Err(t!("It is too big to make a document of").to_string());
@@ -665,13 +671,11 @@ pub mod in_process {
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         let options = from_markdown::Options {
             title: None,
-            base_dir: Some(dir.clone()),
+            base_dir: Some(dir),
+            graphics: true,
+            ..from_markdown::Options::default()
         };
-        Ok(Input::Text {
-            dir,
-            name: "document.typ".to_string(),
-            text: from_markdown::to_typst(text, &options),
-        })
+        Ok((text.to_string(), options))
     }
 
     /// What a failed export says for its file: the first error with its place, and how many more there were.

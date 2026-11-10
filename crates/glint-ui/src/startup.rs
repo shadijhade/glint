@@ -61,6 +61,7 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     start_quick_search(cx);
     if services.rules {
         start_rules(cx);
+        hear_core_notices(cx);
     }
     start_explorer(cx);
     // The disk usage maps, reading glint-core (after the explorer, whose tabs they follow).
@@ -317,9 +318,44 @@ fn quit_now(window: &mut Window, cx: &mut App) {
     window.remove_window();
 }
 
-/// The updater's question before it quits to install: `mayQuit`'s, then `go` only on yes (at once when nothing is in
-/// the way).
+/// The notice that an update waits for a file operation to end.
+struct UpdateWaitingToast;
+
+/// Runs `then` once no file operation is running (`operationsDone` of the web app's updater): at once when none
+/// is, else after the last one ends, with a notice saying so. Closing the app would cut a copy or move short.
+fn when_operations_done(cx: &mut App, then: Box<dyn FnOnce(&mut App)>) {
+    let Some(explorer) = explorer::try_explorer(cx).filter(|e| e.read(cx).busy_count() > 0) else {
+        return then(cx);
+    };
+    notify(
+        cx,
+        Notification::info(t!("Installing once the file operation finishes…"))
+            .id::<UpdateWaitingToast>()
+            .autohide(false),
+    );
+    let waiting = Rc::new(std::cell::RefCell::new(Some(then)));
+    cx.subscribe(&explorer, move |explorer, _: &explorer::ExplorerEvent, cx| {
+        if explorer.read(cx).busy_count() != 0 {
+            return;
+        }
+        if let Some(then) = waiting.borrow_mut().take() {
+            if let Some(main) = main_window(cx) {
+                let _ = main.update(cx, |_, window, cx| window.remove_notification::<UpdateWaitingToast>(cx));
+            }
+            then(cx);
+        }
+    })
+    .detach();
+}
+
+/// The updater's question before it quits to install: file operations end first, then `mayQuit`'s, then `go`
+/// only on yes (at once when nothing is in the way).
 fn confirm_quit_for_update(cx: &mut App, go: Box<dyn FnOnce(&mut App)>) {
+    when_operations_done(cx, Box::new(move |cx| ask_quit_for_update(cx, go)));
+}
+
+/// [`confirm_quit_for_update`] once no operation runs: a copy still in the queue, or Compare's edits, ask first.
+fn ask_quit_for_update(cx: &mut App, go: Box<dyn FnOnce(&mut App)>) {
     let go = Rc::new(std::cell::RefCell::new(Some(go)));
     let run = {
         let go = go.clone();
@@ -419,6 +455,21 @@ fn open_settings_in_main(cx: &mut App, section: Option<&str>) {
 /// goes (`summon` toggled in the web app too).
 fn quick_search(cx: &mut App) {
     quick_search::toggle(cx);
+}
+
+/// What core tells without being asked, said in the main window: a scheduled backup that finished (App.tsx's
+/// "backup-finished" listener) and files a paired PC sent here (`listenForDeviceFiles`, with Show).
+fn hear_core_notices(cx: &mut App) {
+    let Some(events) = cx.try_global::<core_bridge::Core>().map(|core| core.events.clone()) else {
+        return;
+    };
+    cx.subscribe(&events, |_, event: &core_bridge::CoreEvent, cx| {
+        if event.name == "backup-finished" {
+            crate::dialogs::backup::tell_finished(&event.payload, |note| notify(cx, note));
+        }
+    })
+    .detach();
+    crate::dialogs::nearby::hear_device_files(cx, Rc::new(notify));
 }
 
 /// The folder rules saved last time are handed to core, which watches their folders again (`initRules`).
@@ -1338,6 +1389,61 @@ mod tests {
         w.settle();
         w.press("Stop");
         assert_eq!(w.notifications(), 0);
+    }
+
+    #[gpui_kit::test]
+    fn an_update_waits_for_a_file_operation_to_end_and_says_so(cx: &mut TestAppContext) {
+        use crate::explorer::fake::FakeDisk;
+        let _guard = testing::lock();
+        cx.update(testing::init);
+        let disk = FakeDisk::new();
+        disk.folder("C:\\", vec![]);
+        disk.folder("C:\\a", vec![file("C:\\a", "one.txt", 1, 1)]);
+        disk.folder("C:\\b", vec![]);
+        cx.update(|cx| init_with(cx, disk.source()));
+        let (mut window, _) = testing::open_window(cx, |_, cx| cx.new(|_| Blank));
+        window.update(|window, cx| cx.set_global(MainWindow(window.window_handle())));
+        let opened = cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.init_explorer(Vec::new(), cx)));
+        window.foreground_executor().block_test(opened);
+        let went = cx.update(|cx| {
+            explorer::explorer(cx).update(cx, |e, cx| {
+                e.navigate_task("C:\\b", explorer::NavOptions::default(), cx)
+            })
+        });
+        window.foreground_executor().block_test(went);
+
+        // Nothing running: it goes ahead at once, with no notice.
+        let ran = Rc::new(std::cell::Cell::new(0));
+        let again = ran.clone();
+        cx.update(|cx| when_operations_done(cx, Box::new(move |_| again.set(again.get() + 1))));
+        assert_eq!(ran.get(), 1);
+
+        // A paste under way: it waits, and the notice says why.
+        let gate = disk.hold_ops();
+        disk.set_clipboard(&["C:\\a\\one.txt"], false);
+        let pasting = cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.paste(None, cx)));
+        window.run_until_parked();
+        assert_eq!(cx.update(|cx| explorer::explorer(cx).read(cx).busy_count()), 1);
+        let again = ran.clone();
+        cx.update(|cx| when_operations_done(cx, Box::new(move |_| again.set(again.get() + 1))));
+        window.run_until_parked();
+        assert_eq!(ran.get(), 1, "waiting");
+        let said = window.update(|window, cx| window.notifications(cx).len());
+        assert_eq!(said, 1, "a notice says what it waits for");
+
+        // The paste ends: the update goes ahead, once, and the notice goes.
+        gate.close();
+        window.foreground_executor().block_test(pasting);
+        for _ in 0..40 {
+            window.run_until_parked();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(ran.get(), 2, "ran once the operation ended");
+        // The notice leaves once its exit has played.
+        window.executor().advance_clock(Duration::from_millis(500));
+        window.run_until_parked();
+        let said = window.update(|window, cx| window.notifications(cx).len());
+        assert_eq!(said, 0, "the notice is gone");
     }
 
     #[test]

@@ -443,36 +443,58 @@ impl HexPreview {
         Some(total)
     }
 
-    /// The footer: the selected byte as numbers, or what to do (`status`).
-    pub fn status_line(&self) -> SharedString {
-        let (Some(at), Some(size)) = (self.at, self.size) else {
-            return t!("Click a byte, or go to an offset");
+    /// The footer's pieces for the selected byte, each with the tooltip it has (the two numbers read little-endian
+    /// say so), or nothing when no byte is selected (`status`).
+    fn status_parts(&self) -> Option<Vec<(String, Option<SharedString>)>> {
+        let (Some(at), Some(_)) = (self.at, self.size) else {
+            return None;
         };
-        let _ = size;
-        let Some(value) = self.byte_at(at) else {
-            return t!("Click a byte, or go to an offset");
-        };
+        let value = self.byte_at(at)?;
         let mut parts = vec![
-            format!(
-                "0x{} ({})",
-                hex(at, 8),
-                format_count(usize::try_from(at).unwrap_or(usize::MAX))
+            (
+                format!(
+                    "0x{} ({})",
+                    hex(at, 8),
+                    format_count(usize::try_from(at).unwrap_or(usize::MAX))
+                ),
+                None,
             ),
-            if value > 0x20 && value < 0x7f {
-                format!("{} = {value} = '{}'", hex(u64::from(value), 2), char::from(value))
-            } else {
-                format!("{} = {value}", hex(u64::from(value), 2))
-            },
+            (
+                if value > 0x20 && value < 0x7f {
+                    format!("{} = {value} = '{}'", hex(u64::from(value), 2), char::from(value))
+                } else {
+                    format!("{} = {value}", hex(u64::from(value), 2))
+                },
+                None,
+            ),
         ];
         for (name, n) in [("u16", 2), ("u32", 4)] {
             if let Some(number) = self.word(at, n) {
-                parts.push(format!(
-                    "{name} {}",
-                    format_count(usize::try_from(number).unwrap_or(usize::MAX))
+                let tip = if n == 2 {
+                    t!("The two bytes from here, little-endian")
+                } else {
+                    t!("The four bytes from here, little-endian")
+                };
+                parts.push((
+                    format!("{name} {}", format_count(usize::try_from(number).unwrap_or(usize::MAX))),
+                    Some(tip),
                 ));
             }
         }
-        parts.join("   ").into()
+        Some(parts)
+    }
+
+    /// The footer: the selected byte as numbers, or what to do (`status`).
+    pub fn status_line(&self) -> SharedString {
+        match self.status_parts() {
+            Some(parts) => parts
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+                .join("   ")
+                .into(),
+            None => t!("Click a byte, or go to an offset"),
+        }
     }
 
     /// The arrows, Page, Home and End move the selection (`onKey`).
@@ -771,13 +793,29 @@ impl Render for HexPreview {
             .px(space(3.))
             .flex()
             .items_center()
+            .gap(space(3.))
             .truncate()
             .border_t_1()
             .border_color(t.border)
             .font_family(mono)
             .text_size(theme::size::XS)
             .text_color(t.muted_foreground)
-            .child(self.status_line());
+            .children(match self.status_parts() {
+                Some(parts) => parts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (text, tip))| {
+                        let part = div().id(("hex-status-part", i)).child(text);
+                        match tip {
+                            Some(tip) => part
+                                .tooltip(move |window, cx| crate::kit::tooltip(tip.clone(), window, cx))
+                                .into_any_element(),
+                            None => part.into_any_element(),
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+                None => vec![self.status_line().into_any_element()],
+            });
 
         root.child(self.header(size, base, page_bytes, &t, cx))
             .child(
@@ -1023,6 +1061,34 @@ mod tests {
         ] {
             assert_eq!(byte_of_hex_char(character), byte, "character {character}");
         }
+    }
+
+    #[gpui_kit::test]
+    fn the_two_and_four_byte_readings_say_they_are_little_endian(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        let (source, _, _) = fake(100_000, counting);
+        let (view, mut visual) = open(cx, "C:\\data\\blob.bin", source);
+        ready(&view, &mut visual);
+        assert!(
+            view.read_with(&visual, |v, _| v.status_parts()).is_none(),
+            "no byte, no readings"
+        );
+        view.update_in(&mut visual, |v, _, cx| v.select_at(2, cx));
+        frames(&mut visual);
+        let parts = view
+            .read_with(&visual, |v, _| v.status_parts())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(text, tip)| (text, tip.map(|tip| tip.to_string())))
+            .collect::<Vec<_>>();
+        assert_eq!(parts.len(), 4, "offset, byte, u16, u32");
+        assert_eq!(parts[0].1, None);
+        assert_eq!(parts[1].1, None);
+        assert!(parts[2].0.starts_with("u16 "));
+        assert_eq!(parts[2].1.as_deref(), Some("The two bytes from here, little-endian"));
+        assert!(parts[3].0.starts_with("u32 "));
+        assert_eq!(parts[3].1.as_deref(), Some("The four bytes from here, little-endian"));
     }
 
     #[gpui_kit::test]

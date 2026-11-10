@@ -691,6 +691,10 @@ pub struct HistoryDialog {
 impl HistoryDialog {
     /// Shows `history` in a dialog with its query in the search box, and puts the cursor there.
     pub fn new(history: Entity<History>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        super::refresh_on_f5(cx, |this, _, cx| {
+            this.history.update(cx, |history, cx| history.load(cx));
+        });
         let query = history.read(cx).query().to_string();
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -760,7 +764,7 @@ impl HistoryDialog {
             .xsmall()
             .icon(IconName::RefreshCw)
             .loading(loading)
-            .tooltip(t!("Refresh"))
+            .tooltip(t!("Refresh (F5)"))
             .accessibility_label(t!("Refresh"))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.history.update(cx, |history, cx| history.load(cx));

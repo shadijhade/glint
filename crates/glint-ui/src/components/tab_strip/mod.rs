@@ -27,6 +27,7 @@
 //! the window can still be moved by it. Tabs and buttons `occlude` the mouse, so pressing one never starts a
 //! window drag.
 
+use crate::components::command_bar::keyed;
 use crate::explorer::{self, Drive, DriveKind, Explorer, Pane, Tab, TabId};
 use crate::kit::prelude::*;
 use crate::platform::dragdrop::{Answer, DropEffect, Under};
@@ -739,7 +740,7 @@ impl TabStrip {
                         .xsmall()
                         .icon(IconName::X)
                         .accessibility_label(t!("Close {name}", name = d.name))
-                        .tooltip(t!("Close tab"))
+                        .tooltip(keyed("Close tab ({0})", &[&crate::actions::CloseTab]))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.explorer.update(cx, |e, cx| e.close_tab(Some(id), cx));
                         })),
@@ -1067,7 +1068,7 @@ impl Render for TabStrip {
                 .small()
                 .icon(IconName::Plus)
                 .accessibility_label(t!("New tab"))
-                .tooltip(t!("New tab"))
+                .tooltip(keyed("New tab ({0})", &[&crate::actions::NewTab]))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     // A new tab goes where the keyboard is: this pane's button acts on this pane.
                     this.explorer.update(cx, |e, cx| {

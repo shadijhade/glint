@@ -1087,12 +1087,14 @@ impl CommandBar {
                 IconName::LayoutGrid,
                 keyed("Grid, with thumbnails ({0})", &[&actions::GridView]),
             ),
-            // Ctrl+Shift+9 in the TypeScript; nothing binds it here yet, so the tooltip doesn't promise it.
             (
                 ViewMode::Columns,
                 "view-columns",
                 IconName::Columns3,
-                t!("Columns: the folder above, this one, and what's in the focused one"),
+                keyed(
+                    "Columns: the folder above, this one, and what's in the focused one ({0})",
+                    &[&actions::ColumnsView],
+                ),
             ),
         ];
         row()

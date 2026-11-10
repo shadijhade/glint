@@ -216,6 +216,10 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
     let typst = entry.ext == "typ";
     let small = small_of(entry);
     let sheet = is_sheet(entry);
+    // E-books and comics, 3D models and asciinema recordings have one view of their own, named for what it does.
+    let book = readable(entry) && !is_archived(entry) && one_of(entry, &BOOKS);
+    let model = readable(entry) && !is_archived(entry) && one_of(entry, &MODELS);
+    let cast = readable(entry) && entry.ext == "cast";
     let choice = |view, label: SharedString, title: SharedString| ViewChoice { view, label, title };
     if notebook {
         views.push(choice(
@@ -224,6 +228,8 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
             t!("The notebook as it reads, its outputs included"),
         ));
         views.push(choice(View::Source, t!("Source"), t!("The notebook's JSON as written")));
+    } else if book {
+        views.push(choice(View::File, t!("Book"), t!("The book, to read")));
     } else if typst {
         views.push(choice(
             View::File,
@@ -241,6 +247,8 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
         if !matches!(small, Some(SmallKind::Outlook | SmallKind::Design)) {
             views.push(choice(View::Source, t!("Text"), t!("The file as written")));
         }
+    } else if model {
+        views.push(choice(View::File, t!("Model"), t!("The model, drawn")));
     } else if rendered_markdown(entry) {
         views.push(choice(View::File, t!("Rendered"), t!("The Markdown as it reads")));
         views.push(choice(View::Source, t!("Source"), t!("The Markdown as written")));
@@ -265,6 +273,9 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
                 t!("As Windows' previewer for it shows it (Excel's, with Office installed)"),
             ));
         }
+    } else if cast {
+        views.push(choice(View::File, t!("Play"), t!("The recording, played")));
+        views.push(choice(View::Source, t!("Text"), t!("The file as written")));
     } else {
         views.push(choice(View::File, t!("File"), t!("The file as it is")));
     }
@@ -381,7 +392,7 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         return Choice::of(if source { Body::Text } else { Body::Data });
     }
     if readable && entry.ext == "cast" {
-        return Choice::of(Body::Cast);
+        return Choice::of(if source { Body::Text } else { Body::Cast });
     }
     if readable && !archived && one_of(entry, &DOCX_EXTS) && entry.size <= DOCX_MAX {
         return Choice::of(Body::Docx);
@@ -606,6 +617,38 @@ mod tests {
         assert_eq!(views(&book, false)[1].title, "The notebook's JSON as written");
         assert_eq!(choose(&book, View::File).body, Body::Notebook);
         assert_eq!(choose(&book, View::Source).body, Body::Text);
+    }
+
+    #[test]
+    fn books_models_and_recordings_have_a_view_named_for_what_it_does() {
+        for (name, label, title) in [
+            ("a.epub", "Book", "The book, to read"),
+            ("a.cbz", "Book", "The book, to read"),
+            ("m.stl", "Model", "The model, drawn"),
+            ("m.glb", "Model", "The model, drawn"),
+            ("c.cast", "Play", "The recording, played"),
+        ] {
+            let entry = file("C:\\x", name, 10, 1);
+            let first = &views(&entry, false)[0];
+            assert_eq!(first.view, View::File, "{name}");
+            assert_eq!(first.label, label, "{name}");
+            assert_eq!(first.title, title, "{name}");
+        }
+        // A recording is also text; a book and a model are read as they are.
+        let cast = file("C:\\x", "c.cast", 10, 1);
+        assert_eq!(
+            labels(&cast, false),
+            pairs(&[(View::File, "Play"), (View::Source, "Text"), (View::Hex, "Hex")])
+        );
+        assert_eq!(choose(&cast, View::File).body, Body::Cast);
+        assert_eq!(choose(&cast, View::Source).body, Body::Text);
+        assert_eq!(
+            labels(&file("C:\\x", "a.epub", 10, 1), false),
+            pairs(&[(View::File, "Book"), (View::Hex, "Hex")])
+        );
+        // Inside an archive they aren't read from disk: the plain File view.
+        let inside = marked("a.epub", attr::IN_ARCHIVE);
+        assert_eq!(views(&inside, false)[0].label, "File");
     }
 
     #[test]

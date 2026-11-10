@@ -316,6 +316,10 @@ pub struct LocksDialog {
 
 impl LocksDialog {
     pub fn new(locks: Entity<Locks>, on_reveal: OnReveal, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        super::refresh_on_f5(cx, |this, _, cx| {
+            this.locks.update(cx, |locks, cx| locks.scan(cx));
+        });
         let redraw = cx.observe(&locks, |_, _, cx| cx.notify());
         let events = cx.subscribe_in(&locks, window, |_, _, event: &LocksEvent, window, cx| match event {
             LocksEvent::Ended { name, pid } => window.push_notification(
@@ -596,7 +600,7 @@ impl Render for LocksDialog {
                     .xsmall()
                     .icon(IconName::RefreshCw)
                     .loading(state == State::Loading && report.is_some())
-                    .tooltip(t!("Refresh"))
+                    .tooltip(t!("Refresh (F5)"))
                     .accessibility_label(t!("Refresh"))
                     .on_click(cx.listener(|this, _, _, cx| this.locks.update(cx, |locks, cx| locks.scan(cx)))),
             );
