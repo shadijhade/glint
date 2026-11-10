@@ -14,6 +14,11 @@ name = "glint_ui"
 # wave its features go and the modules are always built. (Wave 3's went with its integration.)
 [features]
 default = []
+# Wave 10.
+preview-player = []
+preview-pdf = []
+preview-books = []
+preview-3d = []
 
 [dependencies]
 # syntect: syntax highlighting for the text and code previews (pure Rust: fancy-regex, two-face's grammars).
@@ -55,6 +60,21 @@ windows = { workspace = true, features = [
     "ApplicationModel",
     # The batch rename dialog's local dates.
     "Win32_System_Time",
+    # Wave 10's native previews: PDF pages (Windows.Data.Pdf), video and audio (Media Foundation's media engine,
+    # frames copied through a Direct3D 11 texture), WinRT buffers. glint-core already builds most of these.
+    "Data_Pdf",
+    "Storage",
+    "Storage_Streams",
+    "Graphics_Imaging",
+    "Foundation_Collections",
+    "Win32_System_WinRT",
+    "Win32_System_Variant",
+    "Win32_Media_MediaFoundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Imaging",
 ] }
 
 # Headless window tests (gpui-kit's test module) need gpui-kit's test-support feature. It is a dev-dependency
