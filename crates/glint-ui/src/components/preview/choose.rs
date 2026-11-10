@@ -6,6 +6,7 @@
 //! and the body is the TypeScript's own fallback for it (Windows' previewer over the file's icon, or the
 //! file as text).
 
+use super::player::Kind as PlayerKind;
 use crate::dialogs::data_tools::DUCK_READS;
 use crate::t;
 use glint_model::entries::{
@@ -115,6 +116,16 @@ pub enum Body {
     Profile,
     /// The bytes (`preview::hex`).
     Hex,
+    /// Video or sound played with Media Foundation (`preview::player`; a copy first for one in an archive).
+    Player(PlayerKind),
+    /// PDF pages drawn with Windows.Data.Pdf (`preview::pdf`; a copy first for one in an archive).
+    Pdf,
+    /// A book read page by page: EPUB, FB2, comics (`preview::book`).
+    Book,
+    /// A Word document laid out without Office (`preview::docx`).
+    Docx,
+    /// A 3D model drawn and turned (`preview::model3d`).
+    Model,
     /// Windows' own previewer for the type, over `fallback`.
     Shell(Fallback),
     /// The kind's icon and nothing else.
@@ -313,8 +324,11 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         return Choice::of(Body::Icon);
     }
     if readable && !archived && one_of(entry, &BOOKS) {
-        // PORT ME(book): the reader (BookView.tsx: EPUB, MOBI, FB2, comics).
-        return Choice::later(Body::Shell(Fallback::Icon), "book");
+        if super::book::can_read(&entry.ext) {
+            return Choice::of(Body::Book);
+        }
+        // PORT ME(mobi): MOBI and AZW books (foliate's mobi.js); Windows' previewer meanwhile.
+        return Choice::later(Body::Shell(Fallback::Icon), "mobi");
     }
     // Its Text view is the file as it is, which goes on down the chain.
     if let Some(kind) = small_of(entry).filter(|_| !source) {
@@ -326,39 +340,11 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
     // In an archive, pictures, video, sound and PDFs are shown from a temp copy; text is read straight out of it.
     match kind_of(entry).preview {
         Some(PreviewKind::Image) => return Choice::of(Body::Picture),
-        // PORT ME(video): the player with Trim and the transcript (VideoPreview).
-        Some(PreviewKind::Video) => {
-            return Choice::later(
-                if archived {
-                    Body::Icon
-                } else {
-                    Body::Shell(Fallback::Icon)
-                },
-                "video",
-            )
-        }
-        // PORT ME(audio): the player with cover, waveform, Trim and transcript (AudioPreview).
-        Some(PreviewKind::Audio) => {
-            return Choice::later(
-                if archived {
-                    Body::Icon
-                } else {
-                    Body::Shell(Fallback::Icon)
-                },
-                "audio",
-            )
-        }
-        // PORT ME(pdf pages): PDF pages drawn natively (PdfPreview).
-        Some(PreviewKind::Pdf) => {
-            return Choice::later(
-                if archived {
-                    Body::Icon
-                } else {
-                    Body::Shell(Fallback::Icon)
-                },
-                "pdf pages",
-            )
-        }
+        // The player, with Trim, the waveform and the transcript (VideoPreview, AudioPreview).
+        Some(PreviewKind::Video) => return Choice::of(Body::Player(PlayerKind::Video)),
+        Some(PreviewKind::Audio) => return Choice::of(Body::Player(PlayerKind::Audio)),
+        // PDF pages drawn natively (PdfPreview).
+        Some(PreviewKind::Pdf) => return Choice::of(Body::Pdf),
         _ => {}
     }
     if !archived && one_of(entry, &SQLITE) {
@@ -383,8 +369,7 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         return Choice::later(Body::Text, "typst");
     }
     if readable && !archived && one_of(entry, &MODELS) {
-        // PORT ME(3d): the model drawn (ModelView).
-        return Choice::later(Body::Shell(Fallback::Icon), "3d");
+        return Choice::of(Body::Model);
     }
     if rendered_markdown(entry) {
         return Choice::of(if source { Body::Text } else { Body::Markdown });
@@ -397,8 +382,7 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
         return Choice::later(Body::Text, "cast");
     }
     if readable && !archived && one_of(entry, &DOCX_EXTS) && entry.size <= DOCX_MAX {
-        // PORT ME(docx): Word documents laid out without Office (DocxView).
-        return Choice::later(Body::Shell(Fallback::Icon), "docx");
+        return Choice::of(Body::Docx);
     }
     // Unknown extensions get a text preview attempt; the probe spots binary files.
     if kind_of(entry).preview == Some(PreviewKind::Text) || !is_known_type(entry) {
@@ -465,14 +449,16 @@ mod tests {
     #[test]
     fn kinds_the_port_has_not_reached_say_so_and_fall_back_as_the_typescript_did() {
         let later = |name: &str| choose(&file("C:\\x", name, 10, 1), View::File);
-        assert_eq!(later("movie.mp4").later, Some("video"));
-        assert_eq!(later("movie.mp4").body, Body::Shell(Fallback::Icon));
-        assert_eq!(later("song.mp3").later, Some("audio"));
-        assert_eq!(later("paper.pdf").later, Some("pdf pages"));
-        assert_eq!(later("book.epub").later, Some("book"));
-        assert_eq!(later("model.stl").later, Some("3d"));
-        assert_eq!(later("letter.docx").later, Some("docx"));
+        assert_eq!(later("book.mobi").later, Some("mobi"));
+        assert_eq!(later("book.mobi").body, Body::Shell(Fallback::Icon));
         // What has its previewer now says nothing is missing.
+        assert_eq!(later("movie.mp4").body, Body::Player(PlayerKind::Video));
+        assert_eq!(later("song.mp3").body, Body::Player(PlayerKind::Audio));
+        assert_eq!(later("paper.pdf").body, Body::Pdf);
+        assert_eq!(later("book.epub").body, Body::Book);
+        assert_eq!(later("comic.cbz").body, Body::Book);
+        assert_eq!(later("model.stl").body, Body::Model);
+        assert_eq!(later("letter.docx").body, Body::Docx);
         for ready in [
             "notes.md",
             "sheet.xlsx",
@@ -480,6 +466,12 @@ mod tests {
             "card.vcf",
             "tool.exe",
             "app.sqlite",
+            "movie.mp4",
+            "song.mp3",
+            "paper.pdf",
+            "book.epub",
+            "model.stl",
+            "letter.docx",
         ] {
             assert_eq!(later(ready).later, None, "{ready}");
         }
@@ -507,7 +499,12 @@ mod tests {
         assert_eq!(choose(&inside("a.txt"), View::File).body, Body::Text);
         assert_eq!(choose(&inside("a.md"), View::File).body, Body::Markdown);
         assert_eq!(choose(&inside("a.docx"), View::File).body, Body::Icon);
-        assert_eq!(choose(&inside("a.mp4"), View::File).body, Body::Icon);
+        // Video, sound and PDFs are played or drawn from a copy the view extracts itself.
+        assert_eq!(
+            choose(&inside("a.mp4"), View::File).body,
+            Body::Player(PlayerKind::Video)
+        );
+        assert_eq!(choose(&inside("a.pdf"), View::File).body, Body::Pdf);
         // A table in an archive is shown as the text it is.
         assert_eq!(choose(&inside("a.csv"), View::File).body, Body::Text);
     }
