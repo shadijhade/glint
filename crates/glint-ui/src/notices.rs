@@ -251,10 +251,8 @@ pub fn ask(question: &Ask, window: &mut Window, cx: &mut App) {
 /// The instant-search offer, kept up for the web app's 15 s.
 struct OfferToast;
 
-/// What searching tells the person.
-///
-/// PORT ME(coordinator): the web app made the instant-search offer once ever (`firstNotice`); the explorer
-/// makes it at most once a run until the saved state keeps a flag for it.
+/// What searching tells the person. The instant-search offer is made once ever (`firstNotice("offer-instant-search")`),
+/// remembered in the saved state (also from the old app's).
 pub fn find(notice: &FindNotice, window: &mut Window, cx: &mut App) {
     match notice {
         FindNotice::NothingBelowRecycleBin => window.push_notification(
@@ -263,6 +261,9 @@ pub fn find(notice: &FindNotice, window: &mut Window, cx: &mut App) {
             cx,
         ),
         FindNotice::OfferInstantSearch => {
+            if !crate::persistence::first_notice(cx, "offer-instant-search", "1") {
+                return;
+            }
             let offer = Notification::info(t!(
                 "It reads each drive's file table once and keeps up with every change. Windows asks for administrator approval."
             ))
@@ -372,8 +373,8 @@ fn updating_service() -> Notification {
 /// build than the app, it takes the one that ships with the app by itself when it can (from after 0.9, and when
 /// the build has the release's signature for it), with "Updating instant search…" while it does and "Instant
 /// search is updated" after. Otherwise it keeps running the version it had, and a notice offers the update with
-/// administrator approval. Nothing waits on the UI thread. NOTE(port): the web app offered it once per app
-/// version, remembered on disk; here it is once per run, since the saved state has no place for that yet.
+/// administrator approval, once per app version (`firstNotice("service-update-notice")`, remembered in the saved
+/// state, also from the old app's). Nothing waits on the UI thread.
 pub fn service_update(window: &mut Window, cx: &mut App) {
     // The main process looks after the service; a secondary window would offer the same update twice.
     if crate::platform::secondary::is_secondary() || cx.has_global::<ServiceChecked>() {
@@ -405,7 +406,11 @@ pub fn service_update(window: &mut Window, cx: &mut App) {
                         let version = now.version.clone().unwrap_or_else(|| now.app_version.clone());
                         window.push_notification(service_updated(&version), cx);
                     }
-                    Err(_) => offer_service_update(info.version.as_deref().unwrap_or_default(), window, cx),
+                    Err(_) => {
+                        if crate::persistence::first_notice(cx, "service-update-notice", &info.app_version) {
+                            offer_service_update(info.version.as_deref().unwrap_or_default(), window, cx);
+                        }
+                    }
                 }
             });
         })
@@ -1106,5 +1111,72 @@ mod service_tests {
         rig.window.executor().advance_clock(Duration::from_secs(16));
         rig.settle();
         assert_eq!(rig.notifications(), 0);
+    }
+
+    /// A run of the app on the state file at `path`: the saved state is read again, as at a start.
+    fn restart(rig: &mut Rig, path: &std::path::Path) {
+        rig.window.update(|_, cx| {
+            crate::persistence::init_at(cx, path.to_path_buf());
+            if cx.has_global::<ServiceChecked>() {
+                cx.remove_global::<ServiceChecked>();
+            }
+        });
+        rig.window.executor().advance_clock(Duration::from_secs(16));
+        rig.settle();
+    }
+
+    #[gpui_kit::test]
+    fn the_service_offer_is_made_once_per_app_version_across_restarts(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let dir = std::env::temp_dir().join(format!("glint-notices-service-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("makes the folder");
+        let path = dir.join("state.json");
+        let mut rig = rig(
+            cx,
+            Ok(info(IndexState::On, "0.9.0", "0.10.0")),
+            Err("not quietly".into()),
+            Err("never asked".into()),
+        );
+        restart(&mut rig, &path);
+        rig.start();
+        assert!(rig.has("Update"), "the first time for 0.10.0 it is offered");
+        rig.window.update(|_, cx| crate::persistence::save_now(cx));
+        // The next start, same app version: the quiet update is tried again, the offer is not made again.
+        restart(&mut rig, &path);
+        assert!(!rig.has("Update"));
+        rig.start();
+        assert_eq!(rig.asked().len(), 4, "status and update, twice");
+        assert!(!rig.has("Update"), "once per version");
+        assert_eq!(rig.notifications(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn the_instant_search_offer_is_made_once_ever_across_restarts(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let dir = std::env::temp_dir().join(format!("glint-notices-offer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("makes the folder");
+        let path = dir.join("state.json");
+        let mut rig = rig(
+            cx,
+            Ok(info(IndexState::On, "0.10.0", "0.10.0")),
+            Err("never asked".into()),
+            Err("never asked".into()),
+        );
+        restart(&mut rig, &path);
+        rig.window
+            .update(|window, cx| find(&FindNotice::OfferInstantSearch, window, cx));
+        assert!(rig.has("Turn on"));
+        rig.window.update(|_, cx| crate::persistence::save_now(cx));
+        restart(&mut rig, &path);
+        assert!(!rig.has("Turn on"), "the offer has gone by itself");
+        rig.window
+            .update(|window, cx| find(&FindNotice::OfferInstantSearch, window, cx));
+        rig.settle();
+        assert!(!rig.has("Turn on"), "never again");
+        assert_eq!(rig.notifications(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

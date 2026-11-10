@@ -983,11 +983,18 @@ impl Updater {
         let marks_path = self.config.marks.clone();
         let work_dir = self.config.work_dir.clone();
         let returning = self.config.returning;
+        // The first start after the old app: its `last-version` and `update-notice` carry over, so the update from
+        // it is greeted with the right version and an update notice already seen isn't shown again.
+        let imported = crate::old_settings::imported().map(|old| Marks {
+            last_version: old.last_version.clone(),
+            noticed: old.notices.get("update-notice").cloned(),
+        });
         cx.spawn(async move |this, cx| {
             let (marks, ()) = cx
                 .background_spawn(async move {
                     sweep(&work_dir, STALE_AFTER);
-                    (marks_path.as_deref().map(read_marks).unwrap_or_default(), ())
+                    let saved = marks_path.as_deref().filter(|path| path.exists()).map(read_marks);
+                    (saved.or(imported).unwrap_or_default(), ())
                 })
                 .await;
             let started = this.update(cx, |this, cx| {

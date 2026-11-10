@@ -474,9 +474,8 @@ fn open_in_new_tab_entry(folder: &str) -> Entry {
 }
 
 /// What New makes in the open folder: a text document, and the kinds of file Windows' New menu has (Word,
-/// Excel, a zip…) (`newMenuItems(false)`). The kinds' icons (File Explorer's own pictures) are drawn as a plain
-/// new-file icon.
-// PORT ME(new items): the TypeScript showed each kind's own icon (`image`); the menu has no picture items yet.
+/// Excel, a zip…) (`newMenuItems(false)`). Each kind shows its own icon (File Explorer's picture of it, from
+/// the kind's PNG), or a plain new-file icon when it has none.
 fn new_items(data: &MenuData) -> Vec<Node> {
     let mut items = vec![Node::Item(Entry::ask(
         t!("Text document"),
@@ -487,11 +486,56 @@ fn new_items(data: &MenuData) -> Vec<Node> {
         items.push(Node::Separator);
     }
     items.extend(data.new_kinds.iter().map(|kind| {
-        Node::Item(Entry::ask(
-            SharedString::from(kind.name.clone()),
-            IconName::FilePlus,
-            MenuEvent::NewOfKind { ext: kind.ext.clone() },
-        ))
+        Node::Item(
+            Entry::ask(
+                SharedString::from(kind.name.clone()),
+                IconName::FilePlus,
+                MenuEvent::NewOfKind { ext: kind.ext.clone() },
+            )
+            .with_data_url_picture(kind.icon.as_deref()),
+        )
     }));
     items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glint_core::newmenu::NewKind;
+
+    fn kind(ext: &str, name: &str, icon: Option<&str>) -> NewKind {
+        NewKind {
+            ext: ext.into(),
+            name: name.into(),
+            icon: icon.map(str::to_string),
+            by_app: false,
+        }
+    }
+
+    #[test]
+    fn each_kind_in_the_new_menu_carries_its_own_icon() {
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        let data = MenuData {
+            new_kinds: vec![
+                kind(".docx", "Microsoft Word Document", Some(png)),
+                kind(".zip", "Zip", None),
+            ],
+            ..MenuData::default()
+        };
+        let nodes = new_items(&data);
+        let entries: Vec<&Entry> = nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::Item(entry) => Some(entry),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(entries.len(), 3, "text document, then the two kinds");
+        // The text document keeps its icon.
+        assert!(entries[0].picture.is_none());
+        assert!(entries[1].picture.is_some(), "Word has the picture File Explorer shows");
+        assert_eq!(entries[1].icon, Some(IconName::FilePlus));
+        // A kind with no icon falls back to the new-file icon.
+        assert!(entries[2].picture.is_none());
+    }
 }

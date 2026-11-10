@@ -103,21 +103,10 @@ pub fn place_of(repository: &str) -> SharedString {
     }
 }
 
-/// "backup 2026-11-09", for a restored copy's name.
-// PORT ME(coordinator): the TypeScript used the local date; glint-ui has no time-zone helper, so this is the UTC date.
+/// "backup 2026-11-09", for a restored copy's name (the local date, as the TypeScript's `getFullYear` and friends
+/// read it).
 pub fn backup_label(time_ms: i64) -> String {
-    let days = time_ms.div_euclid(86_400_000);
-    // Howard Hinnant's civil-from-days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("backup {year}-{month:02}-{day:02}")
+    format!("backup {}", super::batch_rename::iso_date(time_ms))
 }
 
 // ---- The model --------------------------------------------------------------------------------------------
@@ -1065,7 +1054,7 @@ mod tests {
             plan: "docs".into(),
             repository: "rclone:gdrive:backups".into(),
             snapshot: "abc123".into(),
-            time: 1_700_000_000_000,
+            time: 1_699_964_000_000,
             dir,
         }
     }
@@ -1202,7 +1191,8 @@ mod tests {
     fn words_dates_and_places_follow_the_typescript() {
         let _guard = testing::lock();
         assert_eq!(backup_label(0), "backup 1970-01-01");
-        assert_eq!(backup_label(1_700_000_000_000), "backup 2023-11-14");
+        // Midday in Greenwich, so any zone near it is still on the same date.
+        assert_eq!(backup_label(1_699_964_000_000), "backup 2023-11-14");
         assert_eq!(place_of("rclone:gdrive:backups"), "gdrive (a cloud)");
         assert_eq!(place_of("D:\\Backups"), "D:\\Backups");
         let exact = version(1, false, true, false);
@@ -1240,7 +1230,7 @@ mod tests {
         assert_eq!(role_of(&mut visual, "Glint's backups"), Some(Role::Group));
         assert!(has(
             &mut visual,
-            &format!("{}. Backed up to gdrive (a cloud)", format_full_date(1_700_000_000_000))
+            &format!("{}. Backed up to gdrive (a cloud)", format_full_date(1_699_964_000_000))
         ));
         // The shadow copies were named for tabs and crumbs.
         assert!(glint_model::paths::shadow_name(&a.path).starts_with("C: on "));

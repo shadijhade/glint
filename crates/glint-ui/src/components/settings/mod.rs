@@ -120,6 +120,22 @@ struct Open(WeakEntity<SettingsView>);
 
 impl Global for Open {}
 
+/// The shortcut another app was last said to hold ([`tell_quick_taken`]), for a Settings opened afterwards.
+#[derive(Default)]
+struct QuickTaken(Option<String>);
+
+impl Global for QuickTaken {}
+
+/// Says that another app holds the quick search shortcut `shortcut` (`None`: it is free now, or none is asked
+/// for): the open Settings view's Shortcut row warns about it, and so does one opened later. Call it where
+/// `platform::tray::set_hotkey` fails or succeeds.
+pub fn tell_quick_taken(shortcut: Option<String>, cx: &mut App) {
+    cx.set_global(QuickTaken(shortcut.clone()));
+    if let Some(open) = cx.try_global::<Open>().and_then(|open| open.0.upgrade()) {
+        open.update(cx, |view, cx| view.set_quick_taken(shortcut, cx));
+    }
+}
+
 /// Settings: the section names, and the page of sections.
 pub struct SettingsView {
     pub(crate) backend: Arc<dyn Backend>,
@@ -130,8 +146,8 @@ pub struct SettingsView {
     /// A section asked for as Settings opened, scrolled to once the page knows where the sections are.
     pending_section: Option<String>,
     /// A shortcut another app holds, when the tray could not take it (`quickTaken`).
-    // PORT ME(coordinator): `platform::tray::set_hotkey` knows when another app holds the shortcut (it errors) but
-    // startup.rs only words it as a notice; tell the open view with `set_quick_taken` when that happens.
+    // Told by whoever registers the hotkey, through [`tell_quick_taken`] (the open view hears it at once; a Settings
+    // opened later starts with what was last said).
     quick_taken: Option<String>,
     // What is typed.
     pub(crate) default_search_path: Entity<InputState>,
@@ -282,7 +298,7 @@ impl SettingsView {
             focus: cx.focus_handle(),
             order: Vec::new(),
             pending_section: section.map(str::to_string),
-            quick_taken: None,
+            quick_taken: cx.try_global::<QuickTaken>().and_then(|taken| taken.0.clone()),
             default_search_path,
             editor_path,
             yara_rules,
@@ -610,4 +626,44 @@ pub fn open_with(
     let focus = view.read(cx).focus.clone();
     window.defer(cx, move |window, cx| window.focus(&focus, cx));
     view
+}
+
+#[cfg(test)]
+mod quick_taken_tests {
+    use super::tests::{open_settings, Fake};
+    use super::*;
+    use crate::testing;
+    use gpui_kit::TestAppContext;
+
+    #[gpui_kit::test]
+    fn the_open_view_hears_a_shortcut_another_app_holds_and_a_later_one_starts_with_it(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let fake = Arc::new(Fake::new());
+        let (mut visual, view) = open_settings(cx, &fake, None);
+        assert_eq!(
+            view.read_with(&visual, |v, _| v.quick_taken().map(str::to_string)),
+            None
+        );
+        visual.update(|_, cx| tell_quick_taken(Some("Ctrl+Alt+Space".to_string()), cx));
+        assert_eq!(
+            view.read_with(&visual, |v, _| v.quick_taken().map(str::to_string))
+                .as_deref(),
+            Some("Ctrl+Alt+Space")
+        );
+        // Settings opened afterwards starts with what was last said.
+        let (visual, later) = open_settings(cx, &fake, None);
+        assert_eq!(
+            later
+                .read_with(&visual, |v, _| v.quick_taken().map(str::to_string))
+                .as_deref(),
+            Some("Ctrl+Alt+Space")
+        );
+        // Free again.
+        let mut visual = visual;
+        visual.update(|_, cx| tell_quick_taken(None, cx));
+        assert_eq!(
+            later.read_with(&visual, |v, _| v.quick_taken().map(str::to_string)),
+            None
+        );
+    }
 }

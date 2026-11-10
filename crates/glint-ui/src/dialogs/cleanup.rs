@@ -25,7 +25,6 @@
 //! real extension, all or none.
 //!
 //! **Differences from the web page, and why.**
-//! - The `select` boxes ("At least", "Match", "Compare") are rows of buttons: the kit has no select yet.
 //! - Rows are one height, so the list can be virtualized (it can hold 5,000); the page let them differ.
 //! - The tools Czkawka and FFmpeg are looked for the first time a kind that needs them is picked, not when
 //!   the dialog opens. Installing them is [`Source::install`]; the card is drawn here because Settings'
@@ -46,7 +45,6 @@ use glint_model::entries::{with_details, FileEntry, RawEntry};
 use glint_model::file_types::{is_picture_or_video, kind_of};
 use glint_model::format::{format_count, format_date, format_duration, format_size, plural};
 use glint_model::paths::{base_name, parent_path};
-use gpui_kit::base::actions::Confirm;
 use gpui_kit::UniformListScrollHandle;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -595,6 +593,26 @@ pub fn alike_label(level: usize) -> SharedString {
         1 => t!("Very similar"),
         _ => t!("Similar"),
     }
+}
+
+/// The titles of the "At least" box, in [`SIZES`] order.
+fn size_titles() -> Vec<SharedString> {
+    SIZES.iter().map(|&size| format_size(size).into()).collect()
+}
+
+/// The titles of the "Match" box, in [`ALIKE`] order.
+fn alike_titles() -> Vec<SharedString> {
+    (0..ALIKE.len()).map(alike_label).collect()
+}
+
+/// The titles of the "Compare" box: tags, then sound.
+fn compare_titles() -> Vec<SharedString> {
+    vec![t!("Tags: title and artist"), t!("How they sound (slower)")]
+}
+
+/// Where `size` is in the "At least" box (none for a size the box doesn't offer).
+fn size_at(size: u64) -> Option<IndexPath> {
+    SIZES.iter().position(|&s| s == size).map(IndexPath::new)
 }
 
 /// The choices that shape a scan (`Options`).
@@ -1498,19 +1516,17 @@ struct Snap {
 /// What picking an item does: its place in the group.
 type PickFn = dyn Fn(usize, &mut Window, &mut App);
 
-/// The two kinds of group where one item is picked.
+/// A group where one item is picked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pick {
     /// A vertical list of tabs (the kinds): Up and Down move and pick.
     Tab,
-    /// A row of radio buttons (an option): Left and Right move and pick, mirrored in right to left.
-    Radio,
 }
 
 /// One item of a group where one is picked: the item is the control (focusable, with its role, name and state),
 /// so a screen reader hears "Big files, tab, selected". Add its content with `.child(..)`. Enter and Space pick
-/// it; the arrows move to a neighbour and pick it, as native tabs and radio buttons do. Only the picked item is
-/// a tab stop, so Tab passes through the group in one stop.
+/// it; the arrows move to a neighbour and pick it, as native tabs do. Only the picked item is a tab stop, so Tab
+/// passes through the group in one stop.
 #[allow(clippy::too_many_arguments)] // Each is a different thing a control is made of; a struct would only rename them.
 fn pick_item(
     id: impl Into<ElementId>,
@@ -1530,16 +1546,9 @@ fn pick_item(
     let item = row_start()
         .id(id)
         .when_some(focus, |item, focus| item.track_focus(&focus.tab_stop(on)))
-        .role(if pick == Pick::Tab {
-            Role::Tab
-        } else {
-            Role::RadioButton
-        })
+        .role(Role::Tab)
         .aria_label(label)
-        .when(pick == Pick::Tab, |item| item.aria_selected(on))
-        .when(pick == Pick::Radio, |item| {
-            item.aria_toggled(if on { Toggled::True } else { Toggled::False })
-        })
+        .aria_selected(on)
         .test_support()
         .cursor_pointer()
         .gap(space(2.))
@@ -1556,15 +1565,10 @@ fn pick_item(
             }
         })
         .on_key_down(move |event, window, cx| {
-            let rtl = i18n::is_rtl();
             let to = match (pick, event.keystroke.key.as_str()) {
                 (_, "enter" | "space") => Some(at),
                 (Pick::Tab, "down") => at.checked_add(1),
                 (Pick::Tab, "up") => at.checked_sub(1),
-                (Pick::Radio, "right") if rtl => at.checked_sub(1),
-                (Pick::Radio, "right") => at.checked_add(1),
-                (Pick::Radio, "left") if rtl => at.checked_add(1),
-                (Pick::Radio, "left") => at.checked_sub(1),
                 _ => None,
             };
             let Some(to) = to.filter(|&to| to < handles.len()) else {
@@ -1591,15 +1595,6 @@ fn pick_item(
             .when(!on, |item| {
                 item.text_color(t.muted_foreground)
                     .hover(|item| item.bg(t.foreground.opacity(0.05)).text_color(t.foreground))
-            }),
-        Pick::Radio => item
-            .h(rems(1.5))
-            .text_size(theme::size::XS)
-            .border_color(if on { t.primary } else { t.border })
-            .when(on, |item| item.bg(t.primary.opacity(0.1)).text_color(t.foreground))
-            .when(!on, |item| {
-                item.text_color(t.muted_foreground)
-                    .hover(|item| item.bg(t.accent.opacity(0.5)))
             }),
     }
 }
@@ -1628,8 +1623,10 @@ pub struct CleanupDialog {
     root_focus: FocusHandle,
     /// One for each kind in the list, in `Kind::ALL` order (the arrow keys move between them).
     tab_focus: Rc<Vec<FocusHandle>>,
-    /// One for each button of an option row (the longest has five).
-    choice_focus: Rc<Vec<FocusHandle>>,
+    /// The option boxes: "At least" (Big files), "Match" (look-alikes), "Compare" (music).
+    at_least: Entity<SelectState<Vec<SharedString>>>,
+    alike: Entity<SelectState<Vec<SharedString>>>,
+    compare: Entity<SelectState<Vec<SharedString>>>,
     scroll: UniformListScrollHandle,
     /// The line the keyboard is on.
     cursor: usize,
@@ -1644,7 +1641,33 @@ impl CleanupDialog {
         let thumbs = thumbnail::thumbnails(cx);
         let viewer = cx.entity_id();
         let service = thumbs.clone();
+        let options = model.read(cx).options();
+        let at_least = cx.new(|cx| SelectState::new(size_titles(), size_at(options.at_least), window, cx));
+        let alike = cx.new(|cx| SelectState::new(alike_titles(), Some(IndexPath::new(options.alike)), window, cx));
+        let compare = cx.new(|cx| {
+            SelectState::new(
+                compare_titles(),
+                Some(IndexPath::new(usize::from(options.by_sound))),
+                window,
+                cx,
+            )
+        });
         let subscriptions = vec![
+            cx.subscribe(&at_least, |this, _, event: &SelectEvent<Vec<SharedString>>, cx| {
+                if let SelectEvent::Confirm(Some(title)) = event {
+                    this.pick_size(title, cx);
+                }
+            }),
+            cx.subscribe(&alike, |this, _, event: &SelectEvent<Vec<SharedString>>, cx| {
+                if let SelectEvent::Confirm(Some(title)) = event {
+                    this.pick_alike(title, cx);
+                }
+            }),
+            cx.subscribe(&compare, |this, _, event: &SelectEvent<Vec<SharedString>>, cx| {
+                if let SelectEvent::Confirm(Some(title)) = event {
+                    this.pick_compare(title, cx);
+                }
+            }),
             cx.observe(&model, |_, _, cx| cx.notify()),
             cx.observe(&thumbs, |_, _, cx| cx.notify()),
             cx.subscribe_in(&model, window, |this, _, event: &CleanupEvent, window, cx| {
@@ -1665,7 +1688,9 @@ impl CleanupDialog {
             focus: cx.focus_handle().tab_stop(true),
             root_focus: cx.focus_handle(),
             tab_focus: Rc::new(Kind::ALL.iter().map(|_| cx.focus_handle()).collect()),
-            choice_focus: Rc::new(SIZES.iter().map(|_| cx.focus_handle()).collect()),
+            at_least,
+            alike,
+            compare,
             scroll: UniformListScrollHandle::new(),
             cursor: 0,
             shown: 0,
@@ -1990,93 +2015,114 @@ impl CleanupDialog {
         nav
     }
 
-    /// A row of radio buttons to pick one of a few (the page's `select` boxes).
-    ///
-    /// PORT ME(coordinator): when the kit has a Select, the page's three `select` boxes can be those again.
-    fn choice(
+    /// One of the page's `select` boxes: its label, then the drop-down.
+    fn select_row(
         id: &'static str,
         label: SharedString,
-        choices: Vec<(SharedString, bool)>,
-        handles: Rc<Vec<FocusHandle>>,
-        on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+        state: &Entity<SelectState<Vec<SharedString>>>,
         t: &theme::Tokens,
     ) -> impl IntoElement {
-        let on_pick: Rc<PickFn> = Rc::new(on_pick);
-        let group = Rc::new(handles.iter().take(choices.len()).cloned().collect::<Vec<_>>());
         row_start()
             .id(id)
-            .role(Role::RadioGroup)
-            .aria_label(label.clone())
             .test_support()
             .flex_none()
+            .items_center()
             .gap(space(1.5))
             .text_size(theme::size::XS)
-            .child(div().text_color(t.muted_foreground).child(label))
-            .children(choices.into_iter().enumerate().map(|(i, (name, on))| {
-                pick_item(
-                    (id, i),
-                    Pick::Radio,
-                    name.clone(),
-                    on,
-                    i,
-                    group.clone(),
-                    t,
-                    on_pick.clone(),
-                )
-                .child(name)
-            }))
+            .child(div().text_color(t.muted_foreground).child(label.clone()))
+            .child(
+                div()
+                    .w(space(44.))
+                    .child(Select::new(state).id((id, 0_usize)).small().accessibility_label(label)),
+            )
+    }
+
+    /// "At least" was picked: the scan looks again with the new size.
+    fn pick_size(&mut self, title: &SharedString, cx: &mut Context<Self>) {
+        let Some(&size) = size_titles().iter().position(|t| t == title).and_then(|i| SIZES.get(i)) else {
+            return;
+        };
+        if self.model.read(cx).options().at_least != size {
+            self.model
+                .update(cx, |model, cx| model.change_options(|o| o.at_least = size, cx));
+        }
+    }
+
+    /// "Match" was picked.
+    fn pick_alike(&mut self, title: &SharedString, cx: &mut Context<Self>) {
+        let Some(level) = alike_titles().iter().position(|t| t == title) else {
+            return;
+        };
+        if self.model.read(cx).options().alike != level {
+            self.model
+                .update(cx, |model, cx| model.change_options(|o| o.alike = level, cx));
+        }
+    }
+
+    /// "Compare" was picked: tags, or how the songs sound.
+    fn pick_compare(&mut self, title: &SharedString, cx: &mut Context<Self>) {
+        let Some(sound) = compare_titles().iter().position(|t| t == title).map(|i| i == 1) else {
+            return;
+        };
+        if self.model.read(cx).options().by_sound != sound {
+            self.model
+                .update(cx, |model, cx| model.change_options(|o| o.by_sound = sound, cx));
+        }
+    }
+
+    /// Shows the boxes' choices as the options in force are (the model is the truth; a language change also
+    /// re-words the titles).
+    fn sync_selects(&mut self, options: &Options, window: &mut Window, cx: &mut Context<Self>) {
+        fn show(
+            state: &Entity<SelectState<Vec<SharedString>>>,
+            titles: Vec<SharedString>,
+            wanted: Option<IndexPath>,
+            window: &mut Window,
+            cx: &mut Context<CleanupDialog>,
+        ) {
+            let (words_changed, shown) = {
+                let read = state.read(cx);
+                let same = read
+                    .selected_value()
+                    .is_none_or(|title| titles.iter().any(|t| t == title));
+                (!same, read.selected_index(cx))
+            };
+            if words_changed {
+                state.update(cx, |state, cx| state.set_items(titles, window, cx));
+            }
+            if words_changed || shown != wanted {
+                state.update(cx, |state, cx| state.set_selected_index(wanted, window, cx));
+            }
+        }
+        show(&self.at_least, size_titles(), size_at(options.at_least), window, cx);
+        show(
+            &self.alike,
+            alike_titles(),
+            Some(IndexPath::new(options.alike)),
+            window,
+            cx,
+        );
+        show(
+            &self.compare,
+            compare_titles(),
+            Some(IndexPath::new(usize::from(options.by_sound))),
+            window,
+            cx,
+        );
     }
 
     /// What the kind looks for, and the options that shape it.
     fn options_bar(&self, snap: &Snap, t: &theme::Tokens) -> impl IntoElement {
-        let model = self.model.clone();
-        let options = snap.options;
         let picker = match snap.kind {
-            Kind::Big => Some(
-                Self::choice(
-                    "cleanup-at-least",
-                    t!("At least"),
-                    SIZES
-                        .iter()
-                        .map(|&size| (format_size(size).into(), size == options.at_least))
-                        .collect(),
-                    self.choice_focus.clone(),
-                    move |i, _, cx| {
-                        if let Some(&size) = SIZES.get(i) {
-                            model.update(cx, |model, cx| model.change_options(|o| o.at_least = size, cx));
-                        }
-                    },
-                    t,
-                )
-                .into_any_element(),
-            ),
-            Kind::Images | Kind::Videos => Some(
-                Self::choice(
-                    "cleanup-match",
-                    t!("Match"),
-                    (0..ALIKE.len())
-                        .map(|level| (alike_label(level), level == options.alike))
-                        .collect(),
-                    self.choice_focus.clone(),
-                    move |i, _, cx| model.update(cx, |model, cx| model.change_options(|o| o.alike = i, cx)),
-                    t,
-                )
-                .into_any_element(),
-            ),
-            Kind::Music => Some(
-                Self::choice(
-                    "cleanup-compare",
-                    t!("Compare"),
-                    vec![
-                        (t!("Tags: title and artist"), !options.by_sound),
-                        (t!("How they sound (slower)"), options.by_sound),
-                    ],
-                    self.choice_focus.clone(),
-                    move |i, _, cx| model.update(cx, |model, cx| model.change_options(|o| o.by_sound = i == 1, cx)),
-                    t,
-                )
-                .into_any_element(),
-            ),
+            Kind::Big => {
+                Some(Self::select_row("cleanup-at-least", t!("At least"), &self.at_least, t).into_any_element())
+            }
+            Kind::Images | Kind::Videos => {
+                Some(Self::select_row("cleanup-match", t!("Match"), &self.alike, t).into_any_element())
+            }
+            Kind::Music => {
+                Some(Self::select_row("cleanup-compare", t!("Compare"), &self.compare, t).into_any_element())
+            }
             _ => None,
         };
         row_start()
@@ -2723,6 +2769,7 @@ impl Render for CleanupDialog {
 
         let header = self.header(&snap, &t, &mono, cx);
         let nav = self.nav(&snap, &t, cx);
+        self.sync_selects(&snap.options, window, cx);
         let options = self.options_bar(&snap, &t);
         let results = self.results(&snap, height, &t, window, cx);
         let footer = self.footer(&snap, &t, cx);
@@ -3048,6 +3095,16 @@ mod tests {
         cx.update(|window, cx| {
             window.render_frame(cx);
             window.click(id, cx);
+        });
+        cx.run_until_parked();
+    }
+
+    /// Picks `title` in one of the option boxes, as its list does when an item is chosen (the headless windows
+    /// don't open the list's popup, so its `Confirm` event is sent from the box).
+    fn confirm(cx: &mut VisualTestContext, state: &Entity<SelectState<Vec<SharedString>>>, title: &str) {
+        let title = SharedString::from(title.to_string());
+        cx.update(|_, cx| {
+            state.update(cx, |_, cx| cx.emit(SelectEvent::Confirm(Some(title))));
         });
         cx.run_until_parked();
     }
@@ -3577,7 +3634,7 @@ mod tests {
         // Nothing is looked for until it is there, and the kind's own options are shown meanwhile.
         assert!(fake.scans().is_empty());
         assert!(has(&mut visual, "Install Czkawka"));
-        assert_eq!(role_of(&mut visual, "Match"), Some(Role::RadioGroup));
+        assert_eq!(role_of(&mut visual, "Match"), Some(Role::ComboBox));
 
         click(&mut visual, ("cleanup-install", 0_usize));
         settle(&mut visual, |cx| has(cx, "a-small.jpg"));
@@ -3615,7 +3672,7 @@ mod tests {
         visual.run_until_parked();
         // Looking: a status line and a Stop button, and the options of the kind.
         assert_eq!(role_of(&mut visual, "Looking below “Repos”…"), Some(Role::Status));
-        assert_eq!(role_of(&mut visual, "At least"), Some(Role::RadioGroup));
+        assert_eq!(role_of(&mut visual, "At least"), Some(Role::ComboBox));
         let before = fake.cancels.load(Ordering::SeqCst);
         click(&mut visual, "cleanup-stop");
         settle(&mut visual, |cx| has(cx, "Stopped before it finished"));
@@ -3838,13 +3895,28 @@ mod tests {
         fake.answer(Kind::Music, Answer::Found(Scan::default()));
         let _view = open_dialog(&mut visual, "C:\\Repos", Kind::Big, &fake);
         settle(&mut visual, |cx| has(cx, "a.iso"));
-        click(&mut visual, ("cleanup-at-least", 3_usize));
+        // The box shows the size in force; picking another from its list looks again.
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find_by_label("At least").is_some());
+        });
+        let at_least = _view.read_with(&visual, |v, _| v.at_least.clone());
+        confirm(&mut visual, &at_least, "4.0 GB");
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find_by_label("At least").value(),
+                Some("4.0 GB"),
+                "the box shows it"
+            );
+        });
         settle(&mut visual, |_| fake.scans().len() == 2);
         assert_eq!(fake.scans()[1], Mode::Big { at_least: 4 * GB });
         // Another kind's own option.
         click(&mut visual, ("cleanup-kind", 6_usize));
         settle(&mut visual, |_| fake.scans().len() == 3);
-        click(&mut visual, ("cleanup-compare", 1_usize));
+        let compare = _view.read_with(&visual, |v, _| v.compare.clone());
+        confirm(&mut visual, &compare, "How they sound (slower)");
         settle(&mut visual, |_| fake.scans().len() == 4);
         assert_eq!(fake.scans()[3], Mode::Music { by_sound: true });
     }
@@ -3979,7 +4051,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn kinds_are_tabs_and_options_are_radio_buttons_the_arrows_walk(cx: &mut TestAppContext) {
+    fn kinds_are_tabs_the_arrows_walk_and_options_are_boxes(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let mut visual = window(cx);
         let fake = Fake::new();
@@ -4000,10 +4072,8 @@ mod tests {
         visual.update(|window, _| {
             assert_eq!(window.find_by_label("Big files").selected(), Some(true));
             assert_eq!(window.find_by_label("Temporary files").selected(), Some(false));
-            assert_eq!(window.find_by_label("1.0 GB").checked(), Some(true));
-            assert_eq!(window.find_by_label("100 MB").checked(), Some(false));
+            assert_eq!(window.find_by_label("At least").value(), Some("1.0 GB"));
         });
-        let radios = view.read_with(&visual, |view, _| view.choice_focus.clone());
         let tabs = view.read_with(&visual, |view, _| view.tab_focus.clone());
         let focus = |cx: &mut VisualTestContext, handle: &FocusHandle| {
             let handle = handle.clone();
@@ -4013,32 +4083,12 @@ mod tests {
             });
         };
 
-        // Right moves to the next size and picks it; Left goes back.
-        focus(&mut visual, &radios[2]);
-        visual.update(|window, cx| window.press("right", cx));
-        settle(&mut visual, |_| fake.scans().len() == 2);
-        assert_eq!(fake.scans()[1], Mode::Big { at_least: 4 * GB });
-        visual.update(|window, cx| window.press("left", cx));
-        settle(&mut visual, |_| fake.scans().len() == 3);
-        assert_eq!(fake.scans()[2], Mode::Big { at_least: GB });
-        // Enter on the one picked does nothing again.
-        settle(&mut visual, |cx| has(cx, "a.iso"));
-        visual.update(|window, cx| window.press("enter", cx));
-        visual.run_until_parked();
-        assert_eq!(fake.scans().len(), 3);
-        // Mirrored, Left is the way to the next one.
-        testing::set_rtl(true);
-        focus(&mut visual, &radios[2]);
-        visual.update(|window, cx| window.press("left", cx));
-        settle(&mut visual, |_| fake.scans().len() == 4);
-        assert_eq!(fake.scans()[3], Mode::Big { at_least: 4 * GB });
-        testing::set_rtl(false);
-
         // Down on a kind moves to the next one and picks it (looking for it the first time).
         focus(&mut visual, &tabs[3]);
         visual.update(|window, cx| window.press("down", cx));
         settle(&mut visual, |cx| has(cx, "a.jpg"));
-        assert_eq!(fake.scans()[4], Mode::Images { alike: 6 });
+        assert_eq!(fake.scans()[1], Mode::Images { alike: 6 });
+        visual.update(|window, _| assert_eq!(window.find_by_label("Match").value(), Some("Very similar")));
         visual.update(|window, _| {
             assert_eq!(window.find_by_label("Look-alike pictures").selected(), Some(true));
             assert_eq!(window.find_by_label("Big files").selected(), Some(false));

@@ -12,6 +12,7 @@ use super::event::MenuEvent;
 use crate::actions::{self, BINDINGS};
 use crate::kit::prelude::*;
 use glint_model::paths::THIS_PC;
+use std::sync::Arc;
 
 /// One thing in a menu.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +55,9 @@ pub struct Entry {
     pub label: SharedString,
     /// Its picture; none for a row that is only a check mark.
     pub icon: Option<IconName>,
+    /// A picture of its own (an app's icon, as File Explorer shows it) drawn in the icon's place: the New menu's
+    /// kinds of file (`image` in Menu.tsx). `icon` stays as what a row falls back to.
+    pub picture: Option<Arc<Image>>,
     /// The key it has elsewhere, as text ("Ctrl+C").
     pub hint: Option<SharedString>,
     /// Greyed out and not chosen.
@@ -74,6 +78,7 @@ impl Entry {
         Entry {
             label,
             icon: Some(icon),
+            picture: None,
             hint: None,
             disabled: false,
             danger: false,
@@ -105,6 +110,13 @@ impl Entry {
         let mut entry = Entry::new(label, icon, Run::Nothing);
         entry.disabled = true;
         entry
+    }
+
+    /// Draws the picture a `data:image/png;base64,…` address holds in the icon's place (`image: kind.icon`). An
+    /// address that is none, or isn't a PNG picture, leaves the row with its icon.
+    pub fn with_data_url_picture(mut self, url: Option<&str>) -> Entry {
+        self.picture = url.and_then(png_from_data_url).map(Arc::new);
+        self
     }
 
     /// Shows `text` as the key (for a row whose key isn't an action: "Shift+right-click").
@@ -153,6 +165,13 @@ impl Entry {
     pub fn node(self) -> Option<Node> {
         Some(Node::Item(self))
     }
+}
+
+/// The PNG a `data:image/png;base64,…` address holds.
+fn png_from_data_url(url: &str) -> Option<Image> {
+    let data = url.strip_prefix("data:image/png;base64,")?;
+    let bytes = crate::components::preview::markdown::base64_decode(data).filter(|bytes| !bytes.is_empty())?;
+    Some(Image::from_bytes(ImageFormat::Png, bytes))
 }
 
 /// `Some(node)` when `condition`: the TypeScript's `condition && { ... }` in a menu's array.
@@ -364,6 +383,27 @@ pub fn is_this_pc(folder: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BLANK_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn a_png_address_gives_the_row_its_own_picture_and_anything_else_keeps_the_icon() {
+        let row = |url: Option<&str>| {
+            Entry::task("Word".into(), IconName::FilePlus, Task::RefreshDrives).with_data_url_picture(url)
+        };
+        let with = row(Some(BLANK_PNG));
+        assert!(with
+            .picture
+            .as_ref()
+            .is_some_and(|image| image.format == ImageFormat::Png));
+        // The icon stays as what the row falls back to.
+        assert_eq!(with.icon, Some(IconName::FilePlus));
+        assert!(row(None).picture.is_none());
+        assert!(row(Some("data:image/jpeg;base64,AAAA")).picture.is_none());
+        assert!(row(Some("data:image/png;base64,")).picture.is_none());
+        assert!(row(Some("data:image/png;base64,***")).picture.is_none());
+        assert!(row(Some("C:\\icon.png")).picture.is_none());
+    }
 
     fn item(label: &str) -> Node {
         Entry::task(label.to_string().into(), IconName::File, Task::RefreshDrives)

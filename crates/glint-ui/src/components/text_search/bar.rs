@@ -400,17 +400,22 @@ impl TextSearch {
             "Meaning search ranks passages by what they're about, with a small model (Model2Vec's potion-base-8M, 30 MB, MIT) downloaded once from Hugging Face and checked against its pinned checksum. What you search for never leaves this PC."
         );
         let control = if self.meaning_downloading {
+            // "Downloading 2.1 MB of 30 MB" once the download says how far it is.
+            let progress = model
+                .meaning_progress()
+                .map(tools::describe_progress)
+                .unwrap_or_else(|| t!("Downloading…"));
             row_start()
                 .gap(space(2.))
                 .child(
                     div()
                         .id("text-meaning-progress")
                         .role(Role::Status)
-                        .aria_label(t!("Downloading…"))
+                        .aria_label(progress.clone())
                         .test_support()
                         .text_size(theme::size::XS)
                         .text_color(t.muted_foreground)
-                        .child(t!("Downloading…")),
+                        .child(progress),
                 )
                 .child(
                     Button::new("text-meaning-stop")

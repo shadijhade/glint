@@ -39,6 +39,9 @@ pub mod prelude {
         ResizableState, ScrollableElement, Scrollbar, Selectable, Sizable, Spinner, Switch, TableDelegate, TableState,
         TitleBar, WindowExt,
     };
+    pub use super::{
+        Confirm, IndexPath, Select, SelectEvent, SelectState, Slider, SliderEvent, SliderState, SliderValue,
+    };
     pub use gpui_kit::prelude::*;
     pub use gpui_kit::*;
     // With gpui-kit's test-support, `gpui_kit::*` brings GPUI's own `test` macro, which would shadow Rust's
@@ -150,6 +153,8 @@ pub fn kind_icon(icon: glint_model::file_types::Icon) -> IconName {
         K::SquareTerminal => IconName::SquareTerminal,
     }
 }
+/// The action Enter makes in a dialog (`on_action(cx.listener(|this, _: &Confirm, ..| ..))`).
+pub use gpui_kit::base::actions::Confirm;
 /// A scrollable element's scrollbar (`.overflow_y_scrollbar()` and friends) and the base Scrollbar.
 pub use gpui_kit::base::Scrollbar;
 pub use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
@@ -163,11 +168,17 @@ pub use gpui_kit::component::kbd::Kbd;
 pub use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 pub use gpui_kit::component::notification::Notification;
 pub use gpui_kit::component::scroll::ScrollableElement;
+/// A drop-down list (`Select` over a `SelectState<Vec<SharedString>>` entity; it emits `SelectEvent::Confirm`).
+pub use gpui_kit::component::select::{Select, SelectEvent, SelectState};
+/// A slider (`Slider` over a `SliderState` entity; it emits `SliderEvent::Change` while dragged).
+pub use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 pub use gpui_kit::component::spinner::Spinner;
 pub use gpui_kit::component::switch::Switch;
 pub use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 /// Rendered Markdown (CommonMark and GitHub's extensions) and plain rich text: the Markdown preview, notes.
 pub use gpui_kit::component::text::{TextView, TextViewState};
+/// A row in a list (`SelectState::set_selected_index(Some(IndexPath::new(row)), ..)`).
+pub use gpui_kit::component::IndexPath;
 pub use gpui_kit::component::{h_resizable, resizable_panel, ResizableState};
 pub use gpui_kit::component::{Disableable, Icon, Selectable, Sizable, TitleBar, WindowExt};
 

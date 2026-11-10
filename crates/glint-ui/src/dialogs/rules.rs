@@ -19,9 +19,9 @@
 //! Rules are pushed to core (`rules_set`, which starts and stops the watchers) whenever this dialog changes
 //! them, as the TypeScript's store subscription did for every change.
 //!
-//! Not here, because it is not the dialog: the toasts the TypeScript's `initRules` showed as rules do their
-//! work (`rule-did` events, with Undo). (`startup.rs` pushes the saved rules to core at start.) PORT ME(coordinator):
-//! subscribe to the `rule-did` core event and show the toast.
+//! Also here, though it is not the dialog: the toasts the TypeScript's `initRules` showed as rules do their
+//! work ([`hear_rules`]: core's `rule-did` events, said with Undo, a burst of them said once). `startup.rs` pushes
+//! the saved rules to core at start and starts [`hear_rules`].
 
 use crate::kit::prelude::*;
 use crate::{core_bridge, persistence, t, theme};
@@ -33,8 +33,10 @@ use gpui_kit::UniformListScrollHandle;
 use std::future::Future;
 use std::ops::Range;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A boxed core call.
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
@@ -282,15 +284,21 @@ pub fn did_what(done: &Done) -> String {
         }
         return said;
     }
-    let did = match done.action.as_str() {
+    format!("{} “{name}”", did_verb(&done.action))
+}
+
+/// What a rule's action is called once done: `moved`, `put in the Recycle Bin`… (`DID`); an action it doesn't know
+/// is said as it is.
+fn did_verb(action: &str) -> String {
+    match action {
         "move" => t!("moved"),
         "rename" => t!("renamed"),
         "recycle" => t!("put in the Recycle Bin"),
         "unblock" => t!("unblocked"),
         "extract" => t!("extracted"),
         other => other.to_string().into(),
-    };
-    format!("{did} “{name}”")
+    }
+    .to_string()
 }
 
 // ---- Clouds and numbers -------------------------------------------------------------------------------------
@@ -1848,6 +1856,212 @@ pub fn open_with(window: &mut Window, cx: &mut App, backend: Arc<dyn Backend>, f
     super::show(window, cx, t!("Folder rules"), px(672.), view);
 }
 
+// ---- What rules do, said as they do it ---------------------------------------------------------------------------
+
+/// A rule's toast, keyed by the log entry it tells of.
+struct RuleToast;
+
+/// How long a burst of `rule-did` events is gathered before it is said (the TypeScript's 300 ms timer).
+const BURST_WAIT: Duration = Duration::from_millis(300);
+
+/// Up to this many things done by one rule in a burst are each said, with Undo; more are said once.
+const SAID_EACH_UP_TO: usize = 3;
+
+/// One thing to tell, before it is a notification.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Toast {
+    /// A rule did something: the words, what it left behind, and the entry to take back (a sync has none).
+    Did {
+        title: String,
+        detail: Option<String>,
+        undo: Option<Done>,
+    },
+    /// A rule couldn't.
+    Failed { title: String, detail: Option<String> },
+}
+
+/// What one rule did to one file, said with Undo (`tell`).
+fn toast_for(done: Done) -> Toast {
+    if let Some(error) = done.error.clone() {
+        let name = base_name(&done.from).to_string();
+        return Toast::Failed {
+            title: t!(
+                "Rule “{rule}” couldn't do it: {name}",
+                rule = done.rule.clone(),
+                name = name
+            )
+            .to_string(),
+            detail: Some(error),
+        };
+    }
+    let title = t!(
+        "Rule “{rule}”: {what}",
+        rule = done.rule.clone(),
+        what = did_what(&done)
+    )
+    .to_string();
+    // A sync says what it did, and has no Undo.
+    if done.action == "sync" {
+        return Toast::Did {
+            title,
+            detail: None,
+            undo: None,
+        };
+    }
+    Toast::Did {
+        title,
+        detail: done.to.clone(),
+        undo: Some(done),
+    }
+}
+
+/// What rules did in the last moment (`tellBurst`): a few things a rule did are each said, with Undo; more at
+/// once (a folder of files landing, the hourly sweep) are said once for that rule, and What they did lists each.
+/// Rules are told in the order they first appear.
+pub fn toasts_for(burst: Vec<Done>) -> Vec<Toast> {
+    let mut by_rule: Vec<(String, Vec<Done>)> = Vec::new();
+    for done in burst {
+        match by_rule.iter_mut().find(|(rule, _)| *rule == done.rule) {
+            Some((_, dones)) => dones.push(done),
+            None => by_rule.push((done.rule.clone(), vec![done])),
+        }
+    }
+    let mut toasts = Vec::new();
+    for (rule, dones) in by_rule {
+        if dones.len() <= SAID_EACH_UP_TO {
+            toasts.extend(dones.into_iter().map(toast_for));
+            continue;
+        }
+        let failed: Vec<&Done> = dones.iter().filter(|d| d.error.is_some()).collect();
+        if let Some(did) = dones.iter().find(|d| d.error.is_none()) {
+            let files = plural(dones.len() - failed.len(), "file");
+            toasts.push(Toast::Did {
+                title: t!(
+                    "Rule “{rule}”: {what} {files}",
+                    rule = rule.clone(),
+                    what = did_verb(&did.action),
+                    files = files
+                )
+                .to_string(),
+                detail: Some(t!("What they did lists each, with Undo.").to_string()),
+                undo: None,
+            });
+        }
+        if let Some(first) = failed.first() {
+            toasts.push(Toast::Failed {
+                title: t!(
+                    "Rule “{rule}” couldn't do it to {files}",
+                    rule = rule.clone(),
+                    files = plural(failed.len(), "file")
+                )
+                .to_string(),
+                detail: first.error.clone(),
+            });
+        }
+    }
+    toasts
+}
+
+/// A toast as a notification; Undo takes back through `backend`.
+fn notification_for(toast: Toast, backend: Arc<dyn Backend>) -> Notification {
+    match toast {
+        Toast::Failed { title, detail } => Notification::error(detail.unwrap_or_default()).title(title),
+        Toast::Did { title, detail, undo } => {
+            let note = Notification::success(detail.unwrap_or_default()).title(title);
+            let Some(done) = undo else {
+                return note;
+            };
+            let key = usize::try_from(done.id).unwrap_or(usize::MAX);
+            note.id1::<RuleToast>(key).action(move |_, _, _| {
+                let (done, backend) = (done.clone(), backend.clone());
+                Button::new(("rule-undo", key))
+                    .label(t!("Undo"))
+                    .on_click(move |_, window, cx| {
+                        window.remove_notification1::<RuleToast>(key, cx);
+                        undo_rule(&backend, done.clone(), window, cx);
+                    })
+            })
+        }
+    }
+}
+
+/// Takes back one thing a rule did and says so (`undoRule`).
+pub fn undo_rule(backend: &Arc<dyn Backend>, done: Done, window: &mut Window, cx: &mut App) {
+    let handle = window.window_handle();
+    let undoing = backend.undo(done.id);
+    cx.spawn(async move |cx| {
+        let note = match undoing.await {
+            Ok(()) => Notification::success(t!("Took back: {what}", what = did_what(&done))),
+            Err(reason) => Notification::error(reason).title(t!("Couldn't take it back")),
+        };
+        tell(cx, handle, note);
+    })
+    .detach();
+}
+
+/// How a notification is shown: in the main window.
+pub type Say = Rc<dyn Fn(&mut App, Notification)>;
+
+/// Listens for what rules do and says it: gathers the `rule-did` events of a moment, then tells them.
+pub struct RuleToasts {
+    burst: Vec<Done>,
+    backend: Arc<dyn Backend>,
+    say: Say,
+}
+
+struct SharedRuleToasts(Entity<RuleToasts>);
+
+impl Global for SharedRuleToasts {}
+
+/// The listener [`hear_rules`] started, if it has.
+pub fn rule_toasts(cx: &App) -> Option<Entity<RuleToasts>> {
+    cx.try_global::<SharedRuleToasts>().map(|shared| shared.0.clone())
+}
+
+impl RuleToasts {
+    fn heard(&mut self, done: Done, cx: &mut Context<Self>) {
+        let first = self.burst.is_empty();
+        self.burst.push(done);
+        if first {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(BURST_WAIT).await;
+                let _ = this.update(cx, |this, cx| this.tell_burst(cx));
+            })
+            .detach();
+        }
+    }
+
+    fn tell_burst(&mut self, cx: &mut Context<Self>) {
+        for toast in toasts_for(std::mem::take(&mut self.burst)) {
+            (self.say)(cx, notification_for(toast, self.backend.clone()));
+        }
+    }
+}
+
+/// Starts saying what rules do as they do it (`initRules`' `rule-did` listener); `say` shows a notification (in
+/// the main window). Does nothing if core isn't running.
+pub fn hear_rules(cx: &mut App, backend: Arc<dyn Backend>, say: Say) {
+    let Some(events) = cx.try_global::<core_bridge::Core>().map(|core| core.events.clone()) else {
+        return;
+    };
+    let toasts = cx.new(|_| RuleToasts {
+        burst: Vec::new(),
+        backend,
+        say,
+    });
+    let weak = toasts.downgrade();
+    cx.subscribe(&events, move |_, event: &core_bridge::CoreEvent, cx| {
+        if event.name != "rule-did" {
+            return;
+        }
+        if let Ok(done) = serde_json::from_value::<Done>(event.payload.clone()) {
+            let _ = weak.update(cx, |toasts, cx| toasts.heard(done, cx));
+        }
+    })
+    .detach();
+    cx.set_global(SharedRuleToasts(toasts));
+}
+
 // ---- Tests ----------------------------------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -2664,5 +2878,107 @@ mod tests {
         click(&mut visual, "rules-look");
         settle(&mut visual, |cx| has(cx, "فاتورة.pdf → D:\\Docs\\فاتورة.pdf"));
         testing::set_rtl(false);
+    }
+
+    // ---- What rules do, said as they do it
+
+    fn did_error(id: u64, rule: &str, from: &str, error: &str) -> Done {
+        Done {
+            error: Some(error.into()),
+            ..done(id, rule, "move", from, None)
+        }
+    }
+
+    #[test]
+    fn a_few_things_a_rule_did_are_each_said_with_undo_and_failures_are_told() {
+        let burst = vec![
+            done(1, "Invoices", "move", "C:\\In\\a.pdf", Some("D:\\Docs\\a.pdf")),
+            did_error(2, "Invoices", "C:\\In\\b.pdf", "Access is denied"),
+            done(3, "Photos", "sync", "C:\\Photos", Some("gdrive:Photos")),
+        ];
+        let toasts = toasts_for(burst);
+        assert_eq!(toasts.len(), 3);
+        let Toast::Did { title, detail, undo } = &toasts[0] else {
+            panic!("a move is told as done");
+        };
+        assert_eq!(title, "Rule “Invoices”: moved “a.pdf”");
+        assert_eq!(detail.as_deref(), Some("D:\\Docs\\a.pdf"));
+        assert_eq!(undo.as_ref().map(|d| d.id), Some(1));
+        assert_eq!(
+            toasts[1],
+            Toast::Failed {
+                title: "Rule “Invoices” couldn't do it: b.pdf".into(),
+                detail: Some("Access is denied".into())
+            }
+        );
+        // A sync says what it did and has no Undo.
+        assert!(matches!(
+            &toasts[2],
+            Toast::Did {
+                undo: None,
+                detail: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn more_than_three_things_by_one_rule_are_said_once() {
+        let mut burst: Vec<Done> = (1..=5)
+            .map(|i| done(i, "Invoices", "move", &format!("C:\\In\\{i}.pdf"), Some("D:\\Docs")))
+            .collect();
+        burst.push(did_error(6, "Invoices", "C:\\In\\6.pdf", "In use"));
+        burst.push(did_error(7, "Invoices", "C:\\In\\7.pdf", "In use"));
+        burst.push(done(8, "Other", "recycle", "C:\\In\\o.tmp", Some("bin")));
+        let toasts = toasts_for(burst);
+        assert_eq!(
+            toasts,
+            vec![
+                Toast::Did {
+                    title: "Rule “Invoices”: moved 5 files".into(),
+                    detail: Some("What they did lists each, with Undo.".into()),
+                    undo: None
+                },
+                Toast::Failed {
+                    title: "Rule “Invoices” couldn't do it to 2 files".into(),
+                    detail: Some("In use".into())
+                },
+                toast_for(done(8, "Other", "recycle", "C:\\In\\o.tmp", Some("bin"))),
+            ]
+        );
+        assert!(toasts_for(Vec::new()).is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn a_rule_did_event_becomes_a_toast_and_its_undo_calls_core(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        cx.update(testing::init);
+        let fake = Arc::new(Fake::default());
+        let (mut visual, _) = testing::open_window(cx, |_, cx| cx.new(|_| Host));
+        let handle = visual.update(|window, _| window.window_handle());
+        let backend: Arc<dyn Backend> = fake.clone();
+        visual.update(|_, cx| {
+            let say: Say = Rc::new(move |cx, note| {
+                let _ = handle.update(cx, |_, window, cx| window.push_notification(note, cx));
+            });
+            hear_rules(cx, backend, say);
+            assert!(rule_toasts(cx).is_some());
+            let one = done(41, "Invoices", "move", "C:\\In\\a.pdf", Some("D:\\Docs\\a.pdf"));
+            core_bridge::emit(cx, "rule-did", serde_json::to_value(&one).unwrap_or_default());
+        });
+        visual.run_until_parked();
+        assert!(!has(&mut visual, "Undo"), "said a moment later, all of it at once");
+        visual.executor().advance_clock(Duration::from_millis(400));
+        visual.run_until_parked();
+        assert_eq!(visual.update(|window, cx| window.notifications(cx).len()), 1);
+        assert!(has(&mut visual, "Undo"));
+        click(&mut visual, ("rule-undo", 41_usize));
+        settle(&mut visual, |_| fake.calls().contains(&"undo 41".to_string()));
+        assert_eq!(fake.calls(), ["undo 41"]);
+        // The toast with Undo is gone and "Took back" is said in its place.
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.run_until_parked();
+        assert!(!has(&mut visual, "Undo"));
+        assert_eq!(visual.update(|window, cx| window.notifications(cx).len()), 1);
     }
 }

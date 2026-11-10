@@ -23,8 +23,9 @@
 //! Not ported:
 //! - The tree has no horizontal scroll: a row longer than the pane is cut at its end (strings are cut at 400
 //!   characters anyway), and its full value is what Copy gives.
-//! - PORT ME(coordinator): the "jaq needed" card with Install (`ToolNeeded`) over the filter; the error from
-//!   glint-core says the tool isn't installed instead.
+//! - The "jaq needed" card with Install (`ToolNeeded`) shows over the filter while a filter other than `.` is in
+//!   force and jaq isn't installed (the app's tools model, from `dialogs::action_run::tools_model`); tests that read
+//!   through a fake source have no tools model, so no card.
 //! - NOTE(port): the kit's `DataTable` cycles a column's sort descending, ascending, off; the TypeScript went
 //!   ascending, descending, off.
 
@@ -32,6 +33,8 @@ use super::hex::{core_hex_source, CopySource};
 use super::text::{
     big_icon, entry_of, is_archived_path, name_of, note_centered, page_list, redraw_after_delay, waiting, TextPreview,
 };
+use crate::components::settings::tools::{needed, Tools};
+use crate::dialogs::action_run::tools_model;
 use crate::kit::prelude::*;
 use crate::{actions, core_bridge, t, theme};
 use glint_core::data_lens::TablePreview;
@@ -436,12 +439,39 @@ pub struct DataTree {
     generation: u64,
     _task: Task<()>,
     _typed_events: Subscription,
+    /// The tools model the jaq card reads (none without core), and the subscription that redraws with it.
+    tools: Option<Entity<Tools>>,
+    _tools_watch: Option<Subscription>,
 }
 
 impl DataTree {
     /// The tree of the file at `path`, read as `format`.
     pub fn new(path: String, format: DataFormat, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_source(path, format, core_data_source(), window, cx)
+        let mut this = Self::with_source(path, format, core_data_source(), window, cx);
+        if let Some(tools) = tools_model(window, cx) {
+            this._tools_watch = Some(cx.observe(&tools, |_, _, cx| cx.notify()));
+            this.tools = Some(tools);
+        }
+        this
+    }
+
+    /// Reads the tools the jaq card needs from `tools` (tests pass a model over a fake backend).
+    pub fn with_tools(mut self, tools: Entity<Tools>, cx: &mut Context<Self>) -> Self {
+        self._tools_watch = Some(cx.observe(&tools, |_, _, cx| cx.notify()));
+        self.tools = Some(tools);
+        self
+    }
+
+    /// The card that offers to install jaq: while a filter is in force and jaq isn't there.
+    fn jaq_card(&self, cx: &App) -> Option<AnyElement> {
+        let tools = self.tools.as_ref().filter(|_| self.filter != ".")?;
+        needed(
+            tools,
+            "jaq",
+            t!("Filters run in jaq, jq rewritten in Rust: a 5 MB program from its GitHub release, checked before it's used."),
+            IconName::Braces,
+            cx,
+        )
     }
 
     /// [`DataTree::new`] reading through `source` (tests pass fakes).
@@ -477,6 +507,8 @@ impl DataTree {
             generation: 0,
             _task: Task::ready(()),
             _typed_events: events,
+            tools: None,
+            _tools_watch: None,
         };
         this.query(cx);
         this
@@ -1160,7 +1192,12 @@ impl Render for DataTree {
                 .child(Scrollbar::vertical(&self.scroll).viewport_from_layout())
                 .into_any_element()
         };
-        root.child(bar).children(error).child(body).child(self.footer(&t, cx))
+        let card = self.jaq_card(cx);
+        root.child(bar)
+            .children(card)
+            .children(error)
+            .child(body)
+            .child(self.footer(&t, cx))
     }
 }
 

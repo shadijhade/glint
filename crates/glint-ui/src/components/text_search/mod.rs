@@ -931,8 +931,6 @@ impl TextSearch {
 
     /// Downloads the meaning model (the card's "Download it").
     fn download_meaning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // PORT ME(coordinator): `Tools::meaning_progress()`, a getter for the download's progress, so the card can
-        // show "Downloading 2.1 MB of 30 MB…" as the TypeScript's did; today it says only "Downloading…".
         let Some(tools) = self.tools.clone() else { return };
         self.meaning_downloading = true;
         tools.update(cx, |tools, cx| tools.install_meaning(false, window, cx));

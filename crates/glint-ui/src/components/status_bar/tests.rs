@@ -662,3 +662,127 @@ fn the_work_line_says_what_the_folder_sizes_took_once_they_are_measured(cx: &mut
         .find(|category| category.group == summary::FOLDERS);
     assert_eq!(folders.map(|category| category.bytes), Some(1));
 }
+
+// ---- X-Ray, Rename and Zip -------------------------------------------------------------------------------
+
+/// Selects the listed items of the open folder with these names, the first alone and the rest added to it.
+fn select_names(setup: &mut Setup, names: &[&str]) {
+    let paths: Vec<String> = setup.explorer.read_with(&setup.visual, |e, _| {
+        e.active_tab()
+            .map(|t| {
+                t.rows
+                    .iter()
+                    .filter(|r| names.contains(&r.name.as_str()))
+                    .map(|r| r.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    with_explorer(setup, |e, cx| {
+        e.select_only(None, cx);
+        for path in &paths {
+            e.toggle_selected(path, cx);
+        }
+    });
+}
+
+#[gpui_kit::test]
+fn x_ray_is_offered_for_one_selected_file_and_for_nothing_else(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    go(&mut setup, "C:\\a");
+    assert!(!has(&mut setup.visual, "X-Ray"), "nothing selected");
+    select_names(&mut setup, &["notes.md"]);
+    assert!(has(&mut setup.visual, "X-Ray"));
+    assert_eq!(role_of(&mut setup.visual, "X-Ray"), Some(Role::Button));
+    // A folder is not a file to look into.
+    select_names(&mut setup, &["sub"]);
+    assert!(!has(&mut setup.visual, "X-Ray"));
+    // Several are renamed and zipped, not looked into.
+    select_names(&mut setup, &["notes.md", "file2.txt"]);
+    assert!(!has(&mut setup.visual, "X-Ray"));
+}
+
+#[gpui_kit::test]
+fn rename_and_zip_are_offered_for_several_selected_items_only(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    go(&mut setup, "C:\\a");
+    select_names(&mut setup, &["notes.md"]);
+    assert!(!has(&mut setup.visual, "Rename") && !has(&mut setup.visual, "Zip"));
+    select_names(&mut setup, &["notes.md", "file2.txt"]);
+    assert_eq!(role_of(&mut setup.visual, "Rename"), Some(Role::Button));
+    assert_eq!(role_of(&mut setup.visual, "Zip"), Some(Role::Button));
+}
+
+#[gpui_kit::test]
+fn no_selection_button_shows_in_an_archive_or_on_this_pc(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    setup.disk.archive_folder(
+        "C:\\pack.zip",
+        "C:\\pack.zip",
+        vec![file("C:\\pack.zip", "a.txt", 1, 1), file("C:\\pack.zip", "b.txt", 2, 2)],
+    );
+    go(&mut setup, "C:\\pack.zip");
+    select_names(&mut setup, &["a.txt", "b.txt"]);
+    assert!(bar_summary(&setup).selected == 2 && !bar_summary(&setup).writable);
+    assert!(!has(&mut setup.visual, "Rename") && !has(&mut setup.visual, "Zip"));
+    select_names(&mut setup, &["a.txt"]);
+    assert!(!has(&mut setup.visual, "X-Ray"));
+    // A folder on disk is writable again.
+    go(&mut setup, "C:\\a");
+    assert!(bar_summary(&setup).writable);
+}
+
+#[gpui_kit::test]
+fn the_buttons_wait_for_their_widths(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    go(&mut setup, "C:\\a");
+    select_names(&mut setup, &["notes.md", "file2.txt"]);
+    // Rename shows from the medium width (28 rem), Zip from the large (32 rem); a 30 rem window has the first.
+    let rem = setup.visual.update(|window, _| f32::from(window.rem_size()));
+    setup.visual.simulate_resize(size(px(rem * 30.), px(600.)));
+    assert!(has(&mut setup.visual, "Rename"));
+    assert!(!has(&mut setup.visual, "Zip"));
+    setup.visual.simulate_resize(size(px(rem * 20.), px(600.)));
+    assert!(!has(&mut setup.visual, "Rename"));
+}
+
+#[gpui_kit::test]
+fn rename_opens_the_batch_rename_for_the_selection(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    go(&mut setup, "C:\\a");
+    select_names(&mut setup, &["notes.md", "file2.txt"]);
+    click(&mut setup, "status-bar-rename");
+    assert!(has(&mut setup.visual, "Rename items"));
+}
+
+#[gpui_kit::test]
+fn x_ray_opens_the_dialog_for_the_file(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    go(&mut setup, "C:\\a");
+    select_names(&mut setup, &["notes.md"]);
+    click(&mut setup, "status-bar-xray");
+    assert!(has(&mut setup.visual, "File X-Ray: notes.md"));
+}
+
+#[gpui_kit::test]
+fn zip_compresses_the_selection_once_the_secrets_check_lets_it_through(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut setup = setup(cx, index(State::Off, vec![]), Ok(index(State::On, vec![])));
+    go(&mut setup, "C:\\a");
+    select_names(&mut setup, &["notes.md", "file2.txt"]);
+    click(&mut setup, "status-bar-zip");
+    // No Kingfisher to look with (no core in tests): the check is an offer, not a gate.
+    settle(&mut setup.visual, |_| !setup.disk.compressions().is_empty());
+    let compressions = setup.disk.compressions();
+    assert_eq!(compressions.len(), 1);
+    let mut paths = compressions[0].0.paths.clone();
+    paths.sort();
+    assert_eq!(paths, ["C:\\a\\file2.txt", "C:\\a\\notes.md"]);
+    assert_eq!(compressions[0].0.format, explorer::CompressFormat::Zip);
+}

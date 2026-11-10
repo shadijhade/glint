@@ -327,11 +327,6 @@ impl FileList {
         if focused && !frame.inactive {
             line = line.border_color(t.primary);
         }
-        if flashed {
-            // PORT ME(coordinator): the web's `glint-flash` fades its ring out over 1.15 s; this holds it
-            // while the explorer says the item is flashed (1.2 s).
-            line = line.bg(t.primary.opacity(0.25)).border_color(t.primary.opacity(0.85));
-        }
         if let Some(opacity) = dimness(dim, dragged) {
             line = line.opacity(opacity);
         }
@@ -370,8 +365,39 @@ impl FileList {
             })),
             None => line,
         };
-        line.test_support().into_any_element()
+        let line = line.test_support();
+        if flashed {
+            // The web's `glint-flash`: the ring holds for the first fifth of 1.15 s, then fades out.
+            let primary = t.primary;
+            return line
+                .with_animation(
+                    ("file-row-flash", i),
+                    Animation::new(FLASH),
+                    move |row, delta| match flash_strength(delta) {
+                        strength if strength > 0. => row
+                            .bg(primary.opacity(0.25 * strength))
+                            .border_color(primary.opacity(0.85 * strength)),
+                        _ => row,
+                    },
+                )
+                .into_any_element();
+        }
+        line.into_any_element()
     }
+}
+
+/// How long a flash lasts (`glint-flash`'s 1.15 s).
+pub(super) const FLASH: std::time::Duration = std::time::Duration::from_millis(1150);
+
+/// How strong the flash's ring is `delta` (0 to 1) of the way through [`FLASH`]: full until a fifth of the way,
+/// then easing out to nothing (the keyframes' `cubic-bezier(0.22, 1, 0.36, 1)` between them, close enough as a quint).
+pub(super) fn flash_strength(delta: f32) -> f32 {
+    const HOLD: f32 = 0.2;
+    if delta <= HOLD {
+        return 1.;
+    }
+    let along = ((delta - HOLD) / (1. - HOLD)).clamp(0., 1.);
+    (1. - along).powi(5)
 }
 
 /// Whether a row is dimmed: hidden items, items cut to the clipboard and the ones `.gitignore` leaves out.
@@ -589,6 +615,16 @@ fn size_cell(width: Pixels, text: String, percent: u32, t: &Tokens) -> AnyElemen
 mod tests {
     use super::*;
     use crate::explorer::fake::{file, folder};
+
+    #[test]
+    fn the_flash_holds_then_fades_to_nothing() {
+        assert_eq!(flash_strength(0.), 1.);
+        assert_eq!(flash_strength(0.2), 1.);
+        let (a, b, c) = (flash_strength(0.3), flash_strength(0.5), flash_strength(0.9));
+        assert!(1. > a && a > b && b > c && c > 0., "{a} {b} {c}");
+        assert_eq!(flash_strength(1.), 0.);
+        assert_eq!(flash_strength(2.), 0.);
+    }
 
     #[test]
     fn a_folder_has_a_size_only_where_the_index_gave_one() {

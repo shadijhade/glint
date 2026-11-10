@@ -4,6 +4,7 @@
 //! Nothing here draws or touches GPUI, so the rules are easy to test. The view turns the results into
 //! elements, and translates the words (`t!`).
 
+use crate::components::status_bar::index::{Index, State};
 use crate::explorer::{Drive, DriveKind};
 use glint_model::paths::{droppable, in_archive_path, is_remote_path};
 
@@ -169,6 +170,86 @@ pub fn step(
     }
 }
 
+/// What the instant search card says, before it is translated (`InstantSearchCard`'s text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Words {
+    /// The service isn't running: the offer to turn it on.
+    Offer,
+    /// It runs, but lists no drive yet: "Instant search is starting…".
+    Starting,
+    /// The drives being read (with how far, in whole percent, when known) then the drives that failed.
+    Drives {
+        reading: Vec<(String, Option<u64>)>,
+        failed: Vec<String>,
+    },
+}
+
+/// The card shown above the drives while instant search is off, starting, reading a drive or has a drive that
+/// failed (`InstantSearchCard`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Card {
+    pub words: Words,
+    /// A spinner instead of the bolt: the service runs and is starting or reading a drive.
+    pub busy: bool,
+    /// The button: "Turn on instant search" (the service is off) or "Retry" (a drive failed, none is being read).
+    pub button: Option<Button>,
+}
+
+/// The card's button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    TurnOn,
+    Retry,
+}
+
+/// The card for what the service said, or None when there is nothing to offer or say: the service wasn't asked
+/// yet, Settings explains the states a click can't fix (another account's service, an impostor, no NTFS), or all
+/// is well.
+pub fn card(index: Option<&Index>) -> Option<Card> {
+    let index = index?;
+    if matches!(index.state, State::Unsupported | State::NoAccess | State::Untrusted) {
+        return None;
+    }
+    let reading: Vec<(String, Option<u64>)> = index
+        .volumes
+        .iter()
+        .filter(|v| v.scanning)
+        .map(|v| (v.volume.clone(), v.percent()))
+        .collect();
+    let failed: Vec<String> = index
+        .volumes
+        .iter()
+        .filter(|v| v.error)
+        .map(|v| v.volume.clone())
+        .collect();
+    let on = index.state == State::On;
+    if on && reading.is_empty() && failed.is_empty() && !index.volumes.is_empty() {
+        return None;
+    }
+    let words = if !on {
+        Words::Offer
+    } else if index.volumes.is_empty() {
+        Words::Starting
+    } else {
+        Words::Drives {
+            reading: reading.clone(),
+            failed: failed.clone(),
+        }
+    };
+    let button = if !on {
+        Some(Button::TurnOn)
+    } else if !failed.is_empty() && reading.is_empty() {
+        Some(Button::Retry)
+    } else {
+        None
+    };
+    Some(Card {
+        words,
+        busy: on && (!reading.is_empty() || index.volumes.is_empty()),
+        button,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +367,89 @@ mod tests {
         assert_eq!(super::step(0, Step::Down, 0, 2, 1, 1), Some(1));
         assert_eq!(super::step(0, Step::Down, 3, 0, 1, 1), Some(1));
         assert_eq!(super::step(2, Step::Up, 3, 0, 1, 1), Some(1));
+    }
+
+    fn volume(
+        name: &str,
+        scanning: bool,
+        error: bool,
+        progress: u64,
+        total: u64,
+    ) -> crate::components::status_bar::index::Volume {
+        crate::components::status_bar::index::Volume {
+            volume: name.into(),
+            scanning,
+            error,
+            progress,
+            progress_total: total,
+        }
+    }
+
+    fn index(state: State, volumes: Vec<crate::components::status_bar::index::Volume>) -> Index {
+        Index {
+            state,
+            version: None,
+            volumes,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn the_card_offers_turning_on_when_the_service_is_off_or_stopped() {
+        for state in [State::Off, State::Stopped] {
+            let card = card(Some(&index(state, vec![]))).expect("a card");
+            assert_eq!(card.words, Words::Offer);
+            assert_eq!(card.button, Some(Button::TurnOn));
+            assert!(!card.busy);
+        }
+    }
+
+    #[test]
+    fn the_card_is_absent_when_unasked_unfixable_or_all_is_well() {
+        assert_eq!(card(None), None);
+        for state in [State::Unsupported, State::NoAccess, State::Untrusted] {
+            assert_eq!(card(Some(&index(state, vec![]))), None);
+        }
+        assert_eq!(
+            card(Some(&index(State::On, vec![volume("C:", false, false, 0, 0)]))),
+            None
+        );
+    }
+
+    #[test]
+    fn the_card_says_starting_until_a_drive_is_listed() {
+        let card = card(Some(&index(State::On, vec![]))).expect("a card");
+        assert_eq!(card.words, Words::Starting);
+        assert!(card.busy);
+        assert_eq!(card.button, None);
+    }
+
+    #[test]
+    fn the_card_reports_progress_and_failures_and_retries_only_when_nothing_is_being_read() {
+        let both = card(Some(&index(
+            State::On,
+            vec![volume("C:", true, false, 1, 4), volume("D:", false, true, 0, 0)],
+        )))
+        .expect("a card");
+        assert_eq!(
+            both.words,
+            Words::Drives {
+                reading: vec![("C:".into(), Some(25))],
+                failed: vec!["D:".into()],
+            }
+        );
+        assert!(both.busy);
+        assert_eq!(both.button, None, "a drive is still being read");
+        let failed = card(Some(&index(State::On, vec![volume("D:", false, true, 0, 0)]))).expect("a card");
+        assert!(!failed.busy);
+        assert_eq!(failed.button, Some(Button::Retry));
+        let unknown = card(Some(&index(State::On, vec![volume("E:", true, false, 5, 0)]))).expect("a card");
+        assert_eq!(
+            unknown.words,
+            Words::Drives {
+                reading: vec![("E:".into(), None)],
+                failed: vec![],
+            }
+        );
     }
 }
