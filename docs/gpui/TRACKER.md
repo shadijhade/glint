@@ -208,7 +208,7 @@
 
 ## Wave 12B: wrapped right-to-left text and the three end-to-end bugs: done 2026-11-10
 
-*2 tasks (Sonnet), both passed review; committed with the updater's wiring as 2a7c94a.* The vendored GPUI wraps a right-to-left paragraph at spaces in reading order and shapes each row alone (13 tests on the real DirectWrite); Enter in the rename box no longer opens the item; the list takes the keyboard back after a rename; drops from other apps work after a key press (file drags count as mouse input). End-to-end: 18 passed. The updater runs from start-up, asks before quitting to install, and has the toolbar's Update button.
+*2 tasks (Sonnet), both passed review; committed with the updater's wiring as 2a7c94a.* The vendored GPUI wraps a right-to-left paragraph at spaces in reading order and shapes each row alone (13 tests on the real DirectWrite); Enter in the rename box no longer opens the item; the list takes the keyboard back after a rename; drops from other apps work after a key press (file drags count as mouse input). End-to-end: 18 passed. The updater runs from start-up, asks before quitting to install, and has the toolbar's Update button. **Tried for real:** a long Arabic paragraph and a mixed Arabic and English one in the Markdown preview wrap at spaces, rows top to bottom, Latin words at the right ends. **Left:** in an English window those paragraphs align left. The Markdown TextView (gpui-kit) needs each block's direction from its first strong letter, as `preview::rich` already does for Word and books.
 
 ## Who works where (since 2026-11-10)
 
