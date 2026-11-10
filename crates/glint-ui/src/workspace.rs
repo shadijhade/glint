@@ -207,7 +207,7 @@ impl Workspace {
         }
     }
 
-    /// Makes the window a drop target and hands what is dragged over it to [`Self::on_drop_event`].
+    /// Makes the window a drop target; what is dragged over it goes to the views as GPUI's file drops (drops.rs).
     fn take_drops(window: &mut Window, cx: &mut Context<Self>) -> Option<dragdrop::DropTarget> {
         let hwnd = core_bridge::hwnd_of(window)?;
         let target = match dragdrop::register(hwnd) {
@@ -218,10 +218,12 @@ impl Workspace {
             }
         };
         let events = target.events.clone();
-        cx.spawn_in(window, async move |this, cx| {
+        let answers = target.answers.clone();
+        // Handed to GPUI as its own file drops, outside any entity update: the views take them (drops.rs).
+        cx.spawn_in(window, async move |_, cx| {
             while let Ok(event) = events.recv().await {
-                if this
-                    .update_in(cx, |this, window, cx| this.on_drop_event(event, window, cx))
+                if cx
+                    .update(|window, cx| crate::drops::dispatch(event, &answers, window, cx))
                     .is_err()
                 {
                     break;
@@ -230,20 +232,6 @@ impl Workspace {
         })
         .detach();
         Some(target)
-    }
-
-    /// What was dragged over the window. The answers (what a drop would do where the pointer is) stay
-    /// Windows' default here, copy, until the views under the pointer give their own.
-    ///
-    /// PORT ME(drag and drop): the file list, the grid, the folder tree, the tab strip, the crumbs and This
-    /// PC's tiles answer for the place under the pointer (`DropAnswers::set`) and act on the drop; each has a
-    /// PORT ME at the spot. Until then a drop only says so.
-    fn on_drop_event(&mut self, event: dragdrop::DropEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if let dragdrop::DropEvent::Drop { paths, effect, .. } = event {
-            if effect != dragdrop::DropEffect::None && !paths.is_empty() {
-                Self::not_yet(window, cx, t!("Dropping files"));
-            }
-        }
     }
 
     /// The marker for something whose part of the port isn't built yet: a notice saying so, so the wiring is
