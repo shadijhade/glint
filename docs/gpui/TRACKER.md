@@ -210,6 +210,20 @@
 
 *2 tasks (Sonnet), both passed review; committed with the updater's wiring as 2a7c94a.* The vendored GPUI wraps a right-to-left paragraph at spaces in reading order and shapes each row alone (13 tests on the real DirectWrite); Enter in the rename box no longer opens the item; the list takes the keyboard back after a rename; drops from other apps work after a key press (file drags count as mouse input). End-to-end: 18 passed. The updater runs from start-up, asks before quitting to install, and has the toolbar's Update button. **Tried for real:** a long Arabic paragraph and a mixed Arabic and English one in the Markdown preview wrap at spaces, rows top to bottom, Latin words at the right ends. **Left:** in an English window those paragraphs align left. The Markdown TextView (gpui-kit) needs each block's direction from its first strong letter, as `preview::rich` already does for Word and books.
 
+## Wave 13: known gaps (running, wf_fa13162c-675)
+
+*5 tasks (Sonnet), off Antigravity's files.*
+
+- **find-buttons:** find as you type, search subfolders, try again, search wider, the Gallery and Recent states.
+- **grid-rename:** the rename box on tiles; clearing a filter ends a search.
+- **list-facts:** `components/row_facts.rs`, for tag dots, the Tags submenu's checks, and the Taken, Dimensions, Duration, Artist and Album columns.
+- **markdown-dir:** each Markdown block takes its own direction, in the vendored gpui-base.
+- **palette:** saved searches, Empty the Recycle Bin, and the file actions and tools, through `workspace::run_menu_command`.
+
+**Left for integration:** tag dots on grid tiles (from row_facts), Compare folders from Previous versions, and the Markdown follow-ups.
+
+**Build folder:** since 2026-11-10, `target/ui` is a junction to `E:\glint-gpui-target\ui`. E: is on the same NVMe drive and has 104 GB free, so C: keeps its room. Paths didn't change, so nothing was rebuilt.
+
 ## Who works where (since 2026-11-10)
 
 | Lane | Who | Folder | Branch | Owns | Status |
