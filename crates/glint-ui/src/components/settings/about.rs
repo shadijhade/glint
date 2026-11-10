@@ -14,7 +14,6 @@ use crate::{actions, state, t, theme};
 use glint_model::store::Settings;
 use std::sync::Arc;
 
-#[cfg(feature = "updater")]
 use crate::updater::{self, Install, Policy, Status, Updater};
 
 /// Glint's page, for the GitHub button (`REPO_URL`).
@@ -28,10 +27,8 @@ pub struct About {
     /// The Microsoft Store's copy: the Store keeps it up to date, so there is nothing to check.
     store: bool,
     /// The update model, once the app has made one.
-    #[cfg(feature = "updater")]
     updater: Option<Entity<Updater>>,
     /// Redraws this card when the update model changes.
-    #[cfg(feature = "updater")]
     _watching: Option<Subscription>,
 }
 
@@ -40,24 +37,19 @@ impl About {
     pub fn new(backend: Arc<dyn Backend>, store: bool, cx: &mut Context<Self>) -> Self {
         let transfer = cx.new(|_| Transfer::new(backend.clone()));
         // Only the updater feature changes it.
-        #[cfg_attr(not(feature = "updater"), allow(unused_mut))]
         let mut about = Self {
             backend,
             transfer,
             version: env!("CARGO_PKG_VERSION").into(),
             store,
-            #[cfg(feature = "updater")]
             updater: None,
-            #[cfg(feature = "updater")]
             _watching: None,
         };
-        #[cfg(feature = "updater")]
         about.attach_updater(cx);
         about
     }
 
     /// Starts watching the shared update model, once it exists.
-    #[cfg(feature = "updater")]
     fn attach_updater(&mut self, cx: &mut Context<Self>) {
         if self.updater.is_some() {
             return;
@@ -104,7 +96,6 @@ impl About {
     }
 }
 
-#[cfg(feature = "updater")]
 impl About {
     /// The updates row (`UpdateRow`): what the update model knows, with its buttons.
     fn update_row(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {
@@ -209,36 +200,8 @@ impl About {
     }
 }
 
-#[cfg(not(feature = "updater"))]
-impl About {
-    /// The updates row while the updater isn't built in: drawn as the TypeScript draws it, and waiting. The
-    /// Store's copy has no button: the Store updates it.
-    fn update_row(&self, t: &theme::Tokens, _cx: &mut Context<Self>) -> AnyElement {
-        if self.store {
-            return widgets::setting_row(
-                t!("Updates"),
-                Some(t!("The Microsoft Store keeps Glint up to date")),
-                Vec::new(),
-                t,
-            );
-        }
-        widgets::setting_row(
-            t!("Updates"),
-            None,
-            vec![
-                widgets::button("about-update", t!("Check for updates"), Some(IconName::RefreshCw))
-                    .disabled(true)
-                    .tooltip(t!("Updating comes with its part of the port."))
-                    .into_any_element(),
-            ],
-            t,
-        )
-    }
-}
-
 impl Render for About {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(feature = "updater")]
         self.attach_updater(cx);
         let t = theme::tokens(cx).clone();
         let pink = theme::tailwind("pink-500").unwrap_or(t.primary);

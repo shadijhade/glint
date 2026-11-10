@@ -33,13 +33,15 @@ pub mod state;
 pub mod theme;
 /// Typst in process: a World over the disk and the system fonts, compiling to pages and PDF.
 pub mod typst_engine;
-/// Glint keeping itself up to date: latest.json, the signed installer, the Update button. Wave 12 slot.
-#[cfg(feature = "updater")]
+/// Glint keeping itself up to date: latest.json, the signed installer, the Update button.
 pub mod updater;
 pub mod workspace;
 
 #[cfg(test)]
 pub(crate) mod testing;
+/// Wrapped right-to-left paragraphs on the real DirectWrite (the vendored GPUI's line layout).
+#[cfg(test)]
+mod rtl_wrap_tests;
 
 /// Starts the app and runs until it quits. Returns the exit code core asked for (0 normally); the caller
 /// (`Glint.exe`) passes it to the process.

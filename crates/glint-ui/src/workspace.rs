@@ -232,6 +232,10 @@ impl Workspace {
                 Self::explorer(cx, |e, cx| e.set_git_marks(*tab, marks, cx));
             }
         }));
+        // The Update button follows the updater (none in tests, which start no updater).
+        if let Some(updater) = crate::updater::try_shared(cx) {
+            subscriptions.push(cx.observe(&updater, |_, _, cx| cx.notify()));
+        }
         // A tab's map turned on or off changes what its pane shows.
         let usage = disk_usage::shared(cx);
         subscriptions.push(cx.observe_in(&usage, window, |this, _, window, cx| this.follow_panes(window, cx)));
@@ -1422,6 +1426,8 @@ impl Workspace {
                     .when(!self.text_mode, |area| area.child(self.address.clone())),
             )
             .children(self.sharing_button(cx))
+            // 'Update' while a newer Glint is ready (a spinner while it downloads).
+            .children(crate::updater::update_button(cx))
             // TEMPORARY: This PC's tiles and banner open it too; this button goes with the Settings part.
             .child(
                 Button::new("drive-health")

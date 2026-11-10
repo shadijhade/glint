@@ -127,13 +127,29 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_drop_reaches_the_view_under_the_pointer_with_its_effect(cx: &mut TestAppContext) {
+        a_drop_reaches_the_view(cx, false);
+    }
+
+    /// Bug found by the end-to-end checks: after a key press the drop from File Explorer was ignored until the
+    /// mouse had moved over the window (the vendored GPUI kept the keyboard modality, and with it hover, off).
+    #[gpui_kit::test]
+    fn a_drop_reaches_the_view_after_a_key_was_pressed(cx: &mut TestAppContext) {
+        a_drop_reaches_the_view(cx, true);
+    }
+
+    fn a_drop_reaches_the_view(cx: &mut TestAppContext, key_first: bool) {
         let _guard = testing::lock();
         cx.update(testing::init);
         let (mut visual, view) = testing::open_window(cx, |_, cx| cx.new(|_| Target { dropped: Vec::new() }));
         let answers = DropAnswers::default();
-        let files = vec![r"C:\Work.txt".to_string(), r"C:\Work\ملف.txt".to_string()];
+        let files = vec![r"C:\Work.txt".to_string(), r"C:\Work\ملف.txt".to_string()];
         visual.update(|window, cx| {
             window.render_frame(cx);
+            if key_first {
+                // Any key press: GPUI then treats the input as keyboard, and hover is off until the mouse moves.
+                window.press("a", cx);
+                assert!(window.last_input_was_keyboard());
+            }
             dispatch(
                 DropEvent::Enter {
                     paths: files.clone(),

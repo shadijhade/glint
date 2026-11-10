@@ -571,7 +571,9 @@ async fn wave11_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     for (name, typst) in [("notes.md", false), ("doc.typ", true)] {
         let file = folder.join(name).to_string_lossy().into_owned();
         let pdf = folder.join(name).with_extension("pdf");
-        in_main(cx, |window, cx| crate::dialogs::doc_convert::export_pdf(window, cx, vec![file.clone()], typst));
+        in_main(cx, |window, cx| {
+            crate::dialogs::doc_convert::export_pdf(window, cx, vec![file.clone()], typst)
+        });
         let made = wait_for(cx, Duration::from_secs(60), |_| {
             std::fs::read(&pdf).is_ok_and(|bytes| bytes.len() > 500 && bytes.starts_with(b"%PDF"))
         })

@@ -6,7 +6,7 @@
 
 use super::{FileList, FileListEvent};
 use crate::kit::prelude::*;
-use crate::t;
+use crate::{actions, t};
 
 /// The characters no Windows file name can contain (`INVALID_NAME_HINT` lists them).
 pub const INVALID_NAME_CHARS: [char; 9] = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
@@ -64,6 +64,25 @@ impl FileList {
         });
     }
 
+    /// Drops the rename box, and gives the keyboard back to the list if the box held it: the input that had
+    /// the focus is gone with the box, and with nothing focused Ctrl+L, F5 and the buttons that dispatch an
+    /// action would do nothing until a click. A box closed because the person went to another control (the
+    /// address bar, a dialog) leaves the focus where they put it.
+    pub(super) fn end_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rename) = self.rename.take() else { return };
+        let input = rename.state.read(cx).focus_handle(cx);
+        // After this frame: the focus isn't changed mid-render.
+        cx.defer_in(window, move |this, window, cx| {
+            let holds_nothing = match window.focused(cx) {
+                None => true,
+                Some(focused) => focused == input || this.focus.contains_focused(window, cx),
+            };
+            if holds_nothing && !this.focus.is_focused(window) {
+                this.focus.focus(window, cx);
+            }
+        });
+    }
+
     /// Enter or leaving the box commits what is typed; Escape cancels (`finish`). Says it once.
     pub(super) fn finish_rename(&mut self, commit: bool, cx: &mut Context<Self>) {
         let Some(rename) = self.rename.as_mut() else { return };
@@ -88,6 +107,12 @@ impl FileList {
             .h(rems(1.5))
             // The row under it takes presses and double-clicks; the box keeps its own.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // Enter in a single-line input is also passed on, and would run the list's own Enter (open the
+            // item under the old name); the box takes these keys and nothing above it does.
+            .on_action(cx.listener(|this, _: &actions::OpenItem, _, cx| this.finish_rename(true, cx)))
+            .on_action(cx.listener(|_, _: &actions::OpenInNewTab, _, _| {}))
+            .on_action(cx.listener(|_, _: &actions::Rename, _, _| {}))
+            .on_action(cx.listener(|_, _: &actions::Properties, _, _| {}))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 if key == "escape" {

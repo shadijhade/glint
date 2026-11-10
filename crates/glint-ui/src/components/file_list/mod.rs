@@ -522,7 +522,7 @@ impl FileList {
             self.restoring = top > 0.;
             self.typeahead.clear();
             self.press = None;
-            self.rename = None;
+            self.end_rename(window, cx);
             self.shown.tab = Some(view.id);
             self.shown.place = view.place.clone();
             self.shown.focus = None;
@@ -610,7 +610,7 @@ impl FileList {
                     self.start_rename(&path, &name, dir, window, cx);
                 }
             }
-            (None, Some(_)) => self.rename = None,
+            (None, Some(_)) => self.end_rename(window, cx),
             _ => {}
         }
     }
