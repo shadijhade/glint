@@ -423,6 +423,11 @@ Narrator on the real app is the user's check.
   - Most private bytes are GPU buffers (a swap chain per window).
   - For comparison, the Tauri app was 323 MB private for its main process alone, before its WebView2 processes.
 
+**End-to-end (real mouse and keyboard, `tests/e2e/run.ps1`): 18 of 18 passed.**
+- The first run failed two checks: a breadcrumb click and the Grid button. Both had one cause: notices drew at the top right, over the address bar and the toolbar (the persistent "Instant search has an update" notice and "Copied 1 item").
+- The web app's Toaster was at the bottom right, so `theme.rs` now puts notices at the bottom end (bottom left in Arabic).
+- The harness put the user's state files and clipboard back, with matching hashes.
+
 **Follow-ups, not blockers:**
 - Make the Quick Search window on first use (about 60 MB), or keep pre-making it for an instant hotkey.
 - Fat LTO plus one codegen unit, if exe size matters more than build time.
