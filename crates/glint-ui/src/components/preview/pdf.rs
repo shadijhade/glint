@@ -2552,6 +2552,9 @@ mod tests {
         until(&mut visual, "the text is copied", |cx| {
             cx.read_from_clipboard().and_then(|item| item.text()).as_deref() == Some("Quarterly report alpha")
         });
+        // The "Copied" notice sits at the bottom end, over the toolbar, until it fades: a person waits it out.
+        visual.update(|window, cx| window.clear_notifications(cx));
+        visual.run_until_parked();
         // Find: which pages have the words, case ignored; Next goes round.
         click(&mut visual, "pdf-find-toggle");
         assert!(has(&mut visual, "Find in this PDF"));
