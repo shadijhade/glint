@@ -15,7 +15,8 @@ use crate::{i18n, t};
 use glint_core::openers::Opener;
 use glint_core::projects::TaskGroup;
 use glint_core::scripts::Script;
-use glint_model::entries::{is_archive_file, is_closed, FileEntry};
+use glint_model::entries::{is_archive_file, is_archived, is_closed, FileEntry};
+use glint_model::file_types::PreviewKind;
 use glint_model::format::{format_count, format_size, plural};
 use glint_model::grid::{zoom_tiles, TileSize, TILE_SIZES};
 use glint_model::groups::{GroupBy, GROUP_BYS};
@@ -132,6 +133,8 @@ pub enum Run {
     Properties(String),
     /// The Send, receive or share dialog on one of its parts (`showShare`).
     Share(ShareView),
+    /// These text files rewritten as UTF-8, each read as detected, the originals recycled (`convertToUtf8`).
+    ToUtf8(Vec<String>),
 }
 
 /// One line of the list.
@@ -667,17 +670,18 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         true,
         Command::action("new-tab", t!("New tab"), I::Plus, || Box::new(actions::NewTab)),
     );
-    push(
-        true,
-        menu(
+    push(true, {
+        let mut command = menu(
             "new-window",
             t!("New window"),
             I::AppWindow,
             MenuEvent::OpenInNewWindow {
                 path: inputs.path.clone(),
             },
-        ),
-    );
+        );
+        command.shortcut = shortcut_of(|| Box::new(actions::NewWindow));
+        command
+    });
     push(
         inputs.tabs > 1 || inputs.dual,
         Command::action("close-tab", t!("Close tab"), I::X, || Box::new(actions::CloseTab)),
@@ -1058,6 +1062,15 @@ fn menu(id: &str, label: impl Into<SharedString>, icon: IconName, event: MenuEve
     Command::new(id, label, icon, Kind::Action, Run::Menu(event))
 }
 
+/// Whether "Convert the selected text files to UTF-8" is offered: a selection of text files, none a folder or
+/// inside an archive (`chosenEntries.every((e) => !e.dir && previewKind(e) === "text" && !isArchived(e))`).
+pub fn converts_to_utf8(entries: &[FileEntry]) -> bool {
+    !entries.is_empty()
+        && entries.iter().all(|e| {
+            !e.dir && !is_archived(e) && glint_model::file_types::kind_of(e).preview == Some(PreviewKind::Text)
+        })
+}
+
 fn paths_of(entries: &[FileEntry]) -> Vec<String> {
     entries.iter().map(|e| e.path.clone()).collect()
 }
@@ -1140,6 +1153,16 @@ fn nearby_and_files(inputs: &Inputs, place: &Place) -> Vec<Command> {
             t!("Compress in place: the selection takes less space and still opens normally"),
             I::Shrink,
             MenuEvent::CompressInPlace { paths: all.clone() },
+        ),
+    );
+    add(
+        converts_to_utf8(entries),
+        Command::new(
+            "to-utf8",
+            t!("Convert the selected text files to UTF-8 (old Arabic, Cyrillic and other encodings)"),
+            I::FileCheck,
+            Kind::Action,
+            Run::ToUtf8(all.clone()),
         ),
     );
     add(

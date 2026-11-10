@@ -39,6 +39,7 @@ actions!(
         NextTab,
         PreviousTab,
         OpenInNewTab,
+        NewWindow,
         DualPane,
         CompareFiles,
         ComparePanes,
@@ -214,6 +215,8 @@ pub static BINDINGS: &[Binding] = &[
     // Tabs and panes
     bind!("ctrl-t", "Workspace", NewTab, "New tab"),
     bind!("ctrl-w", "Workspace", CloseTab, "Close the tab"),
+    // Explorer.tsx handled Ctrl+N (`openInNewWindow()`) but ShortcutsDialog.tsx never listed it.
+    bind!("ctrl-n", "Workspace", NewWindow, "New window on the folder shown"),
     bind!(
         "ctrl-shift-t",
         "Workspace",

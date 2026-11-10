@@ -11,6 +11,11 @@
 //! - **Saving** is debounced (about 500 ms after the last change), atomic (a temp file in the same folder,
 //!   renamed over the old one) and done by a worker thread, never the UI thread. The app quitting flushes.
 //!
+//! **A secondary window** (a second Glint.exe process, `platform::secondary`) keeps nothing of its own: it
+//! loads the file without moving a bad one aside, never writes it (no [`Saver`]), starts without last time's
+//! session or last folder, and follows the main window's changes: [`follow_main`] watches `state.json` and
+//! [`apply_reloaded`] takes a new copy of it (`useStore.persist.rehydrate()`).
+//!
 //! The live settings are held by [`crate::state`]; the rest of the saved state (pinned folders, history, the
 //! session...) lives here, in [`Persistence`]. [`init`] loads and hands the settings to `state`, whose
 //! `update` calls [`sync`] after every change, so changed settings are saved soon.
@@ -104,6 +109,33 @@ fn set_aside(path: &Path) -> Option<PathBuf> {
         return std::fs::rename(path, &target).ok().map(|_| target);
     }
     None
+}
+
+/// [`load_from`] for a window that mustn't write: text that isn't a saved state gives the defaults and the
+/// file stays where it is (the main window moves it aside).
+pub fn load_read_only(path: &Path) -> Loaded {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Loaded {
+                keep_file: error.kind() != std::io::ErrorKind::NotFound,
+                ..Loaded::default()
+            }
+        }
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_start_matches('\u{feff}');
+    if is_saved_state(text) {
+        Loaded {
+            state: load_persisted(text),
+            ..Loaded::default()
+        }
+    } else {
+        Loaded {
+            keep_file: true,
+            ..Loaded::default()
+        }
+    }
 }
 
 /// Reads the state at `path`. Missing or unreadable (a locked file, a permission) gives the defaults and
@@ -273,9 +305,19 @@ impl Saver {
 /// The saved state held by the running app (the settings in it are kept up to date with [`crate::state`]'s).
 pub struct Persistence {
     app: AppState,
-    /// None when this run mustn't write the file ([`Loaded::keep_file`]).
+    /// None when this run mustn't write the file ([`Loaded::keep_file`]), and in a secondary window.
     saver: Option<Saver>,
     set_aside: Option<PathBuf>,
+    /// A secondary window's watch on the file, for as long as the app runs.
+    _follow: Option<Follow>,
+}
+
+/// A secondary window's watch on `state.json`, with the one strong end of the channel it reports on (the watching
+/// thread holds a weak one, so the channel is closed by the app's thread and never by the watching thread as it
+/// ends, which would wake the task waiting on it from the wrong thread).
+struct Follow {
+    _watch: crate::platform::secondary::FileWatch,
+    _changed: std::sync::Arc<async_channel::Sender<()>>,
 }
 
 impl Global for Persistence {}
@@ -291,7 +333,13 @@ pub fn init(cx: &mut App) {
 
 /// [`init`] with the state file at `path`.
 pub fn init_at(cx: &mut App, path: PathBuf) {
-    let loaded = load_from(&path);
+    // A secondary window reads the file and never writes it.
+    let secondary = crate::platform::secondary::is_secondary();
+    let loaded = if secondary {
+        load_read_only(&path)
+    } else {
+        load_from(&path)
+    };
     if let Some(aside) = &loaded.set_aside {
         eprintln!(
             "glint: {} wasn't a saved state; kept as {}",
@@ -300,42 +348,32 @@ pub fn init_at(cx: &mut App, path: PathBuf) {
         );
     }
     let mut app = loaded.state;
+    if secondary {
+        // The tabs and the last folder are the main window's: this one opens on its own folder.
+        app.session = None;
+        app.last_folder = None;
+    }
     let saved_settings = app.settings.clone();
     crate::state::update(cx, |settings| *settings = saved_settings);
     // Debug builds' environment overrides (as state::init reads them) win over the saved settings, and are
     // the baseline, so looking at the other mode doesn't by itself write anything.
     if cfg!(debug_assertions) {
-        if let Ok(language) = std::env::var("GLINT_LANGUAGE") {
-            crate::state::update(cx, |s| {
-                s.language = match language.as_str() {
-                    "ar" => glint_model::store::Language::Ar,
-                    "en" => glint_model::store::Language::En,
-                    _ => s.language,
-                }
-            });
-        }
-        if let Ok(theme) = std::env::var("GLINT_THEME") {
-            crate::state::update(cx, |s| {
-                s.theme = match theme.as_str() {
-                    "light" => glint_model::store::Theme::Light,
-                    "dark" => glint_model::store::Theme::Dark,
-                    _ => s.theme,
-                }
-            });
-        }
+        apply_debug_overrides(cx);
         app.settings = crate::state::settings(cx).clone();
     }
-    if loaded.keep_file {
+    if loaded.keep_file && !secondary {
         eprintln!(
             "glint: {} couldn't be read or moved aside; this run won't save over it",
             path.display()
         );
     }
-    let saver = (!loaded.keep_file).then(|| Saver::start(path));
+    let saver = (!loaded.keep_file && !secondary).then(|| Saver::start(path.clone()));
+    let follow = if secondary { follow_main(cx, &path) } else { None };
     cx.set_global(Persistence {
         app,
         saver: saver.clone(),
         set_aside: loaded.set_aside,
+        _follow: follow,
     });
 
     cx.on_app_quit(move |cx| {
@@ -350,6 +388,95 @@ pub fn init_at(cx: &mut App, path: PathBuf) {
         }
     })
     .detach();
+}
+
+/// `GLINT_LANGUAGE` and `GLINT_THEME` (debug builds), applied over the settings in use.
+fn apply_debug_overrides(cx: &mut App) {
+    if let Ok(language) = std::env::var("GLINT_LANGUAGE") {
+        crate::state::update(cx, |s| {
+            s.language = match language.as_str() {
+                "ar" => glint_model::store::Language::Ar,
+                "en" => glint_model::store::Language::En,
+                _ => s.language,
+            }
+        });
+    }
+    if let Ok(theme) = std::env::var("GLINT_THEME") {
+        crate::state::update(cx, |s| {
+            s.theme = match theme.as_str() {
+                "light" => glint_model::store::Theme::Light,
+                "dark" => glint_model::store::Theme::Dark,
+                _ => s.theme,
+            }
+        });
+    }
+}
+
+// ---- A secondary window follows the main window --------------------------------------------------------------
+
+/// The state at `path`, if it is a saved state: what a secondary window takes when the file changes. Never moves
+/// a bad file aside (a half-written or foreign file is passed over until the next change).
+fn read_saved(path: &Path) -> Option<AppState> {
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_start_matches('\u{feff}');
+    is_saved_state(text).then(|| load_persisted(text))
+}
+
+/// Watches `path` and takes each new copy of it ([`apply_reloaded`]), read off the UI thread. None when Windows
+/// won't watch the folder (the window then keeps the settings it started with).
+fn follow_main(cx: &mut App, path: &Path) -> Option<Follow> {
+    let (changed_in, changed) = async_channel::unbounded::<()>();
+    let changed_in = std::sync::Arc::new(changed_in);
+    let weak = std::sync::Arc::downgrade(&changed_in);
+    let Some(watch) = crate::platform::secondary::watch_file(path, move || {
+        if let Some(changed_in) = weak.upgrade() {
+            let _ = changed_in.try_send(());
+        }
+    }) else {
+        eprintln!(
+            "glint: can't watch {}; this window won't follow the main window's settings",
+            path.display()
+        );
+        return None;
+    };
+    let path = path.to_path_buf();
+    cx.spawn(async move |cx| {
+        while changed.recv().await.is_ok() {
+            // Several changes in a row are one read.
+            while changed.try_recv().is_ok() {}
+            let from = path.clone();
+            if let Some(state) = cx.background_executor().spawn(async move { read_saved(&from) }).await {
+                cx.update(|cx| apply_reloaded(cx, state));
+            }
+        }
+    })
+    .detach();
+    Some(Follow {
+        _watch: watch,
+        _changed: changed_in,
+    })
+}
+
+/// A secondary window takes the main window's new saved state: the settings (redrawn, with the theme and the
+/// language following), and the pinned folders, saved searches and the rest, which observers of
+/// [`Persistence`] hear. The window's own session and last folder stay as they are.
+pub fn apply_reloaded(cx: &mut App, mut state: AppState) {
+    if !cx.has_global::<Persistence>() {
+        return;
+    }
+    let settings = state.settings.clone();
+    let p = cx.global_mut::<Persistence>();
+    state.session = p.app.session.take();
+    state.last_folder = p.app.last_folder.take();
+    p.app = state;
+    if settings != *crate::state::settings(cx) {
+        crate::state::update(cx, |live| *live = settings);
+        if cfg!(debug_assertions) {
+            apply_debug_overrides(cx);
+        }
+        sync_quietly(cx);
+    }
 }
 
 /// Copies the live settings into the saved state; true if they had changed.
@@ -1153,6 +1280,173 @@ mod tests {
         assert!(std::fs::read_dir(&dir)
             .expect("lists")
             .any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with("state.corrupt-"))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- A secondary window
+
+    /// Every file of a folder with its bytes, for "nothing was written".
+    fn contents(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .expect("lists")
+            .flatten()
+            .map(|e| {
+                (
+                    e.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(e.path()).unwrap_or_default(),
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// A saved state with a session and a last folder, which a secondary window must not take.
+    fn with_session() -> AppState {
+        let mut state = sample();
+        state.settings.language = Language::En;
+        state.last_folder = Some("C:\\Last".into());
+        state.session = Some(glint_model::store::Session {
+            dual: false,
+            active_pane: 0,
+            panes: vec![glint_model::store::SessionPane {
+                paths: vec!["C:\\One".into(), "C:\\Two".into()],
+                active: 1,
+                views: None,
+            }],
+        });
+        state
+    }
+
+    #[gpui_kit::test]
+    fn a_secondary_window_reads_the_settings_and_never_writes_anything(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = crate::testing::lock();
+        let _secondary = crate::platform::secondary::as_secondary(crate::platform::secondary::window_on("C:\\Work"));
+        let dir = temp_dir("secondary-no-writes");
+        let path = dir.join(STATE_FILE);
+        save_to(&path, &with_session()).expect("saves");
+        let before = contents(&dir);
+        cx.update(|cx| {
+            crate::testing::init(cx);
+            init_at(cx, path.clone());
+            // The settings were read…
+            assert_eq!(crate::state::settings(cx).theme, Theme::Dark);
+            assert_eq!(app(cx).map(|a| a.pinned.clone()), Some(vec!["C:\\Work".to_string()]));
+            // …but last time's tabs and folder are the main window's.
+            assert!(app(cx).is_some_and(|a| a.session.is_none() && a.last_folder.is_none()));
+            // Everything that would write: a setting, the saved state, a flush and the quit's save.
+            crate::state::update(cx, |s| s.show_hidden = true);
+            update_app(cx, |a| a.pinned.push("C:\\Pinned".into()));
+            sync(cx);
+            save_now(cx);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        assert_eq!(contents(&dir), before, "not the file, and not a temp file beside it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_secondary_window_leaves_a_file_that_is_not_a_saved_state_where_it_is(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = crate::testing::lock();
+        let _secondary = crate::platform::secondary::as_secondary(crate::platform::secondary::window_on("C:\\Work"));
+        let dir = temp_dir("secondary-garbage");
+        let path = dir.join(STATE_FILE);
+        std::fs::write(&path, "garbage").expect("writes");
+        cx.update(|cx| {
+            crate::testing::init(cx);
+            init_at(cx, path.clone());
+            assert!(corrupt_file_set_aside(cx).is_none());
+            crate::state::update(cx, |s| s.show_hidden = true);
+            save_now(cx);
+        });
+        assert_eq!(contents(&dir), vec![(STATE_FILE.to_string(), b"garbage".to_vec())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reading_without_writing_gives_the_same_state_as_loading() {
+        let dir = temp_dir("read-only");
+        let path = dir.join(STATE_FILE);
+        save_to(&path, &sample()).expect("saves");
+        assert_eq!(load_read_only(&path).state, load_from(&path).state);
+        // A missing file is the defaults, and nothing is made.
+        let missing = dir.join("nothing.json");
+        let loaded = load_read_only(&missing);
+        assert_eq!(loaded.state, AppState::default());
+        assert!(!loaded.keep_file && !missing.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_secondary_window_takes_the_main_windows_new_state(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = crate::testing::lock();
+        let _secondary = crate::platform::secondary::as_secondary(crate::platform::secondary::window_on("C:\\Work"));
+        let dir = temp_dir("secondary-reload");
+        let path = dir.join(STATE_FILE);
+        save_to(&path, &with_session()).expect("saves");
+        // What a changed state in the main window looks like: a light theme, another pinned folder.
+        let mut newer = sample();
+        newer.settings.theme = Theme::Light;
+        newer.settings.language = Language::En;
+        newer.pinned.push("C:\\Newly".into());
+        newer.session = None;
+        let heard = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update(|cx| {
+            crate::testing::init(cx);
+            init_at(cx, path.clone());
+            assert_eq!(crate::state::settings(cx).theme, Theme::Dark);
+        });
+        // Listening starts in an update of its own, after the start-up's pending notices.
+        cx.update(|cx| {
+            let seen = heard.clone();
+            cx.observe_global::<Persistence>(move |_| seen.set(seen.get() + 1))
+                .detach();
+        });
+        cx.update(|cx| {
+            apply_reloaded(cx, newer.clone());
+            assert_eq!(crate::state::settings(cx).theme, Theme::Light, "the theme follows");
+            assert!(!crate::theme::tokens(cx).dark, "and is drawn");
+            assert_eq!(
+                app(cx).map(|a| a.pinned.clone()),
+                Some(vec!["C:\\Work".to_string(), "C:\\Newly".to_string()])
+            );
+            assert!(app(cx).is_some_and(|a| a.session.is_none() && a.last_folder.is_none()));
+        });
+        assert!(heard.get() > 0, "observers of the saved state hear it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn settings_reload_when_the_file_changes(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = crate::testing::lock();
+        let _secondary = crate::platform::secondary::as_secondary(crate::platform::secondary::window_on("C:\\Work"));
+        let dir = temp_dir("secondary-watch");
+        let path = dir.join(STATE_FILE);
+        let mut first = sample();
+        first.settings.theme = Theme::Dark;
+        first.settings.language = Language::En;
+        save_to(&path, &first).expect("saves");
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            crate::testing::init(cx);
+            init_at(cx, path.clone());
+            assert_eq!(crate::state::settings(cx).theme, Theme::Dark);
+        });
+        // The main window saves a new theme (the same atomic replace it always uses).
+        let mut second = sample();
+        second.settings.theme = Theme::Light;
+        second.settings.language = Language::En;
+        save_to(&path, &second).expect("saves");
+        let mut followed = false;
+        for _ in 0..600 {
+            cx.run_until_parked();
+            if cx.update(|cx| crate::state::settings(cx).theme) == Theme::Light {
+                followed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(followed, "the window followed the file to the light theme");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

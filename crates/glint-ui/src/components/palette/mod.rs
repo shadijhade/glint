@@ -26,9 +26,9 @@
 //! the same [`MenuEvent`](crate::components::menus::MenuEvent) to the main window
 //! ([`crate::workspace::run_menu_command`]); "Run <task>" types the task into the terminal pane
 //! ([`crate::workspace::run_task`]); the commands that only change the explorer or a setting (Even out the panes,
-//! Invert selection, Get access, Move the tab) are [`commands::Change`]s. What is not here: "Convert the selected
-//! text files to UTF-8", which waits for the workspace to offer it (nothing the palette can call runs
-//! `text_to_utf8` and offers its Undo yet), and the "Ctrl+N" shown beside "New window" (no key is bound to it).
+//! Invert selection, Get access, Move the tab) are [`commands::Change`]s. "Convert the selected text files to
+//! UTF-8" is [`commands::Run::ToUtf8`]: it runs [`crate::components::preview::text::convert_to_utf8`], the same
+//! call as the text preview's encoding menu, and offers Undo.
 
 pub mod commands;
 mod keys;
@@ -619,6 +619,10 @@ fn carry_out(run: Run, window: &mut Window, cx: &mut App) {
             crate::dialogs::share::open_view(window, cx, view);
         }),
         Run::AddRemote => window.defer(cx, crate::dialogs::remote::open_add),
+        // The files are rewritten in their place, and Undo is offered in a notification over the window.
+        Run::ToUtf8(paths) => window.defer(cx, move |window, cx| {
+            crate::components::preview::text::convert_to_utf8(paths, None, window, cx).detach();
+        }),
         Run::Rules(folder) => window.defer(cx, move |window, cx| crate::dialogs::rules::open(window, cx, folder)),
     }
 }

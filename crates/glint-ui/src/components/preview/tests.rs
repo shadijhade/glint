@@ -1169,16 +1169,13 @@ fn a_window_without_a_handle_has_no_previewer_and_says_nothing(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-fn kinds_not_ported_yet_fall_back_to_windows_previewer_over_the_icon(cx: &mut TestAppContext) {
+fn a_mobi_book_gets_the_book_view_not_windows_previewer(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut env = setup(cx);
-    // MOBI books are the reader's next part; Windows' previewer stands in.
+    // The MOBI family is read here (preview::mobi); Windows' previewer is not asked.
     env.select("book.mobi");
-    let view = env.entry_view().expect("shown");
-    view.read_with(&env.visual, |v, _| {
-        assert_eq!(v.body(), Some(Body::Shell(super::choose::Fallback::Icon)))
-    });
-    assert!(env
+    assert_eq!(env.body(), Some(Body::Book));
+    assert!(!env
         .fake
         .logged()
         .contains(&format!("show {PANE} {}", env.path("book.mobi"))));

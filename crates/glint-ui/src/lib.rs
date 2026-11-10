@@ -25,6 +25,8 @@ pub mod explorer;
 pub mod i18n;
 pub mod kit;
 pub mod notices;
+/// The old app's settings, read from WebView2's localStorage at the first start (wave 16).
+pub mod old_settings;
 pub mod persistence;
 pub mod platform;
 mod selftest;

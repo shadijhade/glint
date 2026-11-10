@@ -130,6 +130,26 @@ pub(crate) fn start(cx: &mut App) {
         .detach();
         return;
     }
+    // `look15:window|<folder>`: Open in new window on the folder (a secondary Glint process). `look15:search|<folder>|
+    // <query>`: the folder searched for the query, with the search bar over the pane. Both left open for a look.
+    if let Some(rest) = script.strip_prefix("look15:") {
+        let parts: Vec<String> = rest.split('|').map(str::to_string).collect();
+        let what = parts.first().cloned().unwrap_or_default();
+        let folder = parts.get(1).cloned().unwrap_or_default();
+        let query = parts.get(2).cloned().unwrap_or_default();
+        explorer::explorer(cx).update(cx, |e, cx| e.navigate(folder.clone(), Default::default(), cx));
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_millis(900)).await;
+            cx.update(|cx| {
+                explorer::explorer(cx).update(cx, |e, cx| match what.as_str() {
+                    "window" => e.open_in_new_window(Some(&folder), cx),
+                    _ => e.run_find(&query, explorer::Wider::default(), cx).detach(),
+                })
+            });
+        })
+        .detach();
+        return;
+    }
     // `map:<folder>`: the folder's disk usage map, left open for a look.
     if let Some(folder) = script.strip_prefix("map:") {
         let folder = folder.to_string();

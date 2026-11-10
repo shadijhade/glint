@@ -296,6 +296,51 @@ Full suite: 2,075 + 300 + 233 passed; clippy clean.
 - **Release profile:** no LTO for either exe; the Tauri builds had fat LTO. Decide before the first GPUI release.
 - **Missing pane bars:** the search bar while searching (Results for…, Stopped at N, Show all, Save, Stop) and the ClosedBar (listing from the index, Get access).
 
+## Wave 15: pane bars, second window, MOBI, Read aloud, batch undo, UTF-8: done 2026-11-10
+
+*6 tasks (Sonnet; 12 agents, ~1.7 h, 2.4M tokens), all passed review on the first try.*
+
+- **pane-bars:**
+  - The search bar over a pane: spinner or icon, "Results" or "Close matches" for the query, "Stopped at N" with Show all, then Save, Stop and Close.
+  - The closed-folder bar for a listing from the index, with Get access.
+- **second-window:** Open in new window, Ctrl+N, and a tab dragged out of its strip all open a second Glint process (`--window <folder> --size WxH --main <pid> [--at x,y]`).
+  - It keeps nothing of its own: no single instance, tray, updater, session, placement or state writes.
+  - It follows `state.json` and sends Settings to the main window.
+  - It closes when the main instance exits.
+- **mobi:** a MOBI, AZW and AZW3 reader written in Rust (`preview/mobi.rs`):
+  - PalmDOC and HUFF/CDIC compression, EXTH, old MOBI HTML, and KF8's FDST, skeleton and fragments.
+  - A DRM-protected book says it can't be read.
+- **read-aloud:** the book view reads the chapter aloud with Windows' speech (`platform/speech.rs`). The voice comes from the text's script.
+- **batch-undo:** Ctrl+Z undoes batch renames, Cleanup's give-extensions, and compress in place (`UndoAction::Wof`).
+- **utf8:** Convert to UTF-8 in the text preview's encoding menu and in Ctrl+K, with Undo.
+
+**Integration:**
+- Second windows no longer write `books.json` or run core's housekeeping.
+- The Markdown preview's `data:` checks no longer slice inside a multi-byte character (a possible crash).
+- Ctrl+N shows beside New window in Ctrl+K.
+- The icon test lists all 219 icons.
+
+Tests: 2,258 + 300 + 233 + 92 passed; clippy clean.
+
+**Tried for real** (`look15:` self-tests, settings put back):
+- The secondary process opens on the folder at 85% size and exits after the main one.
+- The search bar, with Save and Close.
+- A generated MOBI book shows its chapters.
+
+**Not tried:**
+- Read aloud with sound (left for the user).
+- A real store MOBI or KF8 book.
+- Undo and UTF-8 against real core (fakes only).
+
+**Release blocker found:** the old app kept everything in WebView2's localStorage (LevelDB):
+- the store `shadui-ripgrep-storage`;
+- book places and text size;
+- recent tags;
+- `last-version`;
+- the first-notice flags.
+
+The GPUI app imports none of it yet. That is wave 16 (`old_settings/`, without a new crate).
+
 ## Antigravity (2026-11-10): closed before it started
 
 The user offered Antigravity to share the work. It hit its rate limit before doing anything; it left only an empty report. Its lane is closed and its worktree and branch are removed.

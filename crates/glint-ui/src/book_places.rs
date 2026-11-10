@@ -100,6 +100,10 @@ pub fn shared() -> &'static BookPlaces {
 }
 
 fn set_aside(path: &Path) {
+    // Only the main window moves a damaged books.json aside.
+    if crate::platform::secondary::is_secondary() {
+        return;
+    }
     let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else {
         return;
     };
@@ -299,6 +303,10 @@ impl BookPlaces {
 }
 
 fn write_atomically(path: &Path, text: &str) -> bool {
+    // A secondary window keeps nothing of its own: its places count as saved, so nothing retries.
+    if crate::platform::secondary::is_secondary() {
+        return true;
+    }
     if let Some(dir) = path.parent() {
         if std::fs::create_dir_all(dir).is_err() {
             return false;

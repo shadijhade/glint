@@ -4,7 +4,7 @@
 //! chosen view, so it is tested without a window. [`choose`] says what is drawn ([`Body`]); where the
 //! TypeScript had a previewer that the port doesn't have yet, the `later` field names it (the `PORT ME` kinds)
 //! and the body is the TypeScript's own fallback for it (Windows' previewer over the file's icon, or the
-//! file as text).
+//! file as text). No kind is waiting on a previewer through it now (the MOBI family was the last), so `later` is always `None`.
 
 use super::player::Kind as PlayerKind;
 use crate::dialogs::data_tools::DUCK_READS;
@@ -120,7 +120,7 @@ pub enum Body {
     Player(PlayerKind),
     /// PDF pages drawn with Windows.Data.Pdf (`preview::pdf`; a copy first for one in an archive).
     Pdf,
-    /// A book read page by page: EPUB, FB2, comics (`preview::book`).
+    /// A book read page by page: EPUB, MOBI/AZW/AZW3, FB2, comics (`preview::book`, `preview::mobi`).
     Book,
     /// A Word document laid out without Office (`preview::docx`).
     Docx,
@@ -140,20 +140,15 @@ pub enum Body {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Choice {
     pub body: Body,
-    /// `PORT ME(<kind>)`: the TypeScript showed something better for this file; the body is its fallback.
+    /// `PORT ME(<kind>)`: the TypeScript showed something better for this file; the body is its fallback. Nothing
+    /// is waiting on a previewer now (the MOBI family was the last), so it is always `None`; a kind that is not
+    /// ported yet sets it with `Choice { body, later: Some("kind") }`.
     pub later: Option<&'static str>,
 }
 
 impl Choice {
     fn of(body: Body) -> Self {
         Choice { body, later: None }
-    }
-
-    fn later(body: Body, kind: &'static str) -> Self {
-        Choice {
-            body,
-            later: Some(kind),
-        }
     }
 }
 
@@ -335,12 +330,9 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
     if is_list_only(entry) {
         return Choice::of(Body::Icon);
     }
-    if readable && !archived && one_of(entry, &BOOKS) {
-        if super::book::can_read(&entry.ext) {
-            return Choice::of(Body::Book);
-        }
-        // PORT ME(mobi): MOBI and AZW books (foliate's mobi.js); Windows' previewer meanwhile.
-        return Choice::later(Body::Shell(Fallback::Icon), "mobi");
+    // Every e-book, the MOBI family (MOBI, AZW, AZW3) included: `preview::mobi` reads them for `preview::book`.
+    if readable && !archived && one_of(entry, &BOOKS) && super::book::can_read(&entry.ext) {
+        return Choice::of(Body::Book);
     }
     // Its Text view is the file as it is, which goes on down the chain.
     if let Some(kind) = small_of(entry).filter(|_| !source) {
@@ -457,10 +449,15 @@ mod tests {
     }
 
     #[test]
-    fn kinds_the_port_has_not_reached_say_so_and_fall_back_as_the_typescript_did() {
+    fn no_kind_is_waiting_on_a_previewer_and_the_mobi_family_has_the_book_view() {
         let later = |name: &str| choose(&file("C:\\x", name, 10, 1), View::File);
-        assert_eq!(later("book.mobi").later, Some("mobi"));
-        assert_eq!(later("book.mobi").body, Body::Shell(Fallback::Icon));
+        // The MOBI family has the book view too, not Windows' previewer over the icon.
+        for book in ["book.mobi", "book.azw", "book.azw3"] {
+            assert_eq!(later(book).body, Body::Book, "{book}");
+            assert_eq!(later(book).later, None, "{book}");
+        }
+        assert_eq!(later("book.fb2").body, Body::Book);
+        assert_eq!(later("book.fbz").body, Body::Book);
         // What has its previewer now says nothing is missing.
         assert_eq!(later("movie.mp4").body, Body::Player(PlayerKind::Video));
         assert_eq!(later("song.mp3").body, Body::Player(PlayerKind::Audio));

@@ -11,6 +11,10 @@
 //! [`init`] puts the defaults in place; `persistence::init`, right after it, loads the saved settings
 //! through [`update`], and every later [`update`] is saved soon. Code that wants to react to a setting
 //! observes this global (`cx.observe_global::<UiState>`): every [`update`] notifies its observers.
+//!
+//! **In a secondary window** (`platform::secondary`) the settings are the main window's: `persistence::init`
+//! reads them, nothing here is ever saved (the saver isn't there), and when the main window changes them
+//! `persistence::apply_reloaded` hands the new ones to [`update`], so the theme and the language follow.
 
 use glint_model::store::Settings;
 use gpui_kit::{App, Global};

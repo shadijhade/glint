@@ -1,4 +1,9 @@
 //! Glint.exe: a worker when started as one, the app otherwise.
+//!
+//! The app is the main window, or, started as `Glint.exe --window <folder> [--at <x>,<y>] [--size <w>x<h>]
+//! [--main <pid>]`, a second window of its own in secondary mode (Open in new window, a tab dragged out): the
+//! same program, keeping nothing of its own. `glint_ui::run` reads the command line first
+//! (`platform::launch::begin`, `platform::secondary`); a worker's command line never starts with `--window`.
 
 // No console window in release builds on Windows (the debug build keeps one for its logs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]

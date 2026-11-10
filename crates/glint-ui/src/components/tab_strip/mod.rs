@@ -9,12 +9,19 @@
 //! | `Tab` (icon, name, busy pulse, close)       | `TabStrip::tab`                                             |
 //! | `dragTab` / `dropAt` / `placeTab`           | GPUI's `on_drag` with [`DraggedTab`]; `slot_at`             |
 //! | `PaneDropZone` over the files               | [`PaneDropZone`]                                            |
+//! | `tearOffTab`                                | `TabStrip::released`, `TabStrip::tear_off`                  |
 //! | `tabMenu(id)`                               | `tab_menu` (in-app menu on a right-click)                   |
 //! | `paneMenu(pane)` and the pane button        | `pane_menu` (opened by the pane button)                     |
 //!
 //! The strip keeps no copy of what the explorer holds: it reads the tabs and panes, acts through the
 //! explorer's methods and redraws when the explorer changes. Its own state is the scroll position of each
 //! strip, the slot a dragged tab would drop into, the open pane menu and the keyboard focus of the tabs.
+//!
+//! **A tab dragged out of the window** (`tearOffTab`) opens its folder in a window of its own where it was
+//! dropped, and closes, unless it is the last tab. The drop is "outside" when the pointer is released beyond the
+//! window's edge (GPUI keeps the mouse captured while a button is down, so the release still arrives), or well
+//! away (90 px) from where the drag began, over nothing that took the tab. Nothing takes the tab but the strips
+//! and the [`PaneDropZone`]s, which say so with `drop_taken`.
 //!
 //! **The title bar's drag area.** The strip's empty space takes no mouse (it has no handlers that block it), so
 //! the window can still be moved by it. Tabs and buttons `occlude` the mouse, so pressing one never starts a
@@ -23,16 +30,54 @@
 use crate::explorer::{self, Drive, DriveKind, Explorer, Pane, Tab, TabId};
 use crate::kit::prelude::*;
 use crate::platform::dragdrop::{Answer, DropEffect, Under};
+use crate::platform::secondary;
 use crate::theme::Tokens;
 use crate::{i18n, state, t, theme};
 use glint_model::paths::{
     in_archive_path, is_gallery, is_recent, is_recycle_bin, is_remote_path, is_root, is_shadow_path, same_path, THIS_PC,
 };
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::Duration;
 
 /// How long files held over a tab that isn't showing wait before it opens (`springTimer`, 450 ms).
 const SPRING_DELAY: Duration = Duration::from_millis(450);
+
+/// How far from where a tab's drag began a release counts as pulling it out of the strip (`> 90` in `dragTab`).
+const PULL_AWAY: Pixels = px(90.);
+
+thread_local! {
+    /// Set by whatever took the tab that was just dropped (a strip, a pane's drop zone); read after the drop
+    /// to tell a tab dropped on nothing.
+    static DROP_TAKEN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Says that the dropped tab was taken, so it isn't torn off into a window.
+fn drop_taken() {
+    DROP_TAKEN.with(|taken| taken.set(true));
+}
+
+/// What a tab released at some place does (`dragTab`'s end).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TearOff {
+    /// Nothing: it was dropped in the strip or near it.
+    No,
+    /// A window of its own, at once: past the window's edge no strip or zone can take it.
+    Now,
+    /// A window of its own, unless the drop that follows is taken by a strip or a pane's zone.
+    IfNotTaken,
+}
+
+/// Whether a tab released inside the window (or not) and `away` from where its drag began is torn off.
+fn tear_off_for(inside: bool, away: Pixels) -> TearOff {
+    if !inside {
+        TearOff::Now
+    } else if away > PULL_AWAY {
+        TearOff::IfNotTaken
+    } else {
+        TearOff::No
+    }
+}
 
 // ---- What is drawn ----------------------------------------------------------------------------------
 
@@ -363,6 +408,7 @@ impl RenderOnce for PaneDropZone {
                 .on_drop({
                     let explorer = explorer.clone();
                     move |dragged: &DraggedTab, _, cx| {
+                        drop_taken();
                         let id = dragged.id;
                         explorer.update(cx, |e, cx| {
                             if split {
@@ -405,6 +451,8 @@ pub struct TabStrip {
     scrolled_to: Vec<Option<TabId>>,
     /// Where a dragged tab would drop.
     slot: Option<Slot>,
+    /// The tab being dragged and the pointer where the drag began, for pulling it out of the window.
+    drag_from: Option<(TabId, Point<Pixels>)>,
     pane_menu: Option<OpenMenu>,
     /// The tab files are held over, lit while they are (`springTab`).
     spring: Option<TabId>,
@@ -425,6 +473,7 @@ impl TabStrip {
             scrolls: Vec::new(),
             scrolled_to: Vec::new(),
             slot: None,
+            drag_from: None,
             pane_menu: None,
             spring: None,
             spring_timer: None,
@@ -526,10 +575,58 @@ impl TabStrip {
 
     /// A tab dropped on pane `pane`'s strip (`count` tabs): into the gap it was shown for, else at the end.
     fn drop_tab(&mut self, pane: usize, count: usize, id: TabId, cx: &mut Context<Self>) {
+        drop_taken();
         let to = self.slot.filter(|s| s.pane == pane).map_or(count, |s| s.index);
         self.slot = None;
         self.explorer.update(cx, |e, cx| e.place_tab(id, pane, to, cx));
         cx.notify();
+    }
+
+    /// The mouse button went up outside the strip while a tab was dragged: a tab pulled out of the window opens
+    /// its folder in a window of its own where it was dropped (`dragTab`'s end and `tearOffTab`).
+    fn released(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, from)) = self.drag_from.take() else {
+            return;
+        };
+        let viewport = Bounds::new(point(px(0.), px(0.)), window.viewport_size());
+        let away = (position.y - from.y).abs();
+        match tear_off_for(viewport.contains(&position), away) {
+            TearOff::No => {}
+            TearOff::Now => self.tear_off(id, position, window, cx),
+            TearOff::IfNotTaken => {
+                DROP_TAKEN.with(|taken| taken.set(false));
+                // The drop handlers run after this (the capture phase); the deferred call sees what they did.
+                let strip = cx.entity();
+                window.defer(cx, move |window, cx| {
+                    if !DROP_TAKEN.with(Cell::get) {
+                        strip.update(cx, |this, cx| this.tear_off(id, position, window, cx));
+                    }
+                });
+            }
+        }
+    }
+
+    /// Opens tab `id`'s folder in a window of its own with its corner at `position` (in this window), then closes
+    /// the tab unless it is the last one. NOTE(port): the web app closed it whether or not the window opened; here
+    /// a window that can't start leaves the tab where it was.
+    fn tear_off(&mut self, id: TabId, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let explorer = self.explorer.clone();
+        let folder = {
+            let e = explorer.read(cx);
+            e.tab(id).map(|tab| e.new_window_folder(Some(&tab.path)))
+        };
+        let Some(folder) = folder else {
+            return;
+        };
+        let at = secondary::screen_point(window, position);
+        secondary::open_window(window, cx, &folder, Some(at), move |_, cx| {
+            explorer.update(cx, |e, cx| {
+                let tabs: usize = e.panes().iter().map(|pane| pane.tabs.len()).sum();
+                if tabs > 1 {
+                    e.close_tab(Some(id), cx);
+                }
+            });
+        });
     }
 
     /// A key on a focused tab: Enter and Space show it, the arrows (Home, End) move to and show the next tab
@@ -827,6 +924,9 @@ impl Render for TabStrip {
         let dual = panes.len() > 1;
         let dragging = cx.has_active_drag();
         let slot = self.slot.filter(|_| dragging);
+        if !dragging {
+            self.drag_from = None;
+        }
         let _ = window;
 
         let mut strips = Vec::with_capacity(panes.len());
@@ -1029,6 +1129,16 @@ impl Render for TabStrip {
             .h_full()
             .items_end()
             .gap(space(4.))
+            // Where a tab's drag began, and where it ended if that was outside the strip.
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                if this.drag_from.is_none() {
+                    this.drag_from = Some((event.drag(cx).id, event.event.position));
+                }
+            }))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseUpEvent, window, cx| this.released(event.position, window, cx)),
+            )
             .children(strips)
             .children(menu)
     }

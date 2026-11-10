@@ -17,6 +17,10 @@
 //!   itself: any element marked `window_control_area(WindowControlArea::Max)` (the kit's title bar buttons are)
 //!   returns HTMAXBUTTON, so Windows offers the layouts, and GPUI draws the hover and press states and maximizes.
 //!
+//! - **Secondary windows** (`platform::secondary`) keep none of this: [`restore_hwnd`], [`save_hwnd`], the Jump
+//!   List and the thumbnail buttons do nothing in one, and [`place_secondary`] puts the window where its command
+//!   line says (or centres it) instead of where the main window was.
+//!
 //! **What the coordinator calls** (all on the UI thread unless said):
 //!
 //! | When | Call |
@@ -156,6 +160,30 @@ pub fn on_screen(saved: Rect, monitors: &[Rect]) -> Rect {
     }
 }
 
+/// Where a secondary window of `size` goes: its corner at `at` when given (moved onto a monitor if none shows
+/// enough of it to grab), else centred in the first monitor's work area (the primary), made no bigger than it.
+/// `monitors` are work areas, the primary first. With no monitors known, `at` as it was, or the origin.
+pub fn secondary_rect(size: (i32, i32), at: Option<(i32, i32)>, monitors: &[Rect]) -> Rect {
+    let (w, h) = (i64::from(size.0.max(1)), i64::from(size.1.max(1)));
+    let to = |v: i64| i32::try_from(v).unwrap_or(i32::MAX);
+    let placed = |left: i32, top: i32, w: i64, h: i64| Rect {
+        left,
+        top,
+        right: to(i64::from(left) + w),
+        bottom: to(i64::from(top) + h),
+    };
+    match (at, monitors.first()) {
+        (Some((x, y)), _) => on_screen(placed(x, y, w, h), monitors),
+        (None, Some(primary)) => {
+            let (w, h) = (w.min(primary.width()), h.min(primary.height()));
+            let left = to(i64::from(primary.left) + (primary.width() - w) / 2);
+            let top = to(i64::from(primary.top) + (primary.height() - h) / 2);
+            placed(left, top, w, h)
+        }
+        (None, None) => placed(0, 0, w, h),
+    }
+}
+
 /// What to do to the hidden window as it is set up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RestorePlan {
@@ -232,8 +260,19 @@ pub fn restore_window(window: &gpui_kit::Window, data: &Path) {
 
 /// [`restore_window`] for a bare handle.
 pub fn restore_hwnd(hwnd: windows::Win32::Foundation::HWND, data: &Path) {
+    // A secondary window isn't put where the main window was.
+    if crate::platform::secondary::is_secondary() {
+        return;
+    }
     let file = FILE.get_or_init(|| placement_file(data));
     imp::restore(hwnd, load(file));
+}
+
+/// Puts a secondary window (hidden, as it opens) where its command line says, or centred, in the size it says
+/// (the size it opened with when none) (see [`secondary_rect`]). Only the window's own place is set: nothing is
+/// kept for next time.
+pub fn place_secondary(hwnd: windows::Win32::Foundation::HWND, size: Option<(i32, i32)>, at: Option<(i32, i32)>) {
+    imp::place_secondary(hwnd, size, at);
 }
 
 /// Shows the main window: maximized the first time, if it was when it was put away.
@@ -258,6 +297,10 @@ pub fn save_window(window: &gpui_kit::Window) {
 
 /// [`save_window`] for a bare handle (the quit path may only have the handle).
 pub fn save_hwnd(hwnd: windows::Win32::Foundation::HWND) {
+    // The place is the main window's to keep.
+    if crate::platform::secondary::is_secondary() {
+        return;
+    }
     let Some(file) = FILE.get() else { return };
     if let Some(placement) = imp::placement(hwnd) {
         store(file, &placement);
@@ -467,6 +510,10 @@ static SYNC: Mutex<()> = Mutex::new(());
 /// on a fresh COM apartment), so call it from a background thread, or use [`sync_jump_list_in_background`].
 /// The most-used folders stay out when Windows is set not to show recently opened items.
 pub fn sync_jump_list(pinned: Vec<String>, frequent: Vec<String>) -> Result<(), String> {
+    // The Jump List is the main window's.
+    if crate::platform::secondary::is_secondary() {
+        return Ok(());
+    }
     let _turn = SYNC.lock().unwrap_or_else(|e| e.into_inner());
     imp::sync_jump_list(&pinned, &frequent)
 }
@@ -474,6 +521,9 @@ pub fn sync_jump_list(pinned: Vec<String>, frequent: Vec<String>) -> Result<(), 
 /// [`sync_jump_list`] on its own thread, for the UI thread to call when recent or pinned folders change. Best
 /// effort: the taskbar never fails what the user is doing, so an error is only printed.
 pub fn sync_jump_list_in_background(pinned: Vec<String>, frequent: Vec<String>) {
+    if crate::platform::secondary::is_secondary() {
+        return;
+    }
     std::thread::spawn(move || {
         if let Err(error) = sync_jump_list(pinned, frequent) {
             eprintln!("glint: couldn't update the Jump List: {error}");
@@ -492,6 +542,9 @@ pub fn taskbar_progress(window: &gpui_kit::Window, state: ProgressState, complet
 /// can't go. Call on the UI thread whenever the folder or its history changes; clicks arrive on
 /// [`thumb_button_events`].
 pub fn set_thumb_buttons(window: &gpui_kit::Window, back: bool, forward: bool, up: bool) {
+    if crate::platform::secondary::is_secondary() {
+        return;
+    }
     if let Some(hwnd) = crate::core_bridge::hwnd_of(window) {
         imp::thumb_buttons(hwnd, [back, forward, up]);
     }
@@ -499,6 +552,9 @@ pub fn set_thumb_buttons(window: &gpui_kit::Window, back: bool, forward: bool, u
 
 /// [`set_thumb_buttons`] for a bare handle (the start-up glue posts it, outside GPUI's callbacks).
 pub fn set_thumb_buttons_hwnd(hwnd: windows::Win32::Foundation::HWND, back: bool, forward: bool, up: bool) {
+    if crate::platform::secondary::is_secondary() {
+        return;
+    }
     imp::thumb_buttons(hwnd, [back, forward, up]);
 }
 
@@ -619,6 +675,30 @@ mod imp {
                 }
             }
         }
+    }
+
+    /// A secondary window's place: [`super::secondary_rect`] over the monitors there are, set as a hidden window's
+    /// normal place (so it shows there), not maximized.
+    pub fn place_secondary(hwnd: HWND, size: Option<(i32, i32)>, at: Option<(i32, i32)>) {
+        let size = size.or_else(|| {
+            let mut rect = RECT::default();
+            // SAFETY: `rect` is a valid out pointer.
+            unsafe { GetWindowRect(hwnd, &mut rect) }
+                .ok()
+                .map(|_| (rect.right - rect.left, rect.bottom - rect.top))
+        });
+        let Some(size) = size else { return };
+        let rect = super::secondary_rect(size, at, &monitors());
+        restore(
+            hwnd,
+            Some(Placement {
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+                maximized: false,
+            }),
+        );
     }
 
     /// The first time: as configured (1280 x 800 at 100%), unless that's over 90% of the screen's work area
@@ -1198,6 +1278,47 @@ mod tests {
             right,
             bottom,
         }
+    }
+
+    #[test]
+    fn a_secondary_window_is_centred_or_put_at_its_corner_and_kept_on_a_monitor() {
+        let primary = rect(0, 0, 1920, 1080);
+        let second = rect(1920, 0, 3840, 1080);
+        // Centred in the primary monitor's work area.
+        assert_eq!(
+            secondary_rect((1000, 600), None, &[primary, second]),
+            rect(460, 240, 1460, 840)
+        );
+        // At the corner it was dropped at, wherever a monitor shows it.
+        assert_eq!(
+            secondary_rect((1000, 600), Some((2000, 100)), &[primary, second]),
+            rect(2000, 100, 3000, 700)
+        );
+        // A corner no monitor shows (it was unplugged since) goes onto one, whole.
+        let moved = secondary_rect((1000, 600), Some((9000, 9000)), &[primary]);
+        assert_eq!((moved.right - moved.left, moved.bottom - moved.top), (1000, 600));
+        assert!(moved.left >= 0 && moved.top >= 0 && moved.right <= 1920 && moved.bottom <= 1080);
+        // Bigger than the screen: no bigger than it.
+        assert_eq!(secondary_rect((5000, 3000), None, &[primary]), primary);
+        // With no monitor known, as asked.
+        assert_eq!(secondary_rect((800, 600), Some((5, 6)), &[]), rect(5, 6, 805, 606));
+        assert_eq!(secondary_rect((800, 600), None, &[]), rect(0, 0, 800, 600));
+        // A nonsense size is still a window.
+        let tiny = secondary_rect((0, -4), None, &[primary]);
+        assert_eq!((tiny.right - tiny.left, tiny.bottom - tiny.top), (1, 1));
+    }
+
+    #[test]
+    fn a_secondary_window_keeps_no_place_and_builds_no_jump_list() {
+        let _secondary = crate::platform::secondary::as_secondary(crate::platform::secondary::window_on("C:\\"));
+        let nowhere = windows::Win32::Foundation::HWND(std::ptr::null_mut());
+        restore_hwnd(nowhere, Path::new(r"C:\glint-no-such-data-folder"));
+        assert!(FILE.get().is_none(), "the place file was never even named");
+        save_hwnd(nowhere);
+        // The real Jump List would be rebuilt here; a secondary window leaves it to the main one.
+        assert_eq!(sync_jump_list(vec![r"C:\Pinned".into()], vec![]), Ok(()));
+        sync_jump_list_in_background(vec![r"C:\Pinned".into()], vec![]);
+        set_thumb_buttons_hwnd(nowhere, true, true, true);
     }
 
     #[test]
