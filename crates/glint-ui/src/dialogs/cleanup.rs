@@ -1638,6 +1638,13 @@ pub struct CleanupDialog {
 impl CleanupDialog {
     /// The dialog over `model`.
     pub fn new(model: Entity<Cleanup>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        super::refresh_on_f5(cx, |this, window, cx| {
+            {
+                this.park_focus(window, cx);
+                this.model.update(cx, |model, cx| model.refresh(cx));
+            };
+        });
         let thumbs = thumbnail::thumbnails(cx);
         let viewer = cx.entity_id();
         let service = thumbs.clone();
@@ -1931,7 +1938,7 @@ impl CleanupDialog {
                     .small()
                     .icon(IconName::RefreshCw)
                     .accessibility_label(t!("Refresh"))
-                    .tooltip(t!("Refresh"))
+                    .tooltip(t!("Refresh (F5)"))
                     .loading(refreshing)
                     .disabled(!snap.ready)
                     .on_click(cx.listener(|this, _, window, cx| {

@@ -30,6 +30,49 @@ pub fn describe_progress(fetch: &Fetch) -> SharedString {
     )
 }
 
+/// What a finished meaning-model download says: the notice's title and its sentence (`installMeaning` and
+/// `installMultilingual` of meaning.ts).
+fn meaning_downloaded(multilingual: bool) -> (SharedString, SharedString) {
+    if multilingual {
+        (
+            t!("The 101-language meaning model is downloaded"),
+            t!("Meaning search reads Arabic, Chinese, Spanish and 98 more languages now."),
+        )
+    } else {
+        (
+            t!("The meaning model is downloaded"),
+            t!("Meaning search ranks passages by what they're about."),
+        )
+    }
+}
+
+/// The title of the notice when a meaning-model download fails.
+fn meaning_download_failed(multilingual: bool) -> SharedString {
+    if multilingual {
+        t!("Couldn't download the 101-language model")
+    } else {
+        t!("Couldn't download the meaning model")
+    }
+}
+
+/// What removing a meaning model says.
+fn meaning_removed(multilingual: bool) -> SharedString {
+    if multilingual {
+        t!("The 101-language model is removed")
+    } else {
+        t!("The meaning model is removed")
+    }
+}
+
+/// The title of the notice when removing a meaning model fails.
+fn meaning_remove_failed(multilingual: bool) -> SharedString {
+    if multilingual {
+        t!("Couldn't remove the 101-language model")
+    } else {
+        t!("Couldn't remove the meaning model")
+    }
+}
+
 /// What Install will do, for its tooltip (`installHint`).
 pub fn install_hint(tool: &ToolInfo) -> SharedString {
     if tool.source == "release" {
@@ -247,10 +290,11 @@ impl Tools {
                 match answer {
                     Ok(()) => {
                         this.refresh(window, cx);
-                        good(window, cx, t!("The meaning model is downloaded"), None);
+                        let (title, description) = meaning_downloaded(multilingual);
+                        good(window, cx, title, Some(description));
                     }
                     Err(reason) if reason == "cancelled" => {}
-                    Err(reason) => bad(window, cx, t!("Couldn't download the meaning model"), reason),
+                    Err(reason) => bad(window, cx, meaning_download_failed(multilingual), reason),
                 }
                 cx.notify();
             })
@@ -266,8 +310,11 @@ impl Tools {
             let answer = asked.await;
             this.update_in(cx, |this, window, cx| {
                 match answer {
-                    Ok(()) => this.refresh(window, cx),
-                    Err(reason) => bad(window, cx, t!("Couldn't remove the meaning model"), reason),
+                    Ok(()) => {
+                        this.refresh(window, cx);
+                        good(window, cx, meaning_removed(multilingual), None);
+                    }
+                    Err(reason) => bad(window, cx, meaning_remove_failed(multilingual), reason),
                 }
                 cx.notify();
             })
@@ -526,4 +573,38 @@ pub fn needed(tools: &Entity<Tools>, id: &str, why: SharedString, icon_name: Ico
             .children(controls)
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing;
+
+    #[test]
+    fn the_meaning_models_say_what_they_did_in_the_web_apps_words() {
+        let _guard = testing::lock();
+        assert_eq!(
+            meaning_downloaded(false),
+            (
+                SharedString::from("The meaning model is downloaded"),
+                SharedString::from("Meaning search ranks passages by what they're about.")
+            )
+        );
+        assert_eq!(
+            meaning_downloaded(true),
+            (
+                SharedString::from("The 101-language meaning model is downloaded"),
+                SharedString::from("Meaning search reads Arabic, Chinese, Spanish and 98 more languages now.")
+            )
+        );
+        assert_eq!(meaning_download_failed(false), "Couldn't download the meaning model");
+        assert_eq!(
+            meaning_download_failed(true),
+            "Couldn't download the 101-language model"
+        );
+        assert_eq!(meaning_removed(false), "The meaning model is removed");
+        assert_eq!(meaning_removed(true), "The 101-language model is removed");
+        assert_eq!(meaning_remove_failed(false), "Couldn't remove the meaning model");
+        assert_eq!(meaning_remove_failed(true), "Couldn't remove the 101-language model");
+    }
 }

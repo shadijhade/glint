@@ -614,6 +614,14 @@ pub struct DuplicatesDialog {
 
 impl DuplicatesDialog {
     pub fn new(model: Entity<Duplicates>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        super::refresh_on_f5(cx, |this, _, cx| {
+            this.model.update(cx, |model, cx| {
+                if !model.busy() && *model.state() != State::Loading {
+                    model.scan(cx)
+                }
+            });
+        });
         let redraw = cx.observe(&model, |_, _, cx| cx.notify());
         let notices = cx.subscribe_in(
             &model,
@@ -665,6 +673,15 @@ impl DuplicatesDialog {
             .role(Role::Group)
             .aria_label(line.clone())
             .test_support()
+            .when(report.clones, |this| {
+                this.tooltip(|window, cx| {
+                    crate::kit::tooltip(
+                        t!("On ReFS or a Dev Drive, a copy can be a clone of another file: it takes no space of its own until one of them changes"),
+                        window,
+                        cx,
+                    )
+                })
+            })
             .flex_wrap()
             .px(space(3.5))
             .py(space(1.5))
@@ -803,6 +820,11 @@ impl DuplicatesDialog {
         let reveal_path = path.clone();
 
         row_start()
+            .id(("duplicates-copy", ix))
+            // The copies of a group are the choices of one question (`role="radiogroup"` of the TypeScript).
+            .role(Role::RadioGroup)
+            .aria_label(t!("The copy to keep"))
+            .test_support()
             .h(space(ROW_HEIGHT))
             .items_center()
             .gap(space(2.))
@@ -967,7 +989,7 @@ impl Render for DuplicatesDialog {
                             .ghost()
                             .xsmall()
                             .icon(IconName::RotateCw)
-                            .tooltip(t!("Refresh"))
+                            .tooltip(t!("Refresh (F5)"))
                             .accessibility_label(t!("Refresh"))
                             .loading(loading || busy)
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -1408,6 +1430,28 @@ mod tests {
                 Row::File(1, 1)
             ]
         );
+    }
+
+    #[gpui_kit::test]
+    fn f5_scans_again_and_each_groups_copies_are_one_question(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = window(cx);
+        let (source, log) = fake(Ok(two_groups(true)), false);
+        open_dialog(&mut visual, "C:\\Photos", source, effects(&log));
+        settle(&mut visual, "the list", |cx| has(cx, "Keep a.jpg"));
+        assert_eq!(log.scans.load(Ordering::SeqCst), 1);
+        // The copies of a group are the choices of "The copy to keep".
+        let role = visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find(("duplicates-copy", 1_usize)).role()
+        });
+        assert_eq!(role, Some(Role::RadioGroup));
+        // F5 is the Refresh button's key, as in the web app's dialogs.
+        visual.update(|window, cx| window.press("f5", cx));
+        settle(&mut visual, "the second scan", |_| {
+            log.scans.load(Ordering::SeqCst) == 2
+        });
+        settle(&mut visual, "the list again", |cx| has(cx, "Keep a.jpg"));
     }
 
     #[gpui_kit::test]
