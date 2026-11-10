@@ -42,6 +42,7 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     // Instant search's state for the status bar (it polls core's index service in the background).
     crate::components::status_bar::init(cx);
     start_quick_search(cx);
+    start_rules(cx);
     start_explorer(cx);
     start_tray(cx, request.tray);
     keep_jump_list(cx);
@@ -211,6 +212,27 @@ fn hear_later_launches(cx: &mut App) {
 /// goes (`summon` toggled in the web app too).
 fn quick_search(cx: &mut App) {
     quick_search::toggle(cx);
+}
+
+/// The folder rules saved last time are handed to core, which watches their folders again (`initRules`).
+///
+/// PORT ME(coordinator): the toasts of what a rule did (core's "rule-did" event, with Undo).
+fn start_rules(cx: &mut App) {
+    let rules: Vec<_> = crate::dialogs::rules::saved_rules(cx)
+        .iter()
+        .map(crate::dialogs::rules::to_core)
+        .collect();
+    if rules.is_empty() {
+        return;
+    }
+    let app = cx.global::<core_bridge::Core>().app.clone();
+    let started = core_bridge::run(glint_core::rules::rules_set(app, rules));
+    cx.spawn(async move |_| {
+        if let Ok(Err(error)) = started.await {
+            eprintln!("glint: couldn't start the folder rules: {error}");
+        }
+    })
+    .detach();
 }
 
 /// The Quick Search window's hub: "show it in Glint" opens the folder (or the file's folder, the file selected)

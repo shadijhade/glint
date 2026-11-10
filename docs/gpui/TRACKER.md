@@ -109,6 +109,23 @@
 
 **Not tried for real yet:** drops from File Explorer onto each view and drag-out (needs a real OLE drag: a UI Automation harness), the instant-search offer's Turn on.
 
+## Wave 7: native previews and seven dialogs: done 2026-11-10
+
+*12 agents, ~52 minutes, 3.0M tokens: 6 ports (all Sonnet), all passed review first time. Integrated by the coordinator: the preview pane at the end edge (made and dropped with its setting, Alt+P), Quick Look on Space, menus covering Windows' previewers, the seven dialogs opened from the menus, This PC and Settings, saved folder rules handed to core at start. 951 tests pass, clippy clean.*
+
+| Part | From | Status |
+| :--- | :--- | :--- |
+| `preview` frame: pane, Quick Look, pictures (zoom, pan, colors, OCR, rotate, wallpaper), Windows' preview handlers, the details | FilePreview, Preview, PreviewState, QuickLook | done: 80 tests |
+| previewers: text and code (highlighted), Markdown, hex and PE headers, JSON/YAML/TOML trees, CSV/TSV tables | the text, Markdown, hex, binary and data views | done |
+| dialogs: duplicates, recent changes | DuplicatesDialog, TimelineDialog | done |
+| dialog: clean up | CleanupDialog | done |
+| dialogs: X-Ray, checking files (secrets, YARA, Defender) | XRayDialog, CheckDialog | done |
+| dialogs: folder rules, compress in place | RulesDialog, CompressInPlaceDialog | done |
+
+**Tried for real:** a debug-only `GLINT_SELFTEST=show:<file>` opens a file's folder with the preview pane on. Highlighted Rust with line numbers, Markdown with an Arabic heading and a highlighted code block, and a 3840 x 2400 JPEG all render. The picture first stayed blank: it measured its area in a canvas and called `notify` during the draw, which GPUI drops; it now asks after the frame (`on_next_frame`), and STANDARDS has the rule.
+
+**Left for later parts:** video and audio, PDF pages drawn natively (Windows' PDF previewer stands in), EPUB, Word, 3D, email, notebooks, Mermaid and math, the terminal; the toasts of what a folder rule did (core's "rule-did"); saving a dragged preview width; Ctrl+Z for batch renames and WOF compression (an UndoAction each); a shared Tools model for the install cards; the licenses of the grammars two-face bundles (check before a release).
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).

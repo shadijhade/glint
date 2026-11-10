@@ -4,8 +4,10 @@
 //! `GLINT_SELFTEST=ops:<folder>` (a scratch folder holding `a.txt` and `b.txt`): Glint opens it, selects
 //! everything, copies and pastes it (through the window's Copy and Paste actions), renames `a.txt` to
 //! `renamed.txt` (the Rename action, then what the file list's rename box sends), undoes the rename, searches
-//! the folder for the copies, writes what it saw to `<folder>\selftest.log` and quits. Release builds ignore
-//! the variable.
+//! the folder for the copies, writes what it saw to `<folder>\selftest.log` and quits.
+//!
+//! `GLINT_SELFTEST=show:<file>` opens the file's folder with it selected and the preview pane on, and stays
+//! open for a look (a capture). Release builds ignore the variable.
 
 use crate::explorer;
 use crate::kit::prelude::*;
@@ -21,6 +23,17 @@ pub(crate) fn start(cx: &mut App) {
     let Ok(script) = std::env::var("GLINT_SELFTEST") else {
         return;
     };
+    // `show:<file>`: the file's folder with it selected and the preview pane on, left open for a look.
+    if let Some(file) = script.strip_prefix("show:") {
+        let folder = glint_model::paths::parent_path(file);
+        let options = explorer::NavOptions {
+            select: Some(vec![file.to_string()]),
+            ..Default::default()
+        };
+        explorer::explorer(cx).update(cx, |e, cx| e.navigate(folder, options, cx));
+        crate::state::update(cx, |settings| settings.show_preview_pane = true);
+        return;
+    }
     let Some(folder) = script.strip_prefix("ops:").map(PathBuf::from) else {
         eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
         return;

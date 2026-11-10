@@ -14,6 +14,8 @@ pub mod file_list;
 pub mod menus;
 /// Ctrl+K: commands, folders by frecency, the calculator (CommandPalette.tsx, History.tsx).
 pub mod palette;
+/// The preview pane and Quick Look.
+pub mod preview;
 /// The Quick Search window: the shortcut's and the tray's search (QuickSearch.tsx).
 pub mod quick_search;
 /// Settings (SettingsView.tsx).
@@ -26,6 +28,3 @@ pub mod status_bar;
 pub mod tab_strip;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
-/// The preview pane and Quick Look. Wave 7 slot.
-#[cfg(feature = "preview")]
-pub mod preview;
