@@ -64,14 +64,19 @@ impl Explorer {
         cx.emit(ExplorerEvent::Busy(BusyEvent::Ended {
             id,
             was_shown: work.shown,
-            idle: self.ops.busy.is_empty(),
+            idle: self.is_idle(),
         }));
     }
 
     /// How many slow operations (copy, move, delete…) are running. An update waits for 0 before the app closes
     /// (`whenIdle`).
     pub fn busy_count(&self) -> usize {
-        self.ops.busy.len()
+        self.ops.busy.len() + self.archives.running()
+    }
+
+    /// Nothing is running: no operation, and no archive work (the taskbar button is cleared once this is so).
+    pub(super) fn is_idle(&self) -> bool {
+        self.busy_count() == 0
     }
 }
 

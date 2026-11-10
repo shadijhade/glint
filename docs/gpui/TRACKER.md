@@ -126,6 +126,27 @@
 
 **Left for later parts:** video and audio, PDF pages drawn natively (Windows' PDF previewer stands in), EPUB, Word, 3D, email, notebooks, Mermaid and math, the terminal; the toasts of what a folder rule did (core's "rule-did"); saving a dragged preview width; Ctrl+Z for batch renames and WOF compression (an UndoAction each); a shared Tools model for the install cards; the licenses of the grammars two-face bundles (check before a release).
 
+## Wave 8: text search, the disk usage map, archives, fifteen dialogs: done 2026-11-10
+
+*8 ports (Sonnet), all passed review first time. Integrated by the coordinator: the features dropped (`dialogs::action_run` declared once), text mode (Files | Text switch, Ctrl+Shift+F / Ctrl+Shift+E; tabs, sidebar, status bar and the files' keys are off while it shows), the map as a pane view with its status line, toolbar button and palette command (`actions::DiskUsage`), archive notices with Stop and the taskbar, compress (secrets check first) and compress with a password, extract, mount, drags and copies out of archives, archive handoffs, Ctrl+M (`compare_pair`), every menu, sidebar and Settings event of the new dialogs, the Sharing button, quitting asks about running copies and Compare's edits, remote connections handed to core at start. glint-ui 1,253 tests, glint-core 300, glint-model 233 pass; clippy clean.*
+
+| Part | From | Status |
+| :--- | :--- | :--- |
+| `text_search`: query, switches, results, history, replace, preview | Search, Results, History | done |
+| `disk_usage`: the map (index or pdu), colors by type/age/growth, its words | DiskUsage, diskUsage.ts | done |
+| explorer part D, archives: compress, extract, mount, stage out, drags, handoffs | archive actions in explorer.ts | done |
+| dialogs: compare files | CompareFilesDialog | done |
+| dialogs: media, media tools (trim bar, can't play), song tags, metadata | MediaDialog, MediaTools, SongDialog, MetadataDialog | done |
+| dialogs: convert pictures, convert documents, make smaller, PDF tools, data tools | ConvertDialog, DocConvertDialog, ShrinkDialog, PdfDialog, DataTools | done |
+| dialogs: share, nearby | ShareDialog, NearbyDialog | done |
+| dialogs: remote connection, cloud setup, backup | RemoteDialog, CloudSetup, BackupDialog | done |
+
+**Tried for real** (`GLINT_SELFTEST=wave8:<folder>`, plus `text:` and `map:` captures): text search found the needle (ripgrep, 1 match; Arabic file names and mixed lines render in order), back to the files; the map came up from the instant-search index ("index · mapped 10 MB in 1.8 ms") and went again; Compare opened; two files compressed into `a.zip` and extracted beside it.
+
+**Found and fixed while trying:** a dev build had no rg.exe beside it and Windows' App Paths entry for the Store Glint puts its WindowsApps folder first on PATH for any Glint.exe the shell starts, whose rg.exe other processes may not run ("Access is denied"): `crates/glint/build.rs` now puts rg, fd and pdu next to Glint.exe, and `proc::locate` skips WindowsApps folders (the shipping Tauri app has the same PATH fallback for optional tools: worth the same skip on master). A view taking a pane's place (the list to its map, This PC to a folder) now takes the keyboard when the old one had it. glint-core asks for serde_json's `preserve_order` itself, so its tests see the key order Glint.exe has (two tests assumed sorted keys). Pdu maps kept: 4, not 8 (about 10 MB each when big).
+
+**Left for later:** the CommandBar (New, Sort, View, Disk usage... the toolbar has only Disk usage and the mode switch), comparing folders with an earlier version, Open with for files not in archives (its app, an editor, Windows' picker), the remaining menu events (`other =>` in `on_menu_event`: run in sandbox, new window, open file location, forget recent, reveal, folder sizes, batch rename folder, wallpaper, rotate, cloud pin, ncdu export, scripts, tools, on-demand), the video/audio player with the trim bar, the preview pane's Query and Profile views (`data_tools::QueryView`/`ProfileView` exist), Arabic catalog entries for all wave 8 strings, moving text search's own keys into `actions::BINDINGS`, a shared save picker (CSV/JSON filters) and file picker, a kit Slider, one-step Undo for runs that replaced files, Remote's Save guarded against a double press, Cloud setup's Other clouds waiting for the delete, virtualizing Cloud setup's service list, `glint_core::remote::sftp::UNKNOWN_HOST` exported, the two action-parts modules (`media::parts`, `action_run`) merged.
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).

@@ -6,6 +6,8 @@
 pub mod address_bar;
 /// The copy queue: jobs, progress, pause, cancel, questions (CopyQueue.tsx).
 pub mod copy_queue;
+/// The disk usage map of a folder or drive (DiskUsage.tsx, diskUsage.ts).
+pub mod disk_usage;
 /// The grid of tiles with thumbnails and tile sizes (FileGrid.tsx, Thumbnail.tsx, thumbs.ts).
 pub mod file_grid;
 /// The details view: columns, sorting, groups, selection, keyboard, type-ahead (FileList.tsx, VirtualList.tsx, parts of Explorer.tsx).
@@ -26,11 +28,7 @@ pub mod sidebar;
 pub mod status_bar;
 /// The tabs in the title bar (TabStrip.tsx).
 pub mod tab_strip;
+/// Searching inside files: the query, its options, the results and the history (Search.tsx, Results.tsx, History.tsx).
+pub mod text_search;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;
-/// Searching inside files: the query, its options, the results and the history (Search.tsx, Results.tsx, History.tsx). Wave 8 slot.
-#[cfg(feature = "text-search")]
-pub mod text_search;
-/// The disk usage map of a folder or drive (DiskUsage.tsx, diskUsage.ts). Wave 8 slot.
-#[cfg(feature = "disk-usage")]
-pub mod disk_usage;
