@@ -73,6 +73,21 @@ pub mod sources;
 /// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).
 pub mod sqlite;
 pub mod states;
+/// SVG drawn as a GPUI image, cached by its source and size: the pipeline diagrams and math share (previews-native.md sections 4-7). Wave 11 slot.
+#[cfg(feature = "diagrams")]
+pub mod svg_image;
+/// Mermaid and Graphviz diagrams, in Markdown and as files (merman, layout-rs). Wave 11 slot.
+#[cfg(feature = "diagrams")]
+pub mod diagram;
+/// Math in Markdown, LaTeX syntax (RaTeX). Wave 11 slot.
+#[cfg(feature = "diagrams")]
+pub mod math;
+/// asciinema recordings played (CastPreview.tsx). Wave 11 slot.
+#[cfg(feature = "terminal")]
+pub mod cast;
+/// Typst documents typeset (TypstView.tsx). Wave 11 slot.
+#[cfg(feature = "typst")]
+pub mod typst_view;
 /// PDF pages drawn natively with Windows.Data.Pdf (PdfPreview in FilePreview.tsx).
 pub mod pdf;
 /// The rich text the book and Word previews share: blocks and runs, right to left (previews-native.md sections 2-3).
