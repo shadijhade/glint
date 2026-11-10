@@ -35,6 +35,7 @@ use crate::components::frequent_folders::{self, FrequentFolders, FrequentFolders
 use crate::components::gallery_months::GalleryMonths;
 use crate::components::git::{self, GitEvent, ReadmeCard};
 use crate::components::menus::{self, MenuEvent, MenuHost};
+use crate::components::pane_bars::PaneBars;
 use crate::components::preview::{self, PreviewPane};
 use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
@@ -77,6 +78,8 @@ struct PaneViews {
     frequent: Entity<FrequentFolders>,
     /// The compare bar above the pane while the panes are compared (and the bar for two files selected across them).
     compare: Entity<CompareBar>,
+    /// The search bar and the closed-folder bar above the pane (above the compare bar).
+    bars: Entity<PaneBars>,
 }
 
 /// Which of a pane's views is on screen.
@@ -169,6 +172,7 @@ impl Workspace {
                 months: cx.new(|cx| GalleryMonths::new(pane, window, cx)),
                 frequent: cx.new(|cx| FrequentFolders::new(pane, window, cx)),
                 compare: cx.new(|cx| CompareBar::new(pane, window, cx)),
+                bars: cx.new(|cx| PaneBars::new(pane, window, cx)),
             }
         });
         let command_bar = cx.new(|cx| CommandBar::new(window, cx));
@@ -1509,9 +1513,11 @@ impl Workspace {
         } else {
             view
         };
-        // The compare bar on top of everything else in the pane (it draws nothing unless the panes are compared).
+        // The search and closed-folder bars, then the compare bar, on top of everything else in the pane (each draws
+        // nothing when it has nothing to say).
         let view = col()
             .size_full()
+            .child(div().flex_none().child(views.bars.clone()))
             .child(div().flex_none().child(views.compare.clone()))
             .child(div().flex_1().min_h_0().child(view));
         div()
