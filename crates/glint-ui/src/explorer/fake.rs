@@ -1,11 +1,12 @@
 //! A fake disk for the model tests: folders with entries, held in memory, behind the same [`Source`] the app
 //! uses for glint-core. Listings can be held back and released, to test results that arrive out of order.
 
+use super::archive_types::*;
 use super::find_types::{FindOptions, Found, SearchIndex};
 use super::ops_types::*;
-use super::source::{Access, Effect, Fut, Resolved, Source};
+use super::source::{Access, CompressRequest, Effect, Fut, Resolved, Source};
 use super::types::*;
-use glint_model::entries::{attr, sort_entries, with_details, FileEntry, RawEntry, Sort, SortKey};
+use glint_model::entries::{attr, sort_entries, with_details, FileEntry, InArchive, RawEntry, Sort, SortKey};
 use glint_model::paths::{parent_path, same_path, RECYCLE_BIN};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -55,6 +56,8 @@ struct Folder {
     entries: Vec<FileEntry>,
     stamp: f64,
     denied: bool,
+    /// Listed as a folder in an archive (read-only), when set.
+    archive: Option<InArchive>,
 }
 
 #[derive(Default)]
@@ -100,7 +103,55 @@ struct State {
     index: Option<SearchIndex>,
     /// How many times instant search was asked how it does.
     index_asked: usize,
+    // ---- Archives ----
+    arch: ArchiveFake,
 }
+
+/// What the fake keeps for archives, disk images and previous versions.
+#[derive(Default)]
+struct ArchiveFake {
+    stage_seq: u32,
+    /// Staging, compressing and extracting wait here until released (slow work).
+    gate: Option<async_channel::Receiver<()>>,
+    /// Sent to the progress sink when a staging starts.
+    progress: Vec<(u64, u64)>,
+    stages: Vec<StageCall>,
+    compressions: Vec<(CompressRequest, String)>,
+    extractions: Vec<(String, String)>,
+    /// The lanes asked to stop.
+    stopped: Vec<String>,
+    unstaged: Vec<String>,
+    extracted_files: Vec<String>,
+    mounted: Vec<String>,
+    /// The drive the next mount gives (and adds to the drives).
+    mount_drive: Option<String>,
+    mounts_by_default: bool,
+    version_copies: Vec<String>,
+    opened: Vec<(String, OpenHow)>,
+    /// The next archive call fails with this.
+    fail: Option<String>,
+    /// The next open fails with this.
+    fail_open: Option<String>,
+    /// Items that can't be extracted (lower-case path to reason).
+    skip: HashMap<String, String>,
+    /// What an archive file extracts to (lower-case path to names and sizes); a readme otherwise.
+    contents: HashMap<String, Vec<(String, u64)>>,
+    /// A single compressed file (lower-case path) extracts as this one file.
+    single: HashMap<String, String>,
+}
+
+/// A staging the fake was asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StageCall {
+    pub paths: Vec<String>,
+    pub purpose: StagePurpose,
+    pub lane: String,
+}
+
+/// Where the fake stages what it extracts, where it keeps a file in an archive opened, and a version's copy.
+pub const STAGE_ROOT: &str = "C:\\Temp\\Glint\\stage";
+pub const OPEN_ROOT: &str = "C:\\Temp\\Glint\\open";
+pub const VERSION_ROOT: &str = "C:\\Temp\\Glint\\Previous versions";
 
 /// A search the fake was asked to start.
 #[derive(Clone, Debug, PartialEq)]
@@ -129,6 +180,7 @@ fn empty_folder() -> Folder {
         entries: Vec::new(),
         stamp: 1.0,
         denied: false,
+        archive: None,
     }
 }
 
@@ -181,6 +233,7 @@ impl FakeDisk {
                 entries: sorted,
                 stamp: 1.0,
                 denied: false,
+                archive: None,
             },
         );
         self
@@ -198,6 +251,7 @@ impl FakeDisk {
                         entries: Vec::new(),
                         stamp: 1.0,
                         denied: true,
+                        archive: None,
                     },
                 );
             }
@@ -386,6 +440,128 @@ impl FakeDisk {
         self.state.borrow().index_asked
     }
 
+    // ---- Archives: what a test sets up and checks -------------------------------------------------------
+
+    /// Makes a folder inside an archive: listed like any folder, but read-only, with the archive it is in. Its
+    /// entries get the in-archive mark, as core's do.
+    pub fn archive_folder(&self, path: &str, outer: &str, entries: Vec<FileEntry>) -> &Self {
+        let entries: Vec<FileEntry> = entries
+            .into_iter()
+            .map(|mut e| {
+                e.attrs |= attr::IN_ARCHIVE;
+                e
+            })
+            .collect();
+        self.folder(path, entries);
+        if let Some(folder) = self.state.borrow_mut().folders.get_mut(&key(path)) {
+            folder.archive = Some(InArchive {
+                path: path.to_string(),
+                outer: outer.to_string(),
+                format: "zip",
+                entries: 3,
+                cached: true,
+                read_ms: 0.0,
+            });
+        }
+        self
+    }
+
+    /// Holds staging, compressing and extracting back until the returned sender sends (or is dropped).
+    pub fn hold_stages(&self) -> async_channel::Sender<()> {
+        let (gate, wait) = async_channel::bounded(1);
+        self.state.borrow_mut().arch.gate = Some(wait);
+        gate
+    }
+
+    /// What a staging reports as it starts: (done, total) pairs.
+    pub fn script_progress(&self, steps: &[(u64, u64)]) {
+        self.state.borrow_mut().arch.progress = steps.to_vec();
+    }
+
+    /// The next archive call (staging, compressing, extracting, mounting, a version's copy) fails with this.
+    pub fn fail_archive_next(&self, message: &str) {
+        self.state.borrow_mut().arch.fail = Some(message.to_string());
+    }
+
+    /// The next opening of a file fails with this.
+    pub fn fail_open_next(&self, message: &str) {
+        self.state.borrow_mut().arch.fail_open = Some(message.to_string());
+    }
+
+    /// This item of an archive can't be extracted (password-protected, damaged), for this reason.
+    pub fn skip_in_archive(&self, path: &str, reason: &str) {
+        self.state.borrow_mut().arch.skip.insert(key(path), reason.to_string());
+    }
+
+    /// What the archive file at `path` extracts to: names with sizes.
+    pub fn archive_contents(&self, path: &str, files: &[(&str, u64)]) {
+        self.state
+            .borrow_mut()
+            .arch
+            .contents
+            .insert(key(path), files.iter().map(|(n, s)| (n.to_string(), *s)).collect());
+    }
+
+    /// The compressed file at `path` (a .gz) holds one file, which comes out as itself.
+    pub fn single_file_archive(&self, path: &str, inner: &str) {
+        self.state.borrow_mut().arch.single.insert(key(path), inner.to_string());
+    }
+
+    /// The drive the next mount of a disk image gives; it is added to the drives, so reading them finds it.
+    pub fn set_mount_drive(&self, drive: Option<&str>) {
+        self.state.borrow_mut().arch.mount_drive = drive.map(str::to_string);
+    }
+
+    /// Windows' Mount is the default app of disk images (default: it isn't).
+    pub fn set_mounts_by_default(&self, yes: bool) {
+        self.state.borrow_mut().arch.mounts_by_default = yes;
+    }
+
+    /// Every staging asked for, in order.
+    pub fn stages(&self) -> Vec<StageCall> {
+        self.state.borrow().arch.stages.clone()
+    }
+
+    /// Every compression asked for, with its lane.
+    pub fn compressions(&self) -> Vec<(CompressRequest, String)> {
+        self.state.borrow().arch.compressions.clone()
+    }
+
+    /// Every extract here asked for: the archive and the lane.
+    pub fn extractions(&self) -> Vec<(String, String)> {
+        self.state.borrow().arch.extractions.clone()
+    }
+
+    /// The lanes whose staging was asked to stop and hasn't stopped yet.
+    pub fn stopped(&self) -> Vec<String> {
+        self.state.borrow().arch.stopped.clone()
+    }
+
+    /// The staging folders removed.
+    pub fn unstaged(&self) -> Vec<String> {
+        self.state.borrow().arch.unstaged.clone()
+    }
+
+    /// The files in archives extracted to open.
+    pub fn extracted_files(&self) -> Vec<String> {
+        self.state.borrow().arch.extracted_files.clone()
+    }
+
+    /// The images mounted.
+    pub fn mounted(&self) -> Vec<String> {
+        self.state.borrow().arch.mounted.clone()
+    }
+
+    /// The previous versions copied out.
+    pub fn version_copies(&self) -> Vec<String> {
+        self.state.borrow().arch.version_copies.clone()
+    }
+
+    /// What was opened, and how.
+    pub fn opened(&self) -> Vec<(String, OpenHow)> {
+        self.state.borrow().arch.opened.clone()
+    }
+
     /// The drives asked to eject.
     pub fn ejected(&self) -> Vec<String> {
         self.state.borrow().ejected.clone()
@@ -440,7 +616,7 @@ fn copy_tree(state: &mut State, source: &FileEntry, folder: &str, name: &str) ->
             dir: source.dir,
             size: source.size,
             modified: source.modified,
-            attrs: source.attrs & !attr::RECYCLED,
+            attrs: source.attrs & !(attr::RECYCLED | attr::IN_ARCHIVE | attr::REMOTE),
             ..Default::default()
         },
         folder,
@@ -644,6 +820,31 @@ fn apply(state: &mut State, op: &FileOp) -> Result<Performed, String> {
     Ok(Performed { completed: true, items })
 }
 
+/// Waits while staging is held, then stops if the lane was asked to (the ask is used up).
+async fn wait_stage(state: &Rc<RefCell<State>>, lane: &str) -> Result<(), String> {
+    let gate = state.borrow().arch.gate.clone();
+    if let Some(gate) = gate {
+        let _ = gate.recv().await;
+    }
+    let mut state = state.borrow_mut();
+    if let Some(at) = state.arch.stopped.iter().position(|l| l == lane) {
+        state.arch.stopped.remove(at);
+        return Err("cancelled".to_string());
+    }
+    if let Some(message) = state.arch.fail.take() {
+        return Err(message);
+    }
+    Ok(())
+}
+
+/// What a staging sends to its progress sink when it starts.
+fn send_progress(state: &Rc<RefCell<State>>, progress: &ProgressSink) {
+    let steps = state.borrow().arch.progress.clone();
+    for (done, total) in steps {
+        let _ = progress.try_send(StageProgress { done, total });
+    }
+}
+
 impl Source for FakeDisk {
     fn list(&self, path: &str) -> Fut<Result<Listed, ListFailure>> {
         let state = self.state.clone();
@@ -666,7 +867,7 @@ impl Source for FakeDisk {
                     path: path.clone(),
                     entries: Arc::from(folder.entries.clone()),
                     elapsed: 1.5,
-                    archive: None,
+                    archive: folder.archive.clone(),
                     from_index: false,
                     remote: false,
                 }),
@@ -858,6 +1059,236 @@ impl Source for FakeDisk {
         Box::pin(async move {
             state.borrow_mut().ejected.push(path);
             Ok(())
+        })
+    }
+
+    fn stage(
+        &self,
+        paths: Vec<String>,
+        purpose: StagePurpose,
+        lane: &str,
+        progress: ProgressSink,
+    ) -> Fut<Result<Staged, String>> {
+        let state = self.state.clone();
+        let lane = lane.to_string();
+        state.borrow_mut().arch.stages.push(StageCall {
+            paths: paths.clone(),
+            purpose,
+            lane: lane.clone(),
+        });
+        Box::pin(async move {
+            send_progress(&state, &progress);
+            wait_stage(&state, &lane).await?;
+            let mut state = state.borrow_mut();
+            state.arch.stage_seq += 1;
+            let folder = format!("{STAGE_ROOT}{}", state.arch.stage_seq);
+            state.folders.insert(key(&folder), empty_folder());
+            let (mut made, mut skipped, mut bytes) = (Vec::new(), Vec::new(), 0);
+            for path in &paths {
+                if let Some(reason) = state.arch.skip.get(&key(path)) {
+                    skipped.push(Skipped {
+                        path: path.clone(),
+                        reason: reason.clone(),
+                    });
+                    continue;
+                }
+                match entry_of(&state, path) {
+                    Some(entry) => {
+                        bytes += entry.size;
+                        made.push(copy_tree(&mut state, &entry, &folder, &entry.name));
+                    }
+                    None => skipped.push(Skipped {
+                        path: path.clone(),
+                        reason: "It isn't in the archive".to_string(),
+                    }),
+                }
+            }
+            if made.is_empty() {
+                return Err("Nothing could be extracted".to_string());
+            }
+            Ok(Staged {
+                folder,
+                paths: made,
+                skipped,
+                bytes,
+            })
+        })
+    }
+
+    fn compress(&self, request: CompressRequest, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
+        let state = self.state.clone();
+        let lane = lane.to_string();
+        Box::pin(async move {
+            send_progress(&state, &progress);
+            wait_stage(&state, &lane).await?;
+            let mut state = state.borrow_mut();
+            state.arch.compressions.push((request.clone(), lane));
+            let mut skipped = Vec::new();
+            for path in &request.paths {
+                if let Some(reason) = state.arch.skip.get(&key(path)) {
+                    skipped.push(Skipped {
+                        path: path.clone(),
+                        reason: reason.clone(),
+                    });
+                } else if entry_of(&state, path).is_none() {
+                    return Err(format!("Can't find “{path}”"));
+                }
+            }
+            let archive = make_numbered(&mut state, &request.folder, &request.name, false)?;
+            Ok(Staged {
+                folder: request.folder,
+                paths: vec![archive],
+                skipped,
+                bytes: 1,
+            })
+        })
+    }
+
+    fn extract_here(&self, path: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
+        let state = self.state.clone();
+        let (path, lane) = (path.to_string(), lane.to_string());
+        Box::pin(async move {
+            send_progress(&state, &progress);
+            wait_stage(&state, &lane).await?;
+            let mut state = state.borrow_mut();
+            state.arch.extractions.push((path.clone(), lane));
+            if entry_of(&state, &path).is_none() {
+                return Err(format!("Can't find “{path}”"));
+            }
+            let parent = parent_path(&path);
+            if let Some(inner) = state.arch.single.get(&key(&path)).cloned() {
+                let file = make_numbered(&mut state, &parent, &inner, false)?;
+                return Ok(Staged {
+                    folder: file.clone(),
+                    paths: vec![file],
+                    skipped: Vec::new(),
+                    bytes: 1,
+                });
+            }
+            let name = path.rsplit('\\').next().unwrap_or(&path);
+            let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem).to_string();
+            let folder = make_numbered(&mut state, &parent, &stem, true)?;
+            let files = state
+                .arch
+                .contents
+                .get(&key(&path))
+                .cloned()
+                .unwrap_or_else(|| vec![("readme.txt".to_string(), 10)]);
+            let mut made = Vec::new();
+            for (name, size) in files {
+                let made_path = make_numbered(&mut state, &folder, &name, false)?;
+                if let Some(entry) = state
+                    .folders
+                    .get_mut(&key(&folder))
+                    .and_then(|f| f.entries.iter_mut().find(|e| same_path(&e.path, &made_path)))
+                {
+                    entry.size = size;
+                }
+                made.push(made_path);
+            }
+            Ok(Staged {
+                folder,
+                paths: made,
+                skipped: Vec::new(),
+                bytes: 1,
+            })
+        })
+    }
+
+    fn cancel_stage(&self, lane: &str) {
+        self.state.borrow_mut().arch.stopped.push(lane.to_string());
+    }
+
+    fn unstage(&self, folder: &str) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        let folder = folder.to_string();
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            state.arch.unstaged.push(folder.clone());
+            remove_tree(&mut state, &folder);
+            Ok(())
+        })
+    }
+
+    fn extract_file(&self, path: &str) -> Fut<Result<String, String>> {
+        let state = self.state.clone();
+        let path = path.to_string();
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            if let Some(message) = state.arch.fail.take() {
+                return Err(message);
+            }
+            let entry = entry_of(&state, &path).ok_or_else(|| "That isn't in an archive".to_string())?;
+            state.arch.extracted_files.push(path);
+            // Made once and reused.
+            if taken(&state, OPEN_ROOT, &entry.name) {
+                return Ok(format!("{OPEN_ROOT}\\{}", entry.name));
+            }
+            Ok(copy_tree(&mut state, &entry, OPEN_ROOT, &entry.name))
+        })
+    }
+
+    fn mount_image(&self, path: &str) -> Fut<Result<Option<String>, String>> {
+        let state = self.state.clone();
+        let path = path.to_string();
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            if let Some(message) = state.arch.fail.take() {
+                return Err(message);
+            }
+            state.arch.mounted.push(path);
+            let drive = state.arch.mount_drive.clone();
+            if let Some(drive) = &drive {
+                state.drives.push(Drive {
+                    path: drive.clone(),
+                    label: "CD Drive".to_string(),
+                    kind: DriveKind::Cdrom,
+                    fs: "UDF".to_string(),
+                    total: 100,
+                    free: 0,
+                });
+            }
+            Ok(drive)
+        })
+    }
+
+    fn mounts_by_default(&self, _path: &str) -> Fut<bool> {
+        let yes = self.state.borrow().arch.mounts_by_default;
+        Box::pin(async move { yes })
+    }
+
+    fn version_copy(&self, path: &str) -> Fut<Result<String, String>> {
+        let state = self.state.clone();
+        let path = path.to_string();
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            if let Some(message) = state.arch.fail.take() {
+                return Err(message);
+            }
+            let name = path.rsplit('\\').next().unwrap_or(&path).to_string();
+            state.arch.version_copies.push(path);
+            Ok(format!("{VERSION_ROOT}\\{name}"))
+        })
+    }
+
+    fn open_with(&self, path: &str, how: &OpenHow) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        let (path, how) = (path.to_string(), how.clone());
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            state.arch.opened.push((path, how));
+            match state.arch.fail_open.take() {
+                Some(message) => Err(message),
+                None => Ok(()),
+            }
+        })
+    }
+
+    fn all_exist(&self, paths: Vec<String>) -> Fut<bool> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let state = state.borrow();
+            paths.iter().all(|p| entry_of(&state, p).is_some())
         })
     }
 

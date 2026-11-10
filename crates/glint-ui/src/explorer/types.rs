@@ -503,8 +503,12 @@ pub enum ExplorerEvent {
     Busy(super::BusyEvent),
     /// A question to ask before acting; the answer calls a method (see [`Ask`](super::Ask)).
     Ask(super::Ask),
-    /// Work on files in an archive or on a remote connection, for the archive part.
+    /// Work on files in an archive or on a remote connection, for the archive part: hand it to
+    /// [`Explorer::run_archive_job`](super::Explorer::run_archive_job).
     FromArchive(super::ArchiveJob),
+    /// What archive work tells the person: progress and Stop while it runs, what it made or couldn't do (see
+    /// [`ArchiveNotice`](super::ArchiveNotice)).
+    Archive(super::ArchiveNotice),
     /// F2 on several items: the batch rename dialog opens with these paths (batch rename part).
     BatchRename(Vec<String>),
     /// The items cut to the clipboard changed (they show dimmed until pasted): [`Explorer::cut_paths`](super::Explorer::cut_paths).

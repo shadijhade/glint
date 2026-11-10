@@ -217,6 +217,8 @@ pub struct Inputs {
     pub dark: bool,
     /// Now, in Unix milliseconds (for frecency).
     pub now: i64,
+    /// The active tab shows its disk usage map.
+    pub mapped: bool,
 }
 
 /// How much a folder is used: its visits here (frecency) and its zoxide score, together (`usedScore`).
@@ -376,6 +378,19 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
             t!("Show as a grid, with thumbnails"),
             I::LayoutGrid,
             || Box::new(actions::GridView),
+        ),
+    );
+    push(
+        in_folder && !inputs.finding && !inputs.in_archive,
+        Command::action(
+            "disk-usage",
+            if inputs.mapped {
+                t!("Back to the file list")
+            } else {
+                t!("Disk usage")
+            },
+            I::LayoutDashboard,
+            || Box::new(actions::DiskUsage),
         ),
     );
     let tile = inputs.tile_size.unwrap_or(TileSize::Medium);

@@ -55,7 +55,7 @@ mod tests_general;
 #[cfg(test)]
 mod tests_services;
 
-pub use backend::{Backend, CoreBackend, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
+pub use backend::{Backend, CoreBackend, Fetch, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
 pub use clouds::Request as CloudsRequest;
 
 use crate::kit::prelude::*;

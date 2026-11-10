@@ -1,10 +1,14 @@
 //! What the file operations tell the person, worded as the web app's toasts were: the explorer's
 //! [`OpNotice`]s as notifications (with an Undo button where one is offered), the slow-work notice and the
-//! taskbar button while an operation runs ([`BusyEvent`]), and the questions asked before acting ([`Ask`]).
+//! taskbar button while an operation runs ([`BusyEvent`]), the questions asked before acting ([`Ask`]), and
+//! what archive work says ([`ArchiveNotice`]): its progress with a Stop button, what it skipped, what it made.
 //!
 //! The workspace calls these from its subscription to the explorer, with the main window at hand.
 
-use crate::explorer::{self, Ask, BusyEvent, Failing, FindNotice, OpNotice, OtherPane, QueueKind, UndoId, Working};
+use crate::explorer::{
+    self, ArchiveFailure, ArchiveNotice, Ask, BusyEvent, Doing, Failing, FindNotice, OpNotice, OtherPane, QueueKind,
+    SkippedVerb, Subject, UndoId, Working,
+};
 use crate::kit::prelude::*;
 use crate::platform::window_state::{self, ProgressState};
 use crate::{dialogs, t};
@@ -262,22 +266,7 @@ pub fn find(notice: &FindNotice, window: &mut Window, cx: &mut App) {
             .action(|_, _, _| {
                 Button::new("turn-on-instant-search").label(t!("Turn on")).on_click(|_, window, cx| {
                     window.remove_notification::<OfferToast>(cx);
-                    let source = crate::components::status_bar::index::shared_source(cx);
-                    let turning_on = crate::core_bridge::run((source.enable)());
-                    let handle = window.window_handle();
-                    cx.spawn(async move |cx| {
-                        let result = turning_on.await.and_then(|inner| inner.map(|_| ()));
-                        let _ = handle.update(cx, |_, window, cx| {
-                            let note = match result {
-                                Ok(()) => Notification::success(t!("Instant search is on")),
-                                Err(error) => {
-                                    Notification::error(error).title(t!("Couldn't turn on instant search"))
-                                }
-                            };
-                            window.push_notification(note, cx);
-                        });
-                    })
-                    .detach();
+                    turn_on_instant_search(window, cx);
                 })
             });
             window.push_notification(offer, cx);
@@ -288,5 +277,203 @@ pub fn find(notice: &FindNotice, window: &mut Window, cx: &mut App) {
             })
             .detach();
         }
+    }
+}
+
+/// Turns instant search on (Windows asks for administrator approval) and says how it went: the instant-search
+/// offer's button and the disk usage map's "Turn on instant search".
+pub fn turn_on_instant_search(window: &mut Window, cx: &mut App) {
+    let source = crate::components::status_bar::index::shared_source(cx);
+    let turning_on = crate::core_bridge::run((source.enable)());
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let result = turning_on.await.and_then(|inner| inner.map(|_| ()));
+        let _ = handle.update(cx, |_, window, cx| {
+            let note = match result {
+                Ok(()) => Notification::success(t!("Instant search is on")),
+                Err(error) => Notification::error(error).title(t!("Couldn't turn on instant search")),
+            };
+            window.push_notification(note, cx);
+        });
+    })
+    .detach();
+}
+
+/// Archive work's notice, keyed by the job (the web app's loading toast with its id).
+struct ArchiveToast;
+/// "Ready to drag" (id "drag-ready").
+struct DragReadyToast;
+/// What archive work skipped (one at a time: a newer one replaces it).
+struct SkippedToast;
+
+/// `“name”` for one item, else "3 items".
+fn subject(what: &Subject) -> String {
+    match what {
+        Subject::One(name) => format!("“{name}”"),
+        Subject::Many(count) => items(*count),
+    }
+}
+
+/// What archive work is doing, as its notice says it ("Extracting “photos.zip”").
+fn doing(what: &Doing) -> SharedString {
+    match what {
+        Doing::Compressing(what) => t!("Compressing {what}", what = subject(what)),
+        Doing::Extracting(what) => t!("Extracting {what}", what = subject(what)),
+        Doing::ExtractingFromArchive(what) => t!("Extracting {what} from the archive", what = subject(what)),
+        Doing::Downloading(what) => t!("Downloading {what}", what = subject(what)),
+        Doing::ExtractingFile(name) => t!("Extracting “{name}”", name = name.clone()),
+        Doing::Mounting(name) => t!("Mounting “{name}”", name = name.clone()),
+        Doing::CopyingOut(name) => t!("Copying out “{name}”", name = name.clone()),
+    }
+}
+
+/// The work notice: "Extracting “a.zip”…" or "… 40%", with Stop where the work can stop.
+fn working(id: u64, what: &Doing, percent: Option<u8>) -> Notification {
+    let message = match percent {
+        Some(percent) => t!("{doing}… {percent}%", doing = doing(what), percent = percent),
+        None => t!("{doing}…", doing = doing(what)),
+    };
+    let note = Notification::info(message)
+        .id1::<ArchiveToast>(id as usize)
+        .autohide(false);
+    if !what.stoppable() {
+        return note;
+    }
+    note.action(move |_, _, _| {
+        Button::new(("stop-archive-work", id as usize))
+            .label(t!("Stop"))
+            .on_click(move |_, _, cx| {
+                explorer::explorer(cx).update(cx, |e, _| e.stop_archive_work(id));
+            })
+    })
+}
+
+/// What archive work says: its progress (with the taskbar button), what it skipped, what it made, why it failed.
+pub fn archive(notice: &ArchiveNotice, window: &mut Window, cx: &mut App) {
+    match notice {
+        ArchiveNotice::Shown { id, doing, percent } => {
+            window.push_notification(working(*id, doing, *percent), cx);
+            window_state::taskbar_progress(window, ProgressState::Indeterminate, None, None);
+        }
+        ArchiveNotice::Progress {
+            id,
+            doing,
+            percent,
+            done,
+            total,
+            shown,
+        } => {
+            if *total == 0 {
+                window_state::taskbar_progress(window, ProgressState::Indeterminate, None, None);
+            } else {
+                window_state::taskbar_progress(window, ProgressState::Normal, Some(*done), Some(*total));
+            }
+            if *shown {
+                window.push_notification(working(*id, doing, Some(*percent)), cx);
+            }
+        }
+        ArchiveNotice::Ended { id, was_shown, idle } => {
+            if *was_shown {
+                window.remove_notification1::<ArchiveToast>(*id as usize, cx);
+            }
+            if *idle {
+                window_state::taskbar_progress(window, ProgressState::None, None, None);
+            }
+        }
+        ArchiveNotice::Skipped {
+            count,
+            names,
+            more,
+            reason,
+            verb,
+        } => {
+            let files = plural(*count, "file");
+            let title = match verb {
+                SkippedVerb::Added => t!("{files} couldn't be added", files = files),
+                SkippedVerb::Extracted => t!("{files} couldn't be extracted", files = files),
+                SkippedVerb::Downloaded => t!("{files} couldn't be downloaded", files = files),
+            };
+            let mut listed = names
+                .iter()
+                .map(|name| format!("“{name}”"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if *more > 0 {
+                listed.push_str(&t!(" and {n} more", n = *more));
+            }
+            let note = Notification::warning(format!("{listed}: {reason}"))
+                .title(title)
+                .id::<SkippedToast>()
+                .autohide(false);
+            window.push_notification(note, cx);
+            // The web app's 10 s warning.
+            let handle = window.window_handle();
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(Duration::from_secs(10)).await;
+                let _ = handle.update(cx, |_, window, cx| window.remove_notification::<SkippedToast>(cx));
+            })
+            .detach();
+        }
+        ArchiveNotice::Failed { what, message } => {
+            let title = match what {
+                ArchiveFailure::Compress(what) => t!("Couldn't compress {what}", what = subject(what)),
+                ArchiveFailure::Extract(what) => t!("Couldn't extract {what}", what = subject(what)),
+                ArchiveFailure::Download(what) => t!("Couldn't download {what}", what = subject(what)),
+                ArchiveFailure::Drag => t!("Couldn't drag these items"),
+                ArchiveFailure::Mount(name) => t!("Couldn't mount “{name}”", name = name.clone()),
+            };
+            window.push_notification(Notification::error(message.clone()).title(title), cx);
+        }
+        ArchiveNotice::Compressed { what, zip } => window.push_notification(
+            Notification::success(t!(
+                "Compressed {what} into “{zip}”",
+                what = subject(what),
+                zip = name_of(zip)
+            )),
+            cx,
+        ),
+        ArchiveNotice::Extracted { archive, folder, file } => {
+            let message = if *file {
+                t!(
+                    "Extracted “{archive}” as “{folder}”",
+                    archive = name_of(archive),
+                    folder = name_of(folder)
+                )
+            } else {
+                t!(
+                    "Extracted “{archive}” into “{folder}”",
+                    archive = name_of(archive),
+                    folder = name_of(folder)
+                )
+            };
+            let (folder, file) = (folder.clone(), *file);
+            let note = Notification::success(message).action(move |_, _, _| {
+                let folder = folder.clone();
+                Button::new("show-extracted")
+                    .label(if file { t!("Show") } else { t!("Open") })
+                    .on_click(move |_, _, cx| {
+                        let folder = folder.clone();
+                        explorer::explorer(cx).update(cx, |e, cx| e.show_extracted(&folder, file, cx).detach());
+                    })
+            });
+            window.push_notification(note, cx);
+        }
+        ArchiveNotice::ReadyToDrag => window.push_notification(
+            Notification::info(t!("They took a moment to extract: drag them again."))
+                .title(t!("Ready to drag"))
+                .id::<DragReadyToast>(),
+            cx,
+        ),
+        ArchiveNotice::Mounted { name, drive } => window.push_notification(
+            Notification::success(match drive {
+                Some(drive) => t!(
+                    "Mounted “{name}” as {drive}",
+                    name = name.clone(),
+                    drive = drive.clone()
+                ),
+                None => t!("Mounted “{name}”", name = name.clone()),
+            }),
+            cx,
+        ),
     }
 }

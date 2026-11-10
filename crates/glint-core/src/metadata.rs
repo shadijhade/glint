@@ -328,7 +328,8 @@ mod tests {
         let json = r#"[{"SourceFile":"a.jpg","System:FileName":"a.jpg","File:ImageWidth":10,"IFD0:Make":"Canon","GPS:GPSLatitude":"51 deg 30' 0.00\" N","IFD0:Artist":"Ada","ExifIFD:SerialNumber":"123456","ExifIFD:DateTimeOriginal":"2024:06:01 12:00:00","XMP-xmpMM:DocumentID":"xmp.did:1","IFD0:Orientation":"Rotate 90 CW"}]"#;
         let tags = read_tags(json);
         let kinds: Vec<(&str, &str)> = tags.iter().map(|t| (t.name.as_str(), t.kind)).collect();
-        assert_eq!(kinds, [("GPSLatitude", "place"), ("Artist", "people"), ("SerialNumber", "device"), ("Make", "device"), ("DocumentID", "history"), ("DateTimeOriginal", "dates"), ("Orientation", "other")]);
+        // By what they tell; within a kind, in ExifTool's order.
+        assert_eq!(kinds, [("GPSLatitude", "place"), ("Artist", "people"), ("Make", "device"), ("SerialNumber", "device"), ("DocumentID", "history"), ("DateTimeOriginal", "dates"), ("Orientation", "other")]);
         assert!(valid_date("2024:06:01 12:00:00") && !valid_date("2024-06-01 12:00") && !valid_date("2024:06:01T12:00:00"));
     }
 

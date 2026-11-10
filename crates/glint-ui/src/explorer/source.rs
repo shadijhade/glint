@@ -7,6 +7,7 @@
 //! future the model awaits in a GPUI task: [`CoreSource`] runs them on core's runtime through
 //! [`core_bridge::run`], so the UI thread never waits, and decodes big listings off the UI thread too.
 
+use super::archive_types::*;
 use super::find_types::{FindOptions, Found, SearchIndex};
 use super::ops_types::*;
 use super::types::*;
@@ -105,6 +106,43 @@ pub trait Source {
     fn new_file(&self, folder: &str, ext: &str) -> Fut<Result<Option<String>, String>>;
     /// Ejects a drive: a USB drive made safe to remove, a mounted disc image, a disc (`ejectDrive`).
     fn eject(&self, path: &str) -> Fut<Result<(), String>>;
+
+    // ---- Archives, disk images and previous versions ---------------------------------------------------
+
+    /// Extracts files and folders from archives (or downloads them from a remote connection) into a new staging
+    /// folder, keeping their folders (`archiveStage`). Each tab works in its own `lane`; `progress` hears how far
+    /// it has come, from any thread. Files that can't be had are in [`Staged::skipped`]; it is an `Err` when
+    /// nothing could be, and `Err("cancelled")` when [`Source::cancel_stage`] stopped it.
+    fn stage(
+        &self,
+        paths: Vec<String>,
+        purpose: StagePurpose,
+        lane: &str,
+        progress: ProgressSink,
+    ) -> Fut<Result<Staged, String>>;
+    /// Compress to: files and folders on disk into a new archive next to them (`archiveCompress`). The archive is
+    /// `paths[0]` of the answer, numbered like Explorer's if its name is taken.
+    fn compress(&self, request: CompressRequest, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>>;
+    /// Extract here: the archive on disk into a new folder next to it, named after it (`archiveExtractHere`); a
+    /// single compressed file (.gz...) comes out as the file itself. The folder (or file) is [`Staged::folder`].
+    fn extract_here(&self, path: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>>;
+    /// Stops the lane's running staging, compression or extraction (`cancelArchiveStage`). Not waited for.
+    fn cancel_stage(&self, lane: &str);
+    /// Deletes a staging folder once its contents are copied (`archiveUnstage`).
+    fn unstage(&self, folder: &str) -> Fut<Result<(), String>>;
+    /// One file in an archive extracted to a read-only temporary copy, made once and reused: its path
+    /// (`archiveExtract(path, "open")`).
+    fn extract_file(&self, path: &str) -> Fut<Result<String, String>>;
+    /// Mounts a disc or disk image as a drive: the drive (`F:\`) if one showed up (`mountDiskImage`).
+    fn mount_image(&self, path: &str) -> Fut<Result<Option<String>, String>>;
+    /// Whether opening this image mounts it: Windows' own Mount is its default app (`mountsByDefault`).
+    fn mounts_by_default(&self, path: &str) -> Fut<bool>;
+    /// A file in a shadow copy copied to a temporary folder, read-only, for its app to open (`versionCopy`).
+    fn version_copy(&self, path: &str) -> Fut<Result<String, String>>;
+    /// Opens a file on disk the way `how` says.
+    fn open_with(&self, path: &str, how: &OpenHow) -> Fut<Result<(), String>>;
+    /// Whether every one of these is still on disk (a drag's extracted copies may be gone by the next drag).
+    fn all_exist(&self, paths: Vec<String>) -> Fut<bool>;
 
     // ---- Searching -----------------------------------------------------------------------------------
 
@@ -361,6 +399,123 @@ impl Source for CoreSource {
         Box::pin(async move { running.await? })
     }
 
+    fn stage(
+        &self,
+        paths: Vec<String>,
+        purpose: StagePurpose,
+        lane: &str,
+        progress: ProgressSink,
+    ) -> Fut<Result<Staged, String>> {
+        let running = core_bridge::run(glint_core::archive::archive_stage(
+            paths,
+            purpose.as_str().to_string(),
+            lane.to_string(),
+            progress_channel(progress),
+        ));
+        Box::pin(async move { staged_from(&running.await??) })
+    }
+
+    fn compress(&self, request: CompressRequest, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
+        // core's format enum isn't exported: it reads its own word ("zip", "7z", "tar.zst").
+        let format = match serde_json::from_value(serde_json::Value::String(request.format.ext().to_string())) {
+            Ok(format) => format,
+            Err(e) => return Box::pin(async move { Err(e.to_string()) }),
+        };
+        let running = core_bridge::run(glint_core::archive::archive_compress(
+            request.paths,
+            request.folder,
+            request.name,
+            lane.to_string(),
+            Some(format),
+            request.password,
+            progress_channel(progress),
+        ));
+        Box::pin(async move { staged_from(&running.await??) })
+    }
+
+    fn extract_here(&self, path: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
+        let running = core_bridge::run(glint_core::archive::archive_extract_here(
+            path.to_string(),
+            lane.to_string(),
+            progress_channel(progress),
+        ));
+        Box::pin(async move { staged_from(&running.await??) })
+    }
+
+    fn cancel_stage(&self, lane: &str) {
+        glint_core::archive::cancel_archive_stage(lane.to_string());
+    }
+
+    fn unstage(&self, folder: &str) -> Fut<Result<(), String>> {
+        let running = core_bridge::run(glint_core::archive::archive_unstage(folder.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn extract_file(&self, path: &str) -> Fut<Result<String, String>> {
+        let running = core_bridge::run(glint_core::archive::archive_extract(
+            path.to_string(),
+            "open".to_string(),
+        ));
+        Box::pin(async move { running.await? })
+    }
+
+    fn mount_image(&self, path: &str) -> Fut<Result<Option<String>, String>> {
+        let Some(window) = self.window() else {
+            return Box::pin(async { Err("Glint has no window to mount from".to_string()) });
+        };
+        let running = core_bridge::run(glint_core::shell::mount_disk_image(window, path.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn mounts_by_default(&self, path: &str) -> Fut<bool> {
+        let running = core_bridge::run(glint_core::shell::mounts_by_default(path.to_string()));
+        Box::pin(async move { running.await.ok().and_then(Result::ok).unwrap_or(false) })
+    }
+
+    fn version_copy(&self, path: &str) -> Fut<Result<String, String>> {
+        let running = core_bridge::run(glint_core::versions::version_copy(path.to_string()));
+        Box::pin(async move { running.await? })
+    }
+
+    fn all_exist(&self, paths: Vec<String>) -> Fut<bool> {
+        let running = core_bridge::run(async move {
+            glint_core::fsx::blocking(move || Ok(paths.iter().all(|p| std::path::Path::new(p).exists()))).await
+        });
+        Box::pin(async move { running.await.ok().and_then(Result::ok).unwrap_or(false) })
+    }
+
+    fn open_with(&self, path: &str, how: &OpenHow) -> Fut<Result<(), String>> {
+        let path = path.to_string();
+        match how {
+            OpenHow::Default => {
+                let opening = self.open_item(&path);
+                Box::pin(async move { opening.await.map(drop) })
+            }
+            OpenHow::Picker => {
+                let Some(window) = self.window() else {
+                    return Box::pin(async { Err("Glint has no window to ask from".to_string()) });
+                };
+                let running = core_bridge::run(glint_core::shell::open_with(window, path));
+                Box::pin(async move { running.await? })
+            }
+            // The program starts on a blocking thread; it isn't waited for.
+            OpenHow::Editor(editor) => {
+                let editor = editor.clone();
+                let running = core_bridge::run(async move {
+                    glint_core::fsx::blocking(move || {
+                        std::process::Command::new(&editor)
+                            .arg(&path)
+                            .spawn()
+                            .map(drop)
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+                });
+                Box::pin(async move { running.await? })
+            }
+        }
+    }
+
     fn find(
         &self,
         lane: &str,
@@ -448,6 +603,43 @@ impl Source for CoreSource {
             Effect::ZoxideAdd(path) => glint_core::zoxide::zoxide_add(path),
         }
     }
+}
+
+/// What Compress to is asked (`archiveCompress`'s arguments).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompressRequest {
+    /// The files and folders on disk to pack.
+    pub paths: Vec<String>,
+    /// The folder the archive goes in.
+    pub folder: String,
+    /// The archive's name with its extension; numbered by core if it's taken.
+    pub name: String,
+    pub format: CompressFormat,
+    /// A zip's or a 7z's password (AES-256; a 7z's file names too).
+    pub password: Option<String>,
+}
+
+/// A channel core's staging work reports to: only a changed percent is passed on (core reports often).
+fn progress_channel(sink: ProgressSink) -> Channel<glint_core::archive::StageProgress> {
+    let last = std::sync::atomic::AtomicI64::new(-1);
+    Channel::new(move |message: glint_core::archive::StageProgress| {
+        // core's fields are crate-private: JSON is how they are read.
+        if let Ok(progress) = serde_json::to_value(&message).and_then(serde_json::from_value::<StageProgress>) {
+            let percent = i64::from(progress.percent());
+            if last.swap(percent, std::sync::atomic::Ordering::Relaxed) != percent {
+                // A closed sink means the work was left; core keeps going and finishes on its own.
+                let _ = sink.try_send(progress);
+            }
+        }
+        Ok(())
+    })
+}
+
+/// What core's staging made, as the model reads it.
+fn staged_from(staged: &impl serde::Serialize) -> Result<Staged, String> {
+    serde_json::to_value(staged)
+        .and_then(serde_json::from_value)
+        .map_err(|e| format!("Glint couldn't read what was extracted: {e}"))
 }
 
 /// What `find_files` reports besides results, as JSON (find.rs's `FindEvent`).
