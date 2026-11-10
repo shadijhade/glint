@@ -18,6 +18,10 @@
 //! coordinator wires runs on the UI thread, from the pump. When Explorer restarts, the window hears
 //! `TaskbarCreated` and adds the icon again.
 //!
+//! **A secondary window has none of this** (`platform::secondary`): [`init`] makes no window, [`set_tray`],
+//! [`set_hotkey`] and [`set_start_with_windows`] do nothing, and [`keep_running`] is false, so closing the
+//! window closes it. The main process owns the icon, the shortcut and what starts with Windows.
+//!
 //! The icon is Glint.exe's resource id 1 (another agent adds it), falling back to a stock icon.
 
 use crate::t;
@@ -119,6 +123,9 @@ fn window() -> Option<HWND> {
 /// `core_bridge::init`. A second call only replaces the callbacks. `false` if Windows refused the window
 /// (the tray and the hotkey then do nothing).
 pub fn init(callbacks: Callbacks) -> bool {
+    if crate::platform::secondary::is_secondary() {
+        return false;
+    }
     *lock(&CALLBACKS) = Some(callbacks);
     if window().is_some() {
         return true;
@@ -327,6 +334,9 @@ fn show_menu(window: HWND, at: POINT) {
 /// Settings → Quick search → keep running in the tray: shows or removes the icon. UI thread. An error if the
 /// window or the icon couldn't be made.
 pub fn set_tray(on: bool) -> Result<(), String> {
+    if crate::platform::secondary::is_secondary() {
+        return Ok(());
+    }
     TRAY_WANTED.store(on, Ordering::SeqCst);
     if !on {
         remove_icon();
@@ -342,11 +352,14 @@ pub fn set_tray(on: bool) -> Result<(), String> {
 
 /// Whether closing the main window hides it in the tray (set by [`configure`]).
 pub fn keep_running() -> bool {
-    KEEP_RUNNING.load(Ordering::SeqCst)
+    !crate::platform::secondary::is_secondary() && KEEP_RUNNING.load(Ordering::SeqCst)
 }
 
 /// Sets what [`keep_running`] answers, without touching the icon (a start with `--tray` before Settings loads).
 pub fn set_keep_running(on: bool) {
+    if crate::platform::secondary::is_secondary() {
+        return;
+    }
     KEEP_RUNNING.store(on, Ordering::SeqCst);
 }
 
@@ -427,6 +440,9 @@ fn stop((id, thread): Listener) {
 /// while the listener thread starts or stops: call it off the UI thread if it matters (`core_bridge::run`), or
 /// accept a few milliseconds.
 pub fn set_hotkey(shortcut: Option<&str>) -> Result<(), String> {
+    if crate::platform::secondary::is_secondary() {
+        return Ok(());
+    }
     // One change at a time: the old shortcut is let go before it's taken again.
     let mut listener = lock(&LISTENER);
     if let Some(old) = listener.take() {
@@ -452,6 +468,9 @@ pub fn set_hotkey(shortcut: Option<&str>) -> Result<(), String> {
 /// shortcut (`None`: off). The tray goes first, as before; an error from the shortcut still leaves the tray set.
 /// UI thread.
 pub fn configure(shortcut: Option<&str>, tray_icon: bool) -> Result<(), String> {
+    if crate::platform::secondary::is_secondary() {
+        return Ok(());
+    }
     KEEP_RUNNING.store(tray_icon, Ordering::SeqCst);
     set_tray(tray_icon)?;
     set_hotkey(shortcut)
@@ -470,6 +489,10 @@ const STARTUP_TASK: &str = "GlintTray";
 /// entries run, as the uninstallers expect. Blocking (the Store's task waits on Windows): call it off the UI
 /// thread, e.g. `core_bridge::run(async { tray::set_start_with_windows(on) })`'s blocking variant.
 pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
+    // What starts with Windows is the main process's to decide.
+    if crate::platform::secondary::is_secondary() {
+        return Ok(());
+    }
     // A debug build runs from a target folder: it must never change what an installed Glint starts with.
     if cfg!(debug_assertions) {
         return Ok(());
@@ -654,6 +677,27 @@ mod tests {
         assert_eq!(set_hotkey(None), Ok(()));
         assert_eq!(set_hotkey(Some("   ")), Ok(()));
         assert!(set_hotkey(Some("Ctrl+Nope")).is_err());
+    }
+
+    #[test]
+    fn a_secondary_window_has_no_tray_no_shortcut_and_closes_when_asked() {
+        let _secondary = crate::platform::secondary::as_secondary(crate::platform::secondary::window_on("C:\\"));
+        let callbacks = Callbacks {
+            open_main: Arc::new(|| {}),
+            quick_search: Arc::new(|| {}),
+            quit: Arc::new(|| {}),
+        };
+        assert!(!init(callbacks), "no hidden window, so nothing to hear the tray");
+        assert!(window().is_none());
+        // Turning the tray, the shortcut, Start with Windows and "keep running" on does nothing.
+        assert_eq!(set_tray(true), Ok(()));
+        assert!(!TRAY_WANTED.load(Ordering::SeqCst));
+        assert_eq!(set_hotkey(Some("Ctrl+Alt+Space")), Ok(()));
+        assert!(lock(&LISTENER).is_none(), "no listener thread for the shortcut");
+        assert_eq!(configure(Some("Ctrl+Alt+Space"), true), Ok(()));
+        assert_eq!(set_start_with_windows(true), Ok(()));
+        set_keep_running(true);
+        assert!(!keep_running(), "closing the window closes it");
     }
 
     #[test]

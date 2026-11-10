@@ -280,7 +280,7 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
 fn data_image(uri: &str) -> Option<Image> {
     let rest = uri
         .get(5..)
-        .filter(|_| uri.len() > 5 && uri[..5].eq_ignore_ascii_case("data:"))?;
+        .filter(|_| uri.len() > 5 && uri.get(..5).is_some_and(|head| head.eq_ignore_ascii_case("data:")))?;
     let (head, data) = rest.split_once(',')?;
     let mut parts = head.split(';');
     let mime = parts.next()?.trim().to_ascii_lowercase();
@@ -322,7 +322,7 @@ pub fn picture_source(
     root: &str,
     written: &Mutex<HashMap<String, Arc<Image>>>,
 ) -> ImageSource {
-    if src.len() > 5 && src[..5].eq_ignore_ascii_case("data:") {
+    if src.len() > 5 && src.get(..5).is_some_and(|head| head.eq_ignore_ascii_case("data:")) {
         let Ok(mut cache) = written.lock() else {
             return ImageSource::Image(blank());
         };

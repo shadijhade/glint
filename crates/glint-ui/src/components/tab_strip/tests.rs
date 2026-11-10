@@ -483,3 +483,123 @@ fn the_new_tab_button_follows_the_last_tab(cx: &mut TestAppContext) {
         "the + sits right after the last tab, not at the far end"
     );
 }
+
+// ---- A tab pulled out of the window -----------------------------------------------------------------
+
+use crate::platform::secondary::{self, Spawn};
+use std::sync::{Arc, Mutex};
+
+/// Windows started by the test's spawner (answering `answer`), in order.
+fn record_windows(cx: &mut VisualTestContext, answer: Result<(), String>) -> Arc<Mutex<Vec<Spawn>>> {
+    let spawned = Arc::new(Mutex::new(Vec::new()));
+    let seen = spawned.clone();
+    cx.update(|_, cx| {
+        secondary::use_spawner(
+            cx,
+            Arc::new(move |spawn: &Spawn| {
+                seen.lock().unwrap_or_else(|e| e.into_inner()).push(spawn.clone());
+                answer.clone()
+            }),
+        )
+    });
+    spawned
+}
+
+fn started(spawned: &Arc<Mutex<Vec<Spawn>>>) -> Vec<secondary::SecondaryWindow> {
+    spawned
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter_map(|spawn| secondary::parse(spawn.args.clone()).ok().flatten())
+        .collect()
+}
+
+fn settle(cx: &mut VisualTestContext) {
+    for _ in 0..40 {
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_release_is_a_tear_off_beyond_the_edge_or_well_away_from_the_drag() {
+    assert_eq!(tear_off_for(false, px(0.)), TearOff::Now);
+    assert_eq!(tear_off_for(false, px(500.)), TearOff::Now);
+    assert_eq!(tear_off_for(true, px(90.)), TearOff::No, "90 is not more than 90");
+    assert_eq!(tear_off_for(true, px(91.)), TearOff::IfNotTaken);
+    assert_eq!(tear_off_for(true, px(4.)), TearOff::No);
+}
+
+#[gpui_kit::test]
+fn a_tab_dropped_beyond_the_window_opens_its_folder_in_a_window_there_and_closes(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
+    let spawned = record_windows(&mut cx, Ok(()));
+    let from = bounds(&mut cx, "tab-2").center();
+    let to = point(px(-60.), px(-30.));
+    cx.update(|window, cx| window.drag(from, to, cx));
+    settle(&mut cx);
+    // The window's corner is up and left of the drop, in screen pixels.
+    let (drop, scale) = cx.update(|window, _| (secondary::screen_point(window, to), window.scale_factor()));
+    let windows = started(&spawned);
+    assert_eq!(windows.len(), 1, "one new window");
+    assert_eq!(windows[0].folder, "C:\\a", "the dragged tab's folder");
+    assert_eq!(windows[0].at, Some(secondary::corner_for_drop(drop, scale)));
+    assert_eq!(windows[0].main, Some(std::process::id()));
+    assert_eq!(
+        names(&mut cx, 0).len(),
+        2,
+        "the tab went with its folder: {:?}",
+        names(&mut cx, 0)
+    );
+    assert!(!names(&mut cx, 0).contains(&"a".to_string()));
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn the_last_tab_is_torn_off_but_stays_and_a_window_that_cannot_start_keeps_its_tab(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, false);
+    // One tab left, on a real folder (the fake disk has no home folder to give This PC's tab).
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    act(&mut cx, |e, cx| e.close_tab(Some(TabId(1)), cx));
+    assert_eq!(names(&mut cx, 0), ["a"]);
+    let spawned = record_windows(&mut cx, Ok(()));
+    let from = bounds(&mut cx, "tab-2").center();
+    cx.update(|window, cx| window.drag(from, point(px(2000.), px(-40.)), cx));
+    settle(&mut cx);
+    assert_eq!(started(&spawned).len(), 1, "a window opens on the only tab's folder");
+    assert_eq!(names(&mut cx, 0).len(), 1, "but the last tab stays");
+
+    // A second tab, and a window that Windows will not start: the tab stays too, and the person is told.
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
+    let failing = record_windows(&mut cx, Err("Windows said no".into()));
+    let from = bounds(&mut cx, "tab-3").center();
+    cx.update(|window, cx| window.drag(from, point(px(-80.), px(300.)), cx));
+    settle(&mut cx);
+    assert_eq!(failing.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+    assert_eq!(names(&mut cx, 0).len(), 2);
+    testing::set_rtl(false);
+}
+
+#[gpui_kit::test]
+fn a_tab_dropped_in_the_strip_only_moves(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let (mut cx, _) = open(cx, false);
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
+    let spawned = record_windows(&mut cx, Ok(()));
+    let first = bounds(&mut cx, "tab-1");
+    let from = bounds(&mut cx, "tab-3").center();
+    let to = point(first.origin.x + px(4.), first.center().y);
+    cx.update(|window, cx| window.drag(from, to, cx));
+    settle(&mut cx);
+    assert_eq!(order(&mut cx, 0), [3, 1, 2]);
+    assert!(
+        started(&spawned).is_empty(),
+        "no window for a tab put back in the strip"
+    );
+    testing::set_rtl(false);
+}

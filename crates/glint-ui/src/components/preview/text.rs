@@ -18,13 +18,18 @@
 //! The file is read in the background (the first 256 KB, in its own encoding or the one chosen), and only
 //! the first 2,000 lines are shown, with the note that says so.
 //!
-//! Not ported: "Convert to UTF-8" in the encoding menu (it runs glint-core's `text_to_utf8` action with
-//! progress and an Undo, which the interface has no shared helper for yet).
+//! **Convert to UTF-8** (`encodingMenu`, `convertToUtf8`): above the encoding list, for a file on this PC that
+//! isn't UTF-8. [`convert_to_utf8`] runs glint-core's `text_to_utf8` (the file rewritten in its place, the
+//! original recycled) and offers Undo for 8 s as well as Ctrl+Z, through the same step the other file actions
+//! leave (`action_run::offer_undo`); the palette's "Convert the selected text files to UTF-8" calls it too.
+//! The web app ignored the action's progress (`() => {}`), and so does this.
 
 use super::hex::HexPreview;
+use crate::dialogs::action_run::{self, Fut};
 use crate::kit::prelude::*;
 use crate::kit::{Editor, EditorState};
 use crate::{actions, core_bridge, i18n, state, t, theme};
+use glint_core::actions::{Output, Report};
 use glint_core::fsx::TextPreview as TextRead;
 use gpui_kit::{
     anchored, deferred, Anchor, ClipboardItem, DismissEvent, ScrollHandle, Task, UniformListScrollHandle, WeakEntity,
@@ -317,6 +322,103 @@ pub fn core_text_source() -> TextSource {
     Arc::new(|path, encoding| Box::pin(glint_core::fsx::read_text_preview(path, TEXT_BYTES, encoding)))
 }
 
+// ---- Convert to UTF-8 --------------------------------------------------------------------------------------
+
+/// A conversion to UTF-8: the files and the encoding to read them as (None: as detected). The app uses core's;
+/// tests pass fakes through [`init_convert_with`].
+pub type Convert = Arc<dyn Fn(Vec<String>, Option<String>) -> Fut<Report> + Send + Sync>;
+
+struct SharedConvert(Convert);
+
+impl Global for SharedConvert {}
+
+/// Sets the conversion in use (tests pass a fake). [`converter`] gives core's if this was never called.
+pub fn init_convert_with(cx: &mut App, convert: Convert) {
+    cx.set_global(SharedConvert(convert));
+}
+
+/// The conversion in use: glint-core's `text_to_utf8`, replacing the files, owned by the main window.
+fn converter(cx: &App) -> Convert {
+    if let Some(shared) = cx.try_global::<SharedConvert>() {
+        return shared.0.clone();
+    }
+    match cx.try_global::<core_bridge::Core>() {
+        Some(core) => {
+            let app = core.app.clone();
+            Arc::new(move |files, encoding| match action_run::main_window(&app) {
+                Ok(window) => {
+                    // The progress is not shown; the receiver goes, and core ignores a send that fails.
+                    let (progress, _) = core_bridge::stream();
+                    action_run::on_core(glint_core::textenc::text_to_utf8(
+                        window,
+                        files,
+                        encoding,
+                        Output::Replace,
+                        progress,
+                    ))
+                }
+                Err(reason) => Box::pin(async move { Err(reason) }),
+            })
+        }
+        None => Arc::new(|_, _| action_run::no_core()),
+    }
+}
+
+/// Whether the encoding menu offers Convert to UTF-8 for the file at `path`, read as `encoding` (None: plain
+/// UTF-8): a file on this PC (not in an archive, the Recycle Bin, a connection or a closed folder) that isn't
+/// UTF-8 already.
+pub fn can_convert_to_utf8(path: &str, encoding: Option<&str>) -> bool {
+    let entry = entry_of(path);
+    let local = !is_archived_path(path)
+        && !glint_model::entries::is_recycled(&entry)
+        && !glint_model::entries::is_remote(&entry)
+        && !glint_model::entries::is_closed(&entry);
+    local && encoding.is_some_and(|label| !label.eq_ignore_ascii_case("utf-8"))
+}
+
+/// Convert to UTF-8 (`convertToUtf8`): `paths` rewritten as UTF-8, read as `encoding` (None: as detected), the
+/// originals recycled. A conversion offers Undo; one that fails says why. The task ends with whether anything
+/// was made.
+pub fn convert_to_utf8(paths: Vec<String>, encoding: Option<String>, window: &mut Window, cx: &mut App) -> Task<bool> {
+    let call = converter(cx)(paths, encoding);
+    window.spawn(cx, async move |cx| {
+        let outcome = call.await;
+        cx.update(|window, cx| converted(outcome, window, cx)).unwrap_or(false)
+    })
+}
+
+/// Tells the person how a conversion went; whether it made anything.
+fn converted(outcome: Result<Report, String>, window: &mut Window, cx: &mut App) -> bool {
+    let report = match outcome {
+        Ok(report) => report,
+        Err(reason) => {
+            window.push_notification(
+                Notification::error(reason).title(t!("Couldn't convert it to UTF-8")),
+                cx,
+            );
+            return false;
+        }
+    };
+    let made = report.made.len();
+    if made > 0 {
+        let what = if made > 1 {
+            t!("converting {count} files to UTF-8", count = made)
+        } else {
+            t!("converting it to UTF-8")
+        };
+        action_run::offer_undo(&report, &what, window, cx);
+    }
+    if let Some((_, reason)) = report.failed.first() {
+        let title = if made > 0 {
+            t!("{count} not converted", count = report.failed.len())
+        } else {
+            t!("Couldn't convert it to UTF-8")
+        };
+        window.push_notification(Notification::error(reason.clone()).title(title), cx);
+    }
+    made > 0
+}
+
 /// Scrolls a scroll handle's content a page (0.85 of what shows), as Page Down and Page Up do in Quick Look.
 /// Returns whether it moved.
 pub(super) fn page_scroll(handle: &ScrollHandle, down: bool) -> bool {
@@ -404,6 +506,7 @@ pub struct TextPreview {
     /// Which read is current: an answer for an older one is dropped.
     generation: u64,
     _read: Task<()>,
+    _convert: Task<()>,
     _copied_reset: Option<Task<()>>,
     _settings: Subscription,
 }
@@ -430,6 +533,7 @@ impl TextPreview {
             menu: None,
             generation: 0,
             _read: Task::ready(()),
+            _convert: Task::ready(()),
             _copied_reset: None,
             _settings: settings,
         };
@@ -513,6 +617,20 @@ impl TextPreview {
             Load::Shown(shown) => Some(shown.editor.read(cx).value()),
             _ => None,
         }
+    }
+
+    /// Convert to UTF-8: the file read as `read_as` is rewritten in its place; when that made it, it is read again
+    /// as detected (UTF-8 now), as `setEncoding(null)` did.
+    fn convert(&mut self, read_as: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        let task = convert_to_utf8(vec![self.path.clone()], Some(read_as), window, cx);
+        self._convert = cx.spawn_in(window, async move |this, cx| {
+            if task.await {
+                this.update_in(cx, |this, window, cx| this.set_encoding(None, window, cx))
+                    .ok();
+            }
+        });
+        cx.notify();
     }
 
     fn read(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -622,7 +740,23 @@ impl TextPreview {
         let Load::Shown(shown) = &self.state else { return };
         let current = shown.encoding.clone().unwrap_or_default();
         let this: WeakEntity<Self> = cx.weak_entity();
+        let convertible = can_convert_to_utf8(&self.path, shown.encoding.as_deref());
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            let mut menu = menu;
+            if convertible {
+                let this = this.clone();
+                let read_as = current.clone();
+                menu = menu
+                    .item(
+                        PopupMenuItem::new(t!("Convert to UTF-8"))
+                            .icon(IconName::FileCheck)
+                            .on_click(move |_, window, cx| {
+                                let read_as = read_as.clone();
+                                this.update(cx, |this, cx| this.convert(read_as, window, cx)).ok();
+                            }),
+                    )
+                    .separator();
+            }
             let mut menu = menu.item(PopupMenuItem::label(t!("Read as")));
             for (label, name) in ENCODINGS {
                 let this = this.clone();
@@ -635,8 +769,6 @@ impl TextPreview {
                         }),
                 );
             }
-            // PORT ME(coordinator): "Convert to UTF-8" above the list (glint-core's text_to_utf8 action with
-            // its progress and Undo), for a file on disk that isn't UTF-8 already.
             menu
         });
         window.focus(&menu.focus_handle(cx), cx);
@@ -1185,6 +1317,197 @@ mod tests {
     }
 
     #[test]
+    fn convert_to_utf8_is_for_files_on_this_pc_that_are_not_utf8() {
+        // Read as an old encoding, on disk: offered.
+        assert!(can_convert_to_utf8("C:\\old\\a.txt", Some("windows-1256")));
+        assert!(can_convert_to_utf8("C:\\old\\a.txt", Some("UTF-16LE")));
+        // Plain UTF-8 (no encoding noted, or named as such in any case): nothing to convert.
+        assert!(!can_convert_to_utf8("C:\\old\\a.txt", None));
+        assert!(!can_convert_to_utf8("C:\\old\\a.txt", Some("UTF-8")));
+        assert!(!can_convert_to_utf8("C:\\old\\a.txt", Some("utf-8")));
+        // Inside an archive: read, never rewritten.
+        assert!(!can_convert_to_utf8("C:\\old\\bundle.zip\\a.txt", Some("windows-1256")));
+    }
+
+    /// A conversion that answers `report` and remembers what it was asked (the files, the encoding).
+    fn fake_convert(cx: &mut VisualTestContext, report: glint_core::actions::Report) -> Asked {
+        let asked: Asked = Arc::new(Mutex::new(Vec::new()));
+        let log = asked.clone();
+        let convert: Convert = Arc::new(move |files, encoding| {
+            if let Ok(mut log) = log.lock() {
+                log.push((files.join("|"), encoding));
+            }
+            let report = report.clone();
+            Box::pin(async move { Ok(report) })
+        });
+        cx.update(|_, cx| init_convert_with(cx, convert));
+        asked
+    }
+
+    fn made(path: &str) -> glint_core::actions::Report {
+        glint_core::actions::Report {
+            made: vec![path.to_string()],
+            recycled: vec![glint_core::actions::Recycled {
+                path: path.to_string(),
+                bin: "C:\\$Recycle.Bin\\S-1\\$R1.txt".to_string(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// The explorer Ctrl+Z reaches, on a fake disk.
+    fn with_explorer(cx: &mut VisualTestContext) -> Entity<crate::explorer::Explorer> {
+        let disk = crate::explorer::fake::FakeDisk::new();
+        disk.folder("C:\\", Vec::new());
+        let source = disk.source();
+        cx.update(|_, cx| {
+            crate::explorer::init_with(cx, source);
+            crate::explorer::explorer(cx)
+        })
+    }
+
+    fn next_undo(cx: &VisualTestContext, explorer: &Entity<crate::explorer::Explorer>) -> Option<String> {
+        explorer.read_with(cx, |e, _| e.next_undo().map(|(_, label)| label.to_string()))
+    }
+
+    fn old_arabic_read() -> TextRead {
+        let mut read = read_of("مرحبا");
+        read.encoding = Some("windows-1256".into());
+        read.guessed = true;
+        read
+    }
+
+    #[gpui_kit::test]
+    fn the_encoding_menu_offers_convert_only_for_a_file_that_is_not_utf8(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        // An old Arabic file: the item is there, above "Read as".
+        let (source, _) = fake(Ok(old_arabic_read()));
+        let (view, mut visual) = preview(cx, "C:\\old\\a.txt", source);
+        settle(&mut visual, |cx| {
+            view.read_with(cx, |v, _| matches!(v.state, Load::Shown(_)))
+        });
+        visual.update(|window, cx| window.click("text-encoding", cx));
+        visual.run_until_parked();
+        assert!(has(&mut visual, "Convert to UTF-8"));
+        assert!(has(&mut visual, "Read as"));
+
+        // A UTF-8 file: the menu has the encodings only.
+        let (source, _) = fake(Ok(read_of("plain")));
+        let (view, mut visual) = preview(cx, "C:\\old\\b.txt", source);
+        settle(&mut visual, |cx| {
+            view.read_with(cx, |v, _| matches!(v.state, Load::Shown(_)))
+        });
+        assert!(view.read_with(&visual, |v, _| v.encoding_read().is_none()));
+        visual.update(|window, cx| view.update(cx, |v, cx| v.open_encoding_menu(point(px(10.), px(10.)), window, cx)));
+        visual.run_until_parked();
+        assert!(has(&mut visual, "Read as"));
+        assert!(!has(&mut visual, "Convert to UTF-8"));
+
+        // A file in an archive is read, never rewritten.
+        let (source, _) = fake(Ok(old_arabic_read()));
+        let (view, mut visual) = preview(cx, "C:\\old\\bundle.zip\\a.txt", source);
+        settle(&mut visual, |cx| {
+            view.read_with(cx, |v, _| matches!(v.state, Load::Shown(_)))
+        });
+        visual.update(|window, cx| view.update(cx, |v, cx| v.open_encoding_menu(point(px(10.), px(10.)), window, cx)));
+        visual.run_until_parked();
+        assert!(has(&mut visual, "Read as"));
+        assert!(!has(&mut visual, "Convert to UTF-8"));
+    }
+
+    #[gpui_kit::test]
+    fn converting_asks_core_for_the_file_as_read_offers_undo_and_reads_it_again(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        let (source, read_asked) = fake(Ok(old_arabic_read()));
+        let (view, mut visual) = preview(cx, "C:\\old\\a.txt", source);
+        let explorer = with_explorer(&mut visual);
+        let convert_asked = fake_convert(&mut visual, made("C:\\old\\a.txt"));
+        settle(&mut visual, |cx| {
+            view.read_with(cx, |v, _| matches!(v.state, Load::Shown(_)))
+        });
+        let reads = read_asked.lock().map(|a| a.len()).unwrap_or(0);
+
+        visual.update(|window, cx| view.update(cx, |v, cx| v.convert("windows-1256".into(), window, cx)));
+        settle(&mut visual, |_| read_asked.lock().map(|a| a.len()).unwrap_or(0) > reads);
+
+        // Core was asked for that one file, read as the encoding on screen.
+        assert_eq!(
+            convert_asked.lock().ok().map(|a| a.clone()),
+            Some(vec![("C:\\old\\a.txt".to_string(), Some("windows-1256".to_string()))])
+        );
+        // Ctrl+Z (and the notification's Undo) take it back.
+        assert_eq!(next_undo(&visual, &explorer).as_deref(), Some("converting it to UTF-8"));
+        // The file is read again as detected, not as the old encoding.
+        assert_eq!(
+            read_asked.lock().ok().and_then(|a| a.last().cloned()),
+            Some(("C:\\old\\a.txt".to_string(), None))
+        );
+        // The notification offers Undo.
+        let offered = visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.try_find("action-undo").is_some()
+        });
+        assert!(offered, "the notification has an Undo button");
+    }
+
+    #[gpui_kit::test]
+    fn several_files_are_one_undo_step_and_a_failure_is_not_one(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        cx.update(testing::init);
+        let (mut visual, _view) = testing::open_window(cx, |_, cx| cx.new(|_| Nothing));
+        let explorer = with_explorer(&mut visual);
+        let mut two = made("C:\\old\\a.txt");
+        two.made.push("C:\\old\\b.txt".to_string());
+        two.recycled.push(glint_core::actions::Recycled {
+            path: "C:\\old\\b.txt".to_string(),
+            bin: "C:\\$Recycle.Bin\\S-1\\$R2.txt".to_string(),
+        });
+        let asked = fake_convert(&mut visual, two);
+        let task = visual.update(|window, cx| {
+            convert_to_utf8(vec!["C:\\old\\a.txt".into(), "C:\\old\\b.txt".into()], None, window, cx)
+        });
+        let done = visual.foreground_executor().block_test(task);
+        visual.run_until_parked();
+        assert!(done);
+        // As detected (no encoding), both files in one call, one step.
+        assert_eq!(
+            asked.lock().ok().map(|a| a.clone()),
+            Some(vec![("C:\\old\\a.txt|C:\\old\\b.txt".to_string(), None)])
+        );
+        assert_eq!(
+            next_undo(&visual, &explorer).as_deref(),
+            Some("converting 2 files to UTF-8")
+        );
+
+        // A file core couldn't convert makes nothing to undo, and the task says so.
+        let failed = glint_core::actions::Report {
+            failed: vec![("C:\\old\\c.txt".to_string(), "It's UTF-8 already".to_string())],
+            ..Default::default()
+        };
+        fake_convert(&mut visual, failed);
+        let task = visual.update(|window, cx| convert_to_utf8(vec!["C:\\old\\c.txt".into()], None, window, cx));
+        assert!(!visual.foreground_executor().block_test(task));
+        visual.run_until_parked();
+        assert_eq!(
+            next_undo(&visual, &explorer).as_deref(),
+            Some("converting 2 files to UTF-8"),
+            "nothing new to undo"
+        );
+    }
+
+    /// A window's content that draws nothing.
+    struct Nothing;
+
+    impl Render for Nothing {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full()
+        }
+    }
+
+    #[test]
     fn every_icon_the_previewer_draws_is_embedded() {
         use gpui_kit::assets::AllAssets;
         use gpui_kit::AssetSource as _;
@@ -1193,6 +1516,7 @@ mod tests {
             IconName::TextWrap,
             IconName::Copy,
             IconName::Check,
+            IconName::FileCheck,
             IconName::FolderOpen,
         ];
         for name in used {

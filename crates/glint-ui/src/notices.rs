@@ -375,7 +375,8 @@ fn updating_service() -> Notification {
 /// administrator approval. Nothing waits on the UI thread. NOTE(port): the web app offered it once per app
 /// version, remembered on disk; here it is once per run, since the saved state has no place for that yet.
 pub fn service_update(window: &mut Window, cx: &mut App) {
-    if cx.has_global::<ServiceChecked>() {
+    // The main process looks after the service; a secondary window would offer the same update twice.
+    if crate::platform::secondary::is_secondary() || cx.has_global::<ServiceChecked>() {
         return;
     }
     let Some(source) = service_source(cx) else {
@@ -971,6 +972,21 @@ mod service_tests {
             });
             self.settle();
         }
+    }
+
+    #[gpui_kit::test]
+    fn a_secondary_window_leaves_the_service_update_to_the_main_window(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut rig = rig(
+            cx,
+            Ok(info(IndexState::On, "0.9.5", "0.10.0")),
+            Ok(info(IndexState::On, "0.10.0", "0.10.0")),
+            Err("never asked".into()),
+        );
+        let _secondary = crate::platform::secondary::as_secondary(crate::platform::secondary::window_on("C:\\"));
+        rig.start();
+        assert!(rig.asked().is_empty(), "not even its status is asked");
+        assert_eq!(rig.notifications(), 0);
     }
 
     #[gpui_kit::test]

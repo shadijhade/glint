@@ -124,20 +124,27 @@ impl Explorer {
         })
     }
 
-    /// "Open in new window" and Ctrl+N (`openInNewWindow`): a window of its own on `path`, the folder shown when
-    /// none is given; a path that isn't a folder (a file, This PC, the Recycle Bin) gets the home folder. The
-    /// window is the workspace's: it is asked with [`Request::NewWindow`].
-    pub fn open_in_new_window(&mut self, path: Option<&str>, cx: &mut Context<Self>) {
+    /// The folder a new window opens on for `path` (`openInNewWindow`'s `target`): `path` when it is a folder, else
+    /// the folder shown when none is given, and the home folder for a place that isn't one (a file, This PC, the
+    /// Recycle Bin).
+    pub fn new_window_folder(&self, path: Option<&str>) -> String {
         let wanted = path.map_or_else(|| self.current_path().to_string(), str::to_string);
-        let folder = if !wanted.is_empty() && is_folder_path(&wanted) {
+        if !wanted.is_empty() && is_folder_path(&wanted) {
             wanted
         } else {
             self.home_folder().to_string()
-        };
-        // PORT ME(coordinator): a second GPUI window with its own workspace on this folder (`open_window` in
-        // more_windows.rs, which saved nothing of its own and read the main window's settings). Until it exists,
-        // the workspace may open the folder in a new tab instead.
-        cx.emit(ExplorerEvent::Request(Request::NewWindow { path: folder }));
+        }
+    }
+
+    /// "Open in new window" and Ctrl+N (`openInNewWindow`): a window of its own on `path`, the folder shown when
+    /// none is given; a path that isn't a folder (a file, This PC, the Recycle Bin) gets the home folder
+    /// ([`Explorer::new_window_folder`]). The window is another Glint.exe in secondary mode
+    /// (`platform::secondary`), started by the workspace when it hears [`Request::NewWindow`]; a tab dragged out
+    /// of its strip starts one at the drop point itself.
+    pub fn open_in_new_window(&mut self, path: Option<&str>, cx: &mut Context<Self>) {
+        cx.emit(ExplorerEvent::Request(Request::NewWindow {
+            path: self.new_window_folder(path),
+        }));
     }
 
     // ---- Showing ------------------------------------------------------------------------------------------
