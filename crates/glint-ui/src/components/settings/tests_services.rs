@@ -433,7 +433,7 @@ fn about_copies_diagnostics_and_closes_itself_for_the_shortcuts_sheet(cx: &mut T
     settle(&mut visual, |cx| {
         text_of(cx.update(|_, cx| cx.read_from_clipboard())).as_deref() == Some("Glint 0.10.0\nrg 14")
     });
-    // Until the updater is built the check is drawn, and waits.
+    // Without an update model (these windows are made without the app's start-up) the check is drawn, and waits.
     assert_eq!(
         visual.update(|window, cx| {
             window.render_frame(cx);
@@ -484,4 +484,187 @@ fn the_icons_settings_draws_are_in_the_embedded_assets(_cx: &mut TestAppContext)
     // The known folders the sections suggest are asked of the backend by name.
     let fake = Fake::new();
     assert!(Backend::known_folder(&fake, Known::Pictures).is_some());
+}
+
+// ---- About: updates ----------------------------------------------------------------------------------
+
+/// The update model of `updater`'s tests, shared with the Settings that was already open.
+#[cfg(feature = "updater")]
+fn with_updates(
+    cx: &mut VisualTestContext,
+    policy: crate::updater::Policy,
+    current: &str,
+) -> crate::updater::tests::Rig {
+    cx.update(|_, cx| {
+        let rig = crate::updater::tests::build_rig(cx, policy, current, false);
+        crate::updater::set_shared(cx, rig.updater.clone());
+        rig
+    })
+}
+
+/// The hint under the row called `row` (what a screen reader reads after its name).
+#[cfg(feature = "updater")]
+fn hint_of(cx: &mut VisualTestContext, row: &str) -> Option<String> {
+    let id = SharedString::from(format!("settings-row-{row}"));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).and_then(|e| e.description().map(str::to_string))
+    })
+}
+
+#[cfg(feature = "updater")]
+#[gpui_kit::test]
+fn about_checks_for_updates_and_says_how_it_went(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    let rig = with_updates(&mut visual, crate::updater::Policy::SelfUpdating, "0.9.5");
+    go_to(&mut visual, "about");
+    reveal(&mut visual, &view, "settings-button-about-update");
+    assert_eq!(hint_of(&mut visual, "Updates"), None);
+    // Nothing newer: it says so, and the button is there to ask again.
+    click(&mut visual, "settings-button-about-update");
+    settle(&mut visual, |cx| {
+        hint_of(cx, "Updates").as_deref() == Some("You have the latest version")
+    });
+    assert_ne!(
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find("settings-button-about-update").disabled()
+        }),
+        Some(true)
+    );
+    // Offline it says that plainly, not in the library's words.
+    rig.fake.fail("error sending request for url (https://github.com/)");
+    click(&mut visual, "settings-button-about-update");
+    settle(&mut visual, |cx| {
+        hint_of(cx, "Updates").as_deref() == Some("Couldn't reach GitHub to check. Are you online?")
+    });
+    // Any other failure is said as it came.
+    rig.fake.fail("GitHub answered 403 Forbidden");
+    click(&mut visual, "settings-button-about-update");
+    settle(&mut visual, |cx| {
+        hint_of(cx, "Updates").as_deref() == Some("Couldn't check: GitHub answered 403 Forbidden")
+    });
+}
+
+#[cfg(feature = "updater")]
+#[gpui_kit::test]
+fn about_offers_a_newer_version_and_installs_it(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    let rig = with_updates(&mut visual, crate::updater::Policy::SelfUpdating, "0.9.5");
+    rig.fake.serve("0.99.0", crate::updater::tests::SIG_GOOD);
+    go_to(&mut visual, "about");
+    reveal(&mut visual, &view, "settings-button-about-update");
+    click(&mut visual, "settings-button-about-update");
+    settle(&mut visual, |cx| has(cx, "Version 0.99.0 is available"));
+    // The check has given way to What's new and Install, and the row says what installing does.
+    assert!(label_of(&mut visual, "settings-button-about-update").is_none());
+    assert_eq!(
+        label_of(&mut visual, "settings-button-about-install").as_deref(),
+        Some("Install")
+    );
+    assert!(label_of(&mut visual, "settings-button-about-whats-new").is_some());
+    assert_eq!(
+        hint_of(&mut visual, "Version 0.99.0 is available").as_deref(),
+        Some("Installing it restarts the app")
+    );
+    // Install downloads, checks the signature, and (the questions answered) runs it and quits.
+    click(&mut visual, "settings-button-about-install");
+    settle(&mut visual, |_| *rig.quit.borrow() == 1);
+}
+
+#[cfg(feature = "updater")]
+#[gpui_kit::test]
+fn about_says_plainly_when_an_update_was_refused(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    let rig = with_updates(&mut visual, crate::updater::Policy::SelfUpdating, "0.9.5");
+    // The file's signature is for another version than the feed announces.
+    rig.fake.serve("1.0.0", crate::updater::tests::SIG_GOOD);
+    go_to(&mut visual, "about");
+    reveal(&mut visual, &view, "settings-button-about-update");
+    click(&mut visual, "settings-button-about-update");
+    settle(&mut visual, |cx| has(cx, "Version 1.0.0 is available"));
+    click(&mut visual, "settings-button-about-install");
+    settle(&mut visual, |cx| {
+        hint_of(cx, "Version 1.0.0 is available").is_some_and(|hint| hint.starts_with("Couldn't install: "))
+    });
+    let hint = hint_of(&mut visual, "Version 1.0.0 is available").unwrap_or_default();
+    assert!(
+        hint.contains("signed as version 0.99.0 but announced as 1.0.0"),
+        "{hint}"
+    );
+    assert_eq!(*rig.quit.borrow(), 0);
+    // Install is there to try again.
+    assert_eq!(
+        label_of(&mut visual, "settings-button-about-install").as_deref(),
+        Some("Install")
+    );
+}
+
+/// About in a copy that never updates itself: the reason, and no check.
+#[cfg(feature = "updater")]
+fn about_without_updates(cx: &mut TestAppContext, policy: crate::updater::Policy, hint: &str) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, _) = open_settings(cx, &fake, None);
+    let rig = with_updates(&mut visual, policy, "0.9.5");
+    rig.fake.serve("0.99.0", crate::updater::tests::SIG_GOOD);
+    go_to(&mut visual, "about");
+    frame(&mut visual);
+    assert_eq!(hint_of(&mut visual, "Updates").as_deref(), Some(hint));
+    assert!(label_of(&mut visual, "settings-button-about-update").is_none());
+    assert!(rig.fake.asked().is_empty());
+}
+
+#[cfg(feature = "updater")]
+#[gpui_kit::test]
+fn about_has_no_check_in_the_stores_copy(cx: &mut TestAppContext) {
+    about_without_updates(
+        cx,
+        crate::updater::Policy::Store,
+        "The Microsoft Store keeps Glint up to date",
+    );
+}
+
+#[cfg(feature = "updater")]
+#[gpui_kit::test]
+fn about_has_no_check_in_a_debug_build(cx: &mut TestAppContext) {
+    about_without_updates(cx, crate::updater::Policy::Off, "Updates are off in a debug build");
+}
+
+#[cfg(feature = "updater")]
+#[gpui_kit::test]
+fn about_updates_row_mirrors_in_arabic(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let fake = Arc::new(Fake::new());
+    let (mut visual, view) = open_settings(cx, &fake, None);
+    let rig = with_updates(&mut visual, crate::updater::Policy::SelfUpdating, "0.9.5");
+    rig.fake.serve("0.99.0", crate::updater::tests::SIG_GOOD);
+    go_to(&mut visual, "about");
+    reveal(&mut visual, &view, "settings-button-about-update");
+    click(&mut visual, "settings-button-about-update");
+    settle(&mut visual, |cx| has(cx, "Version 0.99.0 is available"));
+    reveal(&mut visual, &view, "settings-button-about-install");
+    let place = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let row = window.find("settings-row-Version 0.99.0 is available").bounds();
+            let button = window.find("settings-button-about-install").bounds();
+            (row.center().x, button.center().x)
+        })
+    };
+    let (row, button) = place(&mut visual);
+    assert!(button > row, "left to right: Install is at the end, on the right");
+    visual.update(|_, cx| state::update(cx, |s| s.language = glint_model::store::Language::Ar));
+    visual.run_until_parked();
+    assert!(crate::i18n::is_rtl());
+    reveal(&mut visual, &view, "settings-button-about-install");
+    let (row, button) = place(&mut visual);
+    assert!(button < row, "right to left: Install is at the end, on the left");
+    assert!(label_of(&mut visual, "settings-button-about-install").is_some());
 }

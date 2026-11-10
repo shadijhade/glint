@@ -63,6 +63,7 @@
 
 mod empty;
 mod keys;
+mod scrub;
 mod tile;
 
 pub mod thumbnail;
@@ -226,6 +227,10 @@ pub struct FileGrid {
     drop_over: Option<DropOver>,
     wheel: Wheel,
     type_ahead: keys::TypeAhead,
+    /// The scrub overlay of the video tile the pointer is on.
+    scrub: scrub::ScrubSlot,
+    /// The thumbnail size drawn last, logical pixels.
+    thumb: f32,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -278,6 +283,8 @@ impl FileGrid {
             drop_over: None,
             wheel: Wheel::default(),
             type_ahead: keys::TypeAhead::default(),
+            scrub: scrub::ScrubSlot::default(),
+            thumb: 0.,
             _subscriptions: subscriptions,
         }
     }
@@ -308,6 +315,7 @@ impl FileGrid {
         self.press = None;
         self.marquee = None;
         self.marquee_scroll = None;
+        self.scrub.clear();
         self.sync_busy();
     }
 
@@ -435,8 +443,9 @@ impl FileGrid {
         }
     }
 
-    /// Hovering a folder tile reads it ahead; leaving it lets go (`hoverFolder`, `leaveFolder`).
-    fn tile_hover(&mut self, index: usize, hovered: bool, cx: &mut Context<Self>) {
+    /// Hovering a folder tile reads it ahead; leaving it lets go (`hoverFolder`, `leaveFolder`). A video tile gets
+    /// its scrub overlay while the pointer is on it, and only then.
+    fn tile_hover(&mut self, index: usize, hovered: bool, window: &Window, cx: &mut Context<Self>) {
         let Some((rows, _)) = self.snapshot(cx) else {
             return;
         };
@@ -444,6 +453,16 @@ impl FileGrid {
             return;
         };
         let path = entry.path.clone();
+        if scrub::scrubbable(entry) {
+            if hovered {
+                let thumb = self.thumb;
+                self.scrub.enter(&path, thumb, window.scale_factor(), cx);
+                cx.notify();
+            } else if self.scrub.leave(&path) {
+                cx.notify();
+            }
+            return;
+        }
         self.explorer.update(cx, |explorer, cx| {
             if hovered {
                 explorer.hover_folder(&path, cx);
@@ -1138,6 +1157,7 @@ impl Render for FileGrid {
 
         // The layout: tiles from the tile-size setting and the text size, as many to a row as the width holds.
         let tile = tile_layout(rem, state::settings(cx).tile_size.as_str());
+        self.thumb = tile.thumb;
         let measured = self.body.get();
         let measured_width = f32::from(measured.size.width);
         let width = if measured_width > 0.0 {
@@ -1252,14 +1272,15 @@ impl Render for FileGrid {
             thumbs: self.thumbs.clone(),
             viewer: cx.entity_id(),
             shown: self.shown.clone(),
+            scrub: self.scrub.current(),
             on_down: handler(cx, |this, (i, event): &(usize, MouseDownEvent), window, cx| {
                 this.tile_down(*i, event, window, cx)
             }),
             on_right_up: handler(cx, |this, (i, event): &(usize, MouseUpEvent), _, cx| {
                 this.tile_context_menu(*i, event, cx)
             }),
-            on_hover: handler(cx, |this, (i, hovered): &(usize, bool), _, cx| {
-                this.tile_hover(*i, *hovered, cx)
+            on_hover: handler(cx, |this, (i, hovered): &(usize, bool), window, cx| {
+                this.tile_hover(*i, *hovered, window, cx)
             }),
         });
 

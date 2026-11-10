@@ -186,6 +186,26 @@
 
 **Left for later:** MOBI/AZW (a reader of its own), Read aloud, a book's last place and text size kept between runs, video scrub thumbnails on grid tiles (`player::Scrub` exists), the compare bar (counts, Sync, deep compare: no core command), HTML mail's right-to-left alignment, a plain/HTML switch and a "load remote pictures" switch, tiled PDF rendering past 8 MP, Arabic strings for all of the above.
 
+## Wave 11: diagrams, math, terminal, Typst (new crates the user approved): done 2026-11-10
+
+*3 ports (Sonnet; 6 agents, ~125 min, 2.0M tokens), all passed review first time. Crates added with the user's OK (2026-11-10): merman 0.9.3 without ELK (EPL-2.0), layout-rs 0.1.3, RaTeX 0.1.15 (KaTeX fonts, SIL OFL: their notice must ship), alacritty_terminal 0.26, Typst 0.15.1 (system fonts only, no packages, no OpenSSL), markdown 1.0; all 1,422 packages' licenses are on the allow list. Integrated by the coordinator: features dropped, Typst and cast bodies in the preview pane, the terminal pane under the panes (Ctrl+`, Run task, scripts), Typst's fonts warmed at start. glint-ui 1,933 tests pass; clippy clean.*
+
+| Part | From | Status |
+| :--- | :--- | :--- |
+| `svg_image`, `diagram`, `math`: Mermaid and Graphviz in Markdown and as files, inline and display math | MarkdownView (mermaid, math), SmallPreviews (Graphviz, MermaidFile) | done |
+| `terminal`: tabs of shells over core's PTY, alacritty's grid painted natively; `cast`: recordings played | TerminalPanel, CastPreview | done |
+| `typst_engine`, `typst_view`; Markdown and Typst to PDF in process | TypstView, the WebView print | done |
+
+**Tried for real** (`GLINT_SELFTEST=wave11:`, `term:` and show: captures): notes.md exported to a 46 KB PDF and doc.typ to a 28 KB PDF in process; a Mermaid flowchart, inline and display math beside Arabic; a Typst page typeset with its math and an Arabic line; a .cast recording played with its colours; the terminal pane open in the folder with a command typed.
+
+**Found:** `range.contains(&&usize)` stops compiling once alacritty_terminal adds `PartialOrd<Column> for usize`: pdf.rs and typst_view.rs take `contains(*p)`.
+
+**Left for later:** math and diagrams in Markdown's PDF export (left as source), the Convert document dialog's PDF target for other formats (still the Typst tool), Arabic inside a formula (RaTeX doesn't shape it), Graphviz's fidelity (layout-rs's subset), Arabic strings, the terminal's IME and Arabic in the grid (not checked).
+
+## Wave 12A: installer, updater, end-to-end checks, scrub and book places: done 2026-11-10
+
+*4 tasks (Sonnet; 8 agents, ~54 min, 1.5M tokens), all passed review.* The NSIS installer for the GPUI build (`crates/glint/installer/`, `npm run gpui:installer`; packaging tried with the debug build, never run); the updater (`updater.rs`, behind `updater` until wired: latest.json, minisign-checked installer, passive install); `tests/e2e/run.ps1` (UI Automation against a debug Glint.exe); video scrubbing on grid tiles; books' places and text size in books.json. **The end-to-end checks found three app bugs** (next wave): Enter in the rename box also opens the item under its old name; after the rename box closes nothing has the keyboard; a file dropped from File Explorer is ignored after a key press until the mouse moves over the window.
+
 ## Coming waves (order follows the dependencies)
 
 1. **Platform services:** done in wave 3, except the shell menu's window plumbing (with the file list's context menu) and the updater (last mile).

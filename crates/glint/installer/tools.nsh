@@ -1,0 +1,497 @@
+﻿; The Extra tools page: the tools Settings → Tools installs (src-tauri/src/tools.rs), the meaning model
+; and instant search, each with what Glint uses it for and, under the list, what it is. The ones picked
+; install once Glint is in place, by Glint itself (`Glint.exe tools install <id>`, as Settings → Tools
+; installs them: with winget where the PC has it, else from the tool's own release, checked against
+; its pinned SHA-256), so every one installs on any PC,
+; the installer keeps no downloads of its own. tools.rs's tests check this list against TOOLS.
+; installer.nsi inserts the page after the folder page, and NSIS_HOOK_POSTINSTALL (hooks.nsh) installs
+; what was picked: on the page, or with /TOOLS=jaq,uv on the command line (silent installs too).
+
+; Every row, in order: its index, its id (tools.rs's), name, group, kind (service, model or tool),
+; program and winget package folder (to tell whether it's on this PC already), what Glint uses
+; it for (the list's second column) and what it is.
+!macro GLINT_TOOLS ROW
+  !insertmacro ${ROW} 0 instant-search "Instant search" 1 service "" "" \
+    "Finds any file on every drive as you type" \
+    "Glint's own index of your NTFS drives, like Everything's: any file on any drive found in milliseconds, best matches first. It runs as a Windows service, so Windows asks for administrator approval."
+  !insertmacro ${ROW} 1 meaning "Meaning model" 1 model "" "" \
+    "Searching text by what it means" \
+    "potion-base-8M, a small model (30 MB, MIT) that runs on this PC: Text's Meaning search then ranks passages by what they're about, not only by the words in them."
+  !insertmacro ${ROW} 2 czkawka "Czkawka" 2 tool windows_czkawka_cli qarmin.czkawka.cli \
+    "Look-alike pictures, videos and music" \
+    "Czkawka finds similar and broken files. Clean up uses it for look-alike pictures, videos and music, broken files and files with the wrong extension."
+  !insertmacro ${ROW} 3 ffmpeg "FFmpeg" 2 tool ffmpeg gyan.ffmpeg \
+    "Reading videos, for look-alike videos" \
+    "FFmpeg reads almost any video and sound. Clean up uses it to compare videos. It's a large download, and an FFmpeg already on this PC is used instead."
+  !insertmacro ${ROW} 4 magika "Magika" 2 tool magika google.magika \
+    "A file's real type, in the File X-Ray" \
+    "Google's Magika tells a file's type from its content. The File X-Ray uses it to catch a file that isn't what its name says: a program named photo.jpg, say."
+  !insertmacro ${ROW} 5 yara-x "YARA-X" 2 tool yr virustotal.yara-x \
+    "Checking files with YARA rules" \
+    "VirusTotal's YARA-X matches files against YARA rules. Check uses it with the rules in a folder you choose in Settings."
+  !insertmacro ${ROW} 6 kingfisher "Kingfisher" 2 tool kingfisher kingfisher \
+    "Finding passwords and keys left in files" \
+    "MongoDB's Kingfisher finds passwords, keys and tokens left in files, so you can take them out before sharing. Nothing is sent anywhere."
+  !insertmacro ${ROW} 7 rimage "rimage" 2 tool rimage rimage \
+    "Converting pictures to JPEG, PNG, WebP or AVIF" \
+    "rimage converts and shrinks pictures. Convert pictures… uses it to make JPEG, PNG, WebP or AVIF files, smaller if you ask."
+  !insertmacro ${ROW} 8 difftastic "Difftastic" 3 tool difft wilfred.difftastic \
+    "Comparing code by its structure" \
+    "Difftastic compares code by its syntax. Compare two files then shows what changed in the code, not which lines moved."
+  !insertmacro ${ROW} 9 ast-grep "ast-grep" 3 tool ast-grep ast-grep.ast-grep \
+    "Code patterns in Text search" \
+    "ast-grep searches code by its syntax. Text then finds (and rewrites) code by its structure, such as console.log($$MSG) or $$X.unwrap()."
+  !insertmacro ${ROW} 10 jaq "jaq" 3 tool jaq 01mf02.jaq \
+    "jq filters in JSON, YAML and TOML previews" \
+    "jaq is jq, rewritten in Rust. The preview of a JSON, YAML or TOML file can then filter it with jq."
+  !insertmacro ${ROW} 11 onefetch "onefetch" 3 tool onefetch o2sh.onefetch \
+    "A Git repository's card in its preview" \
+    "onefetch sums up a Git repository. Its preview gets a card with its languages, who works on it, its last change and its license."
+  !insertmacro ${ROW} 12 tokei "tokei" 3 tool tokei xampprocky.tokei \
+    "Lines of code on a repository's card" \
+    "tokei counts lines of code. A Git repository's card then shows its lines of code by language."
+  !insertmacro ${ROW} 13 just "just" 3 tool just casey.just \
+    "A justfile's recipes in the Run menu" \
+    "just runs a project's commands. The Run menu then lists the recipes in a project's justfile."
+  !insertmacro ${ROW} 14 uv "uv" 4 tool uv astral-sh.uv \
+    "Running Python scripts and projects" \
+    "uv is Astral's fast Python manager. The Run menu runs Python projects' scripts with it, and Scripts runs Python scripts."
+  !insertmacro ${ROW} 15 bun "Bun" 4 tool bun oven-sh.bun \
+    "Running TypeScript and JavaScript scripts" \
+    "Bun is a fast JavaScript runtime. Scripts runs TypeScript and JavaScript scripts with it."
+  !insertmacro ${ROW} 16 nushell "Nushell" 4 tool nu nushell.nushell \
+    "A shell for the terminal, and Nu scripts" \
+    "Nushell is a shell for structured data. The terminal under the files can start it, and Scripts runs Nushell scripts."
+  !insertmacro ${ROW} 17 zoxide "zoxide" 4 tool zoxide ajeetdsouza.zoxide \
+    "Folder history shared with your terminals" \
+    "zoxide remembers the folders you go to. The folders you cd to in your terminals rank in Ctrl+K, and z finds the ones you open in Glint."
+  !insertmacro ${ROW} 18 sendme "sendme" 5 tool sendme n0-computer.sendme \
+    "Sending files to another PC" \
+    "sendme sends files and folders from PC to PC, encrypted end to end, with a ticket instead of an account."
+  !insertmacro ${ROW} 19 dufs "dufs" 5 tool dufs sigoden.dufs \
+    "Sharing a folder with a phone" \
+    "dufs serves a folder on this network. Share with a phone then gives a link that the phone's browser opens."
+  !insertmacro ${ROW} 20 rclone "rclone" 5 tool rclone rclone.rclone \
+    "Google Drive, OneDrive, Dropbox and 60 more clouds" \
+    "rclone reaches more than 60 cloud storage services. Glint then opens Google Drive, OneDrive, Dropbox, Box, MEGA, S3 and the rest like folders, signs you in to them, and keeps folders in sync with them."
+  !insertmacro ${ROW} 21 c2patool "c2patool" 2 tool c2patool c2patool \
+    "Content Credentials: who made a picture, and whether AI did" \
+    "The Content Authenticity Initiative's c2patool reads a picture's or video's Content Credentials (C2PA): who made it, with what, and whether AI made or changed it. The preview and the File X-Ray show them."
+  !insertmacro ${ROW} 22 whisper "whisper.cpp" 1 tool whisper-cli whisper \
+    "Speech search: what's said in recordings and videos" \
+    "whisper.cpp runs OpenAI's Whisper on this PC. Speech search (says: in the search box) then finds recordings and videos by what's said in them, in any language; its model downloads when speech search is turned on in Settings."
+  !insertmacro ${ROW} 23 pdfcpu "pdfcpu" 6 tool pdfcpu pdfcpu     "PDF tools: merge, split, pages, smaller, passwords"     "pdfcpu works on PDFs on this PC: merging and splitting them, keeping, taking out and turning pages, making them smaller, saving their pictures, adding or taking off a password and stamping them. Nothing is uploaded."
+  !insertmacro ${ROW} 24 duckdb "DuckDB" 6 tool duckdb duckdb.cli     "SQL over data files of any size"     "DuckDB reads CSV, JSON and Parquet files where they are, however big: Query, Profile (every column described), Query together and Convert data use it, reading only."
+  !insertmacro ${ROW} 25 exiftool "ExifTool" 6 tool exiftool oliverbetz.exiftool     "Remove personal info from photos, videos and PDFs"     "ExifTool reads and changes what files say about themselves. Remove personal info takes out where a photo was taken, the camera's serial number, names and editing history before you share; it also changes when photos were taken."
+  !insertmacro ${ROW} 26 7zip "7-Zip" 6 tool 7z 7zip.7zip     "Disk images and installers opened like folders"     "7-Zip reads ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers and Linux packages. Glint opens them like folders, so you see what an installer holds without running it."
+  !insertmacro ${ROW} 27 ab-av1 "ab-av1" 6 tool ab-av1 ab-av1 \
+    "Make smaller: videos that still look the same" \
+    "ab-av1 encodes short samples of a video and scores them with VMAF, to find the smallest size that still looks the same. Make smaller then encodes the video with FFmpeg at that setting."
+  !insertmacro ${ROW} 28 libjxl "libjxl" 6 tool cjxl libjxl \
+    "Make smaller: photos repacked as JPEG XL, losslessly" \
+    "libjxl repacks JPEG photos as JPEG XL, about a fifth smaller without losing a bit, and Back to JPEG gives the very same JPEG back. Windows 11 and Chrome open JPEG XL."
+  !insertmacro ${ROW} 29 ghostscript "Ghostscript" 6 tool gswin64c ghostscript \
+    "Make smaller: PDFs full of pictures" \
+    "Ghostscript rewrites a PDF with its pictures at the resolution screens and mail need, or print does: often a tenth of the size. It's unpacked by 7-Zip, which installs first if it isn't here."
+  !insertmacro ${ROW} 30 pandoc "pandoc" 6 tool pandoc johnmacfarlane.pandoc \
+    "Convert document: Word, Markdown, HTML, EPUB and more" \
+    "pandoc turns documents into one another: Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF and more, and Markdown into PowerPoint. It runs sandboxed: it reads only the document it's given."
+  !insertmacro ${ROW} 31 typst "Typst" 6 tool typst typst.typst \
+    "PDFs from Convert document, and .typ files" \
+    "Typst typesets documents. Convert document makes its PDFs with it, without LaTeX or Word, and .typ files get a preview and Export as PDF."
+  !insertmacro ${ROW} 32 restic "restic" 7 tool restic restic.restic \
+    "Back up folders to a drive, a network folder or a cloud" \
+    "restic backs up folders, encrypted, each backup adding only what changed. Glint backs up to a USB drive, a network folder or any cloud Remote reaches, and shows the backups in Previous versions."
+!macroend
+
+!macro GLINT_TOOL_GROUPS GROUP
+  !insertmacro ${GROUP} 1 "Glint's own"
+  !insertmacro ${GROUP} 2 "Clean up, pictures and safety"
+  !insertmacro ${GROUP} 3 "Code and projects"
+  !insertmacro ${GROUP} 4 "Scripts and terminal"
+  !insertmacro ${GROUP} 5 "Sharing and clouds"
+  !insertmacro ${GROUP} 6 "Documents, data and media"
+  !insertmacro ${GROUP} 7 "Backups"
+!macroend
+
+; The list view's messages and flags NSIS doesn't define, as numbers (System::Call takes no expressions).
+!define /ifndef LVM_INSERTGROUP 0x1091
+!define /ifndef LVM_ENABLEGROUPVIEW 0x109D
+!define /ifndef LVN_ITEMCHANGED -101
+!define /ifndef LVIS_SELECTED 2
+!define /ifndef NM_CUSTOMDRAW -12
+!define /ifndef CDDS_PREPAINT 1
+!define /ifndef CDDS_ITEMPREPAINT 65537
+!define /ifndef CDRF_NEWFONT 2
+!define /ifndef CDRF_NOTIFYITEMDRAW 32
+!define GLINT_GREY 7171437 ; RGB(109, 109, 109), as a COLORREF
+!define GLINT_LIST_STYLE 0x5001400D ; WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOCOLUMNHEADER
+!define GLINT_LIST_EXSTYLE 0x14024 ; LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_LABELTIP | LVS_EX_DOUBLEBUFFER
+!define GLINT_ITEM_MASK 257 ; LVIF_TEXT | LVIF_GROUPID
+!define GLINT_GROUP_MASK 17 ; LVGF_HEADER | LVGF_GROUPID
+!define GLINT_STATE_MASK 61440 ; LVIS_STATEIMAGEMASK: the check box's state
+!define GLINT_UNCHECKED 4096
+!define GLINT_CHECKED 8192
+
+Var GlintList
+Var GlintAbout
+Var GlintCount
+; An LVITEM for setting check boxes, allocated once, so handlers need no registers.
+Var GlintItem
+; The ids picked, each between spaces (" jaq uv "), and the rows that have no check box, as they're on
+; this PC already (" 3 7 ").
+Var GlintPicks
+Var GlintInstalled
+; The list's notifications and loops use these rather than registers: a check box set from NSIS sends
+; one while the code that set it is still running.
+Var GlintQuiet
+Var GlintCode
+Var GlintData
+Var GlintRow
+Var GlintNew
+Var GlintOld
+Var GlintChanged
+Var GlintI
+Var GlintN
+Var GlintRows
+Var GlintState
+Var GlintSet
+Var GlintText
+Var GlintFound
+; While installing: how many were picked, which one is installing, and what didn't install.
+Var GlintTotal
+Var GlintStep
+Var GlintFailed
+
+!macro GLINT_SET_CHECK ROW STATE
+  System::Call '*$GlintItem(i 0, i 0, i 0, i ${STATE}, i ${GLINT_STATE_MASK})'
+  SendMessage $GlintList ${LVM_SETITEMSTATE} ${ROW} $GlintItem
+!macroend
+
+!macro GLINT_ADD_GROUP ID NAME
+  StrCpy $1 "${NAME}"
+  System::Call '*(i 40, i ${GLINT_GROUP_MASK}, w r1, i 0, p 0, i 0, i ${ID}, i 0, i 0, i 0) p .r2'
+  SendMessage $GlintList ${LVM_INSERTGROUP} -1 $2
+  System::Free $2
+!macroend
+
+!macro GLINT_ADD_ROW INDEX ID NAME GROUP KIND EXE PACKAGE USE ABOUT
+  StrCpy $1 "${NAME}"
+  System::Call '*(i ${GLINT_ITEM_MASK}, i ${INDEX}, i 0, i 0, i 0, w r1, i 0, i 0, p 0, i 0, i ${GROUP}, i 0, p 0, p 0, i 0) p .r2'
+  SendMessage $GlintList ${LVM_INSERTITEMW} 0 $2
+  System::Free $2
+  StrCpy $5 "${KIND}"
+  StrCpy $6 "${ID}"
+  StrCpy $7 "${EXE}"
+  StrCpy $8 "${PACKAGE}"
+  Call GlintOnThisPC
+  StrCpy $1 "${USE}"
+  StrCpy $3 0
+  ${If} $9 = 1
+    StrCpy $1 "Installed"
+    StrCpy $GlintInstalled "$GlintInstalled${INDEX} "
+    StrCpy $3 1
+  ${EndIf}
+  System::Call '*(i 0, i 0, i 1, i 0, i 0, w r1, i 0, i 0, p 0, i 0, i 0, i 0, p 0, p 0, i 0) p .r2'
+  SendMessage $GlintList ${LVM_SETITEMTEXTW} ${INDEX} $2
+  System::Free $2
+  ; No check box on one that's installed; ticked again if it was picked (Back, then Next).
+  ${If} $3 = 1
+    !insertmacro GLINT_SET_CHECK ${INDEX} 0
+  ${Else}
+    ${StrLoc} $0 $GlintPicks " ${ID} " ">"
+    ${If} $0 != ""
+      !insertmacro GLINT_SET_CHECK ${INDEX} ${GLINT_CHECKED}
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro GLINT_ABOUT_ROW INDEX ID NAME GROUP KIND EXE PACKAGE USE ABOUT
+  ${If} $GlintRow = ${INDEX}
+    StrCpy $GlintText "${ABOUT}"
+  ${EndIf}
+!macroend
+
+!macro GLINT_PICKED_ROW INDEX ID NAME GROUP KIND EXE PACKAGE USE ABOUT
+  SendMessage $GlintList ${LVM_GETITEMSTATE} ${INDEX} ${GLINT_STATE_MASK} $GlintState
+  ${IfThen} $GlintState = ${GLINT_CHECKED} ${|} StrCpy $GlintPicks "$GlintPicks${ID} " ${|}
+!macroend
+
+!macro GLINT_COUNT_PICK INDEX ID NAME GROUP KIND EXE PACKAGE USE ABOUT
+  ${StrLoc} $0 $GlintPicks " ${ID} " ">"
+  ${IfThen} $0 != "" ${|} IntOp $GlintTotal $GlintTotal + 1 ${|}
+!macroend
+
+; Installs one that was picked: instant search with the service's own installer (Windows asks for
+; approval), the rest with Glint, which shows how far it's got on the status line as it goes.
+!macro GLINT_INSTALL_PICK INDEX ID NAME GROUP KIND EXE PACKAGE USE ABOUT
+  ${StrLoc} $0 $GlintPicks " ${ID} " ">"
+  ${If} $0 != ""
+    IntOp $GlintStep $GlintStep + 1
+    !if "${KIND}" == "service"
+      DetailPrint "Turning on instant search ($GlintStep of $GlintTotal): Windows asks for approval…"
+      ExecShellWait "runas" "$INSTDIR\shadui-index.exe" "install" SW_HIDE
+      ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Services\ShadUIRipgrepIndex" "ImagePath"
+      ${If} $0 == ""
+        DetailPrint "Instant search isn't on: Settings → Instant search in Glint turns it on."
+        StrCpy $GlintFailed "$GlintFailed, ${NAME}"
+      ${EndIf}
+    !else
+      DetailPrint "Installing ${NAME} ($GlintStep of $GlintTotal)…"
+      nsExec::ExecToLog '"$INSTDIR\${MAINBINARYNAME}.exe" tools install ${ID} --installer $HWNDPARENT --data "$LOCALAPPDATA\${BUNDLEID}"'
+      Pop $0
+      ${IfThen} $0 != 0 ${|} StrCpy $GlintFailed "$GlintFailed, ${NAME}" ${|}
+    !endif
+  ${EndIf}
+!macroend
+
+; The page itself, after the folder page.
+!macro GLINT_PAGE_TOOLS
+  Page custom GlintToolsPage GlintToolsLeave
+
+  ; Whether a row's tool is on this PC already ($9 = 1): kind, id, program and package in $5 to $8 ($4 is
+  ; free to use). As
+  ; Glint looks (proc.rs): its own downloads, then PATH, winget's, Scoop's, Cargo's and Chocolatey's
+  ; folders, and winget's package folders.
+  Function GlintOnThisPC
+    StrCpy $9 0
+    ${If} $5 == service
+      ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Services\ShadUIRipgrepIndex" "ImagePath"
+      ${IfThen} $0 != "" ${|} StrCpy $9 1 ${|}
+    ${ElseIf} $5 == model
+      ${IfThen} ${FileExists} "$LOCALAPPDATA\${BUNDLEID}\models\potion-base-8M\model.safetensors" ${|} StrCpy $9 1 ${|}
+    ${Else}
+      ReadEnvStr $4 ProgramData
+      ClearErrors
+      SearchPath $0 "$7.exe"
+      ${IfNot} ${Errors}
+      ${OrIf} ${FileExists} "$LOCALAPPDATA\${BUNDLEID}\tools\$6\$7.exe"
+      ${OrIf} ${FileExists} "$LOCALAPPDATA\Microsoft\WinGet\Links\$7.exe"
+      ${OrIf} ${FileExists} "$PROFILE\scoop\shims\$7.exe"
+      ${OrIf} ${FileExists} "$PROFILE\.cargo\bin\$7.exe"
+      ${OrIf} ${FileExists} "$4\chocolatey\bin\$7.exe"
+        StrCpy $9 1
+      ${Else}
+        FindFirst $0 $1 "$LOCALAPPDATA\Microsoft\WinGet\Packages\*$8*"
+        FindClose $0
+        ${IfThen} $1 != "" ${|} StrCpy $9 1 ${|}
+      ${EndIf}
+    ${EndIf}
+  FunctionEnd
+
+  Function GlintToolsPage
+    ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
+    !insertmacro MUI_HEADER_TEXT "Extra tools" "Glint comes with ripgrep, fd and pdu. These free tools add more features; Settings → Tools adds or removes them later."
+    nsDialogs::Create 1018
+    Pop $0
+    ${IfThen} $0 == error ${|} Abort ${|}
+    nsDialogs::SetRTL $(^RTL)
+    ; Installing starts from here (the Start menu page after it is never shown), so the button says so.
+    GetDlgItem $0 $HWNDPARENT 1
+    SendMessage $0 ${WM_SETTEXT} 0 "STR:$(^InstallBtn)"
+
+    nsDialogs::CreateControl SysListView32 ${GLINT_LIST_STYLE} ${WS_EX_CLIENTEDGE} 0 0 100% 96u ""
+    Pop $GlintList
+    SendMessage $GlintList ${LVM_SETEXTENDEDLISTVIEWSTYLE} ${GLINT_LIST_EXSTYLE} ${GLINT_LIST_EXSTYLE}
+    System::Call 'uxtheme::SetWindowTheme(p $GlintList, w "Explorer", p 0)'
+    System::Call '*(i, i, i, i, i, p, i, i, p, i, i, i, p, p, i) p .r0'
+    StrCpy $GlintItem $0
+
+    ; Two columns: the tool, a third of the width, and what Glint uses it for, the rest.
+    System::Call '*(i, i, i, i) p .r0'
+    System::Call 'user32::GetClientRect(p $GlintList, p r0)'
+    System::Call '*$0(i, i, i .r1, i)'
+    System::Free $0
+    IntOp $1 $1 * 30
+    IntOp $1 $1 / 100
+    System::Call '*(i 6, i 0, i r1, w "Tool", i 0, i 0) p .r0'
+    SendMessage $GlintList ${LVM_INSERTCOLUMNW} 0 $0
+    System::Free $0
+    System::Call '*(i 14, i 0, i 100, w "Used in Glint for", i 0, i 1) p .r0'
+    SendMessage $GlintList ${LVM_INSERTCOLUMNW} 1 $0
+    System::Free $0
+
+    !insertmacro GLINT_TOOL_GROUPS GLINT_ADD_GROUP
+    SendMessage $GlintList ${LVM_ENABLEGROUPVIEW} 1 0
+    StrCpy $GlintInstalled " "
+    ${IfThen} $GlintPicks == "" ${|} StrCpy $GlintPicks " " ${|}
+    !insertmacro GLINT_TOOLS GLINT_ADD_ROW
+    SendMessage $GlintList ${LVM_GETITEMCOUNT} 0 0 $GlintRows
+    SendMessage $GlintList ${LVM_SETCOLUMNWIDTH} 1 ${LVSCW_AUTOSIZE_USEHEADER}
+
+    ${NSD_CreateLabel} 0 99u 100% 28u "Tools install for your account: with winget where this PC has it, else from their own releases, checked against their published checksums. Select one to see what it is."
+    Pop $GlintAbout
+    ${NSD_CreateLink} 0 129u 44u 10u "Select all"
+    Pop $0
+    ${NSD_OnClick} $0 GlintToolsAll
+    ${NSD_CreateLink} 48u 129u 40u 10u "Clear all"
+    Pop $0
+    ${NSD_OnClick} $0 GlintToolsNone
+    ${NSD_CreateLabel} 50% 129u 50% 10u ""
+    Pop $GlintCount
+    ${NSD_AddStyle} $GlintCount ${SS_RIGHT}
+    Call GlintToolsCount
+
+    StrCpy $GlintQuiet 0
+    ${NSD_OnNotify} $GlintList GlintToolsNotify
+    nsDialogs::Show
+    System::Free $GlintItem
+  FunctionEnd
+
+  Function GlintToolsLeave
+    StrCpy $GlintPicks " "
+    !insertmacro GLINT_TOOLS GLINT_PICKED_ROW
+  FunctionEnd
+
+  ; A check box ticked or cleared (the count), a row selected (what it is, under the list), or a row
+  ; about to be drawn (grey when it has no check box).
+  Function GlintToolsNotify
+    Pop $GlintData ; the list
+    Pop $GlintCode
+    Pop $GlintData ; its NMLISTVIEW: the row, its new and old state, and what changed
+    ${If} $GlintCode = ${LVN_ITEMCHANGED}
+    ${AndIf} $GlintQuiet = 0
+      System::Call '*$GlintData(p, p, i, i .s)'
+      Pop $GlintRow
+      System::Call '*$GlintData(p, p, i, i, i, i .s)'
+      Pop $GlintNew
+      System::Call '*$GlintData(p, p, i, i, i, i, i .s)'
+      Pop $GlintOld
+      System::Call '*$GlintData(p, p, i, i, i, i, i, i .s)'
+      Pop $GlintChanged
+      IntOp $GlintChanged $GlintChanged & ${LVIF_STATE}
+      ${If} $GlintChanged <> 0
+        IntOp $GlintI $GlintNew ^ $GlintOld
+        IntOp $GlintI $GlintI & ${GLINT_STATE_MASK}
+        ${If} $GlintI <> 0
+          IntOp $GlintI $GlintOld & ${GLINT_STATE_MASK}
+          ${If} $GlintI = 0
+            ; A row without a check box keeps none (Space would give it one).
+            StrCpy $GlintQuiet 1
+            !insertmacro GLINT_SET_CHECK $GlintRow 0
+            StrCpy $GlintQuiet 0
+          ${Else}
+            Call GlintToolsCount
+          ${EndIf}
+        ${EndIf}
+        IntOp $GlintI $GlintNew & ${LVIS_SELECTED}
+        IntOp $GlintN $GlintOld & ${LVIS_SELECTED}
+        ${If} $GlintI <> 0
+        ${AndIf} $GlintN = 0
+          Call GlintToolsAbout
+        ${EndIf}
+      ${EndIf}
+    ${ElseIf} $GlintCode = ${NM_CUSTOMDRAW}
+      ; Rows without a check box in grey: asked for each row (CDRF_NOTIFYITEMDRAW), then its text's colour.
+      System::Call '*$GlintData(p, p, i, i .s)'
+      Pop $GlintI
+      ${If} $GlintI = ${CDDS_PREPAINT}
+        ${NSD_Return} ${CDRF_NOTIFYITEMDRAW}
+      ${ElseIf} $GlintI = ${CDDS_ITEMPREPAINT}
+        System::Call '*$GlintData(p, p, i, i, p, i, i, i, i, p .s)'
+        Pop $GlintI
+        SendMessage $GlintList ${LVM_GETITEMSTATE} $GlintI ${GLINT_STATE_MASK} $GlintState
+        ${If} $GlintState = 0
+          System::Call '*$GlintData(p, p, i, i, p, i, i, i, i, p, i, p, i ${GLINT_GREY})'
+          ${NSD_Return} ${CDRF_NEWFONT}
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  FunctionEnd
+
+  Function GlintToolsAbout
+    StrCpy $GlintText ""
+    !insertmacro GLINT_TOOLS GLINT_ABOUT_ROW
+    ${StrLoc} $GlintFound $GlintInstalled " $GlintRow " ">"
+    ${IfThen} $GlintFound != "" ${|} StrCpy $GlintText "Already on this PC. $GlintText" ${|}
+    ${NSD_SetText} $GlintAbout $GlintText
+  FunctionEnd
+
+  Function GlintToolsCount
+    StrCpy $GlintN 0
+    StrCpy $GlintI 0
+    ${DoWhile} $GlintI < $GlintRows
+      SendMessage $GlintList ${LVM_GETITEMSTATE} $GlintI ${GLINT_STATE_MASK} $GlintState
+      ${IfThen} $GlintState = ${GLINT_CHECKED} ${|} IntOp $GlintN $GlintN + 1 ${|}
+      IntOp $GlintI $GlintI + 1
+    ${Loop}
+    ${If} $GlintN = 0
+      ${NSD_SetText} $GlintCount "None selected"
+    ${Else}
+      ${NSD_SetText} $GlintCount "$GlintN selected"
+    ${EndIf}
+  FunctionEnd
+
+  Function GlintToolsAll
+    Pop $GlintData
+    StrCpy $GlintSet ${GLINT_CHECKED}
+    Call GlintToolsSetAll
+  FunctionEnd
+
+  Function GlintToolsNone
+    Pop $GlintData
+    StrCpy $GlintSet ${GLINT_UNCHECKED}
+    Call GlintToolsSetAll
+  FunctionEnd
+
+  ; Every check box ticked or cleared ($GlintSet), then counted once.
+  Function GlintToolsSetAll
+    StrCpy $GlintQuiet 1
+    StrCpy $GlintI 0
+    ${DoWhile} $GlintI < $GlintRows
+      SendMessage $GlintList ${LVM_GETITEMSTATE} $GlintI ${GLINT_STATE_MASK} $GlintState
+      ${If} $GlintState <> 0
+        !insertmacro GLINT_SET_CHECK $GlintI $GlintSet
+      ${EndIf}
+      IntOp $GlintI $GlintI + 1
+    ${Loop}
+    StrCpy $GlintQuiet 0
+    Call GlintToolsCount
+  FunctionEnd
+!macroend
+
+; A tool that comes with Glint, once Glint is in place: a security program can take one out as it lands,
+; and Glint then puts it back (with winget, or from its own release), as Settings → Tools would.
+!macro GLINT_CHECK_BUNDLED EXE ID
+  ${IfNot} ${FileExists} "$INSTDIR\${EXE}.exe"
+    DetailPrint "${EXE}.exe isn't there (a security program may have removed it): putting ${ID} back…"
+    nsExec::ExecToLog '"$INSTDIR\${MAINBINARYNAME}.exe" tools install ${ID} --installer $HWNDPARENT --data "$LOCALAPPDATA\${BUNDLEID}"'
+    Pop $0
+    ${IfThen} $0 != 0 ${|} StrCpy $GlintFailed "$GlintFailed, ${ID}" ${|}
+  ${EndIf}
+!macroend
+
+; Checks the tools that come with Glint, then installs what was picked, after Glint itself
+; (NSIS_HOOK_POSTINSTALL): on the page, or on the command line with /TOOLS=jaq,uv and, as before,
+; /INSTANTSEARCH. The finish page then says what didn't install.
+!macro GLINT_INSTALL_TOOLS
+  StrCpy $GlintFailed ""
+  !insertmacro GLINT_CHECK_BUNDLED rg ripgrep
+  !insertmacro GLINT_CHECK_BUNDLED fd fd
+  !insertmacro GLINT_CHECK_BUNDLED pdu pdu
+  ClearErrors
+  ${GetOptions} $CMDLINE "/TOOLS=" $0
+  ${IfNot} ${Errors}
+    ${WordReplace} $0 "," " " "+" $0
+    StrCpy $GlintPicks "$GlintPicks $0 "
+  ${EndIf}
+  ClearErrors
+  ${GetOptions} $CMDLINE "/INSTANTSEARCH" $0
+  ${IfNot} ${Errors}
+    StrCpy $GlintPicks "$GlintPicks instant-search "
+  ${EndIf}
+  StrCpy $GlintTotal 0
+  !insertmacro GLINT_TOOLS GLINT_COUNT_PICK
+  ${If} $GlintTotal > 0
+    StrCpy $GlintStep 0
+    !insertmacro GLINT_TOOLS GLINT_INSTALL_PICK
+  ${EndIf}
+  ${If} $GlintFailed != ""
+    StrCpy $GlintFailed $GlintFailed "" 2
+    DetailPrint "Not installed: $GlintFailed. Settings → Tools in Glint can try again."
+    StrCpy $GlintFinishText "${PRODUCTNAME} ${VERSION} is installed, but these aren't: $GlintFailed. Settings → Tools in Glint can try them again.$\r$\n$\r$\nClick Finish to close Setup."
+  ${ElseIf} $GlintTotal > 0
+    DetailPrint "Glint and the tools you picked are installed."
+    StrCpy $GlintFinishText "${PRODUCTNAME} ${VERSION} is installed, with the tools you picked.$\r$\n$\r$\nClick Finish to close Setup."
+  ${EndIf}
+!macroend
