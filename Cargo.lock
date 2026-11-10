@@ -4144,11 +4144,14 @@ dependencies = [
  "glint-core",
  "glint-model",
  "gpui-kit",
+ "image",
  "raw-window-handle",
+ "roxmltree 0.20.0",
  "serde",
  "serde_json",
  "windows 0.62.2",
  "windows-core 0.62.2",
+ "zip",
 ]
 
 [[package]]
