@@ -122,9 +122,12 @@ impl Explorer {
     /// Tells the explorer where instant search stands (the status bar's poll can hand over what it learns).
     pub fn set_search_index(&mut self, index: Option<SearchIndex>, cx: &mut Context<Self>) {
         let was = self.search_index().cloned();
+        // A folder on screen whose drive just became ready shows its sizes without waiting for a navigation.
+        let before = self.indexed_on_screen();
         self.searching.index = index.clone().map(|index| (index, Instant::now()));
         if was != index {
             cx.notify();
+            self.sizes_after_index(before, cx);
         }
     }
 
@@ -156,7 +159,7 @@ impl Explorer {
     }
 
     /// Whether the index has the drive `path` is on, ready to answer (`indexed`).
-    fn indexed(&self, path: &str) -> bool {
+    pub(super) fn indexed(&self, path: &str) -> bool {
         self.search_index().is_some_and(|index| index.indexed(path))
     }
 

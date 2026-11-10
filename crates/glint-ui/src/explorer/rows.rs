@@ -10,10 +10,28 @@
 //!
 //! [`build_rows`] is a pure function of its inputs so a huge folder can be ordered on a background thread.
 
-use glint_model::entries::{entry_order, is_hidden, matcher, FileEntry, Sort, SortKey};
-use glint_model::groups::{group_rows, GroupBy, GroupHeader, Grouped};
+use glint_model::entries::{entry_order, is_hidden, matcher, FileEntry, SizeOf, Sort, SortKey};
+use glint_model::groups::{group_rows, GroupBy, GroupHeader, Grouped, SizeOf as GroupSizeOf};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// The folder sizes measured for the folder (`SizeRun.sizes`), when sorting or grouping by size needs them: a
+/// folder sorts and groups by its calculated size. Equal when it is the same measuring (`version`), so a spec
+/// compare never walks the map.
+#[derive(Clone, Debug)]
+pub struct RowSizes {
+    /// Changes whenever the sizes do ([`SizeRun::version`](super::SizeRun)).
+    pub version: u64,
+    /// Subfolder name to bytes.
+    pub sizes: Arc<HashMap<String, u64>>,
+}
+
+impl PartialEq for RowSizes {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+    }
+}
 
 /// Everything that decides which rows a listing makes, and in what order. Two equal specs make equal rows.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,6 +47,8 @@ pub struct RowSpec {
     pub group: GroupBy,
     /// Whether the entries arrived presorted from the engine (a listing does; a search's results don't).
     pub presorted: bool,
+    /// The measured folder sizes, set only while the sort or the grouping is by size.
+    pub sizes: Option<RowSizes>,
 }
 
 impl Default for RowSpec {
@@ -43,6 +63,7 @@ impl Default for RowSpec {
             filter: String::new(),
             group: GroupBy::None,
             presorted: true,
+            sizes: None,
         }
     }
 }
@@ -169,9 +190,22 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         );
     }
 
+    // A folder sorts by its measured size, one it has none for before every other (the TypeScript's -1): every
+    // size is one more than it is, so "none" is 0 and still sorts below an empty folder.
+    let measured = spec.sizes.as_ref().map(|s| {
+        let sizes = s.sizes.clone();
+        move |e: &FileEntry| -> u64 {
+            if e.dir {
+                sizes.get(&e.name).map_or(0, |size| size.saturating_add(1))
+            } else {
+                e.size.saturating_add(1)
+            }
+        }
+    });
     if !by_default {
         if let Some(order) = order.as_mut() {
-            let compare = entry_order(spec.sort, spec.folders_first, spec.presorted, None, None, None);
+            let size_of = measured.as_ref().map(|f| f as &SizeOf);
+            let compare = entry_order(spec.sort, spec.folders_first, spec.presorted, size_of, None, None);
             // A stable sort, so ties keep the engine's name order, as the TypeScript's did.
             order.sort_by(|&a, &b| match (entries.get(a as usize), entries.get(b as usize)) {
                 (Some(a), Some(b)) => compare(a, b),
@@ -190,12 +224,22 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         return sorted;
     }
     let flat: Vec<FileEntry> = sorted.iter().cloned().collect();
+    let group_size = spec.sizes.as_ref().map(|s| {
+        let sizes = s.sizes.clone();
+        move |e: &FileEntry| -> Option<u64> { sizes.get(&e.name).copied() }
+    });
     let Grouped {
         rows,
         headers,
         lines,
         line_of,
-    } = group_rows(&flat, spec.group, now, None, None);
+    } = group_rows(
+        &flat,
+        spec.group,
+        now,
+        group_size.as_ref().map(|f| f as &GroupSizeOf),
+        None,
+    );
     Rows {
         entries: Arc::from(rows),
         order: None,
@@ -338,6 +382,74 @@ mod tests {
         assert_eq!(names(&rows), ["a2.txt", "a10.txt"]);
         assert_eq!(rows.position_of("C:\\x\\a10.txt"), Some(1));
         assert_eq!(rows.get(5), None);
+    }
+
+    #[test]
+    fn folders_sort_by_their_measured_size_and_one_with_none_comes_before_an_empty_one() {
+        let entries: Arc<[FileEntry]> =
+            Arc::from(vec![folder("big"), folder("none"), folder("empty"), folder("small")]);
+        let sizes = RowSizes {
+            version: 1,
+            sizes: Arc::new(HashMap::from([
+                ("big".to_string(), 9000),
+                ("small".to_string(), 5),
+                ("empty".to_string(), 0),
+            ])),
+        };
+        let spec = RowSpec {
+            sort: Sort {
+                key: SortKey::Size,
+                desc: false,
+            },
+            show_hidden: true,
+            sizes: Some(sizes.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            names(&build_rows(&entries, &spec, 0)),
+            ["none", "empty", "small", "big"]
+        );
+        let descending = RowSpec {
+            sort: Sort {
+                key: SortKey::Size,
+                desc: true,
+            },
+            ..spec.clone()
+        };
+        assert_eq!(
+            names(&build_rows(&entries, &descending, 0)),
+            ["big", "small", "empty", "none"]
+        );
+        // Without the sizes every folder is 0 and the engine's name order stays.
+        let unmeasured = RowSpec { sizes: None, ..spec };
+        assert_eq!(
+            names(&build_rows(&entries, &unmeasured, 0)),
+            ["big", "none", "empty", "small"]
+        );
+    }
+
+    #[test]
+    fn grouping_by_size_puts_a_measured_folder_in_its_size_group() {
+        let entries: Arc<[FileEntry]> = Arc::from(vec![folder("big"), folder("unmeasured"), file("a.txt", 20, 1)]);
+        let spec = RowSpec {
+            group: GroupBy::Size,
+            show_hidden: true,
+            sizes: Some(RowSizes {
+                version: 1,
+                sizes: Arc::new(HashMap::from([("big".to_string(), 200 << 20)])),
+            }),
+            ..Default::default()
+        };
+        let rows = build_rows(&entries, &spec, 0);
+        let labels: Vec<String> = rows
+            .groups()
+            .map(|g| g.headers.iter().map(|h| h.label.clone()).collect())
+            .unwrap_or_default();
+        assert!(
+            labels.iter().any(|l| l == "Folders"),
+            "{labels:?}: an unmeasured folder stays a plain folder"
+        );
+        assert!(labels.iter().any(|l| l.starts_with("Large")), "{labels:?}");
     }
 
     #[test]
