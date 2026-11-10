@@ -104,8 +104,13 @@ impl FileList {
                         .child(icon(IconName::TriangleAlert).size(rems(1.5)).text_color(t.destructive))
                         .child(title(t, t!("The search failed")))
                         // The engine's own words, as they are.
-                        // PORT ME(coordinator): theme::mono_family, the web drew this in the monospace font.
-                        .child(div().max_w_full().text_size(theme::size::XS).child(find.error.clone()))
+                        .child(
+                            div()
+                                .max_w_full()
+                                .font_family(theme::mono_font(cx))
+                                .text_size(theme::size::XS)
+                                .child(find.error.clone()),
+                        )
                         .child(
                             Button::new("file-list-search-try-again")
                                 .outline()

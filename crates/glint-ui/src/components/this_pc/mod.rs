@@ -29,9 +29,14 @@
 //! ("Copy to Downloads"). A drop copies the files into it, or moves them with Shift. A CD or DVD drive, a place
 //! that is read-only, and a folder the files are already in refuse the drop.
 //!
-//! **What isn't here yet** (marked `PORT ME` where it belongs):
-//! - The instant search card above the folders (the TypeScript's `InstantSearchCard`). It needs the index
-//!   state, which the explorer model doesn't hold yet.
+//! **Instant search card** (`InstantSearchCard`), between the folders and the drives. It reads the service's state
+//! from the status bar's `IndexModel` (so both say the same, and ask the same way) and shows while instant
+//! search is off or stopped (a "Turn on instant search" button), starting, reading a drive ("Indexing C: 40%…")
+//! or has a drive that failed ("D: couldn't be indexed", with "Retry" once nothing is being read). Turning on
+//! and Retry are `IndexModel::enable`, which restarts the service; Windows asks for administrator approval.
+//! The card says nothing for a service of another account, an impostor or no NTFS (Settings explains those).
+//! Missing: the status bar's `Volume` doesn't carry the service's own message for a failed drive, so the
+//! TypeScript's ": {error}" after "couldn't be indexed" isn't shown (it needs the text on `Volume` there).
 //!
 //! The disk-usage map, recent changes and duplicates are the window's (`ThisPcEvent`s); this view only says
 //! which drive was asked for.
@@ -40,6 +45,7 @@ mod model;
 #[cfg(test)]
 mod tests;
 
+use crate::components::status_bar::index::{shared_source, IndexModel};
 use crate::components::tab_strip::drop_words;
 use crate::dialogs::drive_health::{self, DriveHealthBadge, DriveHealthBanner, Health};
 use crate::explorer::{Drive, DriveKind, ExplorerEvent, KnownId, NavOptions, TabId};
@@ -143,6 +149,10 @@ pub struct ThisPc {
     /// taken. The tiles light from it; it's shared with their paint closures.
     drop_over: Rc<Cell<Option<usize>>>,
     health: Entity<Health>,
+    /// Instant search's state, for the card.
+    index: Entity<IndexModel>,
+    /// Turning on (or retrying) is under way: the card's button is disabled and spins.
+    enabling: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -152,7 +162,11 @@ impl ThisPc {
     pub fn new(pane: usize, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let explorer = crate::explorer::explorer(cx);
         let health = drive_health::shared(cx);
+        let source = shared_source(cx);
+        let index = cx.new(move |_| IndexModel::new(source));
+        index.update(cx, |index, cx| index.refresh(cx));
         let subscriptions = vec![
+            cx.observe(&index, |_, _, cx| cx.notify()),
             cx.observe(&explorer, |_, _, cx| cx.notify()),
             cx.subscribe(&explorer, |this, _, event: &ExplorerEvent, cx| {
                 if matches!(event, ExplorerEvent::DrivesChanged | ExplorerEvent::KnownFoldersChanged) {
@@ -174,6 +188,8 @@ impl ThisPc {
             drive_bounds: Rc::new(RefCell::new(Vec::new())),
             drop_over: Rc::new(Cell::new(None)),
             health,
+            index,
+            enabling: false,
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
@@ -332,6 +348,107 @@ impl ThisPc {
             }
         })
         .detach();
+    }
+
+    /// "Turn on instant search" and "Retry": the service is turned on or restarted through the shared index model
+    /// (Windows asks for administrator approval; declining says nothing), and a notice says how it went.
+    fn turn_on(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.enabling {
+            return;
+        }
+        self.enabling = true;
+        cx.notify();
+        let answer = self.index.update(cx, |index, cx| index.enable(cx));
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = answer.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.enabling = false;
+                match answer {
+                    Ok(()) => window.push_notification(
+                        Notification::success(t!("Each drive is searched with the index as soon as it has been read."))
+                            .title(t!("Instant search is on")),
+                        cx,
+                    ),
+                    Err(message) if message != "cancelled" => window.push_notification(
+                        Notification::error(message).title(t!("Couldn't turn on instant search")),
+                        cx,
+                    ),
+                    Err(_) => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The instant search card (`InstantSearchCard`), or nothing when there is nothing to offer or say.
+    fn render_index_card(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let card = model::card(self.index.read(cx).info())?;
+        let text: SharedString = match &card.words {
+            model::Words::Offer => {
+                t!("Turn on instant search to find files on every drive in milliseconds and see folder sizes as they open.")
+            }
+            model::Words::Starting => t!("Instant search is starting…"),
+            model::Words::Drives { reading, failed } => {
+                let reading = reading.iter().map(|(volume, percent)| match percent {
+                    Some(percent) => t!(
+                        "Indexing {volume} {percent}%…",
+                        volume = volume.clone(),
+                        percent = *percent
+                    ),
+                    None => t!("Indexing {volume}…", volume = volume.clone()),
+                });
+                let failed = failed
+                    .iter()
+                    .map(|volume| t!("{volume} couldn't be indexed", volume = volume.clone()));
+                reading
+                    .chain(failed)
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+                    .into()
+            }
+        };
+        let lead = if card.busy {
+            Spinner::new().small().color(t.primary).into_any_element()
+        } else {
+            icon(IconName::Zap).size_4().text_color(t.primary).into_any_element()
+        };
+        let button = card.button.map(|which| {
+            let label = match which {
+                model::Button::TurnOn => t!("Turn on instant search"),
+                model::Button::Retry => t!("Retry"),
+            };
+            Button::new("this-pc-instant-search-button")
+                .primary()
+                .small()
+                .icon(IconName::ShieldCheck)
+                .label(label)
+                .loading(self.enabling)
+                .disabled(self.enabling)
+                .tooltip(t!("Windows asks for administrator approval"))
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.turn_on(window, cx)))
+        });
+        Some(
+            row_start()
+                .id("this-pc-instant-search")
+                .role(Role::Status)
+                .aria_label(text.clone())
+                .test_support()
+                .mt(space(8.))
+                .items_center()
+                .gap(space(3.))
+                .rounded(theme::size::RADIUS_LG)
+                .border_1()
+                .border_color(t.border)
+                .bg(t.primary.opacity(0.05))
+                .px(space(4.))
+                .py(space(3.))
+                .child(div().flex_none().child(lead))
+                .child(div().min_w_0().flex_1().text_size(theme::size::SM).child(text))
+                .children(button)
+                .into_any_element(),
+        )
     }
 
     /// Scrolls the page so the tile at `index` is wholly in view. The tiles' places are the ones painted last,
@@ -934,6 +1051,7 @@ impl Render for ThisPc {
             .gap(space(3.))
             .children(drives);
 
+        let index_card = self.render_index_card(&t, cx);
         let body = col()
             .w_full()
             .px(space(6.))
@@ -947,8 +1065,7 @@ impl Render for ThisPc {
                     .child(t!("Folders")),
             )
             .child(folder_grid)
-            // PORT ME(coordinator): the instant search card (InstantSearchCard) goes here: the index state
-            // (glint-core's index_status and its volumes) and Turn on / Retry, which the explorer model doesn't hold yet.
+            .children(index_card)
             .child(DriveHealthBanner::new(self.failing.clone(), open_health))
             .child(devices_header)
             .child(drive_grid);

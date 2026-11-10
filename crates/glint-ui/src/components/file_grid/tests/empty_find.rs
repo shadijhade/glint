@@ -8,7 +8,10 @@ fn filtered(env: &mut Env, filter: &str) {
     let filter = filter.to_string();
     env.visual
         .update(|_, cx| explorer.update(cx, |e, cx| e.set_filter(&filter, None, cx)));
-    env.settle(|env| env.visual.update(|window, _| window.try_find("file-grid-empty").is_some()));
+    env.settle(|env| {
+        env.visual
+            .update(|window, _| window.try_find("file-grid-empty").is_some())
+    });
 }
 
 fn last(disk: &FakeDisk) -> Option<FindCall> {
@@ -29,10 +32,14 @@ fn a_filter_that_hides_every_tile_offers_to_search_subfolders(cx: &mut TestAppCo
         assert_eq!(window.find_by_label("Search subfolders too").role(), Some(Role::Button));
     });
     assert!(disk.finds().is_empty());
-    env.visual.update(|window, cx| window.click("file-grid-search-subfolders", cx));
+    env.visual
+        .update(|window, cx| window.click("file-grid-search-subfolders", cx));
     env.settle(|env| !env.tile_names().is_empty());
     let call = last(&disk).expect("the search ran");
-    assert_eq!((call.query.as_str(), call.roots.as_slice()), ("inner", ["C:\\x".to_string()].as_slice()));
+    assert_eq!(
+        (call.query.as_str(), call.roots.as_slice()),
+        ("inner", ["C:\\x".to_string()].as_slice())
+    );
     assert_eq!(env.tile_names(), ["inner.txt"]);
 }
 

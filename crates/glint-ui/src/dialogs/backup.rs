@@ -1293,7 +1293,7 @@ impl BackupDialog {
 /// "Backups": Previous versions of the folder, which lists the backups made of it. What it hands back is done
 /// here: a backup's folder opens in a new tab, "Show" goes to the restored item.
 fn open_backups(window: &mut Window, cx: &mut App, folder: String) {
-    super::versions::open(window, cx, folder, |request, _window, cx| {
+    super::versions::open(window, cx, folder, |request, window, cx| {
         use super::versions::Request;
         let Some(tabs) = explorer::try_explorer(cx) else { return };
         match request {
@@ -1305,8 +1305,12 @@ fn open_backups(window: &mut Window, cx: &mut App, folder: String) {
                 };
                 e.navigate(folder, options, cx)
             }),
-            // PORT ME(coordinator): comparing waits for the compare dialogs (workspace.rs says the same).
-            Request::CompareFolders { .. } | Request::CompareFiles { .. } => {}
+            // The dialog closed itself first; how it was goes on the left.
+            Request::CompareFiles { then, now } => super::compare_files::open(window, cx, then, now),
+            // This folder now beside how it was, compared in the two panes (`compareWithVersion`).
+            Request::CompareFolders { now, then } => {
+                tabs.update(cx, |e, cx| e.compare_with_version(&now, &then, cx).detach())
+            }
         }
     });
 }

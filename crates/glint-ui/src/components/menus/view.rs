@@ -315,6 +315,10 @@ impl MenuView {
     }
 
     fn icon_of(entry: &Entry, tint: Option<Hsla>) -> Option<AnyElement> {
+        // A row with a picture of its own (the New menu's kinds, as Windows draws them) shows it.
+        if let (None, Some(picture)) = (entry.check, entry.picture.clone()) {
+            return Some(img(picture).size_4().flex_none().into_any_element());
+        }
         // A check mark stands in for the icon of a row that is one of a set; unchecked it keeps the room.
         match (entry.check, entry.icon) {
             (Some(checked), _) => {

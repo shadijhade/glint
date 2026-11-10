@@ -341,6 +341,43 @@ Tests: 2,258 + 300 + 233 + 92 passed; clippy clean.
 
 The GPUI app imports none of it yet. That is wave 16 (`old_settings/`, without a new crate).
 
+## Wave 16: the old app's settings imported, notices remembered, This PC, HTML mail, gaps: done 2026-11-10
+
+*6 tasks (Sonnet; 12 agents, ~1.4 h, 2.1M tokens), all passed review on the first try.*
+
+- **settings-import:** `old_settings/` reads WebView2's localStorage with a read-only LevelDB reader written here: the log, tables, Snappy and CRC32C, with no new crate.
+  - At the first start (no `state.json` yet; main window only) it imports the store into `state.json`, book places and size into `books.json`, recent tags, `last-version` and the first-notice flags.
+  - It never writes the old folder. A locked file is read through a copy.
+- **notices-memory:**
+  - "Rule did X" toasts with Undo.
+  - The instant-search offer once ever, and the service notice once per version, kept in the saved state and seeded from the import.
+  - Recent tags are saved.
+- **this-pc-card:** the instant search card (off, stopped, starting, reading, a failed drive with Retry).
+- **mail-html:** HTML mail laid out through the book reader's XHTML path. cid: and data: pictures show. Remote pictures stay off until "Load pictures" (no request before that). There's a plain/formatted switch.
+- **ui-gaps:**
+  - The New menu's kinds carry their pictures.
+  - The status bar's X-Ray, Rename and Zip buttons.
+  - The grid's search, Gallery and Recent empty states.
+  - The shortcut sheet's Ctrl+N row.
+- **polish:** the kit's Slider, Select and Confirm in use; local dates in History and Versions; filled folder icons; the flash fade; the mono error text; the About logo; Backup's compare requests; the jaq card; the book's language for Read aloud; an end-to-end closed-bar test; "Open N files?"; the preview width saved after a drag.
+
+**Integration:**
+- Menu rows draw their pictures (`menus/view.rs`).
+- Settings hears when another app holds the shortcut.
+- The meaning model's download shows its progress.
+- The updater's marks are seeded from the import, so the first start after the old app greets the update from the right version.
+- **This PC's card tests took the test lock in their helper and dropped it on return**, so they ran unguarded. Each test now holds the lock, and the Retry test waits for the call made off the UI thread. That was the one failing test.
+
+**Tried for real:**
+- A first start with no `state.json`: the import wrote it with this PC's old history (2), visits (15) and the notice flags. The old storage was byte-identical afterwards, and the settings files were put back.
+- The read-only dry run: a 2,717-byte store, last version 0.8.0, no problems.
+- An HTML newsletter: headings, table, list and link are laid out, the cid: picture is drawn, the remote picture is blocked behind "Load pictures", and the plain-text switch works.
+
+**Left:**
+- `Run::Custom` in the menu spec (an internal clean-up).
+- The failed drive's own message on This PC's card (the status bar's Volume has only a flag).
+- Arabic for the new strings (the TS lacked them too).
+
 ## Antigravity (2026-11-10): closed before it started
 
 The user offered Antigravity to share the work. It hit its rate limit before doing anything; it left only an empty report. Its lane is closed and its worktree and branch are removed.

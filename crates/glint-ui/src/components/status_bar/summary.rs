@@ -152,6 +152,9 @@ pub struct Summary {
     /// Selected rows that are files, and their bytes (`selectedFiles`, `selectedBytes`).
     pub selected_files: usize,
     pub selected_bytes: u64,
+    /// The items can be looked into, renamed and zipped from the bar: not an archive's, a remote's, a closed
+    /// folder's, the Recycle Bin's, Recent's or the Gallery's (`writable` in StatusBar.tsx).
+    pub writable: bool,
     /// Entries in the folder's listing (not only the rows shown): the popover's header counts them.
     pub listing_entries: usize,
     /// How long the listing took, and who answered.
@@ -211,6 +214,12 @@ impl Summary {
             selected_paths,
             selected_files,
             selected_bytes,
+            writable: tab.archive().is_none()
+                && !tab.is_remote()
+                && !tab.is_closed()
+                && !tab.is_recycle_bin()
+                && !glint_model::paths::is_recent(&tab.path)
+                && !glint_model::paths::is_gallery(&tab.path),
             listing_entries: tab.entries().len(),
             read_ms: None,
             engine: None,

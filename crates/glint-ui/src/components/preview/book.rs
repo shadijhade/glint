@@ -38,8 +38,8 @@
 //! - **MOBI, AZW, AZW3** are read by [`mobi`](super::mobi) (foliate's `mobi.js`: PalmDOC and HUFF/CDIC text, the
 //!   MOBI and EXTH headers, KF8's skeleton and fragment tables). A book with DRM says so ([`BookError::Drm`]);
 //!   nothing tries to remove it. Fonts, audio and video inside the book are not used.
-//! - **Read aloud** is made ([`BookView::read_aloud`]), with one difference: the book's language comes from its
-//!   text's script ([`language_of`]), because [`Book`] does not carry the language its metadata names.
+//! - **Read aloud** is made ([`BookView::read_aloud`]): in the language the book's metadata names ([`Book::language`]),
+//!   else the one its text's script says ([`language_of`]).
 //! - **Places and the text size** are kept between runs by [`crate::book_places`] (`books.json` beside
 //!   `state.json`), the last 200 books.
 //! - **Pages.** The chapter scrolls (the design note's first milestone); foliate's page-by-page columns are not
@@ -1545,6 +1545,9 @@ pub fn flatten(items: &[TocItem]) -> Vec<TocRow> {
 /// A book, opened: what it is called, how it turns, its contents, and where its chapters are read from.
 pub struct Book {
     pub title: String,
+    /// The language the book's metadata names ("en", "pt-BR"), when it names one: EPUB's `dc:language`, FB2's
+    /// `lang`, MOBI's. Read aloud speaks in it before guessing from the script. None for a comic.
+    pub language: Option<String>,
     /// Pages turn from the right (`page-progression-direction`, or a right-to-left language, or manga).
     pub rtl: bool,
     pub toc: Vec<TocItem>,
@@ -1874,6 +1877,7 @@ pub fn open_epub(path: &str) -> Result<Book, BookError> {
     let count = spine.len();
     Ok(Book {
         title,
+        language: named_language(&language),
         rtl,
         toc,
         count,
@@ -1886,6 +1890,12 @@ pub fn open_epub(path: &str) -> Result<Book, BookError> {
 }
 
 // ---- FB2 -------------------------------------------------------------------------------------------------------
+
+/// The language a book's metadata names, trimmed; None when it names none.
+pub(super) fn named_language(language: &str) -> Option<String> {
+    let language = language.trim();
+    (!language.is_empty()).then(|| language.to_string())
+}
 
 /// A built chapter and the ids on it.
 struct Fb2Source {
@@ -2284,6 +2294,7 @@ pub fn open_fb2(bytes: &[u8]) -> Result<Book, BookError> {
     let count = chapters.len();
     Ok(Book {
         title,
+        language: named_language(&language),
         rtl: rtl_language(&language),
         toc,
         count,
@@ -2383,6 +2394,7 @@ pub fn open_cbz(path: &str) -> Result<Book, BookError> {
     let count = pages.len();
     Ok(Book {
         title: String::new(),
+        language: None,
         rtl: manga,
         toc: Vec::new(),
         count,
@@ -2474,7 +2486,7 @@ pub fn spoken_text(doc: &Document, from: usize) -> String {
 /// The language to speak `text` in, from its script: the letters of its first lines decide (`ar`, `he`, `ru`, `el`,
 /// `ja`, `ko`, `zh`, `th`, `hi`). A Latin text, or one with no letters, gives "" and the PC's own voice speaks it.
 /// `rtl` (the book turns from the right) makes a text with no letters Arabic, the most common right-to-left book.
-/// NOTE(port): the TypeScript used the book's `language` metadata; [`Book`] does not keep it.
+/// Used when the book names no language ([`Book::language`]).
 pub fn language_of(text: &str, rtl: bool) -> &'static str {
     let mut counts = [0usize; 9];
     for ch in text.chars().filter(|c| c.is_alphabetic()).take(400) {
@@ -2696,7 +2708,9 @@ impl BookView {
         if text.is_empty() {
             return;
         }
-        self.speaker.speak(&text, language_of(&text, book.rtl));
+        // The language the book names, else the script of its text.
+        let guess = language_of(&text, book.rtl);
+        self.speaker.speak(&text, book.language.as_deref().unwrap_or(guess));
         self.speaking = true;
         self.watch_speech(cx);
         cx.notify();
@@ -3644,6 +3658,7 @@ mod tests {
         let book = open_epub(&path).expect("an epub");
         assert_eq!(book.title, "كتاب الاختبار");
         assert!(book.rtl, "page-progression-direction rtl");
+        assert_eq!(book.language.as_deref(), Some("ar"), "dc:language");
         assert_eq!(book.count, 3);
         assert_eq!(book.start, 1, "the bodymatter landmark");
         assert!(book.cover.is_some());
@@ -3723,6 +3738,7 @@ mod tests {
         );
         let book = open_epub(&path).expect("an epub 2");
         assert_eq!(book.title, "Old book");
+        assert_eq!(book.language.as_deref(), Some("en"));
         assert!(!book.rtl);
         assert_eq!(book.start, 1, "the guide's text reference");
         let rows = flatten(&book.toc);
@@ -3805,6 +3821,7 @@ mod tests {
     fn an_fb2_opens_with_chapters_notes_and_pictures() {
         let book = open_fb2(FB2.as_bytes()).expect("an fb2");
         assert_eq!(book.title, "رواية");
+        assert_eq!(book.language.as_deref(), Some("ar"), "title-info's lang");
         assert!(book.rtl);
         assert!(book.cover.is_some());
         // The body's title, two sections, and the notes.
@@ -3868,6 +3885,7 @@ mod tests {
         bytes.extend_from_slice(b"</book-title><lang>ru</lang></title-info></description><body><section><p>x</p></section></body></FictionBook>");
         let book = open_fb2(&bytes).expect("an fb2");
         assert_eq!(book.title, "привет");
+        assert_eq!(book.language.as_deref(), Some("ru"));
         assert!(!book.rtl);
     }
 
@@ -3894,6 +3912,7 @@ mod tests {
         );
         let book = open_book(&cbz).expect("a comic");
         assert!(book.pages && book.rtl);
+        assert_eq!(book.language, None, "a comic names no language");
         assert_eq!(book.count, 3);
         assert_eq!(book.title, "comic.cbz", "an untitled book is named by its file");
         assert!(book.toc.is_empty());
@@ -4279,6 +4298,13 @@ mod tests {
     }
 
     #[test]
+    fn a_named_language_is_trimmed_and_blank_names_none() {
+        assert_eq!(named_language(" pt-BR ").as_deref(), Some("pt-BR"));
+        assert_eq!(named_language("  "), None);
+        assert_eq!(named_language(""), None);
+    }
+
+    #[test]
     fn the_language_to_speak_comes_from_the_script_of_the_text() {
         assert_eq!(language_of("بسم الله الرحمن الرحيم", false), "ar");
         assert_eq!(language_of("שלום עולם", false), "he");
@@ -4316,6 +4342,35 @@ mod tests {
         let fake = speech::FakeSpeaker::new();
         view.update(&mut visual, |v, cx| v.set_speaker(fake.clone(), cx));
         (view, visual, fake)
+    }
+
+    #[gpui_kit::test]
+    fn read_aloud_speaks_in_the_language_the_book_names_before_guessing(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        set_text_size(100);
+        let folder = Folder::new();
+        let (view, mut visual, fake) = reading(cx, &folder, 1, "الفصل الثاني");
+        // The same Arabic text in a book that names another language: its metadata wins over the script.
+        view.update(&mut visual, |v, _| {
+            if let Some(book) = v.book.clone() {
+                v.book = Some(Arc::new(Book {
+                    title: book.title.clone(),
+                    language: Some("fr-CA".to_string()),
+                    rtl: book.rtl,
+                    toc: Vec::new(),
+                    count: book.count,
+                    weights: book.weights.clone(),
+                    start: book.start,
+                    cover: None,
+                    pages: false,
+                    source: book.source.clone(),
+                }));
+            }
+        });
+        visual.update(|window, cx| window.click("book-read-aloud", cx));
+        frames(&mut visual);
+        assert_eq!(fake.spoken().first().map(|(_, language)| language.as_str()), Some("fr-CA"));
     }
 
     #[gpui_kit::test]

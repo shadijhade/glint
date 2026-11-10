@@ -19,13 +19,11 @@
 //! name (it doesn't depend on that crate). The answer crosses as JSON, which is the shape the TypeScript read, and
 //! is read here into this file's [`HistoryAnswer`]. A few serde steps for at most 5,000 events, on core's thread.
 //!
-//! **Not yet as the TypeScript has it** (`// PORT ME(coordinator)` marks each place):
-//! - Days are counted from UTC midnight. The TypeScript counted local midnights (`setHours`), which needs the local
-//!   zone; glint-model's `format` has it but exposes no day helper yet. Near midnight, an event can fall on the
-//!   other day here.
-//! - Times are written with `format_date` ("Today 9:31 PM", "Oct 3, 2026 4:15 PM") and day headings for older
-//!   days say the same thing, where the TypeScript wrote the time alone and the weekday with the date. Both want
-//!   glint-model's Windows time and date formats as their own functions.
+//! **Local time.** Days are counted from local midnights (the TypeScript's `setHours`), through Windows' own time
+//! zone rules ([`local_day`]). The older days' heading is the date alone in Windows' long form, and a change's row
+//! shows the time alone, as Windows writes it ([`time_of_day`]); hovering it gives the full date.
+//!
+//! **Not yet as the TypeScript has it:**
 //! - The span (24 h, 7 d, 30 d) starts at 7 d each time the dialog opens. The TypeScript kept the last choice in
 //!   its store for the session.
 //! - "Turn on instant search" runs glint-core's installer, which asks for administrator approval (UAC). It runs
@@ -35,9 +33,9 @@
 use crate::core_bridge::{self, Core};
 use crate::explorer::{self, NavOptions};
 use crate::kit::prelude::*;
-use crate::{i18n, t, theme};
+use crate::{t, theme};
 use glint_core::host::{AppHandle, Manager};
-use glint_model::format::{format_count, format_date, format_duration, format_full_date};
+use glint_model::format::{format_count, format_duration, format_full_date};
 use glint_model::paths::{base_name, parent_path};
 use serde::Deserialize;
 use std::future::Future;
@@ -532,15 +530,104 @@ fn in_recycle_bin(path: &str) -> bool {
             .is_some_and(|folder| folder.eq_ignore_ascii_case(BIN_DIR))
 }
 
-/// A heading for the day `ms` falls on, judged against `now`: Today, Yesterday, or the date.
-// PORT ME(coordinator): days are UTC here (see the module notes). The older days' heading should be the date
-// alone, in Windows' long form, from glint-model's format once it has a day helper.
+/// A heading for the day `ms` falls on, judged against `now`: Today, Yesterday, or the date alone in Windows'
+/// long form (`dayOf`). Days are local.
 fn day_heading(ms: i64, now: i64) -> SharedString {
-    match now.div_euclid(DAY) - ms.div_euclid(DAY) {
+    match local_day(now) - local_day(ms) {
         0 => t!("Today"),
         1 => t!("Yesterday"),
-        _ => format_date(ms, Some(now), i18n::language()).into(),
+        _ => long_date(ms).into(),
     }
+}
+
+// ---- Local time ------------------------------------------------------------------------------------------
+
+/// Unix milliseconds as a local calendar time, from Windows' own time zone rules. `None` when Windows can't
+/// convert it.
+fn local_system_time(ms: i64) -> Option<windows::Win32::Foundation::SYSTEMTIME> {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    // FILETIME counts 100 ns from 1601.
+    let ticks = u64::try_from(ms.checked_add(11_644_473_600_000)?)
+        .ok()?
+        .checked_mul(10_000)?;
+    let file_time = FILETIME {
+        dwLowDateTime: u32::try_from(ticks & 0xFFFF_FFFF).ok()?,
+        dwHighDateTime: u32::try_from(ticks >> 32).ok()?,
+    };
+    let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+    // SAFETY: every pointer is to a live local; the calls only read the first and write the second.
+    unsafe {
+        FileTimeToSystemTime(&file_time, &mut utc).ok()?;
+        SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).ok()?;
+    }
+    Some(local)
+}
+
+/// The number of days from 1970-01-01 to a civil date (Howard Hinnant's days-from-civil).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Which local day `ms` falls on, counted from 1970-01-01 (the TypeScript's `setHours(0, 0, 0, 0)` divided by a
+/// day). A time Windows can't convert counts by UTC.
+fn local_day(ms: i64) -> i64 {
+    match local_system_time(ms) {
+        Some(t) => days_from_civil(i64::from(t.wYear), i64::from(t.wMonth), i64::from(t.wDay)),
+        None => ms.div_euclid(DAY),
+    }
+}
+
+/// Windows' own picture of a date (`long`) or of a time without seconds, for a locale (`None` is the user's).
+fn windows_text(st: &windows::Win32::Foundation::SYSTEMTIME, locale: Option<&str>, long: bool) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Globalization::{GetDateFormatEx, GetTimeFormatEx, DATE_LONGDATE, TIME_NOSECONDS};
+    let name: Option<Vec<u16>> = locale.map(|l| l.encode_utf16().chain(std::iter::once(0)).collect());
+    let name = name.as_ref().map_or(PCWSTR::null(), |n| PCWSTR(n.as_ptr()));
+    let ask = |buf: Option<&mut [u16]>| -> i32 {
+        // SAFETY: `st` lives across the call; the locale name is NULL or a NUL-terminated buffer kept alive by
+        // `locale`'s copy above; the picture and calendar are NULL (Windows' own); `buf` is None or a writable
+        // slice whose length Windows is told.
+        unsafe {
+            if long {
+                GetDateFormatEx(
+                    name,
+                    DATE_LONGDATE,
+                    Some(st as *const _),
+                    PCWSTR::null(),
+                    buf,
+                    PCWSTR::null(),
+                )
+            } else {
+                GetTimeFormatEx(name, TIME_NOSECONDS, Some(st as *const _), PCWSTR::null(), buf)
+            }
+        }
+    };
+    let needed = usize::try_from(ask(None)).ok().filter(|&n| n > 0)?;
+    let mut buf = vec![0u16; needed];
+    let written = usize::try_from(ask(Some(buf.as_mut_slice()))).ok()?;
+    // The count includes the terminating NUL, which is not part of the text.
+    String::from_utf16(buf.get(..written.min(needed).saturating_sub(1))?).ok()
+}
+
+/// The date alone in Windows' long form ("Saturday, October 3, 2026"), for an older day's heading.
+fn long_date(ms: i64) -> String {
+    local_system_time(ms)
+        .and_then(|st| windows_text(&st, None, true))
+        .unwrap_or_default()
+}
+
+/// The time alone as Windows writes it ("4:15 PM"), for a change's row.
+fn time_of_day(ms: i64) -> String {
+    local_system_time(ms)
+        .and_then(|st| windows_text(&st, None, false))
+        .unwrap_or_default()
 }
 
 /// One line of the day list: a day's heading, or one change. The list draws each one on its own, so a busy span
@@ -562,7 +649,7 @@ fn flatten(events: &[HistoryEvent], filter: Filter, now: i64) -> Vec<Item> {
         if !filter.keeps(event.kind) {
             continue;
         }
-        let this_day = event.time.div_euclid(DAY);
+        let this_day = local_day(event.time);
         if day != Some(this_day) {
             day = Some(this_day);
             items.push(Item::Day(day_heading(event.time, now)));
@@ -586,8 +673,6 @@ struct Shown {
     items: Rc<Vec<Item>>,
     /// How many changes are in `items` (the summary counts them).
     count: usize,
-    /// The time the headings were worked out against ("Today" and "Yesterday" move at midnight).
-    now: i64,
 }
 
 /// The history in a dialog: the search and filters, the day groups, the states (loading, the service off or
@@ -798,13 +883,7 @@ impl HistoryDialog {
     /// One change: its badge, its name and place, its time, and a button to show it where it is now or to open
     /// the folder it was in. `index` is the change's place in the answer. `first` and `last` say where it sits in
     /// its day's card: the card's top and bottom edges are drawn by its first and last rows.
-    fn event_row(
-        index: usize,
-        e: &HistoryEvent,
-        now: i64,
-        (first, last): (bool, bool),
-        t: &theme::Tokens,
-    ) -> impl IntoElement {
+    fn event_row(index: usize, e: &HistoryEvent, (first, last): (bool, bool), t: &theme::Tokens) -> impl IntoElement {
         let kind = e.kind;
         let tone = kind.tone(t);
         let (name, place) = describe(e);
@@ -914,10 +993,14 @@ impl HistoryDialog {
             )
             .child(
                 div()
+                    .id(("history-time", index))
                     .flex_none()
                     .text_color(t.muted_foreground)
-                    // PORT ME(coordinator): the TypeScript shows the time alone here (see the module notes).
-                    .child(format_date(e.time, Some(now), i18n::language())),
+                    .tooltip({
+                        let full: SharedString = format_full_date(e.time).into();
+                        move |window, cx| crate::kit::tooltip(full.clone(), window, cx)
+                    })
+                    .child(time_of_day(e.time)),
             )
             .child(action)
     }
@@ -955,7 +1038,7 @@ impl HistoryDialog {
                         let last = !matches!(items.get(ix + 1), Some(Item::Change(_)));
                         div()
                             .px(space(1.))
-                            .child(Self::event_row(*at, event, this.shown.now, (first, last), &t))
+                            .child(Self::event_row(*at, event, (first, last), &t))
                             .into_any_element()
                     }
                 }
@@ -1025,7 +1108,6 @@ impl Render for HistoryDialog {
                 answer: answer.clone(),
                 items: Rc::new(items),
                 count,
-                now,
             };
         }
         let count = self.shown.count;
@@ -1341,6 +1423,49 @@ mod tests {
             .collect()
     }
 
+    /// Local noon of the day `ms` falls on.
+    fn local_noon(ms: i64) -> i64 {
+        let t = local_system_time(ms).expect("a time Windows can convert");
+        let since_midnight = (i64::from(t.wHour) * 3600 + i64::from(t.wMinute) * 60 + i64::from(t.wSecond)) * 1000
+            + i64::from(t.wMilliseconds);
+        ms - since_midnight + DAY / 2
+    }
+
+    #[test]
+    fn local_days_headings_and_times_read_as_windows_writes_them() {
+        use windows::Win32::Foundation::SYSTEMTIME;
+        let _guard = testing::lock();
+        testing::set_rtl(false);
+        // Civil days: the epoch, a leap day, and a date before 1970.
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2024, 3, 1) - days_from_civil(2024, 2, 28), 2);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+        // Local midday today, yesterday and last week: judged by local days, whatever this PC's zone.
+        let today = local_noon(now_ms());
+        assert_eq!(day_heading(today, today), "Today");
+        assert_eq!(day_heading(today - DAY, today), "Yesterday");
+        assert_eq!(local_day(today) - local_day(today - 2 * DAY), 2);
+        let older = day_heading(today - 5 * DAY, today).to_string();
+        assert!(older != "Today" && older != "Yesterday" && older.chars().any(|c| c.is_ascii_digit()));
+        assert_eq!(older, long_date(today - 5 * DAY), "the date alone, in the long form");
+        // Windows' pictures for a named locale: the time alone, and the long date.
+        let st = SYSTEMTIME {
+            wYear: 2026,
+            wMonth: 10,
+            wDay: 3,
+            wDayOfWeek: 6,
+            wHour: 16,
+            wMinute: 15,
+            ..SYSTEMTIME::default()
+        };
+        assert_eq!(windows_text(&st, Some("en-US"), false).as_deref(), Some("4:15 PM"));
+        let long = windows_text(&st, Some("en-US"), true).unwrap_or_default();
+        assert!(
+            long.contains("October") && long.contains("2026") && !long.contains("4:15"),
+            "{long}"
+        );
+    }
+
     #[test]
     fn days_keep_the_order_and_drop_what_the_filter_hides() {
         let _guard = testing::lock();
@@ -1415,8 +1540,8 @@ mod tests {
         testing::set_rtl(false);
         let mut visual = window(cx);
         // The service sends up to 5,000 changes; the dialog must not lay out all of them.
-        // All on one day (noon UTC of today, back 50 minutes at most), so the heading count is fixed.
-        let noon = now_ms().div_euclid(DAY) * DAY + DAY / 2;
+        // All on one day (local noon of today, back 50 minutes at most), so the heading count is fixed.
+        let noon = local_noon(now_ms());
         let events: Vec<HistoryEvent> = (0..3000i64)
             .map(|i| HistoryEvent {
                 time: noon - i * 1_000,

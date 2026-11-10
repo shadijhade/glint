@@ -13,7 +13,7 @@
 //! | `offerActionUndo`                | [`remember_undo`] (Ctrl+Z; see the note there)                    |
 //! | `revealInApp`                    | [`reveal`]                                                        |
 //! | `ToolNeeded`                     | [`tool_card`] over `settings::tools::needed`                      |
-//! | a slider (quality, strength)     | [`NumberField`]: a box with minus and plus (`PORT ME(coordinator)`: kit::Slider) |
+//! | a slider (quality, strength)     | [`NumberField`]: a [`Slider`] and a box with minus and plus          |
 //!
 //! **One family.** Convert pictures, Convert document, Make smaller, PDF tools and Convert data keep their run in
 //! an [`ActionRun`] entity; the media, media-tools, song and metadata dialogs (MediaDialog.tsx, MediaTools.tsx,
@@ -570,9 +570,9 @@ pub fn choices<V: 'static, T: Copy + PartialEq + 'static>(
 
 // ---- A number with minus and plus -----------------------------------------------------------------------
 
-/// A number in a box with a button either side (the TypeScript's sliders for quality and strength).
-///
-/// `PORT ME(coordinator)`: the kit has no slider; this is the closest thing it has, and works from the keyboard.
+/// A number in a box with a button either side, and a slider over a short range (the TypeScript's sliders for
+/// quality and strength). The box is the value; the slider and the buttons move it, and typing moves the slider.
+/// A range of more than [`SLIDER_STEPS`] steps (pages in a part) has no slider.
 pub struct NumberField {
     id: &'static str,
     label: SharedString,
@@ -582,8 +582,12 @@ pub struct NumberField {
     max: i64,
     step: i64,
     fallback: i64,
-    _subscription: Subscription,
+    slider: Option<Entity<SliderState>>,
+    _subscriptions: Vec<Subscription>,
 }
+
+/// The most steps a range may have and still get a slider.
+pub const SLIDER_STEPS: i64 = 100;
 
 impl NumberField {
     /// A field named `label` ("Quality") between `min` and `max`, starting at `start`, the buttons moving it by
@@ -599,11 +603,36 @@ impl NumberField {
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).default_value(start.to_string()));
-        let subscription = cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
+        let mut subscriptions = vec![
+            cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.sync_slider(window, cx);
+                    cx.notify();
+                }
+            }),
+        ];
+        let step = step.max(1);
+        let slider = ((max - min) / step <= SLIDER_STEPS && max > min).then(|| {
+            cx.new(|_| {
+                SliderState::new()
+                    .min(min as f32)
+                    .max(max as f32)
+                    .step(step as f32)
+                    .default_value(start.clamp(min, max) as f32)
+            })
         });
+        if let Some(slider) = &slider {
+            subscriptions.push(
+                cx.subscribe_in(slider, window, |this, _, event: &SliderEvent, window, cx| {
+                    if let SliderEvent::Change(value) = event {
+                        let picked = value.end().round() as i64;
+                        if picked != this.value(cx) {
+                            this.set(picked, window, cx);
+                        }
+                    }
+                }),
+            );
+        }
         Self {
             id,
             label,
@@ -613,7 +642,24 @@ impl NumberField {
             max,
             step,
             fallback: start.clamp(min, max),
-            _subscription: subscription,
+            slider,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// The slider (if the range has one), for tests.
+    pub fn slider(&self) -> Option<&Entity<SliderState>> {
+        self.slider.as_ref()
+    }
+
+    /// Moves the slider to what the box says, when that is a number in range.
+    fn sync_slider(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(slider), true) = (&self.slider, self.valid(cx)) else {
+            return;
+        };
+        let value = self.value(cx) as f32;
+        if slider.read(cx).value().end() != value {
+            slider.update(cx, |slider, cx| slider.set_value(value, window, cx));
         }
     }
 
@@ -647,6 +693,7 @@ impl NumberField {
         let value = value.clamp(self.min, self.max);
         self.input
             .update(cx, |input, cx| input.set_value(value.to_string(), window, cx));
+        self.sync_slider(window, cx);
         cx.notify();
     }
 }
@@ -677,9 +724,17 @@ impl Render for NumberField {
                 let now = this.value(cx);
                 this.set(now + step, window, cx);
             }));
+        let slider = self.slider.as_ref().map(|state| {
+            div().w(space(32.)).flex_none().child(
+                Slider::new(state)
+                    .horizontal()
+                    .accessibility_label(t!("{what} slider", what = self.label)),
+            )
+        });
         align_row(1.5)
             .id(self.id)
             .test_support()
+            .children(slider)
             .child(less)
             .child(
                 div()
@@ -1584,5 +1639,65 @@ mod undo_tests {
         none.made.clear();
         cx.update(|cx| remember_undo(&none, "x", cx));
         assert!(e.read_with(cx, |e, _| e.next_undo().is_none()));
+    }
+}
+
+#[cfg(test)]
+mod number_field_tests {
+    use super::*;
+    use crate::testing;
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
+    struct Host;
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full()
+        }
+    }
+
+    fn field(cx: &mut TestAppContext, range: (i64, i64, i64), start: i64) -> (VisualTestContext, Entity<NumberField>) {
+        cx.update(testing::init);
+        let mut visual = testing::open_window(cx, |_, cx| cx.new(|_| Host)).0;
+        let field = visual.update(|window, cx| {
+            cx.new(|cx| {
+                NumberField::new(
+                    "test-field",
+                    t!("Quality"),
+                    SharedString::default(),
+                    range,
+                    start,
+                    window,
+                    cx,
+                )
+            })
+        });
+        (visual, field)
+    }
+
+    #[gpui_kit::test]
+    fn a_short_range_has_a_slider_that_follows_the_box_and_moves_it(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, field) = field(cx, (10, 100, 5), 30);
+        let slider = field.read_with(&visual, |f, _| f.slider().cloned()).expect("a slider");
+        assert_eq!(slider.read_with(&visual, |s, _| s.value().end()), 30.);
+        // The buttons' way: the slider follows.
+        visual.update(|window, cx| field.update(cx, |f, cx| f.set(65, window, cx)));
+        assert_eq!(slider.read_with(&visual, |s, _| s.value().end()), 65.);
+        // The slider's way (as the keyboard or the pointer moves it): the box follows.
+        visual.update(|window, cx| slider.update(cx, |s, cx| s.step_thumb(false, 5., window, cx)));
+        visual.run_until_parked();
+        assert_eq!(field.read_with(&visual, |f, cx| f.value(cx)), 70);
+        assert_eq!(
+            field.read_with(&visual, |f, cx| f.input().read(cx).value().to_string()),
+            "70"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_long_range_keeps_to_the_box(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (visual, field) = field(cx, (1, 100_000, 1), 1);
+        assert!(field.read_with(&visual, |f, _| f.slider().is_none()));
     }
 }

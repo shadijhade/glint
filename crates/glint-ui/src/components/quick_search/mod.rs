@@ -33,6 +33,7 @@
 //! key context `QuickSearch > Input` (deeper than the field's own `Input` bindings, so these win), as the
 //! address bar's are. Nothing is bound in `actions::BINDINGS`: they mean something only in this window.
 
+use crate::components::file_grid::thumbnail::kind_icon_filled;
 use crate::kit::prelude::*;
 use crate::{core_bridge, persistence, state, t, theme};
 use glint_model::entries::FileEntry;
@@ -581,8 +582,6 @@ impl QuickSearch {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let kind = kind_of(&entry);
-        // PORT ME(coordinator): the folder icon's fill (`tone.fill`, amber at 80%): the kit's icons can't be filled yet.
-        let tone = theme::kind_tone(kind, cx);
         let name = isolate(entry.name.clone());
         // The isolate puts a mark before the name (and one after it): the marked range moves past the first.
         let shift = if name.len() == entry.name.len() {
@@ -639,7 +638,7 @@ impl QuickSearch {
             .on_click(
                 cx.listener(move |this, event: &ClickEvent, _, cx| this.open(path.clone(), event.modifiers().alt, cx)),
             )
-            .child(icon(kind_icon(kind.icon)).size_4().flex_none().text_color(tone.color))
+            .child(kind_icon_filled(kind, theme::rem_size(cx), cx))
             .child(
                 col()
                     .flex_1()

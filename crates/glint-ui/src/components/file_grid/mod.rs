@@ -57,7 +57,7 @@
 //!
 //! # Not here yet
 //!
-//! Each is marked `PORT ME(<part>)` where it belongs: the search's, Gallery's and Recent's empty states. A
+//! The empty states (a search running, failed or finding nothing, the Gallery, Recent) are `empty.rs`'s. A
 //! folder's tile says its size once "Folder sizes" measured it, and "…" while that runs (`Explorer::size_run`).
 //! The context menu's content is the workspace's: the grid only emits [`FileGridEvent::ContextMenu`] (from the keyboard at the focused tile's bottom-start corner).
 
@@ -82,7 +82,7 @@ use glint_model::entries::{is_archive_file, is_archived, is_closed, is_recycled,
 use glint_model::grid::{
     grid_columns, grid_move, keep_place, marquee_hits, place_of, tile_layout, top_of, GridLayout, Point as ContentPoint,
 };
-use glint_model::paths::{droppable, is_gallery, is_recycle_bin};
+use glint_model::paths::{droppable, is_gallery, is_recent, is_recycle_bin};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -1142,6 +1142,14 @@ impl Render for FileGrid {
         let recycled = tab.is_recycle_bin();
         let gallery = is_gallery(&tab.path);
         let search = tab.find.is_some();
+        let recent = is_recent(&tab.path);
+        let search_run = tab.find.as_ref().map(|find| empty::Search {
+            query: find.query.clone(),
+            scope: find.scope.clone(),
+            running: find.running,
+            error: find.error.clone(),
+            skipped: find.skipped.clone(),
+        });
         let scope = tab.find.as_ref().map(|find| find.scope.clone()).unwrap_or_default();
         let filter = tab.filter.clone();
         let listed = tab.entries().len();
@@ -1315,8 +1323,22 @@ impl Render for FileGrid {
         } else {
             t!("Files")
         };
-        let empty =
-            (rows.is_empty() && has_listing).then(|| empty::Empty::of(&filter, recycled, listed, archive, diff_same));
+        // A search speaks for itself; a plain folder, the Gallery and Recent by what the listing holds.
+        let place = if gallery {
+            empty::Place::Gallery
+        } else if recent {
+            empty::Place::Recent
+        } else {
+            empty::Place::Plain
+        };
+        let mut empty = match &search_run {
+            Some(run) => empty::Empty::of_search(run, rows.is_empty(), state::settings(cx).show_hidden),
+            None => (rows.is_empty() && has_listing)
+                .then(|| empty::Empty::of(&filter, recycled, listed, archive, diff_same, place)),
+        };
+        if let Some(empty::Empty::Recent { off }) = &mut empty {
+            *off = self.recent_is_off(cx);
+        }
 
         let body = div()
             .id("file-grid-body")

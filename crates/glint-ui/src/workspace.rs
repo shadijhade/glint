@@ -1410,15 +1410,25 @@ impl Workspace {
         .detach();
     }
 
-    /// Opening more than ten files at once asks first, as the web app did.
-    ///
-    /// PORT ME(dialogs): the "Open N files?" question; until its dialog exists, they open.
-    fn open_many(paths: Vec<String>, _window: &mut Window, cx: &mut Context<Self>) {
-        Self::explorer(cx, |e, cx| {
-            for path in &paths {
-                e.open_file(path, None, cx).detach();
-            }
-        });
+    /// Opening more than ten files at once asks first, as the web app did: "Open N files?" with Open N and Cancel.
+    /// The lists emit this only above ten, so it always asks.
+    fn open_many(paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let count = paths.len();
+        dialogs::confirm(
+            window,
+            cx,
+            t!("Open files"),
+            t!("Open {count} files?", count = count),
+            t!("Open {count}", count = count),
+            false,
+            move |_, cx| {
+                Self::explorer(cx, |e, cx| {
+                    for path in &paths {
+                        e.open_file(path, None, cx).detach();
+                    }
+                });
+            },
+        );
     }
 
     // ---- The window's parts -----------------------------------------------------------------------------------
@@ -1577,8 +1587,8 @@ impl Workspace {
         let files = match &self.preview {
             None => files,
             Some(pane) => {
-                // Where the web app put it: at the end edge, its width kept in the settings (PORT ME(coordinator):
-                // saving a dragged width back to `preview_width`).
+                // Where the web app put it: at the end edge, its width kept in the settings: a drag of its handle
+                // saves the new width back to `preview_width`.
                 let rem = f32::from(theme::rem_size(cx));
                 let container = (f32::from(window_width(cx)) - f32::from(SIDEBAR_START)).max(0.);
                 let width = preview::pane_width(state::settings(cx).preview_width, container, rem, false);
@@ -1586,7 +1596,14 @@ impl Workspace {
                 let side = resizable_panel()
                     .size(px(width))
                     .child(div().id("preview-pane").size_full().child(pane.clone()));
-                let group = h_resizable("files-preview");
+                // The preview is the last panel from the start, or the first when the window is mirrored.
+                let side_index = if crate::i18n::is_rtl() { 0 } else { 1 };
+                let group = h_resizable("files-preview").on_resize(move |sizes, _, cx| {
+                    if let Some(width) = sizes.read(cx).sizes().get(side_index) {
+                        let saved = dragged_preview_width(f32::from(*width));
+                        state::update(cx, |settings| settings.preview_width = Some(saved));
+                    }
+                });
                 let group = if crate::i18n::is_rtl() {
                     group.child(side).child(shown)
                 } else {
@@ -1811,6 +1828,12 @@ fn window_width(cx: &App) -> Pixels {
         .unwrap_or(px(1240.))
 }
 
+/// What a dragged preview pane's width is saved as: the handle never leaves it narrower than the pane's least
+/// (`Math.max(256, width)`).
+fn dragged_preview_width(width: f32) -> f64 {
+    f64::from(width.max(preview::MIN_WIDTH))
+}
+
 /// Opens the main window, hidden: start-up puts it where it was last time and then shows it (or leaves it in
 /// the tray), so it never flashes up somewhere else first. Mica material, minimum size, the title bar the kit
 /// draws. Returns the window and its workspace.
@@ -1924,6 +1947,46 @@ mod tests {
         });
         visual.run_until_parked();
         visual.update(|window, cx| assert!(window.has_active_dialog(cx)));
+    }
+
+    #[test]
+    fn a_dragged_preview_width_is_saved_but_never_under_the_least() {
+        assert_eq!(dragged_preview_width(480.), 480.);
+        assert_eq!(dragged_preview_width(100.), f64::from(preview::MIN_WIDTH));
+    }
+
+    #[gpui_kit::test]
+    fn opening_many_files_asks_first_and_opens_them_on_yes(cx: &mut TestAppContext) {
+        use crate::explorer::Notice;
+        let _guard = testing::lock();
+        let (mut visual, workspace) = open_workspace(cx, false);
+        // No app is set up to open anything, so each file opened shows up as a notice naming it.
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let log = opened.clone();
+        let _watch = visual.update(|_, cx| {
+            cx.subscribe(&explorer::explorer(cx), move |_, event: &ExplorerEvent, _| {
+                if let ExplorerEvent::Notice(Notice::CouldNotOpenFile { path, .. }) = event {
+                    log.borrow_mut().push(path.clone());
+                }
+            })
+        });
+        let paths: Vec<String> = (0..12).map(|i| format!("C:\\Work\\f{i}.txt")).collect();
+        visual.update(|window, cx| workspace.update(cx, |_, cx| Workspace::open_many(paths.clone(), window, cx)));
+        visual.run_until_parked();
+        // Asked, nothing opened yet.
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            assert!(window.try_find_by_label("Open 12").is_some());
+            assert!(window.try_find_by_label("Open files").is_some());
+        });
+        assert!(opened.borrow().is_empty());
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("confirm-ok", cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(*opened.borrow(), paths);
     }
 
     #[gpui_kit::test]

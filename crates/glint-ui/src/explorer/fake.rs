@@ -59,6 +59,8 @@ struct Folder {
     denied: bool,
     /// Listed as a folder in an archive (read-only), when set.
     archive: Option<InArchive>,
+    /// Listed from instant search's index: Windows keeps the folder closed to this account.
+    from_index: bool,
 }
 
 #[derive(Default)]
@@ -222,6 +224,7 @@ fn empty_folder() -> Folder {
         stamp: 1.0,
         denied: false,
         archive: None,
+        from_index: false,
     }
 }
 
@@ -275,8 +278,20 @@ impl FakeDisk {
                 stamp: 1.0,
                 denied: false,
                 archive: None,
+                from_index: false,
             },
         );
+        self
+    }
+
+    /// Makes a folder that is listed from instant search's index: the tab opens it as a folder Windows keeps
+    /// closed (read-only, with the closed bar), as core's listing says when the disk refuses and the index has it.
+    /// Making it again with [`FakeDisk::folder`] is Windows letting this account in.
+    pub fn index_folder(&self, path: &str, entries: Vec<FileEntry>) -> &Self {
+        self.folder(path, entries);
+        if let Some(folder) = self.state.borrow_mut().folders.get_mut(&key(path)) {
+            folder.from_index = true;
+        }
         self
     }
 
@@ -293,6 +308,7 @@ impl FakeDisk {
                         stamp: 1.0,
                         denied: true,
                         archive: None,
+                        from_index: false,
                     },
                 );
             }
@@ -1055,7 +1071,7 @@ impl Source for FakeDisk {
                     entries: Arc::from(folder.entries.clone()),
                     elapsed: 1.5,
                     archive: folder.archive.clone(),
-                    from_index: false,
+                    from_index: folder.from_index,
                     remote: false,
                 }),
                 None => Err(ListFailure::other(&path, "The system cannot find the path specified")),

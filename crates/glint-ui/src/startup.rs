@@ -423,8 +423,12 @@ fn quick_search(cx: &mut App) {
 
 /// The folder rules saved last time are handed to core, which watches their folders again (`initRules`).
 ///
-/// PORT ME(coordinator): the toasts of what a rule did (core's "rule-did" event, with Undo).
+/// What rules do from now on is said in the main window as they do it, with Undo (`initRules`' "rule-did" toasts).
 fn start_rules(cx: &mut App) {
+    let backend: std::sync::Arc<dyn crate::dialogs::rules::Backend> = std::sync::Arc::new(
+        crate::dialogs::rules::CoreBackend::new(cx.global::<core_bridge::Core>().app.clone()),
+    );
+    crate::dialogs::rules::hear_rules(cx, backend, Rc::new(notify));
     let rules: Vec<_> = crate::dialogs::rules::saved_rules(cx)
         .iter()
         .map(crate::dialogs::rules::to_core)
@@ -539,16 +543,19 @@ fn configure_tray(cx: &mut App, in_tray: bool) {
     if shortcut_changed {
         // The shortcut's listener thread is started and stopped off the UI thread: it waits for it.
         cx.spawn(async move |cx| {
+            let wanted = shortcut.clone();
             let result = cx
                 .background_spawn(async move { tray::set_hotkey(shortcut.as_deref()) })
                 .await;
-            if let Err(error) = result {
-                cx.update(|cx| {
+            match result {
+                Ok(_) => cx.update(|cx| crate::components::settings::tell_quick_taken(None, cx)),
+                Err(error) => cx.update(|cx| {
+                    crate::components::settings::tell_quick_taken(wanted, cx);
                     notify(
                         cx,
                         Notification::error(error).title(t!("Couldn't set the quick search shortcut")),
                     )
-                });
+                }),
             }
         })
         .detach();

@@ -20,8 +20,9 @@
 //! "Folder sizes" and a "Git status" stage for them. The bar redraws when the Git model changes (it must exist,
 //! `git::init`, when the bar is made).
 //!
-//! **Not yet** (each comes with its part, marked `PORT ME` where it belongs): the X-Ray, batch rename and Zip
-//! buttons. Those buttons are left out until their parts exist.
+//! **Buttons for the selection.** One selected file (in a folder that can be changed) offers File X-Ray; several
+//! offer Rename (the batch rename dialog, as F2 opens it) and Zip (a zip beside the items, after looking for
+//! secrets, as "Compress to > Zip file" does). X-Ray and Rename show from the medium width, Zip from the large.
 //!
 //! **Narrow windows.** The TypeScript used container queries (`@lg:` and so on) to drop the least important words
 //! first. GPUI has none, so the bar reads the window's width in rems instead: the same breakpoints, measured on the
@@ -179,6 +180,74 @@ impl StatusBar {
             .update(cx, |explorer, cx| explorer.set_filter("", None, cx));
         self.details_open = false;
         cx.notify();
+    }
+
+    /// A small tinted button with a picture and a word (the X-Ray, Rename and Zip buttons): in the accent color when
+    /// `primary`, else in the plain tint Copy paths has.
+    fn tinted(
+        id: &'static str,
+        glyph: IconName,
+        label: SharedString,
+        tip: SharedString,
+        primary: bool,
+        t: &theme::Tokens,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let variant = if primary {
+            ButtonCustomVariant::new(cx)
+                .color(tint(t.primary, 0.1))
+                .foreground(t.primary)
+                .hover(tint(t.primary, 0.2))
+                .active(tint(t.primary, 0.2))
+        } else {
+            ButtonCustomVariant::new(cx)
+                .color(t.foreground.opacity(0.06))
+                .foreground(t.foreground.opacity(0.85))
+                .hover(t.accent)
+                .active(t.accent)
+        };
+        Button::new(id)
+            .custom(variant)
+            .compact()
+            .tooltip(tip)
+            .accessibility_label(label.clone())
+            .child(
+                row_start()
+                    .items_center()
+                    .gap(space(1.))
+                    .text_size(theme::size::XXS)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(icon(glyph).size_3())
+                    .child(label),
+            )
+    }
+
+    /// File X-Ray of the one selected file: what "File X-Ray" in its menu opens (`inspectXRay`).
+    fn xray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.summary.selected_paths.first().cloned() {
+            crate::dialogs::xray::open(window, cx, path);
+        }
+    }
+
+    /// The batch rename dialog for the selected items: what F2 opens with several selected (`openBatchRename`).
+    fn rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::dialogs::batch_rename::open(window, cx, self.summary.selected_paths.clone());
+    }
+
+    /// A zip of the selected items beside them, once the secrets check is through: what "Compress to > Zip file"
+    /// does (`secretsCheckFirst`, then `compressEntries`).
+    fn zip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.summary.selected_paths.clone();
+        if paths.is_empty() {
+            return;
+        }
+        let explorer = self.explorer.clone();
+        crate::dialogs::check::secrets_check_first(window, cx, paths.clone(), t!("Zip anyway"), move |_, cx| {
+            let paths = paths.clone();
+            explorer.update(cx, |e, cx| {
+                e.compress(paths, explorer::CompressFormat::Zip, None, cx).detach()
+            });
+        });
     }
 
     /// Copies the selected paths, one to a line (Copy paths).
@@ -340,9 +409,45 @@ impl StatusBar {
     /// are selected and the window is wide.
     fn left(&self, s: &Summary, wide: Wide, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let text: SharedString = if s.this_pc { drives(s.drives) } else { counts(s) };
-        // PORT ME(X-Ray): the File X-Ray button for one selected file (writable folders only).
-        // PORT ME(batch rename): the Rename button for several selected items.
-        // PORT ME(compress): the Zip button for several selected items, with the secrets check first.
+        // An archive's items, a remote's, a closed folder's and the Recycle Bin's aren't files to look into or
+        // rename here.
+        let writable = s.writable && !s.this_pc;
+        let xray = (writable && s.selected == 1 && s.selected_files == 1 && wide.medium).then(|| {
+            Self::tinted(
+                "status-bar-xray",
+                IconName::FingerprintPattern,
+                t!("X-Ray"),
+                t!("File X-Ray: hashes and hidden streams"),
+                true,
+                t,
+                cx,
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.xray(window, cx)))
+        });
+        let rename = (writable && s.selected > 1 && wide.medium).then(|| {
+            Self::tinted(
+                "status-bar-rename",
+                IconName::PenLine,
+                t!("Rename"),
+                t!("Rename the selected items (F2)"),
+                true,
+                t,
+                cx,
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.rename(window, cx)))
+        });
+        let zip = (writable && s.selected > 1 && wide.large).then(|| {
+            Self::tinted(
+                "status-bar-zip",
+                IconName::FileArchive,
+                t!("Zip"),
+                t!("Compress the selected items to a .zip archive"),
+                false,
+                t,
+                cx,
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.zip(window, cx)))
+        });
         let copy = (!s.this_pc && s.selected > 1 && wide.extra_large).then(|| {
             Button::new("status-bar-copy-paths")
                 .custom(
@@ -379,6 +484,9 @@ impl StatusBar {
                     .test_support()
                     .child(text),
             )
+            .children(xray)
+            .children(rename)
+            .children(zip)
             .children(copy)
     }
 

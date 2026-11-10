@@ -34,12 +34,13 @@
 //!
 //! # Not ported yet
 //!
-//! Each is marked `PORT ME(<kind>)` where it belongs: HTML mail laid out as a page (its text and pictures are
-//! shown). Until then those files get what the TypeScript showed when its own previewer failed: Windows' previewer
-//! over the file's icon, or the file as text. (Wave 9 brought tables, notebooks, program headers, contacts,
-//! calendars, mail, the Changes, Query and Profile views; wave 10 the player, PDF pages, books, Word documents and
-//! 3D models; wave 11 Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 the MOBI,
-//! AZW and AZW3 books, read by [`mobi`].)
+//! Nothing is marked `PORT ME(<kind>)` in the previewers now: a file the TypeScript had a previewer for either has
+//! its native one or gets what the TypeScript showed when its own previewer failed (Windows' previewer over the
+//! file's icon, or the file as text). (Wave 9 brought tables, notebooks, program headers, contacts, calendars, mail,
+//! the Changes, Query and Profile views; wave 10 the player, PDF pages, books, Word documents and 3D models; wave 11
+//! Mermaid and Graphviz diagrams, math, Typst documents and cast recordings; wave 15 the MOBI, AZW and AZW3 books,
+//! read by [`mobi`], and HTML mail laid out as a page in [`small`], with the pictures from the internet off until
+//! asked and a switch to the plain version.)
 
 /// JSON, YAML and TOML as a tree; CSV and TSV as a table (DataPreview.tsx, DataTree.tsx).
 pub mod data;
@@ -87,7 +88,7 @@ pub mod sheet;
 pub mod shell;
 /// Who signed a program, and whether Windows trusts it (SignatureChip.tsx).
 pub mod signature;
-/// Contacts, calendars, mail, design files (SmallPreviews.tsx).
+/// Contacts, calendars, mail (HTML laid out as a page, pictures from the internet only when asked), design files (SmallPreviews.tsx).
 pub mod small;
 pub mod sources;
 /// SQLite databases: their tables and SQL (SqlitePreview in FilePreview.tsx).

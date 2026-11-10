@@ -40,8 +40,6 @@ use glint_model::js::{is_js_space, js_trim, to_fixed};
 use glint_model::paths::{base_name, join_path, parent_path};
 use glint_model::store::SearchOptions;
 use glint_model::text::{escape_regex, replace_text};
-// PORT ME(coordinator): the kit should export `Confirm` (the action Enter makes in a dialog).
-use gpui_kit::base::actions::Confirm;
 use gpui_kit::{Task, UniformListScrollHandle};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
