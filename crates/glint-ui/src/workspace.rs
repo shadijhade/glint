@@ -509,15 +509,6 @@ impl Workspace {
         Some(target)
     }
 
-    /// The marker for something whose part of the port isn't built yet: a notice saying so, so the wiring is
-    /// visible.
-    fn not_yet(window: &mut Window, cx: &mut App, what: SharedString) {
-        window.push_notification(
-            Notification::info(t!("{what} comes with its part of the port.", what = what)),
-            cx,
-        );
-    }
-
     /// Runs `act` on the explorer model.
     fn explorer(cx: &mut App, act: impl FnOnce(&mut explorer::Explorer, &mut Context<explorer::Explorer>)) {
         explorer::explorer(cx).update(cx, act);
@@ -1279,7 +1270,10 @@ impl Workspace {
             dialogs::versions::Request::CompareFiles { then, now } => {
                 dialogs::compare_files::open(window, cx, then, now)
             }
-            dialogs::versions::Request::CompareFolders { .. } => Self::not_yet(window, cx, t!("Comparing folders")),
+            // This folder now beside how it was, compared in the two panes (`compareWithVersion`).
+            dialogs::versions::Request::CompareFolders { now, then } => {
+                Self::explorer(cx, |e, cx| e.compare_with_version(&now, &then, cx).detach())
+            }
         });
     }
 
