@@ -20,42 +20,35 @@ use crate::kit::prelude::*;
 
 /// Renaming several items at once (BatchRenameDialog.tsx).
 pub mod batch_rename;
-pub mod drive_health;
-/// Duplicate files (DuplicatesDialog.tsx). Wave 7 slot.
-#[cfg(feature = "dialog-duplicates")]
-pub mod duplicates;
-/// Recent changes on a drive (TimelineDialog.tsx). Wave 7 slot.
-#[cfg(feature = "dialog-timeline")]
-pub mod timeline;
-/// Cleaning up a drive or folder (CleanupDialog.tsx). Wave 7 slot.
-#[cfg(feature = "dialog-cleanup")]
-pub mod cleanup;
-/// A file's X-Ray (XRayDialog.tsx). Wave 7 slot.
-#[cfg(feature = "dialog-xray")]
-pub mod xray;
-/// Checking files: secrets, malware scans, YARA (CheckDialog.tsx). Wave 7 slot.
-#[cfg(feature = "dialog-check")]
+/// Checking files: secrets, malware scans, YARA (CheckDialog.tsx).
 pub mod check;
-/// Folder rules (RulesDialog.tsx). Wave 7 slot.
-#[cfg(feature = "dialog-rules")]
-pub mod rules;
-/// Compressing in place with Windows' WOF (CompressInPlaceDialog.tsx). Wave 7 slot.
-#[cfg(feature = "dialog-compress-in-place")]
+/// Cleaning up a drive or folder (CleanupDialog.tsx).
+pub mod cleanup;
+/// Compressing in place with Windows' WOF (CompressInPlaceDialog.tsx).
 pub mod compress_in_place;
+pub mod drive_health;
+/// Duplicate files (DuplicatesDialog.tsx).
+pub mod duplicates;
 /// A file's history (HistoryDialog.tsx).
 pub mod history;
 /// What holds a file open, and stopping it (LocksDialog.tsx).
 pub mod locks;
 /// A password asked for or set (PasswordDialog.tsx).
 pub mod password;
+/// Folder rules (RulesDialog.tsx).
+pub mod rules;
 /// The keyboard shortcuts sheet (ShortcutsDialog.tsx).
 pub mod shortcuts;
 /// Tags for files and folders (TagsDialog.tsx).
 pub mod tags;
+/// Recent changes on a drive (TimelineDialog.tsx).
+pub mod timeline;
 /// Encrypting and decrypting with age (VaultDialog.tsx).
 pub mod vault;
 /// Previous versions of a file or folder (VersionsDialog.tsx).
 pub mod versions;
+/// A file's X-Ray (XRayDialog.tsx).
+pub mod xray;
 
 /// Shows `view` in the window's dialog layer, titled `title`, `width` wide.
 ///

@@ -26,6 +26,7 @@ use crate::components::file_grid::{FileGrid, FileGridEvent};
 use crate::components::file_list::DragFromArchive;
 use crate::components::file_list::{FileList, FileListEvent};
 use crate::components::menus::{MenuEvent, MenuHost};
+use crate::components::preview::{self, PreviewPane};
 use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
 use crate::components::status_bar::StatusBar;
@@ -75,6 +76,9 @@ pub struct Workspace {
     menus: Entity<MenuHost>,
     /// The open Settings view's events, while it is open.
     settings_events: Option<Subscription>,
+    /// The preview pane at the end edge, while the setting shows it: dropped while hidden, since Windows'
+    /// previewers are windows of their own that go only with it.
+    preview: Option<Entity<PreviewPane>>,
     /// The first pane and, in dual-pane view, the second.
     panes: [PaneViews; 2],
     /// What each pane showed at the last look, so a grid going out of sight lets its thumbnails go.
@@ -139,7 +143,10 @@ impl Workspace {
         }
         // The explorer decides what each pane shows; the keyboard follows the active pane when it moves.
         let explorer = explorer::explorer(cx);
-        subscriptions.push(cx.observe(&explorer, |this, _, cx| this.follow_panes(cx)));
+        subscriptions.push(cx.observe_in(&explorer, window, |this, _, window, cx| this.follow_panes(window, cx)));
+        // The preview pane comes and goes with its setting (Alt+P) and the folder shown.
+        subscriptions
+            .push(cx.observe_global_in::<state::UiState>(window, |this, window, cx| this.sync_preview(window, cx)));
         subscriptions.push(
             cx.subscribe_in(&explorer, window, |this, _, event, window, cx| match event {
                 ExplorerEvent::PaneFocused => this.focus_files(window, cx),
@@ -151,6 +158,10 @@ impl Workspace {
                 ExplorerEvent::BatchRename(paths) => dialogs::batch_rename::open(window, cx, paths.clone()),
                 ExplorerEvent::Find(notice) => notices::find(notice, window, cx),
                 ExplorerEvent::FromArchive(_) => Self::not_yet(window, cx, t!("Copying out of archives")),
+                // Opening an item in the Recycle Bin asks for Quick Look through the explorer's flag.
+                ExplorerEvent::TabChanged(_) | ExplorerEvent::SelectionChanged(_) | ExplorerEvent::TabsChanged => {
+                    preview::quick_look::sync(window, cx)
+                }
                 _ => {}
             }),
         );
@@ -166,6 +177,7 @@ impl Workspace {
             queue,
             menus,
             settings_events: None,
+            preview: None,
             panes,
             shown: [None, None],
             _drop_target: Self::take_drops(window, cx),
@@ -191,7 +203,7 @@ impl Workspace {
     }
 
     /// The explorer changed: a grid that went out of sight lets its thumbnails go, and the window redraws.
-    fn follow_panes(&mut self, cx: &mut Context<Self>) {
+    fn follow_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for pane in 0..2 {
             let now = Self::shown_in(pane, cx);
             if self.shown[pane] == Some(Shown::Grid) && now != Some(Shown::Grid) {
@@ -202,7 +214,23 @@ impl Workspace {
             }
             self.shown[pane] = now;
         }
+        self.sync_preview(window, cx);
         cx.notify();
+    }
+
+    /// Makes or drops the preview pane as its setting and the folder shown say (`preview::should_show`).
+    fn sync_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match (preview::should_show(cx), self.preview.is_some()) {
+            (true, false) => {
+                self.preview = Some(cx.new(|cx| PreviewPane::new(window, cx)));
+                cx.notify();
+            }
+            (false, true) => {
+                self.preview = None;
+                cx.notify();
+            }
+            _ => {}
+        }
     }
 
     /// Gives the keyboard to the active pane's file view (the list, the grid, or This PC's first tile).
@@ -397,8 +425,8 @@ impl Workspace {
             ThisPcEvent::ContextMenu { path, position } => self
                 .menus
                 .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
-            ThisPcEvent::RecentChanges { .. } => Self::not_yet(window, cx, t!("Recent changes")),
-            ThisPcEvent::FindDuplicates { .. } => Self::not_yet(window, cx, t!("Finding duplicates")),
+            ThisPcEvent::RecentChanges { path } => dialogs::timeline::open(window, cx, path.clone()),
+            ThisPcEvent::FindDuplicates { path } => dialogs::duplicates::open(window, cx, path.clone()),
             ThisPcEvent::DiskUsage { .. } => Self::not_yet(window, cx, t!("The disk usage map")),
         }
     }
@@ -407,7 +435,24 @@ impl Workspace {
     fn on_menu_event(&mut self, _: &Entity<MenuHost>, event: &MenuEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             // PORT ME(preview pane): hide the native preview while a menu covers it (preview_host::hide/reveal).
-            MenuEvent::Shown | MenuEvent::Closed => {}
+            // A menu covers the preview pane: Windows' previewer (a window of its own) steps aside meanwhile.
+            MenuEvent::Shown => preview::cover(cx),
+            MenuEvent::Closed => preview::uncover(cx),
+            MenuEvent::Duplicates { folder } => dialogs::duplicates::open(window, cx, folder.clone()),
+            MenuEvent::Timeline { folder } => dialogs::timeline::open(window, cx, folder.clone()),
+            MenuEvent::Cleanup { folder } => dialogs::cleanup::open(window, cx, folder),
+            MenuEvent::XRay { path } => dialogs::xray::open(window, cx, path.clone()),
+            MenuEvent::Defender { paths } => {
+                dialogs::check::open(window, cx, paths.clone(), dialogs::check::What::Defender)
+            }
+            MenuEvent::Secrets { path } => {
+                dialogs::check::open(window, cx, vec![path.clone()], dialogs::check::What::Secrets)
+            }
+            MenuEvent::Yara { path } => {
+                dialogs::check::open(window, cx, vec![path.clone()], dialogs::check::What::Yara)
+            }
+            MenuEvent::Rule { folder } => dialogs::rules::open(window, cx, Some(folder.clone())),
+            MenuEvent::CompressInPlace { paths } => dialogs::compress_in_place::open(window, cx, paths.clone()),
             MenuEvent::Restore { paths } => Self::explorer(cx, |e, cx| {
                 let entries: Vec<_> = e
                     .active_tab()
@@ -607,15 +652,13 @@ impl Workspace {
     /// Settings, with what it hands back (connecting a cloud, folder rules) answered here.
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let view = settings::open(window, cx);
-        self.settings_events = Some(
-            cx.subscribe_in(&view, window, |_, _, event: &SettingsEvent, window, cx| {
-                let what = match event {
-                    SettingsEvent::ConnectCloud => t!("Remote connections"),
-                    SettingsEvent::FolderRules => t!("Folder rules"),
-                };
-                Self::not_yet(window, cx, what);
-            }),
-        );
+        self.settings_events =
+            Some(
+                cx.subscribe_in(&view, window, |_, _, event: &SettingsEvent, window, cx| match event {
+                    SettingsEvent::ConnectCloud => Self::not_yet(window, cx, t!("Remote connections")),
+                    SettingsEvent::FolderRules => dialogs::rules::open(window, cx, None),
+                }),
+            );
     }
 
     /// "Properties" on an item: Windows' own dialog, which runs beside the window.
@@ -712,6 +755,27 @@ impl Workspace {
             div().size_full().child(group).into_any_element()
         } else {
             self.pane(0, t, cx)
+        };
+        let files = match &self.preview {
+            None => files,
+            Some(pane) => {
+                // Where the web app put it: at the end edge, its width kept in the settings (PORT ME(coordinator):
+                // saving a dragged width back to `preview_width`).
+                let rem = f32::from(theme::rem_size(cx));
+                let container = (f32::from(window_width(cx)) - f32::from(SIDEBAR_START)).max(0.);
+                let width = preview::pane_width(state::settings(cx).preview_width, container, rem, false);
+                let shown = resizable_panel().child(files);
+                let side = resizable_panel()
+                    .size(px(width))
+                    .child(div().id("preview-pane").size_full().child(pane.clone()));
+                let group = h_resizable("files-preview");
+                let group = if crate::i18n::is_rtl() {
+                    group.child(side).child(shown)
+                } else {
+                    group.child(shown).child(side)
+                };
+                div().size_full().child(group).into_any_element()
+            }
         };
         let content = resizable_panel().child(
             div()
@@ -859,10 +923,8 @@ impl Render for Workspace {
                     .unwrap_or_else(|| explorer::explorer(cx).read(cx).current_path().to_string());
                 Self::show_properties(path, cx)
             }))
-            .on_action(cx.listener(|_, _: &actions::QuickLook, window, cx| Self::not_yet(window, cx, t!("Quick Look"))))
-            .on_action(cx.listener(|_, _: &actions::TogglePreview, window, cx| {
-                Self::not_yet(window, cx, t!("The preview pane"))
-            }))
+            .on_action(cx.listener(|_, _: &actions::QuickLook, window, cx| preview::quick_look::toggle(window, cx)))
+            .on_action(cx.listener(|_, _: &actions::TogglePreview, _, cx| preview::toggle_pane(cx)))
             .child(TitleBar::new().child(self.tabs.clone()))
             .child(self.toolbar(&t, cx))
             .child(div().flex_1().min_h_0().child(self.body(&t, cx)))
@@ -871,6 +933,16 @@ impl Render for Workspace {
             .child(self.queue.clone())
             .child(self.menus.clone())
     }
+}
+
+/// The main window's width, for sizing the preview pane before layout (the web app sized it from the window too).
+fn window_width(cx: &App) -> Pixels {
+    crate::startup::main_window(cx)
+        .and_then(|main| {
+            main.update(&mut cx.to_async(), |_, window, _| window.viewport_size().width)
+                .ok()
+        })
+        .unwrap_or(px(1240.))
 }
 
 /// Opens the main window, hidden: start-up puts it where it was last time and then shows it (or leaves it in

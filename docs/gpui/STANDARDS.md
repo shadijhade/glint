@@ -201,6 +201,8 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
 - **Menus**: a view emits a `ContextMenu` event with the target and a window position; from the keyboard (the menu key, Shift+F10) the position is the focused row's bottom-start corner. The workspace opens the shared menus (`components::menus::MenuHost`).
 - **Taskbar progress:** `platform::window_state::taskbar_progress`.
 
+**Measuring during a draw:** a `canvas` (or `on_children_prepainted`) may record bounds, but never call `cx.notify` there: GPUI drops a redraw asked for during prepaint or paint, so the view would keep its first, unmeasured layout (the picture preview drew nothing until this was found). Ask after the frame instead: `window.on_next_frame(move |_, cx| cx.notify(id))`.
+
 **Editing files with scripts:** open and write with `encoding='utf-8'`. The default on this PC (cp1252) mangles the sources' non-ASCII characters.
 
 ## 6. Core rules (src-tauri to glint-core)
