@@ -111,10 +111,10 @@ The status bar shows it for every folder in an archive: *zip · 54,001 items rea
 
 ## In the code
 
--   `src-tauri/src/archive/mod.rs`:
+-   `crates/glint-core/src/archive/mod.rs`:
     -   where a path goes into an archive (`locate`), and finding one by its first bytes (`sniff`);
     -   the archives read (`opened`, by path, size and date);
-    -   the commands (`archive_extract`, `archive_stage`, `archive_extract_here`, `archive_compress`, `cancel_archive_stage`, `archive_unstage`, and for first reads `archive_progress`, `cancel_archive_read` and `archive_peek`);
+    -   the operations the UI calls (`archive_extract`, `archive_stage`, `archive_extract_here`, `archive_compress`, `cancel_archive_stage`, `archive_unstage`, and for first reads `archive_progress`, `cancel_archive_read` and `archive_peek`; until 0.10 they were Tauri commands);
     -   what `list_dir`, `resolve_path`, `read_text_preview`, `folder_sizes`, `disk_usage`, `find_files` and `thumbnail` ask of an archive.
 -   `read.rs`:
     -   the formats (`Format`: what a name claims, what the first bytes say, the code the UI knows each by);
@@ -134,5 +134,5 @@ The status bar shows it for every folder in an archive: *zip · 54,001 items rea
 -   The RAR fixtures are from [libarchive](https://github.com/libarchive/libarchive)'s tests (BSD 2-clause; made with WinRAR), uudecoded: `rar4.rar` (`test_read_format_rar`), `rar4-encrypted.rar` and `rar4-encrypted-names.rar` (`…rar4_encrypted`, `…rar4_encrypted_filenames`), `rar5.rar` (`…rar5_compressed`), `rar5-solid.rar` (`…rar5_multiple_files_solid`), `rar5-encrypted.rar` and `rar5-encrypted-names.rar`, `rar5-hardlink.rar`, and `rar4-volumes.part1.rar` to `part3` (`test_rar_multivolume_single_file`). The tests check their files against what 7-Zip extracts from them.
 -   The cabinet fixtures were made with Windows' `makecab`: `cab-lzx.cab` from `docs\readme.txt` (60 lines) and `config.ini` (40) with `CompressionType=LZX` and `CompressionMemory=21`; `cab-split1.cab` and `cab-split2.cab` from `whole.txt` (exactly 32 KB, one MSZIP block), `noise.bin` (5,000 bytes that don't compress) and `config.ini` with `CompressionType=MSZIP` and `MaxDiskSize=4096`. The tests rebuild the same text to compare.
 -   The UI side:
-    -   The UI reads a listing's archive (`Listing.archive` in `src/lib/entries.ts`: where it is in the path, its format, its entry count, how long reading it took) and the `ATTR.inArchive`, `ATTR.encrypted` and `ATTR.unreadable` bits of its entries.
-    -   `src/lib/archives.ts` lists the formats by code, which extensions `Enter` opens and which "Open as archive" offers. `src/lib/explorer.ts` has the read-only guards, copying out (`extracting`, `copyOutOfArchive`, `dragFromArchive`) and opening (`openFromArchive`).
+    -   The UI reads a listing's archive (`Listing.archive` in `crates/glint-model/src/entries.rs`: where it is in the path, its format, its entry count, how long reading it took) and the `IN_ARCHIVE`, `ENCRYPTED` and `UNREADABLE` attribute bits of its entries.
+    -   `crates/glint-model/src/archives.rs` lists the formats by code, which extensions `Enter` opens and which "Open as archive" offers. `crates/glint-ui/src/explorer/archive.rs` has copying out (`extracting`, `drag_from_archive`) and opening, and the read-only guards (`read_only_notice` in `explorer/open.rs`) are called from the operations that would write into an archive.

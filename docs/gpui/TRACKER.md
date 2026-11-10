@@ -399,6 +399,36 @@ The GPUI app imports none of it yet. That is wave 16 (`old_settings/`, without a
 
 Narrator on the real app is the user's check.
 
+## Wave 18: the old app deleted: done 2026-11-11
+
+- **Deleted:** `src/` (React/TypeScript, 172 files), `src-tauri/` (Tauri, 190 files), `index.html`, `print.html`, `quick.html`, `vite.config.ts`, `tsconfig*.json` and `components.json`.
+  - `package.json` keeps only the Node release scripts, with no dependencies; the lockfile was regenerated.
+  - The root workspace no longer excludes src-tauri, and VS Code recommends rust-analyzer only.
+  - Nothing in the crates read those folders at build time. The About logo is inlined, and the tools page is read from `crates/glint/installer/tools.nsh`.
+- **docs agent:** README, CONTRIBUTING's code map, SECURITY, the PR template, `docs/*.md`, `release.yml` (NSIS on the runner, no Tauri), and the signing test as stored vectors (`scripts/lib/test-vectors/`, a throwaway key nothing trusts).
+- **Release profile:** `lto = "thin"` for releases. The Tauri builds used fat LTO; thin keeps most of the gain without the long single-threaded link. The service keeps one codegen unit.
+- **Checks without the old app:**
+  - Clippy is clean on the whole workspace.
+  - Tests: 2,402 UI + 300 core + 234 model + 92 service passed.
+  - `gpui-installer.mjs --dry-run` passes.
+
+**Measured, release build, this PC (2026-11-11):**
+- Clean thin-LTO release build in 5 min 18 s.
+- Glint.exe is 174 MB. The Tauri release exe was 53 MB, but diagrams, math, the terminal, 3D, Word and the PDF engine were JavaScript inside the WebView then; they are compiled Rust now.
+- `npm run bench -- --start`: launch to the first folder painted is 68 ms median (best 63 ms), counted from core's start. The window shows about 300 ms after launch (635 ms on the first, coldest run).
+- Listing System32 (5,097 items): 1.5 ms. Index search: 8 ms. Typo search: 92 ms.
+- Memory: about 316 MB private and 123 MB working set.
+  - A peak of 382 MB at start drops to 257 MB.
+  - The pre-made Quick Search window then adds about 60 MB and 17 threads.
+  - Most private bytes are GPU buffers (a swap chain per window).
+  - For comparison, the Tauri app was 323 MB private for its main process alone, before its WebView2 processes.
+
+**Follow-ups, not blockers:**
+- Make the Quick Search window on first use (about 60 MB), or keep pre-making it for an instant hotkey.
+- Fat LTO plus one codegen unit, if exe size matters more than build time.
+- Start the font scan when Typst or PDF export is first needed rather than at start.
+- 98 threads at start (thread pools) could be trimmed.
+
 ## Antigravity (2026-11-10): closed before it started
 
 The user offered Antigravity to share the work. It hit its rate limit before doing anything; it left only an empty report. Its lane is closed and its worktree and branch are removed.

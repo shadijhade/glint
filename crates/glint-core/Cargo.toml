@@ -1,6 +1,6 @@
 [package]
 name = "glint-core"
-description = "Glint's engine: file system, search, archives, media, devices... (moved from src-tauri, Tauri replaced by host)"
+description = "Glint's engine: file system, search, archives, media, devices... (until 0.10 this was the Tauri app's src-tauri; the window is crates/glint-ui now)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

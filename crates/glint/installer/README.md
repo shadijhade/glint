@@ -1,7 +1,7 @@
 # The GPUI Glint installer
 
 An NSIS script for the GPUI build's `Glint.exe` (`crates/glint`). It is the installer the Tauri build had
-(`src-tauri/installer`, itself Tauri's NSIS template with Glint's pages) turned into a plain script, so
+(`src-tauri/installer` until 0.10, itself Tauri's NSIS template with Glint's pages) turned into a plain script, so
 `makensis` is all that builds it: no Tauri bundler, no `tauri-cli`, no plugin beyond NSIS's own. It installs
 over the Tauri build in place: same folder, same registry keys, same shortcuts, same switches.
 
@@ -84,7 +84,7 @@ before), and no language chooser (English only, as before).
 | `installer.nsi` | the script (Tauri's template without the handlebars, the WebView2 section or the plugin) |
 | `hooks.nsh` | Glint's install and uninstall steps: the old-name migration, Explorer entries, the service, the tools |
 | `look.nsh` | font, welcome and finish words, artwork picked for the screen's scaling |
-| `tools.nsh` | the Extra tools page (identical to `src-tauri/installer/tools.nsh` until that folder goes; the script warns if they differ) |
+| `tools.nsh` | the Extra tools page (a test in `crates/glint-core/src/tools.rs` checks it against the tool list) |
 | `logo.svg` | the logo `scripts/installer-art.mjs` draws the pictures from |
 | `utils.nsh` | Tauri's helper macros (shortcuts, the "close it first" check) minus the plugin call |
 | `strings.nsh` | the installer's English words |
@@ -110,9 +110,6 @@ the service for the instant search self-update, runs this script with the servic
 
 ## What is left
 
-- **When `src-tauri` goes:** glint-core's test that checks `tools.nsh` against its tool list reads
-  `src-tauri/installer/tools.nsh` (`include_str!("../../../src-tauri/installer/tools.nsh")` in `tools.rs`); point it at
-  this folder's, and drop the script's comparison note.
 - **Not tried for real:** the setup itself was never run (by rule): it compiles with no warnings, and its
   contents were listed, but the pages, the in-place update over a Tauri 0.9.x install, silent and passive
   installs, the Extra tools page and the uninstaller need a test run on a spare account or machine.

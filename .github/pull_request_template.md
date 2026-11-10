@@ -4,9 +4,9 @@
 
 ## How it was tested
 
-- [ ] `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` (in `src-tauri`)
-- [ ] `npx tsc -p tsconfig.json`, `node src/lib/explorer.check.ts` and `node src/lib/text.check.ts`
-- [ ] Tried it in the app with `npm run tauri dev`
+- [ ] `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] `npm run test:signing`, if `scripts/lib/minisign.mjs` changed
+- [ ] Tried it in the app with `cargo run -p glint` (and `powershell -STA -File tests\e2e\run.ps1`, for changes to what the window does)
 
 ## Screenshots
 

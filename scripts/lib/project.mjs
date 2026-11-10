@@ -29,7 +29,7 @@ export const targetDir = () => resolve(process.env.CARGO_TARGET_DIR ?? join(root
 export const COMMITTED_PUBKEY_FILE = join(root, "crates", "shadui-index", "update-pubkey.txt");
 
 /**
- * The update key's public half, as the minisign box base64-encoded (what tauri.conf.json's `plugins.updater.pubkey`
+ * The update key's public half, as the minisign box base64-encoded (what the old Tauri app's tauri.conf.json `plugins.updater.pubkey`
  * held). The committed one, unless GLINT_UPDATE_PUBKEY names another (a file, or the key itself): that is for dry
  * runs with a throwaway key, and what it signs is not an update any installed Glint accepts.
  */
