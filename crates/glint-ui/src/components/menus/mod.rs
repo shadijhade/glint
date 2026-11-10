@@ -57,7 +57,8 @@ mod data;
 mod event;
 mod folder;
 mod item;
-mod kinds;
+/// What kind of item each command is offered for (also the Ctrl+K palette's conditions).
+pub(crate) mod kinds;
 mod spec;
 #[cfg(test)]
 mod tests;
@@ -233,7 +234,8 @@ impl MenuHost {
             let paths = chosen.iter().map(|e| e.path.clone()).collect();
             return self.show_windows_menu(paths, at, window, cx);
         }
-        let ctx = self.item_ctx(pane, cx);
+        let mut ctx = self.item_ctx(pane, cx);
+        ctx.data.read_tags(cx, chosen.iter().map(|e| e.path.as_str()));
         let nodes = item_menu(&chosen, &ctx);
         self.show(nodes, at, pane, t!("Item menu"), window, cx);
     }
@@ -251,7 +253,8 @@ impl MenuHost {
         if entries.is_empty() {
             return self.open_background_menu(pane, Some(at), window, cx);
         }
-        let ctx = self.item_ctx(pane, cx);
+        let mut ctx = self.item_ctx(pane, cx);
+        ctx.data.read_tags(cx, entries.iter().map(|e| e.path.as_str()));
         let nodes = item_menu(&entries, &ctx);
         self.show(nodes, at, pane, t!("Item menu"), window, cx);
     }

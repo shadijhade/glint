@@ -210,6 +210,11 @@ impl Tags {
         }
     }
 
+    /// The calls into core's tags, for whoever reads tags for the rows (`components::row_facts`).
+    pub fn backend(&self) -> Arc<dyn Backend> {
+        self.backend.clone()
+    }
+
     /// The tags used lately, most recent first.
     pub fn recent(&self) -> &[String] {
         &self.recent

@@ -1146,8 +1146,10 @@ pub fn scripts_menu(cwd: &str, paths: &[String], data: &MenuData) -> Node {
     Node::menu(t!("Scripts"), IconName::ScrollText, items)
 }
 
-// PORT ME(tags): the colors toggle and "Edit tags…" are MenuEvents; the checks come from `MenuData::tags`, which
-// the tags part keeps current.
+/// The Tags submenu: the seven color tags, each checked when every item has it (choosing it then takes it off
+/// them all; otherwise it goes on them all, as with some of them having it already), then "Edit tags…". The
+/// workspace handles both events (`dialogs::tags::set_tags`, `dialogs::tags::open`); the checks come from
+/// `MenuData::tags`, the tags the file list has read (`MenuData::read_tags`).
 fn tags_menu(paths: &[String], data: &MenuData) -> Node {
     let has = |path: &String, tag: &str| {
         data.tags

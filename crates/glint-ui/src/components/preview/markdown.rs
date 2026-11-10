@@ -833,7 +833,6 @@ mod tests {
     #[gpui_kit::test]
     fn arabic_markdown_renders_in_the_arabic_interface(cx: &mut TestAppContext) {
         let _guard = testing::lock();
-        testing::set_rtl(true);
         let (view, mut visual) = open(
             cx,
             "C:\\مستندات\\تقرير.md",
@@ -841,6 +840,9 @@ mod tests {
                 "# تقرير الربع الأول\n\nمرحبا **بالعالم** و [رابط](#تقرير-الربع-الأول).\n",
             )),
         );
+        // After `open`: starting the app's services puts the language back to English.
+        testing::set_rtl(true);
+        view.update(&mut visual, |_, cx| cx.notify());
         settle(&mut visual, |cx| {
             view.read_with(cx, |v, _| matches!(v.load, Load::Shown(_)))
         });
@@ -889,6 +891,362 @@ mod tests {
         settle(&mut visual, |cx| {
             view.read_with(cx, |v, _| matches!(v.load, Load::Binary(_)))
         });
+    }
+
+    // ---- Each block reads in its own direction ----------------------------------------------------------------
+
+    /// Where a document's text is drawn. The whole text is highlighted (the TextView paints a highlight under
+    /// the glyphs it lays out, so its boxes are the glyphs' own, row by row, aligned as they are painted), and
+    /// the list markers and code are underlined by the document's style.
+    mod direction {
+        use super::*;
+        use gpui_kit::base::text::{RangeHighlight, TextViewDefaults, TextViewStyle};
+        use gpui_kit::{point, px, red, Background, Bounds, Pixels, StyleRefinement, Styled as _};
+
+        /// The slack of comparing positions the layout rounded.
+        const SLACK: f32 = 1.5;
+
+        /// Opens the document `text` at `C:\docs\README.md` and waits until it is parsed and drawn, with its
+        /// text highlighted and its list markers and code underlined.
+        fn show(cx: &mut TestAppContext, text: &str, rtl: bool) -> (Entity<MarkdownPreview>, VisualTestContext) {
+            let (view, mut visual) = open(cx, "C:\\docs\\README.md", fake(read_of(text)));
+            // After `open`: starting the app's services puts the language back to English.
+            testing::set_rtl(rtl);
+            view.update(&mut visual, |_, cx| cx.notify());
+            visual.update(|_, cx| {
+                let style = TextViewStyle::from_theme(&gpui_kit::base::Theme::global(cx))
+                    .with_list_style(StyleRefinement::default().underline())
+                    .with_code_block(StyleRefinement::default().underline());
+                cx.set_global(TextViewDefaults::new().with_style(style));
+            });
+            settle(&mut visual, |cx| {
+                view.read_with(cx, |v, cx| v.rendered_text(cx).is_some_and(|t| !t.trim().is_empty()))
+            });
+            view.update(&mut visual, |v, cx| {
+                if let Load::Shown(shown) = &v.load {
+                    shown.state.update(cx, |state, cx| {
+                        let len = state.rendered_text().as_str().len();
+                        let all = RangeHighlight::new(0..len, red());
+                        assert!(state.set_range_highlights([all], cx).is_ok());
+                    });
+                }
+            });
+            // The frames that draw the parsed document and then its measured rows.
+            for _ in 0..3 {
+                has(&mut visual, "README.md");
+                visual.run_until_parked();
+            }
+            (view, visual)
+        }
+
+        /// The text area: the document's box without its padding (`space(5.)` = 20 px a side).
+        fn area(cx: &mut VisualTestContext) -> Bounds<Pixels> {
+            let document = cx.update(|window, cx| {
+                window.render_frame(cx);
+                window.find_by_label("README.md").bounds()
+            });
+            Bounds::from_corners(
+                point(document.left() + px(20.), document.top()),
+                point(document.right() - px(20.), document.bottom()),
+            )
+        }
+
+        /// `found` joined by row, top to bottom.
+        fn joined(mut found: Vec<Bounds<Pixels>>) -> Vec<Bounds<Pixels>> {
+            found.sort_by(|a, b| a.top().partial_cmp(&b.top()).unwrap_or(std::cmp::Ordering::Equal));
+            let mut rows: Vec<Bounds<Pixels>> = Vec::new();
+            for next in found {
+                match rows.last_mut() {
+                    Some(row) if (row.top() - next.top()).abs() < px(3.) => {
+                        *row = Bounds::from_corners(
+                            point(row.left().min(next.left()), row.top().min(next.top())),
+                            point(row.right().max(next.right()), row.bottom().max(next.bottom())),
+                        );
+                    }
+                    _ => rows.push(next),
+                }
+            }
+            rows
+        }
+
+        /// The rows of text, as the glyphs fill them.
+        fn rows(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+            joined(cx.update(|window, cx| {
+                window.render_frame(cx);
+                let scale = window.scale_factor();
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == Background::from(red()))
+                    .map(|quad| quad.bounds.map(|value| px(value.0 / scale)))
+                    .collect()
+            }))
+        }
+
+        /// The underlined stretches: list markers and code.
+        fn underlined(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+            joined(cx.update(|window, cx| {
+                window.render_frame(cx);
+                let scale = window.scale_factor();
+                window
+                    .painted_underlines()
+                    .into_iter()
+                    .map(|underline| underline.bounds.map(|value| px(value.0 / scale)))
+                    .collect()
+            }))
+        }
+
+        fn ends_at_right(row: Bounds<Pixels>, area: Bounds<Pixels>) -> bool {
+            (area.right() - row.right()).abs() <= px(SLACK)
+        }
+
+        fn starts_at_left(row: Bounds<Pixels>, area: Bounds<Pixels>) -> bool {
+            (row.left() - area.left()).abs() <= px(SLACK)
+        }
+
+        const ARABIC_WORDS: &str = "كلمة عربية طويلة تملأ الأسطر";
+
+        #[gpui_kit::test]
+        fn an_arabic_paragraph_ends_at_the_right_edge_in_an_english_window(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            // A short Arabic paragraph, one that wraps over several rows, and an English one for the left edge.
+            let long = [ARABIC_WORDS; 40].join(" ");
+            let text = format!("مرحبا بالعالم\n\n{long}\n\nHello world\n");
+            let (_view, mut visual) = show(cx, &text, false);
+            let area = area(&mut visual);
+            let rows = rows(&mut visual);
+            // The short row hugs the right edge: it ends at the area's right and starts well inside.
+            let short = rows[0];
+            assert!(ends_at_right(short, area), "{short:?} in {area:?}");
+            assert!(short.left() > area.left() + px(300.), "{short:?} in {area:?}");
+            // The wrapped paragraph: every row ends at the right edge, the last of them short.
+            let wrapped = &rows[1..rows.len() - 1];
+            assert!(wrapped.len() >= 2, "it wraps: {rows:?}");
+            for row in wrapped {
+                assert!(ends_at_right(*row, area), "{row:?} in {area:?}");
+            }
+            let last = wrapped[wrapped.len() - 1];
+            assert!(
+                last.size.width < wrapped[0].size.width,
+                "the last row is the short one: {wrapped:?}"
+            );
+            // The English paragraph starts at the left edge, as it always did.
+            let english = rows[rows.len() - 1];
+            assert!(starts_at_left(english, area), "{english:?} in {area:?}");
+            assert!(english.right() < area.left() + px(300.), "{english:?} in {area:?}");
+        }
+
+        #[gpui_kit::test]
+        fn an_english_paragraph_starts_at_the_left_edge_in_an_arabic_window(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            let text = "Hello world\n\nمرحبا بالعالم\n\n1234 ...\n";
+            let (_view, mut visual) = show(cx, text, true);
+            let area = area(&mut visual);
+            let rows = rows(&mut visual);
+            assert_eq!(rows.len(), 3, "{rows:?}");
+            // English reads left to right: at the left, though the window starts at the right.
+            assert!(starts_at_left(rows[0], area), "{:?} in {area:?}", rows[0]);
+            assert!(rows[0].right() < area.left() + px(300.), "{:?} in {area:?}", rows[0]);
+            // Arabic is at the right, and a paragraph with no letters takes the window's direction.
+            assert!(ends_at_right(rows[1], area), "{:?} in {area:?}", rows[1]);
+            assert!(ends_at_right(rows[2], area), "{:?} in {area:?}", rows[2]);
+            testing::set_rtl(false);
+        }
+
+        #[gpui_kit::test]
+        fn english_in_an_english_window_is_laid_out_as_it_was(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            let text = "# Title\n\nSome text, 1234.\n\n- one\n- two\n\n> quoted\n";
+            let (_view, mut visual) = show(cx, text, false);
+            let area = area(&mut visual);
+            for row in rows(&mut visual) {
+                assert!(row.left() < area.left() + px(60.), "{row:?} in {area:?}");
+            }
+            // The markers are on the left, against the items, and the quote's bar on its left.
+            for marker in underlined(&mut visual) {
+                assert!(marker.left() < area.left() + px(40.), "{marker:?} in {area:?}");
+            }
+            assert_eq!(quote_bars(&mut visual), [(true, false)]);
+        }
+
+        #[gpui_kit::test]
+        fn a_heading_takes_its_own_direction_too(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            let text = "# عنوان عربي\n\n## English title\n";
+            let (_view, mut visual) = show(cx, text, false);
+            let area = area(&mut visual);
+            let rows = rows(&mut visual);
+            assert_eq!(rows.len(), 2, "{rows:?}");
+            assert!(ends_at_right(rows[0], area), "{:?} in {area:?}", rows[0]);
+            assert!(starts_at_left(rows[1], area), "{:?} in {area:?}", rows[1]);
+        }
+
+        #[gpui_kit::test]
+        fn a_paragraph_with_code_in_it_is_set_from_the_right_too(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            // Inline code makes the paragraph a flow of fragments, which are placed one by one.
+            let long = [ARABIC_WORDS; 12].join(" ");
+            let text = format!("مرحبا `code` بالعالم\n\nHello `code` world\n\n{long} `code` {long}\n");
+            let (_view, mut visual) = show(cx, &text, false);
+            let area = area(&mut visual);
+            let rows = rows(&mut visual);
+            assert!(rows.len() >= 4, "{rows:?}");
+            assert!(ends_at_right(rows[0], area), "{:?} in {area:?}", rows[0]);
+            assert!(rows[0].left() > area.left() + px(300.), "{:?} in {area:?}", rows[0]);
+            assert!(starts_at_left(rows[1], area), "{:?} in {area:?}", rows[1]);
+            // A long one wraps: its first row spans the area, from its right edge.
+            assert!(ends_at_right(rows[2], area), "{:?} in {area:?}", rows[2]);
+        }
+
+        #[gpui_kit::test]
+        fn a_mixed_list_puts_each_marker_on_its_items_start_side(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            let text = "- English item\n- عنصر عربي\n- Another item\n\n1. First\n2. بند ثان\n";
+            let (_view, mut visual) = show(cx, text, false);
+            let area = area(&mut visual);
+            // The markers are the only underlined text: five rows, one mark each.
+            let markers = underlined(&mut visual);
+            let texts = rows(&mut visual);
+            assert_eq!((markers.len(), texts.len()), (5, 5), "{markers:?} {texts:?}");
+            for (ix, rtl) in [(0, false), (1, true), (2, false), (3, false), (4, true)] {
+                let (marker, text) = (markers[ix], texts[ix]);
+                if rtl {
+                    // At the right edge, and the item's text is to its left.
+                    assert!(
+                        ends_at_right(text, area) || text.right() > area.right() - px(60.),
+                        "item {ix}: {text:?}"
+                    );
+                    assert!(
+                        marker.left() > area.right() - px(40.),
+                        "item {ix}: {marker:?} in {area:?}"
+                    );
+                    assert!(marker.left() > text.right(), "item {ix}: {marker:?} before {text:?}");
+                } else {
+                    assert!(text.left() < area.left() + px(60.), "item {ix}: {text:?}");
+                    assert!(
+                        marker.left() < area.left() + px(40.),
+                        "item {ix}: {marker:?} in {area:?}"
+                    );
+                    assert!(marker.right() < text.left(), "item {ix}: {marker:?} after {text:?}");
+                }
+            }
+        }
+
+        #[gpui_kit::test]
+        fn a_mixed_list_in_an_arabic_window_mirrors_the_same_way(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            let text = "- عنصر عربي\n- English item\n- بند آخر\n";
+            let (_view, mut visual) = show(cx, text, true);
+            let area = area(&mut visual);
+            let markers = underlined(&mut visual);
+            let texts = rows(&mut visual);
+            assert_eq!((markers.len(), texts.len()), (3, 3), "{markers:?} {texts:?}");
+            for (ix, rtl) in [(0, true), (1, false), (2, true)] {
+                if rtl {
+                    assert!(
+                        markers[ix].left() > area.right() - px(40.),
+                        "{:?} in {area:?}",
+                        markers[ix]
+                    );
+                    assert!(
+                        markers[ix].left() > texts[ix].right(),
+                        "{:?} before {:?}",
+                        markers[ix],
+                        texts[ix]
+                    );
+                } else {
+                    assert!(
+                        markers[ix].left() < area.left() + px(40.),
+                        "{:?} in {area:?}",
+                        markers[ix]
+                    );
+                    assert!(
+                        markers[ix].right() < texts[ix].left(),
+                        "{:?} after {:?}",
+                        markers[ix],
+                        texts[ix]
+                    );
+                }
+            }
+            testing::set_rtl(false);
+        }
+
+        #[gpui_kit::test]
+        fn a_nested_list_indents_from_its_start_side(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            let text = "- عنصر\n  - فرعي\n- English\n  - nested\n";
+            let (_view, mut visual) = show(cx, text, false);
+            let area = area(&mut visual);
+            let texts = rows(&mut visual);
+            assert_eq!(texts.len(), 4, "{texts:?}");
+            // The sub-item of an Arabic item is indented from the right: it ends before the item above does.
+            assert!(texts[0].right() > area.right() - px(60.), "{:?}", texts[0]);
+            assert!(
+                texts[1].right() < texts[0].right() - px(10.),
+                "{:?} under {:?}",
+                texts[1],
+                texts[0]
+            );
+            // And the English one from the left.
+            assert!(
+                texts[3].left() > texts[2].left() + px(10.),
+                "{:?} under {:?}",
+                texts[3],
+                texts[2]
+            );
+        }
+
+        /// The vertical bars the quotes drew: (left, right) of every quote, top to bottom, each once.
+        fn quote_bars(cx: &mut VisualTestContext) -> Vec<(bool, bool)> {
+            let mut bars: Vec<(f32, bool, bool)> = cx.update(|window, cx| {
+                window.render_frame(cx);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.border_widths.left.0 > 0. || quad.border_widths.right.0 > 0.)
+                    .map(|quad| {
+                        (
+                            quad.bounds.origin.y.0,
+                            quad.border_widths.left.0 > 0.,
+                            quad.border_widths.right.0 > 0.,
+                        )
+                    })
+                    .collect()
+            });
+            bars.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            bars.dedup();
+            bars.into_iter().map(|(_, left, right)| (left, right)).collect()
+        }
+
+        #[gpui_kit::test]
+        fn a_quote_has_its_bar_on_the_side_it_starts_at(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            let text = "> A quotation\n\n> اقتباس عربي\n";
+            for rtl in [false, true] {
+                let (_view, mut visual) = show(cx, text, rtl);
+                let bars = quote_bars(&mut visual);
+                assert_eq!(bars, [(true, false), (false, true)], "rtl window: {rtl}");
+            }
+            testing::set_rtl(false);
+        }
+
+        #[gpui_kit::test]
+        fn code_stays_left_to_right_in_an_arabic_window(cx: &mut TestAppContext) {
+            let _guard = testing::lock();
+            // The code block's text is underlined (see `show`), so its rows show where it is drawn.
+            let text = "مرحبا\n\n```\nlet x = 1;\n```\n";
+            let (view, mut visual) = show(cx, text, true);
+            let drawn = view.read_with(&visual, |v, cx| v.rendered_text(cx)).unwrap_or_default();
+            assert!(drawn.contains("let x = 1;"), "{drawn}");
+            let area = area(&mut visual);
+            let code = underlined(&mut visual);
+            assert_eq!(code.len(), 1, "{code:?}");
+            assert!(code[0].left() < area.left() + px(40.), "{:?} in {area:?}", code[0]);
+            assert!(code[0].right() < area.right() - px(300.), "{:?} in {area:?}", code[0]);
+            // The Arabic line above it is at the right.
+            assert!(ends_at_right(rows(&mut visual)[0], area));
+            testing::set_rtl(false);
+        }
     }
 
     // ---- Diagrams and math (feature `diagrams`) ---------------------------------------------------------------

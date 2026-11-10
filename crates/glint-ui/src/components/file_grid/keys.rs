@@ -3,7 +3,9 @@
 //!
 //! Pure functions, so they are tested without a window.
 
+use crate::components::file_list::INVALID_NAME_CHARS;
 use crate::explorer::Rows;
+use crate::kit::prelude::Keystroke;
 use std::time::{Duration, Instant};
 
 /// GPUI's key names for the keys that move the cursor, as the DOM named them (`gridMove` speaks the DOM's:
@@ -21,6 +23,16 @@ pub fn move_key(key: &str, rtl: bool) -> Option<&'static str> {
         ("end", _) => "End",
         _ => return None,
     })
+}
+
+/// Whether the rename box refuses this key: a character no Windows name can hold (`\ / : * ? " < > |`; with
+/// Ctrl it is a shortcut, not a character).
+pub fn refuses_in_name(keystroke: &Keystroke) -> bool {
+    let mut chars = keystroke.key_char.as_deref().unwrap_or("").chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => INVALID_NAME_CHARS.contains(&c) && !keystroke.modifiers.control,
+        _ => false,
+    }
 }
 
 /// A pause longer than this starts the typed text over.
@@ -94,6 +106,28 @@ mod tests {
             assert_eq!(move_key("enter", rtl), None);
             assert_eq!(move_key("a", rtl), None);
         }
+    }
+
+    fn key(text: &'static str) -> Keystroke {
+        Keystroke::parse(text).expect("a keystroke written in the tests")
+    }
+
+    #[test]
+    fn the_rename_box_refuses_what_no_name_can_hold() {
+        for refused in ["?", "*", "<", ">", "|", "\\", "/", ":", "\""] {
+            let mut stroke = key(refused);
+            if stroke.key_char.is_none() && refused.len() == 1 {
+                stroke.key_char = Some(refused.to_string());
+            }
+            assert!(refuses_in_name(&stroke), "{refused}");
+        }
+        for allowed in ["a", "enter", "escape", "left", "ctrl-a", "shift-a"] {
+            assert!(!refuses_in_name(&key(allowed)), "{allowed}");
+        }
+        // With Ctrl it is a shortcut (Ctrl+/ is not a typed slash).
+        let mut shortcut = key("ctrl-/");
+        shortcut.key_char = Some("/".to_string());
+        assert!(!refuses_in_name(&shortcut));
     }
 
     #[test]

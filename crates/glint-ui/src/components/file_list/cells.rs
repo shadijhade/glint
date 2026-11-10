@@ -4,6 +4,8 @@
 use super::{FileList, Frame, Track};
 use crate::components::file_grid::thumbnail::thumbnail_square;
 use crate::components::git;
+use crate::components::row_facts::{media_cells, Media, MediaCells};
+use crate::dialogs::tags::tag_dots;
 use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
 use crate::{i18n, t};
@@ -88,6 +90,22 @@ pub fn biggest(rows: &crate::explorer::Rows, located: bool, sizes: Option<&HashM
         .unwrap_or(0)
 }
 
+/// The entries on the lines `lines` of the list (a group's header line has none), for asking what the rows say.
+pub(super) fn entries_on(
+    rows: &crate::explorer::Rows,
+    lines: std::ops::Range<usize>,
+) -> impl Iterator<Item = &FileEntry> + '_ {
+    lines.filter_map(move |line| match rows.groups() {
+        Some(groups) => groups
+            .lines
+            .get(line)
+            .copied()
+            .and_then(|at| usize::try_from(at).ok())
+            .and_then(|at| rows.get(at)),
+        None => rows.get(line),
+    })
+}
+
 /// File Explorer's words and marks for a cloud file's state.
 fn cloud_mark(state: CloudState, t: &Tokens) -> (IconName, SharedString, Hsla) {
     match state {
@@ -148,6 +166,18 @@ impl FileList {
             format_full_date(entry.modified).into()
         };
         let size_text = size_words(entry, size, frame.measuring);
+        // What was read of the item: its tags (the dots), and what it says of itself while a column of that is
+        // shown. Both are empty until read, as the web's were.
+        let (tags, media) = {
+            let facts = self.facts.read(cx);
+            let tags = facts.tags_of(&frame.facts_key, &entry.path).unwrap_or(&[]).to_vec();
+            let media = if frame.media == Media::None {
+                MediaCells::default()
+            } else {
+                media_cells(entry, facts.media_of(&frame.facts_key, entry))
+            };
+            (tags, media)
+        };
 
         // The name: its icon (a picture's or a video's own small image once it is in), then the name, or the box
         // it is renamed in.
@@ -189,7 +219,9 @@ impl FileList {
         if let Some(badge) = &tracked.badge {
             name_cell = name_cell.child(git::row::badge_element(("file-list-git", i), &entry.name, badge, cx));
         }
-        // PORT ME(tags): the tag dots.
+        if let Some(dots) = tag_dots(("file-list-tags", i), &tags, cx) {
+            name_cell = name_cell.child(dots);
+        }
         if let Some(state) = cloud_state(entry) {
             let (name, label, color) = cloud_mark(state, t);
             name_cell = name_cell.child(
@@ -225,7 +257,7 @@ impl FileList {
             .id(("file-row", i))
             .role(Role::ListBoxOption)
             .aria_label(entry.name.clone())
-            .aria_description(describe(&type_text, &size_text, &date_text))
+            .aria_description(with_media(describe(&type_text, &size_text, &date_text), &media))
             .aria_selected(selected)
             .aria_position_in_set(i + 1)
             .aria_size_of_set(frame.rows.len())
@@ -266,13 +298,12 @@ impl FileList {
                 Track::Column { id, width } => line.child(match id {
                     ColumnId::Modified => date_cell(i, width, date_text.clone(), full_date.clone(), hot, t),
                     ColumnId::Type => text_cell(width, type_text.clone(), false, t),
-                    // PORT ME(media): what photos, videos and songs say about themselves (media.ts's facts):
-                    // the dates they were taken, their dimensions, durations, artists and albums. Empty until
-                    // the media part reads them, as the web's cells were before they were read.
-                    ColumnId::Taken | ColumnId::Dimensions | ColumnId::Artist | ColumnId::Album => {
-                        text_cell(width, String::new(), false, t)
-                    }
-                    ColumnId::Duration => text_cell(width, String::new(), true, t),
+                    // What photos, videos and songs say about themselves (media.ts's facts), empty until read.
+                    ColumnId::Taken => taken_cell(i, width, &media, t),
+                    ColumnId::Dimensions => text_cell(width, media.dimensions.clone(), false, t),
+                    ColumnId::Duration => text_cell(width, media.duration.clone(), true, t),
+                    ColumnId::Artist => said_cell(("file-list-artist", i), width, media.artist.clone(), t),
+                    ColumnId::Album => said_cell(("file-list-album", i), width, media.album.clone(), t),
                     ColumnId::Size => size_cell(width, size_text.clone(), percent, t),
                 }),
             };
@@ -377,6 +408,23 @@ fn describe(kind: &str, size: &str, date: &str) -> String {
         .join(", ")
 }
 
+/// What the row's description says besides its kind, size and date: what its file says of itself, in the columns
+/// of that (a screen reader hears them as the cells are drawn: the web read them out of the cells).
+fn with_media(described: String, media: &MediaCells) -> String {
+    [
+        described.as_str(),
+        media.taken.as_str(),
+        media.dimensions.as_str(),
+        media.duration.as_str(),
+        media.artist.as_str(),
+        media.album.as_str(),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
 /// A group's header line: its name, how many items it has and their size.
 fn group_header(header: &GroupHeader, index: usize, t: &Tokens) -> AnyElement {
     let count = if header.count == 1 {
@@ -427,6 +475,54 @@ fn text_cell(width: Pixels, text: String, end: bool, t: &Tokens) -> AnyElement {
         .text_color(t.muted_foreground);
     let cell = if end { cell.text_end() } else { cell.text_start() };
     cell.child(isolate(text)).into_any_element()
+}
+
+/// When it was taken: the date the file says in text close to the foreground's, else (for a picture or video that
+/// doesn't say) its modified date, dimmer. The tooltip says which.
+fn taken_cell(i: usize, width: Pixels, media: &MediaCells, t: &Tokens) -> AnyElement {
+    let color = if media.taken_says {
+        t.foreground.opacity(0.8)
+    } else {
+        t.muted_foreground.opacity(0.7)
+    };
+    let cell = div()
+        .id(("file-list-taken", i))
+        .w(width)
+        .flex_none()
+        .truncate()
+        .text_start()
+        .text_size(theme::size::XS)
+        .text_color(color)
+        .child(isolate(media.taken.clone()));
+    match media.taken_title.clone().filter(|_| !media.taken.is_empty()) {
+        Some(title) => {
+            let title: SharedString = title.into();
+            cell.tooltip(move |window, cx| tooltip(title.clone(), window, cx))
+                .test_support()
+                .into_any_element()
+        }
+        None => cell.test_support().into_any_element(),
+    }
+}
+
+/// A plain text a file says (its artist, its album), with the text itself as its tooltip for when it is cut.
+fn said_cell(id: (&'static str, usize), width: Pixels, text: String, t: &Tokens) -> AnyElement {
+    let cell = div()
+        .id(id)
+        .w(width)
+        .flex_none()
+        .truncate()
+        .text_start()
+        .text_size(theme::size::XS)
+        .text_color(t.muted_foreground);
+    if text.is_empty() {
+        return cell.test_support().into_any_element();
+    }
+    let title: SharedString = text.clone().into();
+    cell.child(isolate(text))
+        .tooltip(move |window, cx| tooltip(title.clone(), window, cx))
+        .test_support()
+        .into_any_element()
 }
 
 /// The date: small and muted, with a green dot when it changed in the last hour. Its tooltip is the full date.
@@ -565,6 +661,34 @@ mod tests {
         let mut hidden = file("C:\\x", ".secret", 1, 0);
         hidden.attrs |= attr::HIDDEN;
         assert!(is_dim(&hidden, false, false));
+    }
+
+    #[test]
+    fn what_a_file_says_of_itself_is_added_to_its_rows_description() {
+        let plain = MediaCells::default();
+        assert_eq!(with_media("TXT file, 1 B".to_string(), &plain), "TXT file, 1 B");
+        let said = MediaCells {
+            taken: "Mar 3".into(),
+            dimensions: "10 × 20".into(),
+            duration: "3:05".into(),
+            artist: "Nour".into(),
+            ..MediaCells::default()
+        };
+        assert_eq!(
+            with_media("MP3 file, 3 MB".to_string(), &said),
+            "MP3 file, 3 MB, Mar 3, 10 × 20, 3:05, Nour"
+        );
+    }
+
+    #[test]
+    fn the_entries_on_some_lines_are_the_rows_there() {
+        use crate::explorer::Rows;
+        let rows = Rows::identity(vec![file("C:\\x", "a", 1, 0), file("C:\\x", "b", 1, 0)].into());
+        let names = |lines: std::ops::Range<usize>| -> Vec<String> {
+            entries_on(&rows, lines).map(|e| e.name.clone()).collect()
+        };
+        assert_eq!(names(0..2), ["a", "b"]);
+        assert_eq!(names(1..9), ["b"], "past the end is left out");
     }
 
     #[test]

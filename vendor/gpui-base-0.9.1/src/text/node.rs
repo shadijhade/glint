@@ -36,7 +36,9 @@ use crate::{
 
 use super::{
     SelectionFormat, TextViewStyle,
-    utils::{data_url_image, list_item_prefix, ordered_list_ordinal},
+    utils::{
+        data_url_image, first_strong_rtl, has_rtl_text, list_item_prefix, ordered_list_ordinal,
+    },
 };
 
 const CHECK_SVG_LIGHT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none"><path d="m3.25 8.25 3 3 6.5-7" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
@@ -454,6 +456,32 @@ enum BlockTextKind {
 impl BlockNode {
     pub(super) fn is_list_item(&self) -> bool {
         matches!(self, Self::ListItem { .. })
+    }
+
+    /// The direction of the first strong letter in the block's text, in
+    /// reading order (HTML's `dir="auto"`). Code and plugin blocks have no
+    /// direction of their own: code reads left to right whatever surrounds it.
+    fn first_strong_rtl(&self) -> Option<bool> {
+        match self {
+            Self::Paragraph(paragraph) => paragraph.first_strong_rtl(),
+            Self::Heading { children, .. } => children.first_strong_rtl(),
+            Self::Root { children, .. }
+            | Self::Blockquote { children, .. }
+            | Self::Surface { children, .. }
+            | Self::List { children, .. }
+            | Self::ListItem { children, .. } => children.iter().find_map(Self::first_strong_rtl),
+            Self::Table(table) => table
+                .children
+                .iter()
+                .flat_map(|row| row.children.iter())
+                .find_map(|cell| cell.children.first_strong_rtl()),
+            Self::CodeBlock(_)
+            | Self::Custom { .. }
+            | Self::Break { .. }
+            | Self::HorizontalRule { .. }
+            | Self::Definition { .. }
+            | Self::Unknown => None,
+        }
     }
 
     /// Whether this block shows nothing: a link definition, a comment, a `<br>`.
@@ -2771,9 +2799,24 @@ pub(crate) struct NodeContext {
     /// The font size the text view inherits this frame, or zero when not
     /// resolved; read it through `body_font_size`.
     pub(crate) body_font_size: Pixels,
+    /// The direction the view's surroundings read in, taken from the
+    /// alignment the view inherits: `Some(true)` when text starts at the
+    /// right, `Some(false)` at the left, and `None` when it is centered or
+    /// unknown, which leaves every block's alignment alone.
+    ///
+    /// Blocks that read the other way (an Arabic paragraph in an English
+    /// window) take their own direction, as HTML's `dir="auto"` does.
+    pub(crate) base_rtl: Option<bool>,
 }
 
 impl NodeContext {
+    /// The direction `first` (the first strong letter of a block) gives it,
+    /// or the surroundings' when it has none. `None` when the surroundings
+    /// do not set a direction.
+    fn block_rtl(&self, first: Option<bool>) -> Option<bool> {
+        self.base_rtl.map(|base| first.unwrap_or(base))
+    }
+
     fn foregrounds(&self, key: Option<u64>) -> &[(Range<usize>, Hsla)] {
         key.and_then(|key| self.foregrounds.as_ref()?.get(&key))
             .map_or(&[], Vec::as_slice)
@@ -2949,10 +2992,91 @@ impl Paragraph {
         highlights
     }
 
+    /// Whether any of the paragraph's text is in a right-to-left script.
+    fn has_rtl_text(&self) -> bool {
+        self.children.iter().any(|child| has_rtl_text(&child.text))
+    }
+
+    /// The direction of the first strong letter in the paragraph's text.
+    fn first_strong_rtl(&self) -> Option<bool> {
+        self.children
+            .iter()
+            .find_map(|child| first_strong_rtl(&child.text))
+    }
+
+    /// The paragraph as an element, aligned to its own start edge.
+    ///
     /// `fade_key` names this paragraph's text for the streamed fade-in and
     /// for range highlights; the owning block supplies it because a heading
     /// or table cell paragraph carries no span of its own.
     fn render(
+        &self,
+        fade_key: Option<TextLeafKey>,
+        node_cx: &NodeContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        self.render_aligned(fade_key, node_cx, true, window, cx)
+    }
+
+    /// [`Self::render`], where `auto` says whether the paragraph takes its
+    /// alignment from its own direction. A table column the author aligned
+    /// keeps that alignment.
+    ///
+    /// A paragraph that reads the way its surroundings do is left to the
+    /// alignment it inherits, so an English document in an English window is
+    /// laid out as it always was. One that reads the other way (Arabic in an
+    /// English window, English in an Arabic window) is set in a box of the
+    /// full width aligned to its own start edge. In a right-to-left window
+    /// every paragraph is set that way explicitly, so the alignment does not
+    /// depend on a style that may not reach the place it is laid out.
+    fn render_aligned(
+        &self,
+        fade_key: Option<TextLeafKey>,
+        node_cx: &NodeContext,
+        auto: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let inner = self.render_unaligned(fade_key, node_cx, window, cx);
+        let Some(base) = node_cx.base_rtl.filter(|_| auto) else {
+            return inner;
+        };
+        // Pictures alone have no direction to follow.
+        if self
+            .children
+            .iter()
+            .all(|child| child.text.trim().is_empty())
+        {
+            return inner;
+        }
+        let own = node_cx.block_rtl(self.first_strong_rtl()).unwrap_or(base);
+        if own == base && !own {
+            return inner;
+        }
+        let block = div().w_full().min_w_0();
+        if !own {
+            return block.text_left().child(inner).into_any_element();
+        }
+        // Text that reads right to left is laid out the width of the block,
+        // so its alignment places it. Text that does not (numbers, symbols,
+        // in a window that reads right to left) is as wide as its longest
+        // row, whatever the alignment says: the box is moved to the end
+        // instead, and its rows are aligned within it.
+        if self.has_rtl_text() {
+            block.text_right().child(inner).into_any_element()
+        } else {
+            block
+                .flex()
+                .flex_col()
+                .items_end()
+                .text_right()
+                .child(inner)
+                .into_any_element()
+        }
+    }
+
+    fn render_unaligned(
         &self,
         fade_key: Option<TextLeafKey>,
         node_cx: &NodeContext,
@@ -3837,6 +3961,9 @@ impl BlockNode {
 impl BlockNode {
     /// `task_toggle` is the view's task toggle handler with the event a click
     /// on the item's checkbox reports, when the checkbox should be clickable.
+    ///
+    /// `rtl` puts the marker at the item's right: an item that reads right to
+    /// left hangs its marker on the start side, against the text.
     #[allow(clippy::too_many_arguments)]
     fn render_list_item_row(
         content: AnyElement,
@@ -3847,6 +3974,7 @@ impl BlockNode {
         style: &TextViewStyle,
         line_height: Pixels,
         indent: Pixels,
+        rtl: bool,
     ) -> Div {
         h_flex()
             .w_full()
@@ -3854,16 +3982,18 @@ impl BlockNode {
             .relative()
             .items_start()
             .content_start()
+            .when(rtl, |this| this.flex_row_reverse())
             .when(!options.todo && checked.is_none(), |this| {
                 // The marker hangs in an indent column, right-aligned against
-                // the text like an outside list marker, and steps back in
-                // color so the item text leads.
+                // the text like an outside list marker (left-aligned in an
+                // item that reads right to left, whose marker is on the
+                // right), and steps back in color so the item text leads.
                 this.child(
                     div()
                         .flex_none()
                         .min_w(indent)
-                        .pr(indent * 0.3)
-                        .text_right()
+                        .when(!rtl, |this| this.pr(indent * 0.3).text_right())
+                        .when(rtl, |this| this.pl(indent * 0.3).text_left())
                         .text_color(style.muted_foreground())
                         .refine_style(style.list_style())
                         .child(
@@ -3888,7 +4018,8 @@ impl BlockNode {
                 this.child(
                     div()
                         .flex()
-                        .mr_2()
+                        .when(!rtl, |this| this.mr_2())
+                        .when(rtl, |this| this.ml_2())
                         .h(line_height)
                         .flex_none()
                         .items_center()
@@ -3964,6 +4095,10 @@ impl BlockNode {
             } => {
                 let body = body_font_size(node_cx, window);
                 let indent = body * 1.4;
+                // An item takes the direction of its first strong letter
+                // (the window's when it has none), and hangs its marker and
+                // indents its continuation on that side.
+                let rtl = node_cx.block_rtl(item.first_strong_rtl()) == Some(true);
                 let task_toggle = match (&node_cx.task_toggle_handler, checked, span, task_marker) {
                     (Some(handler), Some(checked), Some(item), Some(marker)) => Some((
                         handler.clone(),
@@ -4014,7 +4149,8 @@ impl BlockNode {
                                                 div().child(preceding_row).child(
                                                     div()
                                                         .w_full()
-                                                        .pl(indent)
+                                                        .when(!rtl, |this| this.pl(indent))
+                                                        .when(rtl, |this| this.pr(indent))
                                                         .overflow_hidden()
                                                         .child(text),
                                                 ),
@@ -4032,20 +4168,26 @@ impl BlockNode {
                                         &node_cx.style,
                                         window.line_height(),
                                         indent,
+                                        rtl,
                                     ));
                                 }
                                 BlockNode::List { .. } => {
-                                    items.push(div().ml(indent).child(child.render_block(
-                                        NodeRenderOptions {
-                                            depth: options.depth + 1,
-                                            todo: checked.is_some(),
-                                            is_last: true,
-                                            ..options
-                                        },
-                                        node_cx,
-                                        window,
-                                        cx,
-                                    )));
+                                    items.push(
+                                        div()
+                                            .when(!rtl, |this| this.ml(indent))
+                                            .when(rtl, |this| this.mr(indent))
+                                            .child(child.render_block(
+                                                NodeRenderOptions {
+                                                    depth: options.depth + 1,
+                                                    todo: checked.is_some(),
+                                                    is_last: true,
+                                                    ..options
+                                                },
+                                                node_cx,
+                                                window,
+                                                cx,
+                                            )),
+                                    );
                                 }
                                 BlockNode::Root { .. }
                                 | BlockNode::Heading { .. }
@@ -4077,6 +4219,7 @@ impl BlockNode {
                                             &node_cx.style,
                                             window.line_height(),
                                             indent,
+                                            rtl,
                                         ));
                                     } else {
                                         // Indent continuation blocks to align with a
@@ -4086,7 +4229,8 @@ impl BlockNode {
                                             div()
                                                 .w_full()
                                                 .min_w_0()
-                                                .pl(indent)
+                                                .when(!rtl, |this| this.pl(indent))
+                                                .when(rtl, |this| this.pr(indent))
                                                 .overflow_hidden()
                                                 .child(block),
                                         );
@@ -4357,7 +4501,15 @@ impl BlockNode {
                         .span
                         .map(|span| TextLeafKey::table_cell(span.start, cell_ordinal));
                     cell_ordinal += 1;
-                    cell.children.render(fade_key, node_cx, window, cx)
+                    // A column the author aligned keeps that alignment; the
+                    // others follow their cell's own direction.
+                    cell.children.render_aligned(
+                        fade_key,
+                        node_cx,
+                        align == ColumnumnAlign::None,
+                        window,
+                        cx,
+                    )
                 });
 
                 let grow = SLACK_GROW * column.max / total_w;
@@ -4533,40 +4685,47 @@ impl BlockNode {
                     ))
                     .into_any_element()
             }
-            BlockNode::Blockquote { children, .. } => gapped(
-                div()
-                    .w_full()
-                    .text_color(node_cx.style.muted_foreground())
-                    .border_l_2()
-                    .border_color(node_cx.style.border())
-                    .pl(body_font_size(node_cx, window) * 0.9)
-                    .refine_style(node_cx.style.blockquote_style())
-                    // Nested tables measure while rendering, before this div applies its text style.
-                    .children({
-                        let children_len = children.len();
-                        children.into_iter().enumerate().map(move |(index, c)| {
-                            let is_last = index == children_len - 1;
-                            let (is_first, prev) = flow_position(children, index);
-                            window.with_text_style(
-                                Some(node_cx.style.blockquote_style().text.clone()),
-                                |window| {
-                                    c.render_block(
-                                        NodeRenderOptions {
-                                            is_first,
-                                            prev,
-                                            ..options.is_last(is_last)
-                                        },
-                                        node_cx,
-                                        window,
-                                        cx,
-                                    )
-                                },
-                            )
+            BlockNode::Blockquote { children, .. } => {
+                let quote_rtl = node_cx.block_rtl(self.first_strong_rtl()) == Some(true);
+                let quote_pad = body_font_size(node_cx, window) * 0.9;
+                gapped(
+                    div()
+                        .w_full()
+                        .text_color(node_cx.style.muted_foreground())
+                        // The bar and its padding are on the side the quote
+                        // starts at: the right for a quote that reads right to
+                        // left.
+                        .when(!quote_rtl, |this| this.border_l_2().pl(quote_pad))
+                        .when(quote_rtl, |this| this.border_r_2().pr(quote_pad))
+                        .border_color(node_cx.style.border())
+                        .refine_style(node_cx.style.blockquote_style())
+                        // Nested tables measure while rendering, before this div applies its text style.
+                        .children({
+                            let children_len = children.len();
+                            children.into_iter().enumerate().map(move |(index, c)| {
+                                let is_last = index == children_len - 1;
+                                let (is_first, prev) = flow_position(children, index);
+                                window.with_text_style(
+                                    Some(node_cx.style.blockquote_style().text.clone()),
+                                    |window| {
+                                        c.render_block(
+                                            NodeRenderOptions {
+                                                is_first,
+                                                prev,
+                                                ..options.is_last(is_last)
+                                            },
+                                            node_cx,
+                                            window,
+                                            cx,
+                                        )
+                                    },
+                                )
+                            })
                         })
-                    })
-                    .into_any_element(),
-                mb,
-            ),
+                        .into_any_element(),
+                    mb,
+                )
+            }
             BlockNode::Surface { name, children, .. } => {
                 if children.iter().all(Self::draws_nothing) {
                     // Nothing to hold, as when a stream has only sent the marker.
@@ -4647,7 +4806,20 @@ impl BlockNode {
                     items
                 })
                 .into_any_element(),
-            BlockNode::CodeBlock(code_block) => code_block.render(&options, node_cx, window, cx),
+            BlockNode::CodeBlock(code_block) => {
+                let block = code_block.render(&options, node_cx, window, cx);
+                // Code reads left to right, whatever the window does.
+                if node_cx.base_rtl == Some(true) {
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .text_left()
+                        .child(block)
+                        .into_any_element()
+                } else {
+                    block
+                }
+            }
             BlockNode::Custom { node, state } => {
                 let inner = match node_cx.markdown_extensions.render_block(node, window, cx) {
                     Some(rendered) => rendered,

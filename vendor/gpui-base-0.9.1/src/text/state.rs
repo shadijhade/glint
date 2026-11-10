@@ -1111,6 +1111,13 @@ impl TextViewState {
 impl Render for TextViewState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let typography = (window.text_style(), window.rem_size());
+        // The alignment the view inherits says which way its window reads;
+        // blocks that read the other way align themselves.
+        let base_rtl = match typography.0.text_align {
+            gpui::TextAlign::Left => Some(false),
+            gpui::TextAlign::Right => Some(true),
+            _ => None,
+        };
         let body_font_size = typography.0.font_size.to_pixels(typography.1);
         if self
             .layout_text_style
@@ -1152,6 +1159,7 @@ impl Render for TextViewState {
             foregrounds: Default::default(),
             reveal,
             body_font_size,
+            base_rtl,
         };
 
         let content = v_flex()
