@@ -838,7 +838,7 @@ impl Render for AddressBar {
             .rounded(theme::size::RADIUS_LG)
             .border_1()
             .border_color(if lit { t.primary.opacity(0.55) } else { t.stroke })
-            .bg(if lit { t.field_focus } else { t.field })
+            .bg(if lit { t.field_focus } else { t.glass })
             .child(field)
             .child(div().flex_none().w(px(1.)).h(space(4.)).bg(t.stroke))
             .child(search)

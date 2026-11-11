@@ -188,8 +188,11 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
         .text_center()
         .text_size(theme::size::SM)
         .text_color(t.muted_foreground)
-        // A failed search speaks over tiles it found before it failed.
-        .bg(t.background);
+        // A failed search speaks over tiles it found before it failed: only then does it hide what is under it
+        // (elsewhere the sheet's glass shows).
+        .when(matches!(empty, Empty::SearchFailed { .. }), |centered| {
+            centered.bg(t.background)
+        });
     match empty {
         Empty::SearchFailed { query, scope, error } => {
             let heading = t!("The search failed");
@@ -419,9 +422,9 @@ pub(super) fn view(empty: &Empty, tab: TabId, cx: &App) -> impl IntoElement {
                 .aria_label(title.clone())
                 .test_support()
                 .child(
-                    icon(IconName::FolderOpen)
-                        .size_8()
-                        .text_color(t.muted_foreground.opacity(0.6)),
+                    div()
+                        .opacity(0.9)
+                        .child(crate::art::folder(px(72.), theme::folder_tone(cx), None, cx)),
                 )
                 .child(strong(title))
                 .when(!archive, |centered| {

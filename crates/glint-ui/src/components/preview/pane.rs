@@ -438,7 +438,6 @@ impl Render for PreviewPane {
             .test_support()
             .size_full()
             .min_w_0()
-            .bg(t.background)
             .text_start()
             .child(body)
     }
@@ -688,12 +687,7 @@ impl PreviewPane {
         };
         card("preview-nothing")
             .aria_label(t!("Select a file to preview it"))
-            .child(
-                icon(IconName::FolderOpen)
-                    .size(px(56.))
-                    .flex_none()
-                    .text_color(theme::tailwind("amber-500").unwrap_or_default()),
-            )
+            .child(crate::art::folder(px(88.), theme::folder_tone(cx), None, cx))
             .child(named(name.into()))
             .child(line(match summary.total {
                 Some(total) => format!(

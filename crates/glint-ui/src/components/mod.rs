@@ -30,6 +30,8 @@ pub mod menus;
 pub mod palette;
 /// The search bar and the closed-folder bar over each pane (wave 15).
 pub mod pane_bars;
+/// The head of a pane: the folder's name and picture, what is in it, and a chip for each kind.
+pub mod pane_head;
 /// The preview pane and Quick Look.
 pub mod preview;
 /// The Quick Search window: the shortcut's and the tray's search (QuickSearch.tsx).

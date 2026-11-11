@@ -82,9 +82,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use typeahead::TypeAhead;
 
-/// The icon of a kind of file (`kit::kind_icon`), for the cells.
-use crate::kit::kind_icon;
-
 /// How long the arrow keys resting on a folder wait before reading it ahead (`setTimeout(…, 120)`).
 const PREFETCH_AFTER: Duration = Duration::from_millis(120);
 /// More files than this asked to open at once need the person's say-so (`files.length > 10`).
@@ -1253,7 +1250,8 @@ impl Render for FileList {
             inside: view.find.as_ref().map(|find| find.inside.clone()).unwrap_or_default(),
             thumbnails,
             lane: view.id.to_string(),
-            box_px: f32::from(window.rem_size()),
+            // A row's picture: a quarter larger than its text.
+            box_px: (f32::from(window.rem_size()) * 1.25).round(),
             scale: window.scale_factor(),
         });
         self.frame = frame.clone();
