@@ -618,7 +618,7 @@ impl ThisPc {
             .border_color(border)
             .bg(card)
             .cursor_pointer()
-            .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent.opacity(0.6)))
+            .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent))
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 if lit.get() == Some(index) {
                     style.border_color(primary).bg(primary.opacity(0.15))
@@ -805,7 +805,7 @@ impl ThisPc {
             .border_color(border)
             .bg(card)
             .cursor_pointer()
-            .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent.opacity(0.6)))
+            .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent))
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 if lit.get() == Some(index) {
                     style.border_color(primary).bg(primary.opacity(0.15))

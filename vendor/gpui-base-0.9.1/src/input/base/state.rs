@@ -534,6 +534,9 @@ pub struct InputBaseState<M: InputModeKind> {
     scroll_bounce: bool,
     /// The text's stretch past an end, while it lasts.
     pub(super) overscroll: Overscroll,
+    /// Glint: what is left of a wheel notch's glide (see gpui's `wheel_glide`), and whether its steps are running.
+    wheel_left: Point<Pixels>,
+    wheel_gliding: bool,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
     /// The size of the scrollable content.
@@ -1033,6 +1036,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             scroll_handle: ScrollHandle::new(),
             scroll_bounce: crate::ScrollBounce::enabled_by_default(),
             overscroll: Overscroll::default(),
+            wheel_left: Point::default(),
+            wheel_gliding: false,
             scroll_size: gpui::size(px(0.), px(0.)),
             editor_scrollbar_snapshot: Cell::new(None),
             overview_ruler_rows: Default::default(),
@@ -2981,7 +2986,12 @@ impl<M: InputModeKind> InputBaseState<M> {
                 );
                 cx.notify();
             }
-            self.update_scroll_offset(Some(old_offset + delta), cx);
+            // Glint: a notch of a mouse wheel glides to its place over the next frames.
+            if gpui::wheel_notch_glides(&event.delta, cx) {
+                self.wheel_glide(delta, window, cx);
+            } else {
+                self.update_scroll_offset(Some(old_offset + delta), cx);
+            }
         }
 
         // Text that has room to scroll keeps a scroll over it even where the
@@ -2997,6 +3007,53 @@ impl<M: InputModeKind> InputBaseState<M> {
         // The handles follow the text; the menu would sit over whatever
         // scrolls underneath it, so it steps aside until the finger lifts.
         self.edit_menu_on_scroll(event.touch_phase, cx);
+    }
+
+    /// Glint: adds a wheel notch to the glide and, if none is running, takes its first step now.
+    fn wheel_glide(&mut self, delta: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        // A notch the other way drops what was left of the old glide.
+        if self.wheel_left.x.as_f32() * delta.x.as_f32() < 0. {
+            self.wheel_left.x = px(0.);
+        }
+        if self.wheel_left.y.as_f32() * delta.y.as_f32() < 0. {
+            self.wheel_left.y = px(0.);
+        }
+        self.wheel_left = self.wheel_left + delta;
+        if !self.wheel_gliding {
+            self.wheel_gliding = true;
+            self.wheel_glide_step(None, window, cx);
+        }
+    }
+
+    /// Glint: one step of the wheel's glide, and the next one a frame later while there is more to scroll.
+    fn wheel_glide_step(
+        &mut self,
+        last: Option<std::time::Instant>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let now = std::time::Instant::now();
+        let elapsed = last.map(|last| now.duration_since(last));
+        let scale = window.scale_factor();
+        let step = point(
+            gpui::wheel_glide_advance(self.wheel_left.x, elapsed, scale),
+            gpui::wheel_glide_advance(self.wheel_left.y, elapsed, scale),
+        );
+        self.wheel_left = self.wheel_left - step;
+        let before = self.scroll_handle.offset();
+        self.update_scroll_offset(Some(before + step), cx);
+        let moved = self.scroll_handle.offset() != before;
+        let done = !moved
+            || (self.wheel_left.x.abs() < px(0.5) && self.wheel_left.y.abs() < px(0.5));
+        if done {
+            // At an end, or there: the glide is over.
+            self.wheel_left = Point::default();
+            self.wheel_gliding = false;
+            return;
+        }
+        cx.on_next_frame(window, move |this, window, cx| {
+            this.wheel_glide_step(Some(now), window, cx)
+        });
     }
 
     /// Whether the text takes a wheel event moving by `delta` from the

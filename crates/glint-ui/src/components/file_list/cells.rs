@@ -19,8 +19,11 @@ use glint_model::groups::GroupHeader;
 use glint_model::paths::parent_path;
 use std::collections::HashMap;
 
-/// The height of a line, 1.75 rem (`rowHeight`: 28 px at the usual size).
-pub const ROW_HEIGHT: Rems = rems(1.75);
+/// The height of a line, 1.875 rem (30 px at the usual size): a 28 px highlight with a pixel of air above and
+/// below, so rows selected together read as rows, not as one slab.
+pub const ROW_HEIGHT: Rems = rems(1.875);
+/// The air between a line's edge and its highlight, at the sides.
+const INSET: Pixels = px(6.);
 /// An item modified within the last hour gets a dot in its date.
 const HOT_FOR_MS: i64 = 3_600_000;
 /// A size bar only shows where it says something: 40% of the biggest here or more.
@@ -253,27 +256,25 @@ impl FileList {
             );
         }
 
-        let mut line = row_start()
-            .id(("file-row", i))
-            .role(Role::ListBoxOption)
-            .aria_label(entry.name.clone())
-            .aria_description(with_media(describe(&type_text, &size_text, &date_text), &media))
-            .aria_selected(selected)
-            .aria_position_in_set(i + 1)
-            .aria_size_of_set(frame.rows.len())
-            .w_full()
-            .h(ROW_HEIGHT)
-            .flex_none()
-            .px(space(3.))
+        // The row's highlight: a rounded fill inside the line (hover, selection, the folder files will drop into),
+        // holding the cells. The line around it is what is clicked, named and measured.
+        let mut fill = row_start()
+            .id(("file-row-fill", i))
+            .relative()
+            .size_full()
+            .min_w_0()
+            // With the line's inset and the border, text starts 12 px in: under the header's.
+            .px(px(5.))
             .gap(space(3.))
+            .rounded(theme::size::RADIUS_ROW)
             .border_1()
             .border_color(hsla(0., 0., 0., 0.))
             .text_size(theme::size::SM)
             .text_color(t.foreground)
             .child(name_cell);
         for track in &frame.tracks {
-            line = match *track {
-                Track::Name => line,
+            fill = match *track {
+                Track::Name => fill,
                 Track::Where => {
                     let place = match (&frame.where_of, frame.recycled) {
                         (_, true) => entry.origin.clone().unwrap_or_default(),
@@ -286,7 +287,7 @@ impl FileList {
                     } else {
                         parent_path(&entry.path)
                     });
-                    line.child(
+                    fill.child(
                         where_track(div().id(("file-list-where-cell", i)))
                             .truncate()
                             .text_size(theme::size::XS)
@@ -295,7 +296,7 @@ impl FileList {
                             .tooltip(move |window, cx| tooltip(full.clone(), window, cx)),
                     )
                 }
-                Track::Column { id, width } => line.child(match id {
+                Track::Column { id, width } => fill.child(match id {
                     ColumnId::Modified => date_cell(i, width, date_text.clone(), full_date.clone(), hot, t),
                     ColumnId::Type => text_cell(width, type_text.clone(), false, t),
                     // What photos, videos and songs say about themselves (media.ts's facts), empty until read.
@@ -309,24 +310,74 @@ impl FileList {
             };
         }
 
-        line = if dropping {
-            // The folder the files will go into: `bg-primary/20` and an outline.
-            line.bg(t.primary.opacity(0.20)).border_color(t.primary)
+        // The item the keyboard is on, in the pane the keyboard is in.
+        let current = focused && !frame.inactive;
+        fill = if dropping {
+            // The folder the files will go into: tinted and outlined.
+            fill.bg(t.primary.opacity(0.20)).border_color(t.primary)
         } else if selected {
-            let tint = if t.dark { 0.20 } else { 0.15 };
             if frame.inactive {
-                // The pane the keyboard isn't in: muted, with a faint ring, as an unfocused window shows it.
-                line.bg(t.primary.opacity(if t.dark { 0.12 } else { 0.10 }))
-                    .border_color(t.primary.opacity(0.25))
+                // The pane the keyboard isn't in: a quiet gray, as an unfocused window shows it.
+                fill.bg(t.selected_inactive)
             } else {
-                line.bg(t.primary.opacity(tint))
+                let over = t.selected_hover;
+                fill.bg(t.selected).hover(move |style| style.bg(over))
             }
         } else {
-            line.hover(|style| style.bg(t.accent.opacity(0.6)))
+            let over = t.accent;
+            fill.hover(move |style| style.bg(over))
         };
-        if focused && !frame.inactive {
-            line = line.border_color(t.primary);
+        if current && selected {
+            // The current item: Windows 11's accent bar at the start edge.
+            let bar = div()
+                .absolute()
+                .top(rems(0.4375))
+                .bottom(rems(0.4375))
+                .w(px(3.))
+                .rounded_full()
+                .bg(t.primary);
+            fill = fill.child(if i18n::is_rtl() {
+                bar.right(px(-1.))
+            } else {
+                bar.left(px(-1.))
+            });
         }
+        // The keyboard's place when it isn't plain from the selection: on an item that isn't selected, or on
+        // one of several that are.
+        if current && (!selected || frame.selected.len() > 1) {
+            fill = fill.border_color(t.primary.opacity(0.7));
+        }
+        let fill =
+            if flashed {
+                // The web's `glint-flash`: the ring holds for the first fifth of 1.15 s, then fades out.
+                let primary = t.primary;
+                fill.with_animation(("file-row-flash", i), Animation::new(FLASH), move |fill, delta| {
+                    match flash_strength(delta) {
+                        strength if strength > 0. => fill
+                            .bg(primary.opacity(0.25 * strength))
+                            .border_color(primary.opacity(0.85 * strength)),
+                        _ => fill,
+                    }
+                })
+                .into_any_element()
+            } else {
+                fill.into_any_element()
+            };
+
+        let mut line = div()
+            .id(("file-row", i))
+            .role(Role::ListBoxOption)
+            .aria_label(entry.name.clone())
+            .aria_description(with_media(describe(&type_text, &size_text, &date_text), &media))
+            .aria_selected(selected)
+            .aria_position_in_set(i + 1)
+            .aria_size_of_set(frame.rows.len())
+            .w_full()
+            .h(ROW_HEIGHT)
+            .flex_none()
+            .px(INSET)
+            .py(px(1.))
+            .child(fill);
         if let Some(opacity) = dimness(dim, dragged) {
             line = line.opacity(opacity);
         }
@@ -365,24 +416,7 @@ impl FileList {
             })),
             None => line,
         };
-        let line = line.test_support();
-        if flashed {
-            // The web's `glint-flash`: the ring holds for the first fifth of 1.15 s, then fades out.
-            let primary = t.primary;
-            return line
-                .with_animation(
-                    ("file-row-flash", i),
-                    Animation::new(FLASH),
-                    move |row, delta| match flash_strength(delta) {
-                        strength if strength > 0. => row
-                            .bg(primary.opacity(0.25 * strength))
-                            .border_color(primary.opacity(0.85 * strength)),
-                        _ => row,
-                    },
-                )
-                .into_any_element();
-        }
-        line.into_any_element()
+        line.test_support().into_any_element()
     }
 }
 
@@ -476,9 +510,9 @@ fn group_header(header: &GroupHeader, index: usize, t: &Tokens) -> AnyElement {
         .items_end()
         .gap(space(2.))
         .px(space(3.))
-        .pb(space(0.5))
+        .pb(space(1.))
         .border_b_1()
-        .border_color(t.border.opacity(0.6))
+        .border_color(t.border.opacity(0.7))
         .text_size(theme::size::XS)
         .child(
             div()
@@ -587,7 +621,7 @@ fn size_cell(width: Pixels, text: String, percent: u32, t: &Tokens) -> AnyElemen
             .bottom(space(0.5))
             .w(relative(percent as f32 / 100.))
             .rounded(theme::size::RADIUS_SM)
-            .bg(t.primary.opacity(if t.dark { 0.18 } else { 0.12 }));
+            .bg(t.primary.opacity(if t.dark { 0.16 } else { 0.11 }));
         // The bar grows from the end edge.
         if i18n::is_rtl() {
             bar.left_0()

@@ -321,15 +321,24 @@ Add-Check 'command-bar' 'the command bar buttons work: New folder, Copy and Past
     Click-Button 'List (Ctrl+Shift+6)'
     Assert-Eventually { -not (Test-GridLayout) } 'back to the list'
 
-    # The View menu.
-    Click-Button 'View: hidden items*'
-    Assert-Eventually { Get-OpenMenu -Name 'View' } 'the View button opens its menu'
-    $names = Get-Names (Find-Els -Type CheckBox -Root (Get-OpenMenu -Name 'View'))
-    foreach ($want in 'Show hidden items', 'Preview pane', 'Dual pane', 'Compare panes') {
-        Assert-True ($names -contains $want) "the View menu has '$want'"
+    # The View menu. A bar with room shows its four switches as buttons instead (a 1100 px window at 100% scale has
+    # the room; at 125% it folds them into the menu): either way all four are there.
+    Clear-Toasts
+    if (Get-Button 'View: hidden items*') {
+        Click-Button 'View: hidden items*'
+        Assert-Eventually { Get-OpenMenu -Name 'View' } 'the View button opens its menu'
+        $names = Get-Names (Find-Els -Type CheckBox -Root (Get-OpenMenu -Name 'View'))
+        foreach ($want in 'Show hidden items', 'Preview pane', 'Dual pane', 'Compare panes') {
+            Assert-True ($names -contains $want) "the View menu has '$want'"
+        }
+        Send-Key 'escape'
+        Assert-Eventually { -not (Get-OpenMenu) } 'Escape closes it'
     }
-    Send-Key 'escape'
-    Assert-Eventually { -not (Get-OpenMenu) } 'Escape closes it'
+    else {
+        foreach ($want in 'Show hidden items*', 'Preview pane*', 'Dual pane*', 'Compare panes*') {
+            Assert-True (Get-Button $want) "the bar has the '$want' switch"
+        }
+    }
 
     # The Tools menu opens too (its items are tools that may be missing on this PC, so only that it opens is checked).
     Click-Button 'Tools'

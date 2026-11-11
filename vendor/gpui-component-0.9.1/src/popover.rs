@@ -23,7 +23,10 @@ pub(crate) fn init(_: &mut App) {}
 ///
 /// This is shadcn/ui's figure: its popup surfaces carry `animate-in`, whose
 /// duration is 150ms.
-const DROPDOWN_ENTER_DURATION: Duration = Duration::from_millis(150);
+///
+/// Glint: 120ms. Menus are opened dozens of times an hour; the surface should
+/// be there by the time the eye is.
+const DROPDOWN_ENTER_DURATION: Duration = Duration::from_millis(120);
 
 /// Where a dropdown starts out, relative to where it comes to rest.
 ///

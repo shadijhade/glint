@@ -71,6 +71,8 @@ pub(super) struct Frame {
     pub viewer: EntityId,
     /// A fingerprint of the thumbnails last asked for, so the service is told only when the set changes.
     pub shown: Rc<Cell<u64>>,
+    /// A tile drawn this frame has a picture still fading in: the grid draws again next frame.
+    pub arriving: Cell<bool>,
     /// The scrub overlay of the video tile the pointer is on, and that tile's path.
     pub scrub: Option<(String, Entity<crate::components::preview::player::Scrub>)>,
     pub on_down: Handler<(usize, MouseDownEvent)>,
@@ -189,7 +191,7 @@ pub(super) fn rows_in(frame: &Rc<Frame>, range: Range<usize>, window: &mut Windo
             window.drop_image(freed).ok();
         }
     }
-    range
+    let rows = range
         .map(|r| {
             let mut tiles = Vec::with_capacity(cols);
             for i in (r * cols).max(first)..((r + 1) * cols).min(end) {
@@ -206,7 +208,12 @@ pub(super) fn rows_in(frame: &Rc<Frame>, range: Range<usize>, window: &mut Windo
                 .children(tiles)
                 .into_any_element()
         })
-        .collect()
+        .collect();
+    // Pictures that have just come in are fading in over their icons: keep drawing until they are in.
+    if frame.arriving.take() && !measuring {
+        window.request_animation_frame();
+    }
+    rows
 }
 
 /// Tells the thumbnail service which thumbnails the rows in `items` need, if that changed since the last frame.
@@ -248,27 +255,38 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
         // `bg-primary/20 outline-primary`: the folder the files would go into.
         t.primary.opacity(0.20)
     } else if selected {
-        // `bg-primary/15 dark:bg-primary/20`; muted in the pane the keyboard isn't in.
-        t.primary.opacity(match (frame.inactive, t.dark) {
-            (true, _) => 0.10,
-            (false, true) => 0.20,
-            (false, false) => 0.15,
-        })
+        // Tinted with the accent; a quiet gray in the pane the keyboard isn't in.
+        if frame.inactive {
+            t.selected_inactive
+        } else {
+            t.selected
+        }
     } else if frame.flashed.contains(&entry.path) {
         // `glint-flash`: just arrived (created, pasted, dropped, renamed).
         t.primary.opacity(0.25)
     } else {
         hsla(0., 0., 0., 0.)
     };
-    let border = if shown_focus || dropping {
-        t.primary
-    } else if selected && frame.inactive {
-        t.primary.opacity(0.25)
+    // The outline: strong on the folder files would go into and where the keyboard is when the selection doesn't
+    // say (an item that isn't selected, or one of several); soft round everything selected.
+    let border = if dropping || (shown_focus && (!selected || frame.selection.len() > 1)) {
+        t.primary.opacity(0.85)
+    } else if selected && !frame.inactive {
+        t.primary.opacity(0.38)
     } else {
         hsla(0., 0., 0., 0.)
     };
+    // What the pointer adds: a step up from wherever the tile is.
+    let over = if selected && !frame.inactive {
+        t.selected_hover
+    } else {
+        t.accent
+    };
 
-    let look = frame.thumbs.read(cx).look(entry, thumb, frame.scale);
+    let look = frame.thumbs.read(cx).look_arriving(entry, thumb, frame.scale);
+    if look.arriving() {
+        frame.arriving.set(true);
+    }
     let kind = kind_of(entry);
     let icon_px = thumb * if entry.dir { 2. / 3. } else { 7. / 12. };
     let mut square = thumbnail_square(&look, kind, thumb, icon_px, true, cx);
@@ -356,13 +374,13 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                 .items_center()
                 .px(space(1.5))
                 .pt(space(2.))
-                .rounded(theme::size::RADIUS)
+                .rounded(theme::size::RADIUS_LG)
                 .border_1()
                 .border_color(border)
                 .bg(background)
                 .text_center()
-                .when(!selected && !dropping, |tile| {
-                    tile.hover(|hover| hover.bg(t.accent.opacity(0.6)))
+                .when(!dropping && !(selected && frame.inactive), |tile| {
+                    tile.hover(move |hover| hover.bg(over))
                 })
                 .when_some(faded, |tile, opacity| tile.opacity(opacity))
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {

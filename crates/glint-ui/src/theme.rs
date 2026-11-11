@@ -9,10 +9,22 @@
 //! div().bg(t.card).text_color(t.muted_foreground).border_color(t.border)
 //! ```
 //!
-//! **Where the numbers come from.** Colors are the HSL triplets of index.css (`--background: 0 0% 100%`…),
-//! written here as `hsl(0., 0., 100.)`. Sizes follow Tailwind's 4 px unit at Glint's base size
-//! ([`crate::kit::space`]), and the type scale is Tailwind's: `xs` 12, `sm` 14, `base` 16 px (see [`size`]).
-//! Fonts are Windows 11's UI font and Cascadia Mono, with fallbacks for a PC that lacks them.
+//! **Where the numbers come from.** The token names are index.css's (`--background`, `--muted-foreground`…);
+//! the values are Glint's native palette: cool neutrals (hue 240, a few percent of saturation, Tailwind's zinc
+//! family) so grays read as designed rather than as plain gray, in three depths (the chrome behind, the sheet the
+//! files are on, and what floats over it), with the logo's pink as the accent. Sizes follow Tailwind's 4 px unit
+//! at Glint's base size ([`crate::kit::space`]), and the type scale is Tailwind's: `xs` 12, `sm` 14, `base` 16 px
+//! (see [`size`]). Fonts are Windows 11's UI font and Cascadia Mono, with fallbacks for a PC that lacks them.
+//!
+//! **Depth.** The window has three levels. *Chrome* (title bar, toolbar, sidebar) is the darkest and lets Mica
+//! through. The *sheet* (`background`) holds the files and sits on it with a rounded corner and a hairline
+//! ([`Tokens::stroke`]). *Floating* things (menus, the palette, dialogs, notices) are lighter still and cast a
+//! shadow ([`elevation`]). Hover, pressed and selected fills are see-through ([`Tokens::accent`],
+//! [`Tokens::pressed`], [`Tokens::selected`]), so they read the same on every level.
+//!
+//! **Motion.** [`motion`] holds the durations and curves everything moves with, and turns on what the vendored
+//! GPUI adds for Glint: hover styles that fade, and a wheel that glides. Windows' own "Animation effects" switch
+//! turns all of it off ([`motion::sync_with_windows`]).
 //!
 //! **The accent.** With the setting "Windows' accent color", `primary` and `ring` follow the color chosen
 //! in Windows (appearance.rs read it with `UISettings`; [`read_windows_accent`] is that port). Windows 11
@@ -55,6 +67,220 @@ pub mod size {
     pub const RADIUS_LG: Pixels = px(8.);
     /// `rounded-xl`: dialogs.
     pub const RADIUS_XL: Pixels = px(12.);
+    /// The sheet the files are on: its corner against the chrome.
+    pub const RADIUS_SHEET: Pixels = px(10.);
+    /// A row's or a tile's highlight (hover, selection): a pill inside its line.
+    pub const RADIUS_ROW: Pixels = px(6.);
+}
+
+/// How things move: the durations and curves, and the switches for what the vendored GPUI adds for Glint.
+///
+/// Rules of thumb: something the pointer causes directly (hover, press) answers within a frame and settles in
+/// about a tenth of a second; something that appears (a menu, the palette, a dialog) arrives in under a fifth of a
+/// second on a curve that starts fast ([`enter`]); something that leaves goes quicker than it came. Nothing waits
+/// for an animation: every one starts from what is already on screen and can be interrupted.
+pub mod motion {
+    use gpui_kit::App;
+    use std::time::Duration;
+
+    /// Hover fills fading in: almost at once, so the pointer never feels behind.
+    pub const HOVER_IN: Duration = Duration::from_millis(70);
+    /// Hover fills fading out: a short trail behind the pointer.
+    pub const HOVER_OUT: Duration = Duration::from_millis(160);
+    /// Small things changing state: a selection's fill, a toggle, a chevron.
+    pub const FAST: Duration = Duration::from_millis(110);
+    /// Things arriving: menus, the palette, panes, a folder's files.
+    pub const BASE: Duration = Duration::from_millis(170);
+    /// Big surfaces: dialogs, sheets sliding in.
+    pub const SLOW: Duration = Duration::from_millis(240);
+
+    /// The curve things arrive on: fast out of the gate, a long soft landing (`cubic-bezier(0.16, 1, 0.3, 1)`).
+    pub fn enter(t: f32) -> f32 {
+        bezier(0.16, 1.0, 0.3, 1.0, t)
+    }
+
+    /// The curve things move between two places on (`cubic-bezier(0.2, 0, 0, 1)`).
+    pub fn glide(t: f32) -> f32 {
+        bezier(0.2, 0.0, 0.0, 1.0, t)
+    }
+
+    /// A CSS cubic-bezier timing curve at `t` (0 to 1): solved for the curve's parameter with a few Newton steps.
+    fn bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
+        let t = t.clamp(0., 1.);
+        let at = |a: f32, b: f32, u: f32| {
+            let inv = 1. - u;
+            3. * inv * inv * u * a + 3. * inv * u * u * b + u * u * u
+        };
+        let slope = |a: f32, b: f32, u: f32| {
+            let inv = 1. - u;
+            3. * inv * inv * a + 6. * inv * u * (b - a) + 3. * u * u * (1. - b)
+        };
+        let mut u = t;
+        for _ in 0..6 {
+            let dx = at(x1, x2, u) - t;
+            let d = slope(x1, x2, u);
+            if dx.abs() < 1e-4 || d.abs() < 1e-5 {
+                break;
+            }
+            u = (u - dx / d).clamp(0., 1.);
+        }
+        at(y1, y2, u)
+    }
+
+    /// Whether Windows' "Animation effects" setting (Settings → Accessibility → Visual effects) is on. On when
+    /// Windows can't say.
+    pub fn windows_animations_on() -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+        let mut on = windows::core::BOOL(1);
+        // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL through the pointer, which points at `on`.
+        let read = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                Some(std::ptr::from_mut(&mut on).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        };
+        read.is_err() || on.as_bool()
+    }
+
+    /// Follows Windows' "Animation effects" switch: with it off, nothing in Glint animates (GPUI's reduced
+    /// motion: fades, glides and transitions all land at once). Run at start and whenever Windows' appearance
+    /// changes. Tests keep motion off themselves, so they are left alone.
+    pub fn sync_with_windows(cx: &mut App) {
+        if cfg!(test) {
+            return;
+        }
+        cx.set_reduce_motion(!windows_animations_on());
+    }
+
+    /// Turns on what the vendored GPUI adds for Glint: hover styles that fade in and out. (The wheel's glide
+    /// needs no switch: it follows reduced motion by itself.)
+    pub fn init(cx: &mut App) {
+        gpui_kit::set_hover_fade(Some((HOVER_IN, HOVER_OUT)));
+        sync_with_windows(cx);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_curves_start_at_nothing_end_at_everything_and_front_load() {
+            for curve in [enter as fn(f32) -> f32, glide] {
+                assert!(curve(0.).abs() < 1e-3 && (curve(1.) - 1.).abs() < 1e-3);
+                // Never backwards.
+                let mut last = 0.;
+                for step in 1..=20 {
+                    let now = curve(step as f32 / 20.);
+                    assert!(now + 1e-3 >= last, "{now} after {last}");
+                    last = now;
+                }
+            }
+            // Arriving: most of the way there in the first third of the time.
+            assert!(enter(0.33) > 0.8, "{}", enter(0.33));
+            // CSS's values for the same curves.
+            assert!((enter(0.5) - 0.9718).abs() < 0.005, "{}", enter(0.5));
+            assert!((glide(0.5) - 0.8778).abs() < 0.005, "{}", glide(0.5));
+        }
+
+        /// The wheel's glide (vendored GPUI, `wheel_glide.rs`), stepped as a 60 Hz screen steps it: what is left of
+        /// `distance` after each frame.
+        fn wheel_steps(distance: f32, scale: f32) -> Vec<f32> {
+            use gpui_kit::{px, wheel_glide_advance};
+            let frame = Duration::from_micros(16_667);
+            let (mut left, mut elapsed, mut lefts) = (px(distance), None, Vec::new());
+            while left != px(0.) {
+                let by = wheel_glide_advance(left, elapsed, scale);
+                // Every step moves toward the target and never past it; the last one takes what is left, however
+                // little (what steps on the pixel grid leave behind in floating point).
+                let last = f32::from(left - by) == 0.;
+                assert!(
+                    (last || f32::from(by) * distance > 0.) && f32::from(by).abs() <= f32::from(left).abs() + 1e-3,
+                    "{by:?} of {left:?}"
+                );
+                left -= by;
+                lefts.push(f32::from(left));
+                elapsed = Some(frame);
+                assert!(lefts.len() < 100, "the glide never ends: {lefts:?}");
+            }
+            lefts
+        }
+
+        #[test]
+        fn a_wheel_notch_glides_there_on_whole_pixels_within_a_quarter_of_a_second() {
+            for distance in [100., -100.] {
+                let lefts = wheel_steps(distance, 1.);
+                // On whole pixels all the way, so hairlines and text stay sharp while they move.
+                assert!(lefts.iter().all(|left| left.fract() == 0.), "{lefts:?}");
+                // Answered in the event's own frame: a fifth of the notch or more at once.
+                assert!(lefts[0].abs() <= 80., "{lefts:?}");
+                // Most of it within a tenth of a second, all of it within a quarter.
+                assert!(lefts[5].abs() <= 20., "{lefts:?}");
+                assert!(lefts.len() <= 15, "{} frames: {lefts:?}", lefts.len());
+            }
+            // At 125% a device pixel is 0.8 px: steps land on multiples of it, and it still ends.
+            let lefts = wheel_steps(100., 1.25);
+            assert!(
+                lefts
+                    .iter()
+                    .all(|left| ((left * 1.25).round() - left * 1.25).abs() < 1e-3),
+                "{lefts:?}"
+            );
+            // Three notches at once (a fast spin) take no longer to start, and end.
+            assert!(wheel_steps(300., 1.)[0] <= 240.);
+        }
+
+        #[test]
+        fn leaving_is_quicker_than_arriving() {
+            assert!(HOVER_IN < HOVER_OUT && FAST < BASE && BASE < SLOW);
+        }
+    }
+}
+
+/// Shadows for what sits above the sheet. GPUI draws them outside the element, so a parent that clips cuts them.
+pub mod elevation {
+    use super::tokens;
+    use gpui_kit::{hsla, point, px, App, BoxShadow};
+
+    fn shadow(y: f32, blur: f32, spread: f32, alpha: f32) -> BoxShadow {
+        BoxShadow {
+            color: hsla(240. / 360., 0.3, 0.02, alpha),
+            offset: point(px(0.), px(y)),
+            blur_radius: px(blur),
+            spread_radius: px(spread),
+            inset: false,
+        }
+    }
+
+    /// Something resting on the sheet: a card, a thumbnail, a chip being dragged.
+    pub fn raised(cx: &App) -> Vec<BoxShadow> {
+        let dark = tokens(cx).dark;
+        vec![
+            shadow(1., 2., 0., if dark { 0.35 } else { 0.08 }),
+            shadow(2., 6., -1., if dark { 0.25 } else { 0.06 }),
+        ]
+    }
+
+    /// Something floating over the window: a menu, the palette, a notice.
+    pub fn floating(cx: &App) -> Vec<BoxShadow> {
+        let dark = tokens(cx).dark;
+        vec![
+            shadow(2., 6., 0., if dark { 0.30 } else { 0.06 }),
+            shadow(12., 32., -4., if dark { 0.55 } else { 0.16 }),
+        ]
+    }
+
+    /// A dialog.
+    pub fn modal(cx: &App) -> Vec<BoxShadow> {
+        let dark = tokens(cx).dark;
+        vec![
+            shadow(4., 12., 0., if dark { 0.35 } else { 0.08 }),
+            shadow(28., 72., -8., if dark { 0.65 } else { 0.22 }),
+        ]
+    }
 }
 
 /// Windows 11's UI font; Segoe UI before it.
@@ -101,9 +327,24 @@ pub struct Tokens {
     pub primary_foreground: Hsla,
     pub muted: Hsla,
     pub muted_foreground: Hsla,
-    /// Hover and highlight fill. See-through in dark mode (white at 8.5%), as Windows 11's are, so it shows
-    /// on every surface.
+    /// Hover and highlight fill. See-through in both modes (white at 7% in the dark, near-black at 5.5% in the
+    /// light), as Windows 11's are, so it shows on every surface.
     pub accent: Hsla,
+    /// The fill of something held down: the hover fill, stronger.
+    pub pressed: Hsla,
+    /// The fill of what is selected (rows, tiles, places), in the pane the keyboard is in.
+    pub selected: Hsla,
+    /// The same with the pointer over it.
+    pub selected_hover: Hsla,
+    /// The same in a pane the keyboard isn't in.
+    pub selected_inactive: Hsla,
+    /// A hairline round raised and floating things (white at 8% in the dark, black at 8% in the light): it
+    /// reads on any surface, where `border` is a fixed gray.
+    pub stroke: Hsla,
+    /// The glint: the logo's sparkle as a two-color sweep (pink to fuchsia, or Windows' accent and its darker
+    /// shade), for the few things that should catch the eye: what is loading, what is current.
+    pub glint_from: Hsla,
+    pub glint_to: Hsla,
     pub destructive: Hsla,
     pub destructive_foreground: Hsla,
     pub border: Hsla,
@@ -130,28 +371,36 @@ pub struct Tokens {
 impl Tokens {
     /// The light set (`:root` in index.css).
     pub fn light() -> Self {
+        let primary = hsl(333., 71., 51.);
         Self {
             dark: false,
             background: hsl(0., 0., 100.),
-            foreground: hsl(0., 0., 11.),
-            chrome: hsl(0., 0., 95.3),
+            foreground: hsl(240., 10., 10.),
+            chrome: hsl(240., 6., 95.6),
             card: hsl(0., 0., 100.),
             popover: hsl(0., 0., 100.),
-            popover_foreground: hsl(0., 0., 11.),
+            popover_foreground: hsl(240., 10., 10.),
             // Pink-600 here, pink-500 in the dark: at least 4.5:1 as text and under white text.
-            primary: hsl(333., 71., 51.),
+            primary,
             primary_foreground: hsl(0., 0., 100.),
-            muted: hsl(0., 0., 94.),
-            muted_foreground: hsl(0., 0., 38.),
-            accent: hsl(0., 0., 92.),
+            muted: hsl(240., 6., 95.),
+            muted_foreground: hsl(240., 4., 40.),
+            accent: hsla(240. / 360., 0.1, 0.1, 0.055),
+            pressed: hsla(240. / 360., 0.1, 0.1, 0.10),
+            selected: primary.opacity(0.11),
+            selected_hover: primary.opacity(0.16),
+            selected_inactive: hsla(240. / 360., 0.1, 0.1, 0.07),
+            stroke: hsla(240. / 360., 0.1, 0.1, 0.09),
+            glint_from: hex(0xf472b6),
+            glint_to: hex(0xc026d3),
             destructive: hsl(0., 72., 51.),
             destructive_foreground: hsl(0., 0., 100.),
-            border: hsl(0., 0., 89.),
-            input: hsl(0., 0., 82.),
-            ring: hsl(333., 71., 51.),
+            border: hsl(240., 6., 90.),
+            input: hsl(240., 5., 82.),
+            ring: primary,
             field: hsl(0., 0., 100.),
             field_focus: hsl(0., 0., 100.),
-            field_edge: hsl(0., 0., 60.),
+            field_edge: hsl(240., 4., 58.),
             success: hex(0x059669),
             warning: hex(0xd97706),
             tk_comment: hex(0x6a737d),
@@ -166,28 +415,37 @@ impl Tokens {
 
     /// The dark set (`.dark` in index.css).
     pub fn dark() -> Self {
+        let primary = hsl(330., 81., 60.);
         Self {
             dark: true,
             // Dark text on the accent, as Windows 11 has in the dark.
-            primary: hsl(330., 81., 60.),
-            primary_foreground: hsl(0., 0., 7.),
-            ring: hsl(330., 81., 60.),
-            background: hsl(0., 0., 11.),
-            foreground: hsl(0., 0., 95.),
-            chrome: hsl(0., 0., 12.5),
-            card: hsl(0., 0., 14.),
-            popover: hsl(0., 0., 17.),
-            popover_foreground: hsl(0., 0., 95.),
-            muted: hsl(0., 0., 16.),
-            muted_foreground: hsl(0., 0., 64.),
-            accent: hsla(0., 0., 1., 0.085),
+            primary,
+            primary_foreground: hsl(240., 10., 6.),
+            ring: primary,
+            // Three depths: the chrome behind (7.5%), the sheet the files are on (11%), what floats (15%).
+            background: hsl(240., 6., 11.),
+            foreground: hsl(240., 9., 95.5),
+            chrome: hsl(240., 7., 7.5),
+            card: hsl(240., 6., 13.5),
+            popover: hsl(240., 6., 15.),
+            popover_foreground: hsl(240., 9., 95.5),
+            muted: hsl(240., 5., 16.5),
+            muted_foreground: hsl(240., 5., 64.5),
+            accent: hsla(240. / 360., 0.2, 1., 0.07),
+            pressed: hsla(240. / 360., 0.2, 1., 0.11),
+            selected: primary.opacity(0.17),
+            selected_hover: primary.opacity(0.23),
+            selected_inactive: hsla(240. / 360., 0.2, 1., 0.09),
+            stroke: hsla(240. / 360., 0.2, 1., 0.08),
+            glint_from: hex(0xff8fd0),
+            glint_to: hex(0xd946ef),
             destructive: hsl(0., 72., 60.),
-            destructive_foreground: hsl(0., 0., 7.),
-            border: hsl(0., 0., 18.5),
-            input: hsl(0., 0., 26.),
-            field: hsl(0., 0., 17.),
-            field_focus: hsl(0., 0., 11.),
-            field_edge: hsl(0., 0., 45.),
+            destructive_foreground: hsl(240., 10., 6.),
+            border: hsl(240., 5., 18.),
+            input: hsl(240., 5., 26.),
+            field: hsl(240., 6., 14.5),
+            field_focus: hsl(240., 7., 8.5),
+            field_edge: hsl(240., 4., 44.),
             success: hex(0x34d399),
             warning: hex(0xfbbf24),
             tk_comment: hex(0x8b949e),
@@ -209,6 +467,13 @@ impl Tokens {
             tokens.primary = from_rgb(fill);
             tokens.ring = tokens.primary;
             tokens.primary_foreground = text_on(fill);
+            // What is tinted with the accent follows it: the selection, and the glint (the accent to a shade
+            // of itself, lighter in the dark and darker in the light).
+            let (light_tint, dark_tint) = (tokens.selected.a, tokens.selected_hover.a);
+            tokens.selected = tokens.primary.opacity(light_tint);
+            tokens.selected_hover = tokens.primary.opacity(dark_tint);
+            tokens.glint_from = from_rgb(if dark { accent.light[2] } else { accent.light[0] });
+            tokens.glint_to = from_rgb(if dark { accent.accent } else { accent.dark[1] });
         }
         tokens
     }
@@ -332,6 +597,33 @@ pub fn chrome_fill(cx: &App) -> Hsla {
     }
 }
 
+/// What the window itself is filled with, under everything: the chrome color, or over Mica a veil that takes the
+/// material a step back in the dark (Mica's dark gray is as light as the sheet; veiled, the sheet stands off it)
+/// and nothing in the light (Mica's light gray already sits under the white sheet).
+pub fn window_fill(cx: &App) -> Hsla {
+    let t = tokens(cx);
+    match (backdrop_on(cx), t.dark) {
+        (false, _) => t.chrome,
+        (true, true) => hsla(240. / 360., 0.2, 0.03, 0.42),
+        (true, false) => hsla(0., 0., 0., 0.),
+    }
+}
+
+/// The glint as a fill: [`Tokens::glint_from`] to [`Tokens::glint_to`], sweeping along the reading direction.
+pub fn glint_fill(cx: &App) -> gpui_kit::Background {
+    let t = tokens(cx);
+    let (from, to) = if crate::i18n::is_rtl() {
+        (t.glint_to, t.glint_from)
+    } else {
+        (t.glint_from, t.glint_to)
+    };
+    gpui_kit::linear_gradient(
+        90.,
+        gpui_kit::linear_color_stop(from, 0.),
+        gpui_kit::linear_color_stop(to, 1.),
+    )
+}
+
 /// The material Windows can draw: Mica Alt (as File Explorer has) from Windows 11 22H2, Mica on the first
 /// Windows 11, nothing before. Ported from appearance.rs's `backdrop`.
 fn supported_material() -> Option<WindowBackgroundAppearance> {
@@ -374,6 +666,7 @@ fn installed_family(cx: &App, wanted: &'static str, fallback: &'static str) -> S
 /// Start-up step 2: builds the theme, then reads Windows' accent color (off the UI thread) and watches for
 /// changes to it and to light/dark. Needs `gpui_kit::init` and `state::init` to have run.
 pub fn init(cx: &mut App) {
+    motion::init(cx);
     apply(cx);
     // Windows' accent: read now, and again whenever Windows says it changed.
     let (changed, changes) = async_channel::unbounded::<WindowsAccent>();
@@ -403,6 +696,8 @@ fn set_windows_accent(cx: &mut App, accent: WindowsAccent) {
 
 /// Windows changed between light and dark: follows it when the theme setting is "System".
 pub fn on_appearance_changed(cx: &mut App) {
+    // Windows tells of its "Animation effects" switch the same way.
+    motion::sync_with_windows(cx);
     if crate::state::settings(cx).theme == ThemeSetting::System {
         apply(cx);
     }
@@ -461,12 +756,19 @@ pub fn apply(cx: &mut App) {
     };
     Theme::update(cx, |theme| {
         theme.notification.placement = notices_at;
+        // Clear of the status bar at the foot of the sheet, which says how a copy or a search went.
+        theme.notification.margins.bottom = px(40.);
         theme.font_family = sans;
         theme.mono_font_family = mono;
         theme.font_size = font_size;
         theme.mono_font_size = font_size * 0.875;
         theme.radius = size::RADIUS;
         theme.radius_lg = size::RADIUS_XL;
+        theme.shadow = true;
+        // The kit's own controls move on Glint's clock (dialogs, switches, tabs, progress).
+        theme.motion.duration_fast = motion::FAST;
+        theme.motion.duration_normal = motion::BASE;
+        theme.motion.duration_slow = motion::SLOW;
         map_colors(theme, &tokens, chrome);
     });
 }
@@ -475,8 +777,7 @@ pub fn apply(cx: &mut App) {
 /// translucent `accent` fill laid over the surface, as the CSS did with `hover:bg-accent`.
 fn map_colors(theme: &mut Theme, t: &Tokens, chrome: Hsla) {
     let hover = t.accent;
-    // A pressed fill is the hover fill twice, as dark as the highlight gets.
-    let pressed = t.background.blend(t.accent).blend(t.accent);
+    let pressed = t.pressed;
     let c = &mut theme.colors;
     c.background = t.background;
     c.foreground = t.foreground;
@@ -508,19 +809,20 @@ fn map_colors(theme: &mut Theme, t: &Tokens, chrome: Hsla) {
     c.link = t.primary;
     c.link_hover = t.primary.opacity(0.85);
     c.link_active = t.primary.opacity(0.7);
-    c.overlay = hsla(0., 0., 0., 0.5);
+    // What a dialog dims the window with: enough to set the dialog off, not so much the files vanish.
+    c.overlay = hsla(240. / 360., 0.2, 0.03, if t.dark { 0.55 } else { 0.28 });
     c.list = t.background;
     c.list_even = t.background;
     c.list_head = t.background;
     c.list_hover = hover;
-    c.list_active = t.primary.opacity(0.15);
+    c.list_active = t.selected;
     c.list_active_border = t.primary;
     c.table = t.background;
     c.table_even = t.background;
     c.table_head = t.background;
     c.table_head_foreground = t.muted_foreground;
     c.table_hover = hover;
-    c.table_active = t.primary.opacity(0.15);
+    c.table_active = t.selected;
     c.table_active_border = t.primary;
     c.table_row_border = t.border;
     c.title_bar = chrome;
@@ -540,8 +842,8 @@ fn map_colors(theme: &mut Theme, t: &Tokens, chrome: Hsla) {
     c.tab_active = t.background;
     c.tab_active_foreground = t.foreground;
     c.scrollbar = hsla(0., 0., 0., 0.);
-    c.scrollbar_thumb = t.muted_foreground.opacity(0.35);
-    c.scrollbar_thumb_hover = t.muted_foreground.opacity(0.55);
+    c.scrollbar_thumb = t.muted_foreground.opacity(0.32);
+    c.scrollbar_thumb_hover = t.muted_foreground.opacity(0.6);
     c.drag_border = t.primary;
     c.drop_target = t.primary.opacity(0.2);
 }
@@ -655,17 +957,61 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_index_css_values() {
+    fn the_palette_keeps_its_accent_and_its_three_depths() {
         let (light, dark) = (Tokens::light(), Tokens::dark());
-        // Spot checks against :root and .dark in src/index.css.
+        // The logo's pink, as index.css had it.
         assert!(close(light.primary, hsl(333., 71., 51.)));
-        assert!(close(light.background, hsl(0., 0., 100.)));
-        assert!(close(light.chrome, hsl(0., 0., 95.3)));
         assert!(close(dark.primary, hsl(330., 81., 60.)));
-        assert!(close(dark.background, hsl(0., 0., 11.)));
-        // The dark highlight is see-through white; the light one is opaque gray.
-        assert!((dark.accent.a - 0.085).abs() < 1e-6 && (light.accent.a - 1.0).abs() < 1e-6);
+        assert!(close(light.background, hsl(0., 0., 100.)));
+        // Dark: the chrome is behind the sheet, and what floats is in front of it. Light: the sheet is the white.
+        assert!(dark.chrome.l < dark.background.l && dark.background.l < dark.card.l && dark.card.l < dark.popover.l);
+        assert!(light.chrome.l < light.background.l);
+        // Hover, pressed and selected fills are see-through, so they read on every depth; pressed is the stronger.
+        for t in [&light, &dark] {
+            assert!(t.accent.a < 0.2 && t.pressed.a > t.accent.a, "{:?}", t.accent);
+            assert!(t.selected.a < t.selected_hover.a && t.stroke.a < 0.2);
+        }
         assert!(dark.dark && !light.dark);
+    }
+
+    /// WCAG's contrast ratio of two opaque colors.
+    fn contrast(a: Hsla, b: Hsla) -> f32 {
+        fn luminance(color: Hsla) -> f32 {
+            let rgb = gpui_kit::Rgba::from(color);
+            let channel = |v: f32| {
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b)
+        }
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn text_reads_on_every_depth() {
+        for t in [Tokens::light(), Tokens::dark()] {
+            for surface in [t.background, t.chrome, t.card, t.popover] {
+                // Body text well past AA; the quiet text at AA (4.5:1) even on the chrome.
+                assert!(contrast(t.foreground, surface) >= 12., "{:?}", surface);
+                assert!(
+                    contrast(t.muted_foreground, surface) >= 4.5,
+                    "{} on {:?}",
+                    contrast(t.muted_foreground, surface),
+                    surface
+                );
+            }
+            // The accent as text and under its own text.
+            assert!(
+                contrast(t.primary, t.background) >= 4.4,
+                "{}",
+                contrast(t.primary, t.background)
+            );
+            assert!(contrast(t.primary_foreground, t.primary) >= 4.4);
+        }
     }
 
     #[test]
