@@ -14,6 +14,19 @@ use std::sync::Arc;
 impl Explorer {
     /// Replaces a tab's selection with `selection` and tells everyone.
     pub(super) fn apply_selection(&mut self, id: TabId, selection: Selection, cx: &mut Context<Self>) {
+        // The selection already there (the second press of a double-click, a key at the end of the list): nothing
+        // changed, so nothing is told and nothing is drawn again. Only small selections are compared.
+        let same = self.tabs.get(&id).is_some_and(|tab| {
+            let now = &tab.selection;
+            now.anchor == selection.anchor
+                && now.focus == selection.focus
+                && now.len() == selection.len()
+                && (Arc::ptr_eq(&now.paths, &selection.paths)
+                    || (selection.len() <= 64 && selection.iter().all(|path| now.contains(path))))
+        });
+        if same {
+            return;
+        }
         if !self.update_tab(id, |t| t.selection = selection) {
             return;
         }

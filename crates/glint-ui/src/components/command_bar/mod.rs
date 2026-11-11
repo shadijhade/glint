@@ -1296,6 +1296,7 @@ impl CommandBar {
 
 impl Render for CommandBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("command bar");
         if self.dirty {
             self.refresh(cx);
         }

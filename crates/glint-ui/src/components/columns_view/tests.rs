@@ -96,6 +96,9 @@ fn setup(cx: &mut TestAppContext, rtl: bool) -> Rig {
     });
     visual.update(|_, cx| explorer.update(cx, |e, cx| e.init_explorer(Vec::new(), cx).detach()));
     settle(&mut visual);
+    // The pane shows its columns: in any other view they read nothing.
+    visual.update(|_, cx| explorer.update(cx, |e, cx| e.set_view(crate::explorer::ViewMode::Columns, None, cx)));
+    settle(&mut visual);
     let mut rig = Rig {
         visual,
         view,
@@ -503,4 +506,40 @@ fn the_icons_the_columns_draw_are_embedded() {
         let path = name.path();
         assert!(matches!(AllAssets.load(&path), Ok(Some(_))), "{path} is not embedded");
     }
+}
+
+#[gpui_kit::test]
+fn a_pane_in_another_view_reads_nothing_for_its_columns_and_keeps_nothing(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut rig = setup(cx, false);
+    // Shown: the folder above is listed in the first column.
+    let above = rig
+        .visual
+        .update(|_, cx| rig.view.read(cx).parent_path().map(str::to_string));
+    assert_eq!(above.as_deref(), Some(ME));
+    // The pane goes to the list: the columns let go of what they listed.
+    let explorer = rig.explorer.clone();
+    rig.visual
+        .update(|_, cx| explorer.update(cx, |e, cx| e.set_view(crate::explorer::ViewMode::List, None, cx)));
+    settle(&mut rig.visual);
+    let (above, next) = rig.visual.update(|_, cx| {
+        let view = rig.view.read(cx);
+        (
+            view.parent_path().map(str::to_string),
+            view.next_path().map(str::to_string),
+        )
+    });
+    assert_eq!((above, next), (None, None));
+    // Folders opened and items focused meanwhile are read once, by the list alone.
+    let before = rig.disk.listed().len();
+    rig.navigate(REPORTS);
+    assert_eq!(rig.disk.listed().len(), before + 1, "{:?}", rig.disk.listed());
+    // Back in the columns view they are read again.
+    rig.visual
+        .update(|_, cx| explorer.update(cx, |e, cx| e.set_view(crate::explorer::ViewMode::Columns, None, cx)));
+    settle(&mut rig.visual);
+    let above = rig
+        .visual
+        .update(|_, cx| rig.view.read(cx).parent_path().map(str::to_string));
+    assert_eq!(above.as_deref(), Some(PROJECTS));
 }

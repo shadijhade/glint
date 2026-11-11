@@ -229,6 +229,8 @@ pub struct FileGrid {
     /// What a drop at the pointer would go into, while files are dragged over the grid.
     drop_over: Option<DropOver>,
     wheel: Wheel,
+    /// What the folders read ahead hold: their tiles say it.
+    peeks: crate::components::file_list::Peeks,
     type_ahead: keys::TypeAhead,
     /// The scrub overlay of the video tile the pointer is on.
     scrub: scrub::ScrubSlot,
@@ -288,6 +290,7 @@ impl FileGrid {
             dragging: None,
             drop_over: None,
             wheel: Wheel::default(),
+            peeks: crate::components::file_list::Peeks::default(),
             type_ahead: keys::TypeAhead::default(),
             scrub: scrub::ScrubSlot::default(),
             rename: None,
@@ -1127,6 +1130,7 @@ fn handler<E: 'static>(
 
 impl Render for FileGrid {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("file grid");
         let tokens = theme::tokens(cx).clone();
         let scale = window.scale_factor();
         let rem = f32::from(window.rem_size());
@@ -1272,7 +1276,9 @@ impl Render for FileGrid {
         // Files dragged over the grid light the folder tile they would go into, or the whole grid; a drag that has
         // ended (or left the window) lights nothing, whatever was last seen.
         let drop_over = self.drop_over.clone().filter(|_| cx.has_active_drag());
+        let peeks = self.peeks.read(self.explorer.read(cx));
         let frame = Rc::new(tile::Frame {
+            peeks,
             rows: rows.clone(),
             selection: selection.clone(),
             focus,

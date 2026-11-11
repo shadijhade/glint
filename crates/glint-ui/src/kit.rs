@@ -384,6 +384,21 @@ pub fn isolate(text: impl Into<SharedString>) -> SharedString {
     }
 }
 
+/// A line of words, numbers and units ("6 folders · 15 files · 13 MB") as its own right-to-left paragraph when its
+/// first letter is right to left: RLE … PDF around it. [`isolate`] is not enough for these: a line that begins with
+/// a number keeps the number at the left of an isolate, as the left-to-right paragraph it sits in puts it, while an
+/// embedding sets the whole line from the right. Text that starts with a left-to-right letter comes back unchanged.
+/// Visual text only, as with [`isolate`].
+pub fn rtl_line(text: impl Into<SharedString>) -> SharedString {
+    let text = text.into();
+    let first_strong = text.chars().find(|ch| ch.is_alphabetic());
+    if first_strong.is_some_and(is_rtl_letter) {
+        format!("\u{202B}{text}\u{202C}").into()
+    } else {
+        text
+    }
+}
+
 /// A stand-in for a component a later wave builds: says what it is and what replaces it. Placeholders use
 /// `t!`, theme tokens and the kit like everything else.
 #[derive(IntoElement)]
@@ -674,6 +689,16 @@ mod tests {
         assert_eq!(isolate("Report تقرير"), "Report تقرير");
         assert_eq!(isolate(""), "");
         assert_eq!(isolate("12345"), "12345");
+    }
+
+    #[test]
+    fn rtl_line_sets_a_line_of_counts_from_the_right_when_its_words_are_arabic() {
+        // RLE … PDF: the number the line begins with goes to the right with the rest of it.
+        assert_eq!(rtl_line("10 ملفات · 8.7 MB"), "\u{202B}10 ملفات · 8.7 MB\u{202C}");
+        // English lines, sizes alone and nothing at all are left as they are.
+        assert_eq!(rtl_line("6 folders · 15 files · 13 MB"), "6 folders · 15 files · 13 MB");
+        assert_eq!(rtl_line("13 MB"), "13 MB");
+        assert_eq!(rtl_line(""), "");
     }
 
     #[test]

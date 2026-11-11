@@ -61,12 +61,17 @@ pub fn facts(tab: &Tab, kinds: &[Category]) -> SharedString {
             count = format_count(entries)
         );
     }
+    if entries == 0 && tab.listing.is_none() {
+        return SharedString::default();
+    }
+    holds(entries, kinds)
+}
+
+/// What a folder of `entries` items holds, in words: "6 folders · 15 files · 12.6 MB", "Empty", or how many items
+/// when it is too large to count by kind (`kinds` is the breakdown of its first [`SAMPLE`] entries).
+pub fn holds(entries: usize, kinds: &[Category]) -> SharedString {
     if entries == 0 {
-        return if tab.listing.is_some() {
-            t!("Empty")
-        } else {
-            SharedString::default()
-        };
+        return t!("Empty");
     }
     if entries > SAMPLE {
         return items(entries);
@@ -162,6 +167,7 @@ impl PaneHead {
     }
 
     fn refresh(&mut self, cx: &App) {
+        let _span = crate::perf::span("head refresh");
         if self.dirty {
             let head = Head::of(self.explorer.read(cx), self.pane);
             let place = |head: &Option<Head>| head.as_ref().map(|head| (head.tab, head.title.clone()));
@@ -252,6 +258,7 @@ pub fn shares(kinds: &[Category]) -> Vec<f32> {
 
 impl Render for PaneHead {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("pane head");
         self.refresh(cx);
         let Some(head) = self.head.clone() else {
             return div().into_any_element();
@@ -277,7 +284,8 @@ impl Render for PaneHead {
             .truncate()
             .text_size(theme::size::XS)
             .text_color(t.muted_foreground)
-            .child(head.facts.clone());
+            // Counts, words and a size: in Arabic the line reads from the right, numbers and "MB" in their places.
+            .child(crate::kit::rtl_line(head.facts.clone()));
         // The name over the facts; in a short window, beside them (the name whole, the facts giving way).
         let name = if short {
             row_start()

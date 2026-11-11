@@ -1073,3 +1073,16 @@ fn the_box_waits_for_enter_when_fd_would_answer(cx: &mut TestAppContext) {
     rig.settle();
     assert!(rig.disk.finds().is_empty());
 }
+
+#[test]
+fn a_search_as_typed_waits_less_the_more_there_is_to_go_on() {
+    use super::find::as_typed_after;
+    // A letter or two would fill the list with half the drive for the next letter to throw away.
+    assert_eq!(as_typed_after("r"), Duration::from_millis(100));
+    assert_eq!(as_typed_after("re"), Duration::from_millis(60));
+    // From three letters on the results follow the keys.
+    assert_eq!(as_typed_after("rep"), Duration::from_millis(20));
+    assert_eq!(as_typed_after("report 2026"), Duration::from_millis(20));
+    // Letters, not bytes.
+    assert_eq!(as_typed_after("تق"), Duration::from_millis(60));
+}

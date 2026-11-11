@@ -316,6 +316,12 @@ pub enum FolderPlace {
 /// What kind of folder a listing is: Recent and Downloads by where they are, else by what's in it: mostly
 /// pictures, videos or songs (at least five files, three in five of them of one kind), or any.
 pub fn folder_kind(entries: &[FileEntry], place: Option<FolderPlace>) -> FolderKind {
+    folder_kind_of(entries, place)
+}
+
+/// [`folder_kind`] of any run of entries: all of a folder's, or an even sample of a big one's (the shares decide,
+/// and a sample has the same shares).
+pub fn folder_kind_of<'a>(entries: impl IntoIterator<Item = &'a FileEntry>, place: Option<FolderPlace>) -> FolderKind {
     if let Some(place) = place {
         return match place {
             FolderPlace::Recent => FolderKind::Recent,
@@ -543,6 +549,30 @@ mod tests {
         assert_eq!(
             folder_kind(&named(&["a.jpg"]), Some(FolderPlace::Recent)),
             FolderKind::Recent
+        );
+    }
+
+    #[test]
+    fn an_even_sample_of_a_folder_says_the_same_kind() {
+        // A thousand items, four in five of them photos: mostly pictures, whichever of them are looked at.
+        let names: Vec<String> = (0..1000)
+            .map(|i| {
+                if i % 5 == 0 {
+                    format!("note{i}.txt")
+                } else {
+                    format!("photo{i}.jpg")
+                }
+            })
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let all = named(&names);
+        assert_eq!(folder_kind(&all, None), FolderKind::Pictures);
+        assert_eq!(folder_kind_of(all.iter().step_by(7), None), FolderKind::Pictures);
+        assert_eq!(folder_kind_of(all.iter().step_by(64), None), FolderKind::Pictures);
+        // Where the folder is still decides first.
+        assert_eq!(
+            folder_kind_of(all.iter().step_by(7), Some(FolderPlace::Downloads)),
+            FolderKind::Downloads
         );
     }
 

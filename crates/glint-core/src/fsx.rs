@@ -61,64 +61,106 @@ impl ListError {
 /// The Recycle Bin (`recycle::PLACE`) and Recent (`recent::PLACE`) list their items, each with a path
 /// of its own (`encode_items`), and a remote connection's folder (`remote:<id>\…`) what's in it there.
 pub async fn list_dir(path: String) -> Result<crate::host::ipc::Response, ListError> {
-    listing_bytes(path).await.map(crate::host::ipc::Response::new)
+    list_folder(path, Listing::into_bytes).await.map(crate::host::ipc::Response::new)
 }
 
-async fn listing_bytes(path: String) -> Result<Vec<u8>, ListError> {
+/// A folder listed, for a caller in this process.
+pub enum Listing {
+    /// A folder on disk (or a server's shares, or what the index has of a closed folder): its entries as they
+    /// were read, sorted. Nothing was encoded: the caller takes the names as they are.
+    Folder {
+        /// The folder as listed: made absolute, and where a link pointed when the link itself wouldn't list.
+        path: String,
+        entries: Vec<Entry>,
+        /// Milliseconds spent reading and sorting.
+        elapsed: f64,
+        from_index: bool,
+    },
+    /// Anything else (a folder in an archive, on a remote, the Recycle Bin, Recent, the Gallery, a listing read
+    /// as Glint started) in the binary form: `encode_listing`'s or `encode_items`'s.
+    Encoded(Vec<u8>),
+}
+
+impl Listing {
+    /// The binary form of any listing (`encode_listing`).
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            Listing::Folder { path, entries, elapsed, from_index } => encode_listing(&path, &entries, elapsed, None, from_index),
+            Listing::Encoded(bytes) => bytes,
+        }
+    }
+}
+
+/// Lists a folder (`list_dir` says which and how) and hands what was read to `shape` on the thread that read
+/// it: the interface makes its rows there, so a big folder costs one trip between threads and its names are
+/// never packed into bytes only to be unpacked again.
+pub async fn list_folder<T, F>(path: String, shape: F) -> Result<T, ListError>
+where
+    T: Send + 'static,
+    F: FnOnce(Listing) -> T + Send + 'static,
+{
+    let asked = path.clone();
+    let shaped = |listing: Listing, shape: F| async move {
+        crate::host::async_runtime::spawn_blocking(move || shape(listing)).await.map_err(|e| ListError::other(&asked, e.to_string()))
+    };
     // Read already, as Glint started (startup.rs), and the folder is as it was then.
     if let Some(warm) = crate::startup::take(path.trim()) {
-        return Ok(warm);
+        return shaped(Listing::Encoded(warm), shape).await;
+    }
+    if crate::remote::is_remote(path.trim()) {
+        let listing = crate::remote::listing(path.trim(), Instant::now()).await.map_err(|e| ListError::other(path.trim(), e))?;
+        return shaped(Listing::Encoded(listing), shape).await;
     }
     let asked = path.clone();
-    if crate::remote::is_remote(path.trim()) {
-        return crate::remote::listing(path.trim(), Instant::now()).await.map_err(|e| ListError::other(path.trim(), e));
+    crate::host::async_runtime::spawn_blocking(move || read_listing(path).map(shape))
+        .await
+        .map_err(|e| ListError::other(&asked, e.to_string()))?
+}
+
+/// The blocking part of `list_folder`: everything but a remote's folder.
+fn read_listing(path: String) -> Result<Listing, ListError> {
+    let started = Instant::now();
+    if crate::recycle::is_place(path.trim()) {
+        return crate::recycle::listing(started).map(Listing::Encoded).map_err(|e| ListError::other(crate::recycle::PLACE, e));
     }
-    crate::host::async_runtime::spawn_blocking(move || {
-        let started = Instant::now();
-        if crate::recycle::is_place(path.trim()) {
-            return crate::recycle::listing(started).map_err(|e| ListError::other(crate::recycle::PLACE, e));
-        }
-        if crate::recent::is_place(path.trim()) {
-            return crate::recent::listing(started).map_err(|e| ListError::other(crate::recent::PLACE, e));
-        }
-        if crate::gallery::is_place(path.trim()) {
-            return crate::gallery::listing(started).map_err(|e| ListError::other(crate::gallery::PLACE, e));
-        }
-        let path = normalize(&path).map_err(|e| ListError::other(&path, e))?;
-        if let Some(listing) = crate::archive::list(&path, started) {
-            return listing.map_err(|e| ListError::other(&path, e));
-        }
-        if let Some(server) = server_of(&path) {
-            let mut entries = shares(server).map_err(|e| ListError { kind: "other", message: format!("Glint couldn't list the shares on {server}: {e}"), path: path.clone(), remote: true })?;
-            sort_entries(&mut entries);
-            return Ok(encode_listing(&path, &entries, ms_since(started), None, false));
-        }
-        let mut from_index = false;
-        let (path, mut entries) = match read_dir(&path) {
-            Ok(entries) => (path, entries),
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                let remote = on_other_computer(&path);
-                if let Some((entries, target)) = link_target(&path).and_then(|target| Some((read_dir(&target).ok()?, target))) {
-                    (target, entries)
-                } else if let Some(entries) = (!remote).then(|| crate::index::listing(&path)).flatten() {
-                    from_index = true;
-                    (path, entries)
-                } else {
-                    return Err(ListError { kind: "denied", message: describe(&e), remote, path });
-                }
-            }
-            // A path into (or to) an archive not named like one: a renamed zip, or one opened with
-            // "Open as archive". Its first bytes say so, and it's remembered from then on.
-            Err(e) => match crate::archive::sniff(&path).then(|| crate::archive::list(&path, started)).flatten() {
-                Some(listing) => return listing.map_err(|e| ListError::other(&path, e)),
-                None => return Err(ListError::other(&path, describe(&e))),
-            },
-        };
+    if crate::recent::is_place(path.trim()) {
+        return crate::recent::listing(started).map(Listing::Encoded).map_err(|e| ListError::other(crate::recent::PLACE, e));
+    }
+    if crate::gallery::is_place(path.trim()) {
+        return crate::gallery::listing(started).map(Listing::Encoded).map_err(|e| ListError::other(crate::gallery::PLACE, e));
+    }
+    let path = normalize(&path).map_err(|e| ListError::other(&path, e))?;
+    if let Some(listing) = crate::archive::list(&path, started) {
+        return listing.map(Listing::Encoded).map_err(|e| ListError::other(&path, e));
+    }
+    if let Some(server) = server_of(&path) {
+        let mut entries = shares(server).map_err(|e| ListError { kind: "other", message: format!("Glint couldn't list the shares on {server}: {e}"), path: path.clone(), remote: true })?;
         sort_entries(&mut entries);
-        Ok(encode_listing(&path, &entries, ms_since(started), None, from_index))
-    })
-    .await
-    .map_err(|e| ListError::other(&asked, e.to_string()))?
+        return Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index: false });
+    }
+    let mut from_index = false;
+    let (path, mut entries) = match read_dir(&path) {
+        Ok(entries) => (path, entries),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            let remote = on_other_computer(&path);
+            if let Some((entries, target)) = link_target(&path).and_then(|target| Some((read_dir(&target).ok()?, target))) {
+                (target, entries)
+            } else if let Some(entries) = (!remote).then(|| crate::index::listing(&path)).flatten() {
+                from_index = true;
+                (path, entries)
+            } else {
+                return Err(ListError { kind: "denied", message: describe(&e), remote, path });
+            }
+        }
+        // A path into (or to) an archive not named like one: a renamed zip, or one opened with
+        // "Open as archive". Its first bytes say so, and it's remembered from then on.
+        Err(e) => match crate::archive::sniff(&path).then(|| crate::archive::list(&path, started)).flatten() {
+            Some(listing) => return listing.map(Listing::Encoded).map_err(|e| ListError::other(&path, e)),
+            None => return Err(ListError::other(&path, describe(&e))),
+        },
+    };
+    sort_entries(&mut entries);
+    Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index })
 }
 
 /// A folder's own last-write time, in ms: every add, delete and rename in it changes it. Prefetched
@@ -1446,6 +1488,30 @@ mod tests {
         assert!(entries[1].modified > 1_600_000_000_000);
         let file = entry_for_path(dir.join("a.txt").to_str().unwrap(), false);
         assert_eq!((file.name.as_str(), file.size, file.dir), ("a.txt", 5, false));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_is_handed_over_as_it_was_read_and_its_bytes_are_the_same_listing() {
+        let dir = std::env::temp_dir().join(format!("glint-listing-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("b.txt"), b"hello").unwrap();
+        std::fs::write(dir.join("a10.txt"), b"x").unwrap();
+        std::fs::write(dir.join("a2.txt"), b"xy").unwrap();
+        let path = dir.to_str().unwrap().to_string();
+        let Ok(Listing::Folder { path: listed, entries, from_index, .. }) = read_listing(path.clone()) else {
+            panic!("a folder on disk comes as its entries, not as bytes");
+        };
+        assert_eq!(listed, normalize(&path).unwrap());
+        assert!(!from_index);
+        // Sorted as the list shows them: folders first, then natural order.
+        assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["sub", "a2.txt", "a10.txt", "b.txt"]);
+        // Its binary form (what `list_dir` answers) is `encode_listing`'s of the same entries.
+        let bytes = Listing::Folder { path: listed.clone(), entries: entries.clone(), elapsed: 1.5, from_index: false }.into_bytes();
+        assert_eq!(bytes, encode_listing(&listed, &entries, 1.5, None, false));
+        // A folder that isn't there is an error that says so.
+        let missing = read_listing(dir.join("missing").to_string_lossy().into_owned());
+        assert!(matches!(missing, Err(ref e) if e.kind == "other" && !e.message.is_empty()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -107,6 +107,7 @@ impl Explorer {
     /// The listing of `tab` was just shown: in an archive its sizes come with it, and where the index has the
     /// folder's drive they are read quietly from the index (`archiveSizes`, `autoSizes`).
     pub(super) fn sizes_for_listing(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let _span = crate::perf::span("sizes for listing");
         let Some(shown) = self.tabs.get(&tab) else {
             return;
         };

@@ -29,6 +29,8 @@ pub mod kit;
 pub mod notices;
 /// The old app's settings, read from WebView2's localStorage at the first start (wave 16).
 pub mod old_settings;
+/// Timings for measuring, among the frame log's lines (`GLINT_FRAME_LOG`).
+mod perf;
 pub mod persistence;
 pub mod platform;
 mod selftest;
@@ -63,16 +65,23 @@ pub fn run() -> i32 {
     // `AllAssets`, not `Assets`: the default set embeds only gpui-component's own 101 icons, and any other
     // Lucide icon (HeartPulse, ShieldAlert, file types…) would silently draw nothing. All of them add about
     // 1 MiB to the binary and nothing to memory until an icon is drawn.
+    glint_core::startup::mark("single instance");
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    glint_core::startup::mark("gpui application");
     app.run(move |cx| {
+        glint_core::startup::mark("gpui running");
         gpui_kit::init(cx);
+        glint_core::startup::mark("kit");
         state::init(cx);
         // The saved state, its settings first: the theme and the language read them.
         persistence::init(cx);
+        glint_core::startup::mark("saved state");
         theme::init(cx);
         i18n::init(cx);
         actions::init(cx);
+        glint_core::startup::mark("theme, language, actions");
         core_bridge::init(cx);
+        glint_core::startup::mark("core");
         dialogs::drive_health::init(cx);
 
         // Closing the last window quits. With the tray keeping Glint running, closing only hides the window

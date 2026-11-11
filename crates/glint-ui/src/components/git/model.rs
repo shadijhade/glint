@@ -348,6 +348,7 @@ impl Git {
 
     /// A tab's folder was listed (or listed again).
     fn listing_changed(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let _span = crate::perf::span("git listing");
         let Some(folder) = self.wanted(tab, cx) else {
             self.forget(tab, cx);
             return;

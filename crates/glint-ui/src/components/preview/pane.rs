@@ -276,6 +276,7 @@ impl PreviewPane {
 
     /// Looks at the active tab again.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _span = crate::perf::span("preview refresh");
         let (fingerprint, scan, rows, selection, summary_of) = {
             let explorer = self.explorer.read(cx);
             let Some(tab) = explorer.active_tab() else {
@@ -421,6 +422,7 @@ impl PreviewPane {
 
 impl Render for PreviewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("preview pane");
         release_retired(window);
         for image in self.thumbs.update(cx, |thumbs, _| thumbs.take_evicted()) {
             window.drop_image(image).ok();

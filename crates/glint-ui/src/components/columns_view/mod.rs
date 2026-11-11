@@ -35,7 +35,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::explorer::{explorer, CoreSource, Explorer, Fut, ListFailure, Listed, NavOptions, Source, Tab};
+use crate::explorer::{explorer, CoreSource, Explorer, Fut, ListFailure, Listed, NavOptions, Source, Tab, ViewMode};
 use crate::kit::prelude::*;
 use crate::{i18n, state, t, theme};
 use glint_model::entries::{is_hidden, FileEntry};
@@ -217,12 +217,37 @@ impl ColumnsView {
         explorer.pane_tab(self.pane)
     }
 
+    /// The pane shows another view: the columns let go of what they listed and read nothing more.
+    ///
+    /// A pane has its columns view from the start, whichever view it shows. Left to follow the explorer all the
+    /// while, each one listed the folder above and every folder the keyboard came to (a second and a third read
+    /// of what the list had read ahead), kept those listings, and freed them on the UI thread when the next
+    /// folder opened: 12 ms for a folder of 100,000 items, in each pane.
+    fn rest(&mut self, cx: &mut Context<Self>) {
+        if self.tab_path.is_empty() && self.parent.path.is_none() && self.next.path.is_none() && self.focused.is_none()
+        {
+            return;
+        }
+        self.tab_path.clear();
+        self.focused = None;
+        for which in [Which::Parent, Which::Next] {
+            let side = self.side_mut(which);
+            side.path = None;
+            side.seq += 1;
+            side.shown.clear();
+            side.cursor = 0;
+            let raw = side.raw.take();
+            crate::explorer::let_go(raw, cx);
+        }
+        cx.notify();
+    }
+
     /// Reads the pane's tab and the setting, and lists again what changed.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let (path, focused) = {
             let explorer = explorer(cx);
             let explorer = explorer.read(cx);
-            match self.tab(explorer) {
+            match self.tab(explorer).filter(|tab| tab.view == ViewMode::Columns) {
                 Some(tab) => (
                     tab.path.clone(),
                     tab.selection
@@ -231,7 +256,10 @@ impl ColumnsView {
                         .and_then(|at| tab.rows.get(at))
                         .cloned(),
                 ),
-                None => (String::new(), None),
+                None => {
+                    self.rest(cx);
+                    return;
+                }
             }
         };
         let show_hidden = state::settings(cx).show_hidden;
@@ -280,9 +308,10 @@ impl ColumnsView {
         let side = self.side_mut(which);
         side.path = path.clone();
         side.seq += 1;
-        side.raw = None;
+        let raw = side.raw.take();
         side.shown.clear();
         side.cursor = 0;
+        crate::explorer::let_go(raw, cx);
         let Some(path) = path.filter(|p| is_folder_path(p)) else {
             return;
         };

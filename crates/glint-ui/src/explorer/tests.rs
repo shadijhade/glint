@@ -1260,7 +1260,13 @@ fn the_gallery_is_given_pictures_videos_and_the_added_folders(cx: &mut TestAppCo
     let sent = |h: &Harness, cx: &mut TestAppContext| h.read(cx, |e| e.gallery_sent.clone());
     assert_eq!(
         sent(&h, cx).as_deref(),
-        Some(&["C:\\a\\Pictures".to_string(), "C:\\a\\Videos".into(), "D:\\Photos".into()][..])
+        Some(
+            &[
+                "C:\\a\\Pictures".to_string(),
+                "C:\\a\\Videos".into(),
+                "D:\\Photos".into()
+            ][..]
+        )
     );
     // A folder added in Settings (or from the Gallery's own button) is given too.
     cx.update(|cx| crate::state::update(cx, |s| s.gallery_folders.push("E:\\Camera".into())));
@@ -1606,4 +1612,140 @@ fn start_runs_once_and_removing_a_remote_sends_its_tabs_to_this_pc(cx: &mut Test
     h.run(cx, |e, cx| e.leave_remote("NAS", cx));
     assert_eq!(h.path(cx), "");
     assert!(h.disk.listed().len() > reads);
+}
+
+#[gpui_kit::test]
+fn a_folder_read_ahead_can_be_peeked_at_and_stays_put_while_it_is_read_again(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\"));
+    h.read(cx, |e| assert!(e.peeks().is_empty()));
+    h.run(cx, |e, cx| e.prefetch_folder("C:\\a", cx));
+    // What it holds, under the path its row has.
+    let seen = |h: &Harness, cx: &TestAppContext| -> Vec<(String, usize)> {
+        h.read(cx, |e| {
+            e.peeks()
+                .iter()
+                .map(|(path, listed)| (path.to_string(), listed.entries.len()))
+                .collect()
+        })
+    };
+    assert_eq!(seen(&h, cx), [("C:\\a".to_string(), 5)]);
+    // The pointer comes back a while later and the folder is read again: what it held is said until the new
+    // listing is in, so the row's words don't blink.
+    cx.executor().advance_clock(Duration::from_millis(2500));
+    let gate = h.disk.hold("C:\\a");
+    h.run(cx, |e, cx| e.prefetch_folder("C:\\a", cx));
+    assert_eq!(seen(&h, cx), [("C:\\a".to_string(), 5)], "still said while it is read");
+    gate.close();
+    cx.run_until_parked();
+    assert_eq!(seen(&h, cx).len(), 1);
+    // Opening it takes the listing: there is nothing left to peek at.
+    assert!(h.go(cx, "C:\\a"));
+    assert!(seen(&h, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn selecting_what_is_already_selected_tells_nobody(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\a"));
+    h.run(cx, |e, cx| e.select_only(Some("C:\\a\\notes.md"), cx));
+    let told = h.events.borrow().len();
+    // The second press of a double-click: the same item, the same focus and anchor.
+    h.run(cx, |e, cx| e.select_only(Some("C:\\a\\notes.md"), cx));
+    assert_eq!(h.events.borrow().len(), told, "nothing changed, so nothing was told");
+    // Another item is a change; so is nothing selected.
+    h.run(cx, |e, cx| e.select_only(Some("C:\\a\\file2.txt"), cx));
+    let after = h.events.borrow().len();
+    assert!(after > told);
+    h.run(cx, |e, cx| e.select_only(None, cx));
+    assert!(h.events.borrow().len() > after);
+}
+
+#[gpui_kit::test]
+fn a_folder_says_it_is_loading_only_when_it_takes_a_moment(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\"));
+    h.events.borrow_mut().clear();
+    let gate = h.disk.hold("C:\\a");
+    let opening = h
+        .explorer
+        .update(cx, |e, cx| e.navigate_task("C:\\a", NavOptions::default(), cx));
+    cx.run_until_parked();
+    // Nothing is said at once: a folder read in a few milliseconds is drawn without a frame that says "loading".
+    assert!(h.events.borrow().is_empty(), "{:?}", h.events.borrow());
+    h.read(cx, |e| {
+        assert!(e.active_tab().expect("a tab").loading, "the tab itself knows")
+    });
+    // This one takes its time: the views are told, once.
+    cx.executor().advance_clock(Duration::from_millis(60));
+    cx.run_until_parked();
+    let tab = h.read(cx, |e| e.active_tab_id());
+    assert_eq!(*h.events.borrow(), [ExplorerEvent::TabChanged(tab)]);
+    gate.close();
+    assert!(cx.foreground_executor().block_test(opening));
+    // One that arrives before the moment is up is never said to be loading.
+    h.events.borrow_mut().clear();
+    assert!(h.go(cx, "C:\\b"));
+    cx.executor().advance_clock(Duration::from_millis(60));
+    cx.run_until_parked();
+    let loading_said = h
+        .events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, ExplorerEvent::TabChanged(_)))
+        .count();
+    assert_eq!(loading_said, 1, "only the one that says the folder is open");
+}
+
+#[gpui_kit::test]
+fn a_big_folders_kind_is_read_from_a_sample_of_it(cx: &mut TestAppContext) {
+    use glint_model::columns::FolderKind;
+    let _guard = testing::lock();
+    let h = harness(cx);
+    // Thirty thousand photos with a text file every tenth item: mostly pictures, whichever of them are looked at.
+    let entries: Vec<_> = (0..30_000)
+        .map(|i| {
+            if i % 10 == 0 {
+                file("C:\\shots", &format!("note{i}.txt"), 1, 1)
+            } else {
+                file("C:\\shots", &format!("img{i}.jpg"), 1, 1)
+            }
+        })
+        .collect();
+    h.disk.folder("C:\\shots", entries);
+    assert!(h.go(cx, "C:\\shots"));
+    h.read(cx, |e| {
+        assert_eq!(e.active_tab().expect("a tab").kind, FolderKind::Pictures)
+    });
+}
+
+#[gpui_kit::test]
+fn a_big_listing_is_let_go_of_a_moment_later_and_a_small_one_at_once(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let small: Arc<[glint_model::entries::FileEntry]> = Arc::from(vec![file("C:\\x", "a.txt", 1, 1)]);
+    let big: Arc<[glint_model::entries::FileEntry]> = Arc::from(
+        (0..5000)
+            .map(|i| file("C:\\x", &format!("f{i}.txt"), 1, 1))
+            .collect::<Vec<_>>(),
+    );
+    cx.update(|cx| {
+        let_go(Some(small.clone()), cx);
+        let_go(Some(big.clone()), cx);
+        let_go(None, cx);
+    });
+    assert_eq!(Arc::strong_count(&small), 1, "a small one is simply dropped");
+    assert_eq!(
+        Arc::strong_count(&big),
+        2,
+        "a big one is held for a background thread to free"
+    );
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    assert_eq!(Arc::strong_count(&big), 1);
 }

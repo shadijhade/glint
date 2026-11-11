@@ -14,8 +14,17 @@ use search::{has_git_filter, ready_query, starts_with_drive, Offer, FILTERS, GIT
 /// How many of the last searches the empty box offers.
 const RECENT_SHOWN: usize = 5;
 
-/// Typing waits this long before a search as you type starts (the TypeScript's 100 ms).
-const AS_TYPED_AFTER: Duration = Duration::from_millis(100);
+/// How long typing rests before a search as you type starts. Only the index is asked as you type, and it
+/// answers in milliseconds, so the pause is not there to spare the search: it spares the list, which a letter or
+/// two would fill with half the drive only for the next letter to throw it away. From three letters on the
+/// results follow the keys.
+pub(super) fn as_typed_after(query: &str) -> Duration {
+    Duration::from_millis(match query.chars().count() {
+        0 | 1 => 100,
+        2 => 60,
+        _ => 20,
+    })
+}
 
 impl AddressBar {
     /// Puts the tab's filter in the box when something else changed it (clearing a search, another tab), and
@@ -95,8 +104,9 @@ impl AddressBar {
         // known yet). An fd walk waits for Enter.
         if !query.is_empty() && !asks_models(&query) {
             let explorer = self.explorer.clone();
+            let pause = as_typed_after(&query);
             self.find_timer = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(AS_TYPED_AFTER).await;
+                cx.background_executor().timer(pause).await;
                 let running = this
                     .update(cx, |_, cx| {
                         explorer.update(cx, |explorer, cx| explorer.find_as_typed(&query, cx))

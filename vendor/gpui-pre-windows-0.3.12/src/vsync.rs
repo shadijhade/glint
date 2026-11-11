@@ -59,6 +59,22 @@ impl VSyncProvider {
     }
 }
 
+/// Glint: the display's refresh interval, asked of the compositor at most every two seconds (the rate
+/// changes with the display the window is on and with battery saver). For the UI thread.
+pub(crate) fn refresh_interval() -> Duration {
+    thread_local! {
+        static KNOWN: std::cell::Cell<Option<(Instant, Duration)>> = const { std::cell::Cell::new(None) };
+    }
+    KNOWN.with(|known| match known.get() {
+        Some((at, interval)) if at.elapsed() < Duration::from_secs(2) => interval,
+        _ => {
+            let interval = get_dwm_interval().unwrap_or(DEFAULT_VSYNC_INTERVAL);
+            known.set(Some((Instant::now(), interval)));
+            interval
+        }
+    })
+}
+
 fn get_dwm_interval() -> Result<Duration> {
     let mut timing_info = DWM_TIMING_INFO {
         cbSize: std::mem::size_of::<DWM_TIMING_INFO>() as u32,

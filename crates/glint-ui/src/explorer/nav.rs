@@ -32,8 +32,13 @@ const PREFETCH_FRESH: Duration = Duration::from_millis(2000);
 const PREFETCH_MOST: usize = 8;
 /// Back history keeps this many folders.
 const HISTORY_MOST: usize = 100;
-/// The pointer rests on a folder this long before it's read ahead.
-const HOVER_FOR: Duration = Duration::from_millis(80);
+/// The pointer rests on a folder this long before it's read ahead (the web app waited 80 ms): its row says what is
+/// in it once it has been read, so this is most of what is waited for. Long enough that a pointer crossing the
+/// list reads nothing on its way.
+const HOVER_FOR: Duration = Duration::from_millis(60);
+/// A folder that takes this long to open says it is loading. One read in a few milliseconds is on screen before
+/// a frame could have said so, and drawing that frame would only have kept its rows waiting for the next one.
+const LOADING_SAID_AFTER: Duration = Duration::from_millis(40);
 
 // ---- A big archive read whole -----------------------------------------------------------------------------
 
@@ -121,9 +126,14 @@ impl ReadingWatch {
 
 /// A folder read ahead: the listing, once it's in, and the folder's own date from before it was read.
 pub(super) struct PrefetchEntry {
+    /// The folder, as it was asked for.
+    path: String,
     at: Instant,
     stamp: Option<f64>,
     state: PrefetchState,
+    /// What the folder held when it was last read ahead, kept while it is read again: what its row says of it
+    /// ([`Explorer::peeks`]) stays put meanwhile.
+    seen: Option<Listed>,
 }
 
 enum PrefetchState {
@@ -229,8 +239,18 @@ impl Explorer {
             if !tab.ready {
                 tab.load = LoadState::Loading;
             }
-            cx.emit(ExplorerEvent::TabChanged(id));
-            cx.notify();
+            // Said after a moment, if the folder is still being read then (see `LOADING_SAID_AFTER`).
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(LOADING_SAID_AFTER).await;
+                this.update(cx, |this, cx| {
+                    if this.tabs.get(&id).is_some_and(|tab| tab.nav_seq == seq && tab.loading) {
+                        cx.emit(ExplorerEvent::TabChanged(id));
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
         }
         let claim = (target != THIS_PC).then(|| self.claim_prefetch(&target)).flatten();
         let source = self.source.clone();
@@ -245,10 +265,33 @@ impl Explorer {
             if let Some(watch) = watch {
                 watch.finish(cx);
             }
-            this.update(cx, |this, cx| {
-                this.finish_navigation(id, seq, started, target, options, outcome, cx)
-            })
-            .unwrap_or(false)
+            crate::perf::say(|| {
+                let (items, core) = match &outcome {
+                    Some(Ok(listing)) => (listing.entries.len(), listing.elapsed),
+                    _ => (0, 0.0),
+                };
+                format!(
+                    "nav read at={:.2} core={core:.2} items={items} path={target}",
+                    crate::perf::ms(started)
+                )
+            });
+            let opened = this
+                .update(cx, |this, cx| {
+                    let applying = Instant::now();
+                    let opened = this.finish_navigation(id, seq, started, target, options, outcome, cx);
+                    crate::perf::say(|| {
+                        format!(
+                            "nav applied at={:.2} took={:.2}",
+                            crate::perf::ms(started),
+                            crate::perf::ms(applying)
+                        )
+                    });
+                    opened
+                })
+                .unwrap_or(false);
+            // Everyone who follows the explorer has heard by now.
+            crate::perf::say(|| format!("nav told at={:.2}", crate::perf::ms(started)));
+            opened
         })
     }
 
@@ -412,6 +455,8 @@ impl Explorer {
         let keep_history = !options.no_history && was_ready && !same;
         let has_listing = listing.is_some();
         let archived = listing.as_ref().is_some_and(|l| l.archive.is_some());
+        // The folder left: a big one's entries are freed away from this thread.
+        super::model::let_go(state.shared_entries(), cx);
         self.update_tab(id, |tab| {
             tab.ready = true;
             tab.path = path.clone();
@@ -747,21 +792,36 @@ impl Explorer {
             return;
         }
         let at = Instant::now();
+        // What it held the last time it was read ahead stays to be peeked at while it is read again.
+        let seen = self.prefetched.remove(&key).and_then(|known| match known.state {
+            PrefetchState::Ready(listed) => listed,
+            PrefetchState::Pending(_) => known.seen,
+        });
         self.prefetched.insert(
             key.clone(),
             PrefetchEntry {
+                path: path.to_string(),
                 at,
                 stamp: None,
                 state: PrefetchState::Pending(Vec::new()),
+                seen,
             },
         );
         // A few at most: they're for the next click.
         while self.prefetched.len() > PREFETCH_MOST {
             let oldest = self.prefetched.iter().min_by_key(|(_, e)| e.at).map(|(k, _)| k.clone());
-            match oldest {
-                Some(oldest) => self.prefetched.remove(&oldest),
-                None => break,
+            let Some(gone) = oldest.and_then(|oldest| self.prefetched.remove(&oldest)) else {
+                break;
             };
+            for listed in [
+                gone.seen,
+                match gone.state {
+                    PrefetchState::Ready(listed) => listed,
+                    PrefetchState::Pending(_) => None,
+                },
+            ] {
+                super::model::let_go(listed.map(|listed| listed.entries), cx);
+            }
         }
         let source = self.source.clone();
         let path = path.to_string();
@@ -774,11 +834,12 @@ impl Explorer {
             })
             .ok();
             let listed = source.list(&path).await.ok();
-            this.update(cx, |this, _| {
+            this.update(cx, |this, cx| {
                 let Some(entry) = this.prefetched.get_mut(&key).filter(|e| e.at == at) else {
                     return;
                 };
                 let stamp = entry.stamp;
+                entry.seen = None;
                 // Anyone waiting for it gets it now (and it's theirs: taken, so it's used once).
                 if let PrefetchState::Pending(waiting) =
                     std::mem::replace(&mut entry.state, PrefetchState::Ready(listed.clone()))
@@ -788,12 +849,35 @@ impl Explorer {
                             let _ = waiter.try_send((stamp, listed.clone()));
                         }
                         this.prefetched.remove(&key);
+                        return;
                     }
+                }
+                // Its row can say what is in it now.
+                if listed.is_some() {
+                    cx.notify();
                 }
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The folders read ahead and what each holds, newest read first: a folder's row says what is in it while the
+    /// pointer or the keyboard is on it, before it is opened. A few at most ([`PREFETCH_MOST`]), each as it was
+    /// when the pointer last came to it.
+    pub fn peeks(&self) -> Vec<(&str, &Listed)> {
+        let mut known: Vec<&PrefetchEntry> = self.prefetched.values().collect();
+        known.sort_by_key(|entry| std::cmp::Reverse(entry.at));
+        known
+            .into_iter()
+            .filter_map(|entry| {
+                let listed = match &entry.state {
+                    PrefetchState::Ready(listed) => listed.as_ref(),
+                    PrefetchState::Pending(_) => entry.seen.as_ref(),
+                };
+                listed.map(|listed| (entry.path.as_str(), listed))
+            })
+            .collect()
     }
 
     /// Takes the listing read ahead for `path`, if there is a fresh one: it's used once.

@@ -57,8 +57,23 @@ mod tests;
 pub use source::{CoreSource, Found, Fut, Options, Source};
 pub use window::{close, hide, init, is_quick_window, is_shown, prepare, summon, toggle, warm, QuickSearchHub, LABEL};
 
-/// How long after the last key a search starts (the TypeScript's 120 ms timer).
+/// How long after the last key a search starts when files have to be walked for it (the TypeScript's 120 ms
+/// timer): a walk is worth starting only once the typing rests.
 const DEBOUNCE: Duration = Duration::from_millis(120);
+
+/// How long after the last key a search starts. Once the index has answered a search here (`instant`), the
+/// results follow the keys: it answers in milliseconds, so only the first letters wait, whose results the next
+/// letter would throw away.
+fn pause_for(text: &str, instant: bool) -> Duration {
+    if !instant {
+        return DEBOUNCE;
+    }
+    Duration::from_millis(match text.chars().count() {
+        0 | 1 => 100,
+        2 => 60,
+        _ => 20,
+    })
+}
 /// How long "Copied path" stays in the footer.
 const COPIED_FOR: Duration = Duration::from_millis(1400);
 /// How far the pointer moves with the button down on a result before it is dragged out, in pixels.
@@ -146,6 +161,8 @@ pub struct QuickSearch {
     roots: Vec<String>,
     status: SharedString,
     busy: bool,
+    /// The last search was answered by the index alone: the next one needn't wait for the typing to rest.
+    instant: bool,
     active: usize,
     copied: bool,
     /// Numbers the searches, so an answer to an older one is dropped.
@@ -194,6 +211,7 @@ impl QuickSearch {
             roots: Vec::new(),
             status: SharedString::default(),
             busy: false,
+            instant: false,
             active: 0,
             copied: false,
             serial: 0,
@@ -332,8 +350,9 @@ impl QuickSearch {
             return;
         }
         let source = self.source.clone();
+        let pause = pause_for(&text, self.instant);
         self.search = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(DEBOUNCE).await;
+            cx.background_executor().timer(pause).await;
             let started = this.update(cx, |this, cx| {
                 this.busy = true;
                 this.active = 0;
@@ -405,7 +424,10 @@ impl QuickSearch {
     /// One thing the search said.
     fn apply(&mut self, found: Found, engine: &mut String) {
         match found {
-            Found::Started { engine: who } => *engine = who,
+            Found::Started { engine: who } => {
+                self.instant = who == "index";
+                *engine = who;
+            }
             Found::Results(results) => self.found = results,
             Found::Error(message) => {
                 self.busy = false;

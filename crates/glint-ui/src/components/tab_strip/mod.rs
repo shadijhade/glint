@@ -955,6 +955,7 @@ impl TabStrip {
 
 impl Render for TabStrip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("tab strip");
         let t = theme::tokens(cx).clone();
         let panes = self.collect(cx);
         let dual = panes.len() > 1;

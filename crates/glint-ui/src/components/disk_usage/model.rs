@@ -563,6 +563,7 @@ impl Usage {
     /// The tab's folder was listed (or listed again): a folder opened is mapped, one read again is mapped
     /// again shortly.
     fn listing_changed(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let _span = crate::perf::span("usage listing");
         let Some(run) = self.runs.get(&tab) else { return };
         let explorer = explorer(cx);
         let Some((path, has_listing)) = explorer

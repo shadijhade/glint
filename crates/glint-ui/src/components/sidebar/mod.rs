@@ -1484,6 +1484,7 @@ fn row_name(row: &Row) -> String {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("sidebar");
         let t = theme::tokens(cx).clone();
         // Tabbing in puts the keyboard on the folder shown, else the first place. (Checked here rather than in a
         // focus listener, which GPUI only calls while the window is active.)

@@ -155,6 +155,7 @@ impl StatusBar {
 
     /// Makes the summary from the explorer's active tab (`Summary::of`). A tab change closes the popover.
     fn refresh_summary(&mut self, cx: &App) {
+        let _span = crate::perf::span("status summary");
         let summary = {
             let explorer = self.explorer.read(cx);
             let tab = explorer.active_tab();
@@ -401,6 +402,7 @@ impl StatusBar {
 
 impl Render for StatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("status bar");
         if self.dirty {
             self.refresh_summary(cx);
         }

@@ -713,3 +713,17 @@ fn a_long_list_draws_only_the_rows_in_view_and_the_arrows_scroll_to_the_highligh
     let total = rig.view.read_with(&rig.visual, |quick, _| quick.found.len());
     assert_eq!(total, 100);
 }
+
+#[test]
+fn a_search_follows_the_keys_once_the_index_has_answered() {
+    use std::time::Duration;
+    // Files walked: the typing rests first, whatever was typed.
+    assert_eq!(pause_for("report", false), DEBOUNCE);
+    assert_eq!(pause_for("r", false), DEBOUNCE);
+    // The index: the first letters wait (their results would be thrown away), the rest don't.
+    assert_eq!(pause_for("r", true), Duration::from_millis(100));
+    assert_eq!(pause_for("re", true), Duration::from_millis(60));
+    assert_eq!(pause_for("rep", true), Duration::from_millis(20));
+    // Counted in letters, not bytes.
+    assert_eq!(pause_for("تق", true), Duration::from_millis(60));
+}

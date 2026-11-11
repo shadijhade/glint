@@ -1299,3 +1299,25 @@ mod scrubbing {
 
 mod empty_find;
 mod rename;
+
+#[gpui_kit::test]
+fn a_folder_read_ahead_says_what_it_holds_under_its_tile(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut env = env(cx, &disk(0), plain());
+    let said = |env: &mut Env| -> Option<String> {
+        env.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("file-grid-peek", 0usize))
+                .and_then(|peek| peek.label().map(str::to_string))
+        })
+    };
+    assert_eq!(said(&mut env), None);
+    // The pointer rests on the folder (the grid asks the explorer to read it ahead then): the line under its name,
+    // where a file says its size, says what is in it.
+    env.explorer
+        .update(&mut env.visual, |e, cx| e.prefetch_folder("C:\\x\\docs", cx));
+    env.settle(|env| env.explorer.read_with(&env.visual, |e, _| !e.peeks().is_empty()));
+    let words = said(&mut env).expect("the folder's tile says what it holds");
+    assert!(words.starts_with("1 file"), "{words}");
+}

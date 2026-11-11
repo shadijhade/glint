@@ -30,6 +30,9 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 use windows::Win32::Foundation::HWND;
 
+/// The main window waits this long for its first folder before it is shown without it.
+const SHOWN_EMPTY_AFTER: std::time::Duration = std::time::Duration::from_millis(120);
+
 /// The main window's handle, 0 until it exists: posted jobs and the tray's callbacks can't hold a `Window`.
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 
@@ -63,7 +66,9 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
         start_rules(cx);
         hear_core_notices(cx);
     }
+    glint_core::startup::mark("quick search, rules");
     start_explorer(cx);
+    glint_core::startup::mark("explorer");
     // The disk usage maps, reading glint-core (after the explorer, whose tabs they follow).
     crate::components::disk_usage::init(cx);
     // Early, before the saved state is first written: the updater tells a first start after an update by it. (A
@@ -83,6 +88,7 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
         keep_jump_list(cx);
     }
 
+    glint_core::startup::mark("services, tray");
     let (window, main_workspace) = match workspace::open_main_window(cx) {
         Ok(opened) => opened,
         Err(error) => {
@@ -91,6 +97,7 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
             return;
         }
     };
+    glint_core::startup::mark("window opened");
     cx.set_global(MainWindow(window));
     cx.set_global(MainWorkspace(main_workspace));
     let _ = window.update(cx, |_, window, cx| {
@@ -103,9 +110,11 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     match &secondary_window {
         // Opened hidden: put where its command line says, then shown.
         Some(secondary_window) => place_secondary_window(secondary_window),
-        // Opened hidden: put where it was last time, then shown, unless it starts in the tray.
-        None => place_main_window(cx, !request.tray),
+        // Opened hidden: put where it was last time. It is shown once its first folder is in (below), unless
+        // it starts in the tray.
+        None => place_main_window(cx, false),
     }
+    glint_core::startup::mark("window placed");
     if services.thumb_buttons {
         keep_thumb_buttons(cx);
     }
@@ -137,10 +146,37 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
         })
         .collect();
     let first = explorer::explorer(cx).update(cx, |explorer, cx| explorer.init_explorer(targets, cx));
+    glint_core::startup::mark("first folders asked for");
+    // The main window comes up with its first folder in it: shown empty, it was filled a moment later, and a
+    // start seen in two steps looks slower than it is. A folder that takes its time (a sleeping drive, a network
+    // share) doesn't hold the window back: it is shown after a moment whatever is in it.
+    let reveal: Rc<dyn Fn()> = {
+        let wanted = secondary_window.is_none() && !request.tray;
+        let shown = Rc::new(std::cell::Cell::new(!wanted));
+        Rc::new(move || {
+            if !shown.replace(true) {
+                glint_core::startup::mark("window shown");
+                core_bridge::post_to_ui(|| {
+                    if let Some(hwnd) = main_hwnd() {
+                        window_state::show_hwnd(hwnd);
+                    }
+                });
+            }
+        })
+    };
+    {
+        let reveal = reveal.clone();
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(SHOWN_EMPTY_AFTER).await;
+            reveal();
+        })
+        .detach();
+    }
     // The main Glint ending ends this window (Quit; a main window hidden in the tray is still running).
     secondary::follow_main_process(cx, |cx| cx.quit());
     cx.spawn(async move |cx| {
         first.await;
+        reveal();
         cx.update(|cx| {
             if services.later_launches {
                 hear_later_launches(cx);
@@ -641,6 +677,8 @@ fn quit(cx: &mut App) {
 fn start_explorer(cx: &mut App) {
     explorer::init(cx);
     let explorer = explorer::explorer(cx);
+    // Where the known folders are: asked now, so the answer is there when the first folder needs it.
+    explorer.update(cx, |explorer, _| explorer.read_ahead_for_start());
     if let Some(saved) = persistence::app(cx).cloned() {
         explorer.update(cx, |explorer, cx| {
             explorer.set_memory(explorer::Memory::from_app_state(saved), cx)

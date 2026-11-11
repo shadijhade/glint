@@ -55,6 +55,17 @@ pub struct WindowsWindowState {
 
     pub callbacks: Callbacks,
     pub frame_signal: Arc<PlatformFrameSignal>,
+    /// Glint: frames ahead of the display's tick (see `WindowsWindow::frame_waker`). When a frame was last
+    /// drawn and whether that one was early; whether an early one has been asked for and not yet handled;
+    /// whether the frame being handled now is that one; how many early frames have been drawn since the last
+    /// one the tick drew; and whether a frame is being handled at all (what is asked for from inside it is the
+    /// tick's to draw).
+    pub last_draw: Cell<Option<Instant>>,
+    pub last_draw_early: Cell<bool>,
+    pub early_frame_asked: Cell<bool>,
+    pub frame_is_early: Cell<bool>,
+    pub early_frames: Cell<u8>,
+    pub in_frame: Cell<bool>,
     pub input_handler: Cell<Option<PlatformInputHandler>>,
     pub ime_enabled: Cell<bool>,
     pub pending_surrogate: Cell<Option<u16>>,
@@ -171,6 +182,12 @@ impl WindowsWindowState {
             min_size,
             callbacks,
             frame_signal: Arc::new(PlatformFrameSignal::new()),
+            last_draw: Cell::new(None),
+            last_draw_early: Cell::new(false),
+            early_frame_asked: Cell::new(false),
+            frame_is_early: Cell::new(false),
+            early_frames: Cell::new(0),
+            in_frame: Cell::new(false),
             input_handler: Cell::new(input_handler),
             ime_enabled: Cell::new(true),
             pending_surrogate: Cell::new(pending_surrogate),
@@ -984,6 +1001,53 @@ impl PlatformWindow for WindowsWindow {
         self.state.callbacks.request_frame.set(Some(callback));
     }
 
+    /// Glint: a frame as soon as there is something to draw, when none is flowing.
+    ///
+    /// Frames are drawn when the display ticks (the vsync thread invalidates every window then). A window
+    /// that was at rest and is changed by a click or a key so waited for the next tick before it drew, and
+    /// what it drew reached the screen a refresh later than it could have: 7 ms at 144 Hz, 17 ms at 60 Hz, on
+    /// every press. This asks for the frame at once instead:
+    ///
+    /// - when the window has drawn nothing for a whole refresh (it was at rest), and
+    /// - once more when it changes again before the tick has drawn anything: a press is usually answered
+    ///   twice within a few milliseconds, by the control that took it and then by what it asked for (a folder
+    ///   read, a search's results), and the second answer should not wait a refresh for having been second.
+    ///
+    /// Nothing is asked for from inside a frame (an animation asking for its next one: the ticks pace those),
+    /// nor while one asked for is still to be handled, nor once the tick has taken over. So frames that flow
+    /// (an animation, a scroll, the pointer moving over rows) are drawn once a refresh as before, with at most
+    /// two early ones where they start. `GLINT_EARLY_FRAMES=0` turns it off (for measuring what it gives).
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*ON.get_or_init(|| std::env::var_os("GLINT_EARLY_FRAMES").is_none_or(|value| value != "0")) {
+            return None;
+        }
+        let window = Rc::downgrade(&self.0);
+        Some(Rc::new(move || {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let state = &window.state;
+            if state.in_frame.get() || state.early_frame_asked.get() {
+                return;
+            }
+            let refresh = crate::vsync::refresh_interval();
+            let rested = state.last_draw.get().is_none_or(|at| at.elapsed() >= refresh);
+            if rested {
+                // A new start: the early frames of the last one are not held against it.
+                state.early_frames.set(0);
+            }
+            let second = !rested && state.last_draw_early.get() && state.early_frames.get() == 1;
+            if !rested && !second {
+                return;
+            }
+            state.early_frame_asked.set(true);
+            // Only marks the window as needing paint: WM_PAINT comes once the messages already waiting
+            // (more input, usually) are handled, so presses that arrive together are drawn together.
+            unsafe { RedrawWindow(Some(window.hwnd), None, None, RDW_INVALIDATE).ok().log_err() };
+        }))
+    }
+
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
         self.state.callbacks.input.set(Some(callback));
     }
@@ -1046,6 +1110,15 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn draw(&self, scene: &Scene) {
+        // Glint: for `frame_waker`. A frame the tick drew ends the count of early ones.
+        let early = self.state.frame_is_early.get();
+        self.state.last_draw.set(Some(Instant::now()));
+        self.state.last_draw_early.set(early);
+        self.state.early_frames.set(if early {
+            self.state.early_frames.get().saturating_add(1)
+        } else {
+            0
+        });
         self.state
             .renderer
             .borrow_mut()
