@@ -757,7 +757,7 @@ pub fn apply(cx: &mut App) {
     Theme::update(cx, |theme| {
         theme.notification.placement = notices_at;
         // Clear of the status bar at the foot of the sheet, which says how a copy or a search went.
-        theme.notification.margins.bottom = px(40.);
+        theme.notification.margins.bottom = px(72.);
         theme.font_family = sans;
         theme.mono_font_family = mono;
         theme.font_size = font_size;

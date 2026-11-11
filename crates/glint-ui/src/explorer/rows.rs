@@ -10,11 +10,18 @@
 //!
 //! [`build_rows`] is a pure function of its inputs so a huge folder can be ordered on a background thread.
 
+use super::types::{Hit, Hits};
 use glint_model::entries::{entry_order, is_hidden, matcher, FileEntry, GitMarks, SizeOf, Sort, SortKey};
 use glint_model::groups::{group_rows, GroupBy, GroupHeader, Grouped, SizeOf as GroupSizeOf};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+/// How many of a file's matching lines are shown under its row; the rest are counted on one more line.
+pub const HITS_SHOWN: usize = 3;
+/// Where the codes of the lines under rows start in [`GroupLayout::lines`]: line `j` of
+/// [`GroupLayout::hit_lines`] is `HIT_BASE - j`. Far below any header's code (-1 - i).
+const HIT_BASE: i32 = -1_000_000_000;
 
 /// The folder sizes measured for the folder (`SizeRun.sizes`), when sorting or grouping by size needs them: a
 /// folder sorts and groups by its calculated size. Equal when it is the same measuring (`version`), so a spec
@@ -46,6 +53,23 @@ impl PartialEq for RowMarks {
     }
 }
 
+/// What a search found inside files (`inside.rs`), for the rows: which files were found by their contents alone,
+/// and every file's matching lines. Equal when it is the very same findings, so a spec compare walks nothing.
+#[derive(Clone, Debug)]
+pub struct RowInside {
+    pub only: Arc<HashSet<String>>,
+    pub hits: Arc<Hits>,
+    /// The rows show the lines and the two parts' headers (the list does; the grid and the columns view show the
+    /// files alone).
+    pub lines: bool,
+}
+
+impl PartialEq for RowInside {
+    fn eq(&self, other: &Self) -> bool {
+        self.lines == other.lines && Arc::ptr_eq(&self.only, &other.only) && Arc::ptr_eq(&self.hits, &other.hits)
+    }
+}
+
 /// Everything that decides which rows a listing makes, and in what order. Two equal specs make equal rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowSpec {
@@ -67,6 +91,9 @@ pub struct RowSpec {
     pub git: Option<RowMarks>,
     /// Compare panes' "diff only": the pane's comparison, whose identical items the rows leave out.
     pub diffs: Option<super::compare::RowDiffs>,
+    /// A search's findings inside files: the files found by their contents alone stay whatever the box's words say
+    /// of their names; in the list their lines go under their rows, and those files under a header of their own.
+    pub inside: Option<RowInside>,
 }
 
 impl Default for RowSpec {
@@ -84,18 +111,55 @@ impl Default for RowSpec {
             sizes: None,
             git: None,
             diffs: None,
+            inside: None,
         }
     }
+}
+
+/// A line under a file's row: one of the lines in it that matched a search, or how many more there are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HitLine {
+    /// The row it is under.
+    pub row: u32,
+    /// Which of the file's matching lines it is (the first one not shown, for a "more" line).
+    pub hit: u32,
+    /// Above zero this is not a line of the file but the count of its matching lines that aren't shown.
+    pub more: u32,
+}
+
+/// The headers of the two parts a search's results are in when it found files by their contents: by name (none
+/// when no name matched), then inside files. Indices into [`GroupLayout::headers`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sections {
+    pub names: Option<usize>,
+    pub inside: usize,
 }
 
 /// The headers of a grouped list and where its lines are (`Grouped` without its copy of the rows).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupLayout {
     pub headers: Vec<GroupHeader>,
-    /// Each list line: a row's index, or (as -1 - i) header i.
+    /// Each list line: a row's index, or (as -1 - i) header i, or a line under a row (see [`Rows::line`]).
     pub lines: Vec<i32>,
     /// Each row's line.
     pub line_of: Vec<i32>,
+    /// The lines under rows: what a search found inside those files.
+    pub hit_lines: Vec<HitLine>,
+    /// Set when the headers are a search's two parts rather than a grouping.
+    pub sections: Option<Sections>,
+}
+
+/// What is on one line of the list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Line<'a> {
+    /// Row `i`.
+    Row(usize),
+    /// Header `i`.
+    Header(usize, &'a GroupHeader),
+    /// A line under a row: a line of the file that matched the search, or the count of the ones not shown.
+    Hit(HitLine),
+    /// Nothing (past the end).
+    Blank,
 }
 
 /// A tab's rows, in display order. Cloning is cheap (a few `Arc`s).
@@ -105,6 +169,8 @@ pub struct Rows {
     /// Display order as indices into `entries`; `None` means `entries` as they are.
     order: Option<Arc<[u32]>>,
     groups: Option<Arc<GroupLayout>>,
+    /// Every file's lines that matched the search, when the rows show them.
+    inside: Option<Arc<Hits>>,
     /// How many items the Show hidden items setting left out.
     pub hidden: usize,
 }
@@ -122,6 +188,7 @@ impl Rows {
             entries: Arc::from(Vec::new()),
             order: None,
             groups: None,
+            inside: None,
             hidden: 0,
         }
     }
@@ -132,8 +199,58 @@ impl Rows {
             entries,
             order: None,
             groups: None,
+            inside: None,
             hidden: 0,
         }
+    }
+
+    /// How many lines the list has: its rows, its headers and the lines under rows.
+    pub fn line_count(&self) -> usize {
+        self.groups.as_ref().map_or(self.len(), |groups| groups.lines.len())
+    }
+
+    /// What is on line `line` of the list.
+    pub fn line(&self, line: usize) -> Line<'_> {
+        let Some(groups) = &self.groups else {
+            return if line < self.len() {
+                Line::Row(line)
+            } else {
+                Line::Blank
+            };
+        };
+        match groups.lines.get(line).copied() {
+            Some(at) if at >= 0 => Line::Row(at as usize),
+            Some(at) if at > HIT_BASE => {
+                let index = (-at - 1) as usize;
+                groups
+                    .headers
+                    .get(index)
+                    .map_or(Line::Blank, |header| Line::Header(index, header))
+            }
+            Some(at) => groups
+                .hit_lines
+                .get((HIT_BASE - at) as usize)
+                .map_or(Line::Blank, |hit| Line::Hit(*hit)),
+            None => Line::Blank,
+        }
+    }
+
+    /// The lines of the file at `path` that matched the search, when the rows show them.
+    pub fn hits_of(&self, path: &str) -> Option<&Arc<[Hit]>> {
+        self.inside.as_ref()?.get(path)
+    }
+
+    /// The file a line under a row belongs to, and the line of it that matched (the first one not shown, for a
+    /// "more" line).
+    pub fn hit(&self, line: HitLine) -> Option<(&FileEntry, &Hit)> {
+        let entry = self.get(line.row as usize)?;
+        let hit = self.hits_of(&entry.path)?.get(line.hit as usize)?;
+        Some((entry, hit))
+    }
+
+    /// Whether the rows are a search's two parts (by name, inside files), and which headers those are.
+    pub fn sections(&self) -> Option<Sections> {
+        self.groups.as_ref()?.sections
     }
 
     /// Number of rows (not counting group headers).
@@ -203,7 +320,13 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
             if diffs.is_some_and(|d| d.get(&entry.lower) == Some(&glint_model::entries::DiffStatus::Same)) {
                 continue;
             }
-            if test.as_ref().is_some_and(|test| !test(entry)) {
+            // The box's words are looked for in names here; a file found by what is in it needn't be named so
+            // (the search's filters were applied to it when it was found).
+            let by_contents = spec
+                .inside
+                .as_ref()
+                .is_some_and(|inside| inside.only.contains(&entry.path));
+            if !by_contents && test.as_ref().is_some_and(|test| !test(entry)) {
                 continue;
             }
             kept.push(u32::try_from(i).unwrap_or(u32::MAX));
@@ -248,10 +371,14 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         entries: entries.clone(),
         order: order.map(Arc::from),
         groups: None,
+        inside: None,
         hidden,
     };
     if spec.group == GroupBy::None {
-        return sorted;
+        return match spec.inside.as_ref().filter(|inside| inside.lines) {
+            Some(inside) => with_hits(sorted, inside),
+            None => sorted,
+        };
     }
     let flat: Vec<FileEntry> = sorted.iter().cloned().collect();
     let group_size = spec.sizes.as_ref().map(|s| {
@@ -270,15 +397,155 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         group_size.as_ref().map(|f| f as &GroupSizeOf),
         marks,
     );
-    Rows {
+    let grouped = Rows {
         entries: Arc::from(rows),
         order: None,
         groups: Some(Arc::new(GroupLayout {
             headers,
             lines,
             line_of,
+            hit_lines: Vec::new(),
+            sections: None,
         })),
+        inside: None,
         hidden,
+    };
+    match spec.inside.as_ref().filter(|inside| inside.lines) {
+        Some(inside) => with_hits(grouped, inside),
+        None => grouped,
+    }
+}
+
+/// `rows` with what a search found inside files: each file's matching lines under its row (the first
+/// [`HITS_SHOWN`], then a count of the rest). Rows that aren't grouped are put in the search's two parts, each
+/// under its header: the files found by name (in their order), then the ones found by their contents alone. A
+/// grouped list keeps its groups.
+fn with_hits(rows: Rows, inside: &RowInside) -> Rows {
+    let count = rows.len();
+    let index_of = |i: usize| -> u32 {
+        match &rows.order {
+            Some(order) => order.get(i).copied().unwrap_or(u32::MAX),
+            None => u32::try_from(i).unwrap_or(u32::MAX),
+        }
+    };
+    // Where each row goes, and the headers between them: (row or header) in display order.
+    enum Slot {
+        Header(usize),
+        Row(usize),
+    }
+    let mut headers: Vec<GroupHeader> = Vec::new();
+    let mut slots: Vec<Slot> = Vec::new();
+    let mut order: Option<Arc<[u32]>> = rows.order.clone();
+    let mut sections = None;
+    match rows.groups.as_deref() {
+        Some(layout) => {
+            headers = layout.headers.clone();
+            for &at in &layout.lines {
+                if at >= 0 {
+                    slots.push(Slot::Row(at as usize));
+                } else if at > HIT_BASE {
+                    slots.push(Slot::Header((-at - 1) as usize));
+                }
+            }
+        }
+        None => {
+            let (mut named, mut found): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
+            for i in 0..count {
+                let by_contents = rows.get(i).is_some_and(|entry| inside.only.contains(&entry.path));
+                if by_contents {
+                    found.push(index_of(i));
+                } else {
+                    named.push(index_of(i));
+                }
+            }
+            if found.is_empty() {
+                slots.extend((0..count).map(Slot::Row));
+            } else {
+                let names = (!named.is_empty()).then(|| {
+                    headers.push(GroupHeader {
+                        label: "Names".to_string(),
+                        count: named.len(),
+                        size: 0,
+                        first: 0,
+                    });
+                    slots.push(Slot::Header(0));
+                    0
+                });
+                slots.extend((0..named.len()).map(Slot::Row));
+                headers.push(GroupHeader {
+                    label: "Inside files".to_string(),
+                    count: found.len(),
+                    size: 0,
+                    first: named.len(),
+                });
+                slots.push(Slot::Header(headers.len() - 1));
+                slots.extend((named.len()..count).map(Slot::Row));
+                sections = Some(Sections {
+                    names,
+                    inside: headers.len() - 1,
+                });
+                named.append(&mut found);
+                order = Some(Arc::from(named));
+            }
+        }
+    }
+    let placed = Rows {
+        entries: rows.entries.clone(),
+        order,
+        groups: None,
+        inside: None,
+        hidden: rows.hidden,
+    };
+    let mut lines: Vec<i32> = Vec::with_capacity(slots.len());
+    let mut line_of: Vec<i32> = vec![0; count];
+    let mut hit_lines: Vec<HitLine> = Vec::new();
+    for slot in slots {
+        match slot {
+            Slot::Header(i) => lines.push(-1 - i32::try_from(i).unwrap_or(0)),
+            Slot::Row(row) => {
+                if let Some(line) = line_of.get_mut(row) {
+                    *line = i32::try_from(lines.len()).unwrap_or(i32::MAX);
+                }
+                lines.push(i32::try_from(row).unwrap_or(i32::MAX));
+                let hits = placed
+                    .get(row)
+                    .and_then(|entry| inside.hits.get(&entry.path))
+                    .map_or(0, |hits| hits.len());
+                let shown = hits.min(HITS_SHOWN);
+                let row_number = u32::try_from(row).unwrap_or(u32::MAX);
+                for hit in 0..shown {
+                    lines.push(HIT_BASE - i32::try_from(hit_lines.len()).unwrap_or(0));
+                    hit_lines.push(HitLine {
+                        row: row_number,
+                        hit: u32::try_from(hit).unwrap_or(0),
+                        more: 0,
+                    });
+                }
+                if hits > shown {
+                    lines.push(HIT_BASE - i32::try_from(hit_lines.len()).unwrap_or(0));
+                    hit_lines.push(HitLine {
+                        row: row_number,
+                        hit: u32::try_from(shown).unwrap_or(0),
+                        more: u32::try_from(hits - shown).unwrap_or(u32::MAX),
+                    });
+                }
+            }
+        }
+    }
+    // Nothing to add: the rows as they were (a search whose files all went, say).
+    if hit_lines.is_empty() && sections.is_none() {
+        return rows;
+    }
+    Rows {
+        groups: Some(Arc::new(GroupLayout {
+            headers,
+            lines,
+            line_of,
+            hit_lines,
+            sections,
+        })),
+        inside: Some(inside.hits.clone()),
+        ..placed
     }
 }
 

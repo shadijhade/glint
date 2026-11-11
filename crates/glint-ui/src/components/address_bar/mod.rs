@@ -819,6 +819,41 @@ impl Render for AddressBar {
 
         let field = self.address_field(&t, window, cx);
         let search = self.search_box(&t, window, cx);
+        // One field for where you are and what you look for: the crumbs at its start, the search at its end,
+        // a hairline between them. It lights (and shows the glint under it) while either half is typed in.
+        let lit = (seen.editing && self.editing) || self.find_focused;
+        let omni = row_start()
+            .id("address-omni")
+            .test_support()
+            // In the title bar: pressing the field never drags the window.
+            .occlude()
+            .relative()
+            .h(space(8.5))
+            .min_w_0()
+            .flex_1()
+            // A basis of nothing (not of its contents): the field gives way to the window, however long the path.
+            .flex_basis(px(0.))
+            .max_w(rems(60.))
+            .items_center()
+            .rounded(theme::size::RADIUS_LG)
+            .border_1()
+            .border_color(if lit { t.primary.opacity(0.55) } else { t.stroke })
+            .bg(if lit { t.field_focus } else { t.field })
+            .child(field)
+            .child(div().flex_none().w(px(1.)).h(space(4.)).bg(t.stroke))
+            .child(search)
+            .when(lit, |omni| {
+                omni.child(
+                    div()
+                        .absolute()
+                        .bottom(px(-1.))
+                        .left(space(3.))
+                        .right(space(3.))
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(theme::glint_fill(cx)),
+                )
+            });
 
         row_start()
             .id("address-bar")
@@ -829,22 +864,26 @@ impl Render for AddressBar {
             .track_focus(&self.focus)
             .min_w_0()
             .flex_1()
-            .gap(space(2.))
+            // In the title bar, whose row is as wide as its contents ask: the bar asks for nothing of its own,
+            // so a long path never pushes the window's buttons out of the window.
+            .flex_basis(px(0.))
+            .justify_center()
+            .gap(space(1.5))
             .child(
                 row_start()
+                    .occlude()
                     .flex_none()
                     .child(back)
                     .children(forward)
                     .child(up)
                     .children(refresh),
             )
-            .child(field)
-            .child(search)
+            .child(omni)
     }
 }
 
 impl AddressBar {
-    /// The field the crumbs or the typed path sit in: Fluent's, with the accent line under it while typing.
+    /// The start of the bar's field: the crumbs, or the path being typed.
     fn address_field(&mut self, t: &theme::Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let seen = self.seen.clone();
         let editing = seen.editing && self.editing;
@@ -857,29 +896,13 @@ impl AddressBar {
             .id("address-field")
             .test_support()
             .relative()
-            .h(space(8.))
+            .h_full()
             .min_w_0()
             .flex_1()
             .items_center()
-            .rounded(theme::size::RADIUS_LG)
-            .border_1()
-            .border_color(if editing { t.primary.opacity(0.6) } else { t.stroke })
-            .bg(if editing { t.field_focus } else { t.field })
             .overflow_hidden()
             .children(seen.dual.then(|| self.pane_side(t, cx)))
             .child(inner)
-            // Fluent's accent line under a field being typed in: here it is the glint.
-            .when(editing, |field| {
-                field.child(
-                    div()
-                        .absolute()
-                        .bottom_0()
-                        .left_0()
-                        .right_0()
-                        .h(px(2.))
-                        .bg(theme::glint_fill(cx)),
-                )
-            })
     }
 
     /// Dual-pane view: which pane the bar shows; a click shows the other one's (F6).

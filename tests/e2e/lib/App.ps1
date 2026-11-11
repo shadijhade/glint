@@ -57,7 +57,8 @@ function Get-QuickLook { return (Find-El -Type Window -Name 'Quick Look*' -Like)
 
 function Get-SettingsDialog { return (Find-El -Type Group -Name 'Settings') }
 
-function Get-TextSearch { return (Find-El -Type Group -Name 'Text search') }
+# The bar over the list while a search's results are shown.
+function Get-SearchBar { return (Find-El -Type Group -Name 'Search results') }
 
 # Clicks the item called `$Item` of the open menu `$Menu`, found inside it (the toolbar has a button of the same name).
 function Select-MenuItem {
@@ -119,7 +120,7 @@ function Focus-List {
     Start-Sleep -Milliseconds 200
 }
 
-# Gets the app from whatever a check left it in to the same start: no menu or dialog, Files mode, one pane, one tab,
+# Gets the app from whatever a check left it in to the same start: no menu or dialog, no search, one pane, one tab,
 # the arena open with its original contents, nothing selected.
 function Reset-App {
     $main = Get-MainWindow
@@ -132,10 +133,11 @@ function Reset-App {
         Send-Key 'escape'
         Start-Sleep -Milliseconds 250
     }
-    if (Get-TextSearch) {
-        $files = Find-El -Type Button -Name 'Files mode'
-        if ($files) { Invoke-Click $files }
-        [void](Wait-Until -Seconds 3 -Cond { -not (Get-TextSearch) })
+    $search = Get-SearchBar
+    if ($search) {
+        $close = Find-El -Type Button -Name 'Close' -Root $search
+        if ($close) { Invoke-Click $close }
+        [void](Wait-Until -Seconds 3 -Cond { -not (Get-SearchBar) })
     }
     # After a rename or a navigation nothing may hold the keyboard (the box that had it is gone): a click in the empty
     # part of the list gives it to the list, so the keys below reach the app. It also clears the selection.

@@ -198,7 +198,7 @@ fn a_folder_can_be_pasted_into_pinned_opened_beside_and_in_a_terminal() {
             "Scripts>",
             "Show in File Explorer",
             "Back up…",
-            "Search text",
+            "Search here",
             "Inspect & check>",
             "Properties",
         ],
@@ -696,7 +696,7 @@ fn the_folder_shown_has_paste_undo_new_and_the_folders_tools() {
             "Select all",
             "-",
             "Folder sizes",
-            "Search text",
+            "Search here",
             "Inspect & check>",
             "Clean up & share>",
             "-",
@@ -787,7 +787,7 @@ fn a_place_or_tile_opens_pastes_into_and_pins_but_has_no_new_or_select_all() {
         &[
             "Open",
             "Open in new tab",
-            "Search text",
+            "Search here",
             "Open in File Explorer",
             "Properties",
         ],
@@ -833,7 +833,7 @@ fn a_folder_windows_keeps_closed_leads_with_get_access_and_greys_out_changes() {
         Some(true),
         "nothing was listed"
     );
-    assert!(find(&menu, "Search text").is_none() && find(&menu, "Open in Terminal").is_none());
+    assert!(find(&menu, "Search here").is_none() && find(&menu, "Open in Terminal").is_none());
     assert_eq!(labels(submenu(&menu, "Inspect & check")), ["What's locking this?"]);
     // Windows refused outright (even administrators): no Get access to offer.
     if let Some(view) = &mut c.view {
@@ -870,7 +870,7 @@ fn in_an_archive_the_folder_menu_is_read_only() {
     assert_eq!(find(&menu, "New folder").map(|e| e.disabled), Some(true));
     assert!(find(&menu, "Show the archive in File Explorer").is_some());
     assert!(find(&menu, "Archive properties").is_some() && find(&menu, "Properties").is_none());
-    assert!(find(&menu, "Search text").is_none() && find(&menu, "Open in Terminal").is_none());
+    assert!(find(&menu, "Search here").is_none() && find(&menu, "Open in Terminal").is_none());
     // A pinned folder inside an archive is read-only too, though only the path says so.
     let menu = folder_menu("C:\\x\\pack.zip\\inner", false, &FolderCtx::default());
     assert_eq!(find(&menu, "Paste into folder").map(|e| e.disabled), Some(true));

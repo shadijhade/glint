@@ -83,6 +83,7 @@
 //! | `view.rs` | focus, marquee selection, columns, the address bar's editing flag, eject |
 //! | `find_types.rs` | searching's types: [`FindOptions`], [`Found`], [`Wider`], [`SearchIndex`], [`FindNotice`] |
 //! | `find.rs` | searching by name: run, as typed, stop, leave, clear, saved searches (`runFind`…) |
+//! | `inside.rs` | searching inside files as part of the same search: the engines, core's events, the files and their matching lines |
 //! | `actions_types.rs` | the menu actions' types: [`SizeRun`], [`ActionNotice`], [`ExportNotice`], [`Request`]… |
 //! | `actions.rs` | open with an app, Sandbox, new window, reveal, Recent, wallpaper, rotate, cloud pins, ncdu export, scripts, on demand |
 //! | `sizes.rs` | folder sizes (`calcSizes`, `autoSizes`, `stopSizes`) and what reads them |
@@ -98,6 +99,7 @@ mod compare;
 mod create;
 mod find;
 mod find_types;
+mod inside;
 mod memory;
 mod model;
 mod nav;
@@ -133,6 +135,8 @@ pub(crate) mod fake;
 #[cfg(test)]
 mod find_tests;
 #[cfg(test)]
+mod inside_tests;
+#[cfg(test)]
 mod ops_tests;
 #[cfg(test)]
 mod sizes_tests;
@@ -143,6 +147,10 @@ pub use actions_types::*;
 pub use archive_types::*;
 pub use compare::{compare_listings, Comparison, RowDiffs};
 pub use find_types::{FindNotice, FindOptions, Found, SearchIndex, Wider};
+pub use inside::{
+    can_search_inside, inside_filters, inside_unasked, inside_words, InsideEngine, InsideRequest,
+    RawEvent as InsideEvent,
+};
 pub use memory::Memory;
 pub use model::Explorer;
 pub use nav::Refresh;
@@ -150,7 +158,7 @@ pub use open::is_disk_image;
 pub use ops_types::*;
 pub use recycle::purge_what;
 pub use rename::{clean_name, INVALID_NAME_CHARS, INVALID_NAME_HINT};
-pub use rows::{build_rows, GroupLayout, RowSizes, RowSpec, Rows};
+pub use rows::{build_rows, GroupLayout, HitLine, Line, RowInside, RowSizes, RowSpec, Rows};
 pub use source::{Access, CompressRequest, CoreSource, Effect, Fut, Resolved, Source};
 pub use tab::{PathSet, Selection, Tab};
 pub use types::*;

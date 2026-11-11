@@ -141,6 +141,16 @@ fn open_workspace(
     files: &Files,
     rtl: bool,
 ) -> (VisualTestContext, gpui_kit::Entity<Workspace>) {
+    let (visual, workspace, _) = open_workspace_on(cx, files, rtl);
+    (visual, workspace)
+}
+
+/// [`open_workspace`], with the fake disk too (to say what a search inside files finds).
+fn open_workspace_on(
+    cx: &mut TestAppContext,
+    files: &Files,
+    rtl: bool,
+) -> (VisualTestContext, gpui_kit::Entity<Workspace>, FakeDisk) {
     let dir = files.path();
     let disk = FakeDisk::new();
     disk.folder(
@@ -195,7 +205,7 @@ fn open_workspace(
         })
     });
     visual.run_until_parked();
-    (visual, workspace)
+    (visual, workspace, disk)
 }
 
 /// Lets core's threads and the foreground tasks that wait for them finish.
@@ -333,7 +343,15 @@ fn the_command_bar_menus_and_the_context_menu_have_every_item_named(cx: &mut Tes
     let files = Files::new("menus");
     let (mut visual, _) = open_workspace(cx, &files, false);
     select(&mut visual, &files, &["notes.txt"]);
+    // The island folds with the room the dock has: the View menu is there once the toggles have folded into it,
+    // the tile sizes until the views have. Whichever of the two this window shows is swept; New and Tools always.
+    let mut swept = 0;
     for id in ["new-menu", "view-menu", "tools", "tile-sizes"] {
+        if !has(&mut visual, id) {
+            assert!(id == "view-menu" || id == "tile-sizes", "{id} is always in the island");
+            continue;
+        }
+        swept += 1;
         visual.update(|window, cx| {
             window.render_frame(cx);
             window.click(id, cx);
@@ -348,6 +366,10 @@ fn the_command_bar_menus_and_the_context_menu_have_every_item_named(cx: &mut Tes
         visual.update(|window, cx| window.press("escape", cx));
         settle(&mut visual);
     }
+    assert!(
+        swept >= 3,
+        "New, Tools and at least one of the view menus were swept, got {swept}"
+    );
     // The menu of a file.
     visual.update(|window, cx| {
         window.render_frame(cx);
@@ -375,7 +397,8 @@ fn left_of(cx: &mut VisualTestContext, id: &'static str) -> f32 {
 /// Each bar lists its first item and its last: the first starts at the start edge, so left of the last in English
 /// and right of it in Arabic.
 const BARS: &[(&str, &str, &str)] = &[
-    ("the tab strip", "tab-1", "new-tab-0"),
+    // The tabs are a list down the rail: a tab's icon is at its start edge, the list's + at its header's end.
+    ("the tabs", "tab-busy-1", "new-tab-0"),
     ("the address bar", "address-back", "address-refresh"),
     ("the command bar", "new-folder", "view-menu"),
     ("the status bar", "status-counts", "status-bar-details"),
@@ -869,20 +892,45 @@ fn remove_personal_info_has_every_control_named(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn text_search_and_the_disk_map_have_every_control_named(cx: &mut TestAppContext) {
+fn a_searchs_results_with_lines_found_inside_files_and_the_disk_map_have_every_control_named(cx: &mut TestAppContext) {
+    use crate::explorer::fake::{inside_event, inside_match};
     let _guard = testing::lock();
     let files = Files::new("modes");
-    let (mut visual, _) = open_workspace(cx, &files, false);
-    visual.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("mode-text", cx);
+    let (mut visual, _, disk) = open_workspace_on(cx, &files, false);
+    disk.live_inside();
+    // The one search: "notes" is a file's name, and (the test says) a word in a file of the folder below.
+    visual.update(|_, cx| {
+        explorer::explorer(cx).update(cx, |e, cx| {
+            e.set_filter("notes", None, cx);
+            e.run_find("notes", Default::default(), cx).detach();
+        })
     });
     settle(&mut visual);
-    sweep(&mut visual, "the text search mode", 10);
-    visual.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("mode-files", cx);
-    });
+    let id = disk
+        .inside_searches()
+        .last()
+        .map(|(_, request)| request.id.clone())
+        .expect("the files' contents are searched too");
+    let inside = files.join("src\\main.rs");
+    for (kind, lines) in [
+        ("data", vec![inside_match(&inside, "// notes for later\n", 3, 3, 8)]),
+        ("finished", Vec::new()),
+    ] {
+        let event = inside_event(&id, kind, lines);
+        visual.update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.inside_heard(event, cx)));
+        settle(&mut visual);
+    }
+    // Both parts are there, each under its header, and the line under its file.
+    let named = |visual: &mut VisualTestContext, label: &str| {
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.try_find_by_label(label).is_some()
+        })
+    };
+    assert!(named(&mut visual, "Names") && named(&mut visual, "Inside files"));
+    assert!(named(&mut visual, "Line 3: // notes for later"));
+    sweep(&mut visual, "a search's results, by name and inside files", 20);
+    visual.update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.clear_find(cx)));
     settle(&mut visual);
     visual.dispatch_action(actions::DiskUsage);
     settle(&mut visual);

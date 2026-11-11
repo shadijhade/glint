@@ -14,7 +14,7 @@ Glint can open folders for the rest of Windows. These options are off until you 
 
 `Glint.exe [folder or file]…` opens each folder in a new tab; a file opens its folder with the file selected. Relative paths are relative to the current folder. `this-pc:` opens This PC, and File Explorer's own switches are understood: `/select,<path>` opens the folder the item is in with the item selected, and `/e`, `/n` and `/root` are passed over. `--quick-search` brings up quick search (the taskbar button's Jump List starts Glint with it); anything else starting with `-` is ignored.
 
-Glint runs once per user. Starting it again, from the Start menu or with folders, brings the open window to the front (restored if it was minimized) and opens those folders as new tabs at the end of the active pane, leaving Text mode and Settings. A second launch hands over its folders and quits in about 80 ms. At start, a folder that's already one of the restored tabs switches to that tab instead of opening another, since an update restarts the app with the folders it was first started with.
+Glint runs once per user. Starting it again, from the Start menu or with folders, brings the open window to the front (restored if it was minimized) and opens those folders as new tabs at the end of the active pane, leaving Settings. A second launch hands over its folders and quits in about 80 ms. At start, a folder that's already one of the restored tabs switches to that tab instead of opening another, since an update restarts the app with the folders it was first started with.
 
 ## What it changes
 

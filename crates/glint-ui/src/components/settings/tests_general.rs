@@ -161,26 +161,14 @@ fn text_boxes_write_the_settings_as_they_are_typed_and_follow_a_change_from_else
     let _guard = testing::lock();
     let fake = Arc::new(Fake::new());
     let (mut visual, view) = open_settings(cx, &fake, None);
-    let (path, editor, yara) = visual.update(|_, cx| {
+    let (editor, yara) = visual.update(|_, cx| {
         let view = view.read(cx);
-        (
-            view.default_search_path.clone(),
-            view.editor_path.clone(),
-            view.yara_rules.clone(),
-        )
+        (view.editor_path.clone(), view.yara_rules.clone())
     });
-    type_into(&mut visual, &path, "C:\\Projects");
     type_into(&mut visual, &editor, "code");
     type_into(&mut visual, &yara, "D:\\rules");
     let s = settings(&mut visual);
-    assert_eq!(
-        (
-            s.default_search_path.as_str(),
-            s.editor_path.as_str(),
-            s.yara_rules.as_str()
-        ),
-        ("C:\\Projects", "code", "D:\\rules")
-    );
+    assert_eq!((s.editor_path.as_str(), s.yara_rules.as_str()), ("code", "D:\\rules"));
     // An editor found on this PC fills in its path (the terminal found with it is not offered).
     go_to(&mut visual, "search-text-ripgrep");
     assert!(has(&mut visual, "An editor found on this PC"));
@@ -192,9 +180,9 @@ fn text_boxes_write_the_settings_as_they_are_typed_and_follow_a_change_from_else
         "C:\\Code.exe"
     );
     // Changing a setting from elsewhere (Reset, an import) puts its text back in the box.
-    visual.update(|_, cx| state::update(cx, |s| s.default_search_path = "E:\\Else".into()));
+    visual.update(|_, cx| state::update(cx, |s| s.yara_rules = "E:\\Else".into()));
     visual.run_until_parked();
-    assert_eq!(visual.update(|_, cx| path.read(cx).value().to_string()), "E:\\Else");
+    assert_eq!(visual.update(|_, cx| yara.read(cx).value().to_string()), "E:\\Else");
 }
 
 #[gpui_kit::test]

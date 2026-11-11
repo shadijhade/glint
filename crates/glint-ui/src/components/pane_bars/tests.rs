@@ -209,6 +209,7 @@ fn info() -> SearchInfo {
         limited: false,
         saved: false,
         max_results: 50_000,
+        inside_offered: false,
     }
 }
 
