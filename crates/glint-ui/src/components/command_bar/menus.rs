@@ -91,8 +91,6 @@ pub enum Pick {
     DiskUsage,
     /// Measure every folder's size here, or stop.
     FolderSizes,
-    /// Search inside the files of the folder.
-    SearchText,
     /// The terminal pane under the files.
     TerminalPane,
     /// Copy the selection into the other pane's folder.
@@ -124,7 +122,6 @@ impl Pick {
             Pick::Palette => "palette".into(),
             Pick::DiskUsage => "disk-usage".into(),
             Pick::FolderSizes => "folder-sizes".into(),
-            Pick::SearchText => "search-text".into(),
             Pick::TerminalPane => "terminal-pane".into(),
             Pick::CopyToOther => "copy-other".into(),
             Pick::MoveToOther => "move-other".into(),
@@ -151,7 +148,6 @@ impl Pick {
             "palette" => Pick::Palette,
             "disk-usage" => Pick::DiskUsage,
             "folder-sizes" => Pick::FolderSizes,
-            "search-text" => Pick::SearchText,
             "terminal-pane" => Pick::TerminalPane,
             "copy-other" => Pick::CopyToOther,
             "move-other" => Pick::MoveToOther,
@@ -450,15 +446,6 @@ pub fn tools_menu(f: &Facts, selected: &[FileEntry], fold: usize, sizing: bool) 
                 None,
             )
             .disabled(!in_folder || f.find),
-        ));
-        nodes.push(Node::Item(
-            picked(
-                t!("Search text in this folder"),
-                IconName::TextSearch,
-                Pick::SearchText,
-                Some(&crate::actions::TextSearch),
-            )
-            .disabled(!in_folder || read_only),
         ));
         nodes.push(Node::Separator);
     }

@@ -1,13 +1,15 @@
-//! The command bar under the address bar: New, Cut, Copy, Paste, Rename, Delete, the view buttons, Tools...
+//! The command bar: New, Cut, Copy, Paste, Rename, Delete, the view buttons, Tools... It is an island in the
+//! middle of the dock under the files (it was a strip over them): the actions sit by the hand, and the files
+//! start right under the address.
 //! Ported from src/components/explorer/CommandBar.tsx, and from where Explorer.tsx placed and fed it
 //! (`ActiveCommandBar`: the active pane's selection and compare pair).
 //!
 //! # What the bar is
 //!
-//! A 2.5 rem tall row for **the active tab**: it keeps no copy of what the explorer holds. [`Facts`] (`facts.rs`) is
+//! A 2.5 rem tall island for **the active tab**: it keeps no copy of what the explorer holds. [`Facts`] (`facts.rs`) is
 //! worked out from the explorer, the settings and the disk usage map when one of them changes, so a draw scans
 //! nothing. Buttons act through the workspace's actions (New folder, Cut, Copy, Paste, Rename, Delete, Disk usage,
-//! Search text, the palette, the view toggles...), through explorer methods (Restore, Extract all, the other pane,
+//! the palette, the view toggles...), through explorer methods (Restore, Extract all, the other pane,
 //! the views) or, for what the window owns, through a [`CommandBarEvent`].
 //!
 //! | Button | Does |
@@ -22,7 +24,7 @@
 //! | Tools | the Tools menu: dialogs by [`CommandBarEvent::Menu`], Terminal here by the `ToggleTerminal` action |
 //! | Run | the project's tasks (`glint_core::projects`): [`CommandBarEvent::RunTask`] |
 //! | List, Grid, Columns, tile sizes | `Explorer::set_view` after taking the disk usage map off; the sizes set `tile_size` |
-//! | Disk usage, Search text, the palette | the `DiskUsage`, `TextSearch` and `CommandPalette` actions |
+//! | Disk usage, the palette | the `DiskUsage` and `CommandPalette` actions |
 //! | Folder sizes | [`CommandBarEvent::FolderSizes`] |
 //! | Hidden items, Preview pane, Dual pane | the `ToggleHidden`, `TogglePreview` and `DualPane` actions |
 //! | Compare panes | flips `Explorer::compare_panes` (no handler for its action exists yet) |
@@ -36,8 +38,9 @@
 //!
 //! # Folding
 //!
-//! As the bar narrows its labels go, then buttons move into menus (see [`Folding`]). The widths are measured the
-//! STANDARDS way: three canvases record the bar's, the left group's and the right group's widths while painting
+//! As its place narrows its labels go, then buttons move into menus (see [`Folding`]). Cut, Copy, Rename and
+//! Delete are in it only while something is selected. The widths are measured the STANDARDS way: three canvases
+//! record the place's (the dock's), the left group's and the right group's widths while painting
 //! and ask for another frame with `window.on_next_frame` (never `cx.notify` during a draw); the next render hands
 //! them to [`Folding::settle`]. A bar that has just been laid out may show one frame at its old fold.
 //!
@@ -45,14 +48,12 @@
 //!
 //! 1. Make it once per window, beside the panes: `let bar = cx.new(|cx| CommandBar::new(window, cx));` and
 //!    subscribe: `cx.subscribe_in(&bar, window, Workspace::on_command_bar_event)`.
-//! 2. **Place it above the panes**, below the toolbar row, inside the column that holds the pane or the two panes,
-//!    so it spans the files and not the sidebar or the preview pane (the TypeScript's column): in `body()`, make the
-//!    `shown` panel `col().child(self.command_bar.clone()).child(div().flex_1().min_h_0().child(files))`. It is 2.5 rem
-//!    (`space(10.)`) tall and as wide as the column. The TypeScript drew it for every place, This PC included (its
-//!    folder buttons are greyed there); in text mode there is no files column, so no bar.
-//! 3. **Take the temporary Disk usage button out of the toolbar** (`Workspace::disk_usage_button` and its use in
-//!    `toolbar()`): the bar's Disk usage button replaces it, with the same action, tooltip and pressed state. Both
-//!    have the accessible name "Disk usage", which a window must not have twice.
+//! 2. **Place it over the middle of the dock** (the status bar's row at the foot of the sheet): a layer the size
+//!    of the dock holding the bar's view, which centers its island there and measures the dock's width. Tell it
+//!    how much room each side keeps for the status bar's words with [`CommandBar::set_side_room`]; the window
+//!    reads [`CommandBar::widths`] to tell the status bar how much is left beside the island. Its menus open
+//!    upward. The TypeScript drew it for every place, This PC included (its folder buttons are greyed there).
+//! 3. Its Disk usage button has the accessible name "Disk usage", which a window must not have twice.
 //! 4. Handle [`CommandBarEvent`]: see its variants.
 //! 5. Call [`CommandBar::set_folder_sizes_running`] from the folder sizes part when it starts and ends.
 
@@ -85,10 +86,14 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-/// The bar's height: `h-10`.
+/// The island's height: `h-10`.
 const HEIGHT: f32 = 10.;
-/// The room the bar keeps between its two groups, in rems, so they never touch.
-const MIN_GAP_REMS: f32 = 0.5;
+/// The island's own padding and its divider, in rems: what it is wider than its two groups by.
+const ISLAND_PAD: f32 = 1.75;
+/// What the island keeps for itself, in rems, before it leaves any room at its sides
+/// ([`CommandBar::set_side_room`]): between this and the width at which both sides have their room, the island's
+/// room stays as it is while the sides grow, so a narrower place never has more room for it than a wider one.
+const ISLAND_FIRST: f32 = 30.;
 /// A press that closed a menu is the press of the button that opened it if it comes this soon after.
 const SAME_PRESS: Duration = Duration::from_millis(300);
 
@@ -189,6 +194,8 @@ pub struct CommandBar {
     /// The explorer, the settings or the map changed since `facts` was made.
     dirty: bool,
     folding: Folding,
+    /// The room kept free at each side of the island's place, in rems (see `set_side_room`).
+    side_room: f32,
     measured: Rc<Measured>,
     /// Where the buttons that open menus were painted, by name.
     anchors: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
@@ -237,6 +244,7 @@ impl CommandBar {
             facts: Facts::none(),
             dirty: true,
             folding: Folding::default(),
+            side_room: 0.,
             measured: Rc::new(Measured::default()),
             anchors: Rc::new(RefCell::new(HashMap::new())),
             sizing: false,
@@ -270,6 +278,27 @@ impl CommandBar {
     /// The menu on screen, for tests and screen-reader checks.
     pub fn menu_view(&self) -> Option<&Entity<MenuView>> {
         self.menu.as_ref().map(|open| &open.view)
+    }
+
+    /// The room, in rems, the island leaves free at each side of its place once that is wide enough: the window
+    /// puts the status bar's words there (none by default: alone, the island may take the whole width).
+    pub fn set_side_room(&mut self, rems: f32, cx: &mut Context<Self>) {
+        if self.side_room != rems {
+            self.side_room = rems;
+            cx.notify();
+        }
+    }
+
+    /// What the last paint measured, in pixels: the width of the island's place (the dock) and of the island
+    /// itself. Zeros until it has been drawn once.
+    pub fn widths(&self, rem: f32) -> (f32, f32) {
+        let m = &self.measured;
+        let island = if m.left.get() > 0. && m.right.get() > 0. {
+            m.left.get() + m.right.get() + rem * ISLAND_PAD
+        } else {
+            0.
+        };
+        (m.bar.get(), island)
     }
 
     /// Folder sizes are being measured (or stopped): the button says Stop while they are.
@@ -333,6 +362,8 @@ impl CommandBar {
         (
             f.dual,
             f.pair.is_some(),
+            // Cut, Copy, Rename and Delete are there only while something is selected.
+            f.selected > 0,
             f.read_only,
             f.closed,
             f.bin,
@@ -410,7 +441,6 @@ impl CommandBar {
                 let stop = self.sizing;
                 cx.emit(CommandBarEvent::FolderSizes { stop })
             }
-            Pick::SearchText => action(Box::new(actions::TextSearch), self, window, cx),
             Pick::TerminalPane => action(Box::new(actions::ToggleTerminal), self, window, cx),
             Pick::CopyToOther => self
                 .explorer
@@ -470,13 +500,11 @@ impl CommandBar {
         self.close_menu(false, window, cx);
         let anchor = self.anchors.borrow().get(by).copied();
         let rtl = i18n::is_rtl();
-        // Under the button, at its start edge: the menu opens toward the end (toward the start in Arabic).
+        // Over the button, at its start edge (the island is at the foot of the window): the menu opens upward
+        // and toward the end (toward the start in Arabic).
         let at = match anchor {
-            Some(bounds) => point(
-                if rtl { bounds.right() } else { bounds.left() },
-                bounds.bottom() + px(4.),
-            ),
-            None => point(px(8.), px(48.)),
+            Some(bounds) => point(if rtl { bounds.right() } else { bounds.left() }, bounds.top() - px(6.)),
+            None => point(px(8.), window.viewport_size().height - px(56.)),
         };
         let focus = window.focused(cx);
         let view = cx.new(|cx| MenuView::new(nodes, label, cx));
@@ -881,10 +909,25 @@ impl CommandBar {
         group.child(width_probe(&self.measured, Width::Left, fold, 0, cx.entity_id()))
     }
 
-    /// Cut, Copy, Paste, the other pane's two, Compare, Rename and Delete.
+    /// Cut, Copy, Paste, the other pane's two, Compare, Rename and Delete. What acts on a selection is there
+    /// while there is one: with nothing selected the island holds Paste alone of these, so nothing greyed out
+    /// stands between New and the tools.
     fn edit_buttons(&self, group: Stateful<Div>, t: &Tokens, cx: &mut Context<Self>) -> Stateful<Div> {
         let f = &self.facts;
         let none = f.selected == 0;
+        let paste = tool(
+            cx,
+            t,
+            "paste",
+            IconName::ClipboardPaste,
+            keyed("Paste ({0})", &[&actions::Paste]),
+            None,
+        )
+        .disabled(!f.in_folder || f.find || f.read_only)
+        .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Paste), window, cx)));
+        if none {
+            return group.child(paste);
+        }
         let mut group = group
             .child(
                 tool(
@@ -895,7 +938,7 @@ impl CommandBar {
                     keyed("Cut ({0})", &[&actions::Cut]),
                     None,
                 )
-                .disabled(none || f.read_only)
+                .disabled(f.read_only)
                 .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Cut), window, cx))),
             )
             .child(
@@ -911,21 +954,9 @@ impl CommandBar {
                     },
                     None,
                 )
-                .disabled(none)
                 .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Copy), window, cx))),
             )
-            .child(
-                tool(
-                    cx,
-                    t,
-                    "paste",
-                    IconName::ClipboardPaste,
-                    keyed("Paste ({0})", &[&actions::Paste]),
-                    None,
-                )
-                .disabled(!f.in_folder || f.find || f.read_only)
-                .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::Paste), window, cx))),
-            );
+            .child(paste);
         if f.dual {
             group = group
                 .child(
@@ -1170,23 +1201,7 @@ impl CommandBar {
                     .disabled(off)
                     .on_click(cx.listener(|this, _, window, cx| this.pick(Pick::FolderSizes, window, cx))),
                 )
-                .child(
-                    word(
-                        cx,
-                        t,
-                        "search-text",
-                        IconName::TextSearch,
-                        t!("Search text"),
-                        labels,
-                        keyed(
-                            "Search inside the files in this folder (ripgrep) · {0}",
-                            &[&actions::TextSearch],
-                        ),
-                        None,
-                    )
-                    .disabled(!f.in_folder || f.read_only)
-                    .on_click(cx.listener(|this, _, window, cx| this.dispatch(Box::new(actions::TextSearch), window, cx))),
-                );
+                ;
         }
         if fold < 5 {
             group = group
@@ -1287,33 +1302,27 @@ impl Render for CommandBar {
         let t = theme::tokens(cx).clone();
         let rem = f32::from(window.rem_size());
         let signature = self.signature(rem);
-        // What the last paint measured: the bar's width, and what the two groups need at the fold it was drawn at.
+        // What the last paint measured: the dock's width, and what the two groups need at the fold it was drawn at.
         let m = &self.measured;
-        let pad = rem * 0.5 * 2. + rem * MIN_GAP_REMS;
+        // The island's own padding and divider, and a little air it keeps from the dock's edges.
+        let pad = rem * (ISLAND_PAD + 0.5);
         let measured = (m.left.get() > 0. && m.right.get() > 0.)
             .then(|| (m.signature.get(), m.fold.get(), m.left.get() + m.right.get() + pad));
-        let fold = self.folding.settle(signature, m.bar.get(), measured);
+        // What the island may take of the dock: all but the room the status bar's words keep at each side.
+        let dock = m.bar.get();
+        let sides = (dock - rem * ISLAND_FIRST).clamp(0., rem * self.side_room * 2.);
+        let room = if dock > 0. { (dock - sides).max(1.) } else { 0. };
+        let fold = self.folding.settle(signature, room, measured);
 
         let left = self.left_group(fold, &t, cx);
         let right = self.right_group(fold, &t, cx);
         let id = cx.entity_id();
-        let row = row_start()
-            .id("command-bar-row")
-            .relative()
-            .size_full()
-            .overflow_hidden()
-            .px(space(2.))
-            .child(left)
-            // What is left over, so the groups sit at the two ends; never less than a little.
-            .child(div().flex_1().min_w(rems(MIN_GAP_REMS)))
-            .child(right)
-            .child(width_probe(&self.measured, Width::Bar, fold, signature, id));
-        // The menu is outside the row, which clips: it must not be cut at the bar's edge.
+        // The menu is outside the island: it must not be cut at its edge.
         let menu = self.menu.as_ref().map(|open| {
             let anchor = if i18n::is_rtl() {
-                Anchor::TopRight
+                Anchor::BottomRight
             } else {
-                Anchor::TopLeft
+                Anchor::BottomLeft
             };
             deferred(
                 anchored()
@@ -1324,21 +1333,36 @@ impl Render for CommandBar {
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
         });
-        div()
+        // The island: a raised pill holding the two groups, as wide as they are.
+        let island = row_start()
             .id("command-bar")
             .role(Role::Toolbar)
             .aria_label(t!("Commands"))
             .test_support()
             .key_context("CommandBar")
             .track_focus(&self.focus)
+            // Whatever of the status bar is under it is not pressed through it.
+            .occlude()
             .relative()
             .flex_none()
-            .w_full()
             .h(space(HEIGHT))
-            // On the sheet, with the files: no fill of its own (it would square off the sheet's corner).
-            .border_b_1()
-            .border_color(t.border)
-            .child(row)
-            .children(menu)
+            .px(space(1.5))
+            .rounded(theme::size::RADIUS_SHEET)
+            .border_1()
+            .border_color(t.stroke)
+            .bg(t.popover)
+            .shadow(theme::elevation::raised(cx))
+            .child(left)
+            .child(divider(&t))
+            .child(right)
+            .children(menu);
+        // The dock's whole width is measured, and the island sits in its middle. Nothing here takes the mouse
+        // but the island: the status bar under the rest stays live.
+        row_start()
+            .relative()
+            .size_full()
+            .justify_center()
+            .child(island)
+            .child(width_probe(&self.measured, Width::Bar, fold, signature, id))
     }
 }

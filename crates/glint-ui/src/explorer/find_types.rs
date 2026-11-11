@@ -53,6 +53,10 @@ pub struct Wider {
     pub unlimited: bool,
     /// Look in the folders Settings skip, and in what .gitignore files list.
     pub skip_nothing: bool,
+    /// Names alone: what is inside the files isn't searched (a search as it is typed, which must answer at once).
+    pub names_only: bool,
+    /// What is inside the files too, even where that isn't done unasked (a whole drive).
+    pub inside: bool,
 }
 
 impl Wider {
@@ -73,6 +77,18 @@ impl Wider {
     /// Skipping nothing.
     pub fn skipping_nothing(mut self) -> Wider {
         self.skip_nothing = true;
+        self
+    }
+
+    /// Names alone.
+    pub fn names_only(mut self) -> Wider {
+        self.names_only = true;
+        self
+    }
+
+    /// Inside the files too, wherever the search is.
+    pub fn inside_too(mut self) -> Wider {
+        self.inside = true;
         self
     }
 }

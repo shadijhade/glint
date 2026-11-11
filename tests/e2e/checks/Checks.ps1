@@ -374,21 +374,19 @@ Add-Check 'dual-pane-compare' 'Ctrl+Shift+D shows two panes, F6 switches, Ctrl+S
     Assert-Eventually { @(Get-FileLists).Count -eq 1 } 'Ctrl+Shift+D closes the second pane'
 }
 
-# ------------------------------------------------------------------------------------------------ text search
+# ------------------------------------------------------------------------------------------------ the one search
 
-Add-Check 'text-search' 'Ctrl+Shift+F searches inside files for a word and lists the match; Ctrl+Shift+E goes back' {
+Add-Check 'search-inside' 'Ctrl+Shift+F goes to the search box; a word and Enter list the file that holds it, with the line under it; Escape goes back' {
     Send-Key 'ctrl+shift+f'
-    Assert-Eventually { Get-TextSearch } 'Ctrl+Shift+F shows text search'
-    Assert-Eventually { Find-El -Type Edit -Name 'Search query' } 'it has a search box'
+    Assert-Eventually { Find-El -Type Edit -Name 'Search * and its subfolders.' -Like } 'Ctrl+Shift+F puts the keyboard in the search box'
     Send-Text 'needle'
     Send-Key 'enter'
-    Assert-Eventually { Find-El -Type ListItem -Name 'the needle is in this file' } 'the matching line is listed' 15
-    Assert-True (Find-El -Type ListItem -Name 'alpha.txt' -Root (Find-El -Type List -Name 'Matches')) 'under the file it is in'
-    $status = Find-El -Type StatusBar -Name '1 result in 1 file*' -Like
-    Assert-True $status 'the results line counts one result in one file'
-    Assert-Eventually { Find-El -Type Group -Name 'Preview' } 'the match has its preview'
-    Send-Key 'ctrl+shift+e'
-    Assert-Eventually { (-not (Get-TextSearch)) -and (Get-FileList) } 'Ctrl+Shift+E goes back to the files'
+    Assert-Eventually { Get-SearchBar } 'Enter shows the search results'
+    Assert-Eventually { Find-El -Type Group -Name 'Inside files' } 'the results have a part for what was found inside files' 15
+    Assert-Eventually { Find-El -Type Button -Name 'Line 2: the needle is in this file' } 'the matching line is listed, with its number' 15
+    Assert-True (Get-Row -Name 'alpha.txt') 'under the file it is in, a row like any other'
+    Send-Key 'escape'
+    Assert-Eventually { -not (Get-SearchBar) } 'Escape in the box leaves the results'
     Assert-Eventually { Test-RowsShown (Get-ArenaNames) } 'and the folder is listed'
 }
 

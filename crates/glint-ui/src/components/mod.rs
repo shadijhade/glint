@@ -46,7 +46,5 @@ pub mod status_bar;
 pub mod tab_strip;
 /// The terminal pane: shells in tabs under the files (TerminalPanel.tsx).
 pub mod terminal;
-/// Searching inside files: the query, its options, the results and the history (Search.tsx, Results.tsx, History.tsx).
-pub mod text_search;
 /// This PC: drives and their space (ThisPC.tsx).
 pub mod this_pc;

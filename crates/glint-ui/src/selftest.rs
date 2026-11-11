@@ -179,30 +179,18 @@ pub(crate) fn start(cx: &mut App) {
         .detach();
         return;
     }
-    // `text:<folder>|<query>`: text search in the folder for the query, left open for a look.
+    // `text:<folder>|<query>`: the folder searched for the query (names, and inside the files), left open for a look.
     if let Some(rest) = script.strip_prefix("text:") {
         let (folder, query) = rest.split_once('|').unwrap_or((rest, "needle"));
-        let item = glint_model::store::HistoryItem {
-            query: query.to_string(),
-            path: folder.to_string(),
-            timestamp: 0,
-        };
-        // In the folder first: Ctrl+Shift+F searches the open folder (and refuses one Windows keeps closed).
-        let target = folder.to_string();
+        let (target, query) = (folder.to_string(), query.to_string());
         explorer::explorer(cx).update(cx, |e, cx| e.navigate(target, Default::default(), cx));
         cx.spawn(async move |cx| {
             cx.background_executor().timer(Duration::from_millis(800)).await;
-            dispatch(cx, Box::new(actions::TextSearch));
-            cx.background_executor().timer(Duration::from_millis(500)).await;
             cx.update(|cx| {
-                let Some(text) = startup::main_workspace(cx).and_then(|w| w.read(cx).text_search().0) else {
-                    return;
-                };
-                if let Some(main) = startup::main_window(cx) {
-                    let _ = main.update(cx, |_, window, cx| {
-                        text.update(cx, |text, cx| text.pick_history(&item, window, cx))
-                    });
-                }
+                explorer::explorer(cx).update(cx, |e, cx| {
+                    e.set_filter(&query, None, cx);
+                    e.run_find(&query, Default::default(), cx).detach();
+                })
             });
         })
         .detach();
@@ -388,19 +376,14 @@ fn in_main(cx: &mut AsyncApp, act: impl FnOnce(&mut Window, &mut App)) {
     });
 }
 
-/// Whether text search is on screen, and its search's state: (on screen, searching, matches).
-fn text_state(cx: &mut AsyncApp) -> (bool, bool, usize) {
+/// The active tab's search: (a search shows, it still runs by name or inside files, lines matched inside files).
+fn search_state(cx: &mut AsyncApp) -> (bool, bool, usize) {
     cx.update(|cx| {
-        let Some(workspace) = startup::main_workspace(cx) else {
-            return (false, false, 0);
-        };
-        let (text, shown) = workspace.read(cx).text_search();
-        let Some(text) = text else {
-            return (shown, false, 0);
-        };
-        let search = text.read(cx).search().read(cx);
-        let ran = search.run().is_some();
-        (shown, search.searching() || !ran, search.matches().len())
+        let explorer = explorer::explorer(cx).read(cx);
+        match explorer.active_tab().and_then(|tab| tab.find.as_ref()) {
+            Some(find) => (true, find.running || find.inside.running, find.inside.matches),
+            None => (false, false, 0),
+        }
     })
 }
 
@@ -429,57 +412,43 @@ async fn wave8_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     }
 
     log.push(format!("     ripgrep: {:?}", glint_core::proc::locate("rg")));
-    // 2. Text search (Ctrl+Shift+F), the needle searched for as a recent search runs, then back to the files.
-    dispatch(cx, Box::new(actions::TextSearch));
-    let shown = wait_for(cx, Duration::from_secs(5), |cx| text_state(cx).0).await;
-    check(&mut log, "text search comes on screen", shown);
-    let item = glint_model::store::HistoryItem {
-        query: "needle".into(),
-        path: dir.clone(),
-        timestamp: 0,
-    };
+    // 2. The one search: "needle" is looked for in names and inside the files, then the folder comes back.
     cx.update(|cx| {
-        let Some(workspace) = startup::main_workspace(cx) else {
-            return;
-        };
-        let Some(text) = workspace.read(cx).text_search().0 else {
-            return;
-        };
-        if let Some(main) = startup::main_window(cx) {
-            let _ = main.update(cx, |_, window, cx| {
-                text.update(cx, |text, cx| text.pick_history(&item, window, cx))
-            });
-        }
+        explorer::explorer(cx).update(cx, |e, cx| {
+            e.set_filter("needle", None, cx);
+            e.run_find("needle", Default::default(), cx).detach();
+        })
     });
+    let shown = wait_for(cx, Duration::from_secs(5), |cx| search_state(cx).0).await;
+    check(&mut log, "the search's results come on screen", shown);
     let searched = wait_for(cx, Duration::from_secs(20), |cx| {
-        let (_, searching, _) = text_state(cx);
+        let (_, searching, _) = search_state(cx);
         !searching
     })
     .await;
-    let (_, _, matches) = text_state(cx);
+    let (_, _, matches) = search_state(cx);
     let said = cx.update(|cx| {
-        let workspace = startup::main_workspace(cx)?;
-        let text = workspace.read(cx).text_search().0?;
-        let search = text.read(cx).search().read(cx);
+        let explorer = explorer::explorer(cx).read(cx);
+        let find = explorer.active_tab()?.find.as_ref()?;
         Some(format!(
-            "ran: {:?}, searching: {}, error: {:?}, took {} ms",
-            search.run().map(|run| run.path.clone()),
-            search.searching(),
-            search.error(),
-            search.duration()
+            "in {:?}, {} file(s) inside, error: {:?}, took {} ms",
+            find.scope,
+            find.inside.files(),
+            find.inside.error,
+            find.inside.elapsed
         ))
     });
     check(
         &mut log,
         &format!(
-            "text search: {matches} match(es) for “needle” ({})",
+            "inside files: {matches} line(s) for “needle” ({})",
             said.unwrap_or_default()
         ),
         searched && matches == 1,
     );
-    dispatch(cx, Box::new(actions::BackToFiles));
-    let back = wait_for(cx, Duration::from_secs(5), |cx| !text_state(cx).0).await;
-    check(&mut log, "back to the files", back);
+    cx.update(|cx| explorer::explorer(cx).update(cx, |e, cx| e.clear_find(cx)));
+    let back = wait_for(cx, Duration::from_secs(5), |cx| !search_state(cx).0).await;
+    check(&mut log, "back to the folder", back);
 
     // 3. The disk usage map of the folder, then the list again. The files' keys come back with the next frame.
     cx.background_executor().timer(Duration::from_millis(500)).await;

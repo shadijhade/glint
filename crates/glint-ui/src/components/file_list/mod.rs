@@ -178,9 +178,23 @@ pub(crate) enum Track {
 pub(crate) struct FindInfo {
     pub query: String,
     pub scope: String,
+    /// The names or the files' contents are still being searched.
     pub running: bool,
     pub error: String,
     pub skipped: Vec<String>,
+    pub inside: InsideInfo,
+}
+
+/// What a search found inside files, as far as the list says it (the header of that part of the results).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct InsideInfo {
+    /// The words looked for inside files ("" when the search looked at names alone).
+    pub words: String,
+    pub matches: usize,
+    pub files: usize,
+    pub running: bool,
+    pub limited: bool,
+    pub error: String,
 }
 
 /// What the list reads from its pane's tab each frame. Everything is a cheap clone (a few `Arc`s and short
@@ -268,8 +282,11 @@ pub(crate) struct Frame {
     pub dragging: Arc<HashSet<String>>,
     /// The folder row files are dragged over: lit (`dropTarget`).
     pub drop_row: Option<String>,
-    /// How many lines the list has (rows, and a header per group).
+    /// How many lines the list has (rows, a header per group, and the lines under rows).
     pub lines: usize,
+    /// The tab shown, and what its search found inside files (the header of that part says it).
+    pub tab: TabId,
+    pub inside: InsideInfo,
     /// Small pictures in the icon cell (Settings' "list thumbnails"), the tab they are asked for, the square
     /// they fit in (CSS pixels: one rem) and the window's device pixels per CSS pixel.
     pub thumbnails: bool,
@@ -440,6 +457,8 @@ impl FileList {
                 dragging: Arc::new(HashSet::new()),
                 drop_row: None,
                 lines: 0,
+                tab: TabId(0),
+                inside: InsideInfo::default(),
                 thumbnails: false,
                 lane: String::new(),
                 box_px: 16.,
@@ -497,9 +516,21 @@ impl FileList {
         let find = tab.find.as_ref().map(|run: &FindRun| FindInfo {
             query: run.query.clone(),
             scope: run.scope.clone(),
-            running: run.running,
+            running: run.running || run.inside.running,
             error: run.error.clone(),
             skipped: run.skipped.clone(),
+            inside: InsideInfo {
+                words: if run.inside.running || !run.inside.hits.is_empty() || run.inside.elapsed > 0. {
+                    run.inside.words.clone()
+                } else {
+                    String::new()
+                },
+                matches: run.inside.matches,
+                files: run.inside.files(),
+                running: run.inside.running,
+                limited: run.inside.limited,
+                error: run.inside.error.clone(),
+            },
         });
         let plain = find.is_none();
         let recycled = tab.is_recycle_bin() && plain;
@@ -1218,6 +1249,8 @@ impl Render for FileList {
                 _ => None,
             },
             lines,
+            tab: view.id,
+            inside: view.find.as_ref().map(|find| find.inside.clone()).unwrap_or_default(),
             thumbnails,
             lane: view.id.to_string(),
             box_px: f32::from(window.rem_size()),

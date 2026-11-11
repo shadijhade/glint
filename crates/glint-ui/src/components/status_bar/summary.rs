@@ -195,7 +195,8 @@ impl Summary {
         };
         let find = tab.find.as_ref().map(|find| FindInfo {
             engine: find.engine.clone(),
-            fuzzy: find.fuzzy,
+            // Names a letter or two off; files found by what is in them were found as typed.
+            fuzzy: find.fuzzy && find.entries.len() > find.inside.only.len(),
             running: find.running,
             found: find.entries.len(),
             elapsed: find.elapsed,

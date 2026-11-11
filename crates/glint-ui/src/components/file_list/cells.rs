@@ -1,11 +1,12 @@
 //! One line of the list: a row of an item, or the header of a group (`renderRow` and `renderLine` in
 //! FileList.tsx). Built only for the lines on screen.
 
-use super::{FileList, Frame, Track};
+use super::{FileList, Frame, InsideInfo, Track};
 use crate::components::file_grid::thumbnail::thumbnail_square;
 use crate::components::git;
 use crate::components::row_facts::{media_cells, Media, MediaCells};
 use crate::dialogs::tags::tag_dots;
+use crate::explorer::{HitLine, Line};
 use crate::kit::prelude::*;
 use crate::theme::{self, Tokens};
 use crate::{i18n, t};
@@ -14,9 +15,10 @@ use glint_model::entries::{
     attr, cloud_state, is_archived, is_closed, is_hidden, is_locked, is_recycled, CloudState, FileEntry,
 };
 use glint_model::file_types::{kind_of, type_label};
-use glint_model::format::{format_date, format_full_date, format_size};
+use glint_model::format::{format_count, format_date, format_full_date, format_size};
 use glint_model::groups::GroupHeader;
 use glint_model::paths::parent_path;
+use gpui_kit::{HighlightStyle, StyledText};
 use std::collections::HashMap;
 
 /// The height of a line, 1.875 rem (30 px at the usual size): a 28 px highlight with a pixel of air above and
@@ -127,17 +129,225 @@ fn sky(t: &Tokens) -> Hsla {
 impl FileList {
     /// The line `line` of the list: an item's row, or a group's header.
     pub(super) fn line_element(&self, frame: &Frame, t: &Tokens, line: usize, cx: &mut Context<Self>) -> AnyElement {
-        match frame.rows.groups() {
-            Some(groups) => match groups.lines.get(line).copied() {
-                Some(at) if at >= 0 => self.row_element(frame, t, at as usize, cx),
-                Some(at) => match groups.headers.get((-at - 1) as usize) {
-                    Some(header) => group_header(header, (-at - 1) as usize, t),
-                    None => div().h(ROW_HEIGHT).into_any_element(),
-                },
-                None => div().h(ROW_HEIGHT).into_any_element(),
+        match frame.rows.line(line) {
+            Line::Row(i) => self.row_element(frame, t, i, cx),
+            Line::Header(index, header) => match frame.rows.sections() {
+                // A search's two parts: what it found by name, and inside files.
+                Some(sections) => self.section_header(frame, header, index, index == sections.inside, t, cx),
+                None => group_header(header, index, t),
             },
-            None => self.row_element(frame, t, line, cx),
+            Line::Hit(at) => self.hit_element(frame, t, line, at, cx),
+            Line::Blank => div().h(ROW_HEIGHT).into_any_element(),
         }
+    }
+
+    /// A line under a file's row: a line of the file that matched the search (its number, or where it is in a
+    /// document, then the line with the matches marked), or the count of the matching lines that aren't shown.
+    /// Pressing it is pressing its file's row.
+    fn hit_element(&self, frame: &Frame, t: &Tokens, line: usize, at: HitLine, cx: &mut Context<Self>) -> AnyElement {
+        let Some((entry, hit)) = frame.rows.hit(at) else {
+            return div().h(ROW_HEIGHT).into_any_element();
+        };
+        let row = at.row as usize;
+        let selected = frame.selected.contains(&entry.path);
+        let rtl = i18n::is_rtl();
+        let mono = theme::mono_font(cx);
+        // Pressed, the line is what the preview of its file shows (a "more" line shows the first one not listed).
+        let spot = hit.line.map(|line| (entry.path.clone(), line));
+        // Under the name: past the row's inset, its padding, the icon and the gap after it.
+        let indent = INSET + px(6.) + rems(1.).to_pixels(px(frame.box_px)) + px(8.);
+        let (place, body, said): (SharedString, AnyElement, SharedString) = if at.more > 0 {
+            let words = if at.more == 1 {
+                t!("1 more matching line")
+            } else {
+                t!("{n} more matching lines", n = at.more)
+            };
+            (
+                SharedString::default(),
+                div()
+                    .text_color(t.muted_foreground.opacity(0.8))
+                    .child(words.clone())
+                    .into_any_element(),
+                words,
+            )
+        } else {
+            let place: SharedString = hit
+                .label
+                .clone()
+                .or_else(|| hit.line.map(|n| n.to_string()))
+                .unwrap_or_default()
+                .into();
+            let plain: String = hit.parts.iter().map(|part| part.text.as_str()).collect();
+            let said = match (&hit.label, hit.line) {
+                (Some(label), _) => format!("{label}: {plain}"),
+                (None, Some(n)) => t!("Line {n}: {text}", n = n, text = plain).to_string(),
+                (None, None) => plain,
+            };
+            // A document's passage is prose, in the list's own font; a file's line is code.
+            let prose = hit.label.is_some();
+            (
+                place,
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .when(!prose, |d| d.font_family(mono.clone()))
+                    .text_color(t.muted_foreground)
+                    .child(hit_text(hit, t))
+                    .into_any_element(),
+                said.into(),
+            )
+        };
+        let fill = row_start()
+            .id(("file-hit-fill", line))
+            .size_full()
+            .min_w_0()
+            .gap(space(2.5))
+            .pe(1.5)
+            .rounded(theme::size::RADIUS_ROW)
+            .text_size(theme::size::XS)
+            .map(|fill| {
+                if selected {
+                    fill.bg(t.selected.opacity(0.5))
+                } else {
+                    let over = t.accent;
+                    fill.hover(move |style| style.bg(over))
+                }
+            })
+            .child(
+                div()
+                    .w(rems(2.75))
+                    .flex_none()
+                    .truncate()
+                    .text_end()
+                    .when(hit.label.is_none(), |d| d.font_family(mono))
+                    .text_color(t.muted_foreground.opacity(0.6))
+                    .child(place),
+            )
+            .child(body);
+        // The line that ties a file's lines to its row, under the middle of its icon.
+        let guide = div().absolute().top_0().bottom_0().w(px(1.)).bg(t.stroke).map(|guide| {
+            let at = INSET + px(6.) + rems(0.5).to_pixels(px(frame.box_px));
+            if rtl {
+                guide.right(at)
+            } else {
+                guide.left(at)
+            }
+        });
+        div()
+            .id(("file-hit", line))
+            .role(Role::Button)
+            .aria_label(said)
+            .aria_description(entry.name.clone())
+            .relative()
+            .w_full()
+            .h(ROW_HEIGHT)
+            .flex_none()
+            .py(px(1.))
+            .pe(1.5)
+            .map(|line| if rtl { line.pr(indent) } else { line.pl(indent) })
+            .child(guide)
+            .child(fill)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.row_down(row, event, window, cx);
+                    if let Some((path, line)) = &spot {
+                        crate::components::preview::spot(cx, path, *line);
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| this.row_down(row, event, window, cx)),
+            )
+            .test_support()
+            .into_any_element()
+    }
+
+    /// The header of one of a search's two parts: "Names" with how many, or "Inside files" with how many lines
+    /// matched in how many files, a spinner and Stop while that is still being searched.
+    fn section_header(
+        &self,
+        frame: &Frame,
+        header: &GroupHeader,
+        index: usize,
+        inside: bool,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let info: &InsideInfo = &frame.inside;
+        let (glyph, name, counted): (IconName, SharedString, SharedString) = if inside {
+            let lines = if info.matches == 1 {
+                t!("1 line")
+            } else {
+                t!("{n} lines", n = format_count(info.matches))
+            };
+            let files = if info.files == 1 {
+                t!("1 file")
+            } else {
+                t!("{n} files", n = format_count(info.files))
+            };
+            (
+                IconName::TextSearch,
+                t!("Inside files"),
+                t!("{lines} in {files}", lines = lines, files = files),
+            )
+        } else {
+            let items = if header.count == 1 {
+                t!("1 item")
+            } else {
+                t!("{n} items", n = format_count(header.count))
+            };
+            (IconName::Search, t!("Names"), items)
+        };
+        let tab = frame.tab;
+        let running = inside && info.running;
+        row_start()
+            .id(("file-section", index))
+            .role(Role::Group)
+            .aria_label(name.clone())
+            .aria_description(counted.clone())
+            .w_full()
+            .h(ROW_HEIGHT)
+            .flex_none()
+            .items_center()
+            .gap(space(2.))
+            .px(space(3.))
+            .text_size(theme::size::XS)
+            .child(icon(glyph).size(rems(0.875)).text_color(t.primary))
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.foreground)
+                    .child(name),
+            )
+            .child(div().text_color(t.muted_foreground).child(counted))
+            .children((inside && info.limited).then(|| div().text_color(t.warning).child(t!("stopped at the limit"))))
+            .children(running.then(|| {
+                row_start()
+                    .gap(space(1.5))
+                    .child(
+                        div()
+                            .id("file-section-searching")
+                            .role(Role::ProgressIndicator)
+                            .aria_label(t!("Searching inside files"))
+                            .child(Spinner::new().xsmall())
+                            .test_support(),
+                    )
+                    .child(
+                        Button::new("file-section-stop")
+                            .ghost()
+                            .xsmall()
+                            .label(t!("Stop"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.explorer.update(cx, |explorer, cx| explorer.stop_inside(tab, cx))
+                            })),
+                    )
+            }))
+            // A hairline to the end edge, so the header reads as the start of a part.
+            .child(div().flex_1().h(px(1.)).bg(t.stroke))
+            .test_support()
+            .into_any_element()
     }
 
     /// An item's row: its icon and name, then a cell for every column the list is wide enough for.
@@ -483,6 +693,39 @@ fn with_media(described: String, media: &MediaCells) -> String {
     .filter(|part| !part.is_empty())
     .collect::<Vec<_>>()
     .join(", ")
+}
+
+/// A line that matched a search, with the matches marked. The matches' places are byte offsets into the text
+/// that is drawn; a line that starts right to left is isolated first, which moves them past the mark.
+fn hit_text(hit: &crate::explorer::Hit, t: &Tokens) -> StyledText {
+    let mut joined = String::new();
+    let mut ranges: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
+    for part in &hit.parts {
+        let start = joined.len();
+        joined.push_str(&part.text);
+        if part.hit {
+            ranges.push((
+                start..joined.len(),
+                HighlightStyle {
+                    color: Some(t.foreground),
+                    font_weight: Some(FontWeight::SEMIBOLD),
+                    background_color: Some(t.primary.opacity(0.28)),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    let shown = isolate(joined.clone());
+    let shift = if shown.len() == joined.len() {
+        0
+    } else {
+        '\u{2067}'.len_utf8()
+    };
+    let ranges = ranges
+        .into_iter()
+        .map(|(range, style)| (range.start + shift..range.end + shift, style))
+        .collect::<Vec<_>>();
+    StyledText::new(shown).with_highlights(ranges)
 }
 
 /// A group's header line: its name, how many items it has and their size.

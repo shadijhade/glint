@@ -497,12 +497,6 @@ pub fn actions(inputs: &Inputs) -> Vec<Command> {
         ),
     );
     push(
-        writable && !inputs.shut,
-        Command::action("search-text", t!("Search text in this folder"), I::TextSearch, || {
-            Box::new(actions::TextSearch)
-        }),
-    );
-    push(
         bin && inputs.chosen,
         menu(
             "restore",

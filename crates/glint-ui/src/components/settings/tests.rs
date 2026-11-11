@@ -542,7 +542,7 @@ fn settings_opens_as_a_named_dialog_with_every_section_listed(cx: &mut TestAppCo
         ("find-files-by-name", "Find files"),
         ("quick-search", "Quick search"),
         ("ai-agents", "AI agents"),
-        ("search-text-ripgrep", "Search text"),
+        ("search-text-ripgrep", "Inside files"),
         ("text-search-skips", "Text search skips"),
         ("terminal", "Terminal"),
         ("check", "Check"),

@@ -107,6 +107,28 @@ pub use pane::{resolve, should_show, toggle as toggle_pane, Many, PreviewPane, S
 pub use shell::{cover, uncover};
 pub use sources::{init_with, sources, Native, Sources};
 
+/// A line of a file to show in its preview: a search's matching line that was pressed in the list. The text
+/// previewer showing that file scrolls to the line and selects it, once.
+pub struct Spot {
+    pub path: String,
+    /// The line, from 1.
+    pub line: u64,
+    /// A previewer has shown it.
+    pub shown: bool,
+}
+
+impl gpui_kit::Global for Spot {}
+
+/// Asks the preview of `path` to show its line `line` (from 1): the pane's, if it is open now or when it opens
+/// on that file.
+pub fn spot(cx: &mut gpui_kit::App, path: &str, line: u64) {
+    cx.set_global(Spot {
+        path: path.to_string(),
+        line,
+        shown: false,
+    });
+}
+
 /// The narrowest the resize handle drags the pane (`Math.max(256, …)`).
 pub const MIN_WIDTH: f32 = 256.;
 

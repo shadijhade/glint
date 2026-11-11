@@ -106,7 +106,7 @@ pub enum MenuEvent {
     RevealInFileExplorer { paths: Vec<String> },
     /// "Show the archive in File Explorer": the archive file on disk.
     RevealArchive { archive: String },
-    /// "Search text" in a folder (`onSearchText`).
+    /// "Search here" on a folder: it opens, with the search box ready (names, and inside the files).
     SearchText { folder: String },
 
     // ---- The other pane, comparing ----

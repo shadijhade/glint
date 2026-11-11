@@ -723,14 +723,6 @@ impl SettingsView {
             .into_any_element()];
         editor_controls.extend(editor_picker);
         let rows = vec![
-            self.path_row(
-                named("default-search-path", t!("Default folder"), Some(t!("Used when no folder is filled in"))),
-                &self.default_search_path,
-                (t!("A folder for text searches"), s.default_search_path.clone()),
-                |s, v| s.default_search_path = v,
-                t,
-                cx,
-            ),
             self.choice(
                 named("max-results", t!("Result limit"), Some(t!("Stops searching after this many matching lines"))),
                 s.max_results,
@@ -744,22 +736,6 @@ impl SettingsView {
                 t,
                 cx,
             ),
-            self.flag(
-                "auto-open-preview",
-                t!("Preview the first result"),
-                Some(t!("Show the first match as soon as results arrive")),
-                s.auto_open_preview,
-                |s, v| s.auto_open_preview = v,
-                t,
-            ),
-            self.flag(
-                "confirm-before-replace",
-                t!("Confirm before replacing"),
-                None,
-                s.confirm_before_replace,
-                |s, v| s.confirm_before_replace = v,
-                t,
-            ),
             setting_row(
                 t!("Open files with"),
                 Some(t!("A program name or path, e.g. code or notepad++ (results open at their line), or an editor found on this PC")),
@@ -768,7 +744,7 @@ impl SettingsView {
             )
             .into_any_element(),
         ];
-        widgets::section("search-text-ripgrep", t!("Search text (ripgrep)"), None, rows, t)
+        widgets::section("search-text-ripgrep", t!("Search inside files"), None, rows, t)
     }
 
     fn text_skips(&self, s: &Settings, t: &theme::Tokens, cx: &mut Context<Self>) -> AnyElement {

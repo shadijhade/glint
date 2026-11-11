@@ -7,7 +7,7 @@
 //! - `"FileList"`: the file list or grid has focus (Enter, F2, Delete, Ctrl+C…). A text field inside the
 //!   window has its own, deeper context, so typing Ctrl+A or Backspace there edits text and never reaches
 //!   these.
-//! - `"TextSearch"`, `"QuickLook"`, `"Compare"`: those panes, when they exist.
+//! - `"AddressFind"`: the search box. `"QuickLook"`, `"Compare"`: those panes, when they exist.
 //!
 //! **Pattern for a view that handles an action.** The view puts its context on its root element and
 //! registers a listener; the skeleton's workspace does this for the commands it owns:
@@ -54,8 +54,6 @@ actions!(
         Forward,
         Up,
         Refresh,
-        TextSearch,
-        BackToFiles,
         // View
         ToggleHidden,
         TogglePreview,
@@ -86,16 +84,10 @@ actions!(
         OpenSettings,
         ShowShortcuts,
         ShowDriveHealth,
-        // Text search
+        // The search box: how the words are matched inside files
         TextMatchCase,
         TextWholeWord,
         TextRegex,
-        TextCodePatterns,
-        TextDocuments,
-        TextPictures,
-        TextMeaning,
-        TextReplace,
-        TextLeave,
         // Quick Look
         CloseQuickLook,
         QuickLookNext,
@@ -175,7 +167,7 @@ pub static BINDINGS: &[Binding] = &[
         "ctrl-f",
         "Workspace",
         SearchHere,
-        "Search this folder and its subfolders (by name or path)"
+        "Search this folder and its subfolders: names, and inside the files"
     ),
     // Explorer.tsx also took Ctrl+E and F3 for the search box (File Explorer's keys), and Alt+D and F4 for the
     // address bar. The sheet never listed them; they are bound after the listed key, which the menus show.
@@ -183,13 +175,20 @@ pub static BINDINGS: &[Binding] = &[
         "ctrl-e",
         "Workspace",
         SearchHere,
-        "Search this folder and its subfolders (by name or path)"
+        "Search this folder and its subfolders: names, and inside the files"
     ),
     bind!(
         "f3",
         "Workspace",
         SearchHere,
-        "Search this folder and its subfolders (by name or path)"
+        "Search this folder and its subfolders: names, and inside the files"
+    ),
+    // The key the text search had: it is the same search now.
+    bind!(
+        "ctrl-shift-f",
+        "Workspace",
+        SearchHere,
+        "Search this folder and its subfolders: names, and inside the files"
     ),
     bind!("ctrl-l", "Workspace", FocusAddress, "Type a path"),
     bind!("alt-d", "Workspace", FocusAddress, "Type a path"),
@@ -283,29 +282,11 @@ pub static BINDINGS: &[Binding] = &[
         ToggleTerminal,
         "The terminal, under the files (it follows the folder shown)"
     ),
-    // Text
-    bind!("alt-c", "TextSearch", TextMatchCase, "Match case"),
-    bind!("alt-w", "TextSearch", TextWholeWord, "Whole words"),
-    bind!("alt-r", "TextSearch", TextRegex, "Regular expression"),
-    bind!("alt-a", "TextSearch", TextCodePatterns, "Code patterns (ast-grep)"),
-    bind!(
-        "alt-d",
-        "TextSearch",
-        TextDocuments,
-        "Documents (PDF, Office, OpenDocument, EPUB)"
-    ),
-    bind!("alt-o", "TextSearch", TextPictures, "Pictures too (OCR)"),
-    bind!("alt-m", "TextSearch", TextMeaning, "Meaning"),
-    bind!("ctrl-h", "TextSearch", TextReplace, "Replace"),
-    bind!(
-        "escape",
-        "TextSearch",
-        TextLeave,
-        "Leave the search box; again, stop the search"
-    ),
+    // The search box: how its words are matched inside files
+    bind!("alt-c", "AddressFind", TextMatchCase, "Match case, inside files"),
+    bind!("alt-w", "AddressFind", TextWholeWord, "Whole words, inside files"),
+    bind!("alt-r", "AddressFind", TextRegex, "Regular expression, inside files"),
     // Anywhere
-    bind!("ctrl-shift-f", "Workspace", TextSearch, "Search inside the files here"),
-    bind!("ctrl-shift-e", "Workspace", BackToFiles, "Back to Files from Text"),
     bind!("ctrl-,", "Workspace", OpenSettings, "Settings"),
     bind!("f1", "Workspace", ShowShortcuts, "This sheet"),
     bind!("ctrl-/", "Workspace", ShowShortcuts, "This sheet"),
@@ -393,7 +374,7 @@ mod tests {
             let action = (binding.action)();
             assert!(action.name().starts_with("glint::"), "{}", action.name());
             assert!(
-                ["Workspace", "FileList", "TextSearch", "QuickLook", "Compare"].contains(&binding.context),
+                ["Workspace", "FileList", "AddressFind", "QuickLook", "Compare"].contains(&binding.context),
                 "unknown context {:?}",
                 binding.context
             );

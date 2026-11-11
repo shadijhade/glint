@@ -54,7 +54,6 @@ mod tests_general;
 #[cfg(test)]
 mod tests_services;
 
-pub(crate) use backend::from_picker;
 pub use backend::{Backend, CoreBackend, Fetch, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
 pub use clouds::Request as CloudsRequest;
 
@@ -104,7 +103,7 @@ fn nav_name(slot: &str) -> SharedString {
         "find-files-by-name" => t!("Find files"),
         "quick-search" => t!("Quick search"),
         "ai-agents" => t!("AI agents"),
-        "search-text-ripgrep" => t!("Search text"),
+        "search-text-ripgrep" => t!("Inside files"),
         "text-search-skips" => t!("Text search skips"),
         "terminal" => t!("Terminal"),
         "check" => t!("Check"),
@@ -182,7 +181,6 @@ pub struct SettingsView {
     // opened later starts with what was last said).
     quick_taken: Option<String>,
     // What is typed.
-    pub(crate) default_search_path: Entity<InputState>,
     pub(crate) editor_path: Entity<InputState>,
     pub(crate) yara_rules: Entity<InputState>,
     pub(crate) shortcut_box: Entity<InputState>,
@@ -224,7 +222,6 @@ impl SettingsView {
                     .placeholder(placeholder)
             })
         };
-        let default_search_path = input(window, cx, &settings.default_search_path, t!("None"));
         let editor_path = input(window, cx, &settings.editor_path, t!("System default"));
         let yara_rules = input(window, cx, &settings.yara_rules, t!("None chosen"));
         let shortcut_box = input(window, cx, "", t!("Another shortcut, e.g. Ctrl+Alt+K"));
@@ -286,13 +283,6 @@ impl SettingsView {
         let mut subscriptions = vec![
             // What is typed goes to the settings as it is typed; a change from elsewhere (Reset, an import)
             // comes back into the boxes.
-            Self::bind(
-                &default_search_path,
-                |s| &s.default_search_path,
-                |s, v| s.default_search_path = v,
-                window,
-                cx,
-            ),
             Self::bind(&editor_path, |s| &s.editor_path, |s, v| s.editor_path = v, window, cx),
             Self::bind(&yara_rules, |s| &s.yara_rules, |s, v| s.yara_rules = v, window, cx),
             cx.subscribe_in(
@@ -334,7 +324,6 @@ impl SettingsView {
             opened: (section.is_none() && !cx.reduce_motion()).then(std::time::Instant::now),
             settle: None,
             quick_taken: cx.try_global::<QuickTaken>().and_then(|taken| taken.0.clone()),
-            default_search_path,
             editor_path,
             yara_rules,
             shortcut_box,
@@ -380,7 +369,6 @@ impl SettingsView {
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = state::settings(cx).clone();
         for (input, now) in [
-            (&self.default_search_path, settings.default_search_path),
             (&self.editor_path, settings.editor_path),
             (&self.yara_rules, settings.yara_rules),
         ] {

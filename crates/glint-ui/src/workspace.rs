@@ -2,16 +2,14 @@
 //! panes, the status bar. Wave 4's views fill it; this file places them and wires what they hand out (their
 //! events, and the window's actions) to the explorer model and to the parts that own the rest.
 //!
+//! The window is one bar, a rail, and a sheet with a dock at its foot:
+//!
 //! | Area                    | View                                                                 |
 //! |-------------------------|----------------------------------------------------------------------|
-//! | Title bar               | gpui-component's `TitleBar` (snap layouts), holding the [`TabStrip`] |
-//! | Toolbar                 | the mode switch (Files, Text), the [`AddressBar`], Sharing, Disk usage |
-//! | Drive health button     | **temporary** (This PC's tiles and banner open it too)               |
-//! | Sidebar                 | the [`Sidebar`]: places and the folder tree                          |
-//! | Command bar             | the [`CommandBar`] above the panes (New, Cut, Copy, Paste, views, tools) |
-//! | Each pane               | [`ThisPc`], the [`DiskUsage`] map, the [`FileGrid`], the [`FileList`] or the [`ColumnsView`]; [`FrequentFolders`] above Recent, [`GalleryMonths`] beside the Gallery |
-//! | Status bar              | the [`StatusBar`]                                                    |
-//! | Text mode (Ctrl+Shift+F) | [`TextSearch`] instead of the sidebar, the panes and the status bar |
+//! | The bar (the title bar) | gpui-component's `TitleBar` (snap layouts), holding Glint's mark (the app's menu: Settings, the palette, the shortcut sheet, Drive health), the [`AddressBar`] (Back, Forward, Up, and one field: where you are, and the search of names and of what the files hold), Sharing, Update |
+//! | The rail                | the open tabs ([`TabStrip`], a list), then the [`Sidebar`]: places and the folder tree |
+//! | The sheet               | each pane: [`ThisPc`], the [`DiskUsage`] map, the [`FileGrid`], the [`FileList`] or the [`ColumnsView`]; [`FrequentFolders`] above Recent, [`GalleryMonths`] beside the Gallery; the preview pane at the end edge; the terminal under the panes |
+//! | The dock                | the [`StatusBar`] at its two ends and the [`CommandBar`]'s island in its middle (New, Cut, Copy, Paste, views, tools) |
 //! | Over everything         | the [`CopyQueue`] panel and the [`MenuHost`]'s menus                 |
 //!
 //! **Patterns here:**
@@ -42,7 +40,6 @@ use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
 use crate::components::status_bar::StatusBar;
 use crate::components::tab_strip::{PaneDropZone, TabStrip};
 use crate::components::terminal::{TerminalPane, TerminalPaneEvent};
-use crate::components::text_search::{TextSearch, TextSearchEvent};
 use crate::components::this_pc::{ThisPc, ThisPcEvent};
 use crate::components::{palette, settings};
 use crate::explorer::{self, ExplorerEvent};
@@ -54,6 +51,7 @@ use glint_model::entries::FileEntry;
 use glint_model::format::plural;
 use glint_model::paths::{base_name, same_path};
 use glint_model::store::ViewMode;
+use gpui_kit::component::menu::DropdownMenu as _;
 use std::ops::Range;
 
 /// The label glint-core knows the main window by.
@@ -62,8 +60,14 @@ pub const MAIN: &str = "main";
 /// The sidebar's width: what it starts at, and how far it can be dragged.
 const SIDEBAR: Range<Pixels> = px(160.)..px(420.);
 const SIDEBAR_START: Pixels = px(240.);
-/// The title bar's height: room for the tabs' pills with air above and below.
-const TITLE_BAR_HEIGHT: Pixels = px(40.);
+/// The bar's height: room for the address field with air above and below.
+const TITLE_BAR_HEIGHT: Pixels = px(48.);
+/// The dock's height, at the foot of the sheet: the status bar's, with the commands' island over its middle.
+const DOCK_HEIGHT: Pixels = crate::components::status_bar::HEIGHT;
+/// The room, in rems, the dock keeps at each side of the commands' island for the status bar's words.
+const DOCK_SIDE_ROOM: f32 = 13.;
+/// The air between the sheet and the window's end and bottom edges.
+const SHEET_GAP: Pixels = px(8.);
 
 /// What a pane can show: one of each, kept for the window's life so each keeps its scroll and its state.
 struct PaneViews {
@@ -113,11 +117,6 @@ pub struct Workspace {
     preview: Option<Entity<PreviewPane>>,
     /// The first pane and, in dual-pane view, the second.
     panes: [PaneViews; 2],
-    /// Searching inside files: made the first time it is asked for (its install cards look at every tool once),
-    /// then kept for the window's life, so its results keep their place while the files are shown.
-    text: Option<Entity<TextSearch>>,
-    /// Text search is on screen instead of the files (the web app's `mode === "text"`).
-    text_mode: bool,
     /// What is shared or being sent, for the toolbar's Sharing button (None without core, as in tests).
     sharing: Option<Entity<dialogs::share::Sharing>>,
     /// The command bar above the panes.
@@ -182,6 +181,8 @@ impl Workspace {
             }
         });
         let command_bar = cx.new(|cx| CommandBar::new(window, cx));
+        // In the dock the status bar's words are at the island's two sides: it leaves them room.
+        command_bar.update(cx, |bar, cx| bar.set_side_room(DOCK_SIDE_ROOM, cx));
         subscriptions.push(cx.subscribe_in(&command_bar, window, Self::on_command_bar_event));
         // The terminal pane: the window lays out again as it opens, closes or gains a tab; closed, the keyboard goes
         // back to the files.
@@ -330,8 +331,6 @@ impl Workspace {
             settings_events: None,
             preview: None,
             panes,
-            text: None,
-            text_mode: false,
             sharing,
             command_bar,
             sidebar_width: SIDEBAR_START,
@@ -344,11 +343,6 @@ impl Workspace {
             _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
         }
-    }
-
-    /// Text search, once it has been asked for, and whether it is on screen (the self-test reads them).
-    pub fn text_search(&self) -> (Option<Entity<TextSearch>>, bool) {
-        (self.text.clone(), self.text_mode)
     }
 
     /// The terminal pane (the self-test opens it and types into it).
@@ -482,11 +476,7 @@ impl Workspace {
     }
 
     /// Gives the keyboard to the active pane's file view (the list, the grid, the map, or This PC's first tile).
-    /// Text search keeps it while it is on screen.
     fn focus_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.text_mode {
-            return;
-        }
         let pane = explorer::explorer(cx).read(cx).active_pane().min(1);
         match Self::shown_in(pane, cx) {
             Some(Shown::DiskUsage) => {
@@ -552,99 +542,28 @@ impl Workspace {
         });
     }
 
-    // ---- Text mode ------------------------------------------------------------------------------------------
+    // ---- Searching a folder -------------------------------------------------------------------------------------
 
-    /// Text search in `folder` (the open folder when None): Ctrl+Shift+F, the mode switch, the folder menu's
-    /// and the sidebar's "Search text here" (`searchText`). The files stay when the view says why it can't
-    /// search there (inside an archive, a folder Windows keeps closed).
-    fn enter_text(&mut self, folder: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
-        let text = match &self.text {
-            Some(text) => text.clone(),
-            None => {
-                let text = cx.new(|cx| TextSearch::new(window, cx));
-                self._subscriptions
-                    .push(cx.subscribe_in(&text, window, Self::on_text_event));
-                self.text = Some(text.clone());
-                text
+    /// "Search here" on a folder (the folder menu, the sidebar's): the folder opens in this tab and the search
+    /// box takes the keyboard. What is typed there is looked for in names and inside the files.
+    fn search_in(&mut self, folder: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let folder = folder.to_string();
+        let opening = explorer::explorer(cx).update(cx, |e, cx| {
+            if same_path(e.current_path(), &folder) {
+                gpui_kit::Task::ready(true)
+            } else {
+                e.navigate_task(folder, explorer::NavOptions::default(), cx)
             }
-        };
-        if text.update(cx, |text, cx| text.enter(folder, window, cx)) {
-            self.text_mode = true;
-            cx.notify();
-        }
-    }
-
-    /// Back to the files (Ctrl+Shift+E, the mode switch's Files); text search keeps its query and results.
-    fn leave_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.text_mode {
-            return;
-        }
-        self.text_mode = false;
-        cx.notify();
-        self.focus_files(window, cx);
-    }
-
-    fn on_text_event(
-        &mut self,
-        _: &Entity<TextSearch>,
-        event: &TextSearchEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            // "Show in Files": the file's folder, with the file selected (`revealInApp`).
-            TextSearchEvent::Reveal { path } => {
-                self.leave_text(window, cx);
-                let folder = glint_model::paths::parent_path(path);
-                let options = explorer::NavOptions {
-                    select: Some(vec![path.clone()]),
-                    ..Default::default()
-                };
-                Self::explorer(cx, |e, cx| e.navigate(folder, options, cx));
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if opening.await {
+                this.update_in(cx, |this, window, cx| {
+                    this.address.update(cx, |bar, cx| bar.focus_search(window, cx))
+                })
+                .ok();
             }
-        }
-    }
-
-    /// Files or Text, as the web app's mode switch: browsing, or searching inside the files with ripgrep.
-    fn mode_switch(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
-        let text = self.text_mode;
-        row_start()
-            .id("mode-switch")
-            .role(Role::TabList)
-            .aria_label(t!("Mode"))
-            .test_support()
-            .flex_none()
-            .gap(px(2.))
-            .p(px(2.))
-            .rounded(theme::size::RADIUS_LG)
-            .bg(t.accent)
-            .child(
-                Button::new("mode-files")
-                    .ghost()
-                    .small()
-                    .selected(!text)
-                    .icon(IconName::FolderOpen)
-                    .label(t!("Files"))
-                    // The file list is "Files" to a screen reader already; the name keeps the word it shows.
-                    .accessibility_label(t!("Files mode"))
-                    .tooltip(t!("Browse files (Ctrl+Shift+E)"))
-                    .on_click(cx.listener(|this, _, window, cx| this.leave_text(window, cx))),
-            )
-            .child(
-                Button::new("mode-text")
-                    .ghost()
-                    .small()
-                    .selected(text)
-                    .icon(IconName::TextSearch)
-                    .label(t!("Text"))
-                    .accessibility_label(t!("Text mode"))
-                    .tooltip(t!("Search inside files with ripgrep (Ctrl+Shift+F)"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if !this.text_mode {
-                            this.enter_text(None, window, cx)
-                        }
-                    })),
-            )
+        })
+        .detach();
     }
 
     // ---- Archives, comparing, compressing ---------------------------------------------------------------------
@@ -944,7 +863,7 @@ impl Workspace {
             SidebarEvent::AddConnection => dialogs::remote::open_add(window, cx),
             SidebarEvent::EditRemote(id) => dialogs::remote::open_edit(window, cx, id.clone()),
             SidebarEvent::RemoveRemote(id) => dialogs::remote::remove_remote(window, cx, id.clone()),
-            SidebarEvent::SearchText(folder) => self.enter_text(Some(folder), window, cx),
+            SidebarEvent::SearchText(folder) => self.search_in(folder, window, cx),
         }
     }
 
@@ -1126,7 +1045,7 @@ impl Workspace {
             MenuEvent::Vault { paths, decrypt } => dialogs::vault::open(window, cx, paths.clone(), *decrypt),
             MenuEvent::EditConnection { id } => dialogs::remote::open_edit(window, cx, id.clone()),
             MenuEvent::RemoveConnection { id } => dialogs::remote::remove_remote(window, cx, id.clone()),
-            MenuEvent::SearchText { folder } => self.enter_text(Some(folder), window, cx),
+            MenuEvent::SearchText { folder } => self.search_in(folder, window, cx),
             MenuEvent::Compare { left, right } => dialogs::compare_files::open(window, cx, left.clone(), right.clone()),
             // Archives and disk images.
             MenuEvent::ExtractHere { path } => Self::explorer(cx, |e, cx| e.extract_here(path, cx).detach()),
@@ -1208,10 +1127,7 @@ impl Workspace {
             }
             MenuEvent::RunInSandbox { path } => Self::explorer(cx, |e, cx| e.run_in_sandbox(path, cx).detach()),
             MenuEvent::OpenInNewWindow { path } => Self::explorer(cx, |e, cx| e.open_in_new_window(Some(path), cx)),
-            MenuEvent::OpenFileLocation { path } => {
-                self.leave_text(window, cx);
-                Self::explorer(cx, |e, cx| e.reveal_in_app(path, cx).detach())
-            }
+            MenuEvent::OpenFileLocation { path } => Self::explorer(cx, |e, cx| e.reveal_in_app(path, cx).detach()),
             MenuEvent::ForgetRecent { paths } => {
                 Self::explorer(cx, |e, cx| e.forget_recent(paths.clone(), cx).detach())
             }
@@ -1472,8 +1388,8 @@ impl Workspace {
 
     // ---- The window's parts -----------------------------------------------------------------------------------
 
-    /// The title bar: the kit's (the window's buttons, the snap layouts, the drag area), taller for the tabs and
-    /// with no fill or rule of its own: it is chrome like the toolbar under it.
+    /// The bar: the kit's title bar (the window's buttons, the snap layouts, the drag area), taller for the address
+    /// field and with no fill or rule of its own: it is chrome, like the rail.
     fn title_bar() -> TitleBar {
         TitleBar::new()
             .h(TITLE_BAR_HEIGHT)
@@ -1481,9 +1397,10 @@ impl Workspace {
             .border_b_0()
     }
 
-    /// Glint's mark (the folder with the glint on its corner), for the start of the title bar: the installer's
-    /// logo, drawn small. Made once.
-    fn mark() -> impl IntoElement {
+    /// Glint's mark (the folder with the glint on its corner) at the start of the bar: the installer's logo, drawn
+    /// small, made once. It is a button: the app's own menu opens under it (Settings, the palette, the shortcut
+    /// sheet, Drive health, another window), so those have a place to be found that isn't a key.
+    fn mark(&self, cx: &mut Context<Self>) -> impl IntoElement {
         thread_local! {
             static MARK: std::sync::Arc<Image> = {
                 // The drawing is 1024 units square; asked for at 40 px it is sharp at 20 px on any screen.
@@ -1492,46 +1409,63 @@ impl Workspace {
                 std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()))
             };
         }
-        div()
-            .id("glint-mark")
-            .role(Role::Image)
-            .aria_label("Glint")
-            .flex_none()
-            .me(2.)
-            .child(img(MARK.with(Clone::clone)).size(px(20.)).flex_none())
+        let this = cx.weak_entity();
+        let name = t!("Glint: settings and more");
+        let button =
+            Button::new("glint-mark")
+                .ghost()
+                .small()
+                .accessibility_label(name.clone())
+                .tooltip(name)
+                .child(img(MARK.with(Clone::clone)).size(px(20.)).flex_none())
+                .dropdown_menu(move |menu, _, _| {
+                    let settings = this.clone();
+                    menu.item(PopupMenuItem::new(t!("Settings")).icon(IconName::Settings).on_click(
+                        move |_, window, cx| {
+                            settings
+                                .update(cx, |workspace, cx| workspace.open_settings(window, cx))
+                                .ok();
+                        },
+                    ))
+                    .item(
+                        PopupMenuItem::new(t!("Command palette"))
+                            .icon(IconName::Command)
+                            .on_click(|_, window, cx| palette::toggle(window, cx)),
+                    )
+                    .item(
+                        PopupMenuItem::new(t!("Keyboard shortcuts"))
+                            .icon(IconName::Keyboard)
+                            .on_click(|_, window, cx| dialogs::shortcuts::open(window, cx)),
+                    )
+                    .separator()
+                    .item(
+                        PopupMenuItem::new(t!("Drive health"))
+                            .icon(IconName::HeartPulse)
+                            .on_click(|_, window, cx| dialogs::drive_health::open(window, cx, None)),
+                    )
+                    .item(
+                        PopupMenuItem::new(t!("New window"))
+                            .icon(IconName::AppWindow)
+                            .on_click(|_, _, cx| Self::explorer(cx, |e, cx| e.open_in_new_window(None, cx))),
+                    )
+                });
+        // Pressing it never drags the window.
+        div().id("glint-mark-place").occlude().flex_none().me(1.).child(button)
     }
 
-    fn toolbar(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The end of the bar, before the window's own buttons: what is being shared, and Update while a newer Glint
+    /// is ready. Empty most of the time.
+    fn bar_end(&self, cx: &mut Context<Self>) -> impl IntoElement {
         row_start()
-            .id("toolbar")
-            .role(Role::Toolbar)
-            .aria_label(t!("Navigation"))
-            .test_support()
-            .gap(space(1.5))
-            .px(space(2.))
-            .pt(space(0.5))
-            .pb(space(2.))
-            .child(self.mode_switch(t, cx))
-            // Text mode has its own search bar below; the files' address bar steps aside.
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .when(!self.text_mode, |area| area.child(self.address.clone())),
-            )
+            .id("bar-end")
+            // Pressing these never drags the window.
+            .occlude()
+            .flex_none()
+            .gap(space(0.5))
+            .px(space(1.))
             .children(self.sharing_button(cx))
             // 'Update' while a newer Glint is ready (a spinner while it downloads).
             .children(crate::updater::update_button(cx))
-            // TEMPORARY: This PC's tiles and banner open it too; this button goes with the Settings part.
-            .child(
-                Button::new("drive-health")
-                    .ghost()
-                    .small()
-                    .icon(IconName::HeartPulse)
-                    .accessibility_label(t!("Drive health"))
-                    .tooltip(t!("Drive health"))
-                    .on_click(|_, window, cx| dialogs::drive_health::open(window, cx, None)),
-            )
     }
 
     /// What is shared or being sent right now, opening its dialog (the web app's `SharingButton`); nothing when
@@ -1644,11 +1578,9 @@ impl Workspace {
         } else {
             self.pane(0, t, cx)
         };
-        // The command bar spans the panes' column (not the sidebar, not the preview pane), as in the web app; the
-        // terminal pane sits under the panes in the same column (it draws nothing while closed).
+        // The terminal pane sits under the panes, in their column (it draws nothing while closed).
         let files = col()
             .size_full()
-            .child(self.command_bar.clone())
             .child(div().flex_1().min_h_0().child(files))
             .child(div().flex_none().child(self.terminal.clone()))
             .into_any_element();
@@ -1680,40 +1612,68 @@ impl Workspace {
                 div().size_full().child(group).into_any_element()
             }
         };
-        // The sidebar on the chrome, at the start edge: left in English, right in Arabic.
-        let sidebar = div()
+        // The rail on the chrome, at the start edge (left in English, right in Arabic): the open tabs, then the
+        // places under them.
+        let sidebar = col()
             .id("sidebar")
             .test_support()
             .flex_none()
             .h_full()
             .w(self.sidebar_width)
-            .child(self.sidebar.clone());
-        // The sheet: the files (and the status bar under them) on their own surface, a step forward of the
-        // chrome, with a hairline and a rounded corner where it meets the toolbar and the sidebar.
+            .pb(SHEET_GAP)
+            .child(div().flex_none().px(space(2.)).child(self.tabs.clone()))
+            .child(div().flex_1().min_h_0().child(self.sidebar.clone()));
+        // The dock at the foot of the sheet: the status bar's words at its two ends, and the commands' island
+        // over its middle. Each end is told the room it has beside the island (as last drawn), so it says what
+        // fits there and nothing of it runs under the island.
+        let rem = f32::from(theme::rem_size(cx));
+        let (dock_width, island) = self.command_bar.read(cx).widths(rem);
+        let beside = if dock_width > 0. && island > 0. {
+            ((dock_width - island) / 2. - rem * 1.5).max(1.)
+        } else {
+            0.
+        };
+        self.status.read(cx).beside().set(beside);
+        let dock = div()
+            .id("dock")
+            .test_support()
+            .relative()
+            .flex_none()
+            .w_full()
+            .h(DOCK_HEIGHT)
+            .child(self.status.clone())
+            .child(div().absolute().inset_0().child(self.command_bar.clone()));
+        // The sheet: the files and the dock on their own surface, a step forward of the chrome: a card with a
+        // hairline, rounded all round, clear of the window's end and bottom edges.
         let sheet = div()
             .id("content")
             .role(Role::Main)
             .test_support()
-            .flex_1()
-            .min_w_0()
-            .h_full()
+            .size_full()
             .bg(t.background)
+            .border_1()
             .border_color(t.stroke)
-            .border_t_1()
-            .map(|sheet| {
-                if rtl {
-                    sheet.border_r_1().rounded_tr(theme::size::RADIUS_SHEET)
-                } else {
-                    sheet.border_l_1().rounded_tl(theme::size::RADIUS_SHEET)
-                }
-            })
+            .rounded(theme::size::RADIUS_SHEET)
             .overflow_hidden()
             .child(
                 col()
                     .size_full()
                     .child(div().flex_1().min_h_0().child(files))
-                    .child(self.status.clone()),
+                    .child(dock),
             );
+        let sheet = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .pb(SHEET_GAP)
+            .map(|around| {
+                if rtl {
+                    around.pl(SHEET_GAP)
+                } else {
+                    around.pr(SHEET_GAP)
+                }
+            })
+            .child(sheet);
         // The sidebar's edge: a strip over the seam that drags its width (a double-click puts it back).
         let grip = px(8.);
         let at = self.sidebar_width - grip / 2.;
@@ -1827,14 +1787,6 @@ impl Render for Workspace {
             .text_size(theme::size::SM)
             // Text starts at the reading direction's start edge (text alignment is inherited by everything below).
             .text_start()
-            // Either mode.
-            .on_action(cx.listener(|this, _: &actions::TextSearch, window, cx| {
-                // In text mode it does nothing, as in the web app.
-                if !this.text_mode {
-                    this.enter_text(None, window, cx)
-                }
-            }))
-            .on_action(cx.listener(|this, _: &actions::BackToFiles, window, cx| this.leave_text(window, cx)))
             .on_action(
                 cx.listener(|_, _: &actions::ShowDriveHealth, window, cx| {
                     dialogs::drive_health::open(window, cx, None)
@@ -1850,24 +1802,6 @@ impl Render for Workspace {
                 Self::explorer(cx, |e, cx| e.open_in_new_window(None, cx))
             }))
             .on_action(cx.listener(|_, _: &actions::CommandPalette, window, cx| palette::toggle(window, cx)));
-        if self.text_mode {
-            // Text search instead of the files: no tabs, no sidebar, no status bar (as the web app hid them); the
-            // files' keys (Delete, Ctrl+C...) aren't heard, so nothing happens to files that aren't on screen.
-            let text = self.text.clone();
-            return root
-                .child(Self::title_bar().child(Self::mark()))
-                .child(self.toolbar(&t, cx))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .bg(t.background)
-                        .border_t_1()
-                        .border_color(t.stroke)
-                        .children(text),
-                )
-                .child(self.menus.clone());
-        }
         root
             // The mouse's side buttons anywhere outside a pane (the panes answer for themselves).
             .on_mouse_up(MouseButton::Navigate(NavigationDirection::Back), |_, _, cx| {
@@ -1997,13 +1931,22 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|_, _: &actions::QuickLook, window, cx| preview::quick_look::toggle(window, cx)))
             .on_action(cx.listener(|_, _: &actions::TogglePreview, _, cx| preview::toggle_pane(cx)))
-            // The mark at the start edge: before the tabs in English, after them in Arabic.
-            .child(if crate::i18n::is_rtl() {
-                Self::title_bar().child(self.tabs.clone()).child(Self::mark())
-            } else {
-                Self::title_bar().child(Self::mark()).child(self.tabs.clone())
+            // The bar: the mark at the start edge (before the address in English, after it in Arabic), the
+            // address, then what the window has to say at the end.
+            // They are laid over the title bar's drag area, not in it: the kit's area is as wide as what is in it
+            // asks, and a long path asked for more than the window, pushing the window's own buttons out of it.
+            .child({
+                let over = div().absolute().inset_0().flex().flex_row().items_center();
+                Self::title_bar().child(if crate::i18n::is_rtl() {
+                    over.child(self.bar_end(cx))
+                        .child(self.address.clone())
+                        .child(self.mark(cx))
+                } else {
+                    over.child(self.mark(cx))
+                        .child(self.address.clone())
+                        .child(self.bar_end(cx))
+                })
             })
-            .child(self.toolbar(&t, cx))
             .child(div().flex_1().min_h_0().child(self.body(&t, cx)))
             // Over everything: the copy queue, then any open menu above it.
             .child(self.queue.clone())
@@ -2058,6 +2001,9 @@ mod tests {
         open_workspace(cx, rtl).0
     }
 
+    /// A folder name long enough that two of them, one in the other, don't fit the address field.
+    const DEEP: &str = "a folder with a name that goes on for quite a while, 2026 edition";
+
     fn open_workspace(cx: &mut TestAppContext, rtl: bool) -> (VisualTestContext, Entity<Workspace>) {
         let disk = FakeDisk::new();
         disk.folder(
@@ -2068,7 +2014,14 @@ mod tests {
                 file("C:\\Work", "todo.txt", 80, 0),
             ],
         );
-        disk.folder("C:\\Work\\src", vec![file("C:\\Work\\src", "main.rs", 10, 0)]);
+        disk.folder(
+            "C:\\Work\\src",
+            vec![folder("C:\\Work\\src", DEEP), file("C:\\Work\\src", "main.rs", 10, 0)],
+        );
+        // Folders with long names, one in the other: a path longer than the bar.
+        let deep = format!("C:\\Work\\src\\{DEEP}");
+        disk.folder(&deep, vec![folder(&deep, DEEP)]);
+        disk.folder(&format!("{deep}\\{DEEP}"), Vec::new());
         disk.archive_folder(
             "C:\\Work\\pack.zip",
             "C:\\Work\\pack.zip",
@@ -2113,10 +2066,11 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_window_holds_the_views_and_the_drive_health_button_opens_its_dialog(cx: &mut TestAppContext) {
+    fn the_window_holds_the_views_and_the_marks_menu_opens_drive_health(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let mut visual = open(cx, false);
-        assert_eq!(role_of(&mut visual, "Navigation"), Some(Role::Toolbar));
+        assert_eq!(role_of(&mut visual, "Address bar"), Some(Role::Group));
+        assert_eq!(role_of(&mut visual, "Commands"), Some(Role::Toolbar));
         assert_eq!(role_of(&mut visual, "Places"), Some(Role::Navigation));
         assert_eq!(role_of(&mut visual, "Files"), Some(Role::ListBox));
         assert_eq!(role_of(&mut visual, "Status bar"), Some(Role::Status));
@@ -2125,7 +2079,7 @@ mod tests {
             "Forward (Alt+Right)",
             "Up (Alt+Up)",
             "New tab",
-            "Drive health",
+            "Glint: settings and more",
         ] {
             assert_eq!(role_of(&mut visual, icon_only), Some(Role::Button), "{icon_only}");
         }
@@ -2140,12 +2094,75 @@ mod tests {
         // English reads left to right: the sidebar before the files.
         assert!(bounds_of(&mut visual, "sidebar").origin.x < bounds_of(&mut visual, "content").origin.x);
 
+        // The rail holds the tabs over the places, and the dock is the foot of the sheet, under the files.
+        let (tabs, places) = (bounds_of(&mut visual, "tablist-0"), bounds_of(&mut visual, "places"));
+        assert!(tabs.origin.y + tabs.size.height <= places.origin.y + px(1.));
+        let (dock, sheet) = (bounds_of(&mut visual, "dock"), bounds_of(&mut visual, "content"));
+        assert!(dock.origin.y > sheet.origin.y && dock.origin.x >= sheet.origin.x);
+        let island = bounds_of(&mut visual, "command-bar");
+        assert!(island.origin.y >= dock.origin.y && island.origin.x > dock.origin.x);
+
+        // The mark opens the app's menu; Drive health is in it.
         visual.update(|window, cx| {
             window.render_frame(cx);
-            window.click("drive-health", cx);
+            window.click("glint-mark", cx);
         });
         visual.run_until_parked();
+        for item in [
+            "Settings",
+            "Command palette",
+            "Keyboard shortcuts",
+            "Drive health",
+            "New window",
+        ] {
+            assert_eq!(
+                role_of(&mut visual, item),
+                Some(Role::MenuItem),
+                "{item} is in the mark's menu"
+            );
+        }
+        let item = visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.find_by_label("Drive health").bounds().center()
+        });
+        visual.simulate_click(item, gpui_kit::Modifiers::default());
+        visual.run_until_parked();
         visual.update(|window, cx| assert!(window.has_active_dialog(cx)));
+    }
+
+    #[gpui_kit::test]
+    fn a_long_path_gives_way_to_the_window_and_never_pushes_its_buttons_out(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        for rtl in [false, true] {
+            let (mut visual, _) = open_workspace(cx, rtl);
+            let deep = format!("C:\\Work\\src\\{DEEP}\\{DEEP}");
+            visual.update(|_, cx| {
+                explorer::explorer(cx).update(cx, |e, cx| e.navigate(deep, explorer::NavOptions::default(), cx))
+            });
+            visual.simulate_resize(size(px(900.), px(640.)));
+            for _ in 0..6 {
+                visual.update(|window, cx| window.render_frame(cx));
+                visual.run_until_parked();
+            }
+            let width = visual.update(|window, _| window.viewport_size().width);
+            let (bar, mark) = (
+                bounds_of(&mut visual, "address-bar"),
+                bounds_of(&mut visual, "glint-mark"),
+            );
+            // The bar and the mark are inside the window, with room left for the window's own three buttons.
+            assert!(
+                bar.origin.x >= px(0.) && bar.right() <= width - px(100.),
+                "rtl {rtl}: {bar:?} in {width:?}"
+            );
+            assert!(
+                mark.origin.x >= px(0.) && mark.right() <= width,
+                "rtl {rtl}: {mark:?} in {width:?}"
+            );
+            // And the field still has room to show where you are.
+            let field = bounds_of(&mut visual, "address-omni");
+            assert!(field.size.width > px(300.), "rtl {rtl}: {field:?}");
+            testing::set_rtl(false);
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ Glint gets much of its speed and reach from command-line tools, most of them fro
 
 | Tool | In Glint |
 | :--- | :--- |
-| [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg.exe`) | Searching inside files (Text mode) |
+| [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg.exe`) | Searching inside files (the search box, on Enter) |
 | [fd](https://github.com/sharkdp/fd) (`fd.exe`) | Finding files by name where instant search doesn't |
 | [pdu](https://github.com/KSXGitHub/parallel-disk-usage) (`pdu.exe`) | Folder sizes and disk-usage maps where instant search doesn't |
 
@@ -19,7 +19,7 @@ They're the official Windows x64 releases, unmodified, installed next to `Glint.
 | [Czkawka](https://github.com/qarmin/czkawka) CLI | Clean up's look-alike pictures, videos and music, broken files and wrong extensions | winget `qarmin.czkawka.cli`, else its release, 12.0.2 |
 | [FFmpeg](https://ffmpeg.org/) | **Media**: trim, convert and shrink (hardware encoders when the PC has them), the sound alone, GIFs; videos Windows can't play get a copy that plays; Clean up's look-alike videos | winget `Gyan.FFmpeg.Essentials`, else its release, 9.0.2 (with ffprobe) |
 | [Difftastic](https://github.com/Wilfred/difftastic) | Compare two files, and a changed file's **Changes**: code compared by its structure | winget `Wilfred.difftastic`, else its release, 0.72.0 |
-| [ast-grep](https://github.com/ast-grep/ast-grep) | Code patterns in Text mode (`Alt+A`), found and rewritten by their syntax | winget `ast-grep.ast-grep`, else its release, 0.51.1 |
+| [ast-grep](https://github.com/ast-grep/ast-grep) | Code patterns, found and rewritten by their syntax (the MCP server's; the window's search no longer has them) | winget `ast-grep.ast-grep`, else its release, 0.51.1 |
 | [jaq](https://github.com/01mf02/jaq) | jq filters over JSON, YAML and TOML in their preview | its GitHub release, v3.1.2 |
 | [Magika](https://github.com/google/magika) | A file's real type in the File X-Ray, told by its content | winget `Google.Magika`, else its release, 1.1.0 |
 | [YARA-X](https://github.com/VirusTotal/yara-x) | **Check with YARA rules**, from a rules folder chosen in Settings → Check | winget `VirusTotal.YARA-X`, else its release, 1.23.0 |

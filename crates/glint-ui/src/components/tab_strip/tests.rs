@@ -1,4 +1,4 @@
-//! Headless tests of the tab strip, on a fake disk behind the explorer.
+//! Headless tests of the tabs (a list in the rail, one tab under the other), on a fake disk behind the explorer.
 
 use super::*;
 use crate::explorer::fake::{file, folder, FakeDisk};
@@ -179,11 +179,11 @@ fn dragging_a_tab_reorders_the_strip(cx: &mut TestAppContext) {
     let (mut cx, _) = open(cx, false);
     act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
     act(&mut cx, |e, cx| e.new_tab(Some("C:\\b"), cx));
-    // The last tab, dropped on the first one's near edge, goes first.
+    // The last tab, dropped on the first one's upper half, goes first.
     let first = bounds(&mut cx, "tab-1");
     let last = bounds(&mut cx, "tab-3");
     let from = last.center();
-    let to = point(first.origin.x + px(4.), first.center().y);
+    let to = point(first.center().x, first.origin.y + px(4.));
     cx.update(|window, cx| window.drag(from, to, cx));
     cx.run_until_parked();
     assert_eq!(order(&mut cx, 0), [3, 1, 2]);
@@ -239,27 +239,38 @@ fn the_keyboard_moves_between_tabs(cx: &mut TestAppContext) {
     cx.update(|window, cx| window.press("home", cx));
     cx.run_until_parked();
     assert_eq!(active(&mut cx), TabId(1));
+    // The list runs downward: Down and Up are the next and the one before.
+    cx.update(|window, cx| window.press("down", cx));
+    cx.run_until_parked();
+    assert_eq!(active(&mut cx), TabId(2));
+    cx.update(|window, cx| window.press("down", cx));
+    cx.run_until_parked();
+    assert_eq!(active(&mut cx), TabId(3));
+    cx.update(|window, cx| window.press("up", cx));
+    cx.run_until_parked();
+    assert_eq!(active(&mut cx), TabId(2));
     testing::set_rtl(false);
 }
 
 #[gpui_kit::test]
-fn arabic_runs_the_strip_right_to_left_and_names_an_arabic_folder(cx: &mut TestAppContext) {
+fn arabic_lists_the_tabs_downward_too_and_names_an_arabic_folder(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let (mut cx, _) = open(cx, true);
     act(&mut cx, |e, cx| e.new_tab(Some("C:\\تقارير"), cx));
     act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
-    // The first tab is on the right, the next to its left.
+    // The first tab is at the top, the next under it, as in English.
     let first = bounds(&mut cx, "tab-1");
     let second = bounds(&mut cx, "tab-2");
     let third = bounds(&mut cx, "tab-3");
-    assert!(first.origin.x > second.origin.x && second.origin.x > third.origin.x);
+    assert!(first.origin.y < second.origin.y && second.origin.y < third.origin.y);
+    assert_eq!(first.origin.x, second.origin.x);
     // The Arabic name is the tab's accessible name, unmarked.
     let (role, selected, _) = snapshot(&mut cx, "تقارير").unwrap();
     assert_eq!((role, selected), (Some(Role::Tab), Some(false)));
     assert_eq!(snapshot(&mut cx, "Close تقارير").unwrap().0, Some(Role::Button));
-    // Dropping at the right edge of the first tab puts a tab before it.
+    // Dropping on the upper half of the first tab puts a tab before it.
     let from = third.center();
-    let to = point(first.origin.x + first.size.width - px(4.), first.center().y);
+    let to = point(first.center().x, first.origin.y + px(4.));
     cx.update(|window, cx| window.drag(from, to, cx));
     cx.run_until_parked();
     assert_eq!(order(&mut cx, 0), [3, 1, 2]);
@@ -267,21 +278,17 @@ fn arabic_runs_the_strip_right_to_left_and_names_an_arabic_folder(cx: &mut TestA
 }
 
 #[test]
-fn the_gap_a_tab_would_take_follows_the_reading_direction() {
-    let tab = |x: f32| Bounds {
-        origin: point(px(x), px(0.)),
-        size: size(px(100.), px(28.)),
+fn the_gap_a_tab_would_take_is_before_the_first_tab_whose_middle_is_below_the_pointer() {
+    let tab = |y: f32| Bounds {
+        origin: point(px(8.), px(y)),
+        size: size(px(200.), px(30.)),
     };
-    let english = [tab(0.), tab(102.), tab(204.)];
-    assert_eq!(slot_at(px(10.), &english, false), 0);
-    assert_eq!(slot_at(px(160.), &english, false), 2);
-    assert_eq!(slot_at(px(290.), &english, false), 3);
-    // Arabic: the first tab is the rightmost.
-    let arabic = [tab(204.), tab(102.), tab(0.)];
-    assert_eq!(slot_at(px(290.), &arabic, true), 0);
-    assert_eq!(slot_at(px(160.), &arabic, true), 1);
-    assert_eq!(slot_at(px(10.), &arabic, true), 3);
-    assert_eq!(slot_at(px(10.), &[], false), 0);
+    let tabs = [tab(0.), tab(30.), tab(60.)];
+    assert_eq!(slot_at(px(4.), &tabs), 0);
+    assert_eq!(slot_at(px(20.), &tabs), 1, "past the first tab's middle");
+    assert_eq!(slot_at(px(50.), &tabs), 2);
+    assert_eq!(slot_at(px(80.), &tabs), 3, "below the last one's middle: at the end");
+    assert_eq!(slot_at(px(10.), &[]), 0);
 }
 
 #[test]
@@ -472,16 +479,21 @@ fn the_first_tab_of_this_pc_refuses_files(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_new_tab_button_follows_the_last_tab(cx: &mut TestAppContext) {
+fn the_new_tab_button_is_in_the_lists_header_over_the_tabs(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let (mut cx, _) = open(cx, false);
     act(&mut cx, |e, cx| e.new_tab(Some("C:\\a"), cx));
+    let first = bounds(&mut cx, "tab-1");
     let last = bounds(&mut cx, "tab-2");
     let plus = snapshot(&mut cx, "New tab").unwrap().2;
     assert!(
-        plus.origin.x >= last.origin.x + last.size.width && plus.origin.x - (last.origin.x + last.size.width) < px(40.),
-        "the + sits right after the last tab, not at the far end"
+        plus.origin.y + plus.size.height <= first.origin.y,
+        "the + is over the tabs, where it stays as they come and go"
     );
+    assert!(plus.origin.x > first.center().x, "at the header's end edge");
+    // The tabs are rows of the rail: as wide as each other, one under the other.
+    assert_eq!(first.size.width, last.size.width);
+    assert!(last.origin.y >= first.origin.y + first.size.height);
 }
 
 // ---- A tab pulled out of the window -----------------------------------------------------------------
@@ -593,7 +605,7 @@ fn a_tab_dropped_in_the_strip_only_moves(cx: &mut TestAppContext) {
     let spawned = record_windows(&mut cx, Ok(()));
     let first = bounds(&mut cx, "tab-1");
     let from = bounds(&mut cx, "tab-3").center();
-    let to = point(first.origin.x + px(4.), first.center().y);
+    let to = point(first.center().x, first.origin.y + px(4.));
     cx.update(|window, cx| window.drag(from, to, cx));
     settle(&mut cx);
     assert_eq!(order(&mut cx, 0), [3, 1, 2]);
