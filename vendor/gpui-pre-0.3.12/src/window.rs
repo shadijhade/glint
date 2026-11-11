@@ -1358,6 +1358,36 @@ impl FramePacer {
     }
 }
 
+/// Glint: whether `GLINT_FRAME_LOG` is set. With it, every drawn frame prints one line to stderr saying how
+/// long its layout, prepaint, paint, accessibility update and present took (see docs/gpui/VENDOR.md). Read
+/// once; costs one atomic load per frame when off.
+pub(crate) fn frame_log_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("GLINT_FRAME_LOG").is_some())
+}
+
+thread_local! {
+    /// Glint: the last frame's phases in milliseconds (layout, prepaint, paint, accessibility), for the frame log.
+    static FRAME_LOG_PHASES: Cell<[f32; 4]> = const { Cell::new([0.; 4]) };
+}
+
+/// Glint: prints the frame log's line for a frame that took `draw` to build and `present` to show.
+fn frame_log_line(started: std::time::Instant, draw: Duration, present: Duration) {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let at = started.duration_since(*START.get_or_init(|| started));
+    let [layout, prepaint, paint, a11y] = FRAME_LOG_PHASES.with(Cell::get);
+    eprintln!(
+        "frame at={:.1} draw={:.2} layout={:.2} prepaint={:.2} paint={:.2} a11y={:.2} present={:.2}",
+        at.as_secs_f64() * 1000.,
+        draw.as_secs_f64() * 1000.,
+        layout,
+        prepaint,
+        paint,
+        a11y,
+        present.as_secs_f64() * 1000.,
+    );
+}
+
 fn minimum_frame_interval(
     should_throttle: bool,
     inactive_without_high_rate_input: bool,
@@ -2039,8 +2069,14 @@ impl Window {
                                     // atlas tile references after a GPU device recovery.
                                     window.refresh();
                                 }
+                                // Glint: the frame log (off unless GLINT_FRAME_LOG is set).
+                                let log_start = frame_log_enabled().then(std::time::Instant::now);
                                 let arena_clear_needed = window.draw(cx);
+                                let drawn = log_start.map(|start| start.elapsed());
                                 window.present();
+                                if let (Some(start), Some(drawn)) = (log_start, drawn) {
+                                    frame_log_line(start, drawn, start.elapsed().saturating_sub(drawn));
+                                }
                                 arena_clear_needed.clear(cx);
                             })
                             .with_context(|| {
@@ -2241,13 +2277,19 @@ impl Window {
         platform_window.on_input({
             let mut cx = cx.to_async();
             Box::new(move |event| {
-                handle
+                // Glint: the frame log also says how long each input took to handle.
+                let logged = frame_log_enabled().then(|| (event.kind_name(), std::time::Instant::now()));
+                let result = handle
                     .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
                     .with_context(|| {
                         format!("dispatching input for window {:?}", handle.window_id())
                     })
                     .log_err()
-                    .unwrap_or(DispatchEventResult::default())
+                    .unwrap_or(DispatchEventResult::default());
+                if let Some((kind, start)) = logged {
+                    eprintln!("input kind={kind} ms={:.3}", start.elapsed().as_secs_f64() * 1000.);
+                }
+                result
             })
         });
         platform_window.on_hit_test_window_control({
@@ -3934,10 +3976,13 @@ impl Window {
         let scale_factor = self.scale_factor();
         #[cfg(feature = "profiler")]
         let request_layout_start = Instant::now();
+        // Glint: the frame log's phase marks (None unless GLINT_FRAME_LOG is set).
+        let log_layout_start = frame_log_enabled().then(std::time::Instant::now);
         let mut root_element = self.root.as_ref().unwrap().clone().into_any_element();
         let root_layout_id = root_element.request_layout(self, cx);
         #[cfg(feature = "profiler")]
         let prepaint_start = Instant::now();
+        let log_prepaint_start = log_layout_start.map(|_| std::time::Instant::now());
         self.layout_engine
             .as_mut()
             .unwrap()
@@ -3977,6 +4022,7 @@ impl Window {
         // Now actually paint the elements.
         #[cfg(feature = "profiler")]
         let paint_start = Instant::now();
+        let log_paint_start = log_layout_start.map(|_| std::time::Instant::now());
         self.invalidator.set_phase(DrawPhase::Paint);
         root_element.paint(self, cx);
 
@@ -4004,6 +4050,8 @@ impl Window {
                 paint: Instant::now().duration_since(paint_start),
             });
 
+        let log_paint_end = log_layout_start.map(|_| std::time::Instant::now());
+
         // a11y may have been activated/deactivated halfway through the frame
         let a11y_active_start_of_frame = self.a11y.is_active();
         self.a11y.sync_active_flag();
@@ -4029,6 +4077,21 @@ impl Window {
                 );
                 self.platform_window.a11y_tree_update(tree_update);
             }
+        }
+
+        // Glint: the frame log's phases, read by `frame_log_line` once the frame is presented.
+        if let (Some(layout), Some(prepaint), Some(paint), Some(end)) =
+            (log_layout_start, log_prepaint_start, log_paint_start, log_paint_end)
+        {
+            let ms = |from: std::time::Instant, to: std::time::Instant| to.duration_since(from).as_secs_f32() * 1000.;
+            FRAME_LOG_PHASES.with(|phases| {
+                phases.set([
+                    ms(layout, prepaint),
+                    ms(prepaint, paint),
+                    ms(paint, end),
+                    end.elapsed().as_secs_f32() * 1000.,
+                ])
+            });
         }
     }
 

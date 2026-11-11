@@ -1335,7 +1335,7 @@ impl Render for CommandBar {
             .flex_none()
             .w_full()
             .h(space(HEIGHT))
-            .bg(theme::chrome_fill(cx))
+            // On the sheet, with the files: no fill of its own (it would square off the sheet's corner).
             .border_b_1()
             .border_color(t.border)
             .child(row)

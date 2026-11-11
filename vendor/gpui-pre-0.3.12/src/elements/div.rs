@@ -26,6 +26,8 @@ use crate::{
     PinchEvent, Pixels, Point, Render, ScrollEvent, SharedString, Size, Style, StyleRefinement,
     Styled, Task, TooltipId, TouchPhase, Visibility, Window, WindowControlArea, point, px, size,
 };
+// Glint: the hover fade's types.
+use crate::{Fill, Hsla};
 use collections::HashMap;
 use gpui_util::ResultExt;
 use refineable::Refineable;
@@ -3394,11 +3396,13 @@ impl Interactivity {
             let overflow = style.overflow;
             let allow_concurrent_scroll = style.allow_concurrent_scroll;
             let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
-            let line_height = window.line_height();
+            // Glint: a wheel's line is a third of 100 px, not the window's text line (see `wheel_glide`).
+            let line_height = crate::wheel_glide::line_height(window);
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
             window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
+                    let shared_scroll_offset = &scroll_offset;
                     let mut scroll_offset = scroll_offset.borrow_mut();
                     let old_scroll_offset = *scroll_offset;
                     let mut delta = event.delta.pixel_delta(line_height);
@@ -3437,6 +3441,18 @@ impl Interactivity {
                             delta_x = Pixels::ZERO;
                         }
                     }
+                    // Glint: a notch of a mouse wheel glides to its place over the next frames.
+                    if crate::wheel_glide::wants(&event.delta, cx) {
+                        drop(scroll_offset);
+                        crate::wheel_glide::push(
+                            shared_scroll_offset,
+                            point(delta_x, delta_y),
+                            current_view,
+                            window,
+                            cx,
+                        );
+                        return;
+                    }
                     scroll_offset.y += delta_y;
                     scroll_offset.x += delta_x;
                     if *scroll_offset != old_scroll_offset {
@@ -3467,12 +3483,16 @@ impl Interactivity {
     fn compute_style_internal(
         &self,
         hitbox: Option<&Hitbox>,
-        element_state: Option<&mut InteractiveElementState>,
+        mut element_state: Option<&mut InteractiveElementState>,
         window: &mut Window,
         cx: &mut App,
     ) -> Style {
         let mut style = Style::default();
         style.refine(&self.base_style);
+        // Glint: hover styles fade while painting (the one phase that knows what the pointer is over now).
+        let hover_fade = HOVER_FADE
+            .with(Cell::get)
+            .filter(|_| hitbox.is_some() && !cx.reduce_motion());
 
         if let Some(focus_handle) = self.tracked_focus_handle.as_ref() {
             if let Some(in_focus_style) = self.in_focus_style.as_ref()
@@ -3511,8 +3531,17 @@ impl Interactivity {
                         false
                     };
 
-                if is_group_hovered {
-                    style.refine(&group_hover.style);
+                match (hover_fade, element_state.as_deref_mut()) {
+                    (Some(fade), Some(state)) => {
+                        let (amount, moving) =
+                            HoverFade::sample(&mut state.group_hover_fade, is_group_hovered, fade);
+                        refine_by(&mut style, &group_hover.style, amount, is_group_hovered, window);
+                        if moving {
+                            window.request_animation_frame();
+                        }
+                    }
+                    _ if is_group_hovered => style.refine(&group_hover.style),
+                    _ => {}
                 }
             }
 
@@ -3530,8 +3559,33 @@ impl Interactivity {
                     false
                 };
 
-                if is_hovered {
-                    style.refine(hover_style);
+                match (hover_fade, element_state.as_deref_mut()) {
+                    (Some(fade), Some(state)) => {
+                        let (amount, moving) =
+                            HoverFade::sample(&mut state.hover_fade, is_hovered, fade);
+                        refine_by(&mut style, hover_style, amount, is_hovered, window);
+                        if moving {
+                            window.request_animation_frame();
+                        }
+                    }
+                    _ if is_hovered => style.refine(hover_style),
+                    _ => {}
+                }
+            }
+        } else if let (Some(fade), Some(state)) = (hover_fade, element_state.as_deref_mut()) {
+            // A drag is on: hover styles are off, and fade out like any other leave.
+            if let Some(group_hover) = self.group_hover_style.as_ref() {
+                let (amount, moving) = HoverFade::sample(&mut state.group_hover_fade, false, fade);
+                refine_by(&mut style, &group_hover.style, amount, false, window);
+                if moving {
+                    window.request_animation_frame();
+                }
+            }
+            if let Some(hover_style) = self.hover_style.as_ref() {
+                let (amount, moving) = HoverFade::sample(&mut state.hover_fade, false, fade);
+                refine_by(&mut style, hover_style, amount, false, window);
+                if moving {
+                    window.request_animation_frame();
                 }
             }
         }
@@ -3685,6 +3739,167 @@ pub struct InteractiveElementState {
     ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
     long_press_tooltip_active: Option<Rc<Cell<bool>>>,
+    /// Glint: where the hover style's fade is (see [`set_hover_fade`]), and the group hover style's.
+    hover_fade: Option<HoverFade>,
+    group_hover_fade: Option<HoverFade>,
+}
+
+thread_local! {
+    /// Glint: how long hover styles take to fade in and out; None (GPUI's own behavior) switches them at once.
+    static HOVER_FADE: Cell<Option<(Duration, Duration)>> = const { Cell::new(None) };
+}
+
+/// Glint: makes hover styles (`.hover(..)`, `.group_hover(..)`) of elements that have an id fade in over `fade.0`
+/// and out over `fade.1` instead of switching in one frame: the colors of the background, the border and the
+/// text, and the opacity, are blended; everything else in the style still switches at once. `None` turns it
+/// off, and it is off while the app asks for reduced motion. Elements without an id keep no state between
+/// frames, so theirs switch at once as before.
+pub fn set_hover_fade(fade: Option<(Duration, Duration)>) {
+    HOVER_FADE.with(|cell| cell.set(fade));
+}
+
+/// Glint: one hover style's fade: which way it is going and how far along it was when that began.
+#[derive(Clone, Copy)]
+struct HoverFade {
+    hovered: bool,
+    /// Progress (0 to 1, before easing) when `hovered` last changed.
+    from: f32,
+    since: std::time::Instant,
+}
+
+impl HoverFade {
+    /// Fades toward `hovered` and returns how much of the hover style shows now (0 to 1), and whether it is
+    /// still moving. The first sight of an element adopts its state at once: nothing fades in on a first draw.
+    fn sample(
+        slot: &mut Option<HoverFade>,
+        hovered: bool,
+        (fade_in, fade_out): (Duration, Duration),
+    ) -> (f32, bool) {
+        let now = std::time::Instant::now();
+        let fade = slot.get_or_insert(HoverFade {
+            hovered,
+            from: if hovered { 1. } else { 0. },
+            since: now,
+        });
+        let elapsed = now.duration_since(fade.since).as_secs_f32();
+        let mut progress = if fade.hovered {
+            (fade.from + elapsed / fade_in.as_secs_f32().max(0.001)).min(1.)
+        } else {
+            (fade.from - elapsed / fade_out.as_secs_f32().max(0.001)).max(0.)
+        };
+        if fade.hovered != hovered {
+            // Turned round mid-fade: carry on from what is shown, on the other curve.
+            let shown = Self::eased(fade.hovered, progress);
+            progress = if hovered {
+                1. - (1. - shown).max(0.).sqrt()
+            } else {
+                shown.max(0.).sqrt()
+            };
+            *fade = HoverFade {
+                hovered,
+                from: progress,
+                since: now,
+            };
+        }
+        let moving = if hovered {
+            progress < 1.
+        } else {
+            progress > 0.
+        };
+        (Self::eased(hovered, progress), moving)
+    }
+
+    /// Quick at first and settling, both ways.
+    fn eased(hovered: bool, progress: f32) -> f32 {
+        if hovered {
+            1. - (1. - progress) * (1. - progress)
+        } else {
+            progress * progress
+        }
+    }
+}
+
+/// Glint: `from` to `to` by `t`, mixed with the alpha weighed in, so a fade from nothing to a color never passes
+/// through gray.
+fn mix_colors(from: Hsla, to: Hsla, t: f32) -> Hsla {
+    let (a, b) = (crate::Rgba::from(from), crate::Rgba::from(to));
+    let alpha = a.a + (b.a - a.a) * t;
+    if alpha <= 0.0005 {
+        return Hsla { a: 0., ..to };
+    }
+    let channel = |x: f32, y: f32| ((x * a.a) + (y * b.a - x * a.a) * t) / alpha;
+    Hsla::from(crate::Rgba {
+        r: channel(a.r, b.r),
+        g: channel(a.g, b.g),
+        b: channel(a.b, b.b),
+        a: alpha,
+    })
+}
+
+/// Glint: `style` with `hover` refined into it by `amount` (0 to 1): colors and opacity blended, the rest of the
+/// hover style taken whole once the pointer is over the element (`hovered`).
+fn refine_by(
+    style: &mut Style,
+    hover: &StyleRefinement,
+    amount: f32,
+    hovered: bool,
+    window: &Window,
+) {
+    if amount >= 1. {
+        style.refine(hover);
+        return;
+    }
+    if amount <= 0. && !hovered {
+        return;
+    }
+    let rest = style.clone();
+    let mut full = style.clone();
+    full.refine(hover);
+    if hovered {
+        *style = full.clone();
+    }
+    let solid = |fill: &Option<Fill>| match fill {
+        Some(Fill::Color(background)) if background.tag == crate::BackgroundTag::Solid => {
+            Some(background.solid)
+        }
+        _ => None,
+    };
+    if rest.background != full.background {
+        let (from_solid, to_solid) = (solid(&rest.background), solid(&full.background));
+        let blended = match (&rest.background, &full.background) {
+            (None, _) => to_solid.map(|to| mix_colors(Hsla { a: 0., ..to }, to, amount)),
+            (_, None) => from_solid.map(|from| mix_colors(from, Hsla { a: 0., ..from }, amount)),
+            _ => from_solid
+                .zip(to_solid)
+                .map(|(from, to)| mix_colors(from, to, amount)),
+        };
+        if let Some(color) = blended {
+            style.background = Some(Fill::Color(color.into()));
+        }
+    }
+    if rest.border_color != full.border_color {
+        let none = Hsla::transparent_black();
+        let (from, to) = (rest.border_color, full.border_color);
+        let from_color = from.unwrap_or(Hsla {
+            a: 0.,
+            ..to.unwrap_or(none)
+        });
+        let to_color = to.unwrap_or(Hsla {
+            a: 0.,
+            ..from.unwrap_or(none)
+        });
+        style.border_color = Some(mix_colors(from_color, to_color, amount));
+    }
+    if rest.text.color != full.text.color {
+        let inherited = window.text_style().color;
+        let from = rest.text.color.unwrap_or(inherited);
+        let to = full.text.color.unwrap_or(inherited);
+        style.text.color = Some(mix_colors(from, to, amount));
+    }
+    if rest.opacity != full.opacity {
+        let (from, to) = (rest.opacity.unwrap_or(1.), full.opacity.unwrap_or(1.));
+        style.opacity = Some(from + (to - from) * amount);
+    }
 }
 
 /// Whether or not the element or a group that contains it is clicked by the mouse.

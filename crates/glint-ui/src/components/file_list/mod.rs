@@ -311,6 +311,10 @@ pub struct FileList {
     frame: Rc<Frame>,
     /// The width the list was last laid out at, measured by the canvas under it.
     width: Rc<Cell<f32>>,
+    /// The folder or search whose rows were drawn last (`TabView::facts_key`), and how many times that has
+    /// changed: each new one's rows arrive with a short rise (see `render`).
+    entered_for: Option<String>,
+    entered: usize,
     resizing: Option<Resize>,
     rename: Option<RenameBox>,
     typeahead: TypeAhead,
@@ -442,6 +446,8 @@ impl FileList {
                 scale: 1.,
             }),
             width: Rc::new(Cell::new(0.)),
+            entered_for: None,
+            entered: 0,
             resizing: None,
             rename: None,
             typeahead: TypeAhead::default(),
@@ -1157,6 +1163,14 @@ impl Render for FileList {
             return root.track_focus(&self.focus).into_any_element();
         };
         self.sync(&view, window, cx);
+        // Another folder (or search) than the one drawn last: its rows arrive. The tab's path changes only when the
+        // new listing is in, so this is the frame the rows change; a re-read of the same folder is not an arrival.
+        if self.entered_for.as_deref() != Some(view.facts_key.as_str()) {
+            if self.entered_for.is_some() {
+                self.entered += 1;
+            }
+            self.entered_for = Some(view.facts_key.clone());
+        }
 
         // What this frame's lines are drawn from.
         let tracks = self.tracks(&view, window, cx);
@@ -1241,6 +1255,12 @@ impl Render for FileList {
         let list = uniform_list("file-list-lines", lines, cx.processor(Self::render_lines))
             .track_scroll(&self.scroll)
             .size_full();
+        // A folder's rows arrive: readable from the first frame, settling upward the last few pixels.
+        let list = div().size_full().child(list).with_animation(
+            ("file-list-enter", self.entered),
+            Animation::new(theme::motion::BASE).with_easing(theme::motion::enter),
+            |rows, delta| rows.opacity(0.35 + 0.65 * delta).top(px(10. * (1. - delta))),
+        );
         let area = div()
             .id("file-list-area")
             .relative()
@@ -1270,8 +1290,7 @@ impl Render for FileList {
                         .top_0()
                         .left_0()
                         .right_0()
-                        .h(space(0.5))
-                        .bg(t.primary)
+                        .child(loading_sweep("file-list-progress-sweep", cx))
                         .test_support(),
                 )
             })

@@ -58,6 +58,8 @@ mod taffy;
 mod text_system;
 mod util;
 mod view;
+// Glint: wheel notches glide (see the module).
+mod wheel_glide;
 mod window;
 
 #[cfg(feature = "profiler")]
@@ -148,6 +150,8 @@ pub use taffy::{AvailableSpace, LayoutId};
 pub use text_system::*;
 pub use util::{FutureExt, Timeout};
 pub use view::*;
+// Glint: the wheel's glide, for elements that scroll themselves.
+pub use wheel_glide::{wheel_glide_advance, wheel_notch_glides};
 pub use window::*;
 
 #[cfg(not(target_family = "wasm"))]

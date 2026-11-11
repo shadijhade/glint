@@ -980,7 +980,7 @@ impl DataTree {
             .font_family(mono.clone())
             .text_size(rems(0.8125))
             .when(selected, |this| this.bg(t.accent))
-            .when(!selected, |this| this.hover(|this| this.bg(t.accent.opacity(0.6))))
+            .when(!selected, |this| this.hover(|this| this.bg(t.accent)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {

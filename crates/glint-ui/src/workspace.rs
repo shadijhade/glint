@@ -62,6 +62,8 @@ pub const MAIN: &str = "main";
 /// The sidebar's width: what it starts at, and how far it can be dragged.
 const SIDEBAR: Range<Pixels> = px(160.)..px(420.);
 const SIDEBAR_START: Pixels = px(240.);
+/// The title bar's height: room for the tabs' pills with air above and below.
+const TITLE_BAR_HEIGHT: Pixels = px(40.);
 
 /// What a pane can show: one of each, kept for the window's life so each keeps its scroll and its state.
 struct PaneViews {
@@ -120,6 +122,10 @@ pub struct Workspace {
     sharing: Option<Entity<dialogs::share::Sharing>>,
     /// The command bar above the panes.
     command_bar: Entity<CommandBar>,
+    /// The sidebar's width, as dragged (within [`SIDEBAR`]); it starts at [`SIDEBAR_START`].
+    sidebar_width: Pixels,
+    /// While the sidebar's edge is held: where the pointer was pressed and the width then.
+    sidebar_drag: Option<(Pixels, Pixels)>,
     /// The terminal pane under the panes (Ctrl+`), drawn only while it is open.
     terminal: Entity<TerminalPane>,
     /// Whether the bar was last told folder sizes are being measured.
@@ -259,6 +265,13 @@ impl Workspace {
                 }
             }));
         }
+        // Back in front: Windows' "Animation effects" switch is read again (someone who turns it off in Settings
+        // comes back to a Glint that has stopped moving).
+        subscriptions.push(cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                theme::motion::sync_with_windows(cx);
+            }
+        }));
         // The explorer decides what each pane shows; the keyboard follows the active pane when it moves.
         let explorer = explorer::explorer(cx);
         subscriptions.push(cx.observe_in(&explorer, window, |this, _, window, cx| this.follow_panes(window, cx)));
@@ -321,6 +334,8 @@ impl Workspace {
             text_mode: false,
             sharing,
             command_bar,
+            sidebar_width: SIDEBAR_START,
+            sidebar_drag: None,
             terminal,
             sizing: false,
             tools: None,
@@ -601,8 +616,8 @@ impl Workspace {
             .flex_none()
             .gap(px(2.))
             .p(px(2.))
-            .rounded_md()
-            .bg(t.foreground.opacity(0.05))
+            .rounded(theme::size::RADIUS_LG)
+            .bg(t.accent)
             .child(
                 Button::new("mode-files")
                     .ghost()
@@ -1457,18 +1472,45 @@ impl Workspace {
 
     // ---- The window's parts -----------------------------------------------------------------------------------
 
+    /// The title bar: the kit's (the window's buttons, the snap layouts, the drag area), taller for the tabs and
+    /// with no fill or rule of its own: it is chrome like the toolbar under it.
+    fn title_bar() -> TitleBar {
+        TitleBar::new()
+            .h(TITLE_BAR_HEIGHT)
+            .bg(gpui_kit::transparent_black())
+            .border_b_0()
+    }
+
+    /// Glint's mark (the folder with the glint on its corner), for the start of the title bar: the installer's
+    /// logo, drawn small. Made once.
+    fn mark() -> impl IntoElement {
+        thread_local! {
+            static MARK: std::sync::Arc<Image> = {
+                // The drawing is 1024 units square; asked for at 40 px it is sharp at 20 px on any screen.
+                let svg = include_str!("../../glint/installer/logo.svg")
+                    .replacen("width=\"1024\" height=\"1024\"", "width=\"40\" height=\"40\"", 1);
+                std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()))
+            };
+        }
+        div()
+            .id("glint-mark")
+            .role(Role::Image)
+            .aria_label("Glint")
+            .flex_none()
+            .me(2.)
+            .child(img(MARK.with(Clone::clone)).size(px(20.)).flex_none())
+    }
+
     fn toolbar(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         row_start()
             .id("toolbar")
             .role(Role::Toolbar)
             .aria_label(t!("Navigation"))
             .test_support()
-            .gap(space(1.))
+            .gap(space(1.5))
             .px(space(2.))
-            .py(space(1.5))
-            .bg(theme::chrome_fill(cx))
-            .border_b_1()
-            .border_color(t.border)
+            .pt(space(0.5))
+            .pb(space(2.))
             .child(self.mode_switch(t, cx))
             // Text mode has its own search bar below; the files' address bar steps aside.
             .child(
@@ -1586,21 +1628,14 @@ impl Workspace {
     }
 
     fn body(&self, t: &theme::Tokens, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar = resizable_panel().size(SIDEBAR_START).size_range(SIDEBAR).fixed().child(
-            div()
-                .id("sidebar")
-                .test_support()
-                .size_full()
-                .bg(theme::chrome_fill(cx))
-                .child(self.sidebar.clone()),
-        );
+        let rtl = crate::i18n::is_rtl();
         let dual = explorer::explorer(cx).read(cx).is_dual();
         let files = if dual {
             // The first pane at the start edge, the second beside it, the divider between them draggable.
             let first = resizable_panel().child(self.pane(0, t, cx));
             let second = resizable_panel().child(self.pane(1, t, cx));
             let group = h_resizable("panes");
-            let group = if crate::i18n::is_rtl() {
+            let group = if rtl {
                 group.child(second).child(first)
             } else {
                 group.child(first).child(second)
@@ -1623,21 +1658,21 @@ impl Workspace {
                 // Where the web app put it: at the end edge, its width kept in the settings: a drag of its handle
                 // saves the new width back to `preview_width`.
                 let rem = f32::from(theme::rem_size(cx));
-                let container = (f32::from(window_width(cx)) - f32::from(SIDEBAR_START)).max(0.);
+                let container = (f32::from(window_width(cx)) - f32::from(self.sidebar_width)).max(0.);
                 let width = preview::pane_width(state::settings(cx).preview_width, container, rem, false);
                 let shown = resizable_panel().child(files);
                 let side = resizable_panel()
                     .size(px(width))
                     .child(div().id("preview-pane").size_full().child(pane.clone()));
                 // The preview is the last panel from the start, or the first when the window is mirrored.
-                let side_index = if crate::i18n::is_rtl() { 0 } else { 1 };
+                let side_index = if rtl { 0 } else { 1 };
                 let group = h_resizable("files-preview").on_resize(move |sizes, _, cx| {
                     if let Some(width) = sizes.read(cx).sizes().get(side_index) {
                         let saved = dragged_preview_width(f32::from(*width));
                         state::update(cx, |settings| settings.preview_width = Some(saved));
                     }
                 });
-                let group = if crate::i18n::is_rtl() {
+                let group = if rtl {
                     group.child(side).child(shown)
                 } else {
                     group.child(shown).child(side)
@@ -1645,22 +1680,106 @@ impl Workspace {
                 div().size_full().child(group).into_any_element()
             }
         };
-        let content = resizable_panel().child(
-            div()
-                .id("content")
-                .role(Role::Main)
-                .test_support()
-                .size_full()
-                .bg(t.background)
-                .child(files),
-        );
-        // The sidebar sits at the start edge: left in English, right in Arabic.
-        let group = h_resizable("body");
-        if crate::i18n::is_rtl() {
-            group.child(content).child(sidebar)
-        } else {
-            group.child(sidebar).child(content)
-        }
+        // The sidebar on the chrome, at the start edge: left in English, right in Arabic.
+        let sidebar = div()
+            .id("sidebar")
+            .test_support()
+            .flex_none()
+            .h_full()
+            .w(self.sidebar_width)
+            .child(self.sidebar.clone());
+        // The sheet: the files (and the status bar under them) on their own surface, a step forward of the
+        // chrome, with a hairline and a rounded corner where it meets the toolbar and the sidebar.
+        let sheet = div()
+            .id("content")
+            .role(Role::Main)
+            .test_support()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(t.background)
+            .border_color(t.stroke)
+            .border_t_1()
+            .map(|sheet| {
+                if rtl {
+                    sheet.border_r_1().rounded_tr(theme::size::RADIUS_SHEET)
+                } else {
+                    sheet.border_l_1().rounded_tl(theme::size::RADIUS_SHEET)
+                }
+            })
+            .overflow_hidden()
+            .child(
+                col()
+                    .size_full()
+                    .child(div().flex_1().min_h_0().child(files))
+                    .child(self.status.clone()),
+            );
+        // The sidebar's edge: a strip over the seam that drags its width (a double-click puts it back).
+        let grip = px(8.);
+        let at = self.sidebar_width - grip / 2.;
+        let handle = div()
+            .id("sidebar-resize")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(grip)
+            .map(|handle| if rtl { handle.right(at) } else { handle.left(at) })
+            .cursor_col_resize()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    window.prevent_default();
+                    if event.click_count >= 2 {
+                        this.sidebar_width = SIDEBAR_START;
+                        this.sidebar_drag = None;
+                    } else {
+                        this.sidebar_drag = Some((event.position.x, this.sidebar_width));
+                    }
+                    cx.notify();
+                }),
+            );
+        row_start()
+            .relative()
+            .size_full()
+            .child(sidebar)
+            .child(sheet)
+            .child(handle)
+            // While the edge is held, a layer over the window takes the pointer: the drag follows it wherever it
+            // goes and ends when the button is let go.
+            .when(self.sidebar_drag.is_some(), |body| {
+                body.child(
+                    div()
+                        .id("sidebar-resizing")
+                        .absolute()
+                        .inset_0()
+                        .cursor_col_resize()
+                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                            if let Some((from, width)) = this.sidebar_drag {
+                                let moved = event.position.x - from;
+                                let wanted = if rtl { width - moved } else { width + moved };
+                                let next = wanted.clamp(SIDEBAR.start, SIDEBAR.end);
+                                if next != this.sidebar_width {
+                                    this.sidebar_width = next;
+                                    cx.notify();
+                                }
+                            }
+                        }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                this.sidebar_drag = None;
+                                cx.notify();
+                            }),
+                        )
+                        .on_mouse_up_out(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                this.sidebar_drag = None;
+                                cx.notify();
+                            }),
+                        ),
+                )
+            })
     }
 }
 
@@ -1690,12 +1809,8 @@ struct ArchivePropertiesToast;
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
-        // Over Mica the window itself is the backdrop; otherwise it is the page color.
-        let fill = if theme::backdrop_on(cx) {
-            hsla(0., 0., 0., 0.)
-        } else {
-            t.background
-        };
+        // The window is chrome all over (over Mica, the material with a veil); the sheet lies on it.
+        let fill = theme::window_fill(cx);
         // Pixels in a rem follow the text-size setting; rem-based sizes (the type scale, `space`) scale with it.
         let rem = theme::rem_size(cx);
         if window.rem_size() != rem {
@@ -1740,9 +1855,17 @@ impl Render for Workspace {
             // files' keys (Delete, Ctrl+C...) aren't heard, so nothing happens to files that aren't on screen.
             let text = self.text.clone();
             return root
-                .child(TitleBar::new())
+                .child(Self::title_bar().child(Self::mark()))
                 .child(self.toolbar(&t, cx))
-                .child(div().flex_1().min_h_0().children(text))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .bg(t.background)
+                        .border_t_1()
+                        .border_color(t.stroke)
+                        .children(text),
+                )
                 .child(self.menus.clone());
         }
         root
@@ -1874,10 +1997,14 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|_, _: &actions::QuickLook, window, cx| preview::quick_look::toggle(window, cx)))
             .on_action(cx.listener(|_, _: &actions::TogglePreview, _, cx| preview::toggle_pane(cx)))
-            .child(TitleBar::new().child(self.tabs.clone()))
+            // The mark at the start edge: before the tabs in English, after them in Arabic.
+            .child(if crate::i18n::is_rtl() {
+                Self::title_bar().child(self.tabs.clone()).child(Self::mark())
+            } else {
+                Self::title_bar().child(Self::mark()).child(self.tabs.clone())
+            })
             .child(self.toolbar(&t, cx))
             .child(div().flex_1().min_h_0().child(self.body(&t, cx)))
-            .child(self.status.clone())
             // Over everything: the copy queue, then any open menu above it.
             .child(self.queue.clone())
             .child(self.menus.clone())
@@ -2283,6 +2410,54 @@ mod tests {
         // Named in the interface's language.
         assert_eq!(role_of(&mut visual, &t!("Files")), Some(Role::ListBox));
         assert_eq!(role_of(&mut visual, &t!("Places")), Some(Role::Navigation));
+        testing::set_rtl(false);
+    }
+
+    #[gpui_kit::test]
+    fn the_sidebars_edge_drags_its_width_within_its_limits_and_the_sheet_takes_the_rest(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = open(cx, false);
+        let sidebar = bounds_of(&mut visual, "sidebar");
+        assert_eq!(sidebar.size.width, SIDEBAR_START);
+        // The sheet starts where the sidebar ends: nothing between them.
+        assert_eq!(bounds_of(&mut visual, "content").left(), sidebar.right());
+        let edge = point(sidebar.right(), sidebar.center().y);
+        visual.update(|window, cx| {
+            window.pointer_down(edge, MouseButton::Left, cx);
+            window.pointer_move(point(edge.x + px(60.), edge.y), Some(MouseButton::Left), cx);
+        });
+        let dragged = bounds_of(&mut visual, "sidebar");
+        assert_eq!(dragged.size.width, SIDEBAR_START + px(60.));
+        assert_eq!(bounds_of(&mut visual, "content").left(), dragged.right());
+        // Never past its limits, however far the pointer goes (to the far side of the files here); letting go ends
+        // the drag.
+        let far = point(bounds_of(&mut visual, "content").right() - px(10.), edge.y);
+        assert!(
+            far.x - edge.x > SIDEBAR.end - SIDEBAR_START,
+            "the test window is too narrow to tell"
+        );
+        visual.update(|window, cx| {
+            window.pointer_move(far, Some(MouseButton::Left), cx);
+            window.pointer_up(far, MouseButton::Left, cx);
+            window.pointer_move(point(px(20.), edge.y), None, cx);
+        });
+        assert_eq!(bounds_of(&mut visual, "sidebar").size.width, SIDEBAR.end);
+    }
+
+    #[gpui_kit::test]
+    fn in_arabic_the_sidebars_edge_is_its_left_one(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let mut visual = open(cx, true);
+        let sidebar = bounds_of(&mut visual, "sidebar");
+        // The sheet ends where the sidebar starts.
+        assert_eq!(bounds_of(&mut visual, "content").right(), sidebar.left());
+        let edge = point(sidebar.left(), sidebar.center().y);
+        visual.update(|window, cx| {
+            window.pointer_down(edge, MouseButton::Left, cx);
+            window.pointer_move(point(edge.x - px(40.), edge.y), Some(MouseButton::Left), cx);
+            window.pointer_up(point(edge.x - px(40.), edge.y), MouseButton::Left, cx);
+        });
+        assert_eq!(bounds_of(&mut visual, "sidebar").size.width, SIDEBAR_START + px(40.));
         testing::set_rtl(false);
     }
 
