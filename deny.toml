@@ -12,6 +12,19 @@ targets = ["x86_64-pc-windows-msvc"]
 [advisories]
 # Unmaintained crates are reported for Glint's own dependencies, not for what those pull in.
 unmaintained = "workspace"
+# Advisories with no fixed version Glint can reach yet (the maintainer's decision for v0.10.0, 2026-11-11). Take
+# each out once the crate that pins the old version ships a fix.
+ignore = [
+    # crypto-bigint 0.5.5: timing variability in operations meant to be constant-time. It comes only through
+    # age 0.12's P-256 support (elliptic-curve 0.13 needs crypto-bigint 0.5; the fix is 0.7.6). Using it means
+    # timing Encrypt and Decrypt on the same PC, with a P-256 recipient.
+    { id = "RUSTSEC-2026-0387", reason = "only through age 0.12's P-256 path; no age release with elliptic-curve 0.14 yet" },
+    # quick-xml 0.38: quadratic time on duplicate attribute names, and unbounded namespace declarations, both on
+    # crafted XML. It comes only through Typst's citationberg (^0.38), which parses citation styles in Typst
+    # documents shown in the preview: a crafted file can make that preview slow or memory-hungry, nothing more.
+    { id = "RUSTSEC-2026-0194", reason = "only through Typst's citationberg 0.7 (quick-xml ^0.38); denial of service on crafted citation styles" },
+    { id = "RUSTSEC-2026-0195", reason = "only through Typst's citationberg 0.7 (quick-xml ^0.38); denial of service on crafted citation styles" },
+]
 
 [licenses]
 # A crate under several licenses (MIT OR Apache-2.0) needs one of them here.
