@@ -625,13 +625,14 @@ impl Render for EntryView {
 
         let name = entry.name.clone();
         let path: SharedString = entry.path.clone().into();
-        let header = row_start()
+        // In the pane at the side there is rarely room for the name, the views and the buttons in one line (the
+        // name was the one to give way, down to nothing): the views get a line of their own under the name.
+        // Quick Look is wide: one line.
+        let stacked = self.place != Place::QuickLook && show.is_some();
+        let (beside, below) = if stacked { (None, show) } else { (show, None) };
+        let header = col()
             .id(format!("{prefix}-header"))
             .flex_none()
-            .h(space(10.))
-            .gap(space(2.))
-            .ps(3.)
-            .pe(1.5)
             .border_b_1()
             .border_color(t.border)
             .on_click(cx.listener(|_, event: &gpui_kit::ClickEvent, _, cx| {
@@ -640,32 +641,40 @@ impl Render for EntryView {
                 }
             }))
             .child(
-                div()
-                    .id(format!("{prefix}-name"))
-                    .role(Role::Heading)
-                    .aria_label(name.clone())
-                    .test_support()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(theme::size::SM)
-                    .font_weight(FontWeight::MEDIUM)
-                    .tooltip(move |window, cx| tooltip(path.clone(), window, cx))
-                    .child(isolate(name)),
-            )
-            .child(div().flex_1())
-            .children(show)
-            .child(
                 row_start()
-                    .flex_none()
-                    .gap(space(0.5))
-                    .children(compare)
-                    .children(x_ray)
-                    .children(restore)
-                    .children(reveal)
-                    .children(open)
-                    .children(maximize)
-                    .children(close),
-            );
+                    .h(space(10.))
+                    .gap(space(2.))
+                    .ps(3.)
+                    .pe(1.5)
+                    .child(
+                        div()
+                            .id(format!("{prefix}-name"))
+                            .role(Role::Heading)
+                            .aria_label(name.clone())
+                            .test_support()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(theme::size::SM)
+                            .font_weight(FontWeight::MEDIUM)
+                            .tooltip(move |window, cx| tooltip(path.clone(), window, cx))
+                            .child(isolate(name)),
+                    )
+                    .child(div().flex_1())
+                    .children(beside)
+                    .child(
+                        row_start()
+                            .flex_none()
+                            .gap(space(0.5))
+                            .children(compare)
+                            .children(x_ray)
+                            .children(restore)
+                            .children(reveal)
+                            .children(open)
+                            .children(maximize)
+                            .children(close),
+                    ),
+            )
+            .children(below.map(|views| row_start().pe(3.).ps(1.).pb(space(2.)).child(views)));
 
         let body = self
             .body

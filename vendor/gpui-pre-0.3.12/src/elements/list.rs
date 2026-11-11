@@ -551,6 +551,28 @@ impl ListState {
         self.0.borrow().logical_scroll_top()
     }
 
+    /// Glint: what tells this list's state from another's, for the wheel's glide (`crate::wheel_glide`).
+    pub(crate) fn glide_key(&self) -> usize {
+        Rc::as_ptr(&self.0) as *const () as usize
+    }
+
+    /// Glint: one step of the wheel's glide: scrolls by `step` (as a wheel delta: positive shows what is above)
+    /// from where the list is now, in a list `height` tall. Returns whether it moved (false at an end).
+    pub(crate) fn glide_step(
+        &self,
+        height: Pixels,
+        step: Pixels,
+        view: EntityId,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let before = self.logical_scroll_top();
+        self.0
+            .borrow_mut()
+            .scroll(&before, height, point(px(0.), step), view, window, cx);
+        self.logical_scroll_top() != before
+    }
+
     /// Scroll the list by the given offset
     pub fn scroll_by(&self, distance: Pixels) {
         if distance == px(0.) {
@@ -1630,8 +1652,22 @@ impl Element for List {
         let mut accumulated_scroll_delta = ScrollDelta::default();
         window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && hitbox_id.should_handle_scroll(window) {
+                // Glint: a notch of a mouse wheel glides to its place over the next frames.
+                let line = crate::wheel_glide::line_height(window);
+                if crate::wheel_glide::wants(&event.delta, cx) {
+                    let delta = event.delta.pixel_delta(line);
+                    crate::wheel_glide::push_list(
+                        &list_state,
+                        height,
+                        delta.y,
+                        current_view,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
                 accumulated_scroll_delta = accumulated_scroll_delta.coalesce(event.delta);
-                let pixel_delta = accumulated_scroll_delta.pixel_delta(px(20.));
+                let pixel_delta = accumulated_scroll_delta.pixel_delta(line);
                 list_state.0.borrow_mut().scroll(
                     &scroll_top,
                     height,

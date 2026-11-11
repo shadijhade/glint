@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 #[non_exhaustive]
 pub enum DialogEntrance {
     /// Slide down from the window top while fading in, preserving the legacy entrance.
-    #[default]
     SlideDown,
     /// Fade in at the final position without movement.
     Fade,
@@ -21,6 +20,11 @@ pub enum DialogEntrance {
     ///
     /// Travel comes from the theme's short motion distance and is limited by
     /// the space above the resolved surface inside the window.
+    ///
+    /// Glint: the default. The legacy slide travelled from the top of the window
+    /// for a quarter of a second, which made every dialog feel late; this one is
+    /// in place from the start and settles within the theme's normal duration.
+    #[default]
     FadeSlide,
     /// Show the surface and backdrop immediately without entrance animation.
     None,

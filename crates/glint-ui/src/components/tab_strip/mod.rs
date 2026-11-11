@@ -43,6 +43,8 @@ use std::time::Duration;
 
 /// How long files held over a tab that isn't showing wait before it opens (`springTimer`, 450 ms).
 const SPRING_DELAY: Duration = Duration::from_millis(450);
+/// A tab's height: 30 px at the usual size, a pill centred in the title bar.
+const TAB_HEIGHT: Rems = rems(1.875);
 
 /// How far from where a tab's drag began a release counts as pulling it out of the strip (`> 90` in `dragTab`).
 const PULL_AWAY: Pixels = px(90.);
@@ -285,16 +287,16 @@ impl Render for DragChip {
         let t = theme::tokens(cx).clone();
         row_start()
             .gap(space(1.5))
-            .h(space(7.))
+            .h(TAB_HEIGHT)
             .px(space(2.5))
             .max_w(space(52.))
-            .rounded_t(theme::size::RADIUS)
+            .rounded(theme::size::RADIUS_LG)
             .border_1()
-            .border_color(t.border)
-            .bg(t.background)
+            .border_color(t.stroke)
+            .bg(t.card)
             .text_color(t.foreground)
             .text_size(theme::size::SM)
-            .shadow_md()
+            .shadow(theme::elevation::floating(cx))
             .child(icon(self.glyph.icon()).size_4().text_color(t.muted_foreground))
             .child(div().min_w_0().truncate().child(isolate(self.name.clone())))
     }
@@ -747,10 +749,12 @@ impl TabStrip {
                 )
         });
         let background = t.background;
-        let accent = t.accent.opacity(0.6);
+        let accent = t.accent;
+        let stroke = t.stroke;
+        let raised = theme::elevation::raised(cx);
+        let glint = theme::glint_fill(cx);
         let ring = t.ring;
         let primary = t.primary;
-        let border = t.border;
         let wheel_scroll = scroll.clone();
         let menu_explorer = self.explorer.clone();
         let sprung = self.spring.filter(|_| cx.has_active_drag()) == Some(id);
@@ -782,25 +786,28 @@ impl TabStrip {
             .flex_basis(space(52.))
             .min_w(space(24.))
             .max_w(space(52.))
-            .h(space(7.))
+            .h(TAB_HEIGHT)
             .child(
                 row_start()
+                    .id(SharedString::from(format!("tab-fill-{}", id.0)))
                     .size_full()
                     .gap(space(1.5))
                     .ps(2.5)
                     .pe(1.)
-                    .rounded_t(theme::size::RADIUS)
+                    .rounded(theme::size::RADIUS_LG)
                     .border_1()
-                    .border_b_0()
                     .border_color(if selected {
-                        border
+                        stroke
                     } else {
                         gpui_kit::transparent_black()
                     })
                     .text_size(theme::size::SM)
                     .text_color(if selected { t.foreground } else { t.muted_foreground })
-                    .when(selected, move |d| d.bg(background))
-                    .when(!selected, move |d| d.hover(move |s| s.bg(accent)))
+                    .when(selected, move |d| d.bg(background).shadow(raised))
+                    .when(!selected, {
+                        let foreground = t.foreground;
+                        move |d| d.hover(move |s| s.bg(accent).text_color(foreground))
+                    })
                     // Files held over it: lit, and shown soon when it isn't.
                     .when(lit, move |d| {
                         d.bg(primary.opacity(0.15)).text_color(primary).border_color(primary)
@@ -839,17 +846,23 @@ impl TabStrip {
                         d.child(
                             div()
                                 .absolute()
-                                .top_0()
-                                .left(space(2.))
-                                .right(space(2.))
-                                .h(space(0.5))
+                                .bottom(px(-1.))
+                                .left(space(3.))
+                                .right(space(3.))
+                                .h(px(2.))
                                 .rounded_full()
-                                .bg(primary),
+                                .bg(glint),
                         )
                     })
                     .child(glyph)
                     .child(div().flex_1().min_w_0().truncate().child(d.shown.clone()))
-                    .children(close),
+                    .children(close)
+                    // A tab that has just been made rises into its place.
+                    .with_animation(
+                        SharedString::from(format!("tab-enter-{}", id.0)),
+                        Animation::new(theme::motion::BASE).with_easing(theme::motion::enter),
+                        |fill, delta| fill.opacity(delta).top(px(6. * (1. - delta))),
+                    ),
             )
             .track_focus(&self.focus[&id])
             .tab_stop(true)
@@ -1001,8 +1014,8 @@ impl Render for TabStrip {
                 .flex_initial()
                 .min_w_0()
                 .h_full()
-                .items_end()
-                .gap(space(0.5))
+                .items_center()
+                .gap(space(1.))
                 .overflow_x_scroll()
                 .track_scroll(&scroll)
                 // Double-clicking the empty strip makes a tab (the tabs themselves occlude it).
@@ -1094,7 +1107,7 @@ impl Render for TabStrip {
                     .flex_basis(px(0.))
                     .min_w_0()
                     .h_full()
-                    .items_end()
+                    .items_center()
                     .gap(space(1.))
                     .child(list)
                     // The buttons take the mouse (the title bar's drag area stops at them).
@@ -1128,7 +1141,7 @@ impl Render for TabStrip {
             .flex_1()
             .min_w_0()
             .h_full()
-            .items_end()
+            .items_center()
             .gap(space(4.))
             // Where a tab's drag began, and where it ended if that was outside the strip.
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedTab>, _, cx| {

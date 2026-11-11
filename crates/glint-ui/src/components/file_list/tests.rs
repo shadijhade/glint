@@ -1951,5 +1951,5 @@ fn a_folder_row_shows_its_measured_size_and_an_ellipsis_while_it_is_measured(cx:
     assert_eq!(ui.said(0).as_deref(), Some("File folder, 1 B"));
 }
 
-mod find_states;
 mod facts;
+mod find_states;

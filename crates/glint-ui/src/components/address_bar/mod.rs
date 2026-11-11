@@ -255,6 +255,8 @@ pub struct AddressBar {
 #[derive(Default)]
 struct Measure {
     layout: Layout,
+    /// How far the crumbs are moved toward the start edge, to close the gap the last folded crumb leaves.
+    shift: Pixels,
     /// Where each crumb's cell was painted (window coordinates), for the crumb under dragged files.
     cells: Vec<Bounds<Pixels>>,
 }
@@ -851,7 +853,6 @@ impl AddressBar {
         } else {
             self.crumb_bar(t, cx).into_any_element()
         };
-        let edge = if editing { t.primary } else { t.field_edge };
         row_start()
             .id("address-field")
             .test_support()
@@ -860,21 +861,25 @@ impl AddressBar {
             .min_w_0()
             .flex_1()
             .items_center()
-            .rounded(theme::size::RADIUS)
+            .rounded(theme::size::RADIUS_LG)
             .border_1()
-            .border_color(t.border)
+            .border_color(if editing { t.primary.opacity(0.6) } else { t.stroke })
             .bg(if editing { t.field_focus } else { t.field })
+            .overflow_hidden()
             .children(seen.dual.then(|| self.pane_side(t, cx)))
             .child(inner)
-            .child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left(px(1.))
-                    .right(px(1.))
-                    .h(if editing { px(2.) } else { px(1.) })
-                    .bg(edge),
-            )
+            // Fluent's accent line under a field being typed in: here it is the glint.
+            .when(editing, |field| {
+                field.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .bg(theme::glint_fill(cx)),
+                )
+            })
     }
 
     /// Dual-pane view: which pane the bar shows; a click shows the other one's (F6).
@@ -953,7 +958,7 @@ impl AddressBar {
                     .text_size(theme::size::SM)
                     .cursor_pointer()
                     .when(active, |row| row.bg(t.accent).text_color(t.foreground))
-                    .when(!active, |row| row.hover(|s| s.bg(t.accent.opacity(0.6))))
+                    .when(!active, |row| row.hover(|s| s.bg(t.accent)))
                     // The box keeps the keyboard when a row is pressed.
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -1109,11 +1114,21 @@ impl AddressBar {
 
         // The crumbs, packed against the end so it is the first ones that run out of room; they are clipped,
         // and measured after the paint to know how many to fold into the "…".
+        // Each cell is drawn `shift` toward the start of where it is laid out (see `Measure::shift`).
+        let shift = self.measure.borrow().shift;
         let cells: Vec<_> = seen
             .crumbs
             .iter()
             .enumerate()
-            .map(|(i, crumb)| self.crumb_cell(i, crumb, i + 1 == n, i < folded, t, cx))
+            .map(|(i, crumb)| {
+                let cell = self.crumb_cell(i, crumb, i + 1 == n, i < folded, t, cx);
+                let moved = div().flex_none().relative().child(cell);
+                if i18n::is_rtl() {
+                    moved.right(-shift)
+                } else {
+                    moved.left(-shift)
+                }
+            })
             .collect();
         let measure = self.measure.clone();
         let measured_entity = entity.clone();
@@ -1123,19 +1138,34 @@ impl AddressBar {
                 return;
             };
             let rtl = i18n::is_rtl();
-            // Clipped at the start edge: left in English, right in Arabic.
+            // Where each cell is laid out, before it was moved: clipped at the start edge (left in English,
+            // right in Arabic) means it doesn't fit.
+            let start_of = |cell: &Bounds<Pixels>| {
+                if rtl {
+                    cell.right() - shift
+                } else {
+                    cell.left() + shift
+                }
+            };
             let outside = |cell: &Bounds<Pixels>| {
                 if rtl {
-                    cell.right() > row.right() + px(0.5)
+                    start_of(cell) > row.right() + px(0.5)
                 } else {
-                    cell.left() < row.left() - px(0.5)
+                    start_of(cell) < row.left() - px(0.5)
                 }
             };
             let folded = cells.iter().take_while(|cell| outside(cell)).count();
+            // The first crumb that fits starts this far in from the row's start: the gap to close.
+            let gap = match cells.get(folded).filter(|_| folded > 0) {
+                Some(first) if rtl => (row.right() - start_of(first)).max(px(0.)),
+                Some(first) => (start_of(first) - row.left()).max(px(0.)),
+                None => px(0.),
+            };
             let mut m = measure.borrow_mut();
             m.cells = cells.to_vec();
-            if m.layout.folded != folded {
+            if m.layout.folded != folded || (m.shift - gap).abs() > px(0.5) {
                 m.layout.folded = folded;
+                m.shift = gap;
                 drop(m);
                 let entity = measured_entity.clone();
                 cx.defer(move |cx| {

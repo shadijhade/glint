@@ -331,7 +331,13 @@ pub struct Drawn {
     pub image: Arc<RenderImage>,
     pub width: f32,
     pub height: f32,
+    /// How much of the picture shows, 0 to 1: under 1 for the moment after a file's first picture came in, while it
+    /// fades in over its icon ([`Thumbnails::look_arriving`]); always 1 from [`Thumbnails::look`].
+    pub shown: f32,
 }
+
+/// How long a file's first picture takes to fade in over its icon.
+const ARRIVE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// What a tile draws in its square.
 #[derive(Clone)]
@@ -343,6 +349,13 @@ pub enum Look {
     Picture(Drawn),
     /// Another size's picture, until this size's is in (a zoom), filling the square as the new one will.
     StandIn(Drawn),
+}
+
+impl Look {
+    /// A picture that is still fading in: the view drawing it must draw again next frame.
+    pub fn arriving(&self) -> bool {
+        matches!(self, Look::Picture(drawn) if drawn.shown < 1.)
+    }
 }
 
 /// How big to draw a picture of `w` x `h` CSS pixels, asked for a `picture_box` square, in a `box_` square: one
@@ -433,6 +446,9 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
 
 /// A thumbnail on hand: its picture (or none, for a file that has none), where it was asked for, what it costs.
 struct Held {
+    /// When the picture came in, for a file that had none of any size before it: it fades in from then. None for
+    /// a picture that took another size's place (a zoom), which is simply there.
+    since: Option<std::time::Instant>,
     image: Option<Arc<RenderImage>>,
     /// The picture's size in device pixels.
     px: (u32, u32),
@@ -839,6 +855,8 @@ impl Thumbnails {
         let px = image.as_deref().map_or((0, 0), pixels_of);
         let bytes = (px.0 as usize).saturating_mul(px.1 as usize).saturating_mul(4);
         let cost = if bytes == 0 { NONE_COST } else { bytes };
+        // The file's first picture fades in over its icon; one that replaces another size's doesn't.
+        let since = (image.is_some() && !self.latest.contains(&key.path)).then(std::time::Instant::now);
         if image.is_some() {
             self.latest.insert(key.path.clone(), Latest { key: key.clone() });
         }
@@ -846,6 +864,7 @@ impl Thumbnails {
         if let Some(old) = self.held.insert(
             key,
             Held {
+                since,
                 image,
                 px,
                 css_box,
@@ -885,6 +904,17 @@ impl Thumbnails {
     /// What a tile of `css_box` pixels draws for `entry` at a window `scale` (device pixels to one): this
     /// size's picture, else another size's as a stand-in while it comes (unless far smaller), else the icon.
     pub fn look(&self, entry: &FileEntry, css_box: f32, scale: f32) -> Look {
+        self.look_at(entry, css_box, scale, false)
+    }
+
+    /// [`Thumbnails::look`], with a file's first picture fading in for a moment after it comes ([`Drawn::shown`]
+    /// under 1). The view that draws it must keep drawing while [`Look::arriving`] says so
+    /// (`window.request_animation_frame()`), or the picture would stay half there.
+    pub fn look_arriving(&self, entry: &FileEntry, css_box: f32, scale: f32) -> Look {
+        self.look_at(entry, css_box, scale, true)
+    }
+
+    fn look_at(&self, entry: &FileEntry, css_box: f32, scale: f32, arriving: bool) -> Look {
         if !is_eligible(entry) {
             return Look::Icon;
         }
@@ -898,14 +928,22 @@ impl Thumbnails {
         match self.held.get(&key) {
             // This size's picture is in.
             Some(Held {
-                image: Some(image), px, ..
+                image: Some(image),
+                px,
+                since,
+                ..
             }) => {
                 let (w, h) = (px.0 as f32 / scale, px.1 as f32 / scale);
                 let (width, height) = fit(w, h, css_box, css_box, false);
+                let shown = match since.filter(|_| arriving) {
+                    Some(since) => (since.elapsed().as_secs_f32() / ARRIVE.as_secs_f32()).min(1.),
+                    None => 1.,
+                };
                 Look::Picture(Drawn {
                     image: image.clone(),
                     width,
                     height,
+                    shown,
                 })
             }
             // It has none, for good: the icon.
@@ -932,6 +970,7 @@ impl Thumbnails {
                     image: image.clone(),
                     width,
                     height,
+                    shown: 1.,
                 })
             }
             _ => Look::Icon,
@@ -1090,12 +1129,30 @@ pub fn thumbnail_square(look: &Look, kind: &Kind, box_px: f32, icon_px: f32, bot
     match look {
         Look::Icon => square.child(kind_icon_filled(kind, px(icon_px), cx)),
         Look::Picture(drawn) | Look::StandIn(drawn) => {
-            let shadow = !matches!(look, Look::StandIn(_)) && bottom;
+            // A picture that has just come in fades in over the icon it takes the place of.
+            let arriving = drawn.shown < 1.;
+            let square = if arriving {
+                square.child(
+                    div()
+                        .opacity(1. - drawn.shown)
+                        .child(kind_icon_filled(kind, px(icon_px), cx)),
+                )
+            } else {
+                square
+            };
+            // A tile's own picture is a small print: rounded, lifted off the sheet. A row's stays a plain square
+            // with its corners just taken off; a stand-in (a kind's icon as a picture) gets neither.
+            let print = !matches!(look, Look::StandIn(_));
             let picture = img(drawn.image.clone())
                 .w(px(drawn.width))
                 .h(px(drawn.height))
                 .flex_none()
-                .when(shadow, |picture| picture.rounded(theme::size::RADIUS_SM));
+                .when(print && bottom, |picture| {
+                    picture
+                        .rounded(theme::size::RADIUS)
+                        .shadow(theme::elevation::raised(cx))
+                })
+                .when(print && !bottom, |picture| picture.rounded(px(2.)));
             square.child(
                 div()
                     .absolute()
@@ -1104,6 +1161,7 @@ pub fn thumbnail_square(look: &Look, kind: &Kind, box_px: f32, icon_px: f32, bot
                     .justify_center()
                     .when(bottom, |layer| layer.items_end())
                     .when(!bottom, |layer| layer.items_center())
+                    .when(arriving, |layer| layer.opacity(drawn.shown))
                     .child(picture),
             )
         }

@@ -838,7 +838,7 @@ impl TextSearch {
             .ps(4.)
             .pe(3.)
             .cursor_default()
-            .when(!selected, |row| row.hover(|s| s.bg(t.accent.opacity(0.6))))
+            .when(!selected, |row| row.hover(|s| s.bg(t.accent)))
             .when(selected, |row| {
                 row.bg(t.primary.opacity(0.1))
                     .hover(|s| s.bg(t.primary.opacity(0.15)))

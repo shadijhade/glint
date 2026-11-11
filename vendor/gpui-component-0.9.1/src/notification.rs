@@ -27,9 +27,11 @@ use crate::{
     v_flex,
 };
 
-const NOTIFICATION_TRANSITION_DURATION: Duration = Duration::from_millis(400);
-const NOTIFICATION_EXIT_DURATION: Duration = Duration::from_millis(200);
-const NOTIFICATION_TRANSITION_OFFSET: Pixels = px(96.);
+// Glint: a notice arrives in 220 ms from 20 px away on a curve that starts fast, and leaves in 140 ms.
+// (It was 400 ms from 96 px away on CSS's `ease`, and 200 ms out: long enough to watch it travel.)
+const NOTIFICATION_TRANSITION_DURATION: Duration = Duration::from_millis(220);
+const NOTIFICATION_EXIT_DURATION: Duration = Duration::from_millis(140);
+const NOTIFICATION_TRANSITION_OFFSET: Pixels = px(20.);
 const DEFAULT_NOTIFICATION_WIDTH: Pixels = px(382.);
 const NOTIFICATION_ADVANCE_INTERVAL: Duration = Duration::from_millis(50);
 struct DismissRequest;
@@ -489,7 +491,8 @@ impl Render for Notification {
                 } else {
                     NOTIFICATION_TRANSITION_DURATION
                 })
-                .with_easing(cubic_bezier(0.25, 0.1, 0.25, 1.)),
+                // Glint: fast out of the gate, a soft landing (see the durations above).
+                .with_easing(cubic_bezier(0.16, 1., 0.3, 1.)),
                 move |this, delta| {
                     if closing {
                         let opacity = 1. - delta;

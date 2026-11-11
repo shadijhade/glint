@@ -361,7 +361,7 @@ impl MenuView {
             .gap(space(2.))
             .px(space(2.))
             .py(space(1.5))
-            .rounded(theme::size::RADIUS_SM)
+            .rounded(theme::size::RADIUS)
             .text_size(theme::size::SM)
             .text_start()
             .cursor_pointer()
@@ -427,7 +427,7 @@ impl MenuView {
             .gap(space(2.))
             .px(space(2.))
             .py(space(1.5))
-            .rounded(theme::size::RADIUS_SM)
+            .rounded(theme::size::RADIUS)
             .text_size(theme::size::SM)
             .text_start()
             .cursor_pointer()
@@ -642,6 +642,9 @@ impl Render for MenuView {
 
         // No taller than the window: what doesn't fit scrolls.
         let max_height = (window.viewport_size().height - px(8.)).max(px(120.));
+        // A menu arrives: there at once, settling the last few pixels as it fades in (a level deeper or back
+        // arrives the same way).
+        let level = self.levels.len();
         col()
             .id("menu")
             .role(Role::Menu)
@@ -658,14 +661,19 @@ impl Render for MenuView {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .p(space(1.))
-            .rounded(theme::size::RADIUS_LG)
+            .rounded(theme::size::RADIUS_SHEET)
             .border_1()
-            .border_color(t.border.opacity(0.8))
+            .border_color(t.stroke)
             .bg(t.popover)
             .text_color(t.popover_foreground)
-            .shadow_lg()
+            .shadow(theme::elevation::floating(cx))
             .text_start()
             .children(back)
             .children(rows)
+            .with_animation(
+                ("menu-enter", level),
+                Animation::new(theme::motion::FAST).with_easing(theme::motion::enter),
+                |menu, delta| menu.opacity(0.4 + 0.6 * delta).top(px(-5. * (1. - delta))),
+            )
     }
 }

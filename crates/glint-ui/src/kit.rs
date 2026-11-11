@@ -30,7 +30,7 @@ use gpui_kit::component::{h_flex, v_flex};
 pub mod prelude {
     pub use super::{
         align_row, back_icon, capacity_bar, col, drive_icon, forward_icon, free_of, icon, isolate, kind_icon,
-        known_icon, row, row_start, space, tooltip, Logical, Placeholder,
+        known_icon, loading_sweep, row, row_start, space, tooltip, Logical, Placeholder,
     };
     pub use super::{h_resizable, resizable_panel};
     pub use super::{
@@ -92,10 +92,11 @@ pub fn capacity_bar(total: u64, free: u64, height: Rems, cx: &App) -> Option<Div
     }
     let t = theme::tokens(cx);
     let used = (total.saturating_sub(free) as f64 / total as f64).clamp(0., 1.);
+    // The glint for a drive with room, plain red for one nearly full (Explorer's warning).
     let fill = if used > 0.9 {
-        t.destructive
+        gpui_kit::Background::from(t.destructive)
     } else {
-        t.primary.opacity(0.7)
+        theme::glint_fill(cx)
     };
     Some(
         row_start()
@@ -103,7 +104,8 @@ pub fn capacity_bar(total: u64, free: u64, height: Rems, cx: &App) -> Option<Div
             .w_full()
             .overflow_hidden()
             .rounded_full()
-            .bg(t.muted)
+            // See-through, so the empty part shows on the chrome as well as on the sheet.
+            .bg(t.pressed)
             .child(
                 div()
                     .h_full()
@@ -112,6 +114,47 @@ pub fn capacity_bar(total: u64, free: u64, height: Rems, cx: &App) -> Option<Div
                     .bg(fill),
             ),
     )
+}
+
+/// A thin bar that says something is being read: the glint sweeping from the start edge to the end, again and
+/// again, over a faint track. With motion off it is the glint, still. Give it a width where it is used.
+pub fn loading_sweep(id: impl Into<gpui_kit::ElementId>, cx: &App) -> gpui_kit::AnyElement {
+    use gpui_kit::{px, relative, Animation, AnimationExt as _};
+    let track = div()
+        .w_full()
+        .h(px(2.))
+        .overflow_hidden()
+        .bg(theme::tokens(cx).primary.opacity(0.16));
+    if cx.reduce_motion() {
+        return track
+            .child(div().size_full().bg(theme::glint_fill(cx)))
+            .into_any_element();
+    }
+    let rtl = i18n::is_rtl();
+    track
+        .child(
+            div()
+                .h_full()
+                .w(relative(0.4))
+                .rounded_full()
+                .bg(theme::glint_fill(cx))
+                .with_animation(
+                    id,
+                    Animation::new(std::time::Duration::from_millis(1100))
+                        .repeat()
+                        .with_easing(gpui_kit::ease_in_out),
+                    move |bar, delta| {
+                        // From just off the start edge to just off the end.
+                        let at = relative(-0.4 + 1.4 * delta);
+                        if rtl {
+                            bar.right(at)
+                        } else {
+                            bar.left(at)
+                        }
+                    },
+                ),
+        )
+        .into_any_element()
 }
 
 /// "12 GB free of 476 GB" (`freeOf`), or nothing when the total isn't known.

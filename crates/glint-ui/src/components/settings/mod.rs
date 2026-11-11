@@ -116,6 +116,31 @@ fn nav_name(slot: &str) -> SharedString {
     }
 }
 
+/// A section's sign in the list on the left.
+fn nav_icon(slot: &str) -> IconName {
+    match slot {
+        "appearance" => IconName::Sun,
+        "files" => IconName::Files,
+        "instant-search" => IconName::Zap,
+        "find-files-by-name" => IconName::FileSearch,
+        "quick-search" => IconName::Search,
+        "ai-agents" => IconName::Sparkles,
+        "search-text-ripgrep" => IconName::TextSearch,
+        "text-search-skips" => IconName::EyeOff,
+        "terminal" => IconName::SquareTerminal,
+        "check" => IconName::ShieldCheck,
+        "clouds" => IconName::Cloud,
+        "tools" => IconName::Wrench,
+        "history" => IconName::ClockArrowLeft,
+        _ => IconName::Info,
+    }
+}
+
+/// How many sections are drawn while Settings opens: what the first screen shows (see `SettingsView::opened`).
+const FIRST_SECTIONS: usize = 3;
+/// How long after opening the rest of the page is drawn: once the dialog has settled.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(260);
+
 /// The open Settings, so a second request doesn't stack another on it.
 struct Open(WeakEntity<SettingsView>);
 
@@ -146,6 +171,12 @@ pub struct SettingsView {
     order: Vec<&'static str>,
     /// A section asked for as Settings opened, scrolled to once the page knows where the sections are.
     pending_section: Option<String>,
+    /// When Settings opened, while only its first screen is drawn; None once the whole page is. The page is some
+    /// 150 rows, none of them virtual: laid out whole in every frame of the dialog's entrance it cost three frames'
+    /// worth of time in each, so the entrance stuttered. The first screen alone is what is seen while it settles.
+    opened: Option<std::time::Instant>,
+    /// Draws the rest of the page once the dialog has settled.
+    settle: Option<Task<()>>,
     /// A shortcut another app holds, when the tray could not take it (`quickTaken`).
     // Told by whoever registers the hotkey, through [`tell_quick_taken`] (the open view hears it at once; a Settings
     // opened later starts with what was last said).
@@ -299,6 +330,9 @@ impl SettingsView {
             focus: cx.focus_handle(),
             order: Vec::new(),
             pending_section: section.map(str::to_string),
+            // Opened at a section, or with motion off (tests, Windows' setting): the whole page at once.
+            opened: (section.is_none() && !cx.reduce_motion()).then(std::time::Instant::now),
+            settle: None,
             quick_taken: cx.try_global::<QuickTaken>().and_then(|taken| taken.0.clone()),
             default_search_path,
             editor_path,
@@ -412,6 +446,12 @@ impl SettingsView {
 
     /// Scrolls so `section` ("settings-about" or "about") is at the top (`scrollIntoView`).
     pub fn scroll_to(&mut self, section: &str, cx: &mut Context<Self>) {
+        // Asked for while only the first screen is drawn: the whole page first, then there.
+        if self.opened.take().is_some() {
+            self.pending_section = Some(section.to_string());
+            cx.notify();
+            return;
+        }
         let slot = section.strip_prefix("settings-").unwrap_or(section);
         if let Some(at) = self.order.iter().position(|s| *s == slot) {
             self.scroll.scroll_to_top_of_item(at);
@@ -473,7 +513,7 @@ impl SettingsView {
             .role(Role::Navigation)
             .aria_label(t!("Settings sections"))
             .test_support()
-            .w(space(40.))
+            .w(space(47.))
             .flex_none()
             .h_full()
             .overflow_y_scroll()
@@ -486,21 +526,37 @@ impl SettingsView {
                 let chosen = i == current;
                 let name = nav_name(slot);
                 let slot = *slot;
-                Button::new(widgets::id(&["settings-nav", slot]))
-                    .custom(
-                        ButtonCustomVariant::new(cx)
-                            .color(if chosen { t.accent } else { t.accent.opacity(0.) })
-                            .foreground(if chosen { t.foreground } else { t.muted_foreground })
-                            .hover(t.accent)
-                            .active(t.accent),
-                    )
-                    .selected(chosen)
-                    .label(name)
+                let (over, foreground, pressed, ring) = (t.accent, t.foreground, t.pressed, t.ring);
+                // A row of its own rather than the kit's button, which centres its label: a list of names reads
+                // from the start edge, each behind its sign.
+                row_start()
+                    .id(widgets::id(&["settings-nav", slot]))
+                    .role(Role::Button)
+                    .aria_label(name.clone())
+                    .aria_selected(chosen)
+                    .test_support()
+                    .tab_index(0)
                     .w_full()
-                    .justify_start()
-                    .text_start()
-                    .when(chosen, |this| this.font_weight(FontWeight::MEDIUM))
+                    .flex_none()
+                    .h(space(8.))
+                    .gap(space(2.5))
+                    .px(space(2.5))
+                    .rounded(theme::size::RADIUS)
+                    .border_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .cursor_pointer()
+                    .text_color(if chosen { t.foreground } else { t.muted_foreground })
+                    .when(chosen, |row| row.bg(over).font_weight(FontWeight::MEDIUM))
+                    .hover(move |style| style.bg(over).text_color(foreground))
+                    .active(move |style| style.bg(pressed))
+                    .focus_visible(move |style| style.border_color(ring))
                     .on_click(cx.listener(move |this, _, _, cx| this.scroll_to(slot, cx)))
+                    .child(icon(nav_icon(slot)).size_4().flex_none().text_color(if chosen {
+                        t.primary
+                    } else {
+                        t.muted_foreground
+                    }))
+                    .child(div().flex_1().min_w_0().truncate().child(name))
             }))
     }
 }
@@ -514,8 +570,29 @@ impl Render for SettingsView {
         let height = (viewport.height * 0.85).min(rem * 46.) - px(56.);
         let wide = viewport.width >= px(768.);
 
-        let page = self.page(&t, cx);
+        let mut page = self.page(&t, cx);
         self.order = page.iter().map(|(slot, _)| *slot).collect();
+        // While the dialog arrives, its first screen only (see `opened`); then the rest, in one more frame.
+        if let Some(opened) = self.opened {
+            let left = SETTLE.saturating_sub(opened.elapsed());
+            if left.is_zero() || self.pending_section.is_some() {
+                self.opened = None;
+                self.settle = None;
+            } else {
+                page.truncate(FIRST_SECTIONS);
+                if self.settle.is_none() {
+                    self.settle = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(left).await;
+                        this.update(cx, |this, cx| {
+                            if this.opened.take().is_some() {
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    }));
+                }
+            }
+        }
         // A section asked for as Settings opened: now the page knows where the sections are.
         if let Some(section) = self.pending_section.take() {
             self.scroll_to(&section, cx);

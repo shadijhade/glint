@@ -214,6 +214,8 @@ pub struct FileGrid {
     metrics: Option<Metrics>,
     /// The tab and view whose scroll position was restored last.
     placed_for: Option<(TabId, String)>,
+    /// How many times the folder (or search) shown has changed: each new one's tiles arrive with a short rise.
+    entered: usize,
     /// The last place saved for it, so it is saved when it changes.
     saved_place: Option<f32>,
     /// The focused item the list was last scrolled to.
@@ -277,6 +279,7 @@ impl FileGrid {
             layout: None,
             metrics: None,
             placed_for: None,
+            entered: 0,
             saved_place: None,
             scrolled_to: None,
             press: None,
@@ -1213,6 +1216,10 @@ impl Render for FileGrid {
             top.clamp(0.0, if body_height > 0.0 { most } else { f32::MAX })
         };
         if self.placed_for.as_ref() != Some(&place_key) {
+            // Another folder than the one drawn last (not the first one drawn): its tiles arrive.
+            if self.placed_for.is_some() {
+                self.entered += 1;
+            }
             self.placed_for = Some(place_key.clone());
             self.type_ahead.reset();
             self.scrolled_to = None;
@@ -1295,6 +1302,7 @@ impl Render for FileGrid {
             thumbs: self.thumbs.clone(),
             viewer: cx.entity_id(),
             shown: self.shown.clone(),
+            arriving: Cell::new(false),
             scrub: self.scrub.current(),
             on_down: handler(cx, |this, (i, event): &(usize, MouseDownEvent), window, cx| {
                 this.tile_down(*i, event, window, cx)
@@ -1315,6 +1323,12 @@ impl Render for FileGrid {
         .track_scroll(&self.scroll)
         .size_full()
         .pr(px(gutter));
+        // A folder's tiles arrive: there from the first frame, settling upward the last few pixels.
+        let list = div().size_full().child(list).with_animation(
+            ("file-grid-enter", self.entered),
+            Animation::new(theme::motion::BASE).with_easing(theme::motion::enter),
+            |tiles, delta| tiles.opacity(0.35 + 0.65 * delta).top(px(10. * (1. - delta))),
+        );
 
         let name = if search {
             t!("Search results")

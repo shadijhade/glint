@@ -169,8 +169,26 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
 **Style:**
 - `let t = theme::tokens(cx).clone();` at the top of render; colors come only from `t`.
 - Sizes are rems, so the text-size setting scales them: `theme::size::{XXS, XS, SM, BASE}` and `space(n)` (takes f32: `space(3.)`).
-- Chrome (title bar, toolbar, sidebar, status bar) uses `theme::chrome_fill(cx)` so Mica shows through.
 - Tinted buttons use `Button::custom(ButtonCustomVariant::new(cx)...)`.
+
+**Depth: three levels, and nothing else.**
+- **Chrome** (title bar, toolbar, sidebar): no fill of its own. The window is filled once (`theme::window_fill`), Mica shows through, and anything on it that needs a surface uses a see-through one (`t.accent`).
+- **The sheet** (`t.background`): the files, the command bar, the preview pane and the status bar, on one surface with a hairline (`t.stroke`) and a rounded corner (`theme::size::RADIUS_SHEET`) where it meets the chrome. A part of the sheet has no fill of its own either; cards on it are `t.card`.
+- **Floating** (menus, the palette, dialogs, notices): `t.popover`, a `t.stroke` hairline, and a shadow from `theme::elevation::{raised, floating, modal}`. Never `shadow_md()` and friends: the elevations know the theme.
+
+**States: see-through fills, the same everywhere.**
+- Hover is `t.accent`, held down is `t.pressed`, selected is `t.selected` (`t.selected_hover` under the pointer, `t.selected_inactive` in the pane the keyboard isn't in). They are translucent, so they read on all three levels: don't mix your own with `.opacity(..)`.
+- A highlight is a rounded fill *inside* its line (`theme::size::RADIUS_ROW`, a few pixels in from the edges, a pixel of air above and below), so rows selected together read as rows. The line itself is what is clicked and named. `file_list/cells.rs` is the reference.
+- The item the keyboard is on carries the accent bar at its start edge; the 1 px accent outline is only for when the selection doesn't already say where the keyboard is.
+- `theme::glint_fill(cx)` (the logo's pink to fuchsia, or Windows' accent to its shade) is for the few things that should catch the eye: what is loading (`loading_sweep`), what is current (the showing tab's underline), a field being typed in. Not for decoration.
+
+**Motion: `theme::motion`, and it is never in the way.**
+- Hover fills fade by themselves (the vendored GPUI does it for every element with an id: see VENDOR.md). Give an element that has a `.hover(..)` an id and it fades; don't animate hover by hand.
+- Something that arrives uses `Animation::new(theme::motion::BASE).with_easing(theme::motion::enter)` (`FAST` for menus and small things, `SLOW` for big surfaces), and is readable from its first frame: start at an opacity of a third or more and move ten pixels at most. Leaving is quicker than arriving.
+- Key an arrival by what arrived (`("file-list-enter", generation)`), so it plays once for it and not again on every redraw.
+- An animation never delays the thing itself: the new rows, the menu, the dialog are there and usable in the first frame.
+- Windows' "Animation effects" switch turns all of it off (`theme::motion::sync_with_windows`); so do tests. Anything you animate must be right when every animation lands at once: check with the switch off.
+- The wheel glides (the vendored GPUI again). Don't add your own smoothing to a scroll.
 
 **Keys:**
 - Add a row to `actions::BINDINGS` (keys, context, action, English description from ShortcutsDialog.tsx) and the action to the `actions!` list.

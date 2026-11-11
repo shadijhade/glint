@@ -373,7 +373,7 @@ impl GalleryMonths {
                             .hover(move |style| style.bg(accent).text_color(foreground))
                             .when(marked, |button| {
                                 button
-                                    .bg(accent.opacity(0.6))
+                                    .bg(accent)
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(foreground)
                             })

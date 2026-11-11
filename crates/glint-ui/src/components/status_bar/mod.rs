@@ -392,7 +392,7 @@ impl Render for StatusBar {
             .px(space(3.))
             .gap(space(1.5))
             .items_center()
-            .bg(theme::chrome_fill(cx))
+            // The foot of the sheet the files are on.
             .border_t_1()
             .border_color(t.border)
             .text_size(theme::size::XS)
