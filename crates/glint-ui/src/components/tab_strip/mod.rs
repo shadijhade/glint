@@ -87,9 +87,9 @@ fn tear_off_for(inside: bool, away: Pixels) -> TearOff {
 
 // ---- What is drawn ----------------------------------------------------------------------------------
 
-/// The icon a tab gets (`Icon` in TabStrip.tsx).
+/// The icon a tab gets (`Icon` in TabStrip.tsx), and the head of a pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Glyph {
+pub(crate) enum Glyph {
     Search,
     ThisPc,
     RecycleBin,
@@ -97,12 +97,15 @@ enum Glyph {
     Gallery,
     Cloud,
     Folder,
+    /// Home, Documents…: the folder in the place's own color.
+    Known(explorer::KnownId),
     Drive(DriveKind),
 }
 
 impl Glyph {
     fn icon(self) -> IconName {
         match self {
+            Glyph::Known(id) => known_icon(id),
             Glyph::Search => IconName::Search,
             Glyph::ThisPc => IconName::Monitor,
             Glyph::RecycleBin => IconName::Trash,
@@ -112,6 +115,27 @@ impl Glyph {
             Glyph::Folder => IconName::Folder,
             Glyph::Drive(kind) => drive_icon(kind),
         }
+    }
+
+    /// The tab's picture: a folder (a known one in its own color, with its sign where there is room), or the
+    /// place's chip in its own color.
+    pub(crate) fn picture(self, across: Pixels, cx: &App) -> Div {
+        use theme::Place;
+        let tone = match self {
+            Glyph::Folder => return crate::art::folder(across, theme::folder_tone(cx), None, cx),
+            Glyph::Known(id) => {
+                let tone = theme::place_tone(Place::Known(id), cx);
+                return crate::art::folder(across, tone, Some(known_icon(id)), cx);
+            }
+            Glyph::Search | Glyph::ThisPc => theme::tokens(cx).primary,
+            Glyph::RecycleBin => theme::place_tone(Place::RecycleBin, cx),
+            Glyph::Recent => theme::place_tone(Place::Recent, cx),
+            Glyph::Gallery => theme::place_tone(Place::Gallery, cx),
+            Glyph::Cloud => theme::place_tone(Place::Remote, cx),
+            Glyph::Drive(DriveKind::Wsl) => theme::place_tone(Place::Wsl, cx),
+            Glyph::Drive(_) => theme::place_tone(Place::Drive, cx),
+        };
+        crate::art::chip(across, tone, self.icon(), cx)
     }
 }
 
@@ -167,7 +191,7 @@ fn drive_title(drive: &Drive) -> String {
 
 /// What a tab is called: a search's query, the fixed names translated, a drive's name, a folder's name
 /// (`tabName`).
-fn name_of(explorer: &Explorer, tab: Option<&Tab>) -> String {
+pub(crate) fn name_of(explorer: &Explorer, tab: Option<&Tab>) -> String {
     let path = tab.map_or(THIS_PC, |t| t.path.as_str());
     if let Some(find) = tab.and_then(|t| t.find.as_ref()) {
         return find.query.clone();
@@ -187,6 +211,35 @@ fn name_of(explorer: &Explorer, tab: Option<&Tab>) -> String {
         }
     } else {
         explorer.tab_name(path)
+    }
+}
+
+/// The picture for what a tab shows: a search, a special place, a known folder, a drive, else a folder.
+pub(crate) fn glyph_of(explorer: &Explorer, tab: Option<&Tab>) -> Glyph {
+    let path = tab.map_or(THIS_PC, |t| t.path.as_str());
+    if tab.is_some_and(|t| t.find.is_some()) {
+        Glyph::Search
+    } else if path == THIS_PC {
+        Glyph::ThisPc
+    } else if is_recycle_bin(path) {
+        Glyph::RecycleBin
+    } else if is_recent(path) {
+        Glyph::Recent
+    } else if is_gallery(path) {
+        Glyph::Gallery
+    } else if is_remote_path(path) && is_root(path) {
+        Glyph::Cloud
+    } else if let Some(known) = explorer.known_folders().iter().find(|k| same_path(&k.path, path)) {
+        Glyph::Known(known.id)
+    } else if !is_root(path) {
+        Glyph::Folder
+    } else {
+        let kind = explorer
+            .drives()
+            .iter()
+            .find(|d| same_path(&d.path, path))
+            .map_or(DriveKind::Fixed, |d| d.kind);
+        Glyph::Drive(kind)
     }
 }
 
@@ -211,28 +264,7 @@ fn tab_data(explorer: &Explorer, id: TabId) -> TabData {
         Some(query) => t!("Search results for “{query}” in {place}", query = query, place = place).to_string(),
         None => place,
     };
-    let glyph = if query.is_some() {
-        Glyph::Search
-    } else if path == THIS_PC {
-        Glyph::ThisPc
-    } else if is_recycle_bin(path) {
-        Glyph::RecycleBin
-    } else if is_recent(path) {
-        Glyph::Recent
-    } else if is_gallery(path) {
-        Glyph::Gallery
-    } else if is_remote_path(path) && is_root(path) {
-        Glyph::Cloud
-    } else if !is_root(path) {
-        Glyph::Folder
-    } else {
-        let kind = explorer
-            .drives()
-            .iter()
-            .find(|d| same_path(&d.path, path))
-            .map_or(DriveKind::Fixed, |d| d.kind);
-        Glyph::Drive(kind)
-    };
+    let glyph = glyph_of(explorer, tab);
     TabData {
         id,
         shown: isolate(name.clone()),
@@ -300,7 +332,7 @@ impl Render for DragChip {
             .text_color(t.foreground)
             .text_size(theme::size::SM)
             .shadow(theme::elevation::floating(cx))
-            .child(icon(self.glyph.icon()).size_4().text_color(t.muted_foreground))
+            .child(self.glyph.picture(theme::rem_size(cx) * 1.125, cx))
             .child(div().min_w_0().truncate().child(isolate(self.name.clone())))
     }
 }
@@ -699,16 +731,11 @@ impl TabStrip {
         let group = SharedString::from(format!("tab-group-{}", id.0));
         let busy_id = SharedString::from(format!("tab-busy-{}", id.0));
         let tip = d.tooltip.clone();
-        let glyph_color = if d.glyph == Glyph::Folder {
-            t.warning
-        } else {
-            t.muted_foreground
-        };
         let glyph = div()
             .id(busy_id.clone())
             .test_support()
             .flex_shrink_0()
-            .child(icon(d.glyph.icon()).size_4().text_color(glyph_color));
+            .child(d.glyph.picture(theme::rem_size(cx) * 1.125, cx));
         let glyph = if d.busy {
             // The TypeScript's `animate-pulse`.
             glyph
@@ -747,10 +774,9 @@ impl TabStrip {
                         })),
                 )
         });
-        let background = t.background;
+        let glass = t.glass;
         let accent = t.accent;
         let stroke = t.stroke;
-        let raised = theme::elevation::raised(cx);
         let glint = theme::glint_fill(cx);
         let ring = t.ring;
         let primary = t.primary;
@@ -799,7 +825,8 @@ impl TabStrip {
                     })
                     .text_size(theme::size::SM)
                     .text_color(if selected { t.foreground } else { t.muted_foreground })
-                    .when(selected, move |d| d.bg(background).shadow(raised))
+                    // The tab shown: a pane of glass on the rail.
+                    .when(selected, move |d| d.bg(glass))
                     .when(!selected, {
                         let foreground = t.foreground;
                         move |d| d.hover(move |s| s.bg(accent).text_color(foreground))

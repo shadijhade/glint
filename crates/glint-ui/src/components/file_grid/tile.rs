@@ -288,8 +288,24 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
         frame.arriving.set(true);
     }
     let kind = kind_of(entry);
-    let icon_px = thumb * if entry.dir { 2. / 3. } else { 7. / 12. };
-    let mut square = thumbnail_square(&look, kind, thumb, icon_px, true, cx);
+    // Glint's own pictures fill most of the square: the folder nearly all of it, a page a little less.
+    let icon_px = (thumb * if entry.dir { 0.92 } else { 0.84 }).round();
+    let known = entry
+        .dir
+        .then(|| crate::explorer::explorer(cx).read(cx).known_id_of(&entry.path))
+        .flatten();
+    let mut square = match known {
+        // Documents, Pictures…: the folder in the place's own color, its sign on it.
+        Some(known) => div()
+            .relative()
+            .flex_none()
+            .size(px(thumb))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(crate::art::known_folder(known, px(icon_px), cx)),
+        None => thumbnail_square(&look, kind, thumb, icon_px, true, cx),
+    };
     // How it differs from the other pane (top end) and Git's mark (top start) over the thumbnail.
     let tracked = git::row_git(entry, frame.git.as_deref());
     let status = frame.diffs.as_ref().and_then(|diffs| diffs.status(entry));

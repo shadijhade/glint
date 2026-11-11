@@ -411,7 +411,7 @@ impl ColumnsView {
         let t = theme::tokens(cx).clone();
         let side = self.side(which);
         let has_keyboard = side.focus.is_focused(window);
-        let folder_tone = theme::tailwind("amber-500").unwrap_or(t.warning);
+        let art_px = (theme::rem_size(cx) * 1.125).round();
         let rtl = i18n::is_rtl();
         range
             .filter_map(|index| {
@@ -428,14 +428,7 @@ impl ColumnsView {
                     Which::Parent => ("columns-parent-row", index),
                     Which::Next => ("columns-next-row", index),
                 };
-                let glyph = if entry.dir {
-                    icon(IconName::Folder)
-                        .size(rems(1.))
-                        .text_color(folder_tone)
-                        .flex_none()
-                } else {
-                    icon(IconName::File).size(rems(1.)).flex_none()
-                };
+                let glyph = crate::art::kind(glint_model::file_types::kind_of(entry), art_px, cx);
                 let (accent, ring, primary, muted) = (t.accent, t.ring, t.primary, t.muted_foreground);
                 Some(
                     row_start()

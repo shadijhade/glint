@@ -345,6 +345,14 @@ impl Explorer {
         self.known.iter().find(|k| k.id == id).map(|k| k.path.as_str())
     }
 
+    /// Which known folder `path` is (Documents itself, not what is in it), for drawing it in its own color.
+    pub fn known_id_of(&self, path: &str) -> Option<KnownId> {
+        self.known
+            .iter()
+            .find(|k| k.path.len() == path.len() && k.path.eq_ignore_ascii_case(path))
+            .map(|k| k.id)
+    }
+
     /// Home, or This PC when it isn't known (`homeFolder`).
     pub fn home_folder(&self) -> &str {
         self.known_path(KnownId::Home).unwrap_or(THIS_PC)

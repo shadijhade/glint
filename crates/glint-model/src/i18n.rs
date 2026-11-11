@@ -161,11 +161,13 @@ mod tests {
     }
 
     #[test]
-    fn the_arabic_catalog_has_all_290_entries_in_order() {
-        assert_eq!(AR_ENTRIES.len(), 290);
-        assert_eq!(AR.len(), 290);
+    fn the_arabic_catalog_has_all_its_entries_in_order() {
+        // The 290 that came with the port, then what the native app added (the head of a pane and its kinds).
+        assert_eq!(AR_ENTRIES.len(), 309);
+        assert_eq!(AR.len(), 309, "no English text twice");
         assert_eq!(AR_ENTRIES[0], ("This PC", "هذا الكمبيوتر"));
         assert_eq!(AR_ENTRIES[289], ("Read as", "قراءة بترميز"));
+        assert_eq!(AR_ENTRIES[308], ("Other files", "ملفات أخرى"));
     }
 
     #[test]
