@@ -326,6 +326,7 @@ impl Explorer {
 
     /// Makes the comparison again if anything it is made from changed. Called by `changed`; cheap when nothing did.
     pub(super) fn refresh_comparison(&mut self, cx: &mut Context<Self>) {
+        let _span = crate::perf::span("refresh comparison");
         if !(self.dual && self.compare_panes) {
             self.stop_deep();
             self.clear_comparison(cx);

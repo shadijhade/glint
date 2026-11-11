@@ -140,14 +140,7 @@ pub fn selected_entries(explorer: &Explorer) -> Vec<FileEntry> {
     let Some(tab) = explorer.active_tab() else {
         return Vec::new();
     };
-    if tab.selection.is_empty() {
-        return Vec::new();
-    }
-    tab.rows
-        .iter()
-        .filter(|entry| tab.selection.contains(&entry.path))
-        .cloned()
-        .collect()
+    tab.rows.chosen(&tab.selection).into_iter().cloned().collect()
 }
 
 /// The most items selected for the bar to look for a pair among (the pair is two files, or one beside a few folders).
@@ -165,8 +158,9 @@ fn compare_pair(explorer: &Explorer) -> Option<Pair> {
             return Vec::new();
         }
         tab.rows
-            .iter()
-            .filter(|e| tab.selection.contains(&e.path) && !e.dir && on_disk(e))
+            .chosen(&tab.selection)
+            .into_iter()
+            .filter(|e| !e.dir && on_disk(e))
             .cloned()
             .collect()
     };

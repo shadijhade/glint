@@ -15,7 +15,7 @@ use super::tab::Tab;
 use super::types::*;
 use crate::core_bridge::{self, CoreEvent};
 use crate::state::UiState;
-use glint_model::columns::{folder_kind, in_order, ColumnId, FolderKind, FolderPlace};
+use glint_model::columns::{folder_kind_of, in_order, ColumnId, FolderKind, FolderPlace};
 use glint_model::entries::{FileEntry, Sort};
 use glint_model::grid::{zoom_tiles, TileSize};
 use glint_model::groups::GroupBy;
@@ -134,6 +134,9 @@ pub struct Explorer {
     pub diff_only: bool,
     pub(super) drives: Arc<[Drive]>,
     pub(super) known: Arc<[KnownFolder]>,
+    /// The known folders being read since [`Explorer::read_ahead_for_start`], for [`Explorer::init_explorer`]
+    /// to take.
+    pub(super) known_reading: Option<super::source::Fut<Vec<KnownFolder>>>,
     /// The Gallery's folders last handed to glint-core ([`Explorer::push_gallery_folders`]).
     pub(super) gallery_sent: Option<Vec<String>>,
     /// Remote connections' names by lower-case id, for [`tab_name`] (the remotes part sets them).
@@ -202,6 +205,7 @@ impl Explorer {
             diff_only: false,
             drives: Arc::from(Vec::new()),
             known: Arc::from(Vec::new()),
+            known_reading: None,
             gallery_sent: None,
             remote_names: HashMap::new(),
             editing_address: false,
@@ -416,6 +420,7 @@ impl Explorer {
 
     /// Tells everyone a tab changed, and saves what should be saved. Every mutation ends here.
     pub(super) fn changed(&mut self, cx: &mut Context<Self>) {
+        let _span = crate::perf::span("explorer changed");
         self.save_session(cx);
         self.hint_startup(cx);
         self.report_folder();
@@ -547,6 +552,7 @@ impl Explorer {
             return;
         };
         let ms = started.elapsed().as_secs_f64() * 1000.0;
+        crate::perf::say(|| format!("nav shown at={ms:.2}"));
         self.update_tab(tab, |t| t.shown_in = ms);
         self.tab_changed(tab, cx);
     }
@@ -641,6 +647,7 @@ impl Explorer {
     /// What kind of folder a tab shows, which decides its default columns: Recent, Gallery and Downloads by
     /// where they are, else by what's in it (`folderKind`).
     pub(super) fn kind_of(&self, id: TabId) -> FolderKind {
+        let _span = crate::perf::span("kind of");
         let Some(tab) = self.tabs.get(&id) else {
             return FolderKind::General;
         };
@@ -659,7 +666,11 @@ impl Explorer {
         } else {
             None
         };
-        folder_kind(tab.entries(), place)
+        // What a big folder mostly holds is read from an even sample of it: every entry of 100,000 took 2 ms
+        // on this thread to say what a twentieth of them says as well.
+        let entries = tab.entries();
+        let step = (entries.len() / KIND_SAMPLE).max(1);
+        folder_kind_of(entries.iter().step_by(step), place)
     }
 
     /// The row spec for a tab under the current settings.
@@ -740,6 +751,7 @@ impl Explorer {
     /// listing of more than 20,000 entries that needs real sorting is sorted on a background thread: until it
     /// is done the tab shows the listing in the engine's order.
     pub(super) fn rebuild_rows(&mut self, id: TabId, cx: &mut Context<Self>) {
+        let _span = crate::perf::span("rebuild rows");
         let prefs = Prefs::read(cx);
         let Some(spec) = self.row_spec(id, &prefs) else {
             return;
@@ -760,16 +772,28 @@ impl Explorer {
         let now = now_ms();
         let heavy = source.len() > ROWS_IN_BACKGROUND && !is_plain(&spec);
         if !heavy {
-            tab.rows = build_rows(&source, &spec, now);
+            let building = std::time::Instant::now();
+            let old = std::mem::replace(&mut tab.rows, build_rows(&source, &spec, now));
+            crate::perf::say(|| {
+                format!(
+                    "rows built items={} took={:.2} filter={:?}",
+                    source.len(),
+                    crate::perf::ms(building),
+                    spec.filter
+                )
+            });
             tab.set_rows_source(&source);
             cx.emit(ExplorerEvent::RowsChanged(id));
+            // Grouped rows are entries of their own.
+            let_go(Some(old.shared().clone()), cx);
             return;
         }
         if !tab.rows_source_is(&source) {
             // A different listing: the old rows no longer fit it. Show it as the engine sent it meanwhile.
-            tab.rows = Rows::identity(source.clone());
+            let old = std::mem::replace(&mut tab.rows, Rows::identity(source.clone()));
             tab.set_rows_source(&source);
             cx.emit(ExplorerEvent::RowsChanged(id));
+            let_go(Some(old.shared().clone()), cx);
         }
         cx.spawn(async move |this, cx| {
             let rows = cx
@@ -778,9 +802,10 @@ impl Explorer {
             this.update(cx, |this, cx| {
                 // A newer rebuild (or a closed tab) makes this result stale.
                 if let Some(tab) = this.tabs.get_mut(&id).filter(|t| t.rows_seq == seq) {
-                    tab.rows = rows;
+                    let old = std::mem::replace(&mut tab.rows, rows);
                     cx.emit(ExplorerEvent::RowsChanged(id));
                     cx.notify();
+                    let_go(Some(old.shared().clone()), cx);
                 }
             })
             .ok();
@@ -822,6 +847,9 @@ impl Explorer {
     }
 }
 
+/// About how many of a big folder's entries are looked at to say what kind of folder it is.
+const KIND_SAMPLE: usize = 8_192;
+
 /// A spec the engine's own order already satisfies and that cuts nothing out: building it is O(n) at most,
 /// and so never worth a background thread.
 fn is_plain(spec: &RowSpec) -> bool {
@@ -833,6 +861,27 @@ fn is_plain(spec: &RowSpec) -> bool {
         && spec.filter.trim().is_empty()
         && spec.group == GroupBy::None
         && spec.diffs.is_none()
+}
+
+/// A listing of more entries than this is let go of on a background thread ([`let_go`]).
+const LET_GO_AWAY_ABOVE: usize = 4_000;
+/// How long the background holds a listing before letting it go: longer than the views that drew it keep theirs.
+const LET_GO_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Lets go of a listing's entries. Each entry owns four strings, and whoever holds the listing last frees them
+/// all: 400,000 frees for a folder of 100,000, some 12 ms. Left to chance that was the UI thread, in the middle
+/// of showing the next folder. A big listing is held here a moment longer than the views that drew it and freed
+/// on a background thread; a small one is simply dropped.
+pub(crate) fn let_go(entries: Option<Arc<[FileEntry]>>, cx: &App) {
+    let Some(entries) = entries.filter(|entries| entries.len() > LET_GO_AWAY_ABOVE) else {
+        return;
+    };
+    let wait = cx.background_executor().timer(LET_GO_AFTER);
+    cx.background_spawn(async move {
+        wait.await;
+        drop(entries);
+    })
+    .detach();
 }
 
 /// Now, in milliseconds since the Unix epoch.

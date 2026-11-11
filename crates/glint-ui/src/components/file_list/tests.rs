@@ -1953,3 +1953,33 @@ fn a_folder_row_shows_its_measured_size_and_an_ellipsis_while_it_is_measured(cx:
 
 mod facts;
 mod find_states;
+
+#[gpui_kit::test]
+fn a_folder_read_ahead_says_what_it_holds_in_its_row(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let disk = small_disk();
+    let mut ui = open(cx, &disk, "C:\\x");
+    let said = |ui: &mut Ui, row: usize| -> Option<String> {
+        ui.visual.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("file-list-peek", row))
+                .and_then(|peek| peek.label().map(str::to_string))
+        })
+    };
+    // Not read yet: its row says nothing of what is in it.
+    assert_eq!(said(&mut ui, 0), None);
+    // The keyboard comes to rest on the folder: it is read ahead, and its row says what Enter will show.
+    ui.press("down");
+    assert_eq!(ui.focused().as_deref(), Some("docs"));
+    ui.visual.executor().advance_clock(Duration::from_millis(300));
+    ui.frame();
+    let words = said(&mut ui, 0).expect("the folder's row says what it holds");
+    assert!(words.starts_with("1 file"), "{words}");
+    // Only its own row, and never a file's.
+    assert_eq!(said(&mut ui, 1), None);
+    // Opened, it is the folder shown: nothing is left to say of it in a row.
+    ui.press("enter");
+    assert_eq!(ui.path(), "C:\\x\\docs");
+    assert_eq!(said(&mut ui, 0), None);
+}

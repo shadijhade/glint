@@ -19,6 +19,8 @@ default = []
 # syntect: syntax highlighting for the text and code previews (pure Rust: fancy-regex, two-face's grammars).
 gpui-kit = { version = "=0.9.1", features = ["syntect"] }
 glint-model = { path = "../glint-model" }
+# A big folder's rows are made on several threads (already in the build: glint-core sorts with it).
+rayon = "1.12"
 glint-core = { path = "../glint-core" }
 async-channel = "2"
 # The `implement` macro (dragdrop.rs) names this crate.

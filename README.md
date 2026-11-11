@@ -23,7 +23,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [pdu](https://github.com/K
 
 ## Why
 
--   **Folders open in milliseconds.** System32's 5,092 items are on screen 12 ms after you press Enter, and a folder of 100,000 files takes 114 ms. One Win32 pass reads names, sizes, dates and attributes together, Rust sorts them, and the list draws only the rows you can see.
+-   **Folders open in milliseconds.** System32's 5,097 items are on screen 12 ms after you press Enter, and a folder of 100,000 files takes 47 ms (11 ms if the pointer was resting on it: it has been read by then). One Win32 pass reads names, sizes, dates and attributes together, Rust sorts them, and the list draws only the rows you can see. Glint itself is up, with your folder in it, a quarter of a second after you start it.
 -   **Every folder shows its size.** File Explorer keeps them out of the list. Here they're in the Size column as the folder opens (all of `C:\Windows` sized in 0.4 ms from the index), or one click away with pdu. Sort by size, or open **Disk usage** for a treemap like WizTree's, and you see what's filling your disk.
 -   **Any file on any drive, in milliseconds.** Turn on instant search and a small service reads each NTFS drive's Master File Table once, the way Everything does, then follows the change journal. Every `kernel32.dll` on three drives (over 3 million names) is listed in about 8 ms. Without it, fd streams results as it finds them.
 -   **ripgrep for what's inside files**: regular expressions, whole words, replace across files, and a syntax-highlighted preview.
@@ -42,10 +42,12 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [pdu](https://github.com/K
 
 | Task | Where | Found | Time |
 | :--- | :--- | ---: | ---: |
-| Open a folder | `C:\Windows` | 108 items | 6.3 ms |
-| | `C:\Windows\System32` | 5,092 items | 12 ms |
-| | `C:\Windows\WinSxS` | 21,650 items | 73 ms |
-| | a test folder | 100,000 files | 114 ms |
+| Start Glint ⁴ | to its window with `C:\Windows\System32` in it | 5,097 items | 231 ms |
+| Open a folder | `C:\Windows` | 114 items | 9.8 ms |
+| | `C:\Windows\System32` | 5,097 items | 12 ms |
+| | `C:\Windows\WinSxS` | 25,228 items | 23 ms |
+| | a test folder | 100,000 files | 47 ms |
+| | the same folder, read ahead ⁵ | 100,000 files | 11 ms |
 | Size every folder ¹ | `C:\Windows` | 56 GB | 0.4 ms |
 | Map disk usage ¹ | all of `C:\`, six levels down | 20,000 biggest of 464 GB | 53 ms |
 | Find files by name ¹ | `kernel32.dll` on all three drives | 18 files | 7.7 ms |
@@ -64,6 +66,10 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 ¹ With [instant search](docs/instant-search.md) on. Without it, fd and pdu do the work: fd on its own lists the same 5,015 DLLs in 0.1–0.3 s, and takes 8 s for a name search across a 219 GB home folder.
 
 ² From the first thumbnail asked for to the last one in, as the status bar reports it (*30 thumbnails in 71 ms*), each run a fresh start of the app, so none came from its own memory. Asked for all at once, 1,200 photos come 1,100 a second from Windows' cache, and are made at 220 a second when Windows hasn't seen them.
+
+⁴ From the moment Windows makes the process to the folder painted in its window, the median of 7 starts. Most of it is Windows loading the display driver (155 ms), which Glint now does on a thread of its own while the rest of it starts.
+
+⁵ A folder is read ahead while the pointer or the keyboard rests on it, and its row says what is in it meanwhile. Opening it then only has to draw it.
 
 ³ Its list of entries read (47 ms of that), nothing extracted; each run a fresh start of the app, so Glint didn't have the archive in memory yet. After that, every folder in it is read from memory in 0.2 ms. See [docs/archives.md](docs/archives.md).
 
@@ -128,6 +134,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 -   **Typos forgiven.** When the index finds nothing named as typed, it looks again for close matches: each word of four letters or more may be a letter off (two letters swapped count as one; two edits from eight letters) at the start of a word in the name, so `reprot` finds *Q3 Report.pdf* and `dowloads` finds *Downloads*. They come closest first, under **Close matches for…**, with *fuzzy* in the status bar. Numbers and shorter words must be there as typed, and so must a word's first letter (unless it's swapped with the second). Looking again costs the service about 30 ms over 3 million names. fd, which answers without the index, finds names only as typed.
 -   **Folder sizes.** With instant search on, every folder shows its size as it opens, and search results show folder totals too. Otherwise one click measures them with pdu. A bar behind each size shows how it compares with the biggest in the folder.
 -   **Quick search from anywhere.** `Ctrl+Alt+F` opens a search box over every drive, wherever you are: names (and filters) answered by the index as you type, the best matches first and your own files before Windows' (before you type, it offers the folders you use most), and close matches when a name is typed with a typo. `Enter` opens, `Alt+Enter` shows it in Glint, `Esc` puts it away. **Settings → Quick search** picks the shortcut, and can keep Glint in the tray and start it with Windows so it's always there.
+-   **It answers before you ask.** Rest the pointer on a folder, or come to it with the arrow keys, and its row says what is in it (*10 files · 8.7 MB*, with a small band of its make-up): Glint has read it by then, so opening it takes a frame. With instant search on, the search box's results follow the keys from the third letter instead of waiting for you to stop typing. And a click or a key is drawn the moment it is handled, not at the display's next refresh: half a frame sooner on average, a whole one at worst.
 -   **A window that shows where you are.** Each pane starts with the folder's name and picture, what is in it (*6 folders · 15 files · 13 MB*) and a chip for every kind of thing there: press **Images** and only the images show, press it again for everything. Folders, files and places have pictures of their own, each kind of file a page in its color, and Documents, Downloads, Pictures and the others their own colored folder. Soft light behind the window takes the color of the place you're in (Documents blue, Downloads green, Pictures rose), so you can tell where you are without reading.
 -   **Grid view and thumbnails.** Every folder (and every search) can show as a grid of Windows' own thumbnails, in five tile sizes: see [Grid view](#grid-view) below. In the list, pictures and videos get a small one in place of their icon.
 -   **Columns, and each folder's own view.** Right-click the list's header for its columns (Date modified, Date taken, Type, Dimensions, Duration, Artist, Album, Size) and what to sort by. Each folder keeps its own columns, sort, and list or grid, as File Explorer's do; until you set them, it opens as its kind does: a folder of pictures with when each was taken and its dimensions, videos with their length, music with its artists and albums, Downloads and Recent newest first. Settings → Files turns it off, for the same view everywhere.

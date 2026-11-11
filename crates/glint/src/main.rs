@@ -14,10 +14,12 @@
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
+    glint_core::startup::mark("main");
     // A worker answers and exits before anything of the app starts: no window, no GPUI.
     if let Some(code) = glint_core::worker() {
         std::process::exit(code);
     }
+    glint_core::startup::mark("not a worker");
     let code = glint_ui::run();
     if code != 0 {
         std::process::exit(code);

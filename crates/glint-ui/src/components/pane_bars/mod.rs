@@ -529,6 +529,7 @@ impl PaneBars {
 
 impl Render for PaneBars {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("pane bars");
         match self.bar(cx) {
             Bar::Hidden => div().into_any_element(),
             Bar::Search(info) => self.search_bar(&info, cx),

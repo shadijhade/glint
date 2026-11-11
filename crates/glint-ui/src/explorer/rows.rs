@@ -289,6 +289,45 @@ impl Rows {
     pub fn is_identity(&self) -> bool {
         self.order.is_none() && self.groups.is_none()
     }
+
+    /// The entries the rows are drawn from, shared: the listing's own, or the grouped copy.
+    pub(super) fn shared(&self) -> &Arc<[FileEntry]> {
+        &self.entries
+    }
+
+    /// The rows of a selection, in display order.
+    ///
+    /// A few selected items are each looked for by their own path (a compare a row, most settled by the lengths
+    /// alone); many are found in one pass over the rows that ends at the last of them. Neither hashes every row's
+    /// path to ask the selection about it, which cost 2.5 ms for each press of an arrow key in a folder of 100,000.
+    pub fn chosen<'a>(&'a self, selection: &super::tab::Selection) -> Vec<&'a FileEntry> {
+        const FEW: usize = 4;
+        let wanted = selection.len();
+        if wanted == 0 {
+            return Vec::new();
+        }
+        if wanted <= FEW {
+            let mut found: Vec<(usize, &FileEntry)> = selection
+                .iter()
+                .filter_map(|path| {
+                    let at = self.position_of(path)?;
+                    Some((at, self.get(at)?))
+                })
+                .collect();
+            found.sort_by_key(|(at, _)| *at);
+            return found.into_iter().map(|(_, entry)| entry).collect();
+        }
+        let mut found = Vec::with_capacity(wanted.min(self.len()));
+        for entry in self.iter() {
+            if selection.contains(&entry.path) {
+                found.push(entry);
+                if found.len() == wanted {
+                    break;
+                }
+            }
+        }
+        found
+    }
 }
 
 /// Whether a filter or a grouping reads the folder's Git marks (`git:` in the box, Group by Git).
@@ -587,6 +626,36 @@ mod tests {
             },
             "C:\\x",
         )
+    }
+
+    #[test]
+    fn the_rows_of_a_selection_come_in_display_order_few_or_many() {
+        use crate::explorer::Selection;
+        let entries: Arc<[FileEntry]> =
+            Arc::from((0..40).map(|i| file(&format!("f{i:02}.txt"), i, 0)).collect::<Vec<_>>());
+        // By size, biggest first: the display order is the listing's backwards.
+        let spec = RowSpec {
+            sort: Sort {
+                key: SortKey::Size,
+                desc: true,
+            },
+            ..RowSpec::default()
+        };
+        let rows = build_rows(&entries, &spec, 0);
+        let names = |selection: &Selection| -> Vec<String> {
+            rows.chosen(selection).iter().map(|entry| entry.name.clone()).collect()
+        };
+        assert!(names(&Selection::of([])).is_empty());
+        // A few: each found by its own path, then put in the rows' order.
+        let few = Selection::of(["C:\\x\\f03.txt", "C:\\x\\f30.txt", "C:\\x\\gone.txt"]);
+        assert_eq!(names(&few), ["f30.txt", "f03.txt"]);
+        // Many: one pass over the rows, which ends at the last of them.
+        let paths: Vec<String> = (10..20).map(|i| format!("C:\\x\\f{i}.txt")).collect();
+        let many = Selection::of(paths.iter().map(String::as_str));
+        let found = names(&many);
+        assert_eq!(found.len(), 10);
+        assert_eq!(found.first().map(String::as_str), Some("f19.txt"));
+        assert_eq!(found.last().map(String::as_str), Some("f10.txt"));
     }
 
     /// A listing as the engine sends it: folders first, natural name order.

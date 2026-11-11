@@ -468,10 +468,25 @@ impl FileList {
             );
         }
 
+        // What is in the folder, at the end of its name's column: there while the pointer is on the row, and on
+        // the row the keyboard is on. The folder was read ahead when either came to it, so this is said before it
+        // is opened.
+        if let Some(peek) = entry
+            .dir
+            .then(|| frame.peeks.iter().find(|peek| peek.path == entry.path))
+            .flatten()
+        {
+            let kept = focused && !frame.inactive;
+            name_cell = name_cell
+                .child(div().flex_1().min_w_0())
+                .child(peek_cell(i, peek, kept, t));
+        }
+
         // The row's highlight: a rounded fill inside the line (hover, selection, the folder files will drop into),
         // holding the cells. The line around it is what is clicked, named and measured.
         let mut fill = row_start()
             .id(("file-row-fill", i))
+            .group(ROW_GROUP)
             .relative()
             .size_full()
             .min_w_0()
@@ -631,6 +646,51 @@ impl FileList {
             None => line,
         };
         line.test_support().into_any_element()
+    }
+}
+
+/// The name rows are a hover group under: what shows only while the pointer is on a row asks it.
+const ROW_GROUP: &str = "file-row";
+
+/// What a folder holds, said in its row ([`super::Peek`]): its words, then its make-up as a small band. Drawn
+/// clear unless `kept` (the row the keyboard is on) and shown while the pointer is on the row; it gives way before
+/// the name does when the column is narrow.
+fn peek_cell(i: usize, peek: &super::Peek, kept: bool, t: &Tokens) -> impl IntoElement {
+    let band = row_start()
+        .flex_none()
+        .w(rems(2.5))
+        .h(px(3.))
+        .gap(px(1.))
+        .children(peek.band.iter().map(|(color, share)| {
+            div()
+                .h_full()
+                .flex_shrink(1.)
+                .w(relative(*share))
+                .rounded_full()
+                .bg(*color)
+        }));
+    let cell = row_start()
+        .id(("file-list-peek", i))
+        .role(Role::Note)
+        .aria_label(peek.words.clone())
+        .min_w_0()
+        .flex_shrink(1000.)
+        .overflow_hidden()
+        .gap(space(2.))
+        .text_size(theme::size::XS)
+        .text_color(t.muted_foreground)
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .child(crate::kit::rtl_line(peek.words.clone())),
+        )
+        .child(band)
+        .test_support();
+    if kept {
+        cell
+    } else {
+        cell.opacity(0.).group_hover(ROW_GROUP, |style| style.opacity(1.))
     }
 }
 

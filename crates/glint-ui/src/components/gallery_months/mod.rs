@@ -218,9 +218,14 @@ impl GalleryMonths {
 
     /// Groups the pane's rows into months again.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
+        // Only the Gallery has months: any other folder's rows are not walked for them.
         let rows = {
             let explorer = explorer(cx);
-            explorer.read(cx).pane_tab(self.pane).map(|tab| tab.rows.clone())
+            explorer
+                .read(cx)
+                .pane_tab(self.pane)
+                .filter(|tab| glint_model::paths::is_gallery(&tab.path) && tab.find.is_none())
+                .map(|tab| tab.rows.clone())
         };
         let Some(rows) = rows else {
             self.set(Vec::new(), cx);
@@ -372,10 +377,7 @@ impl GalleryMonths {
                             .cursor_pointer()
                             .hover(move |style| style.bg(accent).text_color(foreground))
                             .when(marked, |button| {
-                                button
-                                    .bg(accent)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(foreground)
+                                button.bg(accent).font_weight(FontWeight::MEDIUM).text_color(foreground)
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.go(at, cx)))
                             .child(div().min_w_0().truncate().child(name))
