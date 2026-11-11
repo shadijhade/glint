@@ -34,6 +34,7 @@ use crate::components::gallery_months::GalleryMonths;
 use crate::components::git::{self, GitEvent, ReadmeCard};
 use crate::components::menus::{self, MenuEvent, MenuHost};
 use crate::components::pane_bars::PaneBars;
+use crate::components::pane_head::PaneHead;
 use crate::components::preview::{self, PreviewPane};
 use crate::components::settings::SettingsEvent;
 use crate::components::sidebar::{Sidebar, SidebarEvent, SidebarRequest};
@@ -68,6 +69,19 @@ const DOCK_HEIGHT: Pixels = crate::components::status_bar::HEIGHT;
 const DOCK_SIDE_ROOM: f32 = 13.;
 /// The air between the sheet and the window's end and bottom edges.
 const SHEET_GAP: Pixels = px(8.);
+/// How long the window's light takes to turn to another place's color.
+const LIGHT_TURNS_IN: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// The light behind the window (see [`crate::art::aurora`]): the hue of the place shown, and while it turns, the
+/// hue it is leaving.
+#[derive(Clone, Copy, Debug, Default)]
+struct Light {
+    /// None until the first frame.
+    hue: Option<f32>,
+    from: Option<f32>,
+    /// Counts the turns, so each one's fade is its own animation.
+    turn: usize,
+}
 
 /// What a pane can show: one of each, kept for the window's life so each keeps its scroll and its state.
 struct PaneViews {
@@ -86,6 +100,8 @@ struct PaneViews {
     compare: Entity<CompareBar>,
     /// The search bar and the closed-folder bar above the pane (above the compare bar).
     bars: Entity<PaneBars>,
+    /// The folder's name, large, with what is in it and a chip for each kind, at the top of the pane.
+    head: Entity<PaneHead>,
 }
 
 /// Which of a pane's views is on screen.
@@ -125,6 +141,8 @@ pub struct Workspace {
     sidebar_width: Pixels,
     /// While the sidebar's edge is held: where the pointer was pressed and the width then.
     sidebar_drag: Option<(Pixels, Pixels)>,
+    /// The light behind the window: the hue it has, and the one it is leaving.
+    light: Light,
     /// The terminal pane under the panes (Ctrl+`), drawn only while it is open.
     terminal: Entity<TerminalPane>,
     /// Whether the bar was last told folder sizes are being measured.
@@ -178,6 +196,7 @@ impl Workspace {
                 frequent: cx.new(|cx| FrequentFolders::new(pane, window, cx)),
                 compare: cx.new(|cx| CompareBar::new(pane, window, cx)),
                 bars: cx.new(|cx| PaneBars::new(pane, window, cx)),
+                head: cx.new(|cx| PaneHead::new(pane, window, cx)),
             }
         });
         let command_bar = cx.new(|cx| CommandBar::new(window, cx));
@@ -272,6 +291,8 @@ impl Workspace {
             if window.is_window_active() {
                 theme::motion::sync_with_windows(cx);
             }
+            // The light behind the window dims while another window is in front.
+            cx.notify();
         }));
         // The explorer decides what each pane shows; the keyboard follows the active pane when it moves.
         let explorer = explorer::explorer(cx);
@@ -335,6 +356,7 @@ impl Workspace {
             command_bar,
             sidebar_width: SIDEBAR_START,
             sidebar_drag: None,
+            light: Light::default(),
             terminal,
             sizing: false,
             tools: None,
@@ -1397,6 +1419,86 @@ impl Workspace {
             .border_b_0()
     }
 
+    /// The color of the place the active pane shows: a special place's own, the nearest known folder's it is in
+    /// (Documents, and everything under it), else the accent.
+    fn place_tone(cx: &App) -> Hsla {
+        use glint_model::paths::{is_recycle_bin, GALLERY, RECENT};
+        let explorer = explorer::explorer(cx).read(cx);
+        let accent = theme::tokens(cx).primary;
+        let Some(tab) = explorer.active_tab() else {
+            return accent;
+        };
+        let path = tab.path.as_str();
+        if tab.is_this_pc() {
+            return accent;
+        }
+        if is_recycle_bin(path) {
+            return theme::place_tone(theme::Place::RecycleBin, cx);
+        }
+        if same_path(path, RECENT) {
+            return theme::place_tone(theme::Place::Recent, cx);
+        }
+        if same_path(path, GALLERY) {
+            return theme::place_tone(theme::Place::Gallery, cx);
+        }
+        // The deepest known folder the path is, or is in.
+        let lower = path.to_lowercase();
+        explorer
+            .known_folders()
+            .iter()
+            .filter(|known| {
+                let base = known.path.to_lowercase();
+                let base = base.trim_end_matches('\\');
+                lower == base || lower.strip_prefix(base).is_some_and(|rest| rest.starts_with('\\'))
+            })
+            .max_by_key(|known| known.path.len())
+            .map_or(accent, |known| theme::place_tone(theme::Place::Known(known.id), cx))
+    }
+
+    /// The light behind the window: soft color at its corners, the place's own at the start corner, under
+    /// everything. When the place changes the light turns to its color; while another window is in front it dims.
+    fn light(&mut self, window: &Window, cx: &App) -> impl IntoElement {
+        use gpui_kit::{Animation, AnimationExt as _};
+        crate::art::set_scale(window.scale_factor());
+        let (dark, rtl) = (theme::tokens(cx).dark, crate::i18n::is_rtl());
+        let hue = Self::place_tone(cx).h;
+        match self.light.hue {
+            // A few degrees is the same light (pictures are shared within 3°).
+            Some(now) if (now - hue).abs() < 0.008 => {}
+            Some(now) => {
+                self.light = Light {
+                    hue: Some(hue),
+                    from: Some(now),
+                    turn: self.light.turn + 1,
+                };
+            }
+            None => self.light.hue = Some(hue),
+        }
+        let picture = |hue: f32| {
+            img(crate::art::aurora(hue, dark, rtl))
+                .size_full()
+                .object_fit(gpui_kit::ObjectFit::Fill)
+        };
+        let layer = || div().absolute().inset_0();
+        let turn = self.light.turn;
+        let lights = match self.light.from.filter(|_| !cx.reduce_motion()) {
+            // Turning: the old light goes as the new one comes.
+            Some(from) => layer()
+                .child(layer().child(picture(from)).with_animation(
+                    ("light-going", turn),
+                    Animation::new(LIGHT_TURNS_IN).with_easing(gpui_kit::ease_in_out),
+                    |old, delta| old.opacity(1. - delta),
+                ))
+                .child(layer().child(picture(hue)).with_animation(
+                    ("light-coming", turn),
+                    Animation::new(LIGHT_TURNS_IN).with_easing(gpui_kit::ease_in_out),
+                    |new, delta| new.opacity(delta),
+                )),
+            None => layer().child(picture(hue)),
+        };
+        lights.opacity(if window.is_window_active() { 1. } else { 0.5 })
+    }
+
     /// Glint's mark (the folder with the glint on its corner) at the start of the bar: the installer's logo, drawn
     /// small, made once. It is a button: the app's own menu opens under it (Settings, the palette, the shortcut
     /// sheet, Drive health, another window), so those have a place to be found that isn't a key.
@@ -1487,7 +1589,7 @@ impl Workspace {
     }
 
     /// Pane `pane`: the view its tab asks for, and the zone a dragged tab can be dropped on.
-    fn pane(&self, pane: usize, t: &theme::Tokens, cx: &App) -> AnyElement {
+    fn pane(&self, pane: usize, cx: &App) -> AnyElement {
         let views = &self.panes[pane];
         let view: AnyElement = match Self::shown_in(pane, cx) {
             Some(Shown::ThisPc) => views.this_pc.clone().into_any_element(),
@@ -1537,8 +1639,11 @@ impl Workspace {
         };
         // The search and closed-folder bars, then the compare bar, on top of everything else in the pane (each draws
         // nothing when it has nothing to say).
+        // Over them all, the head: the folder's name and what is in it (nothing for This PC, the map, or a search).
+        let headed = shows_rows || matches!(Self::shown_in(pane, cx), Some(Shown::Columns));
         let view = col()
             .size_full()
+            .when(headed, |view| view.child(div().flex_none().child(views.head.clone())))
             .child(div().flex_none().child(views.bars.clone()))
             .child(div().flex_none().child(views.compare.clone()))
             .child(div().flex_1().min_h_0().child(view));
@@ -1547,7 +1652,6 @@ impl Workspace {
             .relative()
             .size_full()
             .min_w_0()
-            .bg(t.background)
             .on_mouse_up(MouseButton::Navigate(NavigationDirection::Back), move |_, _, cx| {
                 cx.stop_propagation();
                 Self::side_button(Some(pane), true, cx);
@@ -1566,8 +1670,8 @@ impl Workspace {
         let dual = explorer::explorer(cx).read(cx).is_dual();
         let files = if dual {
             // The first pane at the start edge, the second beside it, the divider between them draggable.
-            let first = resizable_panel().child(self.pane(0, t, cx));
-            let second = resizable_panel().child(self.pane(1, t, cx));
+            let first = resizable_panel().child(self.pane(0, cx));
+            let second = resizable_panel().child(self.pane(1, cx));
             let group = h_resizable("panes");
             let group = if rtl {
                 group.child(second).child(first)
@@ -1576,7 +1680,7 @@ impl Workspace {
             };
             div().size_full().child(group).into_any_element()
         } else {
-            self.pane(0, t, cx)
+            self.pane(0, cx)
         };
         // The terminal pane sits under the panes, in their column (it draws nothing while closed).
         let files = col()
@@ -1650,7 +1754,8 @@ impl Workspace {
             .role(Role::Main)
             .test_support()
             .size_full()
-            .bg(t.background)
+            // Glass: the window's light shows through it, faintly; a lit edge at its top.
+            .bg(t.sheet)
             .border_1()
             .border_color(t.stroke)
             .rounded(theme::size::RADIUS_SHEET)
@@ -1787,6 +1892,8 @@ impl Render for Workspace {
             .text_size(theme::size::SM)
             // Text starts at the reading direction's start edge (text alignment is inherited by everything below).
             .text_start()
+            // Under everything: the light, in the color of the place shown.
+            .child(self.light(window, cx))
             .on_action(
                 cx.listener(|_, _: &actions::ShowDriveHealth, window, cx| {
                     dialogs::drive_health::open(window, cx, None)
@@ -2005,7 +2112,17 @@ mod tests {
     const DEEP: &str = "a folder with a name that goes on for quite a while, 2026 edition";
 
     fn open_workspace(cx: &mut TestAppContext, rtl: bool) -> (VisualTestContext, Entity<Workspace>) {
+        open_workspace_on(cx, rtl, |_| ())
+    }
+
+    /// [`open_workspace`], with the disk prepared further before the explorer reads it.
+    fn open_workspace_on(
+        cx: &mut TestAppContext,
+        rtl: bool,
+        prepare: impl FnOnce(&FakeDisk),
+    ) -> (VisualTestContext, Entity<Workspace>) {
         let disk = FakeDisk::new();
+        prepare(&disk);
         disk.folder(
             "C:\\Work",
             vec![
@@ -2163,6 +2280,81 @@ mod tests {
             assert!(field.size.width > px(300.), "rtl {rtl}: {field:?}");
             testing::set_rtl(false);
         }
+    }
+
+    #[gpui_kit::test]
+    fn the_windows_light_is_the_color_of_the_place_shown_and_turns_when_the_place_changes(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        // C:\Work is this PC's Documents.
+        let (mut visual, workspace) = open_workspace_on(cx, false, |disk| {
+            disk.set_known(vec![explorer::KnownFolder {
+                id: explorer::KnownId::Documents,
+                name: "Documents",
+                path: "C:\\Work".into(),
+            }]);
+        });
+        let go = |visual: &mut VisualTestContext, path: &str| {
+            let path = path.to_string();
+            visual.update(|_, cx| {
+                explorer::explorer(cx).update(cx, |e, cx| e.navigate(path, explorer::NavOptions::default(), cx))
+            });
+            for _ in 0..3 {
+                visual.update(|window, cx| window.render_frame(cx));
+                visual.run_until_parked();
+            }
+        };
+        let (documents, accent) = visual.update(|_, cx| {
+            (
+                theme::place_tone(theme::Place::Known(explorer::KnownId::Documents), cx),
+                theme::tokens(cx).primary,
+            )
+        });
+        go(&mut visual, "C:\\Work");
+        assert_eq!(visual.update(|_, cx| Workspace::place_tone(cx)), documents);
+        let light = workspace.read_with(&visual, |workspace, _| workspace.light);
+        assert_eq!(light.hue, Some(documents.h));
+        let turns = light.turn;
+        // A folder in Documents is lit as Documents is.
+        go(&mut visual, "C:\\Work\\src");
+        assert_eq!(visual.update(|_, cx| Workspace::place_tone(cx)), documents);
+        assert_eq!(workspace.read_with(&visual, |workspace, _| workspace.light.turn), turns);
+        // This PC has the accent: the light turns to it from Documents' blue.
+        go(&mut visual, glint_model::paths::THIS_PC);
+        assert_eq!(visual.update(|_, cx| Workspace::place_tone(cx)), accent);
+        let light = workspace.read_with(&visual, |workspace, _| workspace.light);
+        assert_eq!(
+            (light.hue, light.from, light.turn),
+            (Some(accent.h), Some(documents.h), turns + 1)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_sheet_is_headed_by_the_folder_and_not_by_this_pc(cx: &mut TestAppContext) {
+        let _guard = testing::lock();
+        let (mut visual, _) = open_workspace(cx, false);
+        let head = bounds_of(&mut visual, "pane-head-title");
+        let (sheet, dock) = (bounds_of(&mut visual, "content"), bounds_of(&mut visual, "dock"));
+        // The name is at the top of the sheet, over the files, clear of the dock.
+        assert!(
+            head.top() >= sheet.top() && head.bottom() < dock.top(),
+            "{head:?} in {sheet:?}"
+        );
+        assert!(head.top() - sheet.top() < px(40.), "{head:?} in {sheet:?}");
+        visual.update(|_, cx| {
+            explorer::explorer(cx).update(cx, |e, cx| {
+                e.navigate(
+                    glint_model::paths::THIS_PC.to_string(),
+                    explorer::NavOptions::default(),
+                    cx,
+                )
+            })
+        });
+        visual.run_until_parked();
+        let found = visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.try_find("pane-head-title").is_some()
+        });
+        assert!(!found, "This PC has its own headings");
     }
 
     #[test]

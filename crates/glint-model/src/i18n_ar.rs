@@ -322,6 +322,26 @@ pub static AR_ENTRIES: &[(&str, &str)] = &[
     ("In place (still opens normally)…", "في مكانها (تُفتح كالمعتاد)…"),
     ("Convert to UTF-8", "تحويل إلى UTF-8"),
     ("Read as", "قراءة بترميز"),
+    // The head of a pane: the folder's name, what is in it, its kinds
+    ("About this folder", "عن هذا المجلد"),
+    ("Empty", "فارغ"),
+    ("No access", "لا يمكن الوصول"),
+    ("1 folder", "مجلد واحد"),
+    ("{count} folders", "{count} مجلدات"),
+    ("1 file", "ملف واحد"),
+    ("{count} files", "{count} ملفات"),
+    ("{shown} of {count} shown", "يُعرض {shown} من {count}"),
+    ("{name}: {count}", "{name}: {count}"),
+    ("Folders", "المجلدات"),
+    ("Audio", "الصوتيات"),
+    ("Archives", "الأرشيفات"),
+    ("Code and text", "النصوص والشيفرة"),
+    ("Programs", "البرامج"),
+    ("System files", "ملفات النظام"),
+    ("Disk images", "صور الأقراص"),
+    ("Databases", "قواعد البيانات"),
+    ("Fonts", "الخطوط"),
+    ("Other files", "ملفات أخرى"),
 ];
 
 /// The Arabic catalog keyed by English text, built once on first use from `AR_ENTRIES`.

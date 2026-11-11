@@ -400,6 +400,11 @@ const TEXT_NAMES: [&str; 8] = [
     ".gitignore",
 ];
 
+/// The folder's kind (its icon, label and tone), for drawing a folder that isn't an entry (a place, a tab).
+pub fn folder_kind() -> &'static Kind {
+    &FOLDER
+}
+
 /// What kind of file an entry is.
 pub fn kind_of(entry: &FileEntry) -> &'static Kind {
     if entry.dir {

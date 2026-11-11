@@ -1024,6 +1024,23 @@ impl Sidebar {
         }
     }
 
+    /// A place's picture: a folder for a pinned folder, else a chip in the place's own color with its glyph.
+    fn glyph_art(&self, glyph: &Glyph, across: Pixels, t: &Tokens, cx: &App) -> Div {
+        use crate::explorer::DriveKind;
+        use theme::Place;
+        let place = match glyph {
+            Glyph::Folder => return crate::art::folder(across, self.folder_color(t), None, cx),
+            Glyph::Recent => Place::Recent,
+            Glyph::Gallery => Place::Gallery,
+            Glyph::Known(id) => Place::Known(*id),
+            Glyph::Drive(DriveKind::Wsl) => Place::Wsl,
+            Glyph::Drive(_) => Place::Drive,
+            Glyph::RecycleBin => Place::RecycleBin,
+            Glyph::Remote(..) => Place::Remote,
+        };
+        crate::art::chip(across, theme::place_tone(place, cx), Self::glyph_icon(glyph), cx)
+    }
+
     fn draw_place(
         &self,
         ix: usize,
@@ -1038,11 +1055,6 @@ impl Sidebar {
             Label::Fixed(text) => t!(*text),
             Label::Plain(text) => text.clone(),
         };
-        let color = match &p.glyph {
-            Glyph::Folder | Glyph::Drive(crate::explorer::DriveKind::Wsl) => self.folder_color(t),
-            _ if p.active => t.foreground,
-            _ => t.muted_foreground,
-        };
         let bar = p
             .capacity
             .and_then(|(total, free)| capacity_bar(total, free, space(1.), cx));
@@ -1053,6 +1065,7 @@ impl Sidebar {
             .children(bar.map(|b| div().mt(space(1.)).child(b)));
         let tip = tooltip_of(label.clone(), p.detail.clone());
         let (active, accent, foreground) = (p.active, t.accent, t.foreground);
+        let (glass, edge) = (t.glass, t.stroke);
         let (lit, lit_ring) = (t.primary.opacity(0.2), t.primary);
         let mut button = row_start()
             .id(("place", ix))
@@ -1077,7 +1090,7 @@ impl Sidebar {
             .cursor_pointer()
             .text_color(t.foreground.opacity(0.9))
             .hover(move |s| s.bg(accent))
-            .when(active, move |d| d.bg(accent).text_color(foreground))
+            .when(active, move |d| d.bg(glass).border_color(edge).text_color(foreground))
             .when(dropping, move |d| {
                 d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(lit).border_color(lit_ring))
             })
@@ -1100,7 +1113,7 @@ impl Sidebar {
             )
             .tooltip(tip)
             .when(active, |d| d.child(Self::pill(t, space(4.))))
-            .child(icon(Self::glyph_icon(&p.glyph)).size_4().flex_none().text_color(color))
+            .child(self.glyph_art(&p.glyph, theme::rem_size(cx) * 1.25, t, cx))
             .child(text);
 
         let mut cell = div().group("row").relative().w_full().pb(space(0.25)).child(button);
@@ -1159,6 +1172,7 @@ impl Sidebar {
         let (lit, lit_ring) = (t.primary.opacity(0.2), t.primary);
         let tip = tooltip_of(f.name.clone(), SharedString::from(f.path.clone()));
         let (active, accent, foreground) = (f.active, t.accent, t.foreground);
+        let (glass, edge) = (t.glass, t.stroke);
         let button = row_start()
             .id(("folder", ix))
             .role(Role::TreeItem)
@@ -1181,7 +1195,7 @@ impl Sidebar {
             .text_size(TREE_TEXT)
             .text_color(t.foreground.opacity(0.85))
             .hover(move |s| s.bg(accent))
-            .when(active, move |d| d.bg(accent).text_color(foreground))
+            .when(active, move |d| d.bg(glass).border_color(edge).text_color(foreground))
             .when(dropping, move |d| {
                 d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(lit).border_color(lit_ring))
             })
@@ -1204,12 +1218,7 @@ impl Sidebar {
             )
             .tooltip(tip)
             .when(active, |d| d.child(Self::pill(t, space(3.5))))
-            .child(
-                icon(if f.open { IconName::FolderOpen } else { IconName::Folder })
-                    .size_4()
-                    .flex_none()
-                    .text_color(self.folder_color(t)),
-            )
+            .child(crate::art::folder(theme::rem_size(cx), self.folder_color(t), None, cx))
             .child(div().flex_1().min_w_0().truncate().child(isolate(f.name.clone())));
 
         let mut cell = div().group("row").relative().w_full().pb(space(0.25)).child(button);

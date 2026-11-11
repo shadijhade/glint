@@ -68,9 +68,9 @@ pub mod size {
     /// `rounded-xl`: dialogs.
     pub const RADIUS_XL: Pixels = px(12.);
     /// The sheet the files are on: its corner against the chrome.
-    pub const RADIUS_SHEET: Pixels = px(10.);
+    pub const RADIUS_SHEET: Pixels = px(14.);
     /// A row's or a tile's highlight (hover, selection): a pill inside its line.
-    pub const RADIUS_ROW: Pixels = px(6.);
+    pub const RADIUS_ROW: Pixels = px(8.);
 }
 
 /// How things move: the durations and curves, and the switches for what the vendored GPUI adds for Glint.
@@ -319,6 +319,12 @@ pub struct Tokens {
     pub foreground: Hsla,
     /// Windows 11's gray chrome (title bar, toolbars) over the white content.
     pub chrome: Hsla,
+    /// The sheet the files are on: `background`, see-through enough for the window's light to tint it (glass).
+    /// What must hide what is under it (a header rows scroll beneath, a menu) uses `background` or `popover`.
+    pub sheet: Hsla,
+    /// A pane of glass lying on the chrome, with the window's light behind it: the address field, the tab
+    /// and the place you are in.
+    pub glass: Hsla,
     pub card: Hsla,
     pub popover: Hsla,
     pub popover_foreground: Hsla,
@@ -377,6 +383,8 @@ impl Tokens {
             background: hsl(0., 0., 100.),
             foreground: hsl(240., 10., 10.),
             chrome: hsl(240., 6., 95.6),
+            sheet: hsla(0., 0., 1., 0.74),
+            glass: hsla(0., 0., 1., 0.62),
             card: hsl(0., 0., 100.),
             popover: hsl(0., 0., 100.),
             popover_foreground: hsl(240., 10., 10.),
@@ -426,6 +434,8 @@ impl Tokens {
             background: hsl(240., 6., 11.),
             foreground: hsl(240., 9., 95.5),
             chrome: hsl(240., 7., 7.5),
+            sheet: hsla(240. / 360., 0.09, 0.105, 0.70),
+            glass: hsla(240. / 360., 0.2, 1., 0.085),
             card: hsl(240., 6., 13.5),
             popover: hsl(240., 6., 15.),
             popover_foreground: hsl(240., 9., 95.5),
@@ -617,6 +627,20 @@ pub fn glint_fill(cx: &App) -> gpui_kit::Background {
     } else {
         (t.glint_from, t.glint_to)
     };
+    gpui_kit::linear_gradient(
+        90.,
+        gpui_kit::linear_color_stop(from, 0.),
+        gpui_kit::linear_color_stop(to, 1.),
+    )
+}
+
+/// The fill of what is selected where the keyboard is: the accent, fading along the reading direction (the
+/// selection's own light), stronger under the pointer.
+pub fn selected_fill(cx: &App, hovered: bool) -> gpui_kit::Background {
+    let t = tokens(cx);
+    let strong = if hovered { t.selected_hover.a } else { t.selected.a } * 1.35;
+    let (from, to) = (t.primary.opacity(strong), t.glint_to.opacity(strong * 0.38));
+    let (from, to) = if crate::i18n::is_rtl() { (to, from) } else { (from, to) };
     gpui_kit::linear_gradient(
         90.,
         gpui_kit::linear_color_stop(from, 0.),
@@ -940,6 +964,47 @@ pub fn kind_tone(kind: &glint_model::file_types::Kind, cx: &App) -> KindTone {
         }
     }
     tone
+}
+
+// ---- Places: their own colors ------------------------------------------------------------------------------
+
+/// A place Glint knows by more than its path: each has a color of its own, the same wherever it is drawn (its
+/// chip in the rail, its card on This PC, its folder in a list) and in the light behind the window while you
+/// are in it, so where you are can be told from the corner of the eye.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Recent,
+    Gallery,
+    Known(crate::explorer::KnownId),
+    Drive,
+    Wsl,
+    RecycleBin,
+    Remote,
+}
+
+/// A place's color. Home is the accent (it is the place the others are in); the rest are fixed.
+pub fn place_tone(place: Place, cx: &App) -> Hsla {
+    use crate::explorer::KnownId as K;
+    let hex: u32 = match place {
+        Place::Known(K::Home) => return tokens(cx).primary,
+        Place::Recent => 0x8b5cf6,
+        Place::Gallery => 0xd946ef,
+        Place::Known(K::Desktop) => 0x0ea5e9,
+        Place::Known(K::Documents) => 0x3b82f6,
+        Place::Known(K::Downloads) => 0x10b981,
+        Place::Known(K::Pictures) => 0xf43f5e,
+        Place::Known(K::Music) => 0xf97316,
+        Place::Known(K::Videos) => 0x6366f1,
+        Place::Drive | Place::RecycleBin => 0x64748b,
+        Place::Wsl => 0xea580c,
+        Place::Remote => 0x14b8a6,
+    };
+    rgb(hex).into()
+}
+
+/// The folder's color (amber), as rows, tiles and the tree draw it.
+pub fn folder_tone(cx: &App) -> Hsla {
+    kind_tone(glint_model::file_types::folder_kind(), cx).color
 }
 
 /// The monospace family for paths, code and hex (index.css's `--font-mono`: Cascadia Mono), as the kit's theme

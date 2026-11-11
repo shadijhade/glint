@@ -48,19 +48,13 @@ pub fn big_icon(
     cx: &App,
 ) -> impl IntoElement {
     let kind = kind_of(entry);
-    let tone = theme::kind_tone(kind, cx);
     let label: SharedString = glint_model::file_types::type_label(entry).into();
     let mut body = centered(cx)
         .id("preview-icon")
         .role(Role::Group)
         .aria_label(label)
         .test_support()
-        .child(
-            icon(kind_icon(kind.icon))
-                .size(px(64.))
-                .flex_none()
-                .text_color(tone.color),
-        );
+        .child(crate::art::kind(kind, px(88.), cx));
     if let Some(note) = note {
         body = body.child(
             sentence(note.clone())

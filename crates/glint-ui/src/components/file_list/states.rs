@@ -457,7 +457,11 @@ impl FileList {
         centered(t, "file-list-empty")
             .role(Role::Status)
             .aria_label(text.clone())
-            .child(faded(t, IconName::FolderOpen))
+            .child(
+                div()
+                    .opacity(0.9)
+                    .child(crate::art::folder(px(72.), theme::folder_tone(cx), None, cx)),
+            )
             .child(title(t, text))
             .when(!view.in_archive, |this| {
                 this.child(

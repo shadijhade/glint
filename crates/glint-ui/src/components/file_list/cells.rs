@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 /// The height of a line, 1.875 rem (30 px at the usual size): a 28 px highlight with a pixel of air above and
 /// below, so rows selected together read as rows, not as one slab.
-pub const ROW_HEIGHT: Rems = rems(1.875);
+pub const ROW_HEIGHT: Rems = rems(2.);
 /// The air between a line's edge and its highlight, at the sides.
 const INSET: Pixels = px(6.);
 /// An item modified within the last hour gets a dot in its date.
@@ -369,7 +369,6 @@ impl FileList {
         let dragged = frame.dragging.contains(&entry.path);
         let dropping = frame.drop_row.as_deref() == Some(entry.path.as_str());
         let kind = kind_of(entry);
-        let tone = theme::kind_tone(kind, cx);
         let type_text = type_label(entry);
         let date_text = format_date(entry.modified, None, i18n::language());
         // The date's title: the full date and time ("Deleted …" in the Recycle Bin).
@@ -397,11 +396,14 @@ impl FileList {
         let renaming = frame.renaming.as_deref() == Some(entry.path.as_str());
         let mark = match self.look_of(frame, entry, cx) {
             Some(look) => thumbnail_square(&look, kind, frame.box_px, frame.box_px, false, cx).into_any_element(),
-            None => icon(super::kind_icon(kind.icon))
-                .size(rems(1.))
-                .text_color(tone.color)
-                .flex_none()
-                .into_any_element(),
+            None => match entry
+                .dir
+                .then(|| self.explorer.read(cx).known_id_of(&entry.path))
+                .flatten()
+            {
+                Some(known) => crate::art::known_folder(known, px(frame.box_px), cx).into_any_element(),
+                None => crate::art::kind(kind, px(frame.box_px), cx).into_any_element(),
+            },
         };
         let name_tip: SharedString = if tracked.ignored {
             git::name_tooltip(&entry.name, true)
@@ -530,8 +532,10 @@ impl FileList {
                 // The pane the keyboard isn't in: a quiet gray, as an unfocused window shows it.
                 fill.bg(t.selected_inactive)
             } else {
-                let over = t.selected_hover;
-                fill.bg(t.selected).hover(move |style| style.bg(over))
+                let over = theme::selected_fill(cx, true);
+                fill.bg(theme::selected_fill(cx, false))
+                    .border_color(t.primary.opacity(0.22))
+                    .hover(move |style| style.bg(over))
             }
         } else {
             let over = t.accent;
@@ -545,7 +549,7 @@ impl FileList {
                 .bottom(rems(0.4375))
                 .w(px(3.))
                 .rounded_full()
-                .bg(t.primary);
+                .bg(theme::glint_fill(cx));
             fill = fill.child(if i18n::is_rtl() {
                 bar.right(px(-1.))
             } else {

@@ -669,7 +669,8 @@ function Open-Session {
     Reset-Arena
     $work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $w = [Math]::Min(1100, $work.Width - 60)
-    $h = [Math]::Min(640, $work.Height - 60)
+    # Tall enough that the arena's items leave empty list under them (the checks click and right-click there).
+    $h = [Math]::Min(760, $work.Height - 60)
     Set-FreshProfile -Left ($work.Left + 30) -Top ($work.Top + 20) -Width $w -Height $h
     Start-App -Folder $script:E2E.Arena
 }

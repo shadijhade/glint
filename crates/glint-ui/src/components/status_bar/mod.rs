@@ -35,7 +35,7 @@
 //! window rather than on the bar (the bar spans the window's full width).
 
 pub mod index;
-mod summary;
+pub(crate) mod summary;
 #[cfg(test)]
 mod tests;
 

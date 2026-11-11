@@ -925,11 +925,7 @@ impl PlayerView {
         } else if self.loaded && !self.facts.has_video {
             // A "video" with no picture in it: its kind's icon.
             let kind = kind_of(&self.entry);
-            let tone = theme::kind_tone(kind, cx);
-            icon(crate::kit::kind_icon(kind.icon))
-                .size(px(64.))
-                .text_color(tone.color)
-                .into_any_element()
+            crate::art::kind(kind, px(88.), cx).into_any_element()
         } else {
             div().size(px(96.)).child(self.waiting_card.clone()).into_any_element()
         };

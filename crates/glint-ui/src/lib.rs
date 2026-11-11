@@ -16,6 +16,8 @@
 //! services meet.
 
 pub mod actions;
+/// Glint's own pictures: folders, pages, chips, and the light behind the window.
+pub mod art;
 pub mod book_places;
 pub mod components;
 pub mod core_bridge;

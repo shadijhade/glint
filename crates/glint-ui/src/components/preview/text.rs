@@ -289,7 +289,6 @@ pub(super) fn note_centered(id: &'static str, text: SharedString, cx: &App) -> A
 /// under a note asking for one is `probe.rs`'s `Failed` body.)
 pub(super) fn big_icon(path: &str, note: Option<SharedString>, cx: &App) -> AnyElement {
     let kind = glint_model::file_types::kind_of(&entry_of(path));
-    let tone = theme::kind_tone(kind, cx);
     let t = theme::tokens(cx);
     col()
         .id("preview-big-icon")
@@ -304,11 +303,7 @@ pub(super) fn big_icon(path: &str, note: Option<SharedString>, cx: &App) -> AnyE
         .text_center()
         .text_size(theme::size::SM)
         .text_color(t.muted_foreground)
-        .child(
-            icon(crate::kit::kind_icon(kind.icon))
-                .size(space(16.))
-                .text_color(tone.color),
-        )
+        .child(crate::art::kind(kind, px(88.), cx))
         .children(note.map(|note| div().max_w(space(96.)).child(note)))
         .into_any_element()
 }

@@ -582,19 +582,9 @@ impl ThisPc {
         let drop_path = tile.path.clone();
         let drag_name = tile.name.clone();
         let lit = Rc::clone(&self.drop_over);
-        let (primary, accent, ring, border, card) = (t.primary, t.accent, t.ring, t.border, t.card);
+        let (primary, accent, ring) = (t.primary, t.accent, t.ring);
         // The folder's icon: a tinted square, as the TypeScript's.
-        let glyph = div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(space(8.))
-            .h(space(8.))
-            .flex_none()
-            .rounded(theme::size::RADIUS)
-            .bg(primary.opacity(0.1))
-            .text_color(primary)
-            .child(icon(known_icon(tile.id)).size_4());
+        let glyph = crate::art::known_folder(tile.id, (theme::rem_size(cx) * 2.5).round(), cx);
 
         div()
             .id(("this-pc-folder", index))
@@ -613,10 +603,10 @@ impl ThisPc {
             .flex_grow(1.)
             .flex_shrink(1.)
             .p(space(3.))
-            .rounded(theme::size::RADIUS_LG)
+            .rounded(theme::size::RADIUS_XL)
             .border_1()
-            .border_color(border)
-            .bg(card)
+            .border_color(t.stroke)
+            .bg(t.glass)
             .cursor_pointer()
             .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent))
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
@@ -678,12 +668,10 @@ impl ThisPc {
         // The quick actions show when the tile is hovered or has the focus inside it (the TypeScript's group).
         let group = SharedString::from(format!("this-pc-drive-{index}"));
         let focus_within = tile.focus.contains_focused(window, cx);
-        let (primary, accent, ring, border, card, muted, muted_fg, destructive, warning, foreground) = (
+        let (primary, accent, ring, muted, muted_fg, destructive, warning, foreground) = (
             t.primary,
             t.accent,
             t.ring,
-            t.border,
-            t.card,
             t.muted,
             t.muted_foreground,
             t.destructive,
@@ -693,24 +681,20 @@ impl ThisPc {
         let nearly = model::nearly_full(tile.percent);
         let tone = if nearly { destructive } else { muted_fg };
 
-        let glyph = div()
-            .mt(space(0.5))
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(space(9.))
-            .h(space(9.))
-            .flex_none()
-            .rounded(theme::size::RADIUS_LG)
-            .border_1()
-            .border_color(if nearly { destructive.opacity(0.4) } else { border })
-            .bg(if nearly {
-                destructive.opacity(0.1)
-            } else {
-                muted.opacity(0.4)
-            })
-            .text_color(tone)
-            .child(icon(drive_icon(tile.kind)).size_5());
+        // The drive's chip: red when it is nearly full, as its bar is.
+        let chip_tone = if nearly {
+            destructive
+        } else if tile.kind == DriveKind::Wsl {
+            theme::place_tone(theme::Place::Wsl, cx)
+        } else {
+            theme::place_tone(theme::Place::Drive, cx)
+        };
+        let glyph = div().mt(space(0.5)).child(crate::art::chip(
+            (theme::rem_size(cx) * 2.5).round(),
+            chip_tone,
+            drive_icon(tile.kind),
+            cx,
+        ));
 
         // The name line: the name, the badges (WSL, file system, health), and the used share at the end.
         let wsl_tip = t!("Windows Subsystem for Linux distribution");
@@ -800,10 +784,10 @@ impl ThisPc {
             .flex_grow(1.)
             .flex_shrink(1.)
             .p(space(3.))
-            .rounded(theme::size::RADIUS_LG)
+            .rounded(theme::size::RADIUS_XL)
             .border_1()
-            .border_color(border)
-            .bg(card)
+            .border_color(t.stroke)
+            .bg(t.glass)
             .cursor_pointer()
             .hover(|style| style.border_color(primary.opacity(0.4)).bg(accent))
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
