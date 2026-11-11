@@ -43,7 +43,6 @@ impl Render for Host {
             DeletePermanently,
             BatchRename,
             DiskUsage,
-            TextSearch,
             CommandPalette,
             ToggleHidden,
             TogglePreview,
@@ -296,14 +295,22 @@ fn a_folder_with_nothing_selected_offers_new_and_paste_but_not_cut_copy_rename_o
 
     assert!(rig.enabled("New folder"));
     assert!(rig.enabled("Paste (Ctrl+V)"));
-    for off in [
+    // What acts on a selection isn't in the island until there is one: nothing greyed out stands in it.
+    let on_a_selection = [
         "Cut (Ctrl+X)",
         "Copy (Ctrl+C)",
         "Rename (F2) · Ctrl+Shift+R renames many",
         "Delete (Del) · Shift+Del deletes permanently",
-    ] {
-        assert!(!rig.enabled(off), "{off} needs a selection");
+    ];
+    for absent in on_a_selection {
+        assert!(!rig.present(absent), "{absent} needs a selection");
     }
+    rig.select(&["C:\\Work\\notes.txt"]);
+    for there in on_a_selection {
+        assert!(rig.enabled(there), "{there} arrives with the selection");
+    }
+    rig.select(&[]);
+    assert!(!rig.present("Cut (Ctrl+X)"), "and leaves with it");
     // Always on: the palette, the toggles, the views, the map, folder sizes, text search, the tools.
     for on in [
         "Command palette (Ctrl+K)",
@@ -315,7 +322,6 @@ fn a_folder_with_nothing_selected_offers_new_and_paste_but_not_cut_copy_rename_o
         "Grid, with thumbnails (Ctrl+Shift+2)",
         "Disk usage",
         "Folder sizes",
-        "Search text",
         "Tools",
         "Run",
     ] {
@@ -454,7 +460,7 @@ fn a_search_keeps_the_edits_off_what_cant_be_made_and_this_pc_has_no_folder_tool
     // This PC is not a folder: nothing is made or pasted there, no map, no folder sizes.
     assert!(!rig.facts().in_folder);
     assert!(!rig.enabled("New folder") && !rig.enabled("Paste (Ctrl+V)"));
-    assert!(!rig.enabled("Disk usage") && !rig.enabled("Folder sizes") && !rig.enabled("Search text"));
+    assert!(!rig.enabled("Disk usage") && !rig.enabled("Folder sizes"));
     // The palette and the toggles still work.
     assert!(rig.enabled("Command palette (Ctrl+K)") && rig.enabled("Show hidden items (Ctrl+H)"));
 
@@ -485,14 +491,13 @@ fn the_edit_buttons_run_the_workspaces_actions(cx: &mut TestAppContext) {
     }
     assert_eq!(rig.log(), ["NewFolder", "Cut", "Copy", "Paste", "Rename", "Delete"]);
     rig.clear();
-    for id in ["disk-usage", "search-text", "palette", "hidden", "preview", "dual"] {
+    for id in ["disk-usage", "palette", "hidden", "preview", "dual"] {
         rig.click(id);
     }
     assert_eq!(
         rig.log(),
         [
             "DiskUsage",
-            "TextSearch",
             "CommandPalette",
             "ToggleHidden",
             "TogglePreview",
@@ -506,9 +511,10 @@ fn the_edit_buttons_run_the_workspaces_actions(cx: &mut TestAppContext) {
 fn a_disabled_button_does_nothing(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = open(cx, false, 1000.);
-    rig.go("C:\\Work");
-    rig.click("cut");
-    rig.click("delete");
+    // This PC is no folder: New folder and Paste are there, greyed out, and pressing them does nothing.
+    assert!(!rig.enabled("New folder") && !rig.enabled("Paste (Ctrl+V)"));
+    rig.click("new-folder");
+    rig.click("paste");
     assert!(rig.log().is_empty());
     testing::set_rtl(false);
 }
@@ -565,7 +571,10 @@ fn in_two_panes_items_go_to_the_other_pane_and_compare_panes_flips(cx: &mut Test
     rig.act(|e, cx| e.switch_pane(cx));
     let f = rig.facts();
     assert!(f.dual && f.other, "the other pane shows a folder");
-    assert!(!rig.enabled("Copy to the other pane"), "nothing is selected");
+    assert!(
+        !rig.present("Copy to the other pane"),
+        "nothing is selected: nothing to send"
+    );
     rig.select(&["C:\\Work\\todo.txt"]);
     assert!(rig.enabled("Copy to the other pane") && rig.enabled("Move to the other pane"));
     // The same name in the other folder is its namesake: one file here compares with it.
@@ -743,11 +752,8 @@ fn the_tools_menu_grows_as_the_bar_folds_and_is_greyed_for_what_cant_be_done() {
             "Check with YARA rules",
         ]
     );
-    // At 4 the map, folder sizes and text search come in; at 5 the palette too.
-    assert_eq!(
-        &at(4)[..4],
-        ["Disk usage", "Folder sizes", "Search text in this folder", "-"]
-    );
+    // At 4 the map and folder sizes come in; at 5 the palette too.
+    assert_eq!(&at(4)[..3], ["Disk usage", "Folder sizes", "-"]);
     assert_eq!(&at(5)[..2], ["Command palette", "-"]);
     assert_eq!(at(3), plain);
 
@@ -994,7 +1000,6 @@ fn a_pick_survives_being_carried_in_a_run() {
         Pick::Palette,
         Pick::DiskUsage,
         Pick::FolderSizes,
-        Pick::SearchText,
         Pick::TerminalPane,
         Pick::CopyToOther,
         Pick::MoveToOther,
@@ -1162,6 +1167,8 @@ fn each_fold_hides_what_the_typescript_hid(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = open(cx, false, 1400.);
     rig.go("C:\\Work");
+    // With something selected, so Cut, Copy, Rename and Delete are there to fold.
+    rig.select(&["C:\\Work\\notes.txt"]);
     // Find a width for each fold by narrowing until the bar reaches it.
     let mut seen: std::collections::BTreeMap<usize, f32> = Default::default();
     let mut width = 1400.;
@@ -1188,9 +1195,9 @@ fn each_fold_hides_what_the_typescript_hid(cx: &mut TestAppContext) {
     assert!(!rig.present("Show hidden items (Ctrl+H)") && !rig.present("Preview pane (Alt+P)"));
     assert!(rig.present("View: hidden items, preview pane, dual pane, compare panes"));
     assert!(rig.present("Disk usage"));
-    // Fold 4: Disk usage, Folder sizes and Search text are in the Tools menu.
+    // Fold 4: Disk usage and Folder sizes are in the Tools menu.
     at(&mut rig, 4);
-    assert!(!rig.present("Disk usage") && !rig.present("Folder sizes") && !rig.present("Search text"));
+    assert!(!rig.present("Disk usage") && !rig.present("Folder sizes"));
     assert!(rig.present("List (Ctrl+Shift+6)") && rig.present("Command palette (Ctrl+K)"));
     // Fold 5: list and grid are in the View menu, the palette in Tools.
     at(&mut rig, 5);
@@ -1208,17 +1215,7 @@ fn each_fold_hides_what_the_typescript_hid(cx: &mut TestAppContext) {
         .read_with(&rig.cx, |bar, cx| bar.menu_view().map(|v| v.read(cx).nodes().to_vec()))
         .expect("the Tools menu is open");
     let words = labels(&nodes);
-    assert_eq!(
-        &words[..6],
-        [
-            "Command palette",
-            "-",
-            "Disk usage",
-            "Folder sizes",
-            "Search text in this folder",
-            "-"
-        ]
-    );
+    assert_eq!(&words[..5], ["Command palette", "-", "Disk usage", "Folder sizes", "-"]);
     rig.press("escape");
     testing::set_rtl(false);
 }
@@ -1276,9 +1273,9 @@ fn every_control_has_a_name_and_no_two_share_one(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut rig = open(cx, false, 1400.);
     rig.go("C:\\Work");
-    rig.select(&["C:\\Work\\notes.txt"]);
     rig.act(|e, cx| e.toggle_dual(cx));
     rig.go("C:\\Other");
+    rig.select(&["C:\\Other\\other.txt"]);
     let names = rig.buttons();
     assert!(names.len() >= 20, "{names:?}");
     let mut seen = std::collections::HashSet::new();
@@ -1352,13 +1349,6 @@ fn the_tooltips_name_the_keys_the_bindings_table_gives_each_action() {
             "Grid, with thumbnails (Ctrl+Shift+2)",
         ),
         (
-            keyed(
-                "Search inside the files in this folder (ripgrep) · {0}",
-                &[&actions::TextSearch],
-            ),
-            "Search inside the files in this folder (ripgrep) · Ctrl+Shift+F",
-        ),
-        (
             keyed("Compare files ({0})", &[&actions::CompareFiles]),
             "Compare files (Ctrl+M)",
         ),
@@ -1385,7 +1375,6 @@ fn the_tooltips_name_the_keys_the_bindings_table_gives_each_action() {
         &actions::GridLarger,
         &actions::GridSmaller,
         &actions::GridReset,
-        &actions::TextSearch,
         &actions::CompareFiles,
         &actions::ToggleTerminal,
     ] {
@@ -1440,7 +1429,8 @@ fn an_arabic_name_is_in_the_compare_tooltip_and_the_menu_opens_toward_the_start(
     assert_eq!(pair.right_name, "تقرير.txt");
     let label = "Compare “notes.txt” and “تقرير.txt” (Ctrl+M)";
     assert!(rig.present(label), "{:?}", rig.buttons());
-    // The New menu opens under its button, anchored at the button's start edge: the right in Arabic.
+    // The New menu opens over its button (the island is at the foot of the window), anchored at the button's
+    // start edge: the right in Arabic.
     rig.click("new-menu");
     let (at, button) = rig.bar.read_with(&rig.cx, |bar, _| {
         (
@@ -1450,7 +1440,7 @@ fn an_arabic_name_is_in_the_compare_tooltip_and_the_menu_opens_toward_the_start(
     });
     let (at, button) = (at.expect("open"), button.expect("measured"));
     assert_eq!(at.x, button.right());
-    assert_eq!(at.y, button.bottom() + px(4.));
+    assert_eq!(at.y, button.top() - px(6.));
     rig.press("escape");
     testing::set_rtl(false);
 }

@@ -8,7 +8,11 @@ use glint_model::entries::asks_models;
 use glint_model::js::is_js_space;
 use glint_model::paths::is_folder_path;
 use glint_model::plain::plain_query;
+use glint_model::store::{SavedSearch, SearchOptionKey, SearchOptions};
 use search::{has_git_filter, ready_query, starts_with_drive, Offer, FILTERS, GIT_FILTER, PROP_FILTERS};
+
+/// How many of the last searches the empty box offers.
+const RECENT_SHOWN: usize = 5;
 
 /// Typing waits this long before a search as you type starts (the TypeScript's 100 ms).
 const AS_TYPED_AFTER: Duration = Duration::from_millis(100);
@@ -119,7 +123,50 @@ impl AddressBar {
             );
             return;
         }
+        // Kept among the recent searches the empty box offers (when Settings keep them).
+        if !filter.trim().is_empty() {
+            let (query, folder) = (filter.clone(), self.seen.path.clone());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+            crate::persistence::update_app(cx, |app| app.add_to_history(&query, &folder, now));
+        }
         cx.emit(AddressBarEvent::RunFind { query: filter });
+    }
+
+    /// The switches of the search inside files (match case, whole words, a regular expression; documents,
+    /// pictures' text, meaning), as they are saved.
+    fn options(cx: &App) -> SearchOptions {
+        crate::persistence::app(cx).map(|app| app.options).unwrap_or_default()
+    }
+
+    /// Flips one of those switches; results on screen were found the other way, so they are searched for again.
+    fn toggle_option(&mut self, key: SearchOptionKey, cx: &mut Context<Self>) {
+        let o = Self::options(cx);
+        let on = match key {
+            SearchOptionKey::CaseSensitive => o.case_sensitive,
+            SearchOptionKey::WholeWord => o.whole_word,
+            SearchOptionKey::Regex => o.regex,
+            SearchOptionKey::Code => o.code,
+            SearchOptionKey::Documents => o.documents,
+            SearchOptionKey::Ocr => o.ocr,
+            SearchOptionKey::Meaning => o.meaning,
+        };
+        crate::persistence::update_app(cx, |app| app.set_option(key, !on));
+        if self.seen.has_find {
+            cx.emit(AddressBarEvent::RerunFind {
+                query: self.seen.filter.clone(),
+                scope: String::new(),
+            });
+        }
+        cx.notify();
+    }
+
+    /// One of the recent searches was chosen: its folder opens with its words searched for.
+    fn run_recent(&mut self, query: String, folder: String, cx: &mut Context<Self>) {
+        self.explorer.update(cx, |explorer, cx| {
+            explorer.run_saved_search(SavedSearch { query, folder }, cx).detach()
+        });
     }
 
     /// Tab: the filters read from plain words go in the box.
@@ -160,7 +207,8 @@ impl AddressBar {
         cx.notify();
     }
 
-    /// The search box with its hints.
+    /// The search box with its hints: the end of the bar's field. What is typed is looked for in names and, on
+    /// Enter, inside the files too; its switches say how the words are matched there.
     pub(super) fn search_box(
         &mut self,
         t: &theme::Tokens,
@@ -171,16 +219,22 @@ impl AddressBar {
         let rem = window.rem_size();
         let viewport = window.viewport_size();
         let has_text = !seen.filter.is_empty() || seen.has_find;
-        // In a narrow window, just its magnifier until it's clicked into or holds a search.
+        let open = self.find_focused || has_text;
+        // It takes more of the field while it is used. In a narrow window, just its magnifier until then.
         let width = if viewport.width >= rem * 40. {
-            (viewport.width * 0.22).max(rem * 8.).min(rem * 19.)
-        } else if self.find_focused || has_text {
+            if open {
+                (viewport.width * 0.3).max(rem * 12.).min(rem * 26.)
+            } else {
+                (viewport.width * 0.2).max(rem * 9.).min(rem * 16.)
+            }
+        } else if open {
             (rem * 16.).min(viewport.width * 0.5)
         } else {
             rem * 2. + px(2.)
         };
         let rtl = i18n::is_rtl();
         let name = SharedString::from(seen.folder_name.clone());
+        let options = Self::options(cx);
 
         let clear = has_text.then(|| {
             Button::new("address-search-clear")
@@ -191,10 +245,51 @@ impl AddressBar {
                 .tooltip(t!("Clear (Esc)"))
                 .on_click(cx.listener(|this, _, window, cx| this.clear_search(window, cx)))
         });
+        // How the words are matched inside files: shown while the box is in use, lit while on.
+        let switch = |id: &'static str, glyph: IconName, key: SearchOptionKey, on: bool, tip: SharedString| {
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .icon(glyph)
+                .selected(on)
+                .accessibility_label(tip.clone())
+                .tooltip(tip)
+                // The box keeps the keyboard.
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_option(key, cx)))
+        };
+        let switches = open.then(|| {
+            row_start()
+                .id("address-search-switches")
+                .gap(px(1.))
+                .child(switch(
+                    "address-search-case",
+                    IconName::CaseSensitive,
+                    SearchOptionKey::CaseSensitive,
+                    options.case_sensitive,
+                    t!("Match case, inside files (Alt+C)"),
+                ))
+                .child(switch(
+                    "address-search-word",
+                    IconName::WholeWord,
+                    SearchOptionKey::WholeWord,
+                    options.whole_word,
+                    t!("Whole words, inside files (Alt+W)"),
+                ))
+                .child(switch(
+                    "address-search-regex",
+                    IconName::Regex,
+                    SearchOptionKey::Regex,
+                    options.regex,
+                    t!("Regular expression, inside files (Alt+R)"),
+                ))
+        });
         let input = Input::new(&self.search)
+            .appearance(false)
+            .h_full()
             .aria_label(t!("Search {folder} and its subfolders.", folder = name))
             .prefix(icon(IconName::Search).size_4().text_color(t.muted_foreground))
-            .suffix(div().children(clear));
+            .suffix(row_start().gap(px(1.)).children(switches).children(clear));
 
         let plain = self.plain.clone().map(|plain| {
             let query = plain.query.clone();
@@ -295,6 +390,110 @@ impl AddressBar {
             }
             let base = first.len();
             let height = (viewport.height - rem * 3.5).max(px(0.));
+            // Where else the words are looked for inside files, beyond their own text.
+            let reach = |id: &'static str, glyph: IconName, key: SearchOptionKey, on: bool, label: SharedString, tip: SharedString, off: bool, cx: &mut Context<Self>| {
+                Button::new(id)
+                    .outline()
+                    .xsmall()
+                    .icon(glyph)
+                    .label(label)
+                    .selected(on)
+                    .disabled(off)
+                    .tooltip(tip)
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_option(key, cx)))
+            };
+            let reaches = row_start()
+                .id("address-search-reach")
+                .role(Role::Group)
+                .aria_label(t!("Also look inside"))
+                .test_support()
+                .flex_wrap()
+                .gap(space(1.5))
+                .mt(space(2.))
+                .child(div().text_color(t.muted_foreground).child(t!("Also look inside")))
+                .child(reach(
+                    "address-search-documents",
+                    IconName::FileText,
+                    SearchOptionKey::Documents,
+                    options.documents,
+                    t!("Documents"),
+                    t!("The text in PDF, Word, Excel, PowerPoint, OpenDocument and EPUB files"),
+                    false,
+                    cx,
+                ))
+                .child(reach(
+                    "address-search-pictures",
+                    IconName::ScanText,
+                    SearchOptionKey::Ocr,
+                    options.ocr,
+                    t!("Pictures"),
+                    t!("With Documents: the text in pictures, read by Windows' OCR"),
+                    !options.documents,
+                    cx,
+                ))
+                .child(reach(
+                    "address-search-meaning",
+                    IconName::Sparkles,
+                    SearchOptionKey::Meaning,
+                    options.meaning,
+                    t!("By meaning"),
+                    t!("Documents and notes ranked by what they're about, not by their words (a small model, downloaded once)"),
+                    false,
+                    cx,
+                ));
+            // The last searches: one click opens its folder and runs it again.
+            let recent: Vec<(String, String)> = crate::persistence::app(cx)
+                .map(|app| {
+                    app.history
+                        .iter()
+                        .take(RECENT_SHOWN)
+                        .map(|item| (item.query.clone(), item.path.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let recents = (!recent.is_empty()).then(|| {
+                col()
+                    .id("address-search-recent")
+                    .role(Role::Group)
+                    .aria_label(t!("Recent searches"))
+                    .test_support()
+                    .mt(space(2.))
+                    .child(
+                        div()
+                            .px(space(1.5))
+                            .pb(space(0.5))
+                            .text_color(t.muted_foreground)
+                            .child(t!("Recent searches")),
+                    )
+                    .children(recent.into_iter().enumerate().map(|(i, (query, folder))| {
+                        let place = glint_model::paths::base_name(&folder).to_string();
+                        let (run_query, run_folder) = (query.clone(), folder.clone());
+                        row_start()
+                            .id(("address-recent", i))
+                            .role(Role::Button)
+                            .aria_label(t!("{query} in {folder}", query = query, folder = place))
+                            .test_support()
+                            .gap(space(2.))
+                            .px(space(1.5))
+                            .py(space(1.))
+                            .rounded(theme::size::RADIUS_SM)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(t.accent))
+                            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.run_recent(run_query.clone(), run_folder.clone(), cx)
+                            }))
+                            .child(icon(IconName::Clock).size_3p5().text_color(t.muted_foreground))
+                            .child(div().min_w_0().truncate().child(isolate(query)))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(t.muted_foreground)
+                                    .child(isolate(place)),
+                            )
+                    }))
+            });
             col()
                 .id("address-hints")
                 .role(Role::Group)
@@ -313,8 +512,10 @@ impl AddressBar {
                 .shadow_lg()
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .child(div().text_color(t.muted_foreground).child(t!(
-                    "Typing filters this folder. Enter searches its subfolders too, by name or path: as you type, where instant search covers them."
+                    "Typing filters this folder. Enter searches its subfolders too: names, and inside the files. Names are found as you type where instant search covers them."
                 )))
+                .child(reaches)
+                .children(recents)
                 .child(offers(None, first, 0, cx))
                 .child(offers(
                     Some(t!("What photos, videos and songs say (read from the files):")),
@@ -345,12 +546,22 @@ impl AddressBar {
             .key_context(keys::FIND)
             .relative()
             .flex_none()
+            .h_full()
             .w(width)
+            .on_action(cx.listener(|this, _: &crate::actions::TextMatchCase, _, cx| {
+                this.toggle_option(SearchOptionKey::CaseSensitive, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::actions::TextWholeWord, _, cx| {
+                this.toggle_option(SearchOptionKey::WholeWord, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::actions::TextRegex, _, cx| {
+                this.toggle_option(SearchOptionKey::Regex, cx)
+            }))
             .on_action(cx.listener(|this, _: &ListComplete, window, cx| this.take_plain(window, cx)))
             .on_action(cx.listener(|_, _: &ListDown, _, cx| cx.emit(AddressBarEvent::FocusFiles { first: true })))
             .on_action(cx.listener(|this, _: &ListCancel, window, cx| this.leave_search(window, cx)))
             .tooltip(tip(t!(
-                "Typing filters this folder · Enter searches its subfolders too, by name or path, with the instant search index or fd (* and ? work, words all must match); where the index covers them, they're searched as you type. Filters: ext:pdf, path:src\\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:; shows: (what photos show) and says: (what recordings say), with photo and speech search on in Settings"
+                "Typing filters this folder · Enter searches its subfolders too: names (the instant search index or fd; * and ? work, words all must match) and inside the files (ripgrep, or the content index). Filters: ext:pdf, path:src\\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:; shows: (what photos show) and says: (what recordings say), with photo and speech search on in Settings"
             )))
             .child(input)
             .children(plain.map(|p| overlay(p.into_any_element())))

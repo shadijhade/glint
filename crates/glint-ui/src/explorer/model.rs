@@ -67,6 +67,10 @@ pub(super) struct Prefs {
     pub find_exclusions: Vec<String>,
     /// The most results a search keeps; none for no limit.
     pub find_max_results: Option<u64>,
+    /// Names and globs a search inside files skips.
+    pub inside_exclusions: Vec<String>,
+    /// The most matching lines a search inside files keeps; none for no limit.
+    pub inside_max_results: Option<u64>,
     /// Compare panes goes into the subfolders too (the compare bar's options).
     pub compare_subfolders: bool,
     /// Compare panes reads the files' contents, not only their sizes and dates.
@@ -92,6 +96,8 @@ impl Prefs {
             find_respect_ignore: settings.find_respect_ignore,
             find_exclusions: settings.find_exclusions.clone(),
             find_max_results: settings.find_max_results,
+            inside_exclusions: settings.exclusions.clone(),
+            inside_max_results: settings.max_results,
             compare_subfolders: settings.compare_subfolders,
             compare_contents: settings.compare_contents,
         }
@@ -673,6 +679,17 @@ impl Explorer {
                 .clone()
                 .filter(|_| tab.find.is_none() && same_path(&tab.git_for, &tab.path) && reads_git(&tab.filter, group))
                 .map(|marks| RowMarks { marks }),
+            // What the search found inside files: those files stay among the rows, and in the list each file's
+            // lines go under its row.
+            inside: tab
+                .find
+                .as_ref()
+                .filter(|find| !find.inside.hits.is_empty())
+                .map(|find| super::rows::RowInside {
+                    only: find.inside.only.clone(),
+                    hits: find.inside.hits.clone(),
+                    lines: tab.view == ViewMode::List,
+                }),
         })
     }
 
@@ -769,6 +786,12 @@ impl Explorer {
     /// read ("gallery-dated").
     fn on_core_event(&mut self, event: &CoreEvent, cx: &mut Context<Self>) {
         match event.name.as_str() {
+            // What a search inside files found (`inside.rs`).
+            "search-event" => {
+                if let Ok(raw) = serde_json::from_value::<super::inside::RawEvent>(event.payload.clone()) {
+                    self.inside_heard(raw, cx);
+                }
+            }
             "dir-changed" => {
                 if let Some(folder) = event.payload.as_str() {
                     self.reload_folder(folder, cx);

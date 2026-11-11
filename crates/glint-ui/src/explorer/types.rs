@@ -358,6 +358,49 @@ pub struct FindRun {
     pub error: String,
     /// What it didn't look in.
     pub skipped: Vec<String>,
+    /// What the same words found inside files (`inside.rs`): their files are among `entries` too.
+    pub inside: Inside,
+}
+
+/// One line that matched inside a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    /// The line's number, from 1 (a document's passage has none).
+    pub line: Option<u64>,
+    /// A document's match: where it is ("p. 3", "slide 2").
+    pub label: Option<String>,
+    /// The line, trimmed for one row, in plain and matching parts.
+    pub parts: Vec<glint_model::text::Segment>,
+}
+
+/// Every file's matching lines, by path.
+pub type Hits = std::collections::HashMap<String, Arc<[Hit]>>;
+
+/// What a search found inside files (`inside.rs`). The files whose lines matched are rows like any other result:
+/// the ones the name search didn't list are added to [`FindRun::entries`] and named in `only`.
+#[derive(Clone, Debug, Default)]
+pub struct Inside {
+    /// The words looked for inside files ("" when the search has none: only filters, a path, a wildcard).
+    pub words: String,
+    /// The files found by what is in them and not by their names.
+    pub only: Arc<std::collections::HashSet<String>>,
+    pub hits: Arc<Hits>,
+    /// How many lines matched in all.
+    pub matches: usize,
+    pub running: bool,
+    /// It stopped at the result limit.
+    pub limited: bool,
+    pub error: String,
+    pub elapsed: f64,
+    /// The contents weren't searched because the place is big (a whole drive): the results' bar offers to.
+    pub offered: bool,
+}
+
+impl Inside {
+    /// How many files have matching lines.
+    pub fn files(&self) -> usize {
+        self.hits.len()
+    }
 }
 
 // ---- Options ------------------------------------------------------------------------------------------------

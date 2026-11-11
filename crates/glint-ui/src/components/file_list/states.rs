@@ -137,12 +137,18 @@ impl FileList {
                     hint.push_str(&t!("Hidden files weren't searched. "));
                 }
                 hint.push_str(&t!("Filters work too: ext:pdf, size:>10mb, dm:7d."));
+                // The files' contents were searched too: neither a name nor a line matched.
+                let nothing = if find.inside.words.is_empty() {
+                    t!("Nothing named like “{query}”", query = find.query)
+                } else {
+                    t!("No name and no line matches “{query}”", query = find.query)
+                };
                 return Some(
                     centered(t, "file-list-nothing-found")
                         .role(Role::Status)
-                        .aria_label(t!("Nothing named like “{query}”", query = find.query))
+                        .aria_label(nothing.clone())
                         .child(icon(IconName::SearchX).size(rems(1.5)))
-                        .child(title(t, t!("Nothing named like “{query}”", query = find.query)))
+                        .child(title(t, nothing))
                         .child(div().max_w(rems(24.)).child(hint))
                         .child(
                             row_start()

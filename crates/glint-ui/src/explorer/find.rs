@@ -55,6 +55,14 @@ pub(super) struct Searching {
     index_reading: bool,
     /// The "instant search finds names in milliseconds" notice was raised in this run of the app.
     offered: bool,
+    /// The search inside files that runs (`inside.rs`): core has one at a time.
+    pub(super) inside: Option<super::inside::InsideJob>,
+    /// The numbers content searches get.
+    pub(super) inside_serial: u64,
+    /// Core's events to the pump that reads them, once a content search has run.
+    pub(super) inside_events: Option<async_channel::Sender<super::inside::RawEvent>>,
+    /// Events handed to the pump that it hasn't applied yet.
+    pub(super) inside_waiting: usize,
 }
 
 /// What a stream has brought that is not yet part of the run.
@@ -201,7 +209,7 @@ impl Explorer {
         }
         if known.is_some() {
             return if self.finds_as_typed(query, &path, cx) {
-                self.run_find_in(tab, query, Wider::default(), cx)
+                self.find_typed(tab, query, cx)
             } else {
                 Task::ready(())
             };
@@ -214,8 +222,7 @@ impl Explorer {
             let running = this
                 .update(cx, |this, cx| {
                     let same = this.tabs.get(&tab).is_some_and(|t| t.path == path && t.filter == query);
-                    (same && this.finds_as_typed(&query, &path, cx))
-                        .then(|| this.run_find_in(tab, &query, Wider::default(), cx))
+                    (same && this.finds_as_typed(&query, &path, cx)).then(|| this.find_typed(tab, &query, cx))
                 })
                 .ok()
                 .flatten();
@@ -223,6 +230,39 @@ impl Explorer {
                 running.await;
             }
         })
+    }
+
+    /// A search as it is typed: the names at once, and what is inside the files too where the content index
+    /// covers the folder (it answers in milliseconds, as the name index does; ripgrep waits for Enter).
+    fn find_typed(&mut self, tab: TabId, query: &str, cx: &mut Context<Self>) -> Task<()> {
+        let running = self.run_find_in(tab, query, Wider::default().names_only(), cx);
+        let run = self.tabs.get(&tab).and_then(|t| t.find.as_ref());
+        let asked = run
+            .filter(|find| !super::inside::inside_words(&find.query).is_empty())
+            .filter(|find| super::inside::inside_unasked(&find.scope))
+            .map(|find| (find.id, find.scope.clone()));
+        if let Some((id, scope)) = asked {
+            let covers = self.source.inside_covers(&scope);
+            cx.spawn(async move |this, cx| {
+                if !covers.await {
+                    return;
+                }
+                this.update(cx, |this, cx| {
+                    // Still the same search: the person hasn't typed on while the index answered.
+                    let same = this
+                        .tabs
+                        .get(&tab)
+                        .and_then(|t| t.find.as_ref())
+                        .is_some_and(|f| f.id == id);
+                    if same {
+                        this.search_inside(tab, &Wider::default(), cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+        running
     }
 
     // ---- Running a search ---------------------------------------------------------------------------------
@@ -290,6 +330,17 @@ impl Explorer {
         let entries = before.map_or_else(no_entries, |f| f.entries.clone());
         let engine = t.find.as_ref().map(|f| f.engine.clone()).unwrap_or_default();
         let kept = !entries.is_empty();
+        // What is inside the files: searched too when the search has words for it, unasked below a drive's top.
+        let words = super::inside::inside_words(query);
+        let can_inside = !words.is_empty() && super::inside::can_search_inside(&scope);
+        let inside_now = can_inside && !wider.names_only && (wider.inside || super::inside::inside_unasked(&scope));
+        let inside = Inside {
+            words: if can_inside { words } else { String::new() },
+            offered: can_inside && !inside_now && !wider.names_only,
+            ..Default::default()
+        };
+        // The older search's content search (this tab's) ends with it.
+        self.inside_left(tab);
         self.update_tab(tab, |t| {
             t.find = Some(FindRun {
                 id,
@@ -303,6 +354,7 @@ impl Explorer {
                 fuzzy: false,
                 error: String::new(),
                 skipped,
+                inside,
             });
             t.selection = Selection::default();
             t.renaming = None;
@@ -355,6 +407,9 @@ impl Explorer {
         });
         // A newer search in the tab replaces this job, which stops reading; core ends the older search itself.
         self.searching.jobs.insert(tab, reading);
+        if inside_now {
+            self.search_inside(tab, &wider, cx);
+        }
         cx.spawn(async move |_, _| {
             let _ = wait.recv().await;
         })
@@ -406,11 +461,14 @@ impl Explorer {
         if !ours {
             return;
         }
+        // A search that failed shows its error alone: what was found inside files goes with it.
+        self.inside_left(tab);
         self.update_tab(tab, |t| {
             if let Some(find) = &mut t.find {
                 find.running = false;
                 find.error = message;
                 find.entries = no_entries();
+                find.inside = Inside::default();
             }
         });
         self.rebuild_rows(tab, cx);
@@ -445,13 +503,14 @@ impl Explorer {
                 Found::Started { engine } => run.engine = engine,
                 Found::Entries(mut entries) => {
                     if std::mem::replace(&mut progress.kept, false) {
-                        run.entries = no_entries();
+                        drop_kept(&mut run);
                     }
                     progress.pending.append(&mut entries);
                 }
                 Found::Error(message) => {
                     run.error = message;
                     run.entries = no_entries();
+                    run.inside = Inside::default();
                     progress.pending.clear();
                 }
                 Found::Finished { limited, fuzzy, .. } => {
@@ -460,7 +519,7 @@ impl Explorer {
                     add_pending(&mut run, progress);
                     // Nothing came at all: the older results (if they were kept) are not this search's.
                     if std::mem::replace(&mut progress.kept, false) {
-                        run.entries = no_entries();
+                        drop_kept(&mut run);
                     }
                     run.running = false;
                     run.elapsed = elapsed;
@@ -477,7 +536,11 @@ impl Explorer {
                 add_pending(&mut run, progress);
             }
         }
+        let failed = !run.error.is_empty();
         self.update_tab(tab, |t| t.find = Some(run));
+        if failed {
+            self.inside_left(tab);
+        }
         self.rebuild_rows(tab, cx);
         // Not `tab_changed`: nothing the session keeps changed, and this runs for every batch.
         cx.emit(ExplorerEvent::TabChanged(tab));
@@ -514,13 +577,15 @@ impl Explorer {
     /// touched: the caller says what becomes of it.
     pub(super) fn stop_find_job(&mut self, tab: TabId, was_running: bool) {
         self.searching.jobs.remove(&tab);
+        self.inside_left(tab);
         if was_running {
             self.source.cancel_find(&lane(tab));
         }
     }
 
     /// Stop (`stopFind`): the active tab's running search ends, keeping what it found. The stream still brings its
-    /// last words, which mark the run as no longer running.
+    /// last words, which mark the run as no longer running. (What runs inside the files is stopped with
+    /// [`Explorer::stop_inside`].)
     pub fn stop_find(&mut self) {
         let tab = self.active_tab_id();
         if self
@@ -595,10 +660,30 @@ fn add_pending(run: &mut FindRun, progress: &mut Progress) {
     if progress.pending.is_empty() {
         return;
     }
+    // A file found by what is in it has its row already: found by its name too, it is no longer "inside only".
+    if !run.inside.only.is_empty() {
+        let mut only = (*run.inside.only).clone();
+        progress.pending.retain(|entry| !only.remove(&entry.path));
+        if only.len() != run.inside.only.len() {
+            run.inside.only = Arc::new(only);
+        }
+    }
     let mut all = Vec::with_capacity(run.entries.len() + progress.pending.len());
     all.extend(run.entries.iter().cloned());
     all.append(&mut progress.pending);
     run.entries = all.into();
+}
+
+/// The older search's results, kept on screen until this one's first came, go: all but the files this search has
+/// found by their contents meanwhile.
+fn drop_kept(run: &mut FindRun) {
+    if run.inside.only.is_empty() {
+        run.entries = no_entries();
+        return;
+    }
+    let only = run.inside.only.clone();
+    let ours: Vec<FileEntry> = run.entries.iter().filter(|e| only.contains(&e.path)).cloned().collect();
+    run.entries = ours.into();
 }
 
 #[cfg(test)]

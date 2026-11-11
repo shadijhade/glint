@@ -171,16 +171,23 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
 - Sizes are rems, so the text-size setting scales them: `theme::size::{XXS, XS, SM, BASE}` and `space(n)` (takes f32: `space(3.)`).
 - Tinted buttons use `Button::custom(ButtonCustomVariant::new(cx)...)`.
 
+**The window: one bar, a rail, a sheet with a dock.** (`workspace.rs` places them; a new view goes into one of them, never beside them.)
+- **The bar** is the title bar. It holds the address: Back, Forward, Up, and one field with where you are at its start and the search at its end. There is no toolbar row under it. Whatever sits in the bar `occlude`s, so pressing it never drags the window.
+- **The rail** (start edge, on the chrome): the open tabs as a list, then the places. Tabs are rows, like places: every name whole.
+- **The sheet**: the files (the list's header is its first line: nothing sits between the bar and the files), the preview pane at its end edge, the terminal under the files.
+- **The dock** is the sheet's last 52 px: the status bar's words at its two ends, the commands' island over its middle. What acts on the selection is in the island while there is a selection and not otherwise; nothing greyed out stands in it for long. Its menus open upward.
+- **One search.** The box looks in names and inside files, and what it finds is one list of files: a file found by its contents is a row like any other (under "Inside files"), with its matching lines under it. Don't add a second place to search from.
+
 **Depth: three levels, and nothing else.**
-- **Chrome** (title bar, toolbar, sidebar): no fill of its own. The window is filled once (`theme::window_fill`), Mica shows through, and anything on it that needs a surface uses a see-through one (`t.accent`).
-- **The sheet** (`t.background`): the files, the command bar, the preview pane and the status bar, on one surface with a hairline (`t.stroke`) and a rounded corner (`theme::size::RADIUS_SHEET`) where it meets the chrome. A part of the sheet has no fill of its own either; cards on it are `t.card`.
-- **Floating** (menus, the palette, dialogs, notices): `t.popover`, a `t.stroke` hairline, and a shadow from `theme::elevation::{raised, floating, modal}`. Never `shadow_md()` and friends: the elevations know the theme.
+- **Chrome** (the bar, the rail): no fill of its own. The window is filled once (`theme::window_fill`), Mica shows through, and anything on it that needs a surface uses a see-through one (`t.accent`).
+- **The sheet** (`t.background`): the files, the preview pane and the dock, on one card with a hairline (`t.stroke`), rounded all round (`theme::size::RADIUS_SHEET`) and clear of the window's end and bottom edges. A part of the sheet has no fill of its own either; cards on it are `t.card`.
+- **Floating** (menus, the palette, dialogs, notices, the dock's island): `t.popover`, a `t.stroke` hairline, and a shadow from `theme::elevation::{raised, floating, modal}`. Never `shadow_md()` and friends: the elevations know the theme.
 
 **States: see-through fills, the same everywhere.**
 - Hover is `t.accent`, held down is `t.pressed`, selected is `t.selected` (`t.selected_hover` under the pointer, `t.selected_inactive` in the pane the keyboard isn't in). They are translucent, so they read on all three levels: don't mix your own with `.opacity(..)`.
 - A highlight is a rounded fill *inside* its line (`theme::size::RADIUS_ROW`, a few pixels in from the edges, a pixel of air above and below), so rows selected together read as rows. The line itself is what is clicked and named. `file_list/cells.rs` is the reference.
 - The item the keyboard is on carries the accent bar at its start edge; the 1 px accent outline is only for when the selection doesn't already say where the keyboard is.
-- `theme::glint_fill(cx)` (the logo's pink to fuchsia, or Windows' accent to its shade) is for the few things that should catch the eye: what is loading (`loading_sweep`), what is current (the showing tab's underline), a field being typed in. Not for decoration.
+- `theme::glint_fill(cx)` (the logo's pink to fuchsia, or Windows' accent to its shade) is for the few things that should catch the eye: what is loading (`loading_sweep`), what is current (the bar at the showing tab's start edge), a field being typed in. Not for decoration.
 
 **Motion: `theme::motion`, and it is never in the way.**
 - Hover fills fade by themselves (the vendored GPUI does it for every element with an id: see VENDOR.md). Give an element that has a `.hover(..)` an id and it fades; don't animate hover by hand.
@@ -192,7 +199,7 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
 
 **Keys:**
 - Add a row to `actions::BINDINGS` (keys, context, action, English description from ShortcutsDialog.tsx) and the action to the `actions!` list.
-- Contexts: Workspace, FileList, TextSearch, QuickLook, Compare.
+- Contexts: Workspace, FileList, AddressFind (the search box), QuickLook, Compare.
 - Never bind Ctrl+A/C/X/V/Z, Backspace or Delete outside FileList (a test enforces it).
 - Use `KeyBinding::load` for strings built at runtime; `KeyBinding::new` panics on bad text.
 

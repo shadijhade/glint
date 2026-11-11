@@ -83,7 +83,7 @@ start or was aborted, 4 when something was not put back (see below). The last li
 | `quick-look` | Space opens Quick Look named after the file and showing its text, the right arrow moves to the next item, Space and Escape close it |
 | `command-bar` | The buttons: New folder, Copy (onto the real clipboard) and Paste (Windows names the copy), Rename (and Escape), Grid and List (the layout really changes), the palette button and a command run from it, the View and Tools menus |
 | `dual-pane-compare` | Ctrl+Shift+D shows two named panes, a second pane can be taken elsewhere, Ctrl+Shift+M marks "Only here" items in both and unmarks, Ctrl+Shift+D closes the second pane |
-| `text-search` | Ctrl+Shift+F, a typed word, Enter: the match is listed under its file with a preview and "1 result in 1 file"; Ctrl+Shift+E returns to the files |
+| `search-inside` | Ctrl+Shift+F, a typed word, Enter: the file that holds the word is a row of the results under "Inside files", with the matching line and its number under it; Escape returns to the folder |
 | `settings` | Ctrl+, opens Settings (it is a dialog inside the main window), a section can be chosen, Escape closes it |
 | `tabs-sidebar` | Ctrl+T adds a tab, a sidebar place opens in it, Ctrl+W closes it |
 | `quit` | Closing the window ends the process with exit code 0 and writes `state.json` with the session |

@@ -81,14 +81,14 @@ fn a_failed_search_offers_try_again_which_searches_the_same_place_again(cx: &mut
     assert_eq!(again.roots, ["C:\\x"]);
     // It ran fine this time: nothing is named like it.
     assert!(!ui.has("file-list-search-try-again"));
-    assert_eq!(ui.role_of("Nothing named like “zzz”"), Some(Role::Status));
+    assert_eq!(ui.role_of("No name and no line matches “zzz”"), Some(Role::Status));
 }
 
 #[gpui_kit::test]
 fn nothing_found_offers_hidden_files_and_the_other_drives(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let (mut ui, disk) = nothing_found(cx);
-    assert_eq!(ui.role_of("Nothing named like “zzz”"), Some(Role::Status));
+    assert_eq!(ui.role_of("No name and no line matches “zzz”"), Some(Role::Status));
     assert!(ui.has("file-list-search-hidden"));
     assert!(ui.has("file-list-search-every-drive"));
     // Settings skip some folders by default, so the skipped folders have their button too.

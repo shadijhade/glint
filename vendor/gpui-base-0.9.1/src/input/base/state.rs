@@ -1716,6 +1716,15 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.text.offset_to_position(offset)
     }
 
+    /// Glint: shows the (0-based) `line` and selects it, without taking the keyboard as
+    /// [`Self::set_cursor_position`] does: a search result's line in a read-only preview.
+    pub fn reveal_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        let start = self.text.line_start_offset(line);
+        let end = self.text.line_end_offset(line);
+        self.move_to(start, None, cx);
+        self.select_to(end, cx);
+    }
+
     /// Set (0-based) [`Position`] of the cursor.
     ///
     /// This will move the cursor to the specified line and column, and update the selection range.

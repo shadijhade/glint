@@ -10,6 +10,7 @@
 use super::actions_types::*;
 use super::archive_types::*;
 use super::find_types::{FindOptions, Found, SearchIndex};
+use super::inside::{InsideEngine, InsideRequest};
 use super::ops_types::*;
 use super::types::*;
 use crate::core_bridge;
@@ -161,6 +162,17 @@ pub trait Source {
     fn cancel_find(&self, lane: &str);
     /// How instant search stands (`IndexInfo`), or `None` when that can't be said.
     fn search_index(&self) -> Fut<Option<SearchIndex>>;
+    /// Whether the content index covers `path` (and is on): plain words are then answered in milliseconds.
+    fn inside_covers(&self, path: &str) -> Fut<bool>;
+    /// Starts a search inside files; what it finds arrives as core's `search-event`s
+    /// ([`Explorer::inside_heard`](super::Explorer::inside_heard)). A search replaced by a newer one, or stopped
+    /// while it starts, resolves to `Err("cancelled")`.
+    fn inside_start(&self, engine: InsideEngine, request: InsideRequest) -> Fut<Result<(), String>>;
+    /// Stops the search inside files that runs. Never waits on the UI thread.
+    fn inside_cancel(&self);
+    /// These files as rows: each with its size and date as they are on disk now (a search inside files names
+    /// only their paths). One that can't be read still gets its row.
+    fn entries_of(&self, paths: Vec<String>) -> Fut<Vec<glint_model::entries::FileEntry>>;
 
     // ---- Menu actions ---------------------------------------------------------------------------------------
 
@@ -610,6 +622,98 @@ impl Source for CoreSource {
             }
             drop(done);
         });
+    }
+
+    fn inside_covers(&self, path: &str) -> Fut<bool> {
+        let path = path.to_string();
+        let running = core_bridge::run(async move { glint_core::content::content_covers(path) });
+        Box::pin(async move { running.await.unwrap_or(false) })
+    }
+
+    fn inside_start(&self, engine: InsideEngine, request: InsideRequest) -> Fut<Result<(), String>> {
+        let (app, window) = (self.app.clone(), self.window());
+        let running = core_bridge::run(async move {
+            let window = window.ok_or_else(|| crate::t!("Glint's window isn't open").to_string())?;
+            let state = app
+                .try_state::<glint_core::AppState>()
+                .ok_or_else(|| "Glint's search isn't ready yet".to_string())?;
+            match engine {
+                InsideEngine::Ripgrep => {
+                    // The request's fields are private to core: it builds its own arguments from the JSON.
+                    let text = serde_json::from_value(serde_json::json!({
+                        "query": request.query,
+                        "path": request.path,
+                        "caseSensitive": request.options.case_sensitive,
+                        "wholeWord": request.options.whole_word,
+                        "regex": request.options.regex,
+                        "exclusions": request.exclusions,
+                        "everything": request.everything,
+                    }))
+                    .map_err(|e| e.to_string())?;
+                    glint_core::run_ripgrep_batched(window, text, request.id, request.max_results, state).await
+                }
+                InsideEngine::Documents => {
+                    let docs = glint_core::doctext::DocSearch {
+                        query: request.query,
+                        path: request.path,
+                        case_sensitive: request.options.case_sensitive,
+                        whole_word: request.options.whole_word,
+                        regex: request.options.regex,
+                        exclusions: request.exclusions,
+                        everything: request.everything,
+                        ocr: request.options.ocr,
+                        meaning: request.options.meaning,
+                    };
+                    glint_core::run_doc_search(window, docs, request.id, request.max_results, state).await
+                }
+                InsideEngine::Index => {
+                    let words = glint_core::content::ContentSearch {
+                        query: request.query,
+                        path: request.path,
+                    };
+                    glint_core::content::run_content_search(window, words, request.id, request.max_results).await
+                }
+            }
+            .map(drop)
+        });
+        Box::pin(async move { running.await.and_then(|started| started) })
+    }
+
+    fn inside_cancel(&self) {
+        let app = self.app.clone();
+        // Ending a search kills its process: not on the UI thread.
+        glint_core::host::async_runtime::spawn_blocking(move || {
+            if let Some(state) = app.try_state::<glint_core::AppState>() {
+                glint_core::cancel_search(state);
+            }
+        });
+    }
+
+    fn entries_of(&self, paths: Vec<String>) -> Fut<Vec<glint_model::entries::FileEntry>> {
+        let running = core_bridge::run(async move {
+            glint_core::fsx::blocking(move || {
+                Ok(paths
+                    .iter()
+                    .map(|path| {
+                        let entry = glint_core::fsx::entry_for_path(path, false);
+                        glint_model::entries::with_details(
+                            glint_model::entries::RawEntry {
+                                name: entry.name,
+                                path: Some(path.clone()),
+                                dir: entry.dir,
+                                size: entry.size,
+                                modified: entry.modified,
+                                attrs: entry.attrs,
+                                origin: None,
+                            },
+                            "",
+                        )
+                    })
+                    .collect::<Vec<_>>())
+            })
+            .await
+        });
+        Box::pin(async move { running.await.ok().and_then(Result::ok).unwrap_or_default() })
     }
 
     fn search_index(&self) -> Fut<Option<SearchIndex>> {

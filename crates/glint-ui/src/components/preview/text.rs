@@ -509,6 +509,8 @@ pub struct TextPreview {
     _convert: Task<()>,
     _copied_reset: Option<Task<()>>,
     _settings: Subscription,
+    /// A search's line pressed in the list is shown here when it is this file's (`preview::Spot`).
+    _spot: Subscription,
 }
 
 impl TextPreview {
@@ -522,6 +524,7 @@ impl TextPreview {
     pub fn with_source(path: String, source: TextSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings =
             cx.observe_global_in::<state::UiState>(window, |this, window, cx| this.apply_settings(window, cx));
+        let spot = cx.observe_global::<super::Spot>(|this, cx| this.show_spot(cx));
         let mut this = Self {
             path,
             source,
@@ -536,9 +539,27 @@ impl TextPreview {
             _convert: Task::ready(()),
             _copied_reset: None,
             _settings: settings,
+            _spot: spot,
         };
         this.read(window, cx);
         this
+    }
+
+    /// Shows the line a search's result named, if it is a line of this file and nobody has shown it yet: the
+    /// editor scrolls to it and selects it. The keyboard stays where it is (in the list).
+    fn show_spot(&mut self, cx: &mut Context<Self>) {
+        let Load::Shown(shown) = &self.state else { return };
+        let line = match cx.try_global::<super::Spot>() {
+            Some(spot) if !spot.shown && glint_model::paths::same_path(&spot.path, &self.path) => spot.line,
+            _ => return,
+        };
+        let editor = shown.editor.clone();
+        // Marked first: marking it tells every previewer again, and this one must not answer twice.
+        cx.global_mut::<super::Spot>().shown = true;
+        editor.update(cx, |editor, cx| {
+            editor.reveal_line(usize::try_from(line.saturating_sub(1)).unwrap_or(0), cx)
+        });
+        cx.notify();
     }
 
     /// The file shown.
@@ -664,6 +685,8 @@ impl TextPreview {
             Ok(read) if read.text.is_empty() => Load::Empty,
             Ok(read) => Load::Shown(self.show(read, window, cx)),
         };
+        // A search's line was pressed for this file while it was being read.
+        self.show_spot(cx);
         cx.notify();
     }
 

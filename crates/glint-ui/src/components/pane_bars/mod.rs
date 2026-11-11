@@ -66,6 +66,8 @@ pub struct SearchInfo {
     pub saved: bool,
     /// Settings' result limit, for "Stopped at N" (0 when there is none).
     pub max_results: u64,
+    /// The files' contents weren't searched (a whole drive is only when asked): the bar offers to.
+    pub inside_offered: bool,
 }
 
 impl SearchInfo {
@@ -110,13 +112,16 @@ pub fn bar_of_tab(tab: &Tab, saved: &[SavedSearch], max_results: Option<u64>) ->
             tab: tab.id,
             query: find.query.clone(),
             scope: find.scope.clone(),
-            running: find.running,
-            fuzzy: find.fuzzy,
+            // By name or inside the files: Stop ends both.
+            running: find.running || find.inside.running,
+            // "Close matches" is about names: not said when the only results are files found by their contents.
+            fuzzy: find.fuzzy && find.entries.len() > find.inside.only.len(),
             limited: find.limited,
             saved: saved
                 .iter()
                 .any(|s| s.query == find.query && s.folder.to_lowercase() == folder),
             max_results: max_results.unwrap_or(0),
+            inside_offered: find.inside.offered && !find.inside.running,
         });
     }
     if tab.listing.as_ref().is_some_and(|l| l.from_index) {
@@ -239,6 +244,19 @@ impl PaneBars {
         self.explorer.update(cx, |explorer, cx| {
             explorer.focus_pane(pane, cx);
             explorer.stop_find();
+            let tab = explorer.active_tab_id();
+            explorer.stop_inside(tab, cx);
+        });
+    }
+
+    /// Inside files too: the same search again, in the same place, reading what the files hold as well (a whole
+    /// drive isn't read unasked).
+    fn search_inside(&self, info: &SearchInfo, cx: &mut Context<Self>) {
+        let (tab, query, scope) = (info.tab, info.query.clone(), info.scope.clone());
+        self.explorer.update(cx, |explorer, cx| {
+            explorer
+                .run_find_in(tab, &query, Wider::in_scope(scope).inside_too(), cx)
+                .detach();
         });
     }
 
@@ -389,6 +407,18 @@ impl PaneBars {
                 )
         });
 
+        // "Inside files too", where the files' contents weren't searched unasked.
+        let inside = info.inside_offered.then(|| {
+            let chosen = info.clone();
+            ghost("pane-search-inside", pane)
+                .icon(IconName::TextSearch)
+                .label(t!("Inside files too"))
+                .tooltip(t!(
+                    "Read what the files here hold as well. A whole drive takes a while, so it waits to be asked"
+                ))
+                .on_click(cx.listener(move |this, _, _, cx| this.search_inside(&chosen, cx)))
+        });
+
         // Save (Saved once it is in the sidebar), Stop while it runs, Close.
         let chosen = info.clone();
         let save = ghost("pane-search-save", pane)
@@ -435,7 +465,7 @@ impl PaneBars {
             .child(lead)
             .child(words)
             .children(limit)
-            .child(end_group().child(save).children(stop).child(close))
+            .child(end_group().children(inside).child(save).children(stop).child(close))
             .into_any_element()
     }
 

@@ -106,6 +106,17 @@ struct State {
     index: Option<SearchIndex>,
     /// How many times instant search was asked how it does.
     index_asked: usize,
+    /// Every search inside files started, in order.
+    inside: Vec<(super::inside::InsideEngine, super::inside::InsideRequest)>,
+    /// How many times the search inside files was told to stop.
+    inside_cancels: usize,
+    /// A search inside files that can't start, once.
+    inside_error: Option<String>,
+    /// Whether the content index covers every folder.
+    inside_covered: bool,
+    /// A test drives the searches inside files by hand (`Explorer::inside_heard`); otherwise each one ends as it
+    /// starts, having found nothing.
+    inside_live: bool,
     // ---- Archives ----
     arch: ArchiveFake,
     // ---- Menu actions ----
@@ -477,6 +488,32 @@ impl FakeDisk {
         self.state.borrow().finds.clone()
     }
 
+    /// Every search inside files started so far, with the engine asked.
+    pub fn inside_searches(&self) -> Vec<(super::inside::InsideEngine, super::inside::InsideRequest)> {
+        self.state.borrow().inside.clone()
+    }
+
+    /// How many times the search inside files was told to stop.
+    pub fn inside_cancels(&self) -> usize {
+        self.state.borrow().inside_cancels
+    }
+
+    /// Makes the next search inside files fail to start.
+    pub fn refuse_next_inside(&self, message: &str) {
+        self.state.borrow_mut().inside_error = Some(message.to_string());
+    }
+
+    /// Searches inside files stay running until the test says what they found (`Explorer::inside_heard` with the
+    /// request's id) and that they ended.
+    pub fn live_inside(&self) {
+        self.state.borrow_mut().inside_live = true;
+    }
+
+    /// Whether the content index covers every folder (it doesn't, unless a test says so).
+    pub fn set_inside_covered(&self, covered: bool) {
+        self.state.borrow_mut().inside_covered = covered;
+    }
+
     /// The lanes whose search was asked to end.
     pub fn cancelled(&self) -> Vec<String> {
         self.state.borrow().cancelled.clone()
@@ -750,6 +787,30 @@ impl FakeDisk {
     /// The names in the Recycle Bin.
     pub fn bin_names(&self) -> Vec<String> {
         self.names(RECYCLE_BIN)
+    }
+}
+
+/// A line of a file as ripgrep reports that it matched: `text[start..end]` is the match (a `search-event` line).
+pub fn inside_match(path: &str, text: &str, line: u64, start: usize, end: usize) -> String {
+    serde_json::json!({
+        "type": "match",
+        "data": {
+            "path": { "text": path },
+            "lines": { "text": text },
+            "line_number": line,
+            "submatches": [{ "match": { "text": text.get(start..end).unwrap_or("") }, "start": start, "end": end }],
+        }
+    })
+    .to_string()
+}
+
+/// One of core's events of the search inside files `id`: what it found ("data", with [`inside_match`] lines), that
+/// it failed ("error", with the reason) or that it ended ("finished").
+pub fn inside_event(id: &str, kind: &str, lines: Vec<String>) -> super::inside::RawEvent {
+    super::inside::RawEvent {
+        id: id.to_string(),
+        kind: kind.to_string(),
+        lines,
     }
 }
 
@@ -1528,6 +1589,56 @@ impl Source for FakeDisk {
 
     fn cancel_find(&self, lane: &str) {
         self.state.borrow_mut().cancelled.push(lane.to_string());
+    }
+
+    fn inside_covers(&self, _path: &str) -> Fut<bool> {
+        let covered = self.state.borrow().inside_covered;
+        Box::pin(async move { covered })
+    }
+
+    fn inside_start(
+        &self,
+        engine: super::inside::InsideEngine,
+        request: super::inside::InsideRequest,
+    ) -> Fut<Result<(), String>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let mut state = state.borrow_mut();
+            state.inside.push((engine, request));
+            match state.inside_error.take() {
+                Some(message) => Err(message),
+                None if state.inside_live => Ok(()),
+                // Nobody sends this search's events: it ends at once, quietly, as a stopped one does.
+                None => Err("cancelled".to_string()),
+            }
+        })
+    }
+
+    fn inside_cancel(&self) {
+        self.state.borrow_mut().inside_cancels += 1;
+    }
+
+    fn entries_of(&self, paths: Vec<String>) -> Fut<Vec<FileEntry>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let state = state.borrow();
+            paths
+                .iter()
+                .map(|path| {
+                    // A file the fake disk doesn't hold still gets its row, as on disk.
+                    entry_of(&state, path).unwrap_or_else(|| {
+                        glint_model::entries::with_details(
+                            glint_model::entries::RawEntry {
+                                name: glint_model::paths::base_name(path).to_string(),
+                                path: Some(path.clone()),
+                                ..Default::default()
+                            },
+                            "",
+                        )
+                    })
+                })
+                .collect()
+        })
     }
 
     fn run_in_sandbox(&self, path: &str) -> Fut<Result<(), String>> {

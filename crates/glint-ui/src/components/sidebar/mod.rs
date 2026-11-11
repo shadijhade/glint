@@ -1516,7 +1516,7 @@ impl Render for Sidebar {
             .flex()
             .flex_col()
             .px(space(2.))
-            .pt(space(3.))
+            .pt(space(2.))
             .text_size(theme::size::SM)
             .text_color(t.foreground)
             .child(

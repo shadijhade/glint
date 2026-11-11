@@ -267,8 +267,8 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
         }),
         when(reads, || {
             Node::Item(Entry::ask(
-                t!("Search text"),
-                IconName::TextSearch,
+                t!("Search here"),
+                IconName::Search,
                 MenuEvent::SearchText { folder: owned.clone() },
             ))
         }),

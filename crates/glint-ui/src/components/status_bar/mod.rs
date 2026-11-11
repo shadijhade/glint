@@ -13,6 +13,12 @@
 //! The thumbnails' line (`N thumbnails in X`) comes from the file grid's burst for the tab, and shows only while the
 //! tab shows the grid, as the TypeScript did.
 //!
+//! **In the dock.** The bar is the dock at the foot of the sheet: its counts at the start edge, its work line at the
+//! end, and the commands' island over its middle. The window says how much room each end has beside the island
+//! ([`StatusBar::beside`]); each end then says what fits there (`Wide::beside`) and is cut at its own room, so
+//! nothing of it runs under the island. What acted on the selection from here (Rename, Zip, Copy paths) is the
+//! island's while the bar is docked. Alone in a window (tests), the bar goes by the window's width as before.
+//!
 //! **Keyboard.** The breakdown's segments are tab stops: Enter or Space filters to the kind, as a click does.
 //!
 //! The work line also says how long Git status took in the folder (`git · 12 ms`, from the xl width) and, once
@@ -39,11 +45,15 @@ use crate::explorer::{self, Explorer};
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
 use index::{Index, IndexModel, Source, Volume};
+use std::cell::Cell;
+use std::rc::Rc;
 use summary::{
     chip_active, chip_title, counts, drives, items, segment_title, stages, thumbs_line, thumbs_stage, thumbs_title,
     Category, Stage, Summary, Thumbs, Work,
 };
 
+/// The bar's height: the dock's, at the foot of the sheet (the commands' island sits over its middle).
+pub const HEIGHT: Pixels = px(52.);
 /// The widths the bar drops words at, in rems (the TypeScript's `@2xs`, `@md`, `@lg` and `@xl` containers).
 const TWO_XS: f32 = 18.;
 const MEDIUM: f32 = 28.;
@@ -73,7 +83,18 @@ pub struct StatusBar {
     thumbs: Entity<Thumbnails>,
     /// One focus handle per segment of the breakdown, so the keyboard can reach them (kept across frames).
     segment_focus: Vec<FocusHandle>,
+    /// In the dock: how wide each of the bar's two ends may be, in pixels, beside the commands' island over its
+    /// middle (the window says, each frame). Zero while the bar has its whole width to itself.
+    beside: Rc<Cell<f32>>,
     _subscriptions: Vec<Subscription>,
+}
+
+impl StatusBar {
+    /// Where the window says how wide each end of the bar may be, in pixels, while the commands' island sits
+    /// over its middle (zero: the whole width is the bar's).
+    pub fn beside(&self) -> Rc<Cell<f32>> {
+        self.beside.clone()
+    }
 }
 
 /// Start-up: the status bars read instant search through glint-core. Call after `core_bridge::init`.
@@ -127,6 +148,7 @@ impl StatusBar {
             enabling: false,
             thumbs,
             segment_focus: Vec::new(),
+            beside: Rc::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -297,9 +319,25 @@ struct Wide {
     medium: bool,
     large: bool,
     extra_large: bool,
+    /// The bar's ends are beside the commands' island: what acts on the selection is there, not here.
+    docked: bool,
 }
 
 impl Wide {
+    /// What fits at one end of the dock, `side` pixels wide: the counts always, X-Ray and the index's progress
+    /// from 13 rem, how the folder was read from 15, how its sizes and Git's status were from 28.
+    fn beside(side: f32, window: &Window) -> Self {
+        let rem = f32::from(window.rem_size());
+        let at = |rems: f32| side >= rem * rems;
+        Wide {
+            two_xs: at(6.),
+            medium: at(13.),
+            large: at(15.),
+            extra_large: at(28.),
+            docked: true,
+        }
+    }
+
     fn of(window: &Window) -> Self {
         let width = window.viewport_size().width;
         let rem = window.rem_size();
@@ -309,6 +347,7 @@ impl Wide {
             medium: at(MEDIUM),
             large: at(LARGE),
             extra_large: at(EXTRA_LARGE),
+            docked: false,
         }
     }
 }
@@ -371,12 +410,36 @@ impl Render for StatusBar {
             self.segment_focus.push(cx.focus_handle().tab_stop(true));
         }
         let t = theme::tokens(cx).clone();
-        let wide = Wide::of(window);
+        // In the dock each end has the room beside the island, and says what fits there; alone, the bar goes by
+        // the window's width.
+        let side = self.beside.get();
+        let wide = if side > 0. {
+            Wide::beside(side, window)
+        } else {
+            Wide::of(window)
+        };
         let thumbs = self.thumbs_here(cx);
         let s = &self.summary;
 
         let left = self.left(s, wide, &t, cx);
         let right = self.right(s, wide, thumbs.as_ref(), &t, cx);
+        // An end never runs under the island: it is cut at its own room. The start's words are at the bar's
+        // start edge, the end's against its end edge, whatever is between them.
+        let left = div()
+            .flex_none()
+            .min_w_0()
+            .overflow_hidden()
+            .when(side > 0., |left| left.max_w(px(side)))
+            .child(left);
+        let right = right.map(|right| {
+            let held = div().min_w_0().overflow_hidden().flex().justify_end().child(right);
+            let held = if side > 0. {
+                held.flex_none().max_w(px(side))
+            } else {
+                held.flex_1()
+            };
+            div().flex_1().min_w_0().flex().justify_end().child(held)
+        });
         let popover = (s.has_listing && !s.this_pc && s.find.is_none() && self.details_open)
             .then(|| self.details(s, thumbs.as_ref(), &t, cx));
 
@@ -387,14 +450,13 @@ impl Render for StatusBar {
             .test_support()
             .relative()
             .flex_none()
+            // The dock at the foot of the sheet: the counts at its start, the work at its end, and the commands'
+            // island over its middle (the window puts it there).
             .w_full()
-            .h(space(7.))
-            .px(space(3.))
+            .h(HEIGHT)
+            .px(space(4.))
             .gap(space(1.5))
             .items_center()
-            // The foot of the sheet the files are on.
-            .border_t_1()
-            .border_color(t.border)
             .text_size(theme::size::XS)
             .text_color(t.muted_foreground)
             .text_start()
@@ -424,7 +486,7 @@ impl StatusBar {
             )
             .on_click(cx.listener(|this, _, window, cx| this.xray(window, cx)))
         });
-        let rename = (writable && s.selected > 1 && wide.medium).then(|| {
+        let rename = (writable && s.selected > 1 && wide.medium && !wide.docked).then(|| {
             Self::tinted(
                 "status-bar-rename",
                 IconName::PenLine,
@@ -436,7 +498,7 @@ impl StatusBar {
             )
             .on_click(cx.listener(|this, _, window, cx| this.rename(window, cx)))
         });
-        let zip = (writable && s.selected > 1 && wide.large).then(|| {
+        let zip = (writable && s.selected > 1 && wide.large && !wide.docked).then(|| {
             Self::tinted(
                 "status-bar-zip",
                 IconName::FileArchive,
@@ -448,7 +510,7 @@ impl StatusBar {
             )
             .on_click(cx.listener(|this, _, window, cx| this.zip(window, cx)))
         });
-        let copy = (!s.this_pc && s.selected > 1 && wide.extra_large).then(|| {
+        let copy = (!s.this_pc && s.selected > 1 && wide.extra_large && !wide.docked).then(|| {
             Button::new("status-bar-copy-paths")
                 .custom(
                     ButtonCustomVariant::new(cx)

@@ -53,7 +53,7 @@ impl Group {
         match self {
             Self::Files => t!("Files"),
             Self::Tabs => t!("Tabs and panes"),
-            Self::Text => t!("Text"),
+            Self::Text => t!("Search"),
             Self::Anywhere => t!("Anywhere"),
             Self::QuickLook => t!("Quick Look"),
             Self::Compare => t!("Compare two files"),
@@ -87,7 +87,7 @@ const TAB_KEYS: &[&str] = &[
 ];
 
 /// The Workspace keys about the app as a whole, not the folder or the tabs.
-const ANYWHERE_KEYS: &[&str] = &["ctrl-shift-f", "ctrl-shift-e", "ctrl-,", "f1", "ctrl-/"];
+const ANYWHERE_KEYS: &[&str] = &["ctrl-,", "f1", "ctrl-/"];
 
 /// Keys that do what another key of the same row does and are only there because the web app took them too (the
 /// browser's ways to zoom): the sheet leaves them out so its rows stay short, and the key itself still works.
@@ -97,7 +97,7 @@ const NOT_LISTED: &[&str] = &["ctrl-shift-=", "ctrl-+", "ctrl-shift--"];
 /// app-wide ones, and everything else in Workspace is about the folder.
 pub fn group_of(binding: &Binding) -> Group {
     match binding.context {
-        "TextSearch" => Group::Text,
+        "AddressFind" => Group::Text,
         "QuickLook" => Group::QuickLook,
         "Compare" => Group::Compare,
         "FileList" if binding.keys == "ctrl-enter" => Group::Tabs,
@@ -124,19 +124,25 @@ const DOCUMENTED: &[(Group, &str, &str, &str)] = &[
         "Move what's dropped (a plain drop copies)",
         "The terminal, under the files (it follows the folder shown)",
     ),
-    (Group::Text, "Enter", "Search, or open the result picked", "Match case"),
     (
         Group::Text,
-        "↓ ↑",
-        "From the search box on through the results",
-        "Match case",
+        "Enter",
+        "Search below the folder: names, and inside the files",
+        "Match case, inside files",
     ),
     (
         Group::Text,
-        "Shift+Enter",
-        "A new line: search for several lines at once",
-        "Match case",
+        "↓",
+        "From the search box on to the results",
+        "Match case, inside files",
     ),
+    (
+        Group::Text,
+        "Tab",
+        "Take the filters read from plain words",
+        "Match case, inside files",
+    ),
+    (Group::Text, "Esc", "Clear the search: back to the folder", ""),
     (
         Group::Compare,
         "Double-click",
@@ -531,7 +537,8 @@ mod tests {
         assert_eq!(files[0].keys, "Enter");
         assert_eq!(files[0].what, "Open");
         let text: Vec<_> = rows_of(None, Group::Text).into_iter().map(|row| row.keys).collect();
-        assert_eq!(&text[..4], ["Enter", "↓ ↑", "Shift+Enter", "Alt+C"]);
+        assert_eq!(&text[..4], ["Enter", "↓", "Tab", "Alt+C"]);
+        assert_eq!(text.last().map(String::as_str), Some("Esc"));
         // The compare editor's two rows sit before Save, in the TypeScript's order.
         let compare: Vec<_> = rows_of(None, Group::Compare).into_iter().map(|row| row.what).collect();
         let at = |text: &str| compare.iter().position(|w| *w == text).unwrap_or(usize::MAX);
@@ -564,8 +571,8 @@ mod tests {
         };
         assert_eq!(row("Type a path").as_deref(), Some("Ctrl+L / Alt+D / F4"));
         assert_eq!(
-            row("Search this folder and its subfolders (by name or path)").as_deref(),
-            Some("Ctrl+F / Ctrl+E / F3")
+            row("Search this folder and its subfolders: names, and inside the files").as_deref(),
+            Some("Ctrl+F / Ctrl+E / F3 / Ctrl+Shift+F")
         );
         assert_eq!(row("Refresh").as_deref(), Some("F5 / Ctrl+R"));
         assert_eq!(row("Columns").as_deref(), Some("Ctrl+Shift+9"));

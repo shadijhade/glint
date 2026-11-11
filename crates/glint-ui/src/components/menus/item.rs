@@ -802,8 +802,8 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
     if let Some(e) = one.filter(|e| e.dir && !fixed) {
         m.push(
             Entry::ask(
-                t!("Search text"),
-                IconName::TextSearch,
+                t!("Search here"),
+                IconName::Search,
                 MenuEvent::SearchText { folder: e.path.clone() },
             )
             .node(),

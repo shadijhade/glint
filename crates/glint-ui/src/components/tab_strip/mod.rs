@@ -1,5 +1,6 @@
-//! The tabs in the title bar. Ported from src/components/explorer/TabStrip.tsx and the tab handling in
-//! Explorer.tsx (`tabMenu`, `paneMenu`).
+//! The tabs: a list of the open folders at the top of the side rail, one under the other (they were a strip in
+//! the title bar; a list shows every name whole and leaves the title bar to the address). Ported from
+//! src/components/explorer/TabStrip.tsx and the tab handling in Explorer.tsx (`tabMenu`, `paneMenu`).
 //!
 //! What the TypeScript had, and where it is here:
 //!
@@ -23,9 +24,9 @@
 //! away (90 px) from where the drag began, over nothing that took the tab. Nothing takes the tab but the strips
 //! and the [`PaneDropZone`]s, which say so with `drop_taken`.
 //!
-//! **The title bar's drag area.** The strip's empty space takes no mouse (it has no handlers that block it), so
-//! the window can still be moved by it. Tabs and buttons `occlude` the mouse, so pressing one never starts a
-//! window drag.
+//! **In the rail.** Each pane on screen has its list (two in dual-pane view, the first pane's first), under a
+//! small header that names it and holds its `+` and, in dual-pane view, its pane menu. A list grows with its
+//! tabs up to [`MOST_SHOWN`] rows, then scrolls.
 
 use crate::components::command_bar::keyed;
 use crate::explorer::{self, Drive, DriveKind, Explorer, Pane, Tab, TabId};
@@ -43,8 +44,10 @@ use std::time::Duration;
 
 /// How long files held over a tab that isn't showing wait before it opens (`springTimer`, 450 ms).
 const SPRING_DELAY: Duration = Duration::from_millis(450);
-/// A tab's height: 30 px at the usual size, a pill centred in the title bar.
+/// A tab's height: 30 px at the usual size, as a place's row under it.
 const TAB_HEIGHT: Rems = rems(1.875);
+/// How many tabs a pane's list shows before it scrolls.
+const MOST_SHOWN: f32 = 8.;
 
 /// How far from where a tab's drag began a release counts as pulling it out of the strip (`> 90` in `dragTab`).
 const PULL_AWAY: Pixels = px(90.);
@@ -310,25 +313,18 @@ struct Slot {
     index: usize,
 }
 
-/// Which edge of a tab the drop marker is drawn on.
+/// Which edge of a tab the drop marker is drawn on: above it, or below the last one.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Edge {
     Start,
     End,
 }
 
-/// The gap a tab dropped at `x` would take: before the first tab whose middle is past `x` in the reading
-/// direction, else at the end (`dropAt`). `tabs` are the tabs' bounds in order.
-fn slot_at(x: Pixels, tabs: &[Bounds<Pixels>], rtl: bool) -> usize {
+/// The gap a tab dropped at height `y` would take: before the first tab whose middle is below `y`, else at the
+/// end (`dropAt`). `tabs` are the tabs' bounds in order, top to bottom.
+fn slot_at(y: Pixels, tabs: &[Bounds<Pixels>]) -> usize {
     tabs.iter()
-        .position(|b| {
-            let middle = b.origin.x + b.size.width / 2.;
-            if rtl {
-                x > middle
-            } else {
-                x < middle
-            }
-        })
+        .position(|b| y < b.origin.y + b.size.height / 2.)
         .unwrap_or(tabs.len())
 }
 
@@ -592,7 +588,8 @@ impl TabStrip {
             return;
         };
         let viewport = Bounds::new(point(px(0.), px(0.)), window.viewport_size());
-        let away = (position.y - from.y).abs();
+        // The list runs down the rail: pulled sideways is pulled out of it.
+        let away = (position.x - from.x).abs();
         match tear_off_for(viewport.contains(&position), away) {
             TearOff::No => {}
             TearOff::Now => self.tear_off(id, position, window, cx),
@@ -633,7 +630,7 @@ impl TabStrip {
     }
 
     /// A key on a focused tab: Enter and Space show it, the arrows (Home, End) move to and show the next tab
-    /// in the reading direction, Delete closes it.
+    /// (Down and Up; Right and Left too, in the reading direction, as when the tabs were a strip), Delete closes it.
     fn key(&mut self, pane: usize, id: TabId, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.modifiers.modified() {
             return;
@@ -649,6 +646,8 @@ impl TabStrip {
         let here = tabs.iter().position(|&t| t == id).unwrap_or(0);
         let go_to = match event.keystroke.key.as_str() {
             "enter" | "space" => Some(here),
+            "down" => Some((here + 1).min(tabs.len() - 1)),
+            "up" => Some(here.saturating_sub(1)),
             "right" => Some(if rtl {
                 here.saturating_sub(1)
             } else {
@@ -692,7 +691,6 @@ impl TabStrip {
         can_close: bool,
         mark: Option<Edge>,
         count: usize,
-        scroll: &ScrollHandle,
         t: &Tokens,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -708,6 +706,7 @@ impl TabStrip {
         };
         let glyph = div()
             .id(busy_id.clone())
+            .test_support()
             .flex_shrink_0()
             .child(icon(d.glyph.icon()).size_4().text_color(glyph_color));
         let glyph = if d.busy {
@@ -755,7 +754,6 @@ impl TabStrip {
         let glint = theme::glint_fill(cx);
         let ring = t.ring;
         let primary = t.primary;
-        let wheel_scroll = scroll.clone();
         let menu_explorer = self.explorer.clone();
         let sprung = self.spring.filter(|_| cx.has_active_drag()) == Some(id);
         let lit = sprung && (!selected || d.drop_into.is_some());
@@ -780,13 +778,11 @@ impl TabStrip {
             .group(group)
             .relative()
             .occlude()
-            // Tabs are as wide as they can be, and give way together when the strip is full.
-            .flex_grow_0()
-            .flex_shrink_1()
-            .flex_basis(space(52.))
-            .min_w(space(24.))
-            .max_w(space(52.))
+            // A row of the rail: as wide as it, a pixel of air above and below its fill.
+            .w_full()
+            .flex_none()
             .h(TAB_HEIGHT)
+            .py(px(1.))
             .child(
                 row_start()
                     .id(SharedString::from(format!("tab-fill-{}", id.0)))
@@ -829,39 +825,54 @@ impl TabStrip {
                                 ),
                         )
                     })
+                    // Where a dragged tab would land: a line above this one, or below the last.
                     .when_some(mark, |d, edge| {
-                        let left = (edge == Edge::Start) != rtl;
                         d.child(
                             div()
                                 .absolute()
-                                .top(space(0.5))
-                                .bottom(space(0.5))
-                                .w(space(0.5))
+                                .left(space(1.))
+                                .right(space(1.))
+                                .h(space(0.5))
                                 .rounded_full()
                                 .bg(primary)
-                                .map(|m| if left { m.left(px(-1.)) } else { m.right(px(-1.)) }),
+                                .map(|m| {
+                                    if edge == Edge::Start {
+                                        m.top(px(-2.))
+                                    } else {
+                                        m.bottom(px(-2.))
+                                    }
+                                }),
                         )
                     })
+                    // The tab with the keyboard's pane: the glint at its start edge.
                     .when(current, move |d| {
                         d.child(
                             div()
                                 .absolute()
-                                .bottom(px(-1.))
-                                .left(space(3.))
-                                .right(space(3.))
-                                .h(px(2.))
+                                .top(rems(0.4375))
+                                .bottom(rems(0.4375))
+                                .w(px(3.))
                                 .rounded_full()
-                                .bg(glint),
+                                .bg(glint)
+                                .map(|bar| if rtl { bar.right(px(-1.)) } else { bar.left(px(-1.)) }),
                         )
                     })
                     .child(glyph)
                     .child(div().flex_1().min_w_0().truncate().child(d.shown.clone()))
                     .children(close)
-                    // A tab that has just been made rises into its place.
+                    // A tab that has just been made slides into its place from the start edge.
                     .with_animation(
                         SharedString::from(format!("tab-enter-{}", id.0)),
                         Animation::new(theme::motion::BASE).with_easing(theme::motion::enter),
-                        |fill, delta| fill.opacity(delta).top(px(6. * (1. - delta))),
+                        move |fill, delta| {
+                            let away = px(10. * (1. - delta));
+                            let fill = fill.opacity(delta);
+                            if rtl {
+                                fill.right(away)
+                            } else {
+                                fill.left(away)
+                            }
+                        },
                     ),
             )
             .track_focus(&self.focus[&id])
@@ -885,7 +896,6 @@ impl TabStrip {
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 this.key(pane, id, event, window, cx);
             }))
-            .on_scroll(move |event, window, _| wheel(&wheel_scroll, event, rtl, window))
             .on_drag(drag, |drag, _, _, cx| {
                 cx.new(|_| DragChip {
                     name: drag.name.clone(),
@@ -916,27 +926,13 @@ impl TabStrip {
     }
 }
 
-/// The mouse wheel scrolls the strip sideways (`onWheel`): down shows the later tabs.
-fn wheel(scroll: &ScrollHandle, event: &ScrollEvent, rtl: bool, window: &Window) {
-    let delta = event.delta.pixel_delta(window.line_height());
-    if delta.y == px(0.) || delta.x != px(0.) {
-        return;
-    }
-    let offset = scroll.offset();
-    let max = scroll.max_offset().x;
-    // Offsets run from 0 (the strip's left end) to minus the overflow. English's later tabs are to the right,
-    // Arabic's to the left.
-    let moved = if rtl { offset.x - delta.y } else { offset.x + delta.y };
-    scroll.set_offset(point(moved.clamp(-max, px(0.)), offset.y));
-}
-
 impl Render for TabStrip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx).clone();
-        let rtl = i18n::is_rtl();
         let panes = self.collect(cx);
         let dual = panes.len() > 1;
         let dragging = cx.has_active_drag();
+        let rtl = i18n::is_rtl();
         let slot = self.slot.filter(|_| dragging);
         if !dragging {
             self.drag_from = None;
@@ -949,16 +945,14 @@ impl Render for TabStrip {
             let count = pane.tabs.len();
             let can_close = count > 1 || dual;
             let scroll = self.scrolls[index].clone();
-            // Another tab became active: keep it in view (a tab brought into view stops clear of the edge).
+            // Another tab became active: keep it in view.
             if self.scrolled_to[index] != Some(pane.active) {
                 self.scrolled_to[index] = Some(pane.active);
                 if let Some(at) = pane.tabs.iter().position(|d| d.id == pane.active) {
-                    scroll.scroll_to_item(if rtl { count - at } else { at });
+                    scroll.scroll_to_item(at);
                 }
             }
-            // The tabs in reading order. Arabic runs right to left: the scroll is laid out left to right with the
-            // tabs reversed after a spacer that keeps them against the right edge while they all fit.
-            let mut tabs: Vec<AnyElement> = pane
+            let tabs: Vec<AnyElement> = pane
                 .tabs
                 .iter()
                 .enumerate()
@@ -983,17 +977,12 @@ impl Render for TabStrip {
                         can_close,
                         mark,
                         count,
-                        &scroll,
                         &t,
                         cx,
                     )
                     .into_any_element()
                 })
                 .collect();
-            if rtl {
-                tabs.reverse();
-                tabs.insert(0, div().flex_1().min_w_0().into_any_element());
-            }
             let list_label = if !dual {
                 t!("Tabs")
             } else if index == 0 {
@@ -1002,41 +991,27 @@ impl Render for TabStrip {
                 t!("Right pane tabs")
             };
             let drop_scroll = scroll.clone();
-            let wheel_scroll = scroll.clone();
             let list = div()
                 .id(SharedString::from(format!("tablist-{index}")))
                 .test_support()
                 .role(Role::TabList)
                 .aria_label(list_label)
                 .flex()
-                .flex_row()
-                // As wide as its tabs, and no wider: the + sits right after the last one, until they fill the strip.
-                .flex_initial()
-                .min_w_0()
-                .h_full()
-                .items_center()
-                .gap(space(1.))
-                .overflow_x_scroll()
+                .flex_col()
+                .w_full()
+                // As tall as its tabs, up to a few; then it scrolls.
+                .max_h(TAB_HEIGHT * MOST_SHOWN)
+                .overflow_y_scroll()
                 .track_scroll(&scroll)
-                // Double-clicking the empty strip makes a tab (the tabs themselves occlude it).
-                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                    if event.click_count() == 2 {
-                        this.explorer.update(cx, |e, cx| e.new_tab(None, cx));
-                    }
-                }))
-                .on_scroll(move |event, window, _| wheel(&wheel_scroll, event, rtl, window))
-                // A tab dragged over the strip: the gap it would take.
+                // A tab dragged over the list: the gap it would take.
                 .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
                     let over = event.bounds.contains(&event.event.position);
-                    let skip = usize::from(rtl);
                     let new = if over {
-                        let mut bounds: Vec<Bounds<Pixels>> = (0..count)
-                            .filter_map(|i| drop_scroll.bounds_for_item(skip + if rtl { count - 1 - i } else { i }))
-                            .collect();
-                        bounds.truncate(count);
+                        let bounds: Vec<Bounds<Pixels>> =
+                            (0..count).filter_map(|i| drop_scroll.bounds_for_item(i)).collect();
                         Some(Slot {
                             pane: index,
-                            index: slot_at(event.event.position.x, &bounds, rtl),
+                            index: slot_at(event.event.position.y, &bounds),
                         })
                     } else if this.slot.is_some_and(|s| s.pane == index) {
                         None
@@ -1053,13 +1028,58 @@ impl Render for TabStrip {
                 }))
                 .children(tabs);
 
-            // The empty room after the buttons: takes no mouse except a dragged tab, so the title bar still
-            // moves the window by it, and a tab dropped there goes to the end.
-            let filler = div()
-                .id(SharedString::from(format!("tab-filler-{index}")))
-                .flex_1()
-                .min_w_0()
-                .h_full()
+            let new_tab = Button::new(SharedString::from(format!("new-tab-{index}")))
+                .ghost()
+                .xsmall()
+                .icon(IconName::Plus)
+                .accessibility_label(t!("New tab"))
+                .tooltip(keyed("New tab ({0})", &[&crate::actions::NewTab]))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    // A new tab goes where the keyboard is: this pane's button acts on this pane.
+                    this.explorer.update(cx, |e, cx| {
+                        e.focus_pane(index, cx);
+                        e.new_tab(None, cx);
+                    });
+                }));
+            let pane_button = dual.then(|| {
+                Button::new(SharedString::from(format!("pane-menu-{index}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Columns2)
+                    .accessibility_label(t!("Pane menu"))
+                    .tooltip(t!("This pane: swap, show a folder in the other pane, even out, close"))
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        this.open_pane_menu(index, event.position(), window, cx);
+                    }))
+            });
+            // What the list is, over it: "Tabs" (or which pane's), then its buttons at the end edge. A tab dropped
+            // on the header goes to the end of the list, and a double-click on it makes a tab.
+            let heading: SharedString = if !dual {
+                t!("Open")
+            } else if (index == 0) != rtl {
+                t!("Left pane")
+            } else {
+                t!("Right pane")
+            };
+            let header = row_start()
+                .id(SharedString::from(format!("tab-header-{index}")))
+                .w_full()
+                .h(space(7.))
+                .ps(2.)
+                .pe(0.5)
+                .gap(space(0.5))
+                .text_size(theme::size::XS)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if pane.current && dual {
+                    t.foreground
+                } else {
+                    t.muted_foreground
+                })
+                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                    if event.click_count() == 2 {
+                        this.explorer.update(cx, |e, cx| e.new_tab(None, cx));
+                    }
+                }))
                 .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
                     if event.bounds.contains(&event.event.position) {
                         let end = Some(Slot {
@@ -1074,55 +1094,16 @@ impl Render for TabStrip {
                 }))
                 .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                     this.drop_tab(index, count, dragged.id, cx);
-                }));
-
-            let new_tab = Button::new(SharedString::from(format!("new-tab-{index}")))
-                .ghost()
-                .small()
-                .icon(IconName::Plus)
-                .accessibility_label(t!("New tab"))
-                .tooltip(keyed("New tab ({0})", &[&crate::actions::NewTab]))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    // A new tab goes where the keyboard is: this pane's button acts on this pane.
-                    this.explorer.update(cx, |e, cx| {
-                        e.focus_pane(index, cx);
-                        e.new_tab(None, cx);
-                    });
-                }));
-            let pane_button = dual.then(|| {
-                Button::new(SharedString::from(format!("pane-menu-{index}")))
-                    .ghost()
-                    .small()
-                    .icon(IconName::Columns2)
-                    .accessibility_label(t!("Pane menu"))
-                    .tooltip(t!("This pane: swap, show a folder in the other pane, even out, close"))
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        this.open_pane_menu(index, event.position(), window, cx);
-                    }))
-            });
+                }))
+                .child(div().flex_1().min_w_0().truncate().child(heading))
+                .children(pane_button)
+                .child(new_tab);
             strips.push(
-                row_start()
+                col()
                     .id(SharedString::from(format!("tab-strip-{index}")))
-                    .flex_1()
-                    .flex_basis(px(0.))
-                    .min_w_0()
-                    .h_full()
-                    .items_center()
-                    .gap(space(1.))
-                    .child(list)
-                    // The buttons take the mouse (the title bar's drag area stops at them).
-                    .child(
-                        row_start()
-                            .occlude()
-                            .flex_shrink_0()
-                            .items_center()
-                            .self_center()
-                            .child(new_tab),
-                    )
-                    .child(filler)
-                    .children(
-                        pane_button.map(|button| row_start().occlude().flex_shrink_0().self_center().child(button)),
-                    ),
+                    .w_full()
+                    .child(header)
+                    .child(list),
             );
         }
 
@@ -1136,14 +1117,12 @@ impl Render for TabStrip {
             )
             .with_priority(1)
         });
-        row_start()
+        col()
             .id("tab-strip")
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .items_center()
-            .gap(space(4.))
-            // Where a tab's drag began, and where it ended if that was outside the strip.
+            .w_full()
+            .flex_none()
+            .gap(space(1.))
+            // Where a tab's drag began, and where it ended if that was outside the lists.
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedTab>, _, cx| {
                 if this.drag_from.is_none() {
                     this.drag_from = Some((event.drag(cx).id, event.event.position));
