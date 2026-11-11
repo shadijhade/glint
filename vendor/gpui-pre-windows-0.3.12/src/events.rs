@@ -1389,12 +1389,18 @@ impl WindowsWindowInner {
             (None, FrameRequestSource::NativeCallback),
             |(at, source)| (Some(at), source),
         );
+        // Glint: this frame is the early one that was asked for, if one was (`WindowsWindow::frame_waker`); and
+        // nothing asked for while it is handled is drawn ahead of the tick.
+        self.state.frame_is_early.set(self.state.early_frame_asked.take());
+        self.state.in_frame.set(true);
         request_frame(RequestFrameOptions {
             require_presentation: false,
             force_render,
             signal_at,
             signal_source,
         });
+        self.state.in_frame.set(false);
+        self.state.frame_is_early.set(false);
 
         self.state.callbacks.request_frame.set(Some(request_frame));
         self.update_ime_enabled(handle);

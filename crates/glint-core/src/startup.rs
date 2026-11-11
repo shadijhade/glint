@@ -69,11 +69,78 @@ pub fn startup_hint(paths: Vec<String>) {
     let _ = std::fs::write(file, serde_json::to_vec(&paths).unwrap_or_default());
 }
 
-/// The page painted its first folder: with GLINT_BENCH_START set, the time since start is written there
-/// and Glint quits (the bench harness's cold start).
+/// The page painted its first folder: with GLINT_BENCH_START set, the time since Windows made the process is
+/// written there, with every mark along the way on the lines after it, and Glint quits (the bench harness's
+/// cold start).
 pub fn bench_first_folder(app: crate::host::AppHandle) {
+    mark("first folder painted");
     let Some(file) = std::env::var_os("GLINT_BENCH_START") else { return };
-    let ms = STARTED.get().map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0);
-    let _ = std::fs::write(file, format!("{ms:.1}"));
+    let (total, marks) = marks();
+    let mut text = format!("{total:.1}\n");
+    for (name, at) in marks {
+        text.push_str(&format!("{at:9.1}  {name}\n"));
+    }
+    let _ = std::fs::write(file, text);
     app.exit(0);
+}
+
+/// The steps of the start so far, each with the moment it was reached.
+static MARKS: Mutex<Vec<(&'static str, Instant)>> = Mutex::new(Vec::new());
+
+/// Notes that the start has reached `name`: where a slow start spends its time is read from these
+/// (`GLINT_BENCH_START`). A handful of calls, each a clock read and a push.
+pub fn mark(name: &'static str) {
+    MARKS.lock().unwrap_or_else(|e| e.into_inner()).push((name, Instant::now()));
+}
+
+/// How long ago Windows made this process, in ms, and each mark's moment counted from then: the time before
+/// `main` runs (the loader mapping the program and its libraries) is part of what a person waits for.
+pub fn marks() -> (f64, Vec<(&'static str, f64)>) {
+    let now = Instant::now();
+    let age = process_age_ms().unwrap_or_else(|| STARTED.get().map_or(0.0, |s| ms_between(*s, now)));
+    let marks = MARKS.lock().unwrap_or_else(|e| e.into_inner());
+    (age, marks.iter().map(|(name, at)| (*name, age - ms_between(*at, now))).collect())
+}
+
+fn ms_between(from: Instant, to: Instant) -> f64 {
+    to.saturating_duration_since(from).as_secs_f64() * 1000.0
+}
+
+/// Milliseconds since Windows made this process (its creation time against the clock now).
+#[cfg(windows)]
+fn process_age_ms() -> Option<f64> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    let (mut made, mut exited, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+    // Safety: the out-parameters live through the call; the pseudo-handle needs no closing.
+    unsafe { GetProcessTimes(GetCurrentProcess(), &mut made, &mut exited, &mut kernel, &mut user) }.ok()?;
+    let now = unsafe { GetSystemTimePreciseAsFileTime() };
+    // FILETIME counts 100 ns.
+    Some(ticks(now).saturating_sub(ticks(made)) as f64 / 10_000.0)
+}
+
+#[cfg(not(windows))]
+fn process_age_ms() -> Option<f64> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_are_counted_from_when_the_process_was_made_and_keep_their_order() {
+        mark("test: one");
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        mark("test: two");
+        let (age, marks) = marks();
+        let at = |name: &str| marks.iter().find(|(marked, _)| *marked == name).map(|(_, at)| *at).expect("it was marked");
+        // The process is older than its marks, and a later mark is later.
+        assert!(age > 0.0);
+        assert!(at("test: one") >= 0.0, "{}", at("test: one"));
+        assert!(at("test: one") < at("test: two"));
+        assert!(at("test: two") <= age);
+    }
 }

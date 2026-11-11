@@ -82,8 +82,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use typeahead::TypeAhead;
 
-/// How long the arrow keys resting on a folder wait before reading it ahead (`setTimeout(…, 120)`).
-const PREFETCH_AFTER: Duration = Duration::from_millis(120);
+/// How long the arrow keys rest on a folder before it is read ahead (the web app waited 120 ms). Its row says what
+/// is in it as soon as it has been read, so the wait is what is felt: long enough that holding an arrow key down
+/// reads nothing on the way, and no longer.
+const PREFETCH_AFTER: Duration = Duration::from_millis(80);
 /// More files than this asked to open at once need the person's say-so (`files.length > 10`).
 const OPEN_MANY_ASKS_ABOVE: usize = 10;
 /// Selections up to this many items have their tags read (the Tags submenu's checks need them, and the rows may be
@@ -290,6 +292,74 @@ pub(crate) struct Frame {
     pub lane: String,
     pub box_px: f32,
     pub scale: f32,
+    /// What the folders read ahead hold (the one under the pointer, the one the keyboard is on): their rows say it.
+    pub peeks: Rc<Vec<Peek>>,
+}
+
+/// What a folder's row says of the folder before it is opened: it was read ahead when the pointer came to rest on
+/// it, or the keyboard did.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Peek {
+    /// The folder's path, as its row has it.
+    pub path: String,
+    /// "6 folders · 15 files · 12.6 MB".
+    pub words: SharedString,
+    /// Its make-up: each kind's color and share, commonest first (the head's band, small).
+    pub band: Vec<(Hsla, f32)>,
+}
+
+impl Peek {
+    /// What `listed` holds, in the head's words and colors.
+    fn of(path: &str, listed: &explorer::Listed) -> Peek {
+        use crate::components::pane_head::{holds, shares};
+        use crate::components::status_bar::summary::spectrum_sized;
+        let kinds = spectrum_sized(&listed.entries, None);
+        let band = kinds
+            .iter()
+            .zip(shares(&kinds))
+            .map(|(kind, share)| {
+                let color = theme::hsl(kind.group.hue as f32, kind.group.sat as f32, 54.).opacity(0.85);
+                (color, share)
+            })
+            .collect();
+        Peek {
+            path: path.to_string(),
+            words: holds(listed.entries.len(), &kinds),
+            band,
+        }
+    }
+}
+
+/// What the folders read ahead hold, worked out once for each listing (told by where its entries are) and kept
+/// while the explorer still has it. A view keeps one and reads it each frame.
+#[derive(Default)]
+pub(crate) struct Peeks {
+    known: Vec<(usize, Rc<Peek>)>,
+    list: Rc<Vec<Peek>>,
+}
+
+impl Peeks {
+    /// The peeks as the explorer has them now, newest first: the same list as last frame's when nothing changed.
+    pub(crate) fn read(&mut self, explorer: &Explorer) -> Rc<Vec<Peek>> {
+        let now: Vec<(usize, Rc<Peek>)> = explorer
+            .peeks()
+            .into_iter()
+            .map(|(path, listed)| {
+                let at = Arc::as_ptr(&listed.entries) as *const u8 as usize;
+                let known = self.known.iter().find(|(seen, peek)| *seen == at && peek.path == path);
+                (
+                    at,
+                    known.map_or_else(|| Rc::new(Peek::of(path, listed)), |(_, peek)| peek.clone()),
+                )
+            })
+            .collect();
+        let same = now.len() == self.known.len() && now.iter().zip(&self.known).all(|(a, b)| Rc::ptr_eq(&a.1, &b.1));
+        if !same {
+            self.list = Rc::new(now.iter().map(|(_, peek)| Peek::clone(peek)).collect());
+            self.known = now;
+        }
+        self.list.clone()
+    }
 }
 
 /// What was last asked of the facts, so a frame that draws the same lines asks nothing again.
@@ -358,6 +428,8 @@ pub struct FileList {
     marquee: Option<Marquee>,
     /// The items being dragged out of the window now.
     dragging: Arc<HashSet<String>>,
+    /// What the folders read ahead hold: their rows say it.
+    peeks: Peeks,
     /// Where a drop of the files being dragged over the list would land.
     drop_at: Option<DropAt>,
     /// Tests only: an item shown as being renamed, as the explorer's rename part will make `Tab::renaming` say.
@@ -460,6 +532,7 @@ impl FileList {
                 lane: String::new(),
                 box_px: 16.,
                 scale: 1.,
+                peeks: Rc::new(Vec::new()),
             }),
             width: Rc::new(Cell::new(0.)),
             entered_for: None,
@@ -481,6 +554,7 @@ impl FileList {
             tracking: Rc::new(Cell::new(false)),
             marquee: None,
             dragging: Arc::new(HashSet::new()),
+            peeks: Peeks::default(),
             drop_at: None,
             #[cfg(test)]
             pretend_renaming: None,
@@ -1078,6 +1152,7 @@ impl FileList {
 
     /// The lines of the list that are on screen.
     fn render_lines(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let _span = crate::perf::span("list lines");
         let frame = self.frame.clone();
         self.show_thumbnails(&frame, &range, window, cx);
         self.ask_facts(&frame, &range, cx);
@@ -1180,6 +1255,7 @@ impl Focusable for FileList {
 
 impl Render for FileList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("file list");
         let t: Tokens = theme::tokens(cx).clone();
         let root = col()
             .id(("file-list", self.pane))
@@ -1187,10 +1263,14 @@ impl Render for FileList {
             .min_h_0()
             .relative()
             .key_context("FileList");
+        let reading = crate::perf::span("list read tab");
         let Some(view) = self.read_tab(cx) else {
             return root.track_focus(&self.focus).into_any_element();
         };
+        drop(reading);
+        let syncing = crate::perf::span("list sync");
         self.sync(&view, window, cx);
+        drop(syncing);
         // Another folder (or search) than the one drawn last: its rows arrive. The tab's path changes only when the
         // new listing is in, so this is the frame the rows change; a re-read of the same folder is not an arrival.
         if self.entered_for.as_deref() != Some(view.facts_key.as_str()) {
@@ -1209,6 +1289,7 @@ impl Render for FileList {
         let drop_at = self.drop_at.clone().filter(|_| cx.has_active_drag());
         let folder_drop = drop_at == Some(DropAt::Folder);
         let thumbnails = state::settings(cx).list_thumbnails;
+        let peeks = self.peeks.read(explorer);
         let frame = Rc::new(Frame {
             rows: view.rows.clone(),
             selected: view.selection.clone(),
@@ -1253,11 +1334,14 @@ impl Render for FileList {
             // A row's picture: a quarter larger than its text.
             box_px: (f32::from(window.rem_size()) * 1.25).round(),
             scale: window.scale_factor(),
+            peeks,
         });
         self.frame = frame.clone();
 
+        let heading = crate::perf::span("list header and state");
         let header = self.header_row(&frame, &view, &t, cx);
         let state = self.state_view(&view, &t, cx);
+        drop(heading);
 
         // The width the list is laid out at decides which columns fit; a canvas under it measures that, and
         // asks for another frame when it changes.

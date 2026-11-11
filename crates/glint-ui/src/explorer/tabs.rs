@@ -269,6 +269,7 @@ impl Explorer {
             *slot = Pane { tabs, active };
         }
         let closed = self.tabs.remove(&id);
+        super::model::let_go(closed.as_ref().and_then(|tab| tab.shared_entries()), cx);
         self.remember(closed.as_ref(), pane, at);
         if shown {
             self.quick_look = false;

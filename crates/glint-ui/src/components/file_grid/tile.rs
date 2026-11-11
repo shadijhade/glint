@@ -80,7 +80,12 @@ pub(super) struct Frame {
     pub on_hover: Handler<(usize, bool)>,
     /// The rename box, drawn in place of the name of the item it is for.
     pub rename: Option<super::rename::RenameView>,
+    /// What the folders read ahead hold (the one under the pointer, the one the keyboard is on): their tiles say it.
+    pub peeks: Rc<Vec<crate::components::file_list::Peek>>,
 }
+
+/// The name tiles are a hover group under: what shows only while the pointer is on a tile asks it.
+const TILE_GROUP: &str = "file-tile";
 
 /// Where a search result is, below the folder that was searched ("" when right in it) (`relativeTo`).
 pub(super) fn relative_to(scope: &str, path: &str) -> String {
@@ -335,6 +340,12 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
     };
     let size = size_text(entry, frame.located, frame.sizes.as_deref(), frame.measuring);
     let line = if location.is_empty() { size } else { location };
+    // A folder read ahead says what it holds on the line where a file says its size: while the pointer is on its
+    // tile, and on the tile the keyboard is on. One whose size was measured keeps saying that.
+    let peek = (entry.dir && line.is_empty())
+        .then(|| frame.peeks.iter().find(|peek| peek.path == entry.path))
+        .flatten()
+        .map(|peek| peek.words.clone());
 
     let on_down = frame.on_down.clone();
     let on_down_right = frame.on_down.clone();
@@ -383,6 +394,7 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                 .aria_size_of_set(frame.rows.len())
                 .when(shown_focus, |tile| tile.aria_active_descendant())
                 .test_support()
+                .group(TILE_GROUP)
                 .size_full()
                 .min_w_0()
                 .flex()
@@ -432,8 +444,8 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                 })
                 .child(square)
                 .child(label)
-                .child(
-                    div()
+                .child({
+                    let under = div()
                         .h(space(4.))
                         .w_full()
                         .flex_none()
@@ -441,9 +453,25 @@ fn tile(frame: &Rc<Frame>, i: usize, entry: &FileEntry, cx: &App) -> impl IntoEl
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .text_size(theme::size::XXS)
-                        .text_color(t.muted_foreground)
-                        .child(line),
-                ),
+                        .text_color(t.muted_foreground);
+                    match peek {
+                        Some(words) => {
+                            let under = under
+                                .id(("file-grid-peek", i))
+                                .role(Role::Note)
+                                .aria_label(words.clone())
+                                .test_support()
+                                .child(crate::kit::rtl_line(words));
+                            if shown_focus {
+                                under
+                            } else {
+                                under.opacity(0.).group_hover(TILE_GROUP, |style| style.opacity(1.))
+                            }
+                            .into_any_element()
+                        }
+                        None => under.child(line).into_any_element(),
+                    }
+                }),
         )
 }
 

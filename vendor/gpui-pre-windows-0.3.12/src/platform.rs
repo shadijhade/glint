@@ -55,6 +55,10 @@ pub struct WindowsPlatform {
     raw_window_handles: Arc<RwLock<SmallVec<[TrackedWindow; 4]>>>,
     /// The windowing mode to start in, applied when `run` starts. Windowed when unset.
     initial_windowing: RefCell<Option<WindowingRequest>>,
+    /// Glint: the DirectX devices, being made on a thread of their own since the platform's first moment
+    /// (`attach_gpu` takes them). Making them loads the display driver, the longest single step of a start,
+    /// and nothing else of the start waits on it until the first window.
+    pending_devices: RefCell<Option<std::thread::JoinHandle<Result<DirectXDevices>>>>,
     /// Set to stop the current `VSyncProvider` thread, which runs while windowed.
     vsync_stop: RefCell<Option<Arc<AtomicBool>>>,
     // The below members will never change throughout the entire lifecycle of the app.
@@ -182,6 +186,16 @@ impl Drop for PowerRequest {
 
 impl WindowsPlatform {
     pub fn new(headless: bool) -> Result<Self> {
+        // Glint: started before anything else here, so the driver loads while the text system, the
+        // platform's window and the application's own start are made on this thread.
+        let pending_devices = if headless {
+            None
+        } else {
+            std::thread::Builder::new()
+                .name("DirectXDevices".to_owned())
+                .spawn(DirectXDevices::new)
+                .ok()
+        };
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
         }
@@ -272,6 +286,7 @@ impl WindowsPlatform {
             handle,
             raw_window_handles,
             initial_windowing: RefCell::new(None),
+            pending_devices: RefCell::new(pending_devices),
             vsync_stop: RefCell::new(None),
             headless,
             icon,
@@ -410,7 +425,18 @@ impl WindowsPlatform {
 
     /// Creates the DirectX devices that windows draw with, and starts vsync.
     fn attach_gpu(&self) -> Result<()> {
-        let devices = DirectXDevices::new().context("Creating DirectX devices")?;
+        // Glint: the ones begun in `new`, if they are still to be taken (the first attach); made here
+        // otherwise, and when that thread failed.
+        let begun = self
+            .pending_devices
+            .borrow_mut()
+            .take()
+            .and_then(|pending| pending.join().ok())
+            .and_then(|made| made.log_err());
+        let devices = match begun {
+            Some(devices) => devices,
+            None => DirectXDevices::new().context("Creating DirectX devices")?,
+        };
         *self.inner.state.directx_devices.borrow_mut() = Some(devices);
         self.begin_vsync_thread();
         Ok(())

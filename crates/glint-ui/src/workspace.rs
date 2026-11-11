@@ -1873,6 +1873,7 @@ struct ArchivePropertiesToast;
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("workspace");
         let t = theme::tokens(cx).clone();
         // The window is chrome all over (over Mica, the material with a veil); the sheet lies on it.
         let fill = theme::window_fill(cx);

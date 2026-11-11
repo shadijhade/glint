@@ -1371,10 +1371,15 @@ thread_local! {
     static FRAME_LOG_PHASES: Cell<[f32; 4]> = const { Cell::new([0.; 4]) };
 }
 
+/// Glint: milliseconds from the frame log's first line to `moment` (the log's clock: `at=`).
+fn frame_log_at(moment: std::time::Instant) -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    moment.saturating_duration_since(*START.get_or_init(|| moment)).as_secs_f64() * 1000.
+}
+
 /// Glint: prints the frame log's line for a frame that took `draw` to build and `present` to show.
 fn frame_log_line(started: std::time::Instant, draw: Duration, present: Duration) {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let at = started.duration_since(*START.get_or_init(|| started));
+    let at = Duration::from_secs_f64(frame_log_at(started) / 1000.);
     let [layout, prepaint, paint, a11y] = FRAME_LOG_PHASES.with(Cell::get);
     eprintln!(
         "frame at={:.1} draw={:.2} layout={:.2} prepaint={:.2} paint={:.2} a11y={:.2} present={:.2}",
@@ -2287,7 +2292,11 @@ impl Window {
                     .log_err()
                     .unwrap_or(DispatchEventResult::default());
                 if let Some((kind, start)) = logged {
-                    eprintln!("input kind={kind} ms={:.3}", start.elapsed().as_secs_f64() * 1000.);
+                    eprintln!(
+                        "input kind={kind} at={:.1} ms={:.3}",
+                        frame_log_at(start),
+                        start.elapsed().as_secs_f64() * 1000.
+                    );
                 }
                 result
             })

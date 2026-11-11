@@ -240,11 +240,62 @@ impl CoreSource {
     }
 }
 
-/// core's answer for a folder, decoded. Runs on a blocking thread: 100,000 names take a while to decode.
+/// core's answer for a folder in its binary form, decoded. Runs on a blocking thread.
 fn decode(path: &str, bytes: &[u8]) -> Result<Listed, ListFailure> {
     glint_model::entries::decode_listing(bytes)
         .map(Listed::from)
         .map_err(|e| ListFailure::other(path, format!("Glint couldn't read the folder's listing: {e}")))
+}
+
+/// A folder with this many items or more has its rows made on several threads.
+const ROWS_ON_THREADS: usize = 4096;
+
+/// core's answer for a folder, as the explorer keeps it. A folder on disk comes as the entries core read and
+/// becomes rows directly (each name is moved, not copied; its path, lowercase name and extension are made
+/// beside it), a big one on several threads; anything else comes in the binary form and is decoded. Runs on the
+/// thread that read the folder.
+fn shape(asked: &str, listing: glint_core::fsx::Listing) -> Result<Listed, ListFailure> {
+    use glint_model::entries::{attr, with_details, RawEntry};
+    use rayon::prelude::*;
+    match listing {
+        glint_core::fsx::Listing::Encoded(bytes) => decode(asked, &bytes),
+        glint_core::fsx::Listing::Folder {
+            path,
+            entries,
+            elapsed,
+            from_index,
+        } => {
+            let row = |entry: glint_core::fsx::Entry| {
+                // The directory bit is what the interface reads (the binary form set it the same way).
+                let attrs = entry.attrs | if entry.dir { attr::DIRECTORY } else { 0 };
+                with_details(
+                    RawEntry {
+                        name: entry.name,
+                        path: entry.path,
+                        dir: attrs & attr::DIRECTORY != 0,
+                        size: entry.size,
+                        modified: entry.modified,
+                        attrs,
+                        origin: None,
+                    },
+                    &path,
+                )
+            };
+            let rows: Vec<glint_model::entries::FileEntry> = if entries.len() >= ROWS_ON_THREADS {
+                entries.into_par_iter().map(row).collect()
+            } else {
+                entries.into_iter().map(row).collect()
+            };
+            Ok(Listed {
+                entries: Arc::from(rows),
+                path,
+                elapsed,
+                archive: None,
+                from_index,
+                remote: false,
+            })
+        }
+    }
 }
 
 impl Source for CoreSource {
@@ -252,19 +303,19 @@ impl Source for CoreSource {
         let path = path.to_string();
         let job = async move {
             let asked = path.clone();
-            let response = glint_core::fsx::list_dir(path).await.map_err(|e| ListFailure {
-                kind: if e.kind == "denied" {
-                    FailureKind::Denied
-                } else {
-                    FailureKind::Other
-                },
-                message: e.message,
-                path: e.path,
-                remote: e.remote,
-            })?;
-            let bytes = response.into_bytes();
-            let decoded = glint_core::fsx::blocking(move || Ok(decode(&asked, &bytes))).await;
-            decoded.map_err(|e| ListFailure::other("", e))?
+            // Read and made into rows on one blocking thread: one trip there and back.
+            glint_core::fsx::list_folder(path, move |listing| shape(&asked, listing))
+                .await
+                .map_err(|e| ListFailure {
+                    kind: if e.kind == "denied" {
+                        FailureKind::Denied
+                    } else {
+                        FailureKind::Other
+                    },
+                    message: e.message,
+                    path: e.path,
+                    remote: e.remote,
+                })?
         };
         let running = core_bridge::run(job);
         Box::pin(async move {
@@ -1043,4 +1094,98 @@ fn known_folders() -> Vec<KnownFolder> {
 #[cfg(not(windows))]
 fn known_folders() -> Vec<KnownFolder> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glint_core::fsx::{encode_listing, Entry, Listing};
+
+    fn entry(name: &str, dir: bool, size: u64, attrs: u32) -> Entry {
+        Entry {
+            name: name.to_string(),
+            path: None,
+            dir,
+            size,
+            modified: 1_700_000_000_000,
+            attrs,
+        }
+    }
+
+    /// The rows made straight from core's entries are the very rows the binary form decoded to: the same paths,
+    /// lowercase names, extensions and bits, whatever the names hold.
+    #[test]
+    fn a_folders_entries_become_the_rows_their_binary_form_decodes_to() {
+        let entries = vec![
+            entry("Sub Folder", true, 0, 0),
+            entry("Report.PDF", false, 5_000, 0x20),
+            entry(".gitignore", false, 12, 0x2),
+            entry("تقرير 😀.TXT", false, 7, 0),
+            entry("no extension", false, 1, 0),
+        ];
+        let path = "C:\\Work";
+        let decoded = decode(path, &encode_listing(path, &entries, 2.5, None, false)).expect("it decodes");
+        let shaped = shape(
+            path,
+            Listing::Folder {
+                path: path.to_string(),
+                entries,
+                elapsed: 2.5,
+                from_index: false,
+            },
+        )
+        .expect("it is shaped");
+        assert_eq!(shaped.path, decoded.path);
+        assert_eq!(&shaped.entries[..], &decoded.entries[..]);
+        assert_eq!(
+            (shaped.elapsed, shaped.from_index, shaped.remote),
+            (decoded.elapsed, decoded.from_index, decoded.remote)
+        );
+        assert!(shaped.archive.is_none());
+        // What the interface reads of them.
+        assert!(shaped.entries[0].dir && shaped.entries[0].attrs & glint_model::entries::attr::DIRECTORY != 0);
+        assert_eq!(shaped.entries[1].ext, "pdf");
+        assert_eq!(shaped.entries[1].path, "C:\\Work\\Report.PDF");
+        assert_eq!(
+            shaped.entries[2].ext, "",
+            "a dot at the start begins the name, not an extension"
+        );
+    }
+
+    #[test]
+    fn a_big_folders_rows_are_made_on_several_threads_and_stay_in_order() {
+        let count = ROWS_ON_THREADS + 500;
+        let entries: Vec<Entry> = (0..count)
+            .map(|i| entry(&format!("file{i:05}.txt"), false, i as u64, 0))
+            .collect();
+        let shaped = shape(
+            "C:\\Big",
+            Listing::Folder {
+                path: "C:\\Big".to_string(),
+                entries,
+                elapsed: 0.0,
+                from_index: true,
+            },
+        )
+        .expect("it is shaped");
+        assert_eq!(shaped.entries.len(), count);
+        assert!(shaped.from_index);
+        assert!(shaped
+            .entries
+            .iter()
+            .enumerate()
+            .all(|(i, row)| row.size == i as u64 && row.name == format!("file{i:05}.txt")));
+    }
+
+    #[test]
+    fn anything_else_comes_in_the_binary_form_and_is_decoded() {
+        let entries = vec![entry("inside.txt", false, 3, 0)];
+        let bytes = encode_listing("C:\\a.zip", &entries, 1.0, None, false);
+        let shaped = shape("C:\\a.zip", Listing::Encoded(bytes)).expect("it decodes");
+        assert_eq!(shaped.entries.len(), 1);
+        assert_eq!(shaped.entries[0].path, "C:\\a.zip\\inside.txt");
+        // Bytes that are no listing are an error that names the folder asked for, never a panic.
+        let failed = shape("C:\\broken", Listing::Encoded(vec![1, 2, 3])).expect_err("not a listing");
+        assert_eq!(failed.path, "C:\\broken");
+    }
 }

@@ -24,6 +24,15 @@ use std::time::Duration;
 const HINT_AFTER: Duration = Duration::from_millis(1500);
 
 impl Explorer {
+    /// Asks Windows where Home, Desktop and the other known folders are, now: the first folder waits for the
+    /// answer ([`Explorer::init_explorer`]), and asked as the app starts it is there by the time the window is.
+    /// Optional; without it they are asked when the first folders are.
+    pub fn read_ahead_for_start(&mut self) {
+        if !self.initialized && self.known_reading.is_none() {
+            self.known_reading = Some(self.source.known_folders());
+        }
+    }
+
     /// Opens the first folders: last time's tabs or the start folder, and any the app was started with
     /// (`initExplorer`). The task resolves once they are all open.
     ///
@@ -39,9 +48,10 @@ impl Explorer {
         }
         // Drives fill in when they answer; a sleeping network drive mustn't hold up the first folder.
         self.refresh_drives(cx).detach();
-        let known = self.source.known_folders();
+        let known = self.known_reading.take().unwrap_or_else(|| self.source.known_folders());
         cx.spawn(async move |this, cx| {
             let known = known.await;
+            glint_core::startup::mark("known folders");
             let opened = this.update(cx, |this, cx| {
                 this.known = known.into();
                 this.push_gallery_folders(cx);
@@ -77,6 +87,7 @@ impl Explorer {
                     }
                 }
             }
+            glint_core::startup::mark("first folders open");
             this.update(cx, |this, cx| {
                 this.restored = true;
                 this.save_session(cx);
@@ -205,6 +216,7 @@ impl Explorer {
     /// Watches the folders on screen, and only those: a tab out of sight is re-read when it's shown
     /// (`syncWatches`). A folder changing raises core's "dir-changed", which `reload_folder` answers.
     pub(super) fn sync_watches(&mut self) {
+        let _span = crate::perf::span("sync watches");
         let mut folders: Vec<(String, String)> = Vec::new();
         for id in self.visible_tabs() {
             let Some(tab) = self.tabs.get(&id) else {

@@ -152,6 +152,7 @@ pub use inside::{
     RawEvent as InsideEvent,
 };
 pub use memory::Memory;
+pub(crate) use model::let_go;
 pub use model::Explorer;
 pub use nav::Refresh;
 pub use open::is_disk_image;

@@ -777,6 +777,7 @@ fn suggestion_name(item: &Suggestion) -> String {
 
 impl Render for AddressBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::span("address bar");
         let t = theme::tokens(cx).clone();
         let seen = self.seen.clone();
         let rem = window.rem_size();
