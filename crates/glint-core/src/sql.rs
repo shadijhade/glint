@@ -64,18 +64,18 @@ fn key_of(path: &str) -> Result<(String, Option<SystemTime>, u64), String> {
 }
 
 /// The session for `path`, loading it unless it's the one loaded; and how long loading took.
-fn session<'a>(slot: &'a mut Option<Session>, path: &str) -> Result<(&'a Session, f64), String> {
+fn session<'a>(slot: &'a mut Option<Session>, path: &str) -> Result<(&'a mut Session, f64), String> {
     let key = key_of(path)?;
     let mut load_ms = 0.0;
     if slot.as_ref().is_none_or(|s| s.key != key) {
         *slot = None;
         let started = Instant::now();
-        let (conn, tables) = open(path)?;
-        guard(&conn)?;
+        let (mut conn, tables) = open(path)?;
+        guard(&mut conn)?;
         load_ms = started.elapsed().as_secs_f64() * 1000.0;
         *slot = Some(Session { key, conn, tables });
     }
-    Ok((slot.as_ref().expect("set above"), load_ms))
+    Ok((slot.as_mut().expect("set above"), load_ms))
 }
 
 /// The tables there are to query in a file, loading it.
@@ -105,7 +105,7 @@ pub async fn sql_run(path: String, sql: String) -> Result<SqlAnswer, String> {
         let mut slot = SESSION.lock().unwrap_or_else(|e| e.into_inner());
         let (session, load_ms) = session(&mut slot, &path)?;
         *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = Some(session.conn.get_interrupt_handle());
-        let answer = run(&session.conn, &sql);
+        let answer = run(&mut session.conn, &sql);
         *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = None;
         answer.map(|answer| SqlAnswer { load_ms, ..answer })
     })
@@ -118,9 +118,9 @@ pub(crate) fn query_file(path: &str, sql: &str) -> Result<SqlAnswer, String> {
     if crate::duck::takes(path) {
         return crate::duck::query(&[path.to_string()], sql);
     }
-    let (conn, _) = open(path)?;
-    guard(&conn)?;
-    run(&conn, sql)
+    let (mut conn, _) = open(path)?;
+    guard(&mut conn)?;
+    run(&mut conn, sql)
 }
 
 /// A database file's URI, read-only and immutable: `file:///C:/a%20b/x.db?mode=ro&immutable=1`.
@@ -168,7 +168,7 @@ fn open(path: &str) -> Result<(Connection, Vec<String>), String> {
 }
 
 /// Lets a statement only read: tables, functions, recursion, and the pragmas that describe tables.
-fn guard(conn: &Connection) -> Result<(), String> {
+fn guard(conn: &mut Connection) -> Result<(), String> {
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true).map_err(|e| e.to_string())?;
     conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
         AuthAction::Select | AuthAction::Read { .. } | AuthAction::Function { .. } | AuthAction::Recursive => Authorization::Allow,
@@ -388,8 +388,11 @@ fn json_lines(path: &str) -> Result<Loaded, String> {
     Ok(Loaded { name: "data".into(), columns, rows, first: 1, header: false })
 }
 
+/// What a statement read: its columns' names and kinds, its rows, and whether there were more.
+type ReadRows = (Vec<String>, Vec<Kind>, Vec<Vec<String>>, bool);
+
 /// Runs one statement that only reads, giving its first 1,000 rows.
-fn run(conn: &Connection, sql: &str) -> Result<SqlAnswer, String> {
+fn run(conn: &mut Connection, sql: &str) -> Result<SqlAnswer, String> {
     let started = Instant::now();
     let sql = sql.trim().trim_end_matches(';').trim();
     if sql.is_empty() {
@@ -405,26 +408,28 @@ fn run(conn: &Connection, sql: &str) -> Result<SqlAnswer, String> {
             other => other.to_string(),
         },
     };
-    let mut statement = conn.prepare(sql).map_err(explain)?;
-    if !statement.readonly() {
-        return Err("Only queries that read run here: SELECT, WITH and the like.".into());
-    }
+    // The deadline's handler goes on first (rusqlite takes it through `&mut`, and the statement borrows the
+    // connection) and comes off once the rows are read.
     let deadline = started + DEADLINE;
     conn.progress_handler(1000, Some(move || Instant::now() > deadline)).map_err(|e| e.to_string())?;
-    let names: Vec<String> = statement.column_names().into_iter().map(String::from).collect();
-    let mut kinds = vec![Kind::Empty; names.len()];
-    let mut rows = Vec::new();
-    let mut truncated = false;
-    let read = (|| -> Result<(), rusqlite::Error> {
-        let mut found = statement.query([])?;
-        while let Some(row) = found.next()? {
+    let read = (|| -> Result<ReadRows, String> {
+        let mut statement = conn.prepare(sql).map_err(explain)?;
+        if !statement.readonly() {
+            return Err("Only queries that read run here: SELECT, WITH and the like.".into());
+        }
+        let names: Vec<String> = statement.column_names().map(String::from).collect();
+        let mut kinds = vec![Kind::Empty; names.len()];
+        let mut rows = Vec::new();
+        let mut truncated = false;
+        let mut found = statement.query([]).map_err(explain)?;
+        while let Some(row) = found.next().map_err(explain)? {
             if rows.len() == MAX_BACK {
                 truncated = true;
                 break;
             }
             let mut line = Vec::with_capacity(names.len());
             for (c, kind) in kinds.iter_mut().enumerate() {
-                let (text, k) = match row.get_ref(c)? {
+                let (text, k) = match row.get_ref(c).map_err(explain)? {
                     ValueRef::Null => (String::new(), Kind::Empty),
                     ValueRef::Integer(i) => (i.to_string(), Kind::Number),
                     ValueRef::Real(f) => (sheet::number(f), Kind::Number),
@@ -441,10 +446,10 @@ fn run(conn: &Connection, sql: &str) -> Result<SqlAnswer, String> {
             }
             rows.push(line);
         }
-        Ok(())
+        Ok((names, kinds, rows, truncated))
     })();
     let _ = conn.progress_handler(0, None::<fn() -> bool>);
-    read.map_err(explain)?;
+    let (names, kinds, rows, truncated) = read?;
     Ok(SqlAnswer {
         engine: "SQLite",
         columns: names.into_iter().zip(&kinds).map(|(name, k)| TableColumn { name, kind: sheet::kind_name(*k).into() }).collect(),
@@ -481,35 +486,35 @@ mod tests {
     #[test]
     fn queries_a_csv_file_loaded_into_memory() {
         let (dir, path) = temp("sales.csv", "region,amount,code\nNorth,10,007\nSouth,2.5,010\nNorth,7,011\n");
-        let (conn, tables) = open(&path).unwrap();
-        guard(&conn).unwrap();
+        let (mut conn, tables) = open(&path).unwrap();
+        guard(&mut conn).unwrap();
         assert_eq!(tables, ["data"]);
-        let answer = run(&conn, "SELECT region, sum(amount) AS total FROM data GROUP BY region ORDER BY total DESC;").unwrap();
+        let answer = run(&mut conn, "SELECT region, sum(amount) AS total FROM data GROUP BY region ORDER BY total DESC;").unwrap();
         assert_eq!(answer.rows, [["North", "17"], ["South", "2.5"]]);
         assert_eq!(answer.columns.iter().map(|c| c.kind.as_str()).collect::<Vec<_>>(), ["text", "number"]);
-        assert_eq!(run(&conn, "SELECT code FROM data").unwrap().rows[0], ["007"]);
+        assert_eq!(run(&mut conn, "SELECT code FROM data").unwrap().rows[0], ["007"]);
         // Nothing but reading.
         for refused in ["DELETE FROM data", "CREATE TABLE x(a)", "ATTACH DATABASE 'x.db' AS x", "VACUUM INTO 'x.db'", "PRAGMA writable_schema = ON", "SELECT 1; SELECT 2"] {
-            assert!(run(&conn, refused).is_err(), "{refused} ran");
+            assert!(run(&mut conn, refused).is_err(), "{refused} ran");
         }
         assert!(!std::path::Path::new("x.db").exists());
-        assert!(run(&conn, "PRAGMA table_info(data)").unwrap().rows.len() == 3);
-        let many = run(&conn, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000) SELECT i FROM n").unwrap();
+        assert!(run(&mut conn, "PRAGMA table_info(data)").unwrap().rows.len() == 3);
+        let many = run(&mut conn, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000) SELECT i FROM n").unwrap();
         assert_eq!((many.rows.len(), many.truncated), (MAX_BACK, true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn stops_a_query_that_never_ends() {
-        let conn = Connection::open_in_memory().unwrap();
-        guard(&conn).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        guard(&mut conn).unwrap();
         let handle = conn.get_interrupt_handle();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
             handle.interrupt();
         });
         let started = Instant::now();
-        let e = run(&conn, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n").err().unwrap();
+        let e = run(&mut conn, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n").err().unwrap();
         assert!(e.contains("stopped"), "{e}");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
@@ -523,11 +528,11 @@ mod tests {
             db.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE people(name TEXT, age INTEGER); INSERT INTO people VALUES ('Ada', 36), ('Alan', 41);").unwrap();
         }
         let before: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
-        let (conn, tables) = open(&path).unwrap();
-        guard(&conn).unwrap();
+        let (mut conn, tables) = open(&path).unwrap();
+        guard(&mut conn).unwrap();
         assert_eq!(tables, ["people"]);
-        assert_eq!(run(&conn, "SELECT name FROM people WHERE age > 40").unwrap().rows, [["Alan"]]);
-        assert!(run(&conn, "INSERT INTO people VALUES ('x', 1)").is_err());
+        assert_eq!(run(&mut conn, "SELECT name FROM people WHERE age > 40").unwrap().rows, [["Alan"]]);
+        assert!(run(&mut conn, "INSERT INTO people VALUES ('x', 1)").is_err());
         drop(conn);
         let after: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(before, after, "no journal, WAL or lock file appeared");
