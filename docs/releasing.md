@@ -137,7 +137,7 @@ Install the two cargo tools with `cargo install --locked cargo-deny cargo-about`
 5.  **Create the draft** with the `gh release create … --draft` command it prints. It uploads `Glint-setup.exe`, the `-setup.exe`, its `.sig` and `latest.json`, with your notes, and the tag is made at your commit when you publish.
 6.  **On GitHub**, read the release notes (the app's *What's new* opens this page), try the installer, and **publish**. Running copies find the update within 12 hours or at their next start.
 7.  **Submit** `release/vX.Y.Z/package-manifests` to winget and Scoop.
-8.  **The Microsoft Store**, when it should have this version: `npm run msix`, and upload the package in Partner Center ([below](#as-an-msix-package)).
+8.  **The Microsoft Store**, when it should have this version: `npm run msix`, then `npm run store` to see what would change and `npm run store -- --submit` to send it (add `--listing` when the screenshots or the listing's words changed), or upload the package in Partner Center ([below](#as-an-msix-package)). Write what's new for the version in `crates/glint/msix/listing.json` first.
 
 ### A trial with a throwaway key
 
@@ -203,7 +203,34 @@ How the Store's copy differs from the setup program's:
 3.  The app's **Product management → Product identity** has three values the package must carry: put `Package/Identity/Name`, `Package/Identity/Publisher` and `Package/Properties/PublisherDisplayName` in [`crates/glint/msix/store.json`](../crates/glint/msix/store.json) as `name`, `publisher` and `publisherDisplayName`, the name you reserved as `displayName` and the Store ID as `storeId` (for links to the listing), and commit it. It's there already (the Store ID is 9NQLRJ3HF1C9); until it is, `npm run msix` makes a test package (`…_test.msix`), which the Store won't take.
 4.  Fill in the Store listing: the description from the README, screenshots from `screenshots/`, the privacy policy ([SECURITY.md](../SECURITY.md#code-signing-and-privacy-policy)), the category and the age rating questions. The package declares `runFullTrust`, as every desktop app does; when Partner Center asks why, it's a desktop file explorer that reads and changes files anywhere the user can.
 
-**For a release the Store should offer:** on the release's commit (after `npm run release`, or instead of it), `npm run msix`, then in Partner Center a new submission with `release/vX.Y.Z/Glint_X.Y.Z_x64.msix` under **Packages**, and **Submit for certification**. The Store signs it; certification takes a few days. Its version can only go up, and the Store keeps the fourth number (`X.Y.Z.0`) for itself.
+**For a release the Store should offer:** on the release's commit (after `npm run release`, or instead of it), `npm run msix`, then `npm run store` ([below](#sending-it-with-npm-run-store)), or by hand in Partner Center: a new submission with `release/vX.Y.Z/Glint_X.Y.Z_x64.msix` under **Packages**, and **Submit for certification**. The Store signs it; certification takes from hours to a few days. Its version can only go up, and the Store keeps the fourth number (`X.Y.Z.0`) for itself.
+
+#### Sending it with `npm run store`
+
+[`scripts/store.mjs`](../scripts/store.mjs) sends a version through the [Microsoft Store submission API](https://learn.microsoft.com/windows/uwp/monetize/create-and-manage-submissions-using-windows-store-services) instead of Partner Center's pages: the package, what's new in it and, when asked, the listing itself (screenshots and captions, description, features). What the listing says is in [`crates/glint/msix/listing.json`](../crates/glint/msix/listing.json): `whatsNew` with the `version` it was written for (a note for another version is never put on this one), and for each language of the listing its `description`, `features` and `screenshots` (files in `screenshots/`, in the order the Store shows them, each with its caption).
+
+```powershell
+npm run store                        # looks only: what the Store has, and what a submission would change
+npm run store -- --draft --listing   # makes the submission and uploads its files, not committed
+npm run store -- --commit            # commits it: certification, then the Store publishes it by itself
+npm run store -- --submit            # the two in one, for a release whose listing stays as it is
+npm run store -- --status            # where the pending submission is, and the certification report's address
+npm run store -- --discard           # deletes the pending submission
+```
+
+-   **It says what it will do first.** With no mode it changes nothing. `--draft` leaves the submission uncommitted so it can be read in Partner Center: read it there, don't change it there, because the API can't change or commit a submission that was edited by hand (delete it and start over if that happens: `--discard`).
+-   **The package is checked before anything is sent**: it must carry the Store identity of `store.json` and this version, so a test package or last version's file stops there. The new package replaces the ones of its architecture (`--keep-packages` adds it beside them). A version the Store already has is refused.
+-   **`--listing` replaces every screenshot** of the languages in `listing.json` with the listed ones (at most 10, PNG, 1366 x 768 or larger, captions of at most 200 characters) and sets the description and features. Without it, only the package and what's new change. The logos and everything else in the listing stay.
+-   **A submission that is already pending stops it** (one started in Partner Center, or an earlier `--draft`): finish that one, or `--replace-pending` deletes it first.
+
+**Once**, so that the script may act for the account ([Microsoft's page](https://learn.microsoft.com/windows/uwp/monetize/create-and-manage-submissions-using-windows-store-services#how-to-associate-an-azure-ad-application-with-your-partner-center-account) has the clicks):
+
+1.  In Partner Center's **Account settings**, associate a Microsoft Entra directory with the account (Partner Center can make one, free, for an account that has none).
+2.  On the account settings' **Users** page, add a **Microsoft Entra application** (a new one is fine: it only names the script) with the **Manager** role.
+3.  Open the application there and copy its **Tenant ID** and **Client ID**, then **Add new key** and copy the key: it is shown once.
+4.  Set `PARTNER_CENTER_TENANT_ID` and `PARTNER_CENTER_CLIENT_ID` for your account (they aren't secrets; `setx` keeps them). Keep the key in a password manager: `npm run store` asks for it without showing it, or takes it from `PARTNER_CENTER_CLIENT_SECRET` for that run. A key expires (Partner Center says when) and a new one is made the same way.
+
+The key acts for the whole Partner Center account, as a Manager: it is never committed, and the script sends it only to Microsoft's sign-in. The API doesn't work for an app that uses mandatory updates or has never had a submission (the first one is made in Partner Center, [above](#as-an-msix-package)). `npm run test:store` runs the script against a stand-in for the Store that checks every request against the API's pages.
 
 **To try it here** (with Developer Mode on): `npm run msix -- --try` installs a test package from its folder, *Glint (test)* in Start, under its own identity so it can never stand in the Store copy's way; `npm run msix -- --untry` takes it out, with everything it kept. `--from <folder>` packages a build made elsewhere instead of building, such as a debug build.
 
