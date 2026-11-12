@@ -104,7 +104,7 @@ These three were kept as `-Known` checks until they were fixed; the checks now p
 
 A fourth was found by a check that failed one run in four:
 
-4. **`dual-pane-compare`:** Enter on a folder sometimes did nothing. Reading a folder ahead (the click does it at once) makes Windows report it as changed where last-access dates are kept, so the folder it is in is read again 200 ms later; when Enter fell in that moment, the re-read was the tab's newer navigation and the folder asked for never opened. Fixed in `Explorer::reload`: a re-read waits for a navigation under way and is done afterwards only if the tab still shows that folder; `explorer/tests.rs` has the headless test. The app's own log of the failing run showed it (`GLINT_E2E_STDERR`, above).
+4. **`dual-pane-compare`:** Enter on a folder sometimes did nothing. The first time a folder is opened after something changed in it (the run had just made a file there), Windows brings its row in the folder above up to date and reports it as modified. Reading it ahead is such an opening (the click does it at once), so the folder above was read again 200 ms later; when Enter fell in that moment, the re-read was the tab's newer navigation and the folder asked for never opened. Fixed in `Explorer::reload`: a re-read waits for a navigation under way and is done afterwards only if the tab still shows that folder; `explorer/tests.rs` has the headless test. The app's own log of the failing run showed it (`GLINT_E2E_STDERR`, above).
 
 ## What it can't check yet
 
@@ -158,5 +158,9 @@ tests/e2e/
 - Shift for a move is pressed once the drag is under way: pressed at the mouse-down it would change the selection.
 - A notification ("Copied 1 item") floats over the top of the toolbar and takes the clicks meant for the buttons
   under it: `Click-Button` clears toasts first.
+- A change inside a subfolder reaches the watcher of the folder above late: not when it happens, but when the
+  subfolder is next opened by anyone (measured with `notify` on two drives: a file made in it raises nothing; the
+  next listing or `metadata` call of it raises "modified", once; a listing after that, nothing). A run makes its
+  files moments before the app reads them, so the app's first look into a folder can re-read the one above.
 - `Send-Text` presses real keys for what the keyboard layout can type (so key handlers such as type-ahead see them)
   and sends Unicode key events for the rest (Arabic on an English layout).
