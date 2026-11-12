@@ -186,6 +186,9 @@ pub struct Tab {
     pub(super) nav_started: Option<Instant>,
     /// Re-reading for a change on disk: the folder that changed once more meanwhile, if one did.
     pub(super) rereading: Option<Option<String>>,
+    /// The folder was to be read again while a navigation was under way: it is, once that has landed, if
+    /// the tab still shows it (see `Explorer::reload`).
+    pub(super) reload_waiting: bool,
 }
 
 impl Tab {
@@ -227,6 +230,7 @@ impl Tab {
             nav_seq: 0,
             nav_started: None,
             rereading: None,
+            reload_waiting: false,
         }
     }
 

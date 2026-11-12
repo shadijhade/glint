@@ -20,6 +20,9 @@ powershell -STA -NoProfile -ExecutionPolicy Bypass -File tests\e2e\run.ps1
 #    a different build, or only some checks:
 powershell -STA -File tests\e2e\run.ps1 -Exe C:\path\to\Glint.exe -Only drag-copy,drag-move-shift
 powershell -STA -File tests\e2e\run.ps1 -List        # what each check proves
+#    why did it fail? keep the app's own log of the run (every press, navigation and frame):
+$env:GLINT_FRAME_LOG = "1"; $env:GLINT_E2E_STDERR = "C:\path\to\run.stderr.txt"
+powershell -STA -File tests\e2e\run.ps1 -Only dual-pane-compare
 ```
 
 While it runs, **leave the mouse and keyboard alone and keep the screen unlocked**: the checks send real input to
@@ -98,6 +101,10 @@ These three were kept as `-Known` checks until they were fixed; the checks now p
 1. **`rename-enter`:** Enter in the rename box committed the name *and also* ran the list's Open on the old name (gpui's `Input` propagates a single-line Enter to the list's `OpenItem`). Fixed in `file_list/rename.rs`: the box's wrapper takes `OpenItem`, `OpenInNewTab`, `Rename` and `Properties` so they stop there.
 2. **`rename-cancel-focus`:** when the rename box closed, nothing held the keyboard focus, so Ctrl+L, F5 and the buttons that dispatch an action did nothing until a click. Fixed in `file_list/rename.rs` (`end_rename`): the list takes the focus back when the box held it (or nothing did); a box closed by going to another control leaves the focus there.
 3. **`drop-after-key`:** after any key press in Glint, a file dropped from another app was ignored until the mouse had moved over the window. The vendored GPUI set its input modality from the file-drop event (not pointer input), so hover, which every drop listener checks, stayed off after a key press. Fixed in `Window::dispatch_event` (see `docs/gpui/VENDOR.md`); `drops.rs` has the headless test.
+
+A fourth was found by a check that failed one run in four:
+
+4. **`dual-pane-compare`:** Enter on a folder sometimes did nothing. Reading a folder ahead (the click does it at once) makes Windows report it as changed where last-access dates are kept, so the folder it is in is read again 200 ms later; when Enter fell in that moment, the re-read was the tab's newer navigation and the folder asked for never opened. Fixed in `Explorer::reload`: a re-read waits for a navigation under way and is done afterwards only if the tab still shows that folder; `explorer/tests.rs` has the headless test. The app's own log of the failing run showed it (`GLINT_E2E_STDERR`, above).
 
 ## What it can't check yet
 

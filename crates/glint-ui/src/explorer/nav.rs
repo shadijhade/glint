@@ -381,6 +381,8 @@ impl Explorer {
                         }
                     }
                     self.tab_changed(id, cx);
+                    // The tab stays where it was: what changed there meanwhile is read now.
+                    self.reload_if_waiting(id, true, cx);
                 }
                 return false;
             }
@@ -523,7 +525,22 @@ impl Explorer {
         // In an archive every folder's size comes with the listing; with the index, every folder shows its
         // subfolders' sizes as it opens (and after each refresh).
         self.sizes_for_listing(id, cx);
+        // A read of this same folder that waited for the navigation is done now (the listing may be from before
+        // the change); one of the folder left behind is forgotten.
+        self.reload_if_waiting(id, same, cx);
         true
+    }
+
+    /// A navigation has landed: the read that waited for it ([`Explorer::reload`]) is done now if the tab still
+    /// shows the folder it was for (`still`), and forgotten otherwise.
+    fn reload_if_waiting(&mut self, id: TabId, still: bool, cx: &mut Context<Self>) {
+        let waiting = self
+            .tabs
+            .get_mut(&id)
+            .is_some_and(|tab| std::mem::take(&mut tab.reload_waiting));
+        if waiting && still {
+            self.reload(Some(id), cx).detach();
+        }
     }
 
     /// A folder whose own view is a grid or a list opens as it (`Explorer.tsx`'s effect on `[path, tabId]`).
@@ -619,11 +636,19 @@ impl Explorer {
     #[must_use = "dropping the task cancels the reload; `.detach()` it to let it run"]
     pub fn reload(&mut self, tab: Option<TabId>, cx: &mut Context<Self>) -> Task<()> {
         let id = tab.unwrap_or_else(|| self.active_tab_id());
-        let Some(t) = self.tabs.get(&id) else {
+        let Some(t) = self.tabs.get_mut(&id) else {
             return Task::ready(());
         };
         if t.path == THIS_PC {
             return self.refresh_drives(cx);
+        }
+        // The tab is on its way to a folder. Reading the one it is leaving again would be the newer navigation
+        // of the two, and the folder asked for would never open: a change on disk in the moment after Enter
+        // took the tab back. The read waits for the navigation instead: `finish_navigation` does it if the tab
+        // still shows this folder then.
+        if t.loading {
+            t.reload_waiting = true;
+            return Task::ready(());
         }
         let (path, was_archive) = (t.path.clone(), t.archive().is_some());
         // A false result from a navigation that was overtaken by a newer one isn't a missing folder.
