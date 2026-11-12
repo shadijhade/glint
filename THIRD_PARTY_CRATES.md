@@ -3181,7 +3181,7 @@ Apache License
 
 ## Apache License 2.0
 
-[gpui-base 0.9.1](https://github.com/longbridge/gpui-kit), [gpui-component-macros 0.9.1](https://crates.io/crates/gpui-component-macros), [gpui-component 0.9.1](https://github.com/longbridge/gpui-kit)
+[gpui-base 0.9.1](https://github.com/longbridge/gpui-kit), [gpui-component 0.9.1](https://github.com/longbridge/gpui-kit), [gpui-component-macros 0.9.1](https://crates.io/crates/gpui-component-macros)
 
 ````text
 Copyright 2024 - 2026 Longbridge <https://longbridge.com>
