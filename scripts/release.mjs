@@ -193,4 +193,4 @@ console.log(`
        gh release create v${version} ${assets} --draft --target ${commit} --title "Glint v${version}" ${notes}
   2. Read it on GitHub, ${drafted ? "check the notes" : "write the notes (npm run notes drafts them)"}, try the installer, and publish it.
   3. Submit ${where}/package-manifests to winget and Scoop.
-  4. The Microsoft Store, when it should have this version: npm run msix, then upload the package in Partner Center.`);
+  4. The Microsoft Store, when it should have this version: npm run msix, then npm run store (or upload the package in Partner Center).`);

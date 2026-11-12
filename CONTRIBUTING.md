@@ -95,6 +95,7 @@ Run these before you commit or open a pull request:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm run test:signing                       # if you touched scripts/lib/minisign.mjs
+npm run test:store                         # if you touched scripts/store.mjs or scripts/lib/store-submission.mjs
 powershell -STA -File tests\e2e\run.ps1    # the real app, driven by real clicks: leave the mouse and keyboard alone while it runs
 ```
 

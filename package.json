@@ -8,9 +8,11 @@
     "notes": "node scripts/notes.mjs",
     "licenses": "node scripts/licenses.mjs",
     "msix": "node scripts/msix.mjs",
+    "store": "node scripts/store.mjs",
     "gpui:installer": "node scripts/gpui-installer.mjs",
     "installer-art": "node scripts/installer-art.mjs",
     "test:signing": "node scripts/lib/minisign-compare.test.mjs",
+    "test:store": "node scripts/lib/store-submission.test.mjs",
     "site": "npm --prefix site run dev",
     "bench": "node scripts/bench.mjs"
   }

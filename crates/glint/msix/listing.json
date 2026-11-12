@@ -1,0 +1,37 @@
+{
+    "whatsNew": {
+        "version": "0.11.0",
+        "en-us": "Glint is now a native app, drawn by Rust instead of a web page, and it has a window of its own: one bar for where you are and what you're looking for, your tabs in a side rail, and the files on one sheet with the commands in a dock at its foot.\n\n• One search: the box looks in names and, on Enter, inside the files too. A file found by what's in it is listed like any other, with the lines that matched.\n• Every folder starts with what's in it and a chip for each kind of file: press Images and only the images show.\n• Rest the pointer on a folder and its row says what's inside, before you open it.\n• Faster: Glint is up in a quarter of a second, and a folder of 100,000 files is on screen in 47 ms.\n• Also new since the last Store version: trimming and converting videos, PDF tools, querying data files of any size, removing personal info from files, encrypting, sending to phones nearby, making files smaller, backups, and your drives' health."
+    },
+    "en-us": {
+        "description": "Glint is a file explorer for Windows that opens folders in milliseconds, shows the size of every folder, and finds any file on any drive in an instant.\n\n• Folders open in milliseconds: System32's 5,097 items are on screen 12 ms after you press Enter, and a folder of 100,000 files in 47 ms.\n• Every folder shows its size, right in the list. Disk usage draws a map of what fills your drive, every folder and file as a block the size of the space it takes.\n• Instant search (optional): Glint indexes your NTFS drives from their file tables and follows their change journals, so any file on any drive turns up in milliseconds, as you type.\n• One search for names and for what's inside files: a file found by its contents is listed like any other, with the lines that matched. Regular expressions and whole words, with ripgrep.\n• Space for Quick Look: pictures, PDFs, code, and Word, Excel and PowerPoint files, full size without opening them. Thumbnails never hold up a folder, and Gallery shows your photos by month.\n• Archives open like folders: zip, 7z, RAR, cabinet and tar, with nothing extracted until it's needed.\n• Tabs, and two panes side by side, to copy and move between folders, or compare them and sync.\n• Google Drive, OneDrive, Dropbox and more than 60 other clouds, S3, WebDAV and SFTP open like folders, and a folder can stay in sync with a cloud.\n• A copy queue with pause, resume and every copy checked; Windows' full New menu; a folder tree; Recent; and the columns you choose for each folder.\n• The tools File Explorer leaves out: find duplicate files, see which program holds a file open, rename many files at once with a live preview and Undo, and check a download against its published checksum.\n• Ctrl+K runs any command or jumps to the folders you use most, and Ctrl+Alt+F opens quick search from any app.\n• AI agents such as Claude and Copilot can ask Glint to find, measure and search files, through its Model Context Protocol server.\n• Still Windows: copying, moving, deleting and renaming run on Windows' own file engine, with the Recycle Bin, Undo and Windows' right-click menu.\n\nTurning instant search on asks for administrator approval once: a small Windows service then knows the name, size and date of every file on your NTFS drives, and answers only your account and administrators.\n\nGlint is free and open source (MIT License), a native app built in Rust on fd, pdu and ripgrep, and collects no telemetry.\n\nThe Microsoft Store's Glint can't change File Explorer's own settings (Open in Glint on File Explorer's menu, Win+E): the setup program from glint.rafd.tech can.",
+        "features": [
+            "Folders open in milliseconds, even with 100,000 files",
+            "The size of every folder, right in the list",
+            "A disk usage map of what fills your drive",
+            "Instant search over every NTFS drive, as you type",
+            "One search for names and for what's inside files",
+            "Quick Look on Space: pictures, PDFs, code and Office files",
+            "Archives open like folders: zip, 7z, RAR, tar and more",
+            "Tabs, and two panes to copy, compare and sync",
+            "Google Drive, OneDrive, Dropbox and 60 more clouds as folders",
+            "A copy queue with pause, resume and every copy checked",
+            "Your photos by month in Gallery",
+            "Ctrl+K for every command, Ctrl+Alt+F to search from any app",
+            "Duplicate files, batch rename with Undo, checksums",
+            "Free and open source, with no telemetry"
+        ],
+        "screenshots": [
+            { "file": "screenshots/instant-search.png", "caption": "Any file on any drive, in milliseconds" },
+            { "file": "screenshots/folder-sizes.png", "caption": "The size of every folder, right in the list" },
+            { "file": "screenshots/disk-usage.png", "caption": "A map of what fills your drive" },
+            { "file": "screenshots/quick-look.png", "caption": "Quick Look: any file, full size, on Space" },
+            { "file": "screenshots/grid-view.png", "caption": "Thumbnails that never hold up the folder" },
+            { "file": "screenshots/text-search.png", "caption": "One search: names, and what's inside the files" },
+            { "file": "screenshots/dual-pane.png", "caption": "Tabs in a rail, and two panes side by side" },
+            { "file": "screenshots/command-palette.png", "caption": "Ctrl+K for every command and folder" },
+            { "file": "screenshots/batch-rename.png", "caption": "Rename many files at once, with a live preview" },
+            { "file": "screenshots/file-xray.png", "caption": "Check a download: who signed it, and its checksum" }
+        ]
+    }
+}

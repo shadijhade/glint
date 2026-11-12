@@ -146,5 +146,5 @@ if (tryIt) {
     const family = powershell(`(Get-AppxPackage -Name '${TEST.name}').PackageFamilyName`).stdout.trim();
     console.log(`✓ Installed for trying: Glint (test) in Start, or explorer shell:AppsFolder\\${family}!Glint. npm run msix -- --untry takes it out.`);
 } else if (identity !== TEST) {
-    console.log("Next: Partner Center → the app → Packages: upload it. The Store signs it.");
+    console.log("Next: npm run store (what would change), then npm run store -- --submit; or Partner Center → the app → Packages: upload it. The Store signs it.");
 }
