@@ -73,7 +73,7 @@ const pct = (ms: number) => `${((ms / SCALE) * 100).toFixed(2)}%`;
 
   .blink-track {
     position: relative;
-    height: 270px;
+    height: 356px;
     border-bottom: 1px solid var(--line-2);
   }
 
@@ -171,15 +171,22 @@ const pct = (ms: number) => `${((ms / SCALE) * 100).toFixed(2)}%`;
     max-width: 180px;
   }
 
-  /* The first two marks are a few pixels apart: their labels take turns, high and low. */
-  .mark-0,
-  .mark-2 {
-    --stem: 192px;
+  /* All four marks sit in the first eighth of the scale (the slowest is 47 ms of 400), closer together than
+     their labels are wide: the labels step down, each on a level of its own (a label is up to 77 px tall). */
+  .mark-0 {
+    --stem: 270px;
   }
 
-  .mark-1,
+  .mark-1 {
+    --stem: 190px;
+  }
+
+  .mark-2 {
+    --stem: 110px;
+  }
+
   .mark-3 {
-    --stem: 100px;
+    --stem: 30px;
   }
 
   .mark-ms {
