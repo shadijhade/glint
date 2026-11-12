@@ -205,7 +205,11 @@ function Start-App {
     }
     Set-ChildEnv
     try {
-        $p = Start-Process -FilePath $exe -ArgumentList ('"' + $Folder + '"') -PassThru
+        # GLINT_E2E_STDERR=<file> keeps what the app prints to stderr: with GLINT_FRAME_LOG=1 that is every press,
+        # navigation and frame of the run, which says why a check failed when the capture alone does not.
+        $errTo = [Environment]::GetEnvironmentVariable('GLINT_E2E_STDERR', 'Process')
+        if ($errTo) { $p = Start-Process -FilePath $exe -ArgumentList ('"' + $Folder + '"') -PassThru -RedirectStandardError $errTo }
+        else { $p = Start-Process -FilePath $exe -ArgumentList ('"' + $Folder + '"') -PassThru }
     }
     finally { Restore-ChildEnv }
     $script:E2E.Process = $p
