@@ -413,6 +413,74 @@ fn core_dir_changed_rereads_the_tabs_showing_that_folder(cx: &mut TestAppContext
     assert_eq!(h.disk.listed().len(), before);
 }
 
+/// Waits for a "dir-changed" to have reached a tab that is on its way somewhere: its read is waiting.
+fn wait_for_a_read_to_wait(h: &Harness, cx: &mut TestAppContext) {
+    for _ in 0..50 {
+        cx.run_until_parked();
+        if h.read(cx, |e| e.active_tab().is_some_and(|tab| tab.reload_waiting)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the change on disk never reached the tab");
+}
+
+#[gpui_kit::test]
+fn a_change_on_disk_does_not_take_the_tab_back_from_a_folder_being_opened(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\"));
+    // Enter on a folder: its listing is on its way.
+    let gate = h.disk.hold("C:\\a");
+    let opening = h
+        .explorer
+        .update(cx, |e, cx| e.navigate_task("C:\\a", NavOptions::default(), cx));
+    cx.run_until_parked();
+    // The folder being left changes meanwhile. Reading it again then would be the tab's newer navigation, and
+    // the folder asked for would never open.
+    cx.update(|cx| crate::core_bridge::emit(cx, "dir-changed", serde_json::json!("C:\\")));
+    wait_for_a_read_to_wait(&h, cx);
+    gate.close();
+    assert!(
+        cx.foreground_executor().block_test(opening),
+        "the folder asked for opens"
+    );
+    cx.run_until_parked();
+    assert_eq!(h.path(cx), "C:\\a");
+    assert_eq!(h.history(cx).0, ["C:\\"]);
+    h.read(cx, |e| {
+        assert!(
+            !e.active_tab().expect("a tab").reload_waiting,
+            "the folder left behind is not read again"
+        )
+    });
+    let read = h.disk.listed().len();
+    cx.run_until_parked();
+    assert_eq!(h.disk.listed().len(), read);
+
+    // A folder that cannot be opened leaves the tab where it was: what changed there meanwhile is read then.
+    let gate = h.disk.hold("C:\\gone");
+    let opening = h
+        .explorer
+        .update(cx, |e, cx| e.navigate_task("C:\\gone", NavOptions::default(), cx));
+    cx.run_until_parked();
+    h.disk.folder("C:\\a", vec![file("C:\\a", "new.txt", 7, 7)]);
+    cx.update(|cx| crate::core_bridge::emit(cx, "dir-changed", serde_json::json!("C:\\a")));
+    wait_for_a_read_to_wait(&h, cx);
+    gate.close();
+    assert!(!cx.foreground_executor().block_test(opening), "there is no such folder");
+    for _ in 0..50 {
+        cx.run_until_parked();
+        if h.names(cx) == ["new.txt"] {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.path(cx), "C:\\a");
+    assert_eq!(h.names(cx), ["new.txt"]);
+}
+
 #[gpui_kit::test]
 fn a_folder_read_ahead_opens_without_reading_again_unless_it_changed(cx: &mut TestAppContext) {
     let _guard = testing::lock();
