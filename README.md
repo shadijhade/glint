@@ -17,7 +17,7 @@ Built in Rust on [fd](https://github.com/sharkdp/fd), [pdu](https://github.com/K
 
 **[Download the installer](https://github.com/shadijhade/glint/releases/latest/download/Glint-setup.exe)** · [Website](https://glint.rafd.tech/) · [Benchmarks](#benchmarks) · [Features](#features) · [Shortcuts](#keyboard-shortcuts) · [Build from source](#build-from-source)
 
-<img src="screenshots/demo.gif" alt="Opening folders, finding files in every subfolder, Quick Look, folder sizes, the command palette and two panes side by side" width="100%">
+<img src="screenshots/demo.gif" alt="Glint in seven pictures: a folder with its head and a preview, one search for names and for what the files hold, Quick Look, folder sizes, the disk usage map, two panes side by side, and the command palette" width="100%">
 
 </div>
 
@@ -180,7 +180,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 ### Tabs and dual pane
 
-<img src="screenshots/dual-pane.png" alt="Two panes side by side, each with its own tabs: C:\Windows sorted by size, and a project's source folder" width="100%">
+<img src="screenshots/dual-pane.png" alt="Two panes side by side, each with its own list of tabs in the rail: a work folder as a list, and its photos as a grid" width="100%">
 
 -   **Tabs.** `Ctrl+T` opens a tab on the folder you're in, and tabs drag: along their list in the side rail, onto the other pane's (or its files), or to the far half of the files to open side by side. A middle-click (or `Ctrl+Enter`) opens a folder in a new tab behind the current one, as in a browser. `Ctrl+Tab` and `Ctrl+1`…`Ctrl+9` switch, `Ctrl+W` closes, and `Ctrl+Shift+T` brings the last one back. Each tab keeps its own history, selection, search and scroll position, and your tabs come back when the app starts (Settings → Reopen my tabs). A folder opened from File Explorer or a terminal (`Glint.exe C:\Projects`) gets a new tab in the window that's open: Glint runs once.
 -   **Dual pane.** `Ctrl+Shift+D` (or its button in the dock) shows two folders side by side, each pane with its own tabs. Click a pane or press `F6` to work in it: the other one steps back a little, and the address bar shows which pane it's on. Drag files across (`Shift` to move), or use **Copy to other pane** and **Move to other pane**, which run on Windows' own file engine like every other file operation. Drag the line between the panes to share out the width (double-click: halves again); each pane's menu, by its tabs, swaps the panes (`Ctrl+Shift+U`), shows a folder in the other pane, evens them out or closes one, and a folder's right-click menu has **Open in the other pane**.
@@ -194,7 +194,7 @@ Each time runs from pressing Enter until everything is on screen, as the app's s
 
 ### Grid view
 
-<img src="screenshots/grid-view.png" alt="Every wallpaper under C:\Windows\Web found by name and shown as a grid of thumbnails, each with its folder under it" width="100%">
+<img src="screenshots/grid-view.png" alt="The wallpapers under C:\Windows\Web found by name in 12 ms and shown as a grid of thumbnails, each with its folder under it" width="100%">
 
 The **List** and **Grid** buttons in the command bar (or `Ctrl+Shift+6` and `Ctrl+Shift+2`, as in Explorer, or `Ctrl+K`) switch the tab you're in; each tab keeps its own view, and new tabs start in the view of the tab they came from. The grid works like the list: click, `Ctrl` and `Shift` to select, arrow keys in all four directions, `Enter` to open, `Space` for Quick Look, `F2` to rename, drag and drop (into the other pane too), the right-click menu and folder sizes under each folder. Sort it from the bar above it.
 
@@ -227,7 +227,7 @@ With instant search on, the map comes from the index in one request: all of `C:\
 <table>
 <tr>
 <td width="50%"><img src="screenshots/quick-look.png" alt="Quick Look showing a Rust file with syntax highlighting"></td>
-<td width="50%"><img src="screenshots/command-palette.png" alt="The command palette with recent folders and commands"></td>
+<td width="50%"><img src="screenshots/command-palette.png" alt="The command palette listing the commands that match what was typed"></td>
 </tr>
 <tr>
 <td align="center"><b>Space</b>: Quick Look</td>
@@ -274,8 +274,8 @@ These work on files on disk, not inside archives.
 
 <table>
 <tr>
-<td width="50%"><img src="screenshots/file-xray.png" alt="The File X-Ray of a downloaded installer: its SHA-256 matches the published one, and Windows' downloaded-from-the-internet mark with Unblock"></td>
-<td width="50%"><img src="screenshots/batch-rename.png" alt="Batch rename of twelve photos to a date, a name and a number, with each new name previewed"></td>
+<td width="50%"><img src="screenshots/file-xray.png" alt="The File X-Ray of a downloaded program: who signed it, what it really is, and its SHA-256 matching the checksum pasted in"></td>
+<td width="50%"><img src="screenshots/batch-rename.png" alt="Batch rename of ten photos to a name, the date each was taken and a number, with each new name previewed"></td>
 </tr>
 <tr>
 <td align="center"><b>File X-Ray</b>: check a download against its published SHA-256</td>
@@ -285,7 +285,7 @@ These work on files on disk, not inside archives.
 
 ### Instant search (NTFS index)
 
-<img src="screenshots/instant-search.png" alt="5,015 DLLs found under System32 in 37 ms" width="100%">
+<img src="screenshots/instant-search.png" alt="5,094 DLLs found under System32 and its subfolders in 33 ms" width="100%">
 
 It's off until you turn it on: on This PC, with the status bar's **Turn on instant search**, or in **Settings → Instant search**. Windows asks for administrator approval once, and a small service indexes your fixed NTFS drives. When Glint updates, the service updates itself too, without asking again: it takes only a build signed with Glint's update key, and only a newer one. It reads each drive's Master File Table in one sequential pass (2.3–2.5 s for C: with 2.9 million records here), then follows the USN journal, so a file created, renamed or deleted anywhere is in the index within about 0.3 s. Name searches, folder sizes and disk-usage maps then answer from memory. fd and pdu take over wherever the index can't answer: network shares, FAT and exFAT drives, and searches that read `.gitignore`.
 
@@ -311,6 +311,8 @@ Agents that show apps (MCP Apps) draw `folder_sizes` and `largest_files` as a ma
 ### One search: names, and what the files hold
 
 The search box at the end of the address field looks for what you type in two places at once: in the names below the folder you're in, and inside the files there. Both come back as one list.
+
+<img src="screenshots/text-search.png" alt="A search for one word: the file with it in its name, then seven files with it inside them, each with the lines that matched" width="100%">
 
 -   **Files found by what's in them are rows like any other.** They are listed under **Inside files**, each with the lines that matched under it (the line's number, the match marked; the first three, then a count of the rest). Open, copy, rename, delete, drag or preview them as you would any result.
 -   **Typing filters the folder; Enter searches below it.** Names come as you type where instant search covers the drive. What the files hold is read on Enter by ripgrep, streaming in as it's found, or as you type where the content index covers the folder. A whole drive is read inside only when you ask (**Inside files too** on the results' bar).

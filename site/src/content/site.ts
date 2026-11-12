@@ -114,11 +114,11 @@ export const MORE = {
   lines: ["What File Explorer", "leaves out."],
   cards: [
     { shot: "disk-usage", title: "A map of your drive", text: "Every folder and file as a block the size of the space it takes, like WizTree.", alt: "The disk usage map of C:\\Windows: every folder and file as a block sized by how much space it takes" },
-    { shot: "dual-pane", title: "Tabs, and two panes", text: "Copy and move between two folders, or compare them and sync.", alt: "Two panes side by side, each with its own tabs" },
+    { shot: "dual-pane", title: "Tabs, and two panes", text: "Copy and move between two folders, or compare them and sync.", alt: "Two panes side by side, each with its own list of tabs in the rail" },
     { shot: "grid-view", title: "Thumbnails that never wait", text: "1,200 photos on screen in 9.3 ms, thumbnails from Windows' own cache.", alt: "Wallpapers found by name and shown as a grid of thumbnails" },
     { shot: "quick-look", title: "Quick Look on Space", text: "Any file full size without opening it: code, pictures, PDFs, Office files.", alt: "Quick Look showing a Rust file with syntax highlighting" },
-    { shot: "text-search", title: "Search inside files", text: "ripgrep in any folder, with regular expressions and replace.", alt: "ripgrep results with a syntax-highlighted preview" },
-    { shot: "command-palette", title: "Ctrl+K for everything", text: "Jump to the folders you use most, or run any command, by typing.", alt: "The command palette with recent folders and commands" },
+    { shot: "text-search", title: "One search", text: "Names and what the files hold, in one list: a file found by its contents is a row like any other.", alt: "A search for one word: the file with it in its name, then the files with it inside them, each with the lines that matched" },
+    { shot: "command-palette", title: "Ctrl+K for everything", text: "Jump to the folders you use most, or run any command, by typing.", alt: "The command palette listing the commands that match what was typed" },
   ],
   also: ["Archives that open like folders", "Git status in every folder", "A terminal under the files", "Checksums and File X-Ray", "Batch rename with Undo", "Duplicates and Clean up", "Send files to another PC", "S3, WebDAV and SFTP folders"],
 };
