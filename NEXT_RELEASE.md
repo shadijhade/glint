@@ -422,3 +422,28 @@ release build of the changed crates took 133 s. Tests: core 293, model 231, wind
 clippy `-D warnings` clean. e2e on the debug build (2026-11-14, with the user's OK): 17 of 18, as before the wave
 (search inside files, drags and drops, Quick Look and the rest pass; `quit` fails as it does on 0.11.0). Per-event
 costs (CPU, allocations) weren't timed.
+
+### Wave: more speed before the release
+
+The user's ask (2026-11-14): "find more Performance Improvements we could make before we release", then "Build all
+nine" of the nine found. They were found by reading `44956bd` (the app wasn't run) and with one standalone probe of
+the code previews' highlighter. Fourteen commits after `44956bd` (the last a clippy fix), each with its tests passing:
+
+| Item | What it cost | Now |
+| :--- | :--- | :--- |
+| 1. Code previews | Any file up to 64 KB was colored inside the frame that showed it. Timed with the same syntect and two-face (release build, this PC): 33 ms for 16 KB of Python, 93 ms for 61 KB of Rust, about 35 ms more for a language's first file | Its first 4 KB at once (about 4 ms), the whole on a background thread straight away; a language's first file wholly in the background (vendored gpui-component) |
+| 2. At rest | GPUI's vsync thread invalidated every window on every display tick for as long as Glint ran: 144 wake-ups a second here, also with every window hidden in the tray, and a shown window's thread woken as often to find nothing to draw | The thread rests after 16 ticks with nothing drawn, until a frame is wanted (gpui's frame waker), looking once a second while a window is shown and every 10 seconds while none is; a touchpad gesture holds the ticks (vendored gpui-pre-windows) |
+| 3. Folders that keep changing | Read again in full every 200 ms for as long as they changed: a folder of 100,000 files (11-47 ms a read) about five times a second through a build or a download | A read of 20 ms or more, with changes waiting, waits ten times as long before the next one (2 s at most) |
+| 4. Git view | At a repository's root every index entry (up to 300,000) was lowercased to find which of the folder's names are tracked; the repository was discovered twice; status's watchdog woke every 10 ms | One binary search, one lowercase per name; one discover; the watchdog waits on a condvar |
+| 5. Typing in search | A search a newer key press replaced kept its thread in a blocking pipe read, and the service scanned every drive's names and ranked them before finding the pipe closed at its first write; fast typing filled the 16 connections and fd answered | The app cancels the read (`CancelSynchronousIo`) and the pipe closes at once; the service (from 0.12) asks whether its client has gone (`PeekNamedPipe`, at most every 2 ms) before each chunk of names and stops. No protocol change |
+| 6. Redraws | No view reused its last frame: each key press in the files rendered every row of the sidebar again with the rest of the window | The sidebar is a cached view, drawn again when it changes. The status bar, the preview and the address bar aren't, yet (the commit says why) |
+| 7. Network shares | Every row on screen opened its file's tags stream: a trip over the network per row | Rows on shares and mapped network drives don't; the selection's tags are still read, for the menus and the Tags dialog |
+| 8. Content index (when on) | Woke every 2 s for good; any change below an indexed folder (a browser's cache, `node_modules`, the index's own commits under Glint's data folder) made it commit, and look out of date meanwhile (ripgrep answered) | Waits until a change it would read comes (a kind it reads, outside the folders its catch-up skips, hidden ones and Glint's own), gathers the burst for 2 s, commits only when the index changed |
+| 9. 0.12's leftovers | D8: each thumbnail told four views on its own; D2: each change to the saved state copied all of it for the saver; D3: the folder tree kept every folder it revealed open; D7: the second pane's ten views were made at start and observed the explorer; E5: a picture's file was opened twice for its details, a song's tags read twice per preview | D8: told once for the answers already waiting; D2: the saver asks for one copy when it writes; D3: the latest 32 revealed are kept; D7: made when dual view first opens; E5: one open, the last two songs kept |
+
+Measured: item 1 only (the probe above). Not measured, since they need the app run: idle CPU and wake-ups (2), frame
+times (6), re-reads of a changing folder (3), the Git view and content index (4, 8), typing in search against a 0.12
+service (5; the service installed here is 0.9). Tests: core 296, model 231, window 2,334, index 93, all passing;
+clippy `-D warnings` clean; the touched glint-ui files rustfmt-clean. The release build of the changed crates took
+145 s; `Glint.exe` 92,810,752 -> 92,975,616 B (+0.16 MB). e2e: not run (it takes the mouse and keyboard and needs the
+user's OK); it is what would show items 2, 6, D2 and D7 working in the real window.
