@@ -413,6 +413,63 @@ fn core_dir_changed_rereads_the_tabs_showing_that_folder(cx: &mut TestAppContext
     assert_eq!(h.disk.listed().len(), before);
 }
 
+#[gpui_kit::test]
+fn a_folder_slow_to_read_waits_before_it_is_read_again(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let h = harness(cx);
+    standard_disk(&h.disk);
+    assert!(h.go(cx, "C:\\b"));
+    let reads = |h: &Harness| {
+        h.disk
+            .listed()
+            .iter()
+            .filter(|p| p.eq_ignore_ascii_case("C:\\b"))
+            .count()
+    };
+    let changed = |cx: &mut TestAppContext| {
+        cx.update(|cx| crate::core_bridge::emit(cx, crate::core_bridge::CoreEvent::DirChanged("C:\\b".into())))
+    };
+    let before = reads(&h);
+    // A change: the folder is read again, and the read takes a while (held back).
+    let gate = h.disk.hold("C:\\b");
+    changed(cx);
+    for _ in 0..50 {
+        cx.run_until_parked();
+        if h.read(cx, |e| e.active_tab().is_some_and(|tab| tab.rereading.is_some())) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // It changes again while it's read.
+    changed(cx);
+    for _ in 0..50 {
+        cx.run_until_parked();
+        if h.read(cx, |e| {
+            e.active_tab().is_some_and(|tab| matches!(tab.rereading, Some(Some(_))))
+        }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(super::nav::REREAD_SLOW);
+    gate.try_send(()).unwrap();
+    drop(gate);
+    for _ in 0..10 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(reads(&h), before + 1, "read once; the next read waits");
+    cx.executor().advance_clock(Duration::from_secs(2));
+    for _ in 0..50 {
+        cx.run_until_parked();
+        if reads(&h) == before + 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(reads(&h), before + 2, "then it's read again, once, for both changes");
+}
+
 /// Waits for a "dir-changed" to have reached a tab that is on its way somewhere: its read is waiting.
 fn wait_for_a_read_to_wait(h: &Harness, cx: &mut TestAppContext) {
     for _ in 0..50 {
