@@ -53,32 +53,6 @@ name = "gpui_base"
 path = "src/lib.rs"
 doctest = false
 
-[[test]]
-name = "block_surface"
-path = "tests/block_surface.rs"
-
-[[test]]
-name = "element_ext"
-path = "tests/element_ext.rs"
-
-[[test]]
-name = "html_paragraph_ids"
-path = "tests/html_paragraph_ids.rs"
-
-[[test]]
-name = "text_host"
-path = "tests/text_host.rs"
-
-[[bench]]
-name = "motion"
-path = "benches/motion.rs"
-harness = false
-
-[[bench]]
-name = "text_view_scroll"
-path = "benches/text_view_scroll.rs"
-harness = false
-
 [dependencies.aho-corasick]
 version = "1.1.3"
 
