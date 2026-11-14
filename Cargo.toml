@@ -43,3 +43,47 @@ lto = "thin"
 # The instant search service was built with one codegen unit in the Tauri app's profile; it keeps that.
 [profile.release.package.shadui-index]
 codegen-units = 1
+
+# Crates only rare actions reach (a database, Parquet or workbook preview, math, the calculator, a photo's or song's
+# tags, downloads, an installer's contents, encryption, a 7z's headers) are compiled for size: measured in 0.12, the
+# exe is smaller and nothing on a path the window waits on runs their code.
+[profile.release.package.libsqlite3-sys]
+opt-level = "s"
+[profile.release.package.rusqlite]
+opt-level = "s"
+[profile.release.package.lofty]
+opt-level = "s"
+[profile.release.package.parquet]
+opt-level = "s"
+[profile.release.package.ratex-parser]
+opt-level = "s"
+[profile.release.package.ratex-layout]
+opt-level = "s"
+[profile.release.package.ratex-svg]
+opt-level = "s"
+[profile.release.package.ratex-font-loader]
+opt-level = "s"
+[profile.release.package.fend-core]
+opt-level = "s"
+[profile.release.package.nom-exif]
+opt-level = "s"
+[profile.release.package.reqwest]
+opt-level = "s"
+[profile.release.package.hyper]
+opt-level = "s"
+[profile.release.package.hyper-util]
+opt-level = "s"
+[profile.release.package.markdown]
+opt-level = "s"
+[profile.release.package.calamine]
+opt-level = "s"
+[profile.release.package.layout-rs]
+opt-level = "s"
+[profile.release.package.sevenz-rust2]
+opt-level = "s"
+[profile.release.package.msi]
+opt-level = "s"
+[profile.release.package.age]
+opt-level = "s"
+[profile.release.package.age-core]
+opt-level = "s"
