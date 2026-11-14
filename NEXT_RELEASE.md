@@ -372,6 +372,14 @@ app runs): the rows that need the window are empty, and so is the setup's size (
 Per part (sizes): B took 73.6 MB out of the exe (Mermaid 14.5, Typst and its crates ~15, iroh and QUIC ~3.4, the
 rest their dependencies and the code that used them); C1 2.7 MB (tokio 4.62 to 0.94 MB); C3 and C4 2.7 MB; C2 1.8 MB.
 
+**e2e** (`tests\e2e\run.ps1` on the debug build, 2026-11-14, with the user's OK): 17 of 18 pass. It found two
+real bugs, both fixed and committed: a line the content index found showed no line number (an empty label won), and
+the index, started at launch again by A1, answered before it had caught up (a new file wasn't found). `quit` fails:
+closing the window hides it to the tray instead of quitting, and the 0.11.0 build fails the same way on this PC, so it
+isn't from 0.12. The harness's "fresh" profile isn't fully fresh here (the content index's settings, and what its
+processes write to the registry, are shared with the user's own copy). Debug links now hit the PDB limit at times
+(LNK1140): delete `debug\Glint.pdb` and `debug\deps\Glint.pdb`, or link with `-C link-arg=/DEBUG:NONE`.
+
 **Done**: A1; B1-B7 (B5 corrected: ast-grep stays for the MCP server); C1-C4 (C2's cold crates; glint-ui at "s" and
 fat LTO weren't tried, since judging them needs app timings); D1-D10; E1, E2 (with a fix: ripgrep 15's summary was
 never read), E3, E4 (the archive hop only), E6, E7 (the noise filter only), E8 (program locations only), E9;
