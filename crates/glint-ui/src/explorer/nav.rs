@@ -39,6 +39,11 @@ const HOVER_FOR: Duration = Duration::from_millis(60);
 /// A folder that takes this long to open says it is loading. One read in a few milliseconds is on screen before
 /// a frame could have said so, and drawing that frame would only have kept its rows waiting for the next one.
 const LOADING_SAID_AFTER: Duration = Duration::from_millis(40);
+/// A folder re-read in less than this, while it changes, is read again as soon as the watcher says (every
+/// 200 ms at most); one that takes longer waits ten times as long as its read took, up to `REREAD_PAUSE_MAX`.
+/// A folder of 100,000 files that takes 47 ms to read (2026-11-11) is read about twice a second, not five times.
+pub(super) const REREAD_SLOW: Duration = Duration::from_millis(20);
+const REREAD_PAUSE_MAX: Duration = Duration::from_secs(2);
 
 // ---- A big archive read whole -----------------------------------------------------------------------------
 
@@ -740,8 +745,24 @@ impl Explorer {
         }
         tab.rereading = Some(None);
         let reading = self.reload(Some(id), cx);
+        let started = Instant::now();
         cx.spawn(async move |this, cx| {
             reading.await;
+            // Changes came while it was read (a build, a download, an unzip): a folder that took a while to read waits
+            // ten times as long before it's read again (at most 2 s), so a big one isn't read back to back for as long
+            // as the changes go on. Changes meanwhile join the read that follows.
+            let took = started.elapsed();
+            let again = this
+                .read_with(cx, |this, _| {
+                    this.tabs
+                        .get(&id)
+                        .and_then(|t| t.rereading.as_ref())
+                        .is_some_and(Option::is_some)
+                })
+                .unwrap_or(false);
+            if again && took >= REREAD_SLOW {
+                cx.background_executor().timer((took * 10).min(REREAD_PAUSE_MAX)).await;
+            }
             this.update(cx, |this, cx| {
                 let again = this.tabs.get_mut(&id).and_then(|t| t.rereading.take()).flatten();
                 let wanted = again.filter(|again| {
