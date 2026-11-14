@@ -136,20 +136,6 @@ impl Format {
         }
     }
 
-    pub fn code(self) -> u8 {
-        match self {
-            Format::Zip => 0,
-            Format::SevenZ => 1,
-            Format::Tar(codec) => 2 + codec.index(),
-            Format::Single(codec) => 7 + codec.index(),
-            Format::Cab => 13,
-            Format::Msi => 14,
-            Format::Rar => 15,
-            Format::Ncdu(codec) => 16 + codec.index(),
-            Format::Image => 22,
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Format::Zip => "zip",

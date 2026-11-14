@@ -144,7 +144,7 @@ pub struct InArchive {
     pub path: String,
     /// The archive file on disk everything is in (the same, unless archives nest).
     pub outer: String,
-    /// The format's label (one of `ARCHIVE_FORMATS`).
+    /// The format's label ("zip", "tar.gz", "disk image"…).
     pub format: &'static str,
     /// Files and folders in the whole archive.
     pub entries: u32,

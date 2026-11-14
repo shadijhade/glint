@@ -22,7 +22,9 @@ use crate::explorer::{explorer, ExplorerEvent, NavOptions, TabId};
 use crate::state;
 use glint_model::entries::FileEntry;
 use glint_model::paths::{is_folder_path, parent_path, same_path};
-use glint_model::usage::{decode_usage, prune_usage, sub_usage, usage_entries, UsageEngine, UsageMap};
+use glint_model::usage::{
+    prune_usage, sub_usage, usage_entries, UsageEngine, UsageGrowth, UsageItem, UsageMap, WAS_NOT_THERE, WRITTEN_SINCE,
+};
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Task};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -69,6 +71,46 @@ pub trait Source {
     fn missing(&self, paths: Vec<String>) -> Fut<Vec<String>>;
 }
 
+/// What core measured, as the map the view draws.
+fn map_of(measured: glint_core::usage::Measured) -> Result<UsageMap, String> {
+    use glint_core::usage::{NEW, WRITTEN};
+    use glint_model::entries::attr;
+    let items = measured
+        .nodes
+        .into_iter()
+        .map(|node| UsageItem {
+            parent: node.parent,
+            name: node.name,
+            size: node.size,
+            modified: node.modified,
+            attrs: node.attrs | if node.dir { attr::DIRECTORY } else { 0 },
+        })
+        .collect();
+    let map = UsageMap::of_items(measured.path, items).map_err(|error| error.to_string())?;
+    Ok(UsageMap {
+        engine: measured.engine,
+        elapsed: measured.elapsed,
+        limited: measured.limited,
+        service_too_old: measured.service_too_old,
+        growth_too_old: measured.growth_too_old,
+        growth: measured.growth.map(|(previous, mark)| UsageGrowth {
+            since: mark.since as f64,
+            oldest: mark.oldest as f64,
+            drive_then: mark.drive_then as f64,
+            drive_now: mark.drive_now as f64,
+            previous: previous
+                .into_iter()
+                .map(|then| match then {
+                    NEW => WAS_NOT_THERE,
+                    WRITTEN => WRITTEN_SINCE,
+                    then => then as f64,
+                })
+                .collect(),
+        }),
+        ..map
+    })
+}
+
 /// glint-core's `disk_usage`, through the app's handle.
 pub struct CoreUsage {
     app: glint_core::host::AppHandle,
@@ -88,10 +130,9 @@ impl Source for CoreUsage {
             let state = app
                 .try_state::<glint_core::AppState>()
                 .ok_or_else(|| "Glint's measuring isn't ready yet".to_string())?;
-            let response = glint_core::usage::disk_usage(state, ask.path, ask.depth, ask.items, ask.lane, ask.since)
-                .await?
-                .into_bytes();
-            decode_usage(&response).map_err(|error| error.to_string())
+            let measured =
+                glint_core::usage::disk_usage(state, ask.path, ask.depth, ask.items, ask.lane, ask.since).await?;
+            map_of(measured)
         });
         // Two layers: the core task may panic (outer Err), the map may not come (inner Err).
         Box::pin(async move { running.await.and_then(|answer| answer) })
