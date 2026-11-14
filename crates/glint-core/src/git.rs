@@ -527,10 +527,25 @@ pub async fn git_diff(path: String) -> Result<Option<FileDiff>, String> {
 #[derive(Default)]
 pub struct RepoWatcher(Arc<Mutex<HashMap<String, RecommendedWatcher>>>);
 
-/// Changes that don't change status: Git's own object store and logs, and lock files mid-write.
+/// Changes that don't change status: Git's own object store and logs, and lock files mid-write. Told from the
+/// path's parts as they are, without making a copy of it: a build in the repository sends thousands of these.
 fn noise(path: &Path) -> bool {
-    let text = path.to_string_lossy().to_lowercase().replace('/', "\\");
-    text.contains("\\.git\\objects\\") || text.contains("\\.git\\logs\\") || text.ends_with(".lock")
+    let name = path.file_name().map(|n| n.as_encoded_bytes()).unwrap_or_default();
+    if name.len() >= 5 && name[name.len() - 5..].eq_ignore_ascii_case(b".lock") {
+        return true;
+    }
+    let mut in_git = false;
+    for part in path.components() {
+        let std::path::Component::Normal(part) = part else {
+            in_git = false;
+            continue;
+        };
+        if in_git && (part.eq_ignore_ascii_case("objects") || part.eq_ignore_ascii_case("logs")) {
+            return true;
+        }
+        in_git = part.eq_ignore_ascii_case(".git");
+    }
+    false
 }
 
 /// Watches exactly the repositories at `roots`, each emitting "git-changed" with its root at most
@@ -582,6 +597,16 @@ mod tests {
     use super::*;
     use std::fs;
     use std::process::Command;
+
+    #[test]
+    fn gits_own_store_logs_and_lock_files_are_noise_and_the_rest_is_not() {
+        for path in [r"C:\repo\.git\objects\ab\cdef", r"C:\repo\.GIT\Logs\HEAD", r"C:\repo\.git\index.lock", "C:/repo/.git/objects/pack/x.pack", r"C:\repo\a\Cargo.LOCK"] {
+            assert!(noise(Path::new(path)), "{path}");
+        }
+        for path in [r"C:\repo\src\main.rs", r"C:\repo\.git\index", r"C:\repo\.git\HEAD", r"C:\repo\objects\a.txt", r"C:\repo\logs\today.log"] {
+            assert!(!noise(Path::new(path)), "{path}");
+        }
+    }
 
     /// A test repository made with git itself (on PATH, as on every CI runner); a test skips without it.
     struct Repo(PathBuf);
