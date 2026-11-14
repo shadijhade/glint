@@ -39,8 +39,8 @@
     "Comparing code by its structure" \
     "Difftastic compares code by its syntax. Compare two files then shows what changed in the code, not which lines moved."
   !insertmacro ${ROW} 9 ast-grep "ast-grep" 3 tool ast-grep ast-grep.ast-grep \
-    "Code patterns in Text search" \
-    "ast-grep searches code by its syntax. Text then finds (and rewrites) code by its structure, such as console.log($$MSG) or $$X.unwrap()."
+    "Code patterns for AI agents" \
+    "ast-grep searches code by its syntax. AI agents connected to Glint's MCP server then find code by its structure, such as console.log($$MSG) or $$X.unwrap()."
   !insertmacro ${ROW} 10 jaq "jaq" 3 tool jaq 01mf02.jaq \
     "jq filters in JSON, YAML and TOML previews" \
     "jaq is jq, rewritten in Rust. The preview of a JSON, YAML or TOML file can then filter it with jq."
