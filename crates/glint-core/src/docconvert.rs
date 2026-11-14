@@ -12,7 +12,6 @@
 
 use crate::actions::{self, Job, Output, Progress, Report};
 use crate::fsx::blocking;
-use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,8 +46,7 @@ pub fn reader(path: &Path) -> Option<&'static str> {
 }
 
 /// What a document becomes.
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
     Docx,
     Odt,

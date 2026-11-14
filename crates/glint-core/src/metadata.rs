@@ -8,7 +8,6 @@
 
 use crate::actions::{self, Job, Output, Progress, Report};
 use crate::fsx::blocking;
-use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -39,8 +38,7 @@ fn exiftool() -> Result<Command, String> {
 }
 
 /// A detail a file carries, and what it says about someone.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tag {
     pub group: String,
     pub name: String,
@@ -111,8 +109,7 @@ fn read_tags(json: &str) -> Vec<Tag> {
     tags
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MetaTask {
     /// Everything personal out (a picture keeps its orientation and color profile).
     Scrub,

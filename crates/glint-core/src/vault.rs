@@ -7,7 +7,6 @@
 use crate::actions::{self, Job, Output, Progress, Report};
 use crate::fsx::blocking;
 use age::secrecy::SecretString;
-use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -22,8 +21,7 @@ pub fn vault_cancel() {
     STOP.store(true, Ordering::SeqCst);
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub enum VaultTask {
     /// Locked with `password`, or (when there are any) to these age keys instead.
     Encrypt { password: String, recipients: Vec<String> },

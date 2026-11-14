@@ -4,10 +4,8 @@
 //! checks the signature against what the file holds, and says when the signer isn't one it trusts.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 
-#[derive(Serialize, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, PartialEq)]
 pub struct Credentials {
     /// The app (and version) that made the last change: "Adobe Photoshop 26.1", "DALL·E".
     pub made_with: Option<String>,

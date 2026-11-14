@@ -3,7 +3,6 @@
 //! way (what's missing over there, and files newer here), into the folder each goes in.
 
 use crate::fsx::{self, blocking};
-use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
@@ -18,15 +17,13 @@ const SAME_TIME_MS: i64 = 2000;
 /// Past this many files it stops: the panes keep the top-level comparison.
 const MAX_FILES: usize = 1_000_000;
 
-#[derive(Serialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, PartialEq)]
 pub struct Copy {
     pub path: String,
     pub folder: String,
 }
 
-#[derive(Serialize, Default, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default, Debug)]
 pub struct FolderDiff {
     /// Each item at the top of the left folder (by lowercase name): unique, newer, older, differ or same.
     pub left: HashMap<String, &'static str>,

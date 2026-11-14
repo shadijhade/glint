@@ -4,7 +4,6 @@
 //! comes back at once; each tool gets 20 seconds.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
@@ -15,8 +14,7 @@ use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Author {
     pub name: String,
     pub commits: u64,
@@ -24,8 +22,7 @@ pub struct Author {
     pub share: u64,
 }
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Lines {
     pub language: String,
     pub code: u64,
@@ -33,8 +30,7 @@ pub struct Lines {
     pub blanks: u64,
 }
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RepoCard {
     /// onefetch and tokei: whether each was there to ask.
     pub onefetch: bool,

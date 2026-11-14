@@ -54,8 +54,7 @@ fn default_protocol() -> String {
 }
 
 /// A device found: what it says, and where it is.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct Peer {
     pub info: Info,
     pub ip: String,
@@ -199,8 +198,7 @@ fn multicast_socket() -> std::io::Result<UdpSocket> {
 }
 
 /// How a send is going.
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct SendProgress {
     pub files: usize,
     pub total_files: usize,

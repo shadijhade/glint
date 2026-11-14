@@ -34,8 +34,7 @@ pub enum Output {
 
 /// How far an action is: jobs done of all, the one just finished, and how far the job under way is (0 to
 /// 1, for long ones such as a video; 0 when unknown).
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub done: usize,
     pub total: usize,

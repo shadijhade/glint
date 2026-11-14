@@ -12,7 +12,6 @@ use crate::sheet::{self, Cell, Kind, Loaded};
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, InterruptHandle, OpenFlags};
-use serde::Serialize;
 use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -36,8 +35,6 @@ static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// The query running, for a newer one to interrupt.
 static RUNNING: Mutex<Option<InterruptHandle>> = Mutex::new(None);
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SqlTables {
     pub tables: Vec<String>,
     /// Who answers: "DuckDB" for data files once it's installed (duck.rs), else "SQLite".
@@ -46,8 +43,6 @@ pub struct SqlTables {
     pub load_ms: f64,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SqlAnswer {
     pub engine: &'static str,
     pub columns: Vec<TableColumn>,

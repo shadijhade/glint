@@ -4,7 +4,6 @@
 //! says it on its own).
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -13,8 +12,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use crate::host::ipc::Channel;
 
 /// A shell the pane can run.
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct Shell {
     /// "pwsh", "powershell", "cmd", "nu", "bash" or "wsl".
     pub id: &'static str,

@@ -6,7 +6,6 @@
 //! temporary names on the same volume, the entire batch succeeds or rolls back cleanly.
 
 use crate::fsx::blocking;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,15 +14,13 @@ use std::time::Instant;
 
 static BATCH_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct RenamePair {
     pub from: String,
     pub to: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct BatchRenameResult {
     pub renamed: usize,
     /** Inverse pairs (`from: new_path, to: old_path`) so the UI can undo the batch in one click. */

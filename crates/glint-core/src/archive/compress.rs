@@ -13,13 +13,10 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 /// What to write.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Format {
-    #[serde(rename = "zip")]
     Zip,
-    #[serde(rename = "7z")]
     SevenZ,
-    #[serde(rename = "tar.zst")]
     TarZst,
 }
 
