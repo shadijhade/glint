@@ -19,7 +19,7 @@ pub type Fut<T> = Pin<Box<dyn Future<Output = T>>>;
 pub type Ask<T> = Rc<dyn Fn(&str) -> Fut<T>>;
 
 /// Windows' thumbnail of a picture, as core answers: the path, its date and its size.
-pub type ThumbFn = Rc<dyn Fn(&str, i64, u64) -> Fut<Result<Vec<u8>, String>>>;
+pub type ThumbFn = Rc<dyn Fn(&str, i64, u64) -> Fut<Result<glint_core::thumbs::Thumbnail, String>>>;
 
 /// `preview_host::show`: the window, the claimant, the pane's bounds, the file, whether the theme is dark.
 pub type ShowFn = Rc<
@@ -230,7 +230,6 @@ impl Sources {
                         0,
                     )
                     .await
-                    .map(glint_core::host::ipc::Response::into_bytes)
                 });
                 Box::pin(async move { flat(running.await) })
             }),
