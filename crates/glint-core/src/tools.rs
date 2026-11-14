@@ -802,6 +802,7 @@ async fn from_release(tool: &'static Tool, progress: &Channel<Progress>, install
 
 /// A tool's status once it's installed, or an error when Glint can't find it yet.
 async fn found(tool: &'static Tool) -> Result<ToolStatus, String> {
+    proc::forget_locations();
     let found = blocking(move || Ok(status(tool))).await?;
     if found.origin.is_none() {
         return Err(format!("{} was installed, but Glint can't find it yet (restarting Glint may help)", tool.name));
@@ -1203,6 +1204,7 @@ pub async fn tool_remove(id: String) -> Result<ToolStatus, String> {
         }
         let folder = folder_of(tool.id).ok_or("Glint's data folder isn't available")?;
         fs::remove_dir_all(&folder).map_err(|e| format!("Couldn't remove {} (is it running?): {e}", tool.name))?;
+        proc::forget_locations();
         Ok(status(tool))
     })
     .await
