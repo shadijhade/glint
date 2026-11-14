@@ -124,29 +124,6 @@ pub struct AppState {
     pub usage: Lanes,
 }
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-
-pub async fn read_file_content(path: String) -> Result<String, String> {
-    blocking(move || fs::read_to_string(path).map_err(|e| e.to_string())).await
-}
-
-pub async fn read_file_chunk(path: String, start_line: usize, end_line: usize) -> Result<String, String> {
-    blocking(move || {
-        let file = fs::File::open(path).map_err(|e| e.to_string())?;
-        // Stops reading once the last wanted line is in. Lines that aren't valid UTF-8 are shown
-        // lossily rather than dropped, so line numbers stay right.
-        let chunk: Vec<String> = BufReader::new(file)
-            .split(b'\n')
-            .skip(start_line.saturating_sub(1))
-            .take(end_line.saturating_sub(start_line) + 1)
-            .map_while(Result::ok)
-            .map(|line| String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(&line)).into_owned())
-            .collect();
-        Ok(chunk.join("\n"))
-    })
-    .await
-}
-
 /// Saves `content` to `path`, answering its hash ([`filediff::content_hash`]). With `expected`, only
 /// while the file still holds what was read then: a change made elsewhere since isn't overwritten.
 pub async fn write_file_content(path: String, content: String, expected: Option<String>) -> Result<String, String> {
@@ -435,60 +412,6 @@ pub fn doc_search(window: Window, request: doctext::DocSearch, search_id: String
         emit("finished", Vec::new());
     });
     Ok(folder)
-}
-
-/// Lines `from` to `to` (1-based) of a document as the Documents search read it, with their labels, for
-/// the preview.
-pub async fn doc_lines(path: String, from: usize, to: usize) -> Result<Vec<(String, String)>, String> {
-    fsx::blocking(move || doctext::lines_of(&path, from, to)).await
-}
-
-/// A code search (Text's code patterns, by ast-grep): its matches arrive as `search-event`s, as
-/// ripgrep's JSON lines (codesearch.rs), then a summary with how long it took. Returns the folder as
-/// searched.
-pub async fn run_ast_grep(window: Window, request: codesearch::CodeSearch, search_id: String, max_results: Option<usize>, state: State<'_, AppState>) -> Result<String, String> {
-    let ticket = TEXT_SEARCH.fetch_add(1, Ordering::SeqCst) + 1;
-    let search = state.search.clone();
-    fsx::blocking(move || ast_grep_search(window, request, search_id, max_results, search, ticket)).await
-}
-
-pub fn ast_grep_search(window: Window, request: codesearch::CodeSearch, search_id: String, max_results: Option<usize>, search: Slot, ticket: u64) -> Result<String, String> {
-    let folder = text_folder(&request.path)?;
-    let mut command = tools::command("ast-grep")?;
-    command.args(codesearch::args(&request, &folder, false)).current_dir(&folder).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = command.spawn().map_err(|e| format!("Couldn't start ast-grep: {e}"))?;
-    let started = Instant::now();
-    let base = folder.clone();
-    let mut summary = Some(());
-    stream_search(window, search_id, child, max_results, search, ticket, move |line: String| {
-        // ast-grep says nothing at the end: the summary ripgrep would send is made here.
-        if line.is_empty() {
-            return summary.take().map(|_| {
-                let elapsed = started.elapsed();
-                serde_json::json!({ "type": "summary", "data": { "elapsed_total": { "secs": elapsed.as_secs(), "nanos": elapsed.subsec_nanos(), "human": format!("{:.3}s", elapsed.as_secs_f64()) } } }).to_string()
-            });
-        }
-        codesearch::as_ripgrep(&line, &base)
-    })?;
-    Ok(folder)
-}
-
-/// Rewrites every match of a code search in its files, with ast-grep (--update-all); how many it rewrote.
-pub async fn ast_grep_apply(request: codesearch::CodeSearch) -> Result<u64, String> {
-    fsx::blocking(move || {
-        let folder = fsx::normalize(&request.path)?;
-        if request.rewrite.as_deref().unwrap_or("").is_empty() {
-            return Err("Type what each match becomes first.".into());
-        }
-        let mut command = tools::command("ast-grep")?;
-        let output = command.args(codesearch::args(&request, &folder, true)).current_dir(&folder).stdin(Stdio::null()).output().map_err(|e| format!("Couldn't start ast-grep: {e}"))?;
-        let said = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-        if !output.status.success() && codesearch::applied(&said) == 0 {
-            return Err(said.trim().to_string());
-        }
-        Ok(codesearch::applied(&said))
-    })
-    .await
 }
 
 /// Sends a search's output to the UI as `search-event`s: its lines (each `convert`ed, None to skip

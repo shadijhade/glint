@@ -252,7 +252,7 @@ pub static TOOLS: &[Tool] = &[
             "12a0cefb77498820ef6fb302ed8758cbda39be87d4c15120dc74c1dea968a50d",
             "ast-grep.exe",
         ),
-        used_for: "Code patterns in Text: code found (and rewritten) by its structure, console.log($MSG) or $X.unwrap()",
+        used_for: "Code patterns for AI agents (the MCP server): code found by its structure, console.log($MSG) or $X.unwrap()",
     },
     Tool {
         id: "jaq",

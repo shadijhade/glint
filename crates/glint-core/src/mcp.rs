@@ -523,9 +523,8 @@ fn search_code(args: &Value) -> Result<Value, String> {
     let pattern = text(args, "pattern").ok_or("Say which pattern to find")?;
     let folder = folder(args)?.ok_or("Say which folder to search in")?;
     let limit = number(args, "limit", 50, 500) as usize;
-    let search = crate::codesearch::CodeSearch { query: pattern, path: folder.clone(), rewrite: None, exclusions: vec!["node_modules".into(), ".git".into()], everything: false };
     let mut child = crate::tools::command("ast-grep")?
-        .args(crate::codesearch::args(&search, &folder, false))
+        .args(crate::codesearch::args(&pattern, &folder, &["node_modules", ".git"]))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
