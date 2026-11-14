@@ -3817,7 +3817,7 @@ dependencies = [
 
 [[package]]
 name = "glint"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "embed-resource",
  "glint-core",
@@ -3827,7 +3827,7 @@ dependencies = [
 
 [[package]]
 name = "glint-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -3891,7 +3891,7 @@ dependencies = [
 
 [[package]]
 name = "glint-model"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "chrono",
  "regex",
@@ -3902,7 +3902,7 @@ dependencies = [
 
 [[package]]
 name = "glint-ui"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "alacritty_terminal",
  "async-channel",
@@ -9477,7 +9477,7 @@ dependencies = [
 
 [[package]]
 name = "shadui-index"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "base64 0.22.1",
  "memchr",

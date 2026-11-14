@@ -83,8 +83,11 @@ This one adds nothing: it takes out what wasn't worth its weight, makes what sta
 
 -   **Smaller.** Glint.exe is 93 MB, down from 174 MB, and builds 240 fewer crates.
 -   **Back again.** Four things 0.10 stopped starting run again a moment after the window is up: **Search inside files instantly** catches up with what changed while Glint was closed, daily and weekly **backups** run on time, **remotes shown in File Explorer** answer it again, and `Ctrl+Alt+G` takes the file dialog in front to the folder shown.
--   **Less work for each key.** An arrow key no longer rebuilds the sidebar, re-applies the theme, rescans the list for a README or copies every selected path; a grouped list no longer copies its rows; a search inside files with many hits no longer slows as it goes; the copy queue's progress no longer grows with the copy; folder rules wake nothing when none is on.
--   **Instant search** (once its service is updated): a common word searched with many exclusions is about 30% quicker.
+-   **Quiet at rest.** Glint no longer wakes at every refresh of the display when nothing on screen changes, nor while it waits in the tray.
+-   **Code previews at once.** A source file's first lines are colored right away and the rest a moment later; a 60 KB file used to hold the window for up to a tenth of a second.
+-   **Less work for each key.** An arrow key no longer rebuilds the sidebar, re-applies the theme, rescans the list for a README or copies every selected path; the second pane's views are made when you first open it; a grouped list no longer copies its rows; a search inside files with many hits no longer slows as it goes; the copy queue's progress no longer grows with the copy; folder rules wake nothing when none is on.
+-   **Instant search**: a search your next key replaces stops at once, and (once its service is updated) a common word searched with many exclusions is about 30% quicker.
+-   **Less to read again**: a big folder that keeps changing is read again about twice a second, not five times; rows on a network share don't each ask for their tags; **Search inside files instantly** sleeps until a file it reads changes.
 -   **Fixed**: a search inside files says how long ripgrep took again (ripgrep 15 writes its summary differently).
 -   **Removed**:
     -   Mermaid diagrams: a `mermaid` block in Markdown shows as code, and a `.mmd` file as text. Graphviz and math are drawn as before.
