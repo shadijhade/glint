@@ -15,6 +15,7 @@ use glint_model::entries::{entry_order, is_hidden, matcher, FileEntry, GitMarks,
 use glint_model::groups::{group_rows, GroupBy, GroupHeader, Grouped, SizeOf as GroupSizeOf};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 /// How many of a file's matching lines are shown under its row; the rest are counted on one more line.
@@ -173,6 +174,20 @@ pub struct Rows {
     inside: Option<Arc<Hits>>,
     /// How many items the Show hidden items setting left out.
     pub hidden: usize,
+    /// The row [`Rows::position_of`] found last.
+    found: Hint,
+}
+
+/// The row a path was last found at. The focus, the anchor and the row a key moves to are each looked up a few
+/// times for every key press, and a scan compares paths over the whole list (in a folder of 100,000, each one is
+/// felt); the row found last, or one beside it, is nearly always the one asked for. A copy starts from the same row.
+#[derive(Debug, Default)]
+struct Hint(AtomicUsize);
+
+impl Clone for Hint {
+    fn clone(&self) -> Self {
+        Hint(AtomicUsize::new(self.0.load(AtomicOrdering::Relaxed)))
+    }
 }
 
 impl Default for Rows {
@@ -190,6 +205,7 @@ impl Rows {
             groups: None,
             inside: None,
             hidden: 0,
+            found: Hint::default(),
         }
     }
 
@@ -201,6 +217,7 @@ impl Rows {
             groups: None,
             inside: None,
             hidden: 0,
+            found: Hint::default(),
         }
     }
 
@@ -275,9 +292,16 @@ impl Rows {
         (0..self.len()).filter_map(|i| self.get(i))
     }
 
-    /// The index of the row with this path (`findIndex`): the first match, compared exactly.
+    /// The index of the row with this path (`findIndex`), compared exactly. The row found last and the two beside it
+    /// are tried first (a tab's rows never hold a path twice), then every row.
     pub fn position_of(&self, path: &str) -> Option<usize> {
-        self.iter().position(|e| e.path == path)
+        let last = self.found.0.load(AtomicOrdering::Relaxed);
+        let near = [last, last.wrapping_add(1), last.wrapping_sub(1)]
+            .into_iter()
+            .find(|&at| self.get(at).is_some_and(|e| e.path == path));
+        let at = near.or_else(|| self.iter().position(|e| e.path == path))?;
+        self.found.0.store(at, AtomicOrdering::Relaxed);
+        Some(at)
     }
 
     /// Group headers and lines when the list is grouped.
@@ -413,6 +437,7 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         groups: None,
         inside: None,
         hidden,
+        found: Hint::default(),
     };
     if spec.group == GroupBy::None {
         return match spec.inside.as_ref().filter(|inside| inside.lines) {
@@ -449,6 +474,7 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
         })),
         inside: None,
         hidden,
+        found: Hint::default(),
     };
     match spec.inside.as_ref().filter(|inside| inside.lines) {
         Some(inside) => with_hits(grouped, inside),
@@ -535,6 +561,7 @@ fn with_hits(rows: Rows, inside: &RowInside) -> Rows {
         groups: None,
         inside: None,
         hidden: rows.hidden,
+        found: Hint::default(),
     };
     let mut lines: Vec<i32> = Vec::with_capacity(slots.len());
     let mut line_of: Vec<i32> = vec![0; count];
@@ -593,6 +620,24 @@ fn with_hits(rows: Rows, inside: &RowInside) -> Rows {
 mod tests {
     use super::*;
     use glint_model::entries::{attr, with_details, RawEntry};
+
+    #[test]
+    fn a_path_is_found_where_it_is_whichever_row_was_found_last() {
+        let entries: Arc<[FileEntry]> = (0..50).map(|i| file(&format!("f{i:02}.txt"), 1, 1)).collect();
+        let rows = Rows::identity(entries);
+        assert_eq!(rows.position_of("C:\\x\\f10.txt"), Some(10));
+        // Beside the last one, either way, far from it, and not there at all.
+        assert_eq!(rows.position_of("C:\\x\\f11.txt"), Some(11));
+        assert_eq!(rows.position_of("C:\\x\\f10.txt"), Some(10));
+        assert_eq!(rows.position_of("C:\\x\\f49.txt"), Some(49));
+        assert_eq!(rows.position_of("C:\\x\\f00.txt"), Some(0));
+        assert_eq!(rows.position_of("C:\\x\\nope.txt"), None);
+        assert_eq!(rows.position_of("C:\\x\\f01.txt"), Some(1));
+        // A copy, and rows in another order, answer the same.
+        let copy = rows.clone();
+        assert_eq!(copy.position_of("C:\\x\\f02.txt"), Some(2));
+        assert_eq!(Rows::empty().position_of("C:\\x\\f00.txt"), None);
+    }
 
     fn file(name: &str, size: u64, modified: i64) -> FileEntry {
         with_details(
