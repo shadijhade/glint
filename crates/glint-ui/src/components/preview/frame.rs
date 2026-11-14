@@ -39,7 +39,6 @@ use super::signature::SignatureChip;
 use super::small::SmallPreview;
 use super::sources::{sources, Media, Sources};
 use super::sqlite::{SqliteEvent, SqlitePreview};
-use super::typst_view::TypstView;
 use crate::components::command_bar::{Facts, Pair};
 use crate::components::git::{self, ChangesView};
 use crate::dialogs::action_run::{tools_model, Tooling};
@@ -300,7 +299,6 @@ impl EntryView {
             BookView,
             DocxView,
             ModelView,
-            TypstView,
             CastView,
             SmallPreview
         );
@@ -395,7 +393,6 @@ impl EntryView {
             Body::Pdf => cx.new(|cx| PdfView::new(entry.clone(), window, cx)).into(),
             Body::Book => cx.new(|cx| BookView::new(path, window, cx)).into(),
             Body::Model => cx.new(|cx| ModelView::new(entry.clone(), window, cx)).into(),
-            Body::Typst => cx.new(|cx| TypstView::new(entry.clone(), window, cx)).into(),
             Body::Cast => cx.new(|cx| CastView::new(path, window, cx)).into(),
             Body::Docx => {
                 // A document Glint can't lay out falls back to Windows' previewer over the icon, as in the web app.

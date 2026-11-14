@@ -1,40 +1,22 @@
-//! Converting documents: "Convert document…" (pandoc) and "Export as PDF" (Typst).
+//! Converting documents: "Convert document…" (pandoc, with Typst for PDFs; both tools Glint installs on demand).
 //! Ported from src/components/explorer/DocConvertDialog.tsx, built the way [`super::drive_health`] is.
 //!
 //! | TypeScript                           | Here                                                              |
 //! |--------------------------------------|-------------------------------------------------------------------|
-//! | `READS`, `canConvertDoc`, `isTypst`  | [`READS`], [`can_convert_doc`], [`is_typst`] (by name; the menus know the rest) |
+//! | `READS`, `canConvertDoc`             | [`READS`], [`can_convert_doc`] (by name; the menus know the rest) |
 //! | `TARGETS`                            | [`targets`]                                                       |
 //! | `openDocConvert(entries, target)`    | [`open`]                                                          |
-//! | `exportTypstPdf(entries)`            | [`export_pdf`] with `typst` true: Typst in process ([`Backend::export_pdf`]) |
-//! | `exportMarkdownPdf(paths)`, print.rs's `markdown_pdf` | [`export_pdf`] with `typst` false: the Markdown as Typst markup, typeset in process |
 //! | `DocConvertDialog` / `DocConvertModal` | [`DocConvertDialog`]                                            |
 //! | `invoke("doc_convert")`, `doc_cancel`| [`Backend::convert`], [`Backend::cancel`] ([`CoreBackend`] is glint-core) |
 //! | `useActionRun`, `WhereChooser`, `RunProgress`, `RunResult`, `RunFooter` | [`action_run`]                   |
 //! | `ToolNeeded id="pandoc"` and `"typst"` | `settings::tools::needed`, through [`action_run::Tooling`]      |
 //!
-//! **How the coordinator wires it.**
-//! * `MenuEvent::ConvertDocument { paths }` is `dialogs::doc_convert::open(window, cx, paths, None)`. It keeps the
-//!   documents among `paths` by their names and says so in a notification when none is left.
-//! * `MenuEvent::ExportPdf { paths, typst }` is `dialogs::doc_convert::export_pdf(window, cx, paths, typst)`.
-//!   It makes a PDF beside each file, as the TypeScript did (Ctrl+Z takes it back), with no dialog and no tool to
-//!   download: Typst is linked in (`crate::typst_engine`, the `typst` feature).
+//! **How the coordinator wires it.** `MenuEvent::ConvertDocument { paths }` is
+//! `dialogs::doc_convert::open(window, cx, paths, None)`. It keeps the documents among `paths` by their names and says
+//! so in a notification when none is left.
 //!
-//! **Export as PDF without a WebView.** `.typ` files are typeset by Typst in process (the TypeScript ran the
-//! `typst` tool). Markdown printed the preview with WebView2's print-to-PDF (`markdown_pdf`, print.rs), which can't
-//! move to glint-core because there is no WebView; it is now `typst_engine::from_markdown`, the Markdown written
-//! as Typst markup (headings, paragraphs, emphasis, code, lists, tables, pictures beside the file, links, quotes,
-//! footnotes, escaped; Arabic and Hebrew paragraphs typeset right to left) and typeset the same way. The page
-//! looks like Typst's, not exactly like the preview. Both go through `actions::run`, so the PDF lands beside the
-//! file (a name that's taken gets "(2)") and Undo takes it back, as before.
-//!
-//! **Math and diagrams in the Markdown PDF.** The print page of the TypeScript drew `$..$` and `$$..$$` math and
-//! Mermaid blocks; here the same crates as the preview draw them (RaTeX for math, merman for Mermaid, layout-rs
-//! for Graphviz) into SVG, and Typst gets each SVG as an image served from memory, never written to disk
-//! (`from_markdown::Options::graphics`). Inline math sits on the text's baseline; display math, ```` ```math ````
-//! and diagram blocks are centred. A formula or diagram that doesn't draw (or that Typst can't read) stays as its
-//! source text and never fails the export. Without the `typst` feature the old paths stay: `.typ` files go through
-//! core's `doc_convert` (the Typst tool) and Markdown opens this dialog with PDF chosen.
+//! (Export as PDF, with Typst typesetting `.typ` and Markdown files in process, went in 0.12 with the built-in
+//! Typst: Convert document makes PDFs through the pandoc and Typst tools.)
 //!
 //! Enter in the dialog doesn't start the conversion (the TypeScript's modal submitted on Enter); the buttons do.
 
@@ -52,7 +34,6 @@ use glint_model::format::{format_count, plural};
 use glint_model::paths::base_name;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 /// What pandoc reads (docconvert.rs's reader).
@@ -75,11 +56,6 @@ pub fn can_convert_doc(path: &str) -> bool {
     READS.contains(&ext_of(path).as_str())
 }
 
-/// A Typst file, for Export as PDF (`isTypst`).
-pub fn is_typst(path: &str) -> bool {
-    ext_of(path) == "typ"
-}
-
 // ---- The calls --------------------------------------------------------------------------------------------
 
 /// The calls a conversion makes. The app uses [`CoreBackend`]; tests a fake.
@@ -94,10 +70,6 @@ pub trait Backend: Send + Sync {
     ) -> Fut<Report>;
     /// Stops the conversion under way (`doc_cancel`).
     fn cancel(&self);
-    /// Makes a PDF beside each of `files`, which are Typst files or Markdown files (by their names): the whole of
-    /// Export as PDF. With the `typst` feature Typst runs in this process; without it core's `doc_convert` does
-    /// (the Typst tool, and only for Typst files).
-    fn export_pdf(&self, files: Vec<String>) -> Fut<Report>;
 }
 
 /// glint-core's converter, owned by the main window as the shell dialogs it opens are.
@@ -131,10 +103,6 @@ impl Backend for CoreBackend {
     fn cancel(&self) {
         glint_core::docconvert::doc_cancel();
     }
-
-    fn export_pdf(&self, files: Vec<String>) -> Fut<Report> {
-        in_process::export(files)
-    }
 }
 
 /// Stands in when core isn't started (never in the app).
@@ -152,10 +120,6 @@ impl Backend for Unavailable {
     }
 
     fn cancel(&self) {}
-
-    fn export_pdf(&self, _: Vec<String>) -> Fut<Report> {
-        action_run::no_core()
-    }
 }
 
 fn core_backend(cx: &App) -> Arc<dyn Backend> {
@@ -529,172 +493,6 @@ pub fn open_with(
     view
 }
 
-/// A Markdown file, for Export as PDF (`isMarkdown`).
-pub fn is_markdown(path: &str) -> bool {
-    matches!(ext_of(path).as_str(), "md" | "markdown" | "mdown" | "mkd" | "mkdn")
-}
-
-/// "Export as PDF" (`exportTypstPdf`, and Markdown's `pdfFromMarkdown`): a PDF beside each of `paths`, with no
-/// dialog, and Ctrl+Z takes them back. `typst` says the menu was for Typst files; otherwise it was for Markdown.
-///
-/// Without the `typst` feature Markdown opens Convert document with PDF chosen instead (the old stand-in for the
-/// WebView print, which needs pandoc and the Typst tool).
-pub fn export_pdf(window: &mut Window, cx: &mut App, paths: Vec<String>, typst: bool) {
-    let backend = core_backend(cx);
-    if typst {
-        export_typst_with(window, cx, backend, paths);
-    } else {
-        export_markdown_with(window, cx, backend, paths);
-    }
-}
-
-/// [`export_pdf`] for Typst files with a backend of your own (tests pass a fake).
-pub fn export_typst_with(window: &mut Window, cx: &mut App, backend: Arc<dyn Backend>, paths: Vec<String>) {
-    let files: Vec<String> = paths.into_iter().filter(|p| is_typst(p)).collect();
-    if files.is_empty() {
-        return;
-    }
-    run_export(window, cx, backend.export_pdf(files));
-}
-
-/// [`export_pdf`] for Markdown files with a backend of your own. Says it has begun, as the TypeScript's loading
-/// toast did: “name” for one file, “3 files” for more.
-pub fn export_markdown_with(window: &mut Window, cx: &mut App, backend: Arc<dyn Backend>, paths: Vec<String>) {
-    let files: Vec<String> = paths.into_iter().filter(|p| is_markdown(p)).collect();
-    if files.is_empty() {
-        return;
-    }
-    let loading = match files.as_slice() {
-        [one] => t!("Exporting “{name}” as PDF…", name = isolate(base_name(one).to_string())),
-        _ => t!("Exporting {n} files as PDF…", n = format_count(files.len())),
-    };
-    window.push_notification(Notification::info(loading), cx);
-    run_export(window, cx, backend.export_pdf(files));
-}
-
-/// Waits for an export and tells the person what it made, with Undo behind Ctrl+Z, or why it didn't.
-fn run_export(window: &mut Window, cx: &mut App, call: Fut<Report>) {
-    window
-        .spawn(cx, async move |cx| {
-            let result = call.await;
-            let _ = cx.update(|window, cx| match result {
-                Ok(report) => {
-                    if !report.made.is_empty() {
-                        let what = t!("PDF export of {what}", what = plural(report.made.len(), "file"));
-                        action_run::remember_undo(&report, &what, cx);
-                        window.push_notification(Notification::success(what).message(t!("Ctrl+Z takes it back")), cx);
-                    }
-                    if let Some((_, why)) = report.failed.first() {
-                        window.push_notification(Notification::error(why.clone()).title(t!("Couldn't export it")), cx);
-                    }
-                }
-                Err(reason) => {
-                    window.push_notification(Notification::error(reason).title(t!("Couldn't export it")), cx);
-                }
-            });
-        })
-        .detach();
-}
-
-/// The exports in this process: Typst files and Markdown files typeset by `typst_engine`, placed by core's
-/// `actions::run` (beside the file, numbered when the name is taken, Undo-able).
-pub mod in_process {
-    use super::*;
-    use crate::typst_engine::{self, from_markdown, Failure, Input, Limits, EXPORT_BUDGET};
-    use glint_core::actions::Job;
-    use std::path::PathBuf;
-
-    /// A Markdown file bigger than this isn't turned into a document (a data file with the wrong extension).
-    pub const MAX_MARKDOWN_BYTES: u64 = 64 * 1024 * 1024;
-
-    /// A PDF beside each of `files`, on core's blocking threads (see [`run`]).
-    pub fn export(files: Vec<String>) -> Fut<Report> {
-        on_core(glint_core::fsx::blocking(move || run(&files)))
-    }
-
-    /// A PDF beside each of `files`: Typst files as they are, Markdown as Typst markup. Blocks until done, so it
-    /// is for a thread that may wait (never the UI thread).
-    pub fn run(files: &[String]) -> Result<Report, String> {
-        if files.is_empty() {
-            return Err(t!("None of them is a file that becomes a PDF").to_string());
-        }
-        let jobs: Vec<Job> = files.iter().map(Job::one).collect();
-        // Nothing stops an export from outside, as the TypeScript's didn't: the jobs run to the end.
-        let stop = AtomicBool::new(false);
-        glint_core::actions::run(
-            0,
-            "pdf-export",
-            &jobs,
-            &Output::Beside { suffix: String::new() },
-            2,
-            &stop,
-            &|_| {},
-            |job, part, work| {
-                let file = job.inputs.first().ok_or_else(|| "A job has no files".to_string())?;
-                make_pdf(file, part, work).map(|made| vec![made])
-            },
-        )
-    }
-
-    /// One file's PDF, made in `work`.
-    fn make_pdf(file: &Path, part: &(dyn Fn(f32) + Sync), work: &Path) -> Result<PathBuf, String> {
-        let name = file.to_string_lossy();
-        let limits = Limits::new(EXPORT_BUDGET);
-        let pdf = if is_typst(&name) {
-            part(0.2);
-            typst_engine::pdf_of(Input::File(file.to_path_buf()), &limits)
-        } else if is_markdown(&name) {
-            let (text, options) = markdown_source(file)?;
-            part(0.2);
-            from_markdown::pdf_of_markdown(&text, &options, &limits)
-        } else {
-            return Err(t!("It isn't a Typst or Markdown file").to_string());
-        }
-        .map_err(failure_text)?;
-        part(0.9);
-        let out = glint_core::actions::renamed(work, file, "pdf");
-        std::fs::write(&out, pdf).map_err(|e| format!("{}: {e}", out.display()))?;
-        Ok(out)
-    }
-
-    /// The Markdown text at `file`, and how to typeset it: pictures found beside the file, math and diagrams drawn.
-    pub(super) fn markdown_source(file: &Path) -> Result<(String, from_markdown::Options), String> {
-        let meta = std::fs::metadata(file).map_err(|e| format!("{}: {e}", file.display()))?;
-        if meta.len() > MAX_MARKDOWN_BYTES {
-            return Err(t!("It is too big to make a document of").to_string());
-        }
-        let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
-        let text = String::from_utf8_lossy(&bytes);
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        let dir = file
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        let options = from_markdown::Options {
-            title: None,
-            base_dir: Some(dir),
-            graphics: true,
-            ..from_markdown::Options::default()
-        };
-        Ok((text.to_string(), options))
-    }
-
-    /// What a failed export says for its file: the first error with its place, and how many more there were.
-    fn failure_text(failure: Failure) -> String {
-        let errors = failure
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == typst_engine::Severity::Error)
-            .count();
-        let first = failure.summary();
-        if errors > 1 {
-            format!("{first} ({})", t!("and {n} more", n = errors - 1))
-        } else {
-            first
-        }
-    }
-}
-
 // ---- Tests -------------------------------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -712,7 +510,6 @@ mod tests {
         report: Report,
         error: Option<String>,
         cancelled: Mutex<usize>,
-        exports: Mutex<Vec<Vec<String>>>,
     }
 
     impl Fake {
@@ -722,12 +519,7 @@ mod tests {
                 report,
                 error: None,
                 cancelled: Mutex::new(0),
-                exports: Mutex::new(Vec::new()),
             })
-        }
-
-        fn exports(&self) -> Vec<Vec<String>> {
-            self.exports.lock().map(|e| e.clone()).unwrap_or_default()
         }
 
         fn calls(&self) -> Vec<(Vec<String>, Target, Output)> {
@@ -766,20 +558,6 @@ mod tests {
             if let Ok(mut n) = self.cancelled.lock() {
                 *n += 1;
             }
-        }
-
-        fn export_pdf(&self, files: Vec<String>) -> Fut<Report> {
-            if let Ok(mut exports) = self.exports.lock() {
-                exports.push(files);
-            }
-            let report = self.report.clone();
-            let error = self.error.clone();
-            Box::pin(async move {
-                match error {
-                    Some(error) => Err(error),
-                    None => Ok(report),
-                }
-            })
         }
     }
 
@@ -892,7 +670,6 @@ mod tests {
         assert!(
             !can_convert_doc("C:\\d\\a.pdf") && !can_convert_doc("C:\\d\\Folder") && !can_convert_doc("C:\\d\\a.txt")
         );
-        assert!(is_typst("C:\\d\\p.TYP") && !is_typst("C:\\d\\a.docx"));
         // Typst files become PDFs, Word files Markdown, everything else Word; a request wins.
         assert_eq!(
             first_target(&strings(&["C:\\d\\a.typ", "C:\\d\\b.typ"]), None),
@@ -1008,232 +785,11 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn exporting_typst_files_runs_without_a_dialog_and_other_files_open_nothing(cx: &mut TestAppContext) {
+    fn a_file_it_takes_nothing_of_opens_nothing(cx: &mut TestAppContext) {
         let _guard = testing::lock();
         let mut visual = window(cx);
-        let fake = Fake::new(report(&["C:\\d\\paper.pdf"]));
-        let backend: Arc<dyn Backend> = fake.clone();
-        visual.update(|window, cx| {
-            export_typst_with(window, cx, backend, strings(&["C:\\d\\paper.typ", "C:\\d\\notes.md"]));
-        });
-        settle(&mut visual, |_| !fake.exports().is_empty());
-        assert_eq!(fake.exports(), [["C:\\d\\paper.typ"]], "only the Typst file");
-        assert!(fake.calls().is_empty(), "the converter and its tools are not asked");
-        visual.run_until_parked();
-        visual.update(|window, cx| assert!(!window.has_active_dialog(cx), "no dialog for Typst files"));
-        // It said what it made: the PDF export, and that Ctrl+Z takes it back.
-        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
-        // Nothing it takes: it says so, and nothing opens.
         visual.update(|window, cx| open(window, cx, strings(&["C:\\d\\a.pdf"]), None));
         visual.run_until_parked();
         visual.update(|window, cx| assert!(!window.has_active_dialog(cx)));
-    }
-
-    #[gpui_kit::test]
-    fn exporting_markdown_says_it_began_then_what_it_made_and_leaves_other_files_alone(cx: &mut TestAppContext) {
-        let _guard = testing::lock();
-        let mut visual = window(cx);
-        let mut made = report(&["C:\\d\\notes.pdf"]);
-        made.failed = vec![("C:\\d\\bad.md".into(), "bad.md: no such file".into())];
-        let fake = Fake::new(made);
-        let backend: Arc<dyn Backend> = fake.clone();
-        visual.update(|window, cx| {
-            export_markdown_with(
-                window,
-                cx,
-                backend,
-                strings(&["C:\\d\\notes.MD", "C:\\d\\bad.md", "C:\\d\\paper.typ", "C:\\d\\a.docx"]),
-            );
-            // The loading notice is there at once, before the work is done.
-            assert_eq!(window.notifications(cx).len(), 1);
-        });
-        settle(&mut visual, |_| !fake.exports().is_empty());
-        assert_eq!(
-            fake.exports(),
-            [["C:\\d\\notes.MD", "C:\\d\\bad.md"]],
-            "only the Markdown files"
-        );
-        // The loading notice, the success and the failure.
-        settle(&mut visual, |cx| {
-            cx.update(|window, cx| window.notifications(cx).len()) == 3
-        });
-        // No Markdown: nothing begins and nothing is asked.
-        let before = fake.exports().len();
-        let backend: Arc<dyn Backend> = fake.clone();
-        visual.update(|window, cx| export_markdown_with(window, cx, backend, strings(&["C:\\d\\paper.typ"])));
-        visual.run_until_parked();
-        assert_eq!(fake.exports().len(), before);
-        visual.update(|window, cx| assert!(!window.has_active_dialog(cx)));
-    }
-
-    #[test]
-    fn markdown_names_are_told_by_their_extension() {
-        assert!(is_markdown("C:\\d\\a.md") && is_markdown("C:\\d\\A.MARKDOWN") && is_markdown("C:\\d\\a.mkdn"));
-        assert!(!is_markdown("C:\\d\\a.txt") && !is_markdown("C:\\d\\a.typ") && !is_markdown("C:\\d\\md"));
-    }
-
-    /// The exports for real: Typst and Markdown typeset by Typst itself, placed by core's `actions::run`.
-    mod real {
-        use super::super::*;
-        use crate::testing;
-        use std::fs;
-        use std::path::PathBuf;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        struct Scratch(PathBuf);
-
-        impl Scratch {
-            fn new(tag: &str) -> Self {
-                static N: AtomicUsize = AtomicUsize::new(0);
-                let dir = std::env::temp_dir().join(format!(
-                    "glint-export-test-{}-{tag}-{}",
-                    std::process::id(),
-                    N.fetch_add(1, Ordering::SeqCst)
-                ));
-                let _ = fs::remove_dir_all(&dir);
-                fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("making {}: {e}", dir.display()));
-                Scratch(dir)
-            }
-
-            fn file(&self, name: &str, text: &str) -> String {
-                let path = self.0.join(name);
-                fs::write(&path, text).unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
-                path.to_string_lossy().into_owned()
-            }
-
-            fn names(&self) -> Vec<String> {
-                let mut names: Vec<String> = fs::read_dir(&self.0)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .collect();
-                names.sort();
-                names
-            }
-        }
-
-        impl Drop for Scratch {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-
-        fn pdf_at(path: &str) -> Vec<u8> {
-            fs::read(path).unwrap_or_else(|e| panic!("reading {path}: {e}"))
-        }
-
-        #[test]
-        fn typst_and_markdown_files_become_pdfs_beside_them_and_a_taken_name_gets_a_number() {
-            let _guard = testing::lock();
-            let dir = Scratch::new("beside");
-            let typ = dir.file("paper.typ", "= A paper\n\nSome *words*.\n");
-            let md = dir.file(
-                "ملاحظات.md",
-                "# ملاحظات الرحلة\n\nهذا نص عربي طويل بما يكفي ليُقرأ من اليمين إلى اليسار.\n\n\
-                 | الاسم | العدد |\n|---|---|\n| تفاح | 3 |\n\n- بند أول\n- بند ثان\n\n```rust\nlet x = 1;\n```\n",
-            );
-            let english = dir.file(
-                "notes.md",
-                "# Notes\n\nA *plain* English note with `code` and a [link](https://example.com).\n",
-            );
-            let report = in_process::run(&[typ.clone(), md.clone(), english.clone()]).unwrap_or_else(|e| panic!("{e}"));
-            assert!(report.failed.is_empty(), "{:?}", report.failed);
-            assert_eq!(report.made.len(), 3, "{:?}", report.made);
-            assert_eq!(
-                dir.names(),
-                [
-                    "notes.md",
-                    "notes.pdf",
-                    "paper.pdf",
-                    "paper.typ",
-                    "ملاحظات.md",
-                    "ملاحظات.pdf"
-                ],
-                "no work folder is left"
-            );
-            for made in &report.made {
-                let bytes = pdf_at(made);
-                assert!(bytes.starts_with(b"%PDF-"), "{made}");
-                assert!(bytes.len() > 800, "{made}: {} bytes", bytes.len());
-            }
-            // And again: the names are taken, so they are numbered and the first PDFs are untouched.
-            let again = in_process::run(&[typ]).unwrap_or_else(|e| panic!("{e}"));
-            assert_eq!(again.made.len(), 1);
-            assert!(again.made[0].ends_with("paper (2).pdf"), "{:?}", again.made);
-            assert!(report.before > 0 && report.after > 0);
-        }
-
-        #[test]
-        fn what_goes_wrong_is_said_for_its_file_with_its_place() {
-            let _guard = testing::lock();
-            let dir = Scratch::new("wrong");
-            let broken = dir.file("broken.typ", "= Fine\n\n#nosuchfunction(1)\n");
-            let package = dir.file("uses.typ", "#import \"@preview/cetz:0.3.4\": canvas\n");
-            let text = dir.file("notes.txt", "not a document\n");
-            let good = dir.file("good.md", "# Good\n");
-            let report = in_process::run(&[broken, package, text, good]).unwrap_or_else(|e| panic!("{e}"));
-            assert_eq!(report.made.len(), 1, "{:?}", report.made);
-            assert!(report.made[0].ends_with("good.pdf"));
-            assert_eq!(report.failed.len(), 3, "{:?}", report.failed);
-            let why = |name: &str| {
-                report
-                    .failed
-                    .iter()
-                    .find(|(file, _)| file.ends_with(name))
-                    .map(|(_, why)| why.clone())
-                    .unwrap_or_else(|| panic!("{name} didn't fail: {:?}", report.failed))
-            };
-            assert!(
-                why("broken.typ").starts_with("broken.typ:3:2: "),
-                "{}",
-                why("broken.typ")
-            );
-            assert!(why("broken.typ").contains("nosuchfunction"));
-            assert!(why("uses.typ").contains("without going online"), "{}", why("uses.typ"));
-            assert!(why("uses.typ").starts_with("uses.typ:1:"));
-            assert_eq!(why("notes.txt"), "It isn't a Typst or Markdown file");
-            assert_eq!(
-                dir.names(),
-                ["broken.typ", "good.md", "good.pdf", "notes.txt", "uses.typ"]
-            );
-            assert!(in_process::run(&[]).is_err());
-        }
-
-        #[test]
-        fn markdown_pictures_beside_the_file_are_drawn_and_missing_ones_are_described() {
-            let _guard = testing::lock();
-            let dir = Scratch::new("pictures");
-            let picture = image::RgbaImage::from_pixel(40, 30, image::Rgba([20, 120, 220, 255]));
-            let mut png = Vec::new();
-            picture
-                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-                .unwrap_or_else(|e| panic!("png: {e}"));
-            fs::write(dir.0.join("blue.png"), &png).unwrap_or_else(|e| panic!("{e}"));
-            let md = dir.file(
-                "doc.md",
-                "# With pictures\n\n![a blue box](blue.png)\n\n![gone](gone.png) and ![far](https://example.com/x.png)\n\n\
-                 Text with $ and # and * and _ and <angle> and [brackets] and a\\\\backslash.\n",
-            );
-            let report = in_process::run(&[md]).unwrap_or_else(|e| panic!("{e}"));
-            assert!(report.failed.is_empty(), "{:?}", report.failed);
-            let with_picture = pdf_at(&report.made[0]);
-            // Without the picture the same document is smaller.
-            fs::remove_file(dir.0.join("blue.png")).unwrap_or_else(|e| panic!("{e}"));
-            let md = dir.file(
-                "plain.md",
-                "# With pictures\n\n![a blue box](blue.png)\n\n![gone](gone.png) and ![far](https://example.com/x.png)\n\n\
-                 Text with $ and # and * and _ and <angle> and [brackets] and a\\\\backslash.\n",
-            );
-            let report = in_process::run(&[md]).unwrap_or_else(|e| panic!("{e}"));
-            assert!(report.failed.is_empty(), "{:?}", report.failed);
-            let without = pdf_at(&report.made[0]);
-            assert!(
-                with_picture.len() > without.len(),
-                "{} against {}",
-                with_picture.len(),
-                without.len()
-            );
-        }
     }
 }
