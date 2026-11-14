@@ -815,7 +815,8 @@ pub fn open(window: &mut Window, cx: &mut App) {
     open_with(window, cx, Sources::core());
 }
 
-/// Debug builds' self-test: types `text` into the open palette's box, as a person would.
+/// Types `text` into the open palette's box, as a person would (the accessibility sweep).
+#[cfg(test)]
 pub(crate) fn type_query(text: &str, window: &mut Window, cx: &mut App) {
     let Some(palette) = cx.try_global::<Current>().and_then(|current| current.0.upgrade()) else {
         return;
