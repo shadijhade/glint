@@ -168,11 +168,7 @@ pub fn core_source(app: host::AppHandle) -> Source {
         tools: Arc::new(|| {
             Box::pin(async {
                 let tools = glint_core::tools::tools_status().await?;
-                Ok(tools
-                    .iter()
-                    .filter_map(|tool| serde_json::to_value(tool).ok())
-                    .filter_map(|value| tool_state(&value))
-                    .collect())
+                Ok(tools.iter().map(tool_state).collect())
             })
         }),
         install: Arc::new(move |id, progress| {
@@ -191,30 +187,24 @@ pub fn core_source(app: host::AppHandle) -> Source {
     }
 }
 
-/// A tool as core's JSON says it (core's `ToolStatus` has private fields).
-fn tool_state(value: &serde_json::Value) -> Option<ToolState> {
-    let text = |key: &str| value.get(key).and_then(serde_json::Value::as_str).map(str::to_string);
-    Some(ToolState {
-        id: text("id")?,
-        name: text("name")?,
-        installed: text("origin").is_some(),
-        source: text("source").unwrap_or_default(),
-        pinned: text("pinned").unwrap_or_default(),
-    })
+/// A tool as Clean up shows it.
+fn tool_state(tool: &glint_core::tools::ToolStatus) -> ToolState {
+    ToolState {
+        id: tool.id.to_string(),
+        name: tool.name.to_string(),
+        installed: tool.origin.is_some(),
+        source: tool.source.to_string(),
+        pinned: tool.pinned.unwrap_or_default().to_string(),
+    }
 }
 
-/// A channel for core that tells `progress` how an install goes (`tools::Progress` has private fields too).
+/// A channel for core that tells `progress` how an install goes.
 fn progress_channel(progress: async_channel::Sender<Progress>) -> host::ipc::Channel<glint_core::tools::Progress> {
     host::ipc::Channel::new(move |p: glint_core::tools::Progress| {
-        let value = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
         let fetch = Progress {
-            stage: value
-                .get("stage")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            done: value.get("done").and_then(serde_json::Value::as_u64).unwrap_or(0),
-            total: value.get("total").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            stage: p.stage,
+            done: p.done,
+            total: p.total,
         };
         progress
             .try_send(fetch)

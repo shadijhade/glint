@@ -202,12 +202,7 @@ pub fn connection_for(name: &str, remote: &str, kind: &str, taken_ids: &[String]
     }
 }
 
-/// core's connection for a saved one (the same JSON shape; the saved one types its choices).
-fn to_core(connection: &RemoteConnection) -> glint_core::remote::Connection {
-    serde_json::to_value(connection)
-        .and_then(serde_json::from_value)
-        .unwrap_or_default()
-}
+use crate::dialogs::remote::to_core;
 
 /// What `remote_test` says (core's English), in the interface language.
 fn said_text(said: &str) -> SharedString {

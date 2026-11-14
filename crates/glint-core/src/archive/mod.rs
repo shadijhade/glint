@@ -20,6 +20,7 @@
 mod cab;
 mod codec;
 mod compress;
+pub use compress::Format as CompressFormat;
 pub(crate) mod extract;
 mod image;
 mod msi;
@@ -33,7 +34,6 @@ pub(crate) mod tree;
 use crate::fsx::{self, ms_since, Entry, InArchive, Resolved};
 pub use read::Format;
 use read::{ItemIndex, Source};
-use serde::Serialize;
 use shadui_index::proto::{UsageNode, NO_PARENT};
 use shadui_index::query::{fold, is_hidden, parse, Excludes, NameMatcher};
 use std::collections::HashMap;
@@ -966,20 +966,30 @@ fn forget(key: &str) {
     });
 }
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+/// How far a staging has come: `done` of `total` (the unit is the work's; `total` is 0 while it isn't known).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StageProgress {
-    pub(crate) done: u64,
-    pub(crate) total: u64,
+    pub done: u64,
+    pub total: u64,
 }
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+impl StageProgress {
+    /// The whole percent `done` of `total` is, at most 100; 0 while the total isn't known.
+    pub fn percent(&self) -> u8 {
+        if self.total == 0 {
+            return 0;
+        }
+        let percent = u128::from(self.done) * 100 / u128::from(self.total);
+        u8::try_from(percent.min(100)).unwrap_or(100)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct ReadProgress {
     /// The archive being read.
-    path: String,
-    done: u64,
-    total: u64,
+    pub path: String,
+    pub done: u64,
+    pub total: u64,
 }
 
 /// The first read of the archive `path` goes into, while it runs (a compressed tar is read whole to
@@ -1004,14 +1014,13 @@ pub fn cancel_archive_read(path: String) {
 const PEEK_LIMIT: u64 = 64 << 20;
 
 /// What the preview pane says about an archive, without reading a big compressed one whole.
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct Peek {
-    format: &'static str,
-    packed: u64,
+    pub format: &'static str,
+    pub packed: u64,
     /// Its files and folders, and what they unpack to, once its list of entries is read.
-    entries: Option<u32>,
-    unpacked: Option<u64>,
+    pub entries: Option<u32>,
+    pub unpacked: Option<u64>,
 }
 
 pub async fn archive_peek(path: String) -> Result<Peek, String> {
@@ -1035,23 +1044,25 @@ pub async fn archive_peek(path: String) -> Result<Peek, String> {
     .await
 }
 
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
+/// A file that couldn't be had (password-protected, damaged…), with the reason.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Skipped {
-    pub(crate) path: String,
-    pub(crate) reason: String,
+    pub path: String,
+    pub reason: String,
 }
 
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
+/// What a staging, a compression or an extraction made.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Staged {
-    /// The folder they're in, to delete once they're copied.
-    pub(crate) folder: String,
-    /// The copy of each item asked for (in that order) that could be made, folders with what they hold.
-    pub(crate) paths: Vec<String>,
+    /// The folder they're in, to delete once they're copied. After Extract here, the folder made (or the one file,
+    /// for a single compressed file).
+    pub folder: String,
+    /// The copy of each item asked for (in that order) that could be made, folders with what they hold. After
+    /// Compress, the archive is `paths[0]`.
+    pub paths: Vec<String>,
     /// Files that couldn't be extracted, and why.
-    pub(crate) skipped: Vec<Skipped>,
-    pub(crate) bytes: u64,
+    pub skipped: Vec<Skipped>,
+    pub bytes: u64,
 }
 
 /// One file to extract: where it is and where it goes.

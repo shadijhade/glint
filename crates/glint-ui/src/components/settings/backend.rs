@@ -13,7 +13,6 @@ use crate::core_bridge;
 use crate::platform::pickers::{self, Filter, Options};
 use glint_core::host::{self, Manager as _};
 use glint_core::{agents, content, openers, rclone, term, verbs};
-use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -133,19 +132,18 @@ pub struct ToolInfo {
 }
 
 impl ToolInfo {
-    fn from_json(value: &Value) -> Option<ToolInfo> {
-        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
-        Some(ToolInfo {
-            id: text("id")?,
-            name: text("name")?,
-            used_for: text("usedFor").unwrap_or_default(),
-            source: text("source").unwrap_or_default(),
-            origin: text("origin"),
-            path: text("path"),
-            version: text("version"),
-            pinned: text("pinned"),
-            removable: value.get("removable").and_then(Value::as_bool).unwrap_or(false),
-        })
+    fn of(tool: &glint_core::tools::ToolStatus) -> ToolInfo {
+        ToolInfo {
+            id: tool.id.to_string(),
+            name: tool.name.to_string(),
+            used_for: tool.used_for.to_string(),
+            source: tool.source.to_string(),
+            origin: tool.origin.map(str::to_string),
+            path: tool.path.clone(),
+            version: tool.version.clone(),
+            pinned: tool.pinned.map(str::to_string),
+            removable: tool.removable,
+        }
     }
 }
 
@@ -241,15 +239,10 @@ fn on_core<T: Send + 'static>(future: impl Future<Output = Result<T, String>> + 
 /// A channel for core that tells `progress` how an install goes.
 pub(crate) fn fetch_channel(progress: async_channel::Sender<Fetch>) -> host::ipc::Channel<glint_core::tools::Progress> {
     host::ipc::Channel::new(move |p: glint_core::tools::Progress| {
-        let value = serde_json::to_value(&p).unwrap_or(Value::Null);
         let fetch = Fetch {
-            stage: value
-                .get("stage")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            done: value.get("done").and_then(Value::as_u64).unwrap_or(0),
-            total: value.get("total").and_then(Value::as_u64).unwrap_or(0),
+            stage: p.stage,
+            done: p.done,
+            total: p.total,
         };
         progress
             .try_send(fetch)
@@ -293,11 +286,7 @@ impl Backend for CoreBackend {
     fn tools_status(&self) -> Fut<Vec<ToolInfo>> {
         on_core(async {
             let tools = glint_core::tools::tools_status().await?;
-            Ok(tools
-                .iter()
-                .filter_map(|t| serde_json::to_value(t).ok())
-                .filter_map(|v| ToolInfo::from_json(&v))
-                .collect())
+            Ok(tools.iter().map(ToolInfo::of).collect())
         })
     }
 
@@ -347,12 +336,10 @@ impl Backend for CoreBackend {
     fn mcp_setup(&self) -> Fut<McpSetup> {
         on_core(async {
             let setup = glint_core::mcp::mcp_setup()?;
-            let value = serde_json::to_value(&setup).map_err(|e| e.to_string())?;
-            let text = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
             Ok(McpSetup {
-                claude_code: text("claudeCode"),
-                vscode: text("vscode"),
-                json: text("json"),
+                claude_code: setup.claude_code,
+                vscode: setup.vscode,
+                json: setup.json,
             })
         })
     }
@@ -508,13 +495,22 @@ mod tests {
     }
 
     #[test]
-    fn tools_read_from_the_json_core_sends() {
-        let value = serde_json::json!({
-            "id": "rg", "name": "ripgrep", "usedFor": "Text search", "origin": "bundled",
-            "path": "C:\\rg.exe", "version": "14.1.0", "pinned": "14.1.0", "removable": false
+    fn a_tool_is_read_from_what_core_says_of_it() {
+        let tool = ToolInfo::of(&glint_core::tools::ToolStatus {
+            id: "rg",
+            name: "ripgrep",
+            used_for: "Text search",
+            source: "release",
+            origin: Some("bundled"),
+            path: Some("C:\\rg.exe".into()),
+            version: Some("14.1.0".into()),
+            pinned: Some("14.1.0"),
+            removable: false,
         });
-        let tool = ToolInfo::from_json(&value).expect("a tool");
         assert_eq!((tool.id.as_str(), tool.origin.as_deref()), ("rg", Some("bundled")));
-        assert!(ToolInfo::from_json(&serde_json::json!({})).is_none());
+        assert_eq!(
+            (tool.used_for.as_str(), tool.pinned.as_deref()),
+            ("Text search", Some("14.1.0"))
+        );
     }
 }
