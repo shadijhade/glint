@@ -160,24 +160,19 @@ impl Sources {
 }
 
 /// What [`Sidebar::refresh`] builds the rows from, kept to compare against: shared lists by pointer (a new listing
-/// or list of drives is a new `Arc`), the rest by value.
-#[derive(PartialEq)]
+/// or list of drives is a new `Arc`; holding the ones seen keeps their addresses from being reused), the rest by
+/// value.
 struct Seen {
     path: String,
-    known: usize,
-    drives: usize,
-    listing: Option<usize>,
+    known: Arc<[crate::explorer::KnownFolder]>,
+    drives: Arc<[crate::explorer::Drive]>,
+    listing: Option<Arc<[FileEntry]>>,
     folder_tree: bool,
     tree_follows: bool,
     show_hidden: bool,
     pinned: Vec<String>,
     saved: Vec<SavedSearch>,
     remotes: Vec<RemoteConnection>,
-}
-
-/// An `Arc`'s address, to tell a new list from the one seen before without comparing what is in it.
-fn arc_key<T: ?Sized>(shared: &Arc<T>) -> usize {
-    Arc::as_ptr(shared).cast::<()>() as usize
 }
 
 /// The active tab's listing, when it is a folder the tree can hold (not in an archive, not on a remote).
@@ -403,9 +398,9 @@ impl Sidebar {
             self.built += 1;
         }
         self.seen = Some(Seen {
-            known: arc_key(&known),
-            drives: arc_key(&drives),
-            listing: listing.as_ref().map(|(_, entries)| arc_key(entries)),
+            known,
+            drives,
+            listing: listing.map(|(_, entries)| entries),
             path,
             folder_tree,
             tree_follows,
@@ -433,10 +428,15 @@ impl Sidebar {
             Some(app) => seen.pinned == app.pinned && seen.saved == app.saved_searches && seen.remotes == app.remotes,
             None => seen.pinned.is_empty() && seen.saved.is_empty() && seen.remotes.is_empty(),
         };
-        kept && seen.path == e.current_path()
-            && seen.known == arc_key(e.known_folders())
-            && seen.drives == arc_key(e.drives())
-            && seen.listing == tree_listing(e).map(|l| arc_key(&l.entries))
+        let same_listing = match (&seen.listing, tree_listing(e)) {
+            (Some(seen), Some(now)) => Arc::ptr_eq(seen, &now.entries),
+            (None, None) => true,
+            _ => false,
+        };
+        kept && same_listing
+            && seen.path == e.current_path()
+            && Arc::ptr_eq(&seen.known, e.known_folders())
+            && Arc::ptr_eq(&seen.drives, e.drives())
             && (seen.folder_tree, seen.tree_follows, seen.show_hidden) == (s.folder_tree, s.tree_follows, s.show_hidden)
     }
 
