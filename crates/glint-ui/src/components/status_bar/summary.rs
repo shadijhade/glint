@@ -312,11 +312,13 @@ impl SelectedCount {
 const SPECTRA_KEPT: usize = 3;
 
 type SizedBy = Option<(Arc<HashMap<String, u64>>, u64)>;
+/// Make-ups kept: each with the listing and the folder sizes it is of.
+type Spectra = Vec<(Arc<[FileEntry]>, SizedBy, Vec<Category>)>;
 
 thread_local! {
     /// The make-ups worked out last, newest first, each with the listing and the folder sizes it is of (held, so
     /// their addresses aren't reused).
-    static SPECTRA: RefCell<Vec<(Arc<[FileEntry]>, SizedBy, Vec<Category>)>> = const { RefCell::new(Vec::new()) };
+    static SPECTRA: RefCell<Spectra> = const { RefCell::new(Vec::new()) };
 }
 
 /// [`spectrum_sized`] of a listing, worked out once for it and its folder sizes: the bar and each pane's head ask

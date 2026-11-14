@@ -98,7 +98,7 @@ pub fn read(path: &str) -> Result<Lines, String> {
         "epub" => epub(path)?,
         // Images too (OCR): the text Windows reads in a picture, a line each.
         ext if crate::ocr::PICTURES.contains(&ext) => crate::ocr::lines(path)?.into_iter().enumerate().map(|(i, line)| (format!("line {}", i + 1), line)).collect(),
-        // Notes, for Meaning search: their lines as they are (each with its number in the file).
+        // Notes: their lines as they are (each with its number in the file).
         ext if NOTES.contains(&ext) => {
             let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
             let mut bytes = Vec::new();
@@ -401,9 +401,8 @@ pub struct DocSearch {
     pub ocr: bool,
 }
 
-/// Notes, read as text for Meaning search (ripgrep searches their words).
+/// Notes, read as text when a worker is handed one (ripgrep searches their words).
 const NOTES: &[&str] = &["txt", "md", "markdown", "rst", "org", "adoc"];
-/// Meaning search shows at most this many passages, and none less alike than this.
 
 /// The pattern as ripgrep would take it: smart case unless case-sensitive, a literal unless a regular
 /// expression, whole words when asked.
@@ -509,7 +508,7 @@ fn stop(run: u64) {
 }
 
 /// Whether a search reads a file of this name: a document (Office's ~$ owner files aren't), and a
-/// picture with OCR, a note with meaning.
+/// picture with OCR.
 fn is_document(name: &str, search: &DocSearch) -> bool {
     let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
     let of = |list: &[&str]| list.iter().any(|d| d.eq_ignore_ascii_case(ext));
