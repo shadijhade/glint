@@ -150,25 +150,31 @@ impl Sources {
             counts: Rc::new(|path| {
                 let path = path.to_string();
                 let running = core_bridge::run(async move {
-                    let asked = path.clone();
-                    let response = glint_core::fsx::list_dir(path).await.map_err(|e| e.message)?;
-                    let bytes = response.into_bytes();
-                    glint_core::fsx::blocking(move || {
-                        let listing = glint_model::entries::decode_listing(&bytes)
-                            .map_err(|e| format!("Glint couldn't read the folder's listing of {asked}: {e}"))?;
-                        let mut counts = Counts::default();
-                        for entry in &listing.entries {
-                            if entry.dir {
-                                counts.folders += 1;
-                            } else {
-                                counts.files += 1;
-                                counts.bytes = counts.bytes.saturating_add(entry.size);
-                            }
-                            counts.repo |= entry.lower == ".git";
+                    // A folder on disk is counted as it's read; anything else is listed, then counted.
+                    let counted = match glint_core::fsx::count_dir(path.clone()).await? {
+                        Some(counted) => counted,
+                        None => {
+                            let asked = path.clone();
+                            let response = glint_core::fsx::list_dir(path).await.map_err(|e| e.message)?;
+                            let bytes = response.into_bytes();
+                            glint_core::fsx::blocking(move || {
+                                let listing = glint_model::entries::decode_listing(&bytes)
+                                    .map_err(|e| format!("Glint couldn't read the folder's listing of {asked}: {e}"))?;
+                                let mut counts = glint_core::fsx::DirCounts::default();
+                                for entry in &listing.entries {
+                                    counts.add(entry.dir, entry.size, entry.lower == ".git");
+                                }
+                                Ok(counts)
+                            })
+                            .await?
                         }
-                        Ok(counts)
+                    };
+                    Ok(Counts {
+                        folders: counted.folders,
+                        files: counted.files,
+                        bytes: counted.bytes,
+                        repo: counted.repo,
                     })
-                    .await
                 });
                 Box::pin(async move { flat(running.await) })
             }),
