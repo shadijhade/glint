@@ -153,21 +153,17 @@ impl Sources {
                     // A folder on disk is counted as it's read; anything else is listed, then counted.
                     let counted = match glint_core::fsx::count_dir(path.clone()).await? {
                         Some(counted) => counted,
-                        None => {
-                            let asked = path.clone();
-                            let response = glint_core::fsx::list_dir(path).await.map_err(|e| e.message)?;
-                            let bytes = response.into_bytes();
-                            glint_core::fsx::blocking(move || {
-                                let listing = glint_model::entries::decode_listing(&bytes)
-                                    .map_err(|e| format!("Glint couldn't read the folder's listing of {asked}: {e}"))?;
-                                let mut counts = glint_core::fsx::DirCounts::default();
-                                for entry in &listing.entries {
-                                    counts.add(entry.dir, entry.size, entry.lower == ".git");
-                                }
-                                Ok(counts)
-                            })
-                            .await?
-                        }
+                        None => glint_core::fsx::list_folder(path, |listing| {
+                            let (glint_core::fsx::Listing::Folder { entries, .. }
+                            | glint_core::fsx::Listing::Items { entries, .. }) = listing;
+                            let mut counts = glint_core::fsx::DirCounts::default();
+                            for entry in &entries {
+                                counts.add(entry.dir, entry.size, entry.name.eq_ignore_ascii_case(".git"));
+                            }
+                            counts
+                        })
+                        .await
+                        .map_err(|e| e.message)?,
                     };
                     Ok(Counts {
                         folders: counted.folders,

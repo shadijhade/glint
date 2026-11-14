@@ -606,9 +606,8 @@ fn has_thumbnail(name: &str) -> bool {
 
 // What other modules ask of archives.
 
-/// The UTF-16 length of the first `parts` parts of `path` (as JavaScript counts), where the UI cuts
-/// it to get an archive's own path.
-fn prefix_units(path: &str, parts: usize) -> u32 {
+/// The first `parts` parts of `path`: where an archive's own path ends in the path of a folder in it.
+fn prefix(path: &str, parts: usize) -> &str {
     let mut seen = 0;
     let mut in_part = false;
     for (i, c) in path.char_indices() {
@@ -619,20 +618,20 @@ fn prefix_units(path: &str, parts: usize) -> u32 {
         } else if separator && in_part {
             in_part = false;
             if seen == parts {
-                return path[..i].encode_utf16().count() as u32;
+                return &path[..i];
             }
         }
     }
-    path.encode_utf16().count() as u32
+    path
 }
 
 fn parts(path: &str) -> usize {
     path.split(['\\', '/']).filter(|p| !p.is_empty()).count()
 }
 
-/// Lists a folder in an archive (or an archive's top) for `fsx::list_dir`, as the same binary
-/// listing. None when `path` doesn't go into an archive.
-pub fn list(path: &str, started: Instant) -> Option<Result<Vec<u8>, String>> {
+/// Lists a folder in an archive (or an archive's top) for `fsx::list_folder`. None when `path` doesn't go into an
+/// archive.
+pub fn list(path: &str, started: Instant) -> Option<Result<fsx::Listing, String>> {
     let found = spot(path)?;
     Some(
         found
@@ -646,16 +645,24 @@ pub fn list(path: &str, started: Instant) -> Option<Result<Vec<u8>, String>> {
                     spot = Spot { cached: spot.cached && was_cached, read_ms: spot.read_ms, archive: inside, node: ROOT };
                 }
                 let tree = &spot.archive.tree;
-                let children: Vec<&tree::Node> = spot.node().children.iter().map(|&c| tree.node(c)).collect();
-                let info = InArchive {
-                    archive: prefix_units(path, parts(&spot.archive.path)),
-                    outer: prefix_units(path, parts(&spot.archive.outer)),
+                let entries = spot
+                    .node()
+                    .children
+                    .iter()
+                    .map(|&c| {
+                        let node = tree.node(c);
+                        fsx::Entry { name: node.name.to_string(), path: None, dir: node.dir, size: node.size, modified: node.modified, attrs: node.attrs }
+                    })
+                    .collect();
+                let archive = InArchive {
+                    path: prefix(path, parts(&spot.archive.path)).to_string(),
+                    outer: prefix(path, parts(&spot.archive.outer)).to_string(),
+                    format: spot.archive.format.label(),
                     entries: tree.len() as u32,
                     cached: spot.cached,
                     read_ms: spot.read_ms,
-                    format: spot.archive.format.code(),
                 };
-                Ok(fsx::encode_listing(path, &children, ms_since(started), Some(&info), false))
+                Ok(fsx::Listing::Folder { path: path.to_string(), entries, elapsed: ms_since(started), from_index: false, remote: false, archive: Some(archive) })
             })
             .map_err(|e| e.message()),
     )

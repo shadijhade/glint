@@ -277,8 +277,8 @@ fn entries_of(items: Vec<Item>) -> (Vec<Entry>, HashMap<String, String>) {
     (entries, renamed)
 }
 
-/// A folder on a remote, as fsx::list_dir answers: its listing, marked as a remote's.
-pub async fn listing(path: &str, started: Instant) -> Result<Vec<u8>, String> {
+/// A folder on a remote, for `fsx::list_folder`.
+pub async fn listing(path: &str, started: Instant) -> Result<crate::fsx::Listing, String> {
     let (id, shown) = parts(path).ok_or("That isn't a folder on a remote")?;
     let (connection, backend) = backend(id)?;
     let items = backend.list(&raw(id, &shown)).await?;
@@ -293,9 +293,8 @@ pub async fn listing(path: &str, started: Instant) -> Result<Vec<u8>, String> {
             state.names.insert(key, renamed);
         }
     }
-    let mut bytes = crate::fsx::encode_listing(&location, &entries, started.elapsed().as_secs_f64() * 1000.0, None, false);
-    crate::fsx::mark_remote(&mut bytes);
-    Ok(bytes)
+    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+    Ok(crate::fsx::Listing::Folder { path: location, entries, elapsed, from_index: false, remote: true, archive: None })
 }
 
 /// Whether a path on a remote is a folder or a file (fsx::resolve_path's answer).

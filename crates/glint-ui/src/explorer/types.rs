@@ -272,19 +272,6 @@ impl Listed {
     }
 }
 
-impl From<glint_model::entries::Listing> for Listed {
-    fn from(listing: glint_model::entries::Listing) -> Self {
-        Listed {
-            path: listing.path,
-            entries: Arc::from(listing.entries),
-            elapsed: listing.elapsed,
-            archive: listing.archive,
-            from_index: listing.from_index,
-            remote: listing.remote,
-        }
-    }
-}
-
 /// Who answered for a folder: shown in the status bar beside the time it took.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {

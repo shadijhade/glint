@@ -76,36 +76,30 @@ fn write_zip(path: &Path, files: &[(&str, &[u8])], method: zip::CompressionMetho
     zip.finish().unwrap();
 }
 
-/// A listing as `fsx::encode_listing` lays it out.
+/// A listing of a folder in an archive, as the tests read it.
 #[derive(Debug)]
 struct Decoded {
     path: String,
-    archive: u32,
-    outer: u32,
+    archive: String,
+    outer: String,
     entries: u32,
     cached: bool,
+    /// Name, folder or not, size and attributes.
     items: Vec<(String, bool, u64, u32)>,
 }
 
-fn decode(bytes: &[u8]) -> Decoded {
-    let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-    let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-    let count = u32_at(0) as usize;
-    let path_len = u32_at(4) as usize;
-    let text = 40 + 24 * count;
-    let path = std::str::from_utf8(&bytes[text..text + path_len]).unwrap().to_string();
-    let names: Vec<u16> = std::str::from_utf8(&bytes[text + path_len..]).unwrap().encode_utf16().collect();
-    let mut at = 0;
-    let items = (0..count)
-        .map(|i| {
-            let len = u32_at(40 + 20 * count + 4 * i) as usize;
-            let name = String::from_utf16(&names[at..at + len]).unwrap();
-            at += len;
-            let attrs = u32_at(40 + 16 * count + 4 * i);
-            (name, attrs & 0x10 != 0, f64_at(40 + 8 * i) as u64, attrs)
-        })
-        .collect();
-    Decoded { path, archive: u32_at(16), outer: u32_at(20), entries: u32_at(24), cached: u32_at(28) & 1 != 0, items }
+fn decode(listing: &crate::fsx::Listing) -> Decoded {
+    let crate::fsx::Listing::Folder { path, entries, archive: Some(archive), .. } = listing else {
+        panic!("a folder in an archive: {listing:?}");
+    };
+    Decoded {
+        path: path.clone(),
+        archive: archive.path.clone(),
+        outer: archive.outer.clone(),
+        entries: archive.entries,
+        cached: archive.cached,
+        items: entries.iter().map(|e| (e.name.clone(), e.dir, e.size, e.attrs)).collect(),
+    }
 }
 
 fn listing(path: &str) -> Decoded {
@@ -149,8 +143,8 @@ fn finds_where_a_path_goes_into_an_archive() {
     assert_eq!(locate(&text(&dir.join("missing.zip").join("x"))), None);
     assert_eq!(locate(&text(&dir)), None);
     assert!(is_inside(&format!("{z}\\a.txt")) && !is_inside(&z) && is_read_only(&z));
-    assert_eq!(prefix_units("C:\\é😀\\b.zip\\c", 3), "C:\\é😀\\b.zip".encode_utf16().count() as u32);
-    assert_eq!(prefix_units("\\\\server\\share\\x.7z\\y", 3), 19);
+    assert_eq!(prefix("C:\\é😀\\b.zip\\c", 3), "C:\\é😀\\b.zip");
+    assert_eq!(prefix("\\\\server\\share\\x.7z\\y", 3), "\\\\server\\share\\x.7z");
 }
 
 #[test]
@@ -205,7 +199,7 @@ fn lists_a_zip_like_a_folder() {
     let z = text(&zip);
     let top = listing(&z);
     assert_eq!(names(&top), ["docs", "empty", "photos", "é😀", "top.bin"]);
-    assert_eq!((top.path.as_str(), top.archive as usize, top.outer as usize, top.entries), (z.as_str(), z.encode_utf16().count(), z.encode_utf16().count(), 11));
+    assert_eq!((top.path.as_str(), top.archive.as_str(), top.outer.as_str(), top.entries), (z.as_str(), z.as_str(), z.as_str(), 11));
     // Folders carry their totals; everything is marked as being in an archive.
     assert_eq!(top.items.iter().map(|i| i.2).collect::<Vec<_>>(), [5, 0, 500, 10, 7]);
     assert!(top.items.iter().all(|i| i.3 & IN_ARCHIVE != 0));
@@ -238,7 +232,7 @@ fn opens_archives_inside_archives() {
     let at = format!("{o}\\folder\\inner.zip");
     let root = listing(&at);
     assert_eq!(names(&root), ["deep"]);
-    assert_eq!((root.archive as usize, root.outer as usize), (at.encode_utf16().count(), o.encode_utf16().count()));
+    assert_eq!((root.archive.as_str(), root.outer.as_str()), (at.as_str(), o.as_str()));
     let deep = listing(&format!("{at}\\deep"));
     assert_eq!(names(&deep), ["x.txt"]);
     let copy = copy(&format!("{at}\\deep\\x.txt"), Purpose::Preview).unwrap();
@@ -1210,8 +1204,8 @@ fn never_falls_over_on_damaged_archives() {
                 let path = dir.join(format!("d{n}-{at}-{}.{ext}", damaged.len()));
                 fs::write(&path, &damaged).unwrap();
                 let p = text(&path);
-                if let Some(Ok(bytes)) = list(&p, Instant::now()) {
-                    for (name, ..) in decode(&bytes).items {
+                if let Some(Ok(listed)) = list(&p, Instant::now()) {
+                    for (name, ..) in decode(&listed).items {
                         if let Ok(staged) = stage_all(&[format!("{p}\\{name}")]) {
                             extract::remove_tree(Path::new(&staged.folder));
                         }

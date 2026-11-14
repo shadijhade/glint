@@ -11,10 +11,9 @@
 
 use super::search::{Collector, ASKED, LANE};
 use crate::core_bridge;
-use glint_core::host::ipc::{Channel, InvokeResponseBody};
+use glint_core::host::ipc::Channel;
 use glint_core::host::Manager as _;
-use glint_model::entries::{decode_items, FileEntry};
-use serde::Deserialize;
+use glint_model::entries::FileEntry;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -86,47 +85,33 @@ pub trait Source {
 
 // ---- glint-core ---------------------------------------------------------------------------------------------
 
-/// What `find_files` reports besides results, as JSON (find.rs's `FindEvent`).
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-enum CoreEvent {
-    Started {
-        engine: String,
-    },
-    Error {
-        message: String,
-    },
-    Finished {
-        count: usize,
-        elapsed: f64,
-        limited: bool,
-        fuzzy: bool,
-    },
-}
-
-/// A message from core's search as [`Found`] items. `collector` ranks the results so far.
-fn found_from(message: InvokeResponseBody, collector: &Mutex<Collector>) -> Option<Found> {
-    match message {
-        InvokeResponseBody::Json(json) => Some(match serde_json::from_str::<CoreEvent>(&json).ok()? {
-            CoreEvent::Started { engine } => Found::Started { engine },
-            CoreEvent::Error { message } => Found::Error(message),
-            CoreEvent::Finished {
-                count,
-                elapsed,
-                limited,
-                fuzzy,
-            } => Found::Finished {
-                count,
-                elapsed,
-                limited,
-                fuzzy,
-            },
-        }),
-        InvokeResponseBody::Raw(bytes) => {
-            let items = decode_items(&bytes).ok()?;
+/// What core's search said, as a [`Found`]. `collector` ranks the results so far.
+fn found_from(event: glint_core::find::FindEvent, collector: &Mutex<Collector>) -> Found {
+    use glint_core::find::FindEvent;
+    match event {
+        FindEvent::Started { engine } => Found::Started {
+            engine: engine.to_string(),
+        },
+        FindEvent::Found(entries) => {
+            let rows: Vec<FileEntry> = entries
+                .into_iter()
+                .map(|entry| core_bridge::file_entry(entry, "", None))
+                .collect();
             let mut collector = collector.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            Some(Found::Results(collector.add(items.entries)))
+            Found::Results(collector.add(rows))
         }
+        FindEvent::Error { message } => Found::Error(message),
+        FindEvent::Finished {
+            count,
+            elapsed,
+            limited,
+            fuzzy,
+        } => Found::Finished {
+            count,
+            elapsed,
+            limited,
+            fuzzy,
+        },
     }
 }
 
@@ -163,14 +148,11 @@ impl Source for CoreSource {
     ) -> Fut<Result<async_channel::Receiver<Found>, String>> {
         let (sender, receiver) = async_channel::unbounded::<Found>();
         let collector = Mutex::new(Collector::new(&query));
-        // Runs on core's search thread, so decoding and ranking never touch the UI thread.
-        let channel: Channel = Channel::new(move |message| {
-            if let Some(found) = found_from(message, &collector) {
-                sender
-                    .try_send(found)
-                    .map_err(|_| glint_core::host::Error::from("Quick Search has moved on"))?;
-            }
-            Ok(())
+        // Runs on core's search thread, so making rows and ranking never touch the UI thread.
+        let channel = Channel::new(move |event| {
+            sender
+                .try_send(found_from(event, &collector))
+                .map_err(|_| glint_core::host::Error::from("Quick Search has moved on"))
         });
         let app = self.app.clone();
         let running = core_bridge::run(async move {
@@ -245,42 +227,48 @@ impl Source for CoreSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glint_core::find::FindEvent;
 
     #[test]
-    fn core_events_become_found_items_and_unknown_json_is_dropped() {
+    fn core_events_become_found_items() {
         let collector = Mutex::new(Collector::new("a"));
-        let json = |text: &str| InvokeResponseBody::Json(text.to_string());
         assert_eq!(
-            found_from(json(r#"{"type":"started","engine":"index + fd"}"#), &collector),
-            Some(Found::Started {
+            found_from(FindEvent::Started { engine: "index + fd" }, &collector),
+            Found::Started {
                 engine: "index + fd".into()
-            })
-        );
-        assert_eq!(
-            found_from(json(r#"{"type":"error","message":"no such folder"}"#), &collector),
-            Some(Found::Error("no such folder".into()))
+            }
         );
         assert_eq!(
             found_from(
-                json(r#"{"type":"finished","count":7,"elapsed":12.5,"limited":true,"fuzzy":false}"#),
+                FindEvent::Error {
+                    message: "no such folder".into()
+                },
                 &collector
             ),
-            Some(Found::Finished {
+            Found::Error("no such folder".into())
+        );
+        assert_eq!(
+            found_from(
+                FindEvent::Finished {
+                    count: 7,
+                    elapsed: 12.5,
+                    limited: true,
+                    fuzzy: false
+                },
+                &collector
+            ),
+            Found::Finished {
                 count: 7,
                 elapsed: 12.5,
                 limited: true,
                 fuzzy: false
-            })
+            }
         );
-        assert_eq!(found_from(json(r#"{"type":"surprise"}"#), &collector), None);
-        assert_eq!(found_from(json("not json"), &collector), None);
-        // A damaged buffer is dropped, never a panic.
-        assert_eq!(found_from(InvokeResponseBody::Raw(vec![1, 2, 3]), &collector), None);
     }
 
     #[test]
-    fn result_buffers_decode_and_rank_as_they_arrive() {
-        use glint_core::fsx::{encode_items, Entry};
+    fn results_are_ranked_as_they_arrive() {
+        use glint_core::fsx::Entry;
         let entry = |path: &str| Entry {
             name: path.rsplit('\\').next().unwrap_or(path).to_string(),
             path: Some(path.to_string()),
@@ -290,15 +278,13 @@ mod tests {
             attrs: 0,
         };
         let collector = Mutex::new(Collector::new("note"));
-        let first = encode_items("", &[entry(r"C:\z\my-note.txt")], &[], 0.0, false);
-        let Some(Found::Results(results)) = found_from(InvokeResponseBody::Raw(first), &collector) else {
-            panic!("a buffer of results gives results");
+        let Found::Results(results) = found_from(FindEvent::Found(vec![entry(r"C:\z\my-note.txt")]), &collector) else {
+            panic!("results give results");
         };
         assert_eq!(results.len(), 1);
         // The second batch brings a better name: both are held, the better first.
-        let second = encode_items("", &[entry(r"C:\z\note.txt")], &[], 0.0, false);
-        let Some(Found::Results(results)) = found_from(InvokeResponseBody::Raw(second), &collector) else {
-            panic!("a buffer of results gives results");
+        let Found::Results(results) = found_from(FindEvent::Found(vec![entry(r"C:\z\note.txt")]), &collector) else {
+            panic!("results give results");
         };
         let paths: Vec<_> = results.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, [r"C:\z\note.txt", r"C:\z\my-note.txt"]);
