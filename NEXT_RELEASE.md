@@ -419,4 +419,6 @@ left are what the MCP server answers with, what worker processes and the index s
 Measured: the code shrank by about 2,000 lines (140 files, +2,097 / -4,077); `Glint.exe` 93,284,352 -> 92,810,752 B
 (-0.47 MB: glint_ui -0.22 MB and gpui -0.30 MB of code, glint_core +0.37 MB, the parsing that moved into it); the
 release build of the changed crates took 133 s. Tests: core 293, model 231, window 2,330, index 92, all passing;
-clippy `-D warnings` clean. Per-event costs (CPU, allocations) weren't timed: the window wasn't run.
+clippy `-D warnings` clean. e2e on the debug build (2026-11-14, with the user's OK): 17 of 18, as before the wave
+(search inside files, drags and drops, Quick Look and the rest pass; `quit` fails as it does on 0.11.0). Per-event
+costs (CPU, allocations) weren't timed.
