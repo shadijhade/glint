@@ -7,13 +7,16 @@
 //! here touches GPUI, so the text and the numbers are tested on their own.
 
 use crate::components::file_grid::thumbnail::ThumbRun;
-use crate::explorer::{Engine, SizeRun, Tab, TabId};
+use crate::explorer::{Engine, Rows, Selection, SizeRun, Tab, TabId};
 use crate::t;
 use glint_model::entries::FileEntry;
 use glint_model::file_types::{group_filter, type_group, TypeGroup, TYPE_GROUPS};
 use glint_model::format::{format_count, format_duration, format_size};
 use glint_model::store::ViewMode;
 use gpui_kit::SharedString;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// The folders' color on the breakdown (`FOLDERS_GROUP` in StatusBar.tsx). Folders aren't a kind of file, so they
 /// get their own group, with the hue and saturation the TypeScript gave them.
@@ -145,10 +148,9 @@ pub struct Summary {
     pub shown: usize,
     /// Items the "Show hidden items" setting left out.
     pub hidden: usize,
-    /// Rows selected (the TypeScript's `selected.length`).
+    /// Rows selected (the TypeScript's `selected.length`). Their paths are read when a button needs them
+    /// ([`selected_paths`]): with everything in a big folder selected, copying them for every change was felt.
     pub selected: usize,
-    /// The selected rows' paths, in row order: what Copy paths copies.
-    pub selected_paths: Vec<String>,
     /// Selected rows that are files, and their bytes (`selectedFiles`, `selectedBytes`).
     pub selected_files: usize,
     pub selected_bytes: u64,
@@ -185,7 +187,18 @@ impl Summary {
     }
 
     /// [`Summary::of`] with the folder sizes measured for the tab's folder (`Explorer::size_run`).
+    #[cfg(test)]
     pub fn of_sized(tab: Option<&Tab>, drives: usize, sizes: Option<&SizeRun>) -> Summary {
+        Summary::of_counted(tab, drives, sizes, &mut SelectedCount::default())
+    }
+
+    /// [`Summary::of_sized`], the selection counted by `counted` (kept by the bar from one change to the next).
+    pub fn of_counted(
+        tab: Option<&Tab>,
+        drives: usize,
+        sizes: Option<&SizeRun>,
+        counted: &mut SelectedCount,
+    ) -> Summary {
         let Some(tab) = tab else {
             return Summary {
                 drives,
@@ -202,7 +215,7 @@ impl Summary {
             elapsed: find.elapsed,
             limited: find.limited,
         });
-        let (selected_paths, selected_files, selected_bytes) = selected_of(tab);
+        let (selected, selected_files, selected_bytes) = counted.of(tab);
         let mut summary = Summary {
             tab: Some(tab.id),
             this_pc: tab.is_this_pc() && find.is_none(),
@@ -211,8 +224,7 @@ impl Summary {
             no_access: tab.is_closed() && tab.listing.is_none() && find.is_none(),
             shown: tab.rows.len(),
             hidden: tab.rows.hidden,
-            selected: selected_paths.len(),
-            selected_paths,
+            selected,
             selected_files,
             selected_bytes,
             writable: tab.archive().is_none()
@@ -251,32 +263,87 @@ impl Summary {
                 entries: archive.entries as usize,
                 read_ms: archive.read_ms,
             });
-            summary.spectrum = spectrum_sized(&listing.entries, sizes);
+            summary.spectrum = spectrum_of(&listing.entries, sizes);
         }
         summary
     }
 }
 
-/// The selected rows (in row order), with how many of them are files and their bytes. A single selection is
-/// found by its row, the others by scanning the rows (`selected` in Explorer.tsx).
-fn selected_of(tab: &Tab) -> (Vec<String>, usize, u64) {
-    let selection = &tab.selection;
-    let entries: Vec<&FileEntry> = if selection.len() == 1 {
-        selection
-            .iter()
-            .next()
-            .and_then(|path| tab.rows.position_of(path))
-            .and_then(|at| tab.rows.get(at))
-            .into_iter()
-            .collect()
-    } else if selection.is_empty() {
-        Vec::new()
-    } else {
-        tab.rows.iter().filter(|e| selection.contains(&e.path)).collect()
+/// How many rows are selected, how many of them are files, and their bytes (`selected` in Explorer.tsx). A path
+/// that isn't a row isn't counted.
+fn selected_of(tab: &Tab) -> (usize, usize, u64) {
+    let chosen = tab.rows.chosen(&tab.selection);
+    let (files, bytes) = chosen
+        .iter()
+        .filter(|e| !e.dir)
+        .fold((0, 0u64), |(files, bytes), e| (files + 1, bytes.saturating_add(e.size)));
+    (chosen.len(), files, bytes)
+}
+
+/// The selected rows' paths, in row order: what Copy paths copies, Batch rename renames, Zip packs.
+pub fn selected_paths(tab: &Tab) -> Vec<String> {
+    tab.rows
+        .chosen(&tab.selection)
+        .into_iter()
+        .map(|e| e.path.clone())
+        .collect()
+}
+
+/// The selection's counts last worked out, with the rows and the selection they are of (held, so the same lists
+/// can't come back at another's address). The bar is told of every change of the explorer, and most of them (a
+/// thumbnail, a size, a hover) leave both as they were.
+#[derive(Default)]
+pub struct SelectedCount(Option<(Rows, Selection, (usize, usize, u64))>);
+
+impl SelectedCount {
+    fn of(&mut self, tab: &Tab) -> (usize, usize, u64) {
+        if let Some((rows, selection, counted)) = &self.0 {
+            if rows.same_lists(&tab.rows) && selection.same_paths(&tab.selection) {
+                return *counted;
+            }
+        }
+        let counted = selected_of(tab);
+        self.0 = Some((tab.rows.clone(), tab.selection.clone(), counted));
+        counted
+    }
+}
+
+/// How many listings' make-ups are kept: the status bar's and both panes' heads'.
+const SPECTRA_KEPT: usize = 3;
+
+type SizedBy = Option<(Arc<HashMap<String, u64>>, u64)>;
+
+thread_local! {
+    /// The make-ups worked out last, newest first, each with the listing and the folder sizes it is of (held, so
+    /// their addresses aren't reused).
+    static SPECTRA: RefCell<Vec<(Arc<[FileEntry]>, SizedBy, Vec<Category>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// [`spectrum_sized`] of a listing, worked out once for it and its folder sizes: the bar and each pane's head ask
+/// on every change of the explorer (an arrow key), and the listing is nearly always the one asked about before.
+pub fn spectrum_of(entries: &Arc<[FileEntry]>, sizes: Option<&SizeRun>) -> Vec<Category> {
+    let sized: SizedBy = sizes.map(|run| (run.sizes.clone(), run.version));
+    let same_sizes = |kept: &SizedBy| match (kept, &sized) {
+        (Some((a, v)), Some((b, w))) => Arc::ptr_eq(a, b) && v == w,
+        (None, None) => true,
+        _ => false,
     };
-    let files: Vec<&&FileEntry> = entries.iter().filter(|e| !e.dir).collect();
-    let bytes = files.iter().fold(0u64, |sum, e| sum.saturating_add(e.size));
-    (entries.iter().map(|e| e.path.clone()).collect(), files.len(), bytes)
+    SPECTRA.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if let Some(at) = kept
+            .iter()
+            .position(|(listing, by, _)| Arc::ptr_eq(listing, entries) && same_sizes(by))
+        {
+            let hit = kept.remove(at);
+            let spectrum = hit.2.clone();
+            kept.insert(0, hit);
+            return spectrum;
+        }
+        let spectrum = spectrum_sized(entries, sizes);
+        kept.insert(0, (entries.clone(), sized.clone(), spectrum.clone()));
+        kept.truncate(SPECTRA_KEPT);
+        spectrum
+    })
 }
 
 // ---- Words ------------------------------------------------------------------------------------------------
@@ -738,7 +805,7 @@ mod tests {
         let s = Summary::of(Some(&tab), 0);
         assert_eq!(s.selected, 1);
         assert_eq!(counts(&s), "3 items · 1 hidden · 1 selected · 200 B");
-        assert_eq!(s.selected_paths, ["C:\\a\\notes.md"]);
+        assert_eq!(selected_paths(&tab), ["C:\\a\\notes.md"]);
 
         select(&mut tab, &["C:\\a\\sub", "C:\\a\\file10.txt", "C:\\a\\nope.txt"]);
         let s = Summary::of(Some(&tab), 0);
@@ -746,6 +813,45 @@ mod tests {
         assert_eq!(s.selected_files, 1, "folders don't add bytes");
         assert_eq!(s.selected_bytes, 100);
         assert_eq!(counts(&s), "3 items · 1 hidden · 2 selected · 100 B");
+    }
+
+    #[test]
+    fn kept_counts_follow_a_new_selection_and_new_rows() {
+        let _guard = testing::lock();
+        let mut tab = tab_with(vec![file("C:\\a", "a.txt", 100, 1), file("C:\\a", "b.txt", 200, 2)]);
+        let mut counted = SelectedCount::default();
+        select(&mut tab, &["C:\\a\\a.txt"]);
+        let s = Summary::of_counted(Some(&tab), 0, None, &mut counted);
+        assert_eq!((s.selected, s.selected_bytes), (1, 100));
+        // The same rows and selection again: the kept counts.
+        let s = Summary::of_counted(Some(&tab), 0, None, &mut counted);
+        assert_eq!((s.selected, s.selected_bytes), (1, 100));
+        select(&mut tab, &["C:\\a\\a.txt", "C:\\a\\b.txt"]);
+        let s = Summary::of_counted(Some(&tab), 0, None, &mut counted);
+        assert_eq!((s.selected, s.selected_bytes), (2, 300));
+        // New rows with the same selection: counted again (b.txt has grown).
+        let entries: Arc<[FileEntry]> = vec![file("C:\\a", "a.txt", 100, 1), file("C:\\a", "b.txt", 900, 3)].into();
+        tab.rows = Rows::identity(entries);
+        let s = Summary::of_counted(Some(&tab), 0, None, &mut counted);
+        assert_eq!((s.selected, s.selected_bytes), (2, 1000));
+    }
+
+    #[test]
+    fn a_kept_make_up_is_the_one_worked_out_and_new_sizes_change_it() {
+        let _guard = testing::lock();
+        let entries: Arc<[FileEntry]> = vec![folder("C:\\a", "sub"), file("C:\\a", "x.txt", 10, 1)].into();
+        assert_eq!(spectrum_of(&entries, None), spectrum_sized(&entries, None));
+        assert_eq!(
+            spectrum_of(&entries, None),
+            spectrum_sized(&entries, None),
+            "asked again"
+        );
+        let run = SizeRun::measured(HashMap::from([("sub".to_string(), 500)]), 1);
+        let sized = spectrum_of(&entries, Some(&run));
+        assert_eq!(sized, spectrum_sized(&entries, Some(&run)));
+        assert!(sized.iter().any(|c| c.bytes == 500), "the folder's size counts");
+        let run = SizeRun::measured(HashMap::from([("sub".to_string(), 700)]), 2);
+        assert!(spectrum_of(&entries, Some(&run)).iter().any(|c| c.bytes == 700));
     }
 
     #[test]
