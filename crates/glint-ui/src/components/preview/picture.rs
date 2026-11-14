@@ -12,7 +12,7 @@
 
 use super::sources::{sources, Sources};
 use super::states::{big_icon, Waiting};
-use crate::components::file_grid::thumbnail::{picture as thumbnail_picture, Thumbnail};
+use crate::components::file_grid::thumbnail::Thumbnail;
 use crate::explorer;
 use crate::kit::prelude::*;
 use crate::{t, theme};
@@ -555,7 +555,7 @@ fn decode_file(path: &str, ext: &str, renderer: gpui_kit::SvgRenderer) -> Result
 
 /// Windows' thumbnail as core answers it (an 8-byte header, then a BMP), decoded.
 fn decode_thumbnail(answer: &Thumbnail) -> Option<Arc<RenderImage>> {
-    answer.pixels.as_deref().and_then(thumbnail_picture)
+    answer.pixels.as_deref().and_then(crate::core_bridge::picture)
 }
 
 /// The size a picture of `natural` pixels is drawn at in `area`: its own size, or smaller to fit (`max-h-full

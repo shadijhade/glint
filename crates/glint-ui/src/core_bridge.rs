@@ -350,6 +350,13 @@ pub fn file_entry(
     )
 }
 
+/// Pixels core read (straight-alpha BGRA rows, what GPUI draws) as a picture, copied once. `None` when they don't
+/// fill the size they say.
+pub fn picture(pixels: &glint_core::thumbs::Pixels) -> Option<std::sync::Arc<gpui_kit::RenderImage>> {
+    image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.bgra.clone())
+        .map(|buffer| std::sync::Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(buffer)])))
+}
+
 /// Lets a view emit a core event to itself in tests and tools: same path as core's own `emit`.
 pub fn emit(cx: &App, event: CoreEvent) {
     if let Some(core) = cx.try_global::<Core>() {
