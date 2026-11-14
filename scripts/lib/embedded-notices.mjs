@@ -6,10 +6,9 @@
 //   * the KaTeX fonts (SIL OFL 1.1), embedded by ratex-svg's `embed-fonts` through ratex-katex-fonts
 //   * the Lucide icons (ISC, and MIT for the ones from Feather), embedded by gpui-kit-assets for gpui-kit
 //   * two-face's syntax definitions and themes (each with its own license), embedded for code highlighting
-//   * typst-assets: the PDF standard fonts (Foxit), ICC profiles, ICU data and the W3C-derived HTML and MathML
-//     tables (its bundled text fonts are off: Typst reads the system's fonts only)
-//   * hayagriva's citation styles and locales (CC BY-SA 3.0), which Typst's bibliographies use
-//   * hypher's hyphenation patterns (LPPL, MPL, MIT, BSD-3) and jiff-tzdb's time zone database (public domain)
+//   * jiff-tzdb's time zone database (public domain)
+//
+// (Typst's assets, hayagriva's citation styles and hypher's hyphenation patterns left with the built-in Typst in 0.12.)
 //
 // Anything else that embeds a font, icon set or data and isn't listed here: add it to SOURCES below.
 
@@ -87,7 +86,7 @@ function twoFaceLicenses(dir) {
 
 /** Each section: [title, what it is, (folders) => the license texts as markdown]. */
 const SOURCES = [
-    ["KaTeX fonts", "The math in Markdown, Typst and LaTeX previews is drawn with the KaTeX fonts, embedded in Glint.exe by ratex-svg (`embed-fonts`, through ratex-katex-fonts) under the SIL Open Font License 1.1.", (get) => {
+    ["KaTeX fonts", "The math in Markdown and LaTeX previews is drawn with the KaTeX fonts, embedded in Glint.exe by ratex-svg (`embed-fonts`, through ratex-katex-fonts) under the SIL Open Font License 1.1.", (get) => {
         const { dir } = get("ratex-katex-fonts");
         const fonts = readdirSync(join(dir, "fonts")).filter((f) => f.endsWith(".ttf")).map((f) => join(dir, "fonts", f));
         return `${read(join(dir, "fonts", "FONT_NOTICE.txt"))}\n\nThe fonts' own copyright notices:\n\n${fontCopyrights(fonts).map((c) => `- ${c.replace(/\s*\n\s*/g, "; ")}`).join("\n")}\n\n${fence(read(join(dir, "fonts", "OFL.txt")))}`;
@@ -101,12 +100,6 @@ const SOURCES = [
             groups.set(entry.text, group);
         }
         return [...groups.values()].map((g) => `${g.paths.sort().join(", ")}\n\n${fence(g.text)}`).join("\n");
-    }],
-    ["Typst's assets", "Typst documents are laid out and exported to PDF with data typst-assets embeds: the PDF standard fonts (Foxit), ICC colour profiles, ICU line-breaking data and tables derived from the W3C's HTML and MathML specifications. Its bundled text fonts (Libertinus Serif, New Computer Modern, DejaVu) are not compiled in: Typst reads the PC's own fonts. The crate's notice, in full:", (get) => fence(read(join(get("typst-assets").dir, "NOTICE")))],
-    ["Citation styles and locales (hayagriva)", "Typst's bibliographies use the Citation Style Language styles and locales hayagriva embeds, under the Creative Commons Attribution-ShareAlike 3.0 license (https://creativecommons.org/licenses/by-sa/3.0/). The styles are from https://github.com/citation-style-language/styles and the locales from https://github.com/citation-style-language/locales; each file names its authors. The crate's notice:", (get) => fence(read(join(get("hayagriva").dir, "NOTICE")))],
-    ["Hyphenation patterns (hypher)", "Typst hyphenates with the patterns hypher embeds. Its README says of them:", (get) => {
-        const readme = read(join(get("hypher").dir, "README.md"));
-        return fence(readme.slice(readme.indexOf("## License")).split("\n\n[")[0].trim());
     }],
     ["Time zone database (jiff-tzdb)", "Dates in time zones use the IANA time zone database jiff-tzdb embeds, which is in the public domain (https://www.iana.org/time-zones). jiff-tzdb's own code is dual-licensed under the Unlicense and MIT (listed above).", () => ""],
 ];
