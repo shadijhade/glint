@@ -162,12 +162,13 @@ mod tests {
 
     #[test]
     fn the_arabic_catalog_has_all_its_entries_in_order() {
-        // The 290 that came with the port, then what the native app added (the head of a pane and its kinds).
-        assert_eq!(AR_ENTRIES.len(), 309);
-        assert_eq!(AR.len(), 309, "no English text twice");
+        // What came with the port, then what the native app added (the head of a pane and its kinds); 0.12
+        // dropped the text of what it removed.
+        assert_eq!(AR_ENTRIES.len(), 287);
+        assert_eq!(AR.len(), 287, "no English text twice");
         assert_eq!(AR_ENTRIES[0], ("This PC", "هذا الكمبيوتر"));
-        assert_eq!(AR_ENTRIES[289], ("Read as", "قراءة بترميز"));
-        assert_eq!(AR_ENTRIES[308], ("Other files", "ملفات أخرى"));
+        assert_eq!(AR_ENTRIES[267], ("Read as", "قراءة بترميز"));
+        assert_eq!(AR_ENTRIES[286], ("Other files", "ملفات أخرى"));
     }
 
     #[test]
