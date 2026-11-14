@@ -35,12 +35,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The extensions a database has (`SQLITE_EXTS`).
+#[cfg(test)]
 const SQLITE_EXTS: [&str; 6] = ["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"];
 
 /// How long the check mark of a copied statement stays.
 const COPIED_FOR: Duration = Duration::from_millis(1400);
 
 /// Whether the file is a database the preview reads, by its extension (`isSqliteCandidate`, for a file on disk).
+#[cfg(test)]
 pub fn is_sqlite_candidate(path: &str) -> bool {
     SQLITE_EXTS.contains(&super::text::ext_of(path).as_str())
 }
@@ -227,6 +229,7 @@ impl SqlitePreview {
     }
 
     /// The names of the objects the tab and the filter leave.
+    #[cfg(test)]
     pub fn shown_names(&self) -> Vec<String> {
         match &self.load {
             Load::Ready(info) => self
@@ -239,6 +242,7 @@ impl SqlitePreview {
     }
 
     /// The table's rows, when they are showing in place of the schema.
+    #[cfg(test)]
     pub fn rows_view(&self) -> Option<&Entity<QueryView>> {
         self.rows.as_ref()
     }

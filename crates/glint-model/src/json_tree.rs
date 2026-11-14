@@ -28,11 +28,6 @@ impl JsonNumber {
     pub fn new(text: impl Into<String>) -> Self {
         JsonNumber { text: text.into() }
     }
-
-    /// As written, for serializing it back (the TS `toJSON`, which wrote it out raw).
-    pub fn to_json(&self) -> &str {
-        &self.text
-    }
 }
 
 impl fmt::Display for JsonNumber {

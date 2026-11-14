@@ -228,6 +228,7 @@ impl EntryView {
     }
 
     /// Whether the file has a Changes view (Git has a change for it).
+    #[cfg(test)]
     pub fn has_changes(&self) -> bool {
         self.changed
     }
@@ -258,6 +259,7 @@ impl EntryView {
     }
 
     /// The previewer's view, once built.
+    #[cfg(test)]
     pub fn body_view(&self) -> Option<&AnyView> {
         self.body.as_ref()
     }

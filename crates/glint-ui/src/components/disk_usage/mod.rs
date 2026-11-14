@@ -365,6 +365,7 @@ impl DiskUsage {
     }
 
     /// The color mode in use (T goes round them).
+    #[cfg(test)]
     pub fn color_mode(&self) -> ColorMode {
         self.mode
     }

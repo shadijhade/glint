@@ -273,6 +273,7 @@ impl WhereChooser {
     }
 
     /// Whether "In their place" is offered.
+    #[cfg(test)]
     pub fn replace_offered(&self) -> bool {
         self.replace
     }
@@ -1437,12 +1438,6 @@ pub fn folder_line(id: &'static str, files: &[String], t: &theme::Tokens) -> imp
 /// The height of a dialog's scrolling body: a share of the window, so a short window scrolls it.
 pub fn body_height(window: &Window) -> Pixels {
     (window.viewport_size().height * 0.72).max(px(240.))
-}
-
-/// The tools backend core offers (the install cards), or none when core isn't started.
-pub fn core_tools(cx: &App) -> Option<Arc<dyn SettingsBackend>> {
-    let core = cx.try_global::<core_bridge::Core>()?;
-    Some(Arc::new(SettingsCoreBackend::new(core.app.clone())))
 }
 
 // ---- Tools --------------------------------------------------------------------------------------------------

@@ -286,6 +286,7 @@ impl Rows {
     }
 
     /// Whether these rows are the listing's own entries untouched (the fast, default case).
+    #[cfg(test)]
     pub fn is_identity(&self) -> bool {
         self.order.is_none() && self.groups.is_none()
     }

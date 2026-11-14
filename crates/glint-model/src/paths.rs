@@ -129,6 +129,7 @@ pub fn set_shadow_name(top: &str, name: &str) {
 }
 
 /// Forgets every learned shadow copy name (the TypeScript `shadowNames.clear()`).
+#[cfg(test)]
 pub fn clear_shadow_names() {
     shadow_names_map().lock().unwrap_or_else(|e| e.into_inner()).clear();
 }

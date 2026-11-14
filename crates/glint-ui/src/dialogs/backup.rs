@@ -122,6 +122,7 @@ impl Backend for CoreBackend {
 
 /// A folder Back up takes: one on this PC's drives, not in an archive, the Recycle Bin or in the cloud
 /// (`canBackUp`). `online_only`, `archived`, `closed` and `recycled` are the entry's flags.
+#[cfg(test)]
 pub fn can_back_up(path: &str, is_dir: bool, online_only: bool, archived: bool, closed: bool, recycled: bool) -> bool {
     let b = path.as_bytes();
     let on_a_drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
@@ -633,6 +634,7 @@ impl BackupDialog {
     }
 
     /// The box that repeats it.
+    #[cfg(test)]
     pub fn again_input(&self) -> &Entity<InputState> {
         &self.again
     }
@@ -1363,14 +1365,6 @@ pub fn open_with(
         model.clone(),
     );
     (model, view)
-}
-
-/// What the app says when Back up is asked for a folder it can't take (`toast.message` of `openBackup`).
-pub fn say_not_here(window: &mut Window, cx: &mut App) {
-    window.push_notification(
-        Notification::info(t!("Back up works on folders on this PC's drives")),
-        cx,
-    );
 }
 
 /// A scheduled backup that ran while Glint was open (core's `backup-finished`, which App.tsx listened for): a

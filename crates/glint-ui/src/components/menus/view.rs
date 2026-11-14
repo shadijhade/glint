@@ -128,6 +128,7 @@ impl MenuView {
     }
 
     /// The label of the row the keyboard is on, for tests and screen readers.
+    #[cfg(test)]
     pub fn selected_label(&self) -> Option<SharedString> {
         let level = self.levels.last()?;
         match level.stop()? {

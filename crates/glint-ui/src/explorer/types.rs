@@ -434,12 +434,6 @@ impl NavOptions {
         self.select = Some(vec![path.into()]);
         self
     }
-
-    /// Not into Back/Forward history.
-    pub fn without_history(mut self) -> Self {
-        self.no_history = true;
-        self
-    }
 }
 
 // ---- What the model tells the views ----------------------------------------------------------------------

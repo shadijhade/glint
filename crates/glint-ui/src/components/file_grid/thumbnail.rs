@@ -1035,11 +1035,13 @@ impl Thumbnails {
     // ---- Introspection (tests, tools) -------------------------------------------------------------
 
     /// How many thumbnails (pictures and "none"s) are on hand.
+    #[cfg(test)]
     pub fn held_count(&self) -> usize {
         self.held.len()
     }
 
     /// How many requests are out (SVGs being drawn included).
+    #[cfg(test)]
     pub fn pending_count(&self) -> usize {
         self.wanted.len() + self.drawing.len()
     }
@@ -1050,6 +1052,7 @@ impl Thumbnails {
     }
 
     /// Changes the budget (tests).
+    #[cfg(test)]
     pub fn set_budget(&mut self, bytes: usize) {
         self.budget = bytes;
     }

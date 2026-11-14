@@ -315,6 +315,7 @@ pub enum FolderPlace {
 
 /// What kind of folder a listing is: Recent and Downloads by where they are, else by what's in it: mostly
 /// pictures, videos or songs (at least five files, three in five of them of one kind), or any.
+#[cfg(test)]
 pub fn folder_kind(entries: &[FileEntry], place: Option<FolderPlace>) -> FolderKind {
     folder_kind_of(entries, place)
 }
@@ -384,6 +385,7 @@ fn drop_of(id: ColumnId, located: bool) -> Option<DropAt> {
 
 /// The class that leaves a column's cells out as the list narrows (index.css): "col-optional", "col-narrow",
 /// or none.
+#[cfg(test)]
 pub fn drop_class(id: ColumnId, located: bool) -> Option<&'static str> {
     match drop_of(id, located) {
         Some(DropAt::Md) => Some("col-optional"),
@@ -450,6 +452,7 @@ pub fn width_name(width: Column) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn template(tracks: &[GridTrack]) -> String {
     tracks
         .iter()
@@ -471,6 +474,7 @@ pub struct GridTemplates {
 }
 
 /// `grid_tracks` written as CSS grid templates (the same strings the TypeScript produced).
+#[cfg(test)]
 pub fn grid_templates(columns: &[ColumnId], located: bool) -> GridTemplates {
     let tracks = grid_tracks(columns, located);
     GridTemplates {

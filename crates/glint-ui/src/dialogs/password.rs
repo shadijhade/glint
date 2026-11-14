@@ -408,6 +408,7 @@ impl CompressPasswordDialog {
     }
 
     /// The second box.
+    #[cfg(test)]
     pub fn again_input(&self) -> &Entity<InputState> {
         &self.again
     }

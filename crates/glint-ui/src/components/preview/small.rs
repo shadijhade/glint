@@ -66,7 +66,9 @@ use crate::kit::{Editor, EditorState};
 use crate::{core_bridge, explorer, t, theme};
 use glint_model::entries::FileEntry;
 use glint_model::format::{format_date, format_full_date, format_size};
-use glint_model::small_kinds::{small_kind_of, SmallKind};
+#[cfg(test)]
+use glint_model::small_kinds::small_kind_of;
+use glint_model::small_kinds::SmallKind;
 use gpui_kit::{list, Image, ImageFormat, ImageSource, ListAlignment, ListState, ObjectFit, StyledImage as _, Task};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -92,6 +94,7 @@ pub const DESIGN_PICTURES: [&str; 5] = [
 ];
 
 /// Which small preview a file gets, if any (`smallKind(entry.ext)`).
+#[cfg(test)]
 pub fn small_kind(entry: &FileEntry) -> Option<SmallKind> {
     if entry.dir {
         return None;
@@ -3204,11 +3207,13 @@ impl SmallPreview {
     }
 
     /// Whether the file has been read (or failed).
+    #[cfg(test)]
     pub fn is_settled(&self) -> bool {
         !matches!(self.load, Load::Reading)
     }
 
     /// The contacts, once read.
+    #[cfg(test)]
     pub fn contacts(&self) -> Option<&[Card]> {
         match &self.load {
             Load::Contacts { cards, .. } => Some(cards),
@@ -3233,6 +3238,7 @@ impl SmallPreview {
     }
 
     /// The message's words as drawn: the page's, or the plain text in the editor.
+    #[cfg(test)]
     pub fn mail_text(&self, cx: &App) -> Option<String> {
         match &self.load {
             Load::Mail(mail) => Some(match &mail.html {
@@ -3244,11 +3250,13 @@ impl SmallPreview {
     }
 
     /// Whether the plain version of the message is showing instead of its page.
+    #[cfg(test)]
     pub fn showing_plain(&self) -> bool {
         matches!(&self.load, Load::Mail(mail) if mail.plain)
     }
 
     /// The pictures of the message's page as drawn (the blocks of the page, tables included, in order).
+    #[cfg(test)]
     pub fn mail_pictures(&self, cx: &App) -> Vec<Picture> {
         fn walk(blocks: &[Block], out: &mut Vec<Picture>) {
             for block in blocks {
@@ -3274,6 +3282,7 @@ impl SmallPreview {
     }
 
     /// Whether the message's pictures from the internet have been asked for (and fetched, or being fetched).
+    #[cfg(test)]
     pub fn pictures_asked(&self) -> bool {
         matches!(&self.load, Load::Mail(mail) if mail.pictures != Pictures::Off)
     }
@@ -3287,6 +3296,7 @@ impl SmallPreview {
     }
 
     /// Why an attachment didn't open.
+    #[cfg(test)]
     pub fn attachment_problem(&self) -> Option<&str> {
         self.problem.as_deref()
     }

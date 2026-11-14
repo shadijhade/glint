@@ -53,11 +53,13 @@ pub struct Current(pub Language);
 impl Global for Current {}
 
 /// The language in use, read through the app (what `cx`-holding code asks).
+#[cfg(test)]
 pub fn language_in(cx: &App) -> Language {
     cx.try_global::<Current>().map_or(Language::En, |current| current.0)
 }
 
 /// Right to left, read through the app.
+#[cfg(test)]
 pub fn is_rtl_in(cx: &App) -> bool {
     model::is_rtl(language_in(cx))
 }

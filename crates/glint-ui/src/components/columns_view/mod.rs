@@ -178,22 +178,13 @@ impl ColumnsView {
         cx.notify();
     }
 
-    /// The first column's focus handle (the next column's is [`ColumnsView::next_focus`]).
-    pub fn parent_focus(&self) -> FocusHandle {
-        self.parent.focus.clone()
-    }
-
-    /// The last column's focus handle.
-    pub fn next_focus(&self) -> FocusHandle {
-        self.next.focus.clone()
-    }
-
     /// The folder the first column lists, if any.
     pub fn parent_path(&self) -> Option<&str> {
         self.parent.path.as_deref()
     }
 
     /// The folder the last column lists, if any (the list's focused item, when a folder).
+    #[cfg(test)]
     pub fn next_path(&self) -> Option<&str> {
         self.next.path.as_deref()
     }

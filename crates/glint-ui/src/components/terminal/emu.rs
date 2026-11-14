@@ -668,6 +668,7 @@ impl Emu {
 
     /// The characters of the screen in rows, as text (trailing spaces cut), without styles. For tests and for
     /// finding links.
+    #[cfg(test)]
     pub fn visible_text(&self) -> Vec<String> {
         let grid = self.term.grid();
         let offset = grid.display_offset() as i32;
