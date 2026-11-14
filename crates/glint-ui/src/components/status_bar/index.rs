@@ -8,7 +8,7 @@
 
 use crate::core_bridge;
 use crate::t;
-use gpui_kit::{App, Context, Global, Task};
+use gpui_kit::{App, AppContext as _, Context, Entity, Global, Task};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -204,6 +204,23 @@ pub fn init_with(cx: &mut App, source: Source) {
 pub fn shared_source(cx: &App) -> Source {
     cx.try_global::<SharedSource>()
         .map_or_else(Source::unavailable, |shared| shared.0.clone())
+}
+
+struct SharedModel(Entity<IndexModel>);
+
+impl Global for SharedModel {}
+
+/// The one model of the index the status bar and both panes' This PC read, made (and asked) the first time one of
+/// them needs it: each used to make its own, and each asked the service again while it was scanning.
+pub fn shared_model(cx: &mut App) -> Entity<IndexModel> {
+    if let Some(shared) = cx.try_global::<SharedModel>() {
+        return shared.0.clone();
+    }
+    let source = shared_source(cx);
+    let model = cx.new(move |_| IndexModel::new(source));
+    model.update(cx, |model, cx| model.refresh(cx));
+    cx.set_global(SharedModel(model.clone()));
+    model
 }
 
 /// The index as the status bar knows it: the last answer, and the questions under way.

@@ -164,6 +164,44 @@ fn record(visual: &mut VisualTestContext, view: &Entity<ThisPc>) -> Rc<RefCell<V
 }
 
 #[gpui_kit::test]
+fn the_drives_are_asked_for_their_health_once_this_pc_is_drawn_and_not_before(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let asked = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| {
+            !matches!(
+                crate::dialogs::drive_health::shared(cx).read(cx).state(),
+                crate::dialogs::drive_health::State::Idle
+            )
+        })
+    };
+    // Made while the pane shows a folder (as both panes' This PC are, at start): nothing is asked.
+    cx.update(testing::init);
+    cx.update(|cx| state::update(cx, |settings| settings.start_folder = StartFolder::Home));
+    let disk = FakeDisk::new();
+    disk.folder(HOME, vec![]);
+    disk.set_known(vec![KnownFolder {
+        id: KnownId::Home,
+        name: "Home",
+        path: HOME.into(),
+    }]);
+    disk.set_drives(standard_drives());
+    cx.update(|cx| crate::explorer::init_with(cx, disk.source()));
+    let explorer = cx.update(|cx| crate::explorer::explorer(cx));
+    cx.update(|cx| explorer.update(cx, |e, cx| e.init_explorer(Vec::new(), cx).detach()));
+    cx.run_until_parked();
+    let (mut visual, _view) = testing::open_window(cx, |window, cx| cx.new(|cx| ThisPc::new(0, window, cx)));
+    settle(&mut visual);
+    frame(&mut visual);
+    assert_eq!(path(&mut visual, &explorer), HOME);
+    assert!(!asked(&mut visual));
+    // This PC on screen: asked once it's drawn.
+    navigate(&mut visual, &explorer, glint_model::paths::THIS_PC);
+    frame(&mut visual);
+    settle(&mut visual);
+    assert!(asked(&mut visual));
+}
+
+#[gpui_kit::test]
 fn folders_and_drives_are_named_buttons_and_the_totals_add_up(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let (mut visual, _view, _explorer, _disk) = setup(cx, standard_drives(), false);

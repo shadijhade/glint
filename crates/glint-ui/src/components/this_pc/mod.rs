@@ -45,7 +45,7 @@ mod model;
 #[cfg(test)]
 mod tests;
 
-use crate::components::status_bar::index::{shared_source, IndexModel};
+use crate::components::status_bar::index::{shared_model, IndexModel};
 use crate::components::tab_strip::drop_words;
 use crate::dialogs::drive_health::{self, DriveHealthBadge, DriveHealthBanner, Health};
 use crate::explorer::{Drive, DriveKind, ExplorerEvent, KnownId, NavOptions, TabId};
@@ -149,6 +149,9 @@ pub struct ThisPc {
     /// taken. The tiles light from it; it's shared with their paint closures.
     drop_over: Rc<Cell<Option<usize>>>,
     health: Entity<Health>,
+    /// The drives have been asked for their health: the first time the page is drawn, not when it's made (at start,
+    /// for both panes, though neither may show it; asking can wake a sleeping disk).
+    health_asked: bool,
     /// Instant search's state, for the card.
     index: Entity<IndexModel>,
     /// Turning on (or retrying) is under way: the card's button is disabled and spins.
@@ -162,9 +165,7 @@ impl ThisPc {
     pub fn new(pane: usize, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let explorer = crate::explorer::explorer(cx);
         let health = drive_health::shared(cx);
-        let source = shared_source(cx);
-        let index = cx.new(move |_| IndexModel::new(source));
-        index.update(cx, |index, cx| index.refresh(cx));
+        let index = shared_model(cx);
         let subscriptions = vec![
             cx.observe(&index, |_, _, cx| cx.notify()),
             cx.observe(&explorer, |_, _, cx| cx.notify()),
@@ -175,7 +176,6 @@ impl ThisPc {
             }),
             cx.observe(&health, |this, _, cx| this.rebuild(cx)),
         ];
-        health.update(cx, |health, cx| health.refresh(false, cx));
         let mut this = ThisPc {
             pane,
             known: Vec::new(),
@@ -188,6 +188,7 @@ impl ThisPc {
             drive_bounds: Rc::new(RefCell::new(Vec::new())),
             drop_over: Rc::new(Cell::new(None)),
             health,
+            health_asked: false,
             index,
             enabling: false,
             _subscriptions: subscriptions,
@@ -938,6 +939,19 @@ impl Render for ThisPc {
             .read(cx)
             .pane_tab(self.pane)
             .is_some_and(|tab| tab.is_this_pc());
+        // Not while the tab is still on its way to another folder (at start, the first folder is asked for from a
+        // tab that says This PC until it arrives).
+        let settled = shown
+            && !crate::explorer::explorer(cx)
+                .read(cx)
+                .pane_tab(self.pane)
+                .is_some_and(|tab| tab.loading);
+        if settled && !self.health_asked {
+            // Asked once the draw is over: a model changed during a draw isn't heard.
+            self.health_asked = true;
+            let health = self.health.clone();
+            cx.defer(move |cx| health.update(cx, |health, cx| health.refresh(false, cx)));
+        }
         if !shown {
             return div().size_full().into_any_element();
         }

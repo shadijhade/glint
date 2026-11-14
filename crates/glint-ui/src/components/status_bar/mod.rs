@@ -114,9 +114,7 @@ impl StatusBar {
     /// exist (`explorer::init`).
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let explorer = explorer::explorer(cx);
-        let source = index::shared_source(cx);
-        let model = cx.new(move |_| IndexModel::new(source));
-        model.update(cx, |model, cx| model.refresh(cx));
+        let model = index::shared_model(cx);
         let thumbs = thumbnail::thumbnails(cx);
         let usage = crate::components::disk_usage::shared(cx);
         let mut subscriptions = vec![
