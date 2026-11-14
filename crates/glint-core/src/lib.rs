@@ -242,13 +242,40 @@ pub async fn diagnostics(app: crate::host::AppHandle) -> Result<String, String> 
     .await
 }
 
-/// What a search inside files says as it goes: the search it belongs to, its kind ("data", "error", "finished")
-/// and ripgrep's JSON lines (an error's words, for "error").
+/// One line a search inside files found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextMatch {
+    /// The file; empty when ripgrep gave its name as bytes.
+    pub path: String,
+    /// The line's text with its line end, or None when ripgrep gave it as bytes.
+    pub text: Option<String>,
+    /// The line's number, from 1.
+    pub line_number: Option<u64>,
+    /// The hits in the line: UTF-8 byte ranges of `text`.
+    pub hits: Vec<(usize, usize)>,
+    /// A Documents search's match: where it is in the document ("p. 3", "slide 2", "Sales, row 7"). None shows
+    /// the line by its number.
+    pub label: Option<String>,
+}
+
+/// What a search inside files says as it goes, in order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextSaid {
+    /// Lines found.
+    Matches(Vec<TextMatch>),
+    /// The end-of-search summary: how long it took, in milliseconds.
+    Summary { elapsed_ms: Option<f64> },
+    /// The search failed, with the tool's words.
+    Error(String),
+    /// The search is over.
+    Finished,
+}
+
+/// A search inside files' news: the search it belongs to, and what it said.
 #[derive(Clone, Debug)]
 pub struct SearchEvent {
     pub id: String,
-    pub kind: String,
-    pub lines: Vec<String>,
+    pub said: TextSaid,
 }
 
 /// Text searches in the order they were asked for: one that took longer to start (its folder on a share
@@ -363,54 +390,96 @@ pub async fn run_ripgrep_batched(
         let child = command
             .spawn()
             .map_err(|e| format!("Failed to start ripgrep: {e}"))?;
-        stream_search(window, search_id, child, max_results, search, ticket, rg_line_shown)?;
+        stream_search(window, search_id, child, max_results, search, ticket)?;
         Ok(folder)
     })
     .await
 }
 
 /// The longest match line sent as ripgrep wrote it. Its JSON printer ignores --max-columns, so a hit in a
-/// minified file or a one-line log carried the whole line, megabytes of it, through the event and the window.
+/// minified file or a one-line log would carry the whole line, megabytes of it, to the window.
 const LONGEST_MATCH_LINE: usize = 4096;
 /// A cut line keeps this much before its first hit, and this much after where the hit starts.
 const CUT_BEFORE: usize = 200;
 const CUT_AFTER: usize = 1000;
 
-/// What the window gets of one line of ripgrep's JSON: its matches (a long one cut around its first hit) and its
-/// summary; the begin, end and context lines aren't read there.
-fn rg_line_shown(line: String) -> Option<String> {
-    if line.starts_with(r#"{"type":"match""#) {
-        Some(if line.len() > LONGEST_MATCH_LINE { cut_match_line(&line).unwrap_or(line) } else { line })
-    } else if is_rg_summary(&line) {
-        Some(line)
-    } else {
-        None
+/// One line of ripgrep's JSON, as far as it's read.
+#[derive(serde::Deserialize)]
+struct RgLine {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    data: RgData,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct RgData {
+    path: Option<RgText>,
+    lines: Option<RgText>,
+    line_number: Option<u64>,
+    #[serde(default)]
+    submatches: Vec<RgHit>,
+    elapsed_total: Option<RgElapsed>,
+}
+
+/// Text ripgrep gives as `{"text": …}`, or as `{"bytes": …}` when it isn't UTF-8 (then None).
+#[derive(serde::Deserialize)]
+struct RgText {
+    text: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RgHit {
+    start: u64,
+    end: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct RgElapsed {
+    #[serde(default)]
+    secs: u64,
+    #[serde(default)]
+    nanos: u64,
+}
+
+/// What one line of ripgrep's JSON says: a match (a long one cut around its first hit) or the summary. None for
+/// the begin, end and context lines, and for anything that isn't ripgrep's JSON.
+fn rg_said(line: &str) -> Option<TextSaid> {
+    // Most lines are told apart without parsing them: the JSON starts with the type field, except ripgrep 15's
+    // summary, which ends with it.
+    if !line.starts_with(r#"{"type":"match""#) && !is_rg_summary(line) {
+        return None;
+    }
+    let parsed: RgLine = serde_json::from_str(line).ok()?;
+    match parsed.kind.as_str() {
+        "match" => {
+            let data = parsed.data;
+            let mut found = TextMatch {
+                path: data.path.and_then(|p| p.text).unwrap_or_default(),
+                text: data.lines.and_then(|l| l.text),
+                line_number: data.line_number,
+                // Offsets that don't fit are dropped, not guessed.
+                hits: data.submatches.iter().filter_map(|h| Some((usize::try_from(h.start).ok()?, usize::try_from(h.end).ok()?))).collect(),
+                label: None,
+            };
+            cut_long(&mut found);
+            Some(TextSaid::Matches(vec![found]))
+        }
+        "summary" => Some(TextSaid::Summary { elapsed_ms: parsed.data.elapsed_total.map(|e| e.secs as f64 * 1000. + e.nanos as f64 / 1e6) }),
+        _ => None,
     }
 }
 
 /// ripgrep 15 writes the summary's fields in another order than the rest (`{"data":…,"type":"summary"}`).
-pub fn is_rg_summary(line: &str) -> bool {
+fn is_rg_summary(line: &str) -> bool {
     line.starts_with(r#"{"type":"summary""#) || line.ends_with(r#""type":"summary"}"#)
 }
 
-/// A match line whose text is cut to a window around its first hit ("…" marks each cut end), with the hits'
-/// byte offsets moved to match and those outside dropped. A line ripgrep gave as bytes (not UTF-8) loses them.
-fn cut_match_line(line: &str) -> Option<String> {
-    let mut parsed: serde_json::Value = serde_json::from_str(line).ok()?;
-    let data = parsed.get_mut("data")?.as_object_mut()?;
-    let text = data.get("lines").and_then(|l| l.get("text")).and_then(|t| t.as_str()).map(str::to_string);
-    let Some(text) = text else {
-        data.insert("lines".into(), serde_json::Value::Null);
-        return Some(format!(r#"{{"type":"match","data":{}}}"#, serde_json::to_string(data).ok()?));
-    };
-    let first = data
-        .get("submatches")
-        .and_then(|s| s.get(0))
-        .and_then(|m| m.get("start"))
-        .and_then(|s| s.as_u64())
-        .and_then(|s| usize::try_from(s).ok())
-        .unwrap_or(0)
-        .min(text.len());
+/// A match whose line is longer than `LONGEST_MATCH_LINE`, cut to a window around its first hit ("…" marks each
+/// cut end), with the hits' offsets moved to match and those outside dropped.
+fn cut_long(found: &mut TextMatch) {
+    let Some(text) = found.text.as_deref().filter(|text| text.len() > LONGEST_MATCH_LINE) else { return };
+    let first = found.hits.first().map_or(0, |&(start, _)| start).min(text.len());
     let boundary_at_or_before = |mut at: usize| {
         while at > 0 && !text.is_char_boundary(at) {
             at -= 1;
@@ -422,29 +491,19 @@ fn cut_match_line(line: &str) -> Option<String> {
     let head = if from > 0 { "…" } else { "" };
     let tail = if to < text.len() { "…" } else { "" };
     let shown = format!("{head}{}{tail}", &text[from..to]);
-    data.insert("lines".into(), serde_json::json!({ "text": shown }));
-    if let Some(serde_json::Value::Array(hits)) = data.get_mut("submatches") {
-        hits.retain_mut(|hit| {
-            let (Some(start), Some(end)) = (
-                hit.get("start").and_then(|s| s.as_u64()).and_then(|s| usize::try_from(s).ok()),
-                hit.get("end").and_then(|e| e.as_u64()).and_then(|e| usize::try_from(e).ok()),
-            ) else {
-                return false;
-            };
-            if start < from || end > to {
-                return false;
-            }
-            hit["start"] = (start - from + head.len()).into();
-            hit["end"] = (end - from + head.len()).into();
-            true
-        });
-    }
-    Some(format!(r#"{{"type":"match","data":{}}}"#, serde_json::to_string(data).ok()?))
+    found.hits.retain_mut(|(start, end)| {
+        if *start < from || *end > to {
+            return false;
+        }
+        (*start, *end) = (*start - from + head.len(), *end - from + head.len());
+        true
+    });
+    found.text = Some(shown);
 }
 
-/// A Documents search (Text's documents toggle): PDFs', Office's, OpenDocument's and EPUBs' text, read
-/// by worker processes (doctext.rs). Its matches arrive as `search-event`s, as ripgrep's JSON lines with
-/// a label each ("p. 3"), then a summary and "finished". Returns the folder as searched.
+/// A Documents search: PDFs', Office's, OpenDocument's and EPUBs' text, read by worker processes (doctext.rs).
+/// Its matches arrive as `Event::Search`es, each with a label ("p. 3"), then a summary and the end. Returns the
+/// folder as searched.
 pub async fn run_doc_search(window: Window, request: doctext::DocSearch, search_id: String, max_results: Option<usize>, state: State<'_, AppState>) -> Result<String, String> {
     let ticket = TEXT_SEARCH.fetch_add(1, Ordering::SeqCst) + 1;
     let search = state.search.clone();
@@ -465,20 +524,17 @@ pub fn doc_search(window: Window, request: doctext::DocSearch, search_id: String
     };
     let base = std::path::PathBuf::from(&folder);
     thread::spawn(move || {
-        let emit = |kind: &str, lines: Vec<String>| {
-            window.emit(host::Event::Search(SearchEvent { id: search_id.clone(), kind: kind.into(), lines }));
-        };
-        doctext::search(run, &base, &request, &pattern, max, |lines| emit("data", lines));
-        emit("finished", Vec::new());
+        let emit = |said: TextSaid| window.emit(host::Event::Search(SearchEvent { id: search_id.clone(), said }));
+        doctext::search(run, &base, &request, &pattern, max, emit);
+        emit(TextSaid::Finished);
     });
     Ok(folder)
 }
 
-/// Sends a search's output to the UI as `search-event`s: its lines (each `convert`ed, None to skip
-/// one) in batches, until it ends or `max_results` matches came, then an empty line through `convert`
-/// (for a summary of its own), any error it gave, and "finished". The search replaces the one before,
-/// and Documents' run, unless a newer one (or Stop) came while it started: then it's stopped instead.
-pub fn stream_search(window: Window, search_id: String, mut child: std::process::Child, max_results: Option<usize>, search: proc::Slot, ticket: u64, mut convert: impl FnMut(String) -> Option<String> + Send + 'static) -> Result<(), String> {
+/// Sends what ripgrep finds to the window as `Event::Search`es: its matches in batches, until it ends or
+/// `max_results` matches came, then its summary, any error it gave, and the end. The search replaces the one
+/// before, and Documents' run, unless a newer one (or Stop) came while it started: then it's stopped instead.
+pub fn stream_search(window: Window, search_id: String, mut child: std::process::Child, max_results: Option<usize>, search: proc::Slot, ticket: u64) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
     let mut stderr = child.stderr.take().ok_or("Failed to open stderr")?;
     // Replaces (and stops) any search still running.
@@ -493,61 +549,52 @@ pub fn stream_search(window: Window, search_id: String, mut child: std::process:
     });
 
     thread::spawn(move || {
+        let emit = |said: TextSaid| window.emit(host::Event::Search(SearchEvent { id: search_id.clone(), said }));
         let reader = BufReader::new(stdout);
-        let mut batch = Vec::new();
+        let mut batch: Vec<TextMatch> = Vec::new();
         let mut last_emit = Instant::now();
-
         let mut total_matches = 0;
         let limit = match max_results {
             Some(0) | None => usize::MAX,
             Some(n) => n,
         };
-
         for line in reader.lines() {
             let Ok(line) = line else { break };
-            let Some(l) = convert(line) else { continue };
-            // The JSON always starts with the type field, so no need to parse every line.
-            if l.starts_with(r#"{"type":"match""#) {
-                total_matches += 1;
+            match rg_said(&line) {
+                Some(TextSaid::Matches(mut found)) => {
+                    total_matches += found.len();
+                    batch.append(&mut found);
+                }
+                // The summary comes after every match it counts.
+                Some(said) => {
+                    if !batch.is_empty() {
+                        emit(TextSaid::Matches(std::mem::take(&mut batch)));
+                    }
+                    emit(said);
+                }
+                None => continue,
             }
-
-            batch.push(l);
-
-            if batch.len() >= 1000 || last_emit.elapsed() >= Duration::from_millis(50) {
-                window.emit(host::Event::Search(SearchEvent {
-                    id: search_id.clone(),
-                    kind: "data".to_string(),
-                    lines: std::mem::take(&mut batch),
-                }));
+            if !batch.is_empty() && (batch.len() >= 1000 || last_emit.elapsed() >= Duration::from_millis(50)) {
+                emit(TextSaid::Matches(std::mem::take(&mut batch)));
                 last_emit = Instant::now();
             }
-
             if total_matches >= limit {
                 // Limit reached: kill this search — but not a newer one that already replaced it.
                 search.kill_if(pid);
                 break;
             }
         }
-        if let Some(last) = convert(String::new()) {
-            batch.push(last);
-        }
-
         if !batch.is_empty() {
-            window.emit(host::Event::Search(SearchEvent { id: search_id.clone(), kind: "data".to_string(), lines: batch }));
+            emit(TextSaid::Matches(batch));
         }
 
         // Surface real failures (e.g. an invalid regex); per-file errors are silenced by --no-messages.
         let errors = stderr_reader.join().unwrap_or_default();
         search.finish(pid);
         if total_matches == 0 && !errors.trim().is_empty() {
-            window.emit(host::Event::Search(SearchEvent {
-                id: search_id.clone(),
-                kind: "error".to_string(),
-                lines: vec![errors.trim().to_string()],
-            }));
+            emit(TextSaid::Error(errors.trim().to_string()));
         }
-
-        window.emit(host::Event::Search(SearchEvent { id: search_id, kind: "finished".to_string(), lines: vec![] }));
+        emit(TextSaid::Finished);
     });
     Ok(())
 }
@@ -622,16 +669,30 @@ mod tests {
         format!(r#"{{"type":"match","data":{}}}"#, serde_json::json!({"path": {"text": "C:\\a.min.js"}, "lines": {"text": text}, "line_number": 1, "submatches": submatches}))
     }
 
-    #[test]
-    fn only_matches_and_the_summary_reach_the_window() {
-        assert_eq!(rg_line_shown(r#"{"type":"begin","data":{}}"#.into()), None);
-        assert_eq!(rg_line_shown(r#"{"type":"end","data":{}}"#.into()), None);
-        assert_eq!(rg_line_shown(String::new()), None);
-        let short = match_line("the needle", &[(4, 10)]);
-        assert_eq!(rg_line_shown(short.clone()), Some(short), "a short match goes as it is");
-        for summary in [r#"{"type":"summary","data":{}}"#, r#"{"data":{"elapsed_total":{"secs":0}},"type":"summary"}"#] {
-            assert_eq!(rg_line_shown(summary.into()).as_deref(), Some(summary));
+    fn one_match(said: Option<TextSaid>) -> TextMatch {
+        match said {
+            Some(TextSaid::Matches(mut found)) if found.len() == 1 => found.remove(0),
+            other => panic!("one match: {other:?}"),
         }
+    }
+
+    #[test]
+    fn ripgreps_matches_and_summary_are_read_and_the_rest_is_skipped() {
+        assert_eq!(rg_said(r#"{"type":"begin","data":{}}"#), None);
+        assert_eq!(rg_said(r#"{"type":"end","data":{}}"#), None);
+        assert_eq!(rg_said(""), None);
+        assert_eq!(rg_said("not json"), None);
+        let found = one_match(rg_said(&match_line("    the needle is here\n", &[(8, 14)])));
+        assert_eq!(
+            found,
+            TextMatch { path: "C:\\a.min.js".into(), text: Some("    the needle is here\n".into()), line_number: Some(1), hits: vec![(8, 14)], label: None }
+        );
+        assert_eq!(rg_said(r#"{"type":"summary","data":{"elapsed_total":{"secs":1,"nanos":500000000}}}"#), Some(TextSaid::Summary { elapsed_ms: Some(1500.) }));
+        // ripgrep 15 writes the summary with its type last.
+        assert_eq!(rg_said(r#"{"data":{"elapsed_total":{"secs":2,"nanos":0}},"type":"summary"}"#), Some(TextSaid::Summary { elapsed_ms: Some(2000.) }));
+        // A line given as bytes has no text, and still counts.
+        let bytes = one_match(rg_said(r#"{"type":"match","data":{"path":{"text":"C:\\b.bin"},"lines":{"bytes":"/w=="},"line_number":3,"submatches":[]}}"#));
+        assert_eq!((bytes.text, bytes.line_number), (None, Some(3)));
     }
 
     #[test]
@@ -639,15 +700,13 @@ mod tests {
         let text = format!("{}needle{}é{}", "x".repeat(5000), "y".repeat(500), "z".repeat(5000));
         let at = 5000;
         let far = text.len() - 10;
-        let line = rg_line_shown(match_line(&text, &[(at, at + 6), (far, far + 4)])).unwrap();
-        assert!(line.starts_with(r#"{"type":"match""#) && line.len() < LONGEST_MATCH_LINE);
-        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
-        let shown = parsed["data"]["lines"]["text"].as_str().unwrap();
+        let found = one_match(rg_said(&match_line(&text, &[(at, at + 6), (far, far + 4)])));
+        let shown = found.text.as_deref().unwrap();
+        assert!(shown.len() < LONGEST_MATCH_LINE);
         assert!(shown.starts_with('…') && shown.ends_with('…'));
-        let hits = parsed["data"]["submatches"].as_array().unwrap();
-        assert_eq!(hits.len(), 1, "a hit outside what's kept is dropped");
-        let (start, end) = (hits[0]["start"].as_u64().unwrap() as usize, hits[0]["end"].as_u64().unwrap() as usize);
+        assert_eq!(found.hits.len(), 1, "a hit outside what's kept is dropped");
+        let (start, end) = found.hits[0];
         assert_eq!(&shown[start..end], "needle");
-        assert_eq!(parsed["data"]["line_number"], 1);
+        assert_eq!(found.line_number, Some(1));
     }
 }

@@ -33,8 +33,7 @@ use glint_model::entries::{matcher, terms, FileEntry};
 use glint_model::paths::{in_archive_path, is_folder_path, is_recycle_bin, is_remote_path, is_root, THIS_PC};
 use glint_model::store::SearchOptions;
 use glint_model::text::{self, RgMatch, Submatch};
-use gpui_kit::{AppContext as _, Context, Task};
-use serde::Deserialize;
+use gpui_kit::{Context, Task};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -152,161 +151,19 @@ pub fn inside_unasked(scope: &str) -> bool {
 
 // ---- What core sends -----------------------------------------------------------------------------------
 
-/// One event of a search inside files as core sent it: the search it belongs to, its kind ("data", "error",
-/// "finished") and ripgrep's JSON lines.
-pub use glint_core::SearchEvent as RawEvent;
+/// What core's search inside files said, and the search it belongs to.
+pub use glint_core::{SearchEvent, TextMatch as Match, TextSaid as Said};
 
-/// One match line (ripgrep's `match` message).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Match {
-    /// The file (`data.path.text`); empty when ripgrep sent its name as bytes.
-    pub path: String,
-    /// The line's text, with its line end (`data.lines.text`), or None when ripgrep sent none.
-    pub text: Option<String>,
-    /// The line's number, from 1 (`data.line_number`).
-    pub line_number: Option<u64>,
-    /// The hits in the line: UTF-8 byte ranges (`data.submatches`).
-    pub hits: Vec<(usize, usize)>,
-    /// A Documents search's match: where it is in the document ("p. 3", "slide 2", "Sales, row 7").
-    pub label: Option<String>,
-}
-
-impl Match {
-    /// The match as a row shows it: trimmed, in plain and matching parts.
-    pub fn hit(&self) -> Hit {
-        let rg = RgMatch {
-            lines_text: self.text.clone(),
-            submatches: self.hits.iter().map(|&(start, end)| Submatch { start, end }).collect(),
-        };
-        Hit {
-            line: self.line_number,
-            label: self.label.clone(),
-            parts: text::segments(&rg),
-        }
-    }
-}
-
-/// What a batch of lines said, in order.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Said {
-    Matches(Vec<Match>),
-    /// The end-of-search summary: how long it took, in milliseconds.
-    Summary {
-        elapsed_ms: Option<f64>,
-    },
-    /// The search failed, with the tool's words.
-    Error(String),
-    /// The search is over.
-    Finished,
-}
-
-#[derive(Deserialize)]
-struct Line {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    data: Data,
-}
-
-#[derive(Default, Deserialize)]
-struct Data {
-    path: Option<Text>,
-    lines: Option<Text>,
-    line_number: Option<u64>,
-    #[serde(default)]
-    submatches: Vec<Sub>,
-    label: Option<String>,
-    elapsed_total: Option<Elapsed>,
-}
-
-#[derive(Deserialize)]
-struct Text {
-    text: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Sub {
-    start: u64,
-    end: u64,
-}
-
-#[derive(Deserialize)]
-struct Elapsed {
-    #[serde(default)]
-    secs: u64,
-    #[serde(default)]
-    nanos: u64,
-}
-
-/// Reads one of ripgrep's lines. Only `match` and `summary` messages are used; anything else, and text that
-/// isn't JSON, is skipped.
-fn parse_line(line: &str) -> Option<Said> {
-    // Most lines are told apart without parsing them: the JSON starts with the type field, except ripgrep 15's
-    // summary, which ends with it.
-    if !line.starts_with(r#"{"type":"match""#) && !glint_core::is_rg_summary(line) {
-        return None;
-    }
-    let parsed: Line = serde_json::from_str(line).ok()?;
-    match parsed.kind.as_str() {
-        "match" => {
-            let d = parsed.data;
-            let hits = d
-                .submatches
-                .iter()
-                // Offsets that don't fit are dropped, not guessed.
-                .filter_map(|h| Some((usize::try_from(h.start).ok()?, usize::try_from(h.end).ok()?)))
-                .collect();
-            Some(Said::Matches(vec![Match {
-                path: d.path.and_then(|p| p.text).unwrap_or_default(),
-                text: d.lines.and_then(|l| l.text),
-                line_number: d.line_number,
-                hits,
-                // An empty label says nothing: the line is shown by its number.
-                label: d.label.filter(|label| !label.is_empty()),
-            }]))
-        }
-        "summary" => Some(Said::Summary {
-            elapsed_ms: parsed
-                .data
-                .elapsed_total
-                .map(|e| e.secs as f64 * 1000. + e.nanos as f64 / 1e6),
-        }),
-        _ => None,
-    }
-}
-
-/// What an event says, in order. Runs off the UI thread: a batch can be a thousand lines.
-pub fn parse(event: &RawEvent) -> Vec<Said> {
-    match event.kind.as_str() {
-        "data" => {
-            let mut said: Vec<Said> = Vec::new();
-            let mut matches: Vec<Match> = Vec::new();
-            for line in &event.lines {
-                match parse_line(line) {
-                    Some(Said::Matches(mut found)) => matches.append(&mut found),
-                    Some(summary) => {
-                        if !matches.is_empty() {
-                            said.push(Said::Matches(std::mem::take(&mut matches)));
-                        }
-                        said.push(summary);
-                    }
-                    None => {}
-                }
-            }
-            if !matches.is_empty() {
-                said.push(Said::Matches(matches));
-            }
-            said
-        }
-        "error" => vec![Said::Error(
-            event
-                .lines
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "Unknown error".to_string()),
-        )],
-        "finished" => vec![Said::Finished],
-        _ => Vec::new(),
+/// A match as a row shows it: trimmed, in plain and matching parts.
+pub fn hit_of(found: &Match) -> Hit {
+    let rg = RgMatch {
+        lines_text: found.text.clone(),
+        submatches: found.hits.iter().map(|&(start, end)| Submatch { start, end }).collect(),
+    };
+    Hit {
+        line: found.line_number,
+        label: found.label.clone(),
+        parts: text::segments(&rg),
     }
 }
 
@@ -326,7 +183,7 @@ pub(super) struct InsideJob {
     _starting: Task<()>,
 }
 
-/// What the pump read of one event, off the UI thread.
+/// What a run of events of one search said.
 struct Heard {
     id: String,
     said: Vec<Said>,
@@ -460,7 +317,7 @@ impl Explorer {
     }
 
     /// One of core's `search-event`s: handed to the pump, which applies them in order.
-    pub fn inside_heard(&mut self, event: &glint_core::SearchEvent, cx: &mut Context<Self>) {
+    pub fn inside_heard(&mut self, event: &SearchEvent, cx: &mut Context<Self>) {
         if self.searching.inside.as_ref().is_none_or(|job| job.id != event.id) {
             return;
         }
@@ -478,15 +335,15 @@ impl Explorer {
         self.searching.inside_waiting == 0
     }
 
-    /// The pump, made at the first content search: the events waiting, parsed off the UI thread, their new files
-    /// read through the source, then applied. Every event that is waiting is taken with the first: each application
+    /// The pump, made at the first content search: the events waiting, their new files read through the source,
+    /// then applied. Every event that is waiting is taken with the first: each application
     /// copies the run's lines and rows, so taking them one at a time while they came faster than they were applied
     /// made a big search's cost grow with the square of what it found.
     fn ensure_inside_pump(&mut self, cx: &mut Context<Self>) {
         if self.searching.inside_events.is_some() {
             return;
         }
-        let (events, heard) = async_channel::unbounded::<RawEvent>();
+        let (events, heard) = async_channel::unbounded::<SearchEvent>();
         self.searching.inside_events = Some(events);
         let source = self.source.clone();
         cx.spawn(async move |this, cx| {
@@ -496,28 +353,22 @@ impl Explorer {
                     waiting.push(more);
                 }
                 // One read per run of events of the same search, in order, with how many events it holds.
-                let reads: Vec<(Heard, usize)> = cx
-                    .background_spawn(async move {
-                        let mut reads: Vec<(Heard, usize)> = Vec::new();
-                        for event in &waiting {
-                            let said = parse(event);
-                            match reads.last_mut() {
-                                Some((read, count)) if read.id == event.id => {
-                                    read.said.extend(said);
-                                    *count += 1;
-                                }
-                                _ => reads.push((
-                                    Heard {
-                                        said,
-                                        id: event.id.clone(),
-                                    },
-                                    1,
-                                )),
-                            }
+                let mut reads: Vec<(Heard, usize)> = Vec::new();
+                for event in waiting {
+                    match reads.last_mut() {
+                        Some((read, count)) if read.id == event.id => {
+                            read.said.push(event.said);
+                            *count += 1;
                         }
-                        reads
-                    })
-                    .await;
+                        _ => reads.push((
+                            Heard {
+                                said: vec![event.said],
+                                id: event.id,
+                            },
+                            1,
+                        )),
+                    }
+                }
                 for (read, count) in reads {
                     // The files of this batch that have no row yet.
                     let unread = this.update(cx, |this, _| this.inside_unread(&read));
@@ -603,7 +454,7 @@ impl Explorer {
                         if m.path.is_empty() || refused.contains(&m.path) {
                             continue;
                         }
-                        by_file.entry(m.path.clone()).or_default().push(m.hit());
+                        by_file.entry(m.path.clone()).or_default().push(hit_of(&m));
                     }
                     for (path, mut lines) in by_file {
                         matches += lines.len();
@@ -706,18 +557,6 @@ pub(super) fn drop_inside_files(find: &mut FindRun) {
 mod tests {
     use super::*;
 
-    fn line(path: &str, text: &str, number: u64, hits: &[(usize, usize)]) -> String {
-        let subs: Vec<serde_json::Value> = hits
-            .iter()
-            .map(|(start, end)| serde_json::json!({ "match": { "text": &text[*start..*end] }, "start": start, "end": end }))
-            .collect();
-        serde_json::json!({
-            "type": "match",
-            "data": { "path": { "text": path }, "lines": { "text": text }, "line_number": number, "submatches": subs }
-        })
-        .to_string()
-    }
-
     #[test]
     fn the_words_looked_for_inside_files_leave_out_filters_paths_and_wildcards() {
         assert_eq!(inside_words("budget"), "budget");
@@ -753,70 +592,22 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_label_leaves_the_line_shown_by_its_number() {
-        let line = r#"{"type":"match","data":{"path":{"text":"C:\\a\\alpha.txt"},"lines":{"text":"the needle\n"},"line_number":2,"label":"","submatches":[{"match":{"text":"needle"},"start":4,"end":10}]}}"#;
-        let event = RawEvent {
-            id: "a".into(),
-            kind: "data".into(),
-            lines: vec![line.into()],
+    fn a_match_becomes_a_hit_in_plain_and_matching_parts() {
+        let found = Match {
+            path: "C:\\x\\a.txt".into(),
+            text: Some("    the needle is here\n".into()),
+            line_number: Some(3),
+            hits: vec![(8, 14)],
+            label: None,
         };
-        let said = parse(&event);
-        let Said::Matches(matches) = &said[0] else {
-            panic!("a match")
-        };
-        let hit = matches[0].hit();
-        assert_eq!((hit.line, hit.label), (Some(2), None));
-    }
-
-    #[test]
-    fn a_match_line_becomes_a_hit_in_plain_and_matching_parts() {
-        let event = RawEvent {
-            id: "a".into(),
-            kind: "data".into(),
-            lines: vec![
-                line("C:\\x\\a.txt", "    the needle is here\n", 3, &[(8, 14)]),
-                "not json".into(),
-                r#"{"type":"summary","data":{"elapsed_total":{"secs":1,"nanos":500000000}}}"#.into(),
-                // ripgrep 15 writes the summary with its type last.
-                r#"{"data":{"elapsed_total":{"secs":2,"nanos":0}},"type":"summary"}"#.into(),
-            ],
-        };
-        let said = parse(&event);
-        assert_eq!(said.len(), 3);
-        assert_eq!(
-            said[2],
-            Said::Summary {
-                elapsed_ms: Some(2000.)
-            }
-        );
-        let Said::Matches(matches) = &said[0] else {
-            panic!("matches first")
-        };
-        let hit = matches[0].hit();
-        assert_eq!(hit.line, Some(3));
+        let hit = hit_of(&found);
+        assert_eq!((hit.line, hit.label), (Some(3), None));
         let parts: Vec<(&str, bool)> = hit.parts.iter().map(|p| (p.text.as_str(), p.hit)).collect();
         assert_eq!(parts, [("the ", false), ("needle", true), (" is here", false)]);
-        assert_eq!(
-            said[1],
-            Said::Summary {
-                elapsed_ms: Some(1500.)
-            }
-        );
-    }
-
-    #[test]
-    fn errors_and_the_end_are_events_of_their_own() {
-        let failed = RawEvent {
-            id: "a".into(),
-            kind: "error".into(),
-            lines: vec!["regex parse error".into()],
-        };
-        assert_eq!(parse(&failed), [Said::Error("regex parse error".into())]);
-        let ended = RawEvent {
-            id: "a".into(),
-            kind: "finished".into(),
-            lines: Vec::new(),
-        };
-        assert_eq!(parse(&ended), [Said::Finished]);
+        let labelled = hit_of(&Match {
+            label: Some("p. 3".into()),
+            ..found
+        });
+        assert_eq!(labelled.label.as_deref(), Some("p. 3"));
     }
 }

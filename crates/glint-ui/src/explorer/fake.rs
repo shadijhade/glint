@@ -790,27 +790,22 @@ impl FakeDisk {
     }
 }
 
-/// A line of a file as ripgrep reports that it matched: `text[start..end]` is the match (a `search-event` line).
-pub fn inside_match(path: &str, text: &str, line: u64, start: usize, end: usize) -> String {
-    serde_json::json!({
-        "type": "match",
-        "data": {
-            "path": { "text": path },
-            "lines": { "text": text },
-            "line_number": line,
-            "submatches": [{ "match": { "text": text.get(start..end).unwrap_or("") }, "start": start, "end": end }],
-        }
-    })
-    .to_string()
+/// A line of a file a search inside files found: `text[start..end]` is the match.
+pub fn inside_match(path: &str, text: &str, line: u64, start: usize, end: usize) -> glint_core::TextMatch {
+    glint_core::TextMatch {
+        path: path.to_string(),
+        text: Some(text.to_string()),
+        line_number: Some(line),
+        hits: vec![(start, end)],
+        label: None,
+    }
 }
 
-/// One of core's events of the search inside files `id`: what it found ("data", with [`inside_match`] lines), that
-/// it failed ("error", with the reason) or that it ended ("finished").
-pub fn inside_event(id: &str, kind: &str, lines: Vec<String>) -> super::inside::RawEvent {
-    super::inside::RawEvent {
+/// One of core's events of the search inside files `id`.
+pub fn inside_event(id: &str, said: glint_core::TextSaid) -> glint_core::SearchEvent {
+    glint_core::SearchEvent {
         id: id.to_string(),
-        kind: kind.to_string(),
-        lines,
+        said,
     }
 }
 

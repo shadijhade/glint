@@ -60,7 +60,7 @@ pub(super) struct Searching {
     /// The numbers content searches get.
     pub(super) inside_serial: u64,
     /// Core's events to the pump that reads them, once a content search has run.
-    pub(super) inside_events: Option<async_channel::Sender<super::inside::RawEvent>>,
+    pub(super) inside_events: Option<async_channel::Sender<super::inside::SearchEvent>>,
     /// Events handed to the pump that it hasn't applied yet.
     pub(super) inside_waiting: usize,
 }

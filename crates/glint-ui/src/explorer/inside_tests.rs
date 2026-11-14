@@ -67,8 +67,8 @@ impl Rig {
     }
 
     /// What the content search says, applied.
-    fn say(&self, cx: &mut TestAppContext, kind: &str, lines: Vec<String>) {
-        let event = inside_event(&self.inside_id(), kind, lines);
+    fn say(&self, cx: &mut TestAppContext, said: glint_core::TextSaid) {
+        let event = inside_event(&self.inside_id(), said);
         self.explorer.update(cx, |e, cx| e.inside_heard(&event, cx));
         for _ in 0..4 {
             cx.run_until_parked();
@@ -128,14 +128,13 @@ fn a_search_looks_inside_the_files_too_and_lists_them_with_their_lines(cx: &mut 
     // Two files hold it: one four times, and the one the name search listed, once.
     r.say(
         cx,
-        "data",
-        vec![
+        glint_core::TextSaid::Matches(vec![
             inside_match("C:\\proj\\src\\main.rs", "    let needle = 1;\n", 3, 8, 14),
             inside_match("C:\\proj\\src\\main.rs", "needle();\n", 9, 0, 6),
             inside_match("C:\\proj\\src\\main.rs", "// needle\n", 12, 3, 9),
             inside_match("C:\\proj\\src\\main.rs", "end of needle\n", 20, 7, 13),
             inside_match("C:\\proj\\needle-notes.txt", "a needle in here\n", 1, 2, 8),
-        ],
+        ]),
     );
     assert_eq!(
         r.lines(cx),
@@ -161,7 +160,7 @@ fn a_search_looks_inside_the_files_too_and_lists_them_with_their_lines(cx: &mut 
     assert!(run.inside.only.contains("C:\\proj\\src\\main.rs") && run.inside.only.len() == 1);
     assert!(run.inside.running);
 
-    r.say(cx, "finished", Vec::new());
+    r.say(cx, glint_core::TextSaid::Finished);
     let run = r.run_of(cx);
     assert!(!run.inside.running && run.inside.error.is_empty() && !run.inside.limited);
 }
@@ -176,11 +175,10 @@ fn the_filters_of_the_search_narrow_the_files_found_by_their_contents(cx: &mut T
     assert_eq!(r.disk.inside_searches()[0].1.query, "needle");
     r.say(
         cx,
-        "data",
-        vec![
+        glint_core::TextSaid::Matches(vec![
             inside_match("C:\\proj\\src\\main.rs", "needle\n", 1, 0, 6),
             inside_match("C:\\proj\\readme.md", "needle\n", 2, 0, 6),
-        ],
+        ]),
     );
     assert_eq!(r.lines(cx), ["# Inside files (1)", "main.rs", "  1: needle"]);
     assert_eq!(r.run_of(cx).inside.matches, 1, "the Markdown file's line isn't counted");
@@ -235,8 +233,7 @@ fn a_newer_search_and_leaving_the_results_end_the_content_search(cx: &mut TestAp
     // What the older search still says is nobody's.
     let stale = inside_event(
         &first,
-        "data",
-        vec![inside_match("C:\\proj\\readme.md", "needle\n", 1, 0, 6)],
+        glint_core::TextSaid::Matches(vec![inside_match("C:\\proj\\readme.md", "needle\n", 1, 0, 6)]),
     );
     r.explorer.update(cx, |e, cx| e.inside_heard(&stale, cx));
     cx.run_until_parked();
@@ -245,8 +242,7 @@ fn a_newer_search_and_leaving_the_results_end_the_content_search(cx: &mut TestAp
     // Stop keeps what was found and the names.
     r.say(
         cx,
-        "data",
-        vec![inside_match("C:\\proj\\readme.md", "the report\n", 4, 4, 10)],
+        glint_core::TextSaid::Matches(vec![inside_match("C:\\proj\\readme.md", "the report\n", 4, 4, 10)]),
     );
     let tab = r.explorer.read_with(cx, |e, _| e.active_tab_id());
     r.explorer.update(cx, |e, cx| e.stop_inside(tab, cx));
@@ -279,7 +275,7 @@ fn a_content_search_that_fails_says_why_and_keeps_the_names(cx: &mut TestAppCont
     let r = rig(cx);
     r.go(cx, "C:\\proj");
     r.find(cx, "needle", Wider::default());
-    r.say(cx, "error", vec!["regex parse error".into()]);
+    r.say(cx, glint_core::TextSaid::Error("regex parse error".into()));
     let run = r.run_of(cx);
     assert!(!run.inside.running);
     assert_eq!(run.inside.error, "regex parse error");
@@ -336,10 +332,15 @@ fn the_rows_keep_a_grouping_and_put_the_lines_under_their_files(cx: &mut TestApp
     r.find(cx, "needle", Wider::default());
     r.say(
         cx,
-        "data",
-        vec![inside_match("C:\\proj\\src\\lib.rs", "pub fn needle() {}\n", 7, 7, 13)],
+        glint_core::TextSaid::Matches(vec![inside_match(
+            "C:\\proj\\src\\lib.rs",
+            "pub fn needle() {}\n",
+            7,
+            7,
+            13,
+        )]),
     );
-    r.say(cx, "finished", Vec::new());
+    r.say(cx, glint_core::TextSaid::Finished);
     r.explorer
         .update(cx, |e, cx| e.set_group(glint_model::groups::GroupBy::Type, cx));
     cx.run_until_parked();
