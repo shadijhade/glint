@@ -33,9 +33,7 @@ serde_json = { workspace = true }
 image = { version = "0.25", default-features = false }
 zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 roxmltree = "0.20"
-# Wave 11. Mermaid without ELK (EPL-2.0: never the default or `complete-svg-elk` features); RaTeX embeds KaTeX's
-# fonts (SIL OFL 1.1, their notice ships with the app).
-merman = { version = "=0.9.3", default-features = false, features = ["all-diagrams", "svg", "layout-cytoscape"] }
+# Wave 11. Graphviz's layouts; RaTeX embeds KaTeX's fonts (SIL OFL 1.1, their notice ships with the app).
 layout-rs = { version = "=0.1.3" }
 ratex-parser = { version = "=0.1.15" }
 ratex-layout = { version = "=0.1.15" }
