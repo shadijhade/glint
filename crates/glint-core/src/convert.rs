@@ -6,7 +6,7 @@
 //! step, from what this says it did).
 
 use crate::fsx::{self, blocking};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
@@ -24,8 +24,7 @@ pub const READS: &[&str] = &["avif", "bmp", "ff", "hdr", "jpg", "jpeg", "jpe", "
 /// The most pictures converted at once (each a rimage process, holding one picture in memory).
 const AT_ONCE: usize = 4;
 
-#[derive(Deserialize, Clone, Copy, PartialEq, Debug)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Format {
     Jpeg,
     Png,
@@ -45,8 +44,7 @@ impl Format {
     }
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub enum Resize {
     /// This much of its width and height.
     Percent { value: u32 },
@@ -66,8 +64,7 @@ pub enum Output {
     Replace,
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ConvertOptions {
     pub format: Format,
     /// 1 to 100; PNG has none (OxiPNG is lossless).
@@ -78,8 +75,7 @@ pub struct ConvertOptions {
     pub output: Output,
 }
 
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct ConvertProgress {
     pub done: usize,
     pub total: usize,
@@ -87,8 +83,7 @@ pub struct ConvertProgress {
     pub current: String,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Converted {
     pub from: String,
     pub to: String,
@@ -98,8 +93,7 @@ pub struct Converted {
     pub after: u64,
 }
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ConvertReport {
     pub converted: Vec<Converted>,
     /// Each picture that wasn't converted, and why.

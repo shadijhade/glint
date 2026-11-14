@@ -9,7 +9,6 @@
 
 use crate::actions::{self, Job, Output, Progress, Report};
 use crate::fsx::blocking;
-use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,8 +42,7 @@ pub(crate) fn ffprobe() -> Result<Command, String> {
 }
 
 /// What a video or recording holds.
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Probe {
     /// Seconds.
     pub duration: f64,
@@ -113,8 +111,7 @@ fn rate(text: &str) -> Option<f64> {
 }
 
 /// The encoders each format gets on this PC, the first that works (hardware first).
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct Encoders {
     pub h264: Option<String>,
     pub hevc: Option<String>,
@@ -175,16 +172,14 @@ fn test_encoder(name: &str) -> bool {
     actions::run_tool(test, name, &stop, |_| {}).is_ok()
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VideoFormat {
     H264,
     Hevc,
     Av1,
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Quality {
     /// Good enough to share, small.
     Good,
@@ -194,8 +189,7 @@ pub enum Quality {
     Size { mb: f64 },
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AudioFormat {
     /// As it's stored, without re-encoding (the container chosen by its codec).
     Same,
@@ -206,8 +200,7 @@ pub enum AudioFormat {
     Wav,
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Task {
     /// From `start` to `end` (seconds): copied as stored (cut at the keyframe at or before the start), or
     /// re-encoded to start on the very frame.

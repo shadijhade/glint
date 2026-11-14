@@ -3,13 +3,11 @@
 //! exports in sub-millisecond time without external crates or reading the entire file.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct PeSection {
     pub name: String,
     pub virtual_size: u32,
@@ -19,24 +17,21 @@ pub struct PeSection {
     pub flags: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct PeImportModule {
     pub module: String,
     pub symbols: Vec<String>,
     pub total_count: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct PeExport {
     pub ordinal: u32,
     pub name: String,
     pub rva: u32,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct PeInfo {
     pub format: String,
     pub machine: String,

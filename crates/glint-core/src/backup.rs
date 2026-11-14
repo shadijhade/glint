@@ -74,8 +74,7 @@ pub struct LastRun {
 }
 
 /// How far a backup is.
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct BackupProgress {
     pub stage: String,
     pub fraction: f64,
@@ -421,8 +420,7 @@ fn run_plan(plan: &Plan, progress: &dyn Fn(BackupProgress)) -> Result<LastRun, S
 }
 
 /// A backup that holds a path: its plan, the snapshot, and when it was made.
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct BackupVersion {
     pub plan: String,
     pub repository: String,

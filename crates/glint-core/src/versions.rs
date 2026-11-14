@@ -4,12 +4,10 @@
 //! itself when Glint runs as an administrator, or else are found by name. A copy is read-only; restoring
 //! copies out of it, and a replaced item goes to the Recycle Bin first.
 
-use serde::Serialize;
 use shadui_index::shadow::{Snapshot, DEVICES};
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct Version {
     /// The item's path in the copy.
     pub path: String,

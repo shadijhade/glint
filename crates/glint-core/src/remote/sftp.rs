@@ -8,7 +8,6 @@
 
 use super::s3::NOT_FOUND;
 use super::Item;
-use serde::Serialize;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -351,8 +350,7 @@ pub fn askpass() -> Option<i32> {
 }
 
 /// A server's host keys, as ssh-keyscan reads them, and their fingerprints, for the person to trust.
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct HostKeys {
     pub fingerprints: Vec<String>,
     pub keys: String,

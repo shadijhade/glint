@@ -6,7 +6,6 @@
 
 use crate::fsx::blocking;
 use crate::proc::{self, Lanes, Origin};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -638,8 +637,7 @@ pub fn command(id: &str) -> Result<Command, String> {
     Ok(command)
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ToolStatus {
     pub id: &'static str,
     pub name: &'static str,

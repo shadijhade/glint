@@ -3,13 +3,12 @@
 
 use crate::fsx::{blocking, ms_since};
 use crate::AppState;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::io::Read;
 use std::process::Stdio;
 use std::time::Instant;
 use crate::host::State;
 
-#[derive(Serialize)]
 pub struct FolderSizes {
     pub path: String,
     /// Everything in the folder, files included, in bytes.

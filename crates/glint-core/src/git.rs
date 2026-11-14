@@ -9,7 +9,6 @@
 use crate::fsx::{blocking, ms_since};
 use gix::bstr::{BStr, BString, ByteSlice};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,8 +17,7 @@ use std::time::{Duration, Instant};
 use crate::host::{State, Window};
 
 /// What a name in a folder has, strongest last: a folder shows the strongest of what's below it.
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Mark {
     /// Left out by .gitignore.
     Ignored,
@@ -33,8 +31,7 @@ pub enum Mark {
     Conflicted,
 }
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Counts {
     pub modified: u32,
     pub staged: u32,
@@ -42,8 +39,7 @@ pub struct Counts {
     pub conflicted: u32,
 }
 
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct GitView {
     /// The repository's working folder.
     pub root: String,
@@ -351,16 +347,14 @@ const DIFF_LINES: usize = 5_000;
 /// Lines kept around each change.
 const CONTEXT: u32 = 3;
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineKind {
     Same,
     Removed,
     Added,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DiffLine {
     pub kind: LineKind,
     /// Its line number before and after, from 1; 0 on the side it isn't on.
@@ -369,8 +363,7 @@ pub struct DiffLine {
     pub text: String,
 }
 
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct FileDiff {
     /// Where it is in its repository ("src/lib/fs.ts").
     pub path: String,

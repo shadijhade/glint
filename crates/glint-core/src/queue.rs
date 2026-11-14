@@ -6,7 +6,6 @@
 //! copied (and checked). Glint's own engine (CopyFileEx), for what Windows' copy dialog doesn't do;
 //! Windows' own stays for every other copy.
 
-use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,22 +14,21 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::host::{AppHandle, Event};
 
 /// What went wrong with one file.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Failure {
     pub path: String,
     pub error: String,
 }
 
 /// An item made where it was copied or moved to: Undo's way back.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Made {
     pub from: String,
     pub to: String,
 }
 
 /// A job, as the app shows it.
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct JobView {
     pub id: u64,
     /// "copy" or "move".

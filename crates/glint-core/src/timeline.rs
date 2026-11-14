@@ -7,7 +7,6 @@
 //!    every file touched in chronological order.
 
 use crate::fsx::{self, blocking};
-use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,8 +17,7 @@ const MAX_LIVE_EVENTS: usize = 500;
 const MAX_SCAN_FILES: usize = 150_000;
 const MAX_TIMELINE_ITEMS: usize = 400;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct LiveFsEvent {
     pub path: String,
     pub name: String,
@@ -30,8 +28,7 @@ pub struct LiveFsEvent {
     pub dir: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TimelineEntry {
     pub path: String,
     pub name: String,
@@ -40,8 +37,7 @@ pub struct TimelineEntry {
     pub modified: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct HotSubfolder {
     pub path: String,
     pub name: String,
@@ -49,8 +45,7 @@ pub struct HotSubfolder {
     pub files_changed: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TimelineReport {
     pub root: String,
     pub window_ms: i64,

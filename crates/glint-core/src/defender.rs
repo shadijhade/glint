@@ -4,15 +4,13 @@
 
 use crate::fsx::blocking;
 use crate::proc::{self, Slot};
-use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::Instant;
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DefenderReport {
     /// It found nothing.
     pub clean: bool,
@@ -20,8 +18,7 @@ pub struct DefenderReport {
     pub elapsed_ms: f64,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Threat {
     /// As Defender names it, e.g. "Virus:DOS/EICAR_Test_File".
     pub name: String,

@@ -4,15 +4,13 @@
 //! scripts through uv. The UI runs one in the terminal pane, typed at a shell's prompt.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 /// How far up from the folder Glint looks, without a repository to stop at.
 const MAX_UP: usize = 6;
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Task {
     pub name: String,
     /// What's typed at the prompt, in the group's folder.
@@ -21,8 +19,7 @@ pub struct Task {
     pub detail: String,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TaskGroup {
     pub folder: String,
     /// "npm", "pnpm", "yarn", "bun", "just", "cargo" or "uv".

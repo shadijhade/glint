@@ -13,7 +13,6 @@
 //! one changes, yet stay separate files.
 
 use crate::fsx::{self, blocking};
-use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -28,16 +27,14 @@ const MAX_GROUPS: usize = 500;
 /// Windows attributes for cloud placeholders (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS).
 const ONLINE_ONLY_ATTRS: u32 = 0x0000_1000 | 0x0040_0000;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct DuplicateFile {
     pub path: String,
     pub name: String,
     pub modified: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct DuplicateGroup {
     pub hash: String,
     pub size: u64,
@@ -45,8 +42,7 @@ pub struct DuplicateGroup {
     pub files: Vec<DuplicateFile>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct DedupReport {
     pub root: String,
     pub groups: Vec<DuplicateGroup>,
@@ -62,8 +58,7 @@ pub struct DedupReport {
 }
 
 /// What hard-linking (or cloning) a group did: `linked` copies replaced.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct HardlinkResult {
     pub linked: usize,
     pub reclaimed_bytes: u64,

@@ -10,7 +10,6 @@
 
 use crate::fsx::blocking;
 use crate::share::{listen, running, start, why, Running, NEXT};
-use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -24,8 +23,7 @@ use crate::host::ipc::Channel;
 const HIDDEN: &str = ".*,desktop.ini,Thumbs.db,$RECYCLE.BIN,System Volume Information";
 
 /// One of this PC's addresses on a network, and that network adapter's name ("Wi-Fi").
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Address {
     pub address: String,
     pub name: String,
@@ -68,8 +66,7 @@ fn free_port() -> Result<u16, String> {
     Err("Couldn't find a free port".into())
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct LanOptions {
     /// What's sent there can be saved into it (nothing there can be replaced or deleted).
     pub uploads: bool,
@@ -79,8 +76,7 @@ pub struct LanOptions {
     pub address: Option<String>,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LanEvent {
     /// It's being served: its link, that as a QR code (an SVG), and when it ends by itself (ms since 1970).
     Ready { url: String, qr: String, ends: Option<u64> },
@@ -105,8 +101,7 @@ fn arguments(path: &str, address: Ipv4Addr, port: u16, prefix: &str, uploads: bo
 
 /// What may keep other devices from reaching a share at one of this PC's addresses: the kind of network
 /// Windows has it on, and Windows Firewall's say on dufs there.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Reach {
     /// "public", "private" or "domain", as Windows has the network; None when it can't say.
     pub network: Option<&'static str>,
@@ -114,8 +109,7 @@ pub struct Reach {
 }
 
 /// What Windows Firewall does with connections coming in to dufs on a network.
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Firewall {
     /// It's off there (another firewall may stand in for it).
     Off,

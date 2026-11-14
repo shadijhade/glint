@@ -17,7 +17,7 @@
 
 use crate::fsx::{blocking, ms_since};
 use crate::proc::Slot;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
@@ -155,8 +155,7 @@ fn leftover(name: &str) -> Option<&'static str> {
 }
 
 /// What Clean up looks for.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(tag = "mode", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Build output and package caches beside their projects.
     Junk,

@@ -3,7 +3,6 @@
 //! (`GetFileInformationByHandle`), Shannon entropy spectrum, and single-pass SHA-256, BLAKE3 and CRC32.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::Read;
@@ -17,8 +16,7 @@ const MAX_HASH_BYTES: u64 = 256 * 1024 * 1024;
 /// Maximum bytes sampled for the Shannon entropy & byte distribution spectrum (4 MB).
 const MAX_ENTROPY_BYTES: usize = 4 * 1024 * 1024;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct NtfsStream {
     /** Stream name such as ":Zone.Identifier:$DATA" */
     pub name: String,
@@ -29,8 +27,7 @@ pub struct NtfsStream {
     pub preview: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ZoneIdentifier {
     pub zone_id: u32,
     pub zone_label: String,
@@ -38,8 +35,7 @@ pub struct ZoneIdentifier {
     pub referrer_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct FileXRayReport {
     pub path: String,
     pub logical_size: u64,
@@ -78,8 +74,7 @@ pub async fn inspect_file_xray(path: String, full: Option<bool>) -> Result<FileX
 }
 
 /// A file's type as Magika tells it from its content (Google's model), whatever its name says.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RealType {
     pub label: String,
     /// e.g. "PE Windows executable".

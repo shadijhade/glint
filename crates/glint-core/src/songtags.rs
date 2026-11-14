@@ -9,7 +9,6 @@ use lofty::config::WriteOptions;
 use lofty::picture::{Picture, PictureType};
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, Tag};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,8 +25,7 @@ pub fn is_song(path: &Path) -> bool {
 }
 
 /// A song's details as they are.
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SongTags {
     pub path: String,
     pub title: String,
@@ -72,8 +70,7 @@ fn read(path: &Path) -> SongTags {
 }
 
 /// One song's new details: a field that's None stays as it is; an empty one is taken out.
-#[derive(Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct SongEdit {
     pub path: String,
     pub title: Option<String>,

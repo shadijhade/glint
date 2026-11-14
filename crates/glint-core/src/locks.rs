@@ -3,10 +3,8 @@
 //! folder in a few milliseconds, with zero background overhead when idle.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct LockingProcess {
     pub pid: u32,
     pub name: String,
@@ -19,8 +17,7 @@ pub struct LockingProcess {
     pub start_time_high: u32,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct LockReport {
     pub paths: Vec<String>,
     pub processes: Vec<LockingProcess>,

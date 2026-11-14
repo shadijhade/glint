@@ -3,7 +3,6 @@
 //! time with the next place they differ.
 
 use crate::fsx::{blocking, ms_since};
-use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -18,8 +17,7 @@ const DIFFTASTIC_TIME: Duration = Duration::from_secs(5);
 const DIFFTASTIC_OUTPUT: usize = 8 << 20;
 
 /// Two files side by side, as text.
-#[derive(Serialize, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default)]
 pub struct TextCompare {
     pub left: Vec<String>,
     pub right: Vec<String>,
@@ -54,8 +52,7 @@ pub struct TextCompare {
     pub elapsed: f64,
 }
 
-#[derive(serde::Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum IgnoreWhitespace {
     #[default]
     None,
@@ -63,14 +60,10 @@ pub enum IgnoreWhitespace {
     All,
 }
 
-#[derive(serde::Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CompareOptions {
-    #[serde(default)]
     pub ignore_whitespace: IgnoreWhitespace,
-    #[serde(default)]
     pub ignore_case: bool,
-    #[serde(default)]
     pub line_mode: bool,
 }
 

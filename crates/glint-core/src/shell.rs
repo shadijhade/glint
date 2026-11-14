@@ -5,11 +5,9 @@
 
 use crate::archive;
 use crate::fsx::blocking;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use crate::host::Window;
 
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FileOp {
     Copy { sources: Vec<String>, dest: String },
     Move { sources: Vec<String>, dest: String },
@@ -27,7 +25,6 @@ pub enum FileOp {
     CopyInto { items: Vec<Back> },
 }
 
-#[derive(Deserialize)]
 pub struct Back {
     pub path: String,
     pub folder: String,
@@ -42,14 +39,13 @@ pub struct Done {
     pub to: Option<String>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Debug)]
 pub struct Performed {
     /// False when the person cancelled in one of Windows' dialogs; what was done before stays done.
     pub completed: bool,
     pub items: Vec<Done>,
 }
 
-#[derive(Serialize)]
 pub struct ClipboardFiles {
     pub paths: Vec<String>,
     pub cut: bool,

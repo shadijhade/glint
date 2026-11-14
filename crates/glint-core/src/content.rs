@@ -67,8 +67,7 @@ fn is_pdf(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
 }
 
-#[derive(Serialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct Status {
     pub enabled: bool,
     pub folders: Vec<String>,
@@ -633,8 +632,6 @@ pub fn content_covers(path: String) -> bool {
     CONTENT.get().is_some_and(|c| c.config.read().unwrap().enabled && c.current() && c.covered(Path::new(path.trim_end_matches('\\'))))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ContentSearch {
     pub query: String,
     pub path: String,

@@ -15,7 +15,6 @@
 
 use crate::actions::{self, Job, Output, Progress, Report};
 use crate::fsx::blocking;
-use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -56,16 +55,14 @@ pub fn kind_of(path: &Path) -> Option<Kind> {
     })
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VideoCodec {
     H264,
     Hevc,
     Av1,
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PhotoWay {
     /// MozJPEG at `quality`: still a JPEG, opens everywhere.
     Jpeg,
@@ -73,8 +70,7 @@ pub enum PhotoWay {
     Jxl,
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PdfWay {
     /// Pictures at 150 dpi, for screens and mail.
     Screen,
@@ -84,8 +80,7 @@ pub enum PdfWay {
     Lossless,
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ShrinkChoices {
     pub video: VideoCodec,
     pub photo: PhotoWay,
@@ -95,8 +90,7 @@ pub struct ShrinkChoices {
 }
 
 /// What this PC's FFmpeg can do for Make smaller: its software encoders, and VMAF.
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct Engines {
     pub h264: bool,
     pub hevc: bool,

@@ -7,7 +7,6 @@
 use crate::data_lens::{TableColumn, TablePreview};
 use crate::fsx::blocking;
 use calamine::{Data, DataRef, Dimensions, ExcelDateTime, Ods, Reader, SheetVisible, Xls, Xlsb, Xlsx};
-use serde::Serialize;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -20,8 +19,6 @@ const MAX_CELL: usize = 2000;
 /// .xls and .ods sheets are read whole, so not past this size.
 const MAX_WHOLE: u64 = 64 << 20;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SheetPreview {
     pub table: TablePreview,
     /// A workbook's sheets that aren't hidden, in order (none for Parquet), and the one shown.

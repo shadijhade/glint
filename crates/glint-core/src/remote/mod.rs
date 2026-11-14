@@ -20,7 +20,6 @@ mod time;
 
 use crate::archive::{extract, Skipped, StageProgress, Staged};
 use crate::fsx::{Entry, Resolved};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -53,8 +52,7 @@ pub fn is_remote(path: &str) -> bool {
 }
 
 /// A connection, as the app's settings have it (no secret).
-#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Connection {
     pub id: String,
     pub name: String,

@@ -19,8 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::host::{AppHandle, Event};
 
 /// A rule, as the app's settings keep it.
-#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rule {
     pub id: String,
     pub name: String,

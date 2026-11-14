@@ -6,11 +6,9 @@
 //! Node; Nushell's with nu; and a .cmd or .bat as it is.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Script {
     pub name: String,
     pub path: String,
@@ -21,8 +19,7 @@ pub struct Script {
     pub missing: Option<String>,
 }
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct Scripts {
     pub folder: String,
     pub scripts: Vec<Script>,

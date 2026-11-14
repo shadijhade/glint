@@ -4,7 +4,6 @@
 
 use crate::fsx::blocking;
 use crate::proc::{self, Slot};
-use serde::Serialize;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
@@ -13,8 +12,7 @@ use std::time::Instant;
 /// The check running (one at a time).
 static RUN: LazyLock<Slot> = LazyLock::new(Slot::default);
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     pub path: String,
     /// Where in the file (secrets), 0 when it's the whole file (YARA rules).
@@ -29,8 +27,7 @@ pub struct Finding {
     pub confidence: String,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CheckReport {
     pub findings: Vec<Finding>,
     pub elapsed_ms: f64,
