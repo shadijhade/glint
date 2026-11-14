@@ -170,6 +170,43 @@ pub fn folder_stamp(path: String) -> Result<f64, String> {
     Ok(modified.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1000.0))
 }
 
+/// What a folder holds, counted: its folders, its files and their bytes, and whether one of them is `.git`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirCounts {
+    pub folders: usize,
+    pub files: usize,
+    pub bytes: u64,
+    pub repo: bool,
+}
+
+impl DirCounts {
+    pub fn add(&mut self, dir: bool, size: u64, lower_name_is_git: bool) {
+        if dir {
+            self.folders += 1;
+        } else {
+            self.files += 1;
+            self.bytes = self.bytes.saturating_add(size);
+        }
+        self.repo |= lower_name_is_git;
+    }
+}
+
+/// Counts what a folder holds (the preview of a selected folder) when it's a folder on disk that can be read: as
+/// it's read, neither sorted nor packed into a listing. `None` for anything else (an archive, a remote, a place,
+/// one Windows keeps closed), which the caller lists and counts.
+pub async fn count_dir(path: String) -> Result<Option<DirCounts>, String> {
+    blocking(move || {
+        let Ok(dir) = normalize(path.trim()) else { return Ok(None) };
+        let Ok(entries) = read_dir(&dir) else { return Ok(None) };
+        let mut counts = DirCounts::default();
+        for entry in &entries {
+            counts.add(entry.dir, entry.size, entry.name.eq_ignore_ascii_case(".git"));
+        }
+        Ok(Some(counts))
+    })
+    .await
+}
+
 /// A folder in the sidebar's tree: its name, and whether it has folders of its own (None: not looked at,
 /// or too much in it to tell quickly).
 #[derive(Serialize)]
@@ -1258,6 +1295,21 @@ mod tests {
             .collect();
         sort_entries(&mut entries);
         entries.into_iter().map(|e| e.name).collect()
+    }
+
+    #[test]
+    fn a_folder_on_disk_is_counted_and_anything_else_is_left_to_its_listing() {
+        let dir = std::env::temp_dir().join(format!("glint-count-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("a.txt"), "12345").unwrap();
+        std::fs::write(dir.join("b.bin"), vec![0u8; 100]).unwrap();
+        let counted = crate::host::async_runtime::block_on(count_dir(dir.to_string_lossy().into_owned())).unwrap();
+        assert_eq!(counted, Some(DirCounts { folders: 2, files: 2, bytes: 105, repo: true }));
+        let missing = dir.join("nope").to_string_lossy().into_owned();
+        assert_eq!(crate::host::async_runtime::block_on(count_dir(missing)).unwrap(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
