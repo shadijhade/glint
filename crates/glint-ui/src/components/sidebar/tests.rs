@@ -909,9 +909,7 @@ fn the_menu_key_and_shift_f10_ask_for_the_menu_at_the_rows_bottom_start_corner(c
     let asked = |w: &World| w.requests.borrow().clone();
     let first = asked(&w);
     assert_eq!(first.len(), 1, "{first:?}");
-    let SidebarRequest::ContextMenu { path, position } = first[0].clone() else {
-        panic!("a menu was asked for");
-    };
+    let SidebarRequest::ContextMenu { path, position } = first[0].clone();
     assert_eq!(path, HOME);
     assert!(
         (f32::from(position.x) - f32::from(row.left())).abs() < 1.5,
@@ -935,9 +933,7 @@ fn the_menu_key_and_shift_f10_ask_for_the_menu_at_the_rows_bottom_start_corner(c
     let row = w.bounds_of(("folder", ix));
     w.press("menu");
     let last = asked(&w).pop().expect("a request");
-    let SidebarRequest::ContextMenu { path, position } = last else {
-        panic!("a menu was asked for");
-    };
+    let SidebarRequest::ContextMenu { path, position } = last;
     assert!(path.starts_with(HOME), "{path}");
     assert!(
         (f32::from(position.x) - f32::from(row.right())).abs() < 1.5,
@@ -1018,26 +1014,18 @@ fn files_dropped_on_a_place_or_a_tree_folder_are_copied_or_moved_into_it(cx: &mu
 }
 
 #[gpui_kit::test]
-fn views_remotes_and_titles_refuse_files_and_the_bin_and_a_paired_pc_take_them(cx: &mut TestAppContext) {
+fn views_remotes_and_titles_refuse_files_and_the_bin_takes_them(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut w = world(cx, "drop-refuse");
-    let remotes = vec![
-        RemoteConnection {
-            id: "nas".into(),
-            name: "NAS".into(),
-            kind: RemoteKind::Sftp,
-            host: Some("nas.local".into()),
-            ..Default::default()
-        },
-        RemoteConnection {
-            id: "pc1".into(),
-            name: "Laptop".into(),
-            kind: RemoteKind::Device,
-            ..Default::default()
-        },
-    ];
+    let remotes = vec![RemoteConnection {
+        id: "nas".into(),
+        name: "NAS".into(),
+        kind: RemoteKind::Sftp,
+        host: Some("nas.local".into()),
+        ..Default::default()
+    }];
     w.cx.update(|_, cx| persistence::update_app(cx, |app| app.remotes = remotes));
-    w.settle(|w| w.names().contains(&"Laptop".to_string()));
+    w.settle(|w| w.names().contains(&"NAS".to_string()));
     w.disk.folder("D:\\Inbox", vec![file("D:\\Inbox", "a.txt", 3, 1)]);
     let files = vec!["D:\\Inbox\\a.txt".to_string()];
     let answers = DropAnswers::default();
@@ -1053,21 +1041,10 @@ fn views_remotes_and_titles_refuse_files_and_the_bin_and_a_paired_pc_take_them(c
         assert_eq!(answers.get(), Answer::Refuse, "{key}");
         assert_eq!(w.lit(), None, "{key}");
     }
-    // The Recycle Bin always moves; a paired PC is sent to.
+    // The Recycle Bin always moves.
     let bin = w.row_of(format!("p:{}", glint_model::paths::RECYCLE_BIN));
     w.drag_over(&answers, &files, ("place", bin), DropEffect::Copy);
     assert!(matches!(answers.get(), Answer::Accept(u) if u.always_move && u.name == "Recycle Bin"));
-    let pc = w.row_of("p:remote:pc1".to_string());
-    w.drag_over(&answers, &files, ("place", pc), DropEffect::Copy);
-    assert!(matches!(answers.get(), Answer::Accept(u) if u.name == "Laptop" && u.copy == "Send to %1"));
-    w.drop_at(&answers, &files, ("place", pc), DropEffect::Copy);
-    assert_eq!(
-        w.requests.borrow().last(),
-        Some(&SidebarRequest::SendToDevice {
-            id: "pc1".into(),
-            paths: files.clone()
-        })
-    );
     // A drop on the Recycle Bin recycles them.
     w.drag_over(&answers, &files, ("place", bin), DropEffect::Move);
     w.drop_at(&answers, &files, ("place", bin), DropEffect::Move);

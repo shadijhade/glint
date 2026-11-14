@@ -352,10 +352,6 @@ fn editors_scripts_and_devices_come_from_what_was_read() {
             missing: Some("shellcheck".into()),
         },
     ];
-    c.devices = vec![Device {
-        id: "pc1".into(),
-        name: "Laptop".into(),
-    }];
     let menu = item_menu(&[text("alpha.txt")], &c);
     assert!(find(&menu, "Open with Code").is_some());
     assert_eq!(labels(submenu(&menu, "Open in")), ["VS Code"]);
@@ -367,10 +363,6 @@ fn editors_scripts_and_devices_come_from_what_was_read() {
             "-",
             "Open the Scripts folder"
         ]
-    );
-    assert_eq!(
-        labels(submenu(submenu(&menu, "Clean up & share"), "Send to my PC")),
-        ["Laptop"]
     );
     // With no editor found there is no "Open in" at all.
     assert!(find(&item_menu(&[text("alpha.txt")], &ctx()), "Open in").is_none());
@@ -907,7 +899,6 @@ fn a_remote_connections_top_can_be_edited_and_shown_in_file_explorer() {
         remote: Some(Connection {
             id: "cloud".into(),
             name: "My cloud".into(),
-            device: false,
         }),
         ..FolderCtx::default()
     };
@@ -927,16 +918,10 @@ fn a_remote_connections_top_can_be_edited_and_shown_in_file_explorer() {
             "Read-only: on a remote connection",
         ]
     );
-    // Mounted: it says how to stop. A paired PC's connection is changed in Settings, not here.
+    // Mounted: it says how to stop.
     c.data.on_demand = vec!["cloud".into()];
-    c.remote = Some(Connection {
-        id: "cloud".into(),
-        name: "My cloud".into(),
-        device: true,
-    });
     let menu = folder_menu(&top, false, &c);
     assert!(find(&menu, "Stop showing in File Explorer").is_some());
-    assert!(find(&menu, "Edit the connection…").is_none() && find(&menu, "Remove the connection…").is_some());
     // A folder inside a remote can be pinned.
     let inside = "remote:cloud\\docs".to_string();
     let menu = folder_menu(&inside, false, &FolderCtx::default());
@@ -965,10 +950,6 @@ fn every_icon_the_menus_draw_is_in_the_embedded_assets() {
     c.dual = true;
     c.other_folder = Some("Docs".into());
     c.editor_name = "Code".into();
-    c.devices = vec![Device {
-        id: "a".into(),
-        name: "b".into(),
-    }];
     c.data.openers = vec![
         glint_core::openers::Opener {
             id: "vscode",
@@ -1026,7 +1007,6 @@ fn every_icon_the_menus_draw_is_in_the_embedded_assets() {
     folder_ctx.remote = Some(Connection {
         id: "r".into(),
         name: "r".into(),
-        device: false,
     });
     for (path, current) in [
         ("C:\\x", true),

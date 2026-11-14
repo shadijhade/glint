@@ -91,8 +91,6 @@ ruzstd = "0.9.1"
 tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression"] }
 # Photo search (photos.rs): ONNX Runtime, its DLL downloaded when photo search is turned on, never bundled.
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std"] }
-# Devices (devices.rs): QUIC between Glint on your PCs, dialed by key, through NATs (ring, as rustls already uses).
-iroh = { version = "1.4", default-features = false, features = ["tls-ring", "portmapper"] }
 # age encryption (Encrypt… on a file's menu, vault.rs): the format of age and rage, in Rust.
 age = { version = "0.12.1", default-features = false }
 # Nearby (localsend.rs): the LocalSend protocol's small HTTP server and its multicast, with what Glint has already.

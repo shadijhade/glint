@@ -15,15 +15,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-/// A paired PC, which files can be sent to (Settings > Devices): `pairedDevices()` in Explorer.tsx.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Device {
-    /// The connection's id.
-    pub id: String,
-    /// Its name.
-    pub name: String,
-}
-
 /// Everything the menus need that no service of the app holds yet.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MenuData {

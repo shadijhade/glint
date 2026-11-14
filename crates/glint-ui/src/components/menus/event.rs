@@ -198,8 +198,6 @@ pub enum MenuEvent {
     RemovePersonalInfo { paths: Vec<String> },
     /// "Change when it was taken…" (`openMetadata(…, "date")`).
     ChangeDateTaken { paths: Vec<String> },
-    /// "Send to my PC" > a paired PC (`sendToDevice`): its connection id.
-    SendToDevice { device: String, paths: Vec<String> },
     /// "Send to a phone nearby…" (`openNearby`).
     SendNearby { paths: Vec<String> },
     /// "Send to another PC…" (`offerToPC`).

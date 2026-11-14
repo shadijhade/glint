@@ -3,7 +3,6 @@
 //! of SettingsView.tsx, `connectionFor` of CloudSetup.tsx).
 
 use super::backend::Backend;
-use super::devices::remote_id;
 use super::tools::{self, Tools};
 use super::widgets::{self, bad};
 use crate::kit::prelude::*;
@@ -23,6 +22,30 @@ pub enum Request {
 
 /// A service's name: "Google Drive" for "drive" (`serviceName`). Types without a plainer name show as rclone
 /// calls them.
+/// A new connection's id, made from its name (`remoteId`): lower-case letters and digits with single dashes,
+/// at most 32 characters, and a number added when `taken` has it. (The TypeScript decomposed accents first, so
+/// "é" became "e"; here an accented letter becomes a dash, which only matters for a name that has one.)
+pub fn remote_id(name: &str, taken: &[String]) -> String {
+    let mut base = String::new();
+    for ch in name.to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            base.push(ch);
+        } else if !base.ends_with('-') {
+            base.push('-');
+        }
+    }
+    let base: String = base.trim_matches('-').chars().take(32).collect();
+    let base = base.trim_matches('-').to_string();
+    let base = if base.is_empty() { "remote".to_string() } else { base };
+    let mut id = base.clone();
+    let mut n = 2;
+    while taken.contains(&id) {
+        id = format!("{base}-{n}");
+        n += 1;
+    }
+    id
+}
+
 pub fn service_name(kind: &str) -> SharedString {
     match kind {
         "drive" => t!("Google Drive"),

@@ -9,7 +9,7 @@
 //! closed, or on a remote connection, nothing changes, so what would is greyed out or left off, and the menu
 //! ends with a note saying why.
 
-use super::data::{Device, MenuData};
+use super::data::MenuData;
 use super::event::{CloudPin, CompressFormat, MediaTool, MenuEvent, PdfTool};
 use super::kinds::*; // includes `on_a_drive`
 use super::spec::{separator, visible_items, when, Command, Entry, Node, Task};
@@ -48,8 +48,6 @@ pub struct ItemCtx {
     pub editor_path: String,
     /// What the editor is called ("Code" for `...\Code.exe`).
     pub editor_name: String,
-    /// The paired PCs.
-    pub devices: Vec<Device>,
     /// The lists from [`MenuData`].
     pub data: MenuData,
 }
@@ -875,26 +873,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 ))
             }),
             separator(),
-            when(!fixed && !c.devices.is_empty(), || {
-                Node::menu(
-                    t!("Send to my PC"),
-                    IconName::Monitor,
-                    c.devices
-                        .iter()
-                        .map(|d| {
-                            Entry::ask(
-                                SharedString::from(d.name.clone()),
-                                IconName::Monitor,
-                                MenuEvent::SendToDevice {
-                                    device: d.id.clone(),
-                                    paths: paths.clone(),
-                                },
-                            )
-                            .node()
-                        })
-                        .collect(),
-                )
-            }),
             when(!fixed, || {
                 entry_node(Entry::ask(
                     t!("Send to a phone nearby…"),

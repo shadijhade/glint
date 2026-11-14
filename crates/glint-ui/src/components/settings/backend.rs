@@ -12,7 +12,7 @@
 use crate::core_bridge;
 use crate::platform::pickers::{self, Filter, Options};
 use glint_core::host::{self, Manager as _};
-use glint_core::{agents, content, devices, meaning, media_ai, openers, rclone, term, verbs};
+use glint_core::{agents, content, meaning, media_ai, openers, rclone, term, verbs};
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -178,18 +178,12 @@ pub trait Backend: Send + Sync + 'static {
         Box::pin(async { Err(crate::t!("Instant search isn't available here").to_string()) })
     }
     fn index_disable(&self) -> Fut<IndexInfo>;
-    // Search inside files; photos and recordings; devices.
+    // Search inside files; photos and recordings.
     fn content_status(&self) -> Fut<content::Status>;
     fn content_configure(&self, enabled: bool, folders: Vec<String>, pictures: Option<bool>) -> Fut<content::Status>;
     fn media_status(&self) -> Fut<media_ai::Status>;
     fn media_configure(&self, config: media_ai::Config) -> Fut<media_ai::Status>;
     fn media_install(&self, kind: &'static str, progress: async_channel::Sender<Fetch>) -> Fut<media_ai::Status>;
-    fn devices_status(&self) -> Fut<devices::Status>;
-    fn devices_configure(&self, sharing: bool, shares: Vec<devices::Share>) -> Fut<devices::Status>;
-    fn devices_forget(&self, id: String) -> Fut<devices::Status>;
-    fn devices_pair_code(&self) -> Fut<String>;
-    /// Enters another PC's code: its key and its name.
-    fn devices_pair(&self, code: String) -> Fut<(String, String)>;
     // Tools and the meaning models.
     fn tools_status(&self) -> Fut<Vec<ToolInfo>>;
     fn tool_install(&self, id: String, progress: async_channel::Sender<Fetch>) -> Fut<()>;
@@ -316,26 +310,6 @@ impl Backend for CoreBackend {
             let installs = app.state::<glint_core::tools::Installs>();
             media_ai::media_ai_install(kind.to_string(), fetch_channel(progress), installs).await
         })
-    }
-
-    fn devices_status(&self) -> Fut<devices::Status> {
-        on_core(async { Ok(devices::devices_status()) })
-    }
-
-    fn devices_configure(&self, sharing: bool, shares: Vec<devices::Share>) -> Fut<devices::Status> {
-        on_core(devices::devices_configure(sharing, shares))
-    }
-
-    fn devices_forget(&self, id: String) -> Fut<devices::Status> {
-        on_core(async move { devices::devices_forget(id) })
-    }
-
-    fn devices_pair_code(&self) -> Fut<String> {
-        on_core(devices::devices_pair_code())
-    }
-
-    fn devices_pair(&self, code: String) -> Fut<(String, String)> {
-        on_core(async move { devices::devices_pair(code).await.map(|p| (p.id, p.name)) })
     }
 
     fn tools_status(&self) -> Fut<Vec<ToolInfo>> {

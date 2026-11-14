@@ -543,7 +543,7 @@ The index's tests (MFT record parsing, queries, disk-usage maps, folder totals u
 -   [x] An MCP server, so AI agents can use Glint's instant search
 -   [x] Photo search (`shows:`) and speech search (`says:`), on this PC
 -   [x] Previous versions, from Windows' shadow copies
--   [x] Your other PCs as devices, and remotes in File Explorer on demand
+-   [x] Remotes in File Explorer, on demand
 -   [x] Search inside files from an index, tags, and Glint in Arabic
 -   [x] A native app: Rust and GPUI, with no web view
 -   [x] A window of its own: one bar, tabs in a rail, a dock, and one search for names and contents

@@ -41,8 +41,6 @@ pub struct Connection {
     pub id: String,
     /// Its name.
     pub name: String,
-    /// A paired PC: its connection is changed in Settings, not here.
-    pub device: bool,
 }
 
 /// What the folder menu reads besides the folder.
@@ -141,16 +139,14 @@ pub fn folder_menu(folder: &str, current: bool, c: &FolderCtx) -> Vec<Node> {
                 }
                 .node(),
             );
-            if !r.device {
-                m.push(
-                    Entry::ask(
-                        t!("Edit the connection…"),
-                        IconName::PlugZap,
-                        MenuEvent::EditConnection { id: r.id.clone() },
-                    )
-                    .node(),
-                );
-            }
+            m.push(
+                Entry::ask(
+                    t!("Edit the connection…"),
+                    IconName::PlugZap,
+                    MenuEvent::EditConnection { id: r.id.clone() },
+                )
+                .node(),
+            );
             m.push(
                 Entry::ask(
                     t!("Remove the connection…"),

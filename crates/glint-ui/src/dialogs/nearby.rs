@@ -1,6 +1,6 @@
 //! Phones and computers nearby: finding the LocalSend apps on this network, sending to them and receiving from
-//! them; and sending to a paired PC. Ported from src/components/explorer/NearbyDialog.tsx and the
-//! `sendToDevice` of src/lib/devices.ts, built the way [`super::drive_health`] is.
+//! them. Ported from src/components/explorer/NearbyDialog.tsx, built the way [`super::drive_health`] is.
+//! (Sending to a paired PC, `sendToDevice`, went with paired devices in 0.12.)
 //!
 //! | TypeScript                                   | Here                                                          |
 //! |----------------------------------------------|---------------------------------------------------------------|
@@ -9,16 +9,11 @@
 //! | `nearby_scan`, `nearby_send`, `nearby_cancel`, `nearby_receive` | [`Backend::scan`], [`Backend::send`], [`Backend::cancel`], [`Backend::receive`] |
 //! | `listen("nearby-received")`                  | the model subscribes to core's `nearby-received` event        |
 //! | `NearbyDialog`                               | [`NearbyDialog`]                                              |
-//! | `sendToDevice(device, paths)`                | [`send_to_device`] (progress as notifications)                |
 //! | toasts                                       | [`NearbyEvent`] raised by the model, shown as notifications by the dialog |
 //!
 //! **How the coordinator wires it.**
 //!
 //! - `MenuEvent::SendNearby { paths }` is `nearby::open(window, cx, paths)`.
-//! - `MenuEvent::SendToDevice { device, paths }` (the menu's "Send to my PC" > a paired PC; `device` is the
-//!   connection's id) and `SidebarRequest::SendToDevice { id, paths }` (files dropped on a paired PC's place)
-//!   are both `nearby::send_to_device(window, cx, device, paths)`: it finds the connection in the saved
-//!   remotes, sends the files and reports progress and the end in notifications.
 //! - `MenuEvent::SendToPc`, `ShareOnNetwork`, `ShareWithWindows` and `ReceiveHere` belong to `share.rs`.
 //!
 //! Closing the dialog stops receiving, as the TypeScript's unmount did.
@@ -27,7 +22,7 @@
 //! dozen devices at most); the received list is the TypeScript's 50 newest.
 
 use crate::kit::prelude::*;
-use crate::{core_bridge, explorer, persistence, t, theme};
+use crate::{core_bridge, explorer, t, theme};
 use glint_core::host::ipc::Channel;
 use glint_core::localsend::Peer;
 use glint_model::format::{format_size, plural};
@@ -36,7 +31,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
 
 /// A boxed core call.
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
@@ -70,18 +66,6 @@ impl From<glint_core::localsend::SendProgress> for Progress {
     }
 }
 
-impl From<glint_core::devices::SendProgress> for Progress {
-    fn from(p: glint_core::devices::SendProgress) -> Self {
-        Self {
-            files: p.files,
-            total_files: p.total_files,
-            bytes: p.bytes,
-            total_bytes: p.total_bytes,
-            current: p.current,
-        }
-    }
-}
-
 // ---- The calls --------------------------------------------------------------------------------------
 
 /// The calls the dialog makes. The app uses [`CoreBackend`]; tests a fake.
@@ -100,13 +84,6 @@ pub trait Backend: Send + Sync + 'static {
     fn cancel(&self);
     /// `nearby_receive`: starts or stops taking files; the port it listens on.
     fn receive(&self, on: bool) -> Fut<Option<u16>>;
-    /// `devices_send`: sends `paths` to the paired PC `id`; what each landed as.
-    fn devices_send(
-        &self,
-        id: String,
-        paths: Vec<String>,
-        progress: Channel<glint_core::devices::SendProgress>,
-    ) -> Fut<Vec<String>>;
 }
 
 /// glint-core.
@@ -143,14 +120,6 @@ impl Backend for CoreBackend {
             Some(app) => Box::pin(glint_core::localsend::nearby_receive(app, on)),
             None => Box::pin(async { Err("Glint's core isn't running".to_string()) }),
         }
-    }
-    fn devices_send(
-        &self,
-        id: String,
-        paths: Vec<String>,
-        progress: Channel<glint_core::devices::SendProgress>,
-    ) -> Fut<Vec<String>> {
-        Box::pin(glint_core::devices::devices_send(id, paths, progress))
     }
 }
 
@@ -789,287 +758,6 @@ pub fn open_with(
     view
 }
 
-// ---- Sending to a paired PC ---------------------------------------------------------------------------
-
-/// Hears each update of a send to a paired PC, on the UI thread.
-pub type Reporter = Rc<dyn Fn(&DeviceUpdate, &mut Window, &mut App)>;
-
-/// How a send to a paired PC is going.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DeviceUpdate {
-    /// Under way.
-    Progress { name: String, progress: Progress },
-    /// It landed: how many files.
-    Sent { name: String, files: usize },
-    /// It didn't.
-    Failed { name: String, reason: String },
-}
-
-impl DeviceUpdate {
-    /// The notice's title and message (the TypeScript's toast and its description).
-    pub fn text(&self) -> (SharedString, SharedString) {
-        match self {
-            // Before the first report: just that it has started.
-            DeviceUpdate::Progress { name, progress: p } if p.files == 0 && p.total_bytes == 0 => (
-                t!("Sending to {name}…", name = isolate(name.clone())),
-                SharedString::default(),
-            ),
-            DeviceUpdate::Progress { name, progress: p } => {
-                let mut detail = t!(
-                    "{bytes} of {all}",
-                    bytes = format_size(p.bytes),
-                    all = format_size(p.total_bytes)
-                )
-                .to_string();
-                if !p.current.is_empty() {
-                    detail.push_str(&format!(" · {}", p.current));
-                }
-                (
-                    t!(
-                        "Sending to {name}: {files} of {total}",
-                        name = isolate(name.clone()),
-                        files = p.files,
-                        total = p.total_files
-                    ),
-                    detail.into(),
-                )
-            }
-            DeviceUpdate::Sent { name, files } => (
-                if *files == 1 {
-                    t!("Sent it to {name}", name = isolate(name.clone()))
-                } else {
-                    t!(
-                        "Sent {files} to {name}",
-                        files = plural(*files, "file"),
-                        name = isolate(name.clone())
-                    )
-                },
-                t!("In its Downloads folder"),
-            ),
-            DeviceUpdate::Failed { name, reason } => (
-                t!("Couldn't send to {name}", name = isolate(name.clone())),
-                reason.clone().into(),
-            ),
-        }
-    }
-}
-
-/// Marks a send's notification, so each report replaces the last.
-struct DeviceSending;
-
-/// Shows a send's state as its notification (a loading notice that updates, then success or error).
-pub fn notify_update(update: &DeviceUpdate, id: &str, window: &mut Window, cx: &mut App) {
-    let (title, message) = update.text();
-    let notification = match update {
-        DeviceUpdate::Progress { .. } => Notification::info(message).title(title).autohide(false),
-        DeviceUpdate::Sent { .. } => Notification::success(message).title(title),
-        DeviceUpdate::Failed { .. } => Notification::error(message).title(title),
-    };
-    window.push_notification(
-        notification.id1::<DeviceSending>(SharedString::from(id.to_string())),
-        cx,
-    );
-}
-
-/// Sends `paths` to the paired PC whose connection id is `device` (`sendToDevice`): a notice shows the
-/// progress, then that it landed in the other PC's Downloads or why it didn't. The connection is looked up in
-/// the saved remotes.
-pub fn send_to_device(window: &mut Window, cx: &mut App, device: String, paths: Vec<String>) {
-    let remote = persistence::app(cx)
-        .and_then(|app| app.remotes.iter().find(|r| r.id == device))
-        .map(|r| (r.name.clone(), r.host.clone().unwrap_or_default()));
-    let backend: Arc<dyn Backend> = Arc::new(CoreBackend::new(cx));
-    match remote {
-        Some((name, host)) if !host.is_empty() => {
-            let id = device.clone();
-            let report: Reporter = Rc::new(move |update, window, cx| notify_update(update, &id, window, cx));
-            send_to_device_with(window, cx, backend, name, host, paths, report);
-        }
-        _ => {
-            window.push_notification(
-                Notification::error(t!("That isn't a paired PC")).title(t!("Couldn't send")),
-                cx,
-            );
-        }
-    }
-}
-
-/// [`send_to_device`] for a connection already found: `name` is what the person calls it, `id` its device key
-/// (the connection's host). `report` hears each update, in order, on the UI thread.
-pub fn send_to_device_with(
-    window: &mut Window,
-    cx: &mut App,
-    backend: Arc<dyn Backend>,
-    name: String,
-    id: String,
-    paths: Vec<String>,
-    report: Reporter,
-) {
-    // The first notice, before the first report.
-    report(
-        &DeviceUpdate::Progress {
-            name: name.clone(),
-            progress: Progress {
-                files: 0,
-                total_files: paths.len(),
-                bytes: 0,
-                total_bytes: 0,
-                current: String::new(),
-            },
-        },
-        window,
-        cx,
-    );
-    let (channel, reports) = core_bridge::stream::<glint_core::devices::SendProgress>();
-    let work = backend.devices_send(id, paths, channel);
-    let finished = Rc::new(std::cell::Cell::new(false));
-    let (progress_name, progress_report, progress_finished) = (name.clone(), report.clone(), finished.clone());
-    window
-        .spawn(cx, async move |cx| {
-            let mut last = Instant::now() - Duration::from_secs(1);
-            while let Ok(p) = reports.recv().await {
-                // Ten reports a second are plenty for a notice.
-                if progress_finished.get() || last.elapsed() < Duration::from_millis(100) {
-                    continue;
-                }
-                last = Instant::now();
-                let update = DeviceUpdate::Progress {
-                    name: progress_name.clone(),
-                    progress: p.into(),
-                };
-                let report = progress_report.clone();
-                if cx.update(|window, cx| report(&update, window, cx)).is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
-    window
-        .spawn(cx, async move |cx| {
-            let sent = core_bridge::run(work).await.and_then(|inner| inner);
-            finished.set(true);
-            let update = match sent {
-                Ok(landed) => DeviceUpdate::Sent {
-                    name,
-                    files: landed.len(),
-                },
-                Err(reason) => DeviceUpdate::Failed { name, reason },
-            };
-            let _ = cx.update(|window, cx| report(&update, window, cx));
-        })
-        .detach();
-}
-
-// ---- Files a paired PC sends here ------------------------------------------------------------------------
-
-/// A file a paired PC sent here (core's `device-received`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeviceFile {
-    /// The sending PC's name.
-    pub from: String,
-    /// Where the file landed.
-    pub path: String,
-}
-
-/// How long after the last file a burst is told (the TypeScript's 800 ms).
-const RECEIVED_WAIT: Duration = Duration::from_millis(800);
-
-/// What a burst of received files is told as, and the path Show goes to (`listenForDeviceFiles`'s `flush`): who
-/// sent them, once each, and the file's name when it is one, else how many.
-pub fn received_words(batch: &[DeviceFile]) -> Option<(String, String)> {
-    let last = batch.last()?;
-    let mut senders: Vec<&str> = Vec::new();
-    for file in batch {
-        if !senders.contains(&file.from.as_str()) {
-            senders.push(&file.from);
-        }
-    }
-    let from = senders.join(", ");
-    let title = if batch.len() == 1 {
-        t!("{from} sent you “{name}”", from = from, name = base_name(&last.path))
-    } else {
-        t!("{from} sent you {n} files", from = from, n = batch.len())
-    };
-    Some((title.to_string(), last.path.clone()))
-}
-
-/// How a notification is shown: in the main window.
-pub type Say = Rc<dyn Fn(&mut App, Notification)>;
-
-/// Gathers the files paired PCs send into one notice a burst, with Show for the last.
-pub struct DeviceInbox {
-    batch: Vec<DeviceFile>,
-    say: Say,
-}
-
-/// The notice of files that arrived (a newer one replaces it).
-struct ReceivedToast;
-
-impl DeviceInbox {
-    fn heard(&mut self, file: DeviceFile, cx: &mut Context<Self>) {
-        self.batch.push(file);
-        // Each file puts the telling off again, so a folder of them is one notice.
-        let waiting = self.batch.len();
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(RECEIVED_WAIT).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.batch.len() == waiting {
-                    this.tell(cx);
-                }
-            });
-        })
-        .detach();
-    }
-
-    fn tell(&mut self, cx: &mut Context<Self>) {
-        let batch = std::mem::take(&mut self.batch);
-        let Some((title, path)) = received_words(&batch) else {
-            return;
-        };
-        let note = Notification::success(t!("In Downloads"))
-            .title(title)
-            .id::<ReceivedToast>()
-            .action(move |_, _, _| {
-                let path = path.clone();
-                Button::new("show-received")
-                    .label(t!("Show"))
-                    .on_click(move |_, _, cx| {
-                        if let Some(explorer) = explorer::try_explorer(cx) {
-                            let options = explorer::NavOptions::default().selecting(path.clone());
-                            explorer.update(cx, |explorer, cx| explorer.navigate(parent_path(&path), options, cx));
-                        }
-                    })
-            });
-        (self.say)(cx, note);
-    }
-}
-
-/// Starts telling of the files paired PCs send here (`listenForDeviceFiles`); `say` shows a notification in the
-/// main window. Does nothing if core isn't running.
-pub fn hear_device_files(cx: &mut App, say: Say) {
-    let Some(events) = cx.try_global::<core_bridge::Core>().map(|core| core.events.clone()) else {
-        return;
-    };
-    let inbox = cx.new(|_| DeviceInbox { batch: Vec::new(), say });
-    cx.subscribe(&events, move |_, event: &core_bridge::CoreEvent, cx| {
-        if event.name != "device-received" {
-            return;
-        }
-        let (Some(from), Some(path)) = (
-            event.payload.get("from").and_then(|v| v.as_str()),
-            event.payload.get("path").and_then(|v| v.as_str()),
-        ) else {
-            return;
-        };
-        let file = DeviceFile {
-            from: from.to_string(),
-            path: path.to_string(),
-        };
-        inbox.update(cx, |inbox, cx| inbox.heard(file, cx));
-    })
-    .detach();
-}
-
 // ---- Tests ------------------------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1082,32 +770,6 @@ mod tests {
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
-
-    #[test]
-    fn files_a_paired_pc_sent_are_told_once_a_burst_with_who_sent_them() {
-        let _guard = testing::lock();
-        let file = |from: &str, path: &str| DeviceFile {
-            from: from.into(),
-            path: path.into(),
-        };
-        assert_eq!(received_words(&[]), None);
-        assert_eq!(
-            received_words(&[file("Laptop", "C:\\Users\\me\\Downloads\\Laptop\\plan.pdf")]),
-            Some((
-                "Laptop sent you “plan.pdf”".to_string(),
-                "C:\\Users\\me\\Downloads\\Laptop\\plan.pdf".to_string()
-            ))
-        );
-        // Several files: how many, from each sender once, and Show goes to the last.
-        assert_eq!(
-            received_words(&[
-                file("Laptop", "C:\\d\\a.txt"),
-                file("Desk", "C:\\d\\b.txt"),
-                file("Laptop", "C:\\d\\c.txt"),
-            ]),
-            Some(("Laptop, Desk sent you 3 files".to_string(), "C:\\d\\c.txt".to_string()))
-        );
-    }
 
     fn peer(alias: &str, fingerprint: &str, model: Option<&str>, kind: Option<&str>, ip: &str) -> Peer {
         Peer {
@@ -1136,9 +798,6 @@ mod tests {
         receive_calls: Mutex<Vec<bool>>,
         progress: Mutex<Option<Channel<glint_core::localsend::SendProgress>>>,
         finish: Mutex<Option<async_channel::Sender<Result<usize, String>>>>,
-        devices: Mutex<Vec<(String, Vec<String>)>>,
-        device_progress: Mutex<Option<Channel<glint_core::devices::SendProgress>>>,
-        device_result: Mutex<Result<Vec<String>, String>>,
     }
 
     impl Fake {
@@ -1152,9 +811,6 @@ mod tests {
                 receive_calls: Mutex::new(Vec::new()),
                 progress: Mutex::new(None),
                 finish: Mutex::new(None),
-                devices: Mutex::new(Vec::new()),
-                device_progress: Mutex::new(None),
-                device_result: Mutex::new(Ok(vec!["a.txt".into(), "b.txt".into()])),
             })
         }
     }
@@ -1184,24 +840,6 @@ mod tests {
         fn receive(&self, on: bool) -> Fut<Option<u16>> {
             self.receive_calls.lock().unwrap().push(on);
             Box::pin(async move { Ok(on.then_some(53317)) })
-        }
-        fn devices_send(
-            &self,
-            id: String,
-            paths: Vec<String>,
-            progress: Channel<glint_core::devices::SendProgress>,
-        ) -> Fut<Vec<String>> {
-            self.devices.lock().unwrap().push((id, paths));
-            let _ = progress.send(glint_core::devices::SendProgress {
-                files: 1,
-                total_files: 2,
-                bytes: 10,
-                total_bytes: 20,
-                current: "a.txt".into(),
-            });
-            *self.device_progress.lock().unwrap() = Some(progress);
-            let result = self.device_result.lock().unwrap().clone();
-            Box::pin(async move { result })
         }
     }
 
@@ -1573,168 +1211,5 @@ mod tests {
             Some(Role::Group)
         );
         testing::set_rtl(false);
-    }
-
-    #[gpui_kit::test]
-    fn what_a_send_to_a_paired_pc_reports_is_worded_like_the_toasts(_cx: &mut TestAppContext) {
-        let _guard = testing::lock();
-        let started = DeviceUpdate::Progress {
-            name: "Office".into(),
-            progress: Progress {
-                files: 0,
-                total_files: 3,
-                bytes: 0,
-                total_bytes: 0,
-                current: String::new(),
-            },
-        };
-        assert_eq!(
-            started.text(),
-            (t!("Sending to {name}…", name = "Office"), SharedString::default())
-        );
-        let (title, message) = DeviceUpdate::Progress {
-            name: "Office".into(),
-            progress: Progress {
-                files: 1,
-                total_files: 3,
-                bytes: 1000,
-                total_bytes: 3000,
-                current: "a.txt".into(),
-            },
-        }
-        .text();
-        assert_eq!(title, "Sending to Office: 1 of 3");
-        assert_eq!(
-            message,
-            format!("{} of {} · a.txt", format_size(1000), format_size(3000))
-        );
-        let sent = |files| DeviceUpdate::Sent {
-            name: "Office".into(),
-            files,
-        };
-        assert_eq!(
-            sent(1).text(),
-            ("Sent it to Office".into(), "In its Downloads folder".into())
-        );
-        assert_eq!(sent(3).text().0, "Sent 3 files to Office");
-        let failed = DeviceUpdate::Failed {
-            name: "Office".into(),
-            reason: "That PC didn't take it".into(),
-        };
-        assert_eq!(
-            failed.text(),
-            ("Couldn't send to Office".into(), "That PC didn't take it".into())
-        );
-    }
-
-    #[gpui_kit::test]
-    fn sending_to_a_paired_pc_reports_the_start_the_progress_and_the_end(cx: &mut TestAppContext) {
-        let _guard = testing::lock();
-        let mut env = env(cx, Fake::new(vec![]));
-        let heard: Rc<RefCell<Vec<DeviceUpdate>>> = Rc::default();
-        let sink = heard.clone();
-        let report: Reporter = Rc::new(move |update, _, _| sink.borrow_mut().push(update.clone()));
-        let backend: Arc<dyn Backend> = env.fake.clone();
-        env.visual.update(|window, cx| {
-            send_to_device_with(
-                window,
-                cx,
-                backend,
-                "المكتب".into(),
-                "device-key".into(),
-                vec![r"C:\a.txt".into(), r"C:\b.txt".into()],
-                report,
-            )
-        });
-        settle(&mut env.visual, |_| {
-            matches!(heard.borrow().last(), Some(DeviceUpdate::Sent { .. }))
-        });
-        assert_eq!(
-            *env.fake.devices.lock().unwrap(),
-            vec![(
-                "device-key".to_string(),
-                vec![r"C:\a.txt".to_string(), r"C:\b.txt".to_string()]
-            )]
-        );
-        let heard = heard.borrow();
-        // First that it has started, with the two files to go, and last that both landed.
-        assert!(
-            matches!(&heard[0], DeviceUpdate::Progress { progress, .. } if progress.total_files == 2 && progress.files == 0)
-        );
-        assert_eq!(
-            heard.last(),
-            Some(&DeviceUpdate::Sent {
-                name: "المكتب".into(),
-                files: 2
-            })
-        );
-    }
-
-    #[gpui_kit::test]
-    fn sending_to_a_paired_pc_that_refuses_says_why(cx: &mut TestAppContext) {
-        let _guard = testing::lock();
-        let fake = Fake::new(vec![]);
-        *fake.device_result.lock().unwrap() = Err("That PC didn't take it".into());
-        let mut env = env(cx, fake);
-        let heard: Rc<RefCell<Vec<DeviceUpdate>>> = Rc::default();
-        let sink = heard.clone();
-        let report: Reporter = Rc::new(move |update, _, _| sink.borrow_mut().push(update.clone()));
-        let backend: Arc<dyn Backend> = env.fake.clone();
-        env.visual.update(|window, cx| {
-            send_to_device_with(
-                window,
-                cx,
-                backend,
-                "Office".into(),
-                "k".into(),
-                vec![r"C:\a.txt".into()],
-                report,
-            )
-        });
-        settle(&mut env.visual, |_| {
-            matches!(heard.borrow().last(), Some(DeviceUpdate::Failed { .. }))
-        });
-        assert_eq!(
-            heard.borrow().last(),
-            Some(&DeviceUpdate::Failed {
-                name: "Office".into(),
-                reason: "That PC didn't take it".into()
-            })
-        );
-    }
-
-    #[gpui_kit::test]
-    fn the_notice_for_a_send_is_replaced_by_each_update_and_an_unknown_pc_is_refused(cx: &mut TestAppContext) {
-        let _guard = testing::lock();
-        let mut env = env(cx, Fake::new(vec![]));
-        let start = DeviceUpdate::Progress {
-            name: "Office".into(),
-            progress: Progress {
-                files: 0,
-                total_files: 1,
-                bytes: 0,
-                total_bytes: 0,
-                current: String::new(),
-            },
-        };
-        let end = DeviceUpdate::Sent {
-            name: "Office".into(),
-            files: 1,
-        };
-        env.visual
-            .update(|window, cx| notify_update(&start, "pc-1", window, cx));
-        env.visual.run_until_parked();
-        assert_eq!(notifications(&mut env.visual), 1);
-        env.visual.update(|window, cx| notify_update(&end, "pc-1", window, cx));
-        env.visual.run_until_parked();
-        assert_eq!(notifications(&mut env.visual), 1, "the same notice, updated");
-        env.visual.update(|window, cx| notify_update(&end, "pc-2", window, cx));
-        env.visual.run_until_parked();
-        assert_eq!(notifications(&mut env.visual), 2);
-        // A connection that isn't saved (or isn't a paired PC) can't be sent to.
-        env.visual
-            .update(|window, cx| send_to_device(window, cx, "nobody".into(), vec![r"C:\a.txt".into()]));
-        env.visual.run_until_parked();
-        assert_eq!(notifications(&mut env.visual), 3);
     }
 }

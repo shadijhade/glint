@@ -538,7 +538,7 @@ impl Form {
                 RemoteKind::Rclone => self.editing.as_ref().is_some_and(|r| r.rclone.is_some()),
                 RemoteKind::S3 => has(Field::Bucket),
                 RemoteKind::Sftp => has(Field::Host),
-                RemoteKind::Webdav | RemoteKind::Device => has(Field::Endpoint),
+                RemoteKind::Webdav => has(Field::Endpoint),
             }
     }
 
@@ -551,7 +551,7 @@ impl Form {
         RemoteConnection {
             id: match &self.editing {
                 Some(r) => r.id.clone(),
-                None => crate::components::settings::devices::remote_id(&name, &self.taken_ids),
+                None => crate::components::settings::clouds::remote_id(&name, &self.taken_ids),
             },
             name,
             kind: self.kind,
@@ -1395,15 +1395,11 @@ pub fn open_add(window: &mut Window, cx: &mut App) {
     open_with(window, cx, backend, None);
 }
 
-/// Opens the dialog that edits the connection `id` (`editRemote`). Nothing opens for an id that isn't saved, or
-/// for a paired PC's folders, which have nothing to edit.
+/// Opens the dialog that edits the connection `id` (`editRemote`). Nothing opens for an id that isn't saved.
 pub fn open_edit(window: &mut Window, cx: &mut App, id: String) {
     let Some(remote) = persistence::app(cx).and_then(|app| app.remotes.iter().find(|r| r.id == id).cloned()) else {
         return;
     };
-    if remote.kind == RemoteKind::Device {
-        return;
-    }
     let backend = backend(cx);
     open_with(window, cx, backend, Some(remote));
 }
@@ -2017,18 +2013,14 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn escape_closes_the_form_and_a_device_has_nothing_to_edit(cx: &mut TestAppContext) {
+    fn escape_closes_the_form_and_an_unknown_id_opens_nothing(cx: &mut TestAppContext) {
         let _guard = testing::lock();
-        let mut visual = window(cx, vec![saved("pc", "Laptop", RemoteKind::Device)]);
+        let mut visual = window(cx, Vec::new());
         let fake = Fake::new();
         visual.update(|window, cx| {
             init_with(cx, fake.clone());
-            open_edit(window, cx, "pc".into());
             open_edit(window, cx, "missing".into());
-            assert!(
-                !window.has_active_dialog(cx),
-                "nothing opens for a paired PC or an unknown id"
-            );
+            assert!(!window.has_active_dialog(cx), "nothing opens for an unknown id");
         });
         let (_, _) = open(&mut visual, &fake, None);
         visual.update(|window, cx| {

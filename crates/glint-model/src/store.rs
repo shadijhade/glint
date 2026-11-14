@@ -507,8 +507,6 @@ pub enum RemoteKind {
     Webdav,
     Sftp,
     Rclone,
-    /// A paired PC's shared folders (devices.rs), its key in `host`.
-    Device,
 }
 
 /// A remote connection (remote/), as its folders are reached at `remote:<id>`: no secret, which Windows
@@ -829,22 +827,51 @@ lenient_deserialize!(Settings {
     "readmeOpen" => readme_open,
     "zoxide" => zoxide,
 });
-lenient_deserialize!(RemoteConnection {
-    "id" => id,
-    "name" => name,
-    "kind" => kind,
-    "endpoint" => endpoint,
-    "region" => region,
-    "bucket" => bucket,
-    "user" => user,
-    "host" => host,
-    "port" => port,
-    "key" => key,
-    "root" => root,
-    "thumbnails" => thumbnails,
-    "rclone" => rclone,
-    "service" => service,
-});
+/// Kinds of remote connection Glint no longer has: a paired PC's folders ("device"), gone with paired devices in
+/// 0.12. A saved one loads as nothing ([`load_persisted`] drops it); any other kind it doesn't know loads as S3.
+const RETIRED_REMOTE_KINDS: &[&str] = &["device"];
+
+impl<'de> Deserialize<'de> for RemoteConnection {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let retired = value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| RETIRED_REMOTE_KINDS.contains(&kind));
+        if retired {
+            return Ok(RemoteConnection::default());
+        }
+        let mut out = RemoteConnection::default();
+        if let serde_json::Value::Object(mut map) = value {
+            macro_rules! field {
+                ($($json:literal => $field:ident),*) => {$(
+                    if let Some(raw) = map.remove($json) {
+                        if let Ok(parsed) = serde_json::from_value(raw) {
+                            out.$field = parsed;
+                        }
+                    }
+                )*};
+            }
+            field!(
+                "id" => id,
+                "name" => name,
+                "kind" => kind,
+                "endpoint" => endpoint,
+                "region" => region,
+                "bucket" => bucket,
+                "user" => user,
+                "host" => host,
+                "port" => port,
+                "key" => key,
+                "root" => root,
+                "thumbnails" => thumbnails,
+                "rclone" => rclone,
+                "service" => service
+            );
+        }
+        Ok(out)
+    }
+}
 lenient_deserialize!(FolderRule {
     "id" => id,
     "name" => name,
@@ -910,13 +937,16 @@ pub fn persisted_json(state: &AppState) -> Result<String, serde_json::Error> {
 /// that isn't a saved state, or one of another version (zustand would refuse it, having no `migrate`),
 /// gives the defaults.
 pub fn load_persisted(text: &str) -> AppState {
-    match serde_json::from_str::<PersistedIn>(text) {
+    let mut state = match serde_json::from_str::<PersistedIn>(text) {
         Ok(PersistedIn {
             state,
             version: Some(PERSIST_VERSION),
         }) => state.unwrap_or_default(),
         _ => AppState::default(),
-    }
+    };
+    // A connection of a retired kind loads with no id: it goes (see `RETIRED_REMOTE_KINDS`).
+    state.remotes.retain(|remote| !remote.id.is_empty());
+    state
 }
 
 impl AppState {
@@ -1476,6 +1506,17 @@ mod tests {
         assert_eq!(s.remotes[0].id, "r");
         assert_eq!(s.remotes[0].kind, RemoteKind::S3);
         assert_eq!(s.remotes[0].port, None);
+    }
+
+    #[test]
+    fn a_paired_pcs_connection_saved_by_an_older_glint_goes() {
+        let text = r#"{"state":{"remotes":[
+            {"id":"laptop","name":"Laptop","kind":"device","host":"abc123"},
+            {"id":"nas","name":"NAS","kind":"sftp","host":"nas.local"}]},"version":0}"#;
+        let s = load_persisted(text);
+        assert_eq!(s.remotes.len(), 1);
+        assert_eq!((s.remotes[0].id.as_str(), s.remotes[0].kind), ("nas", RemoteKind::Sftp));
+        assert_eq!(s.remotes[0].host.as_deref(), Some("nas.local"));
     }
 
     #[test]

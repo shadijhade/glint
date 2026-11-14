@@ -153,63 +153,6 @@ fn photo_search_picks_pictures_and_downloads_its_model_when_turned_on(cx: &mut T
 }
 
 #[gpui_kit::test]
-fn devices_share_pair_and_forget(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let fake = Arc::new(Fake::new());
-    let (mut visual, view) = open_settings(cx, &fake, None);
-    go_to(&mut visual, "instant-search");
-    reveal(&mut visual, &view, "settings-switch-devices-share");
-    assert!(has(&mut visual, "Share folders from TEST-PC"));
-    click(&mut visual, "settings-switch-devices-share");
-    // Sharing on with nothing shared shares Pictures.
-    settle(&mut visual, |_| {
-        fake.calls().contains(&"devices_configure true 1".to_string())
-    });
-    settle(&mut visual, |cx| {
-        label_of(cx, "settings-button-devices-show-code").is_some()
-    });
-    reveal(&mut visual, &view, "settings-button-devices-show-code");
-    click(&mut visual, "settings-button-devices-show-code");
-    settle(&mut visual, |cx| {
-        has(cx, "Pairing code") && label_of(cx, "settings-devices-code").is_some()
-    });
-    let code = visual.update(|window, cx| {
-        window.render_frame(cx);
-        window.find("settings-devices-code").description().map(str::to_string)
-    });
-    assert_eq!(code.as_deref(), Some("KEY-ABCDE23456"));
-    // Copy puts it on the clipboard.
-    click(&mut visual, "settings-button-devices-copy-code");
-    assert_eq!(
-        text_of(visual.update(|_, cx| cx.read_from_clipboard())).as_deref(),
-        Some("KEY-ABCDE23456")
-    );
-    // Pair: the PC's code goes to core, and the PC is saved as a connection for the sidebar.
-    let devices = visual.update(|_, cx| view.read(cx).devices.clone());
-    let input = visual.update(|_, cx| devices.read(cx).input().clone());
-    type_into(&mut visual, &input, "OTHER-KEY-XYZ");
-    reveal(&mut visual, &view, "settings-button-devices-pair");
-    click(&mut visual, "settings-button-devices-pair");
-    settle(&mut visual, |_| {
-        fake.calls().contains(&"devices_pair OTHER-KEY-XYZ".to_string())
-    });
-    settle(&mut visual, |cx| !saved_remotes(cx).is_empty());
-    let remotes = saved_remotes(&mut visual);
-    assert_eq!(remotes.len(), 1);
-    assert_eq!(
-        (
-            remotes[0].name.as_str(),
-            remotes[0].id.as_str(),
-            remotes[0].host.as_deref()
-        ),
-        ("Office PC", "office-pc", Some("device-key"))
-    );
-    assert_eq!(remotes[0].kind, glint_model::store::RemoteKind::Device);
-    // The box empties after a pairing.
-    assert_eq!(visual.update(|_, cx| input.read(cx).value().to_string()), "");
-}
-
-#[gpui_kit::test]
 fn tools_install_with_progress_and_clouds_wait_for_rclone(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = Arc::new(Fake::new());
