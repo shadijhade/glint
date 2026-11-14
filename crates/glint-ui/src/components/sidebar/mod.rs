@@ -497,11 +497,9 @@ impl Sidebar {
         if chain.is_empty() {
             return;
         }
-        for folder in chain {
-            if !self.tree.is_open(&folder) {
-                self.tree.set_open(&folder, true);
-                self.load(folder, cx);
-            }
+        // What the last reveal opened elsewhere closes again.
+        for folder in self.tree.reveal(&chain) {
+            self.load(folder, cx);
         }
         self.scroll_to_current = true;
     }

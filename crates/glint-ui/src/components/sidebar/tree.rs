@@ -100,7 +100,14 @@ pub struct Tree {
     /// The newest read of each folder: an answer that comes back for an older one is dropped.
     reads: HashMap<String, u64>,
     next_read: u64,
+    /// The folders `reveal` opened (keys), not opened or closed by hand since, the least recently revealed first:
+    /// beyond `REVEALED_KEPT` the oldest close again, so the tree doesn't keep every folder a session went
+    /// through open (and its rows, and what was read of each, growing).
+    revealed: Vec<String>,
 }
+
+/// How many folders the tree keeps open for having followed the folder shown.
+const REVEALED_KEPT: usize = 32;
 
 impl Tree {
     /// Whether the folder is open (`isTreeOpen`).
@@ -118,15 +125,42 @@ impl Tree {
         matches!(self.kids(path), Some(Kids::Loading))
     }
 
-    /// Opens or closes a folder (`toggleFolder`). Returns true when it opened, so the caller reads it again.
+    /// Opens or closes a folder (`toggleFolder`). Returns true when it opened, so the caller reads it again. A
+    /// folder opened or closed by hand stays as it was left when the tree follows the folder shown elsewhere.
     pub fn set_open(&mut self, path: &str, open: bool) -> bool {
         let key = key_of(path);
+        self.revealed.retain(|revealed| *revealed != key);
         if open {
             self.open.insert(key, path.to_string());
         } else {
             self.open.remove(&key);
         }
         open
+    }
+
+    /// Opens the folders of `chain` (`reveal_chain`'s), and closes the folders earlier reveals opened beyond the
+    /// last `REVEALED_KEPT`, forgetting what was read of them. Returns the folders it opened, to read.
+    pub fn reveal(&mut self, chain: &[String]) -> Vec<String> {
+        let mut opened = Vec::new();
+        for folder in chain {
+            let key = key_of(folder);
+            if let Some(at) = self.revealed.iter().position(|revealed| *revealed == key) {
+                // Revealed again: the most recent now.
+                let again = self.revealed.remove(at);
+                self.revealed.push(again);
+            } else if !self.open.contains_key(&key) {
+                self.open.insert(key.clone(), folder.clone());
+                self.revealed.push(key);
+                opened.push(folder.clone());
+            }
+        }
+        let over = self.revealed.len().saturating_sub(REVEALED_KEPT);
+        for key in self.revealed.drain(..over) {
+            self.open.remove(&key);
+            self.kids.remove(&key);
+            self.reads.remove(&key);
+        }
+        opened
     }
 
     /// Starts reading a folder (`load`): marks it loading unless something is already shown for it, and numbers
@@ -236,6 +270,38 @@ mod tests {
         // No place holds it.
         assert!(reveal_chain("E:\\Stuff\\More", &roots).is_empty());
         assert!(reveal_chain("", &roots).is_empty());
+    }
+
+    #[test]
+    fn the_folders_opened_by_following_are_kept_to_the_latest_few_and_never_those_opened_by_hand() {
+        let mut tree = Tree::default();
+        let roots = vec![r"C:\".to_string()];
+        assert!(tree.set_open(r"C:\Work", true), "opened by hand");
+        let chain = reveal_chain(r"C:\Users\me\Docs", &roots);
+        assert_eq!(chain, [r"C:\", r"C:\Users", r"C:\Users\me"]);
+        assert_eq!(tree.reveal(&chain), chain, "each opened, to read");
+        tree.begin_read(r"C:\Users\me");
+        // Deeper in the same place: only what's new opens.
+        let deeper = reveal_chain(r"C:\Users\me\Docs\2026", &roots);
+        assert_eq!(tree.reveal(&deeper), [r"C:\Users\me\Docs"]);
+        // A session through many folders: the tree keeps the latest few it opened, and forgets what it read of the
+        // others; the folder opened by hand stays.
+        for n in 0..REVEALED_KEPT {
+            tree.reveal(&reveal_chain(&format!(r"C:\Data\{n}\x"), &roots));
+        }
+        assert!(!tree.is_open(r"C:\Users\me"), "among the oldest");
+        assert!(tree.kids(r"C:\Users\me").is_none());
+        assert!(tree.is_open(r"C:\Data") && tree.is_open(&format!(r"C:\Data\{}", REVEALED_KEPT - 1)));
+        assert!(tree.is_open(r"C:\"), "revealed again by every one");
+        assert!(tree.is_open(r"C:\Work"));
+        assert!(tree.open.len() <= REVEALED_KEPT + 1);
+        // A revealed folder opened by hand is the user's: no reveal closes it.
+        tree.set_open(r"C:\Data", true);
+        for n in 0..REVEALED_KEPT * 2 {
+            tree.reveal(&reveal_chain(&format!(r"D:\Other\{n}\y"), &[r"D:\".to_string()]));
+        }
+        assert!(tree.is_open(r"C:\Data"));
+        assert!(!tree.is_open(r"C:\"), "the oldest the reveals opened");
     }
 
     #[test]
