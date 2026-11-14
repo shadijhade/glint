@@ -126,8 +126,6 @@ pub enum Body {
     Docx,
     /// A 3D model drawn and turned (`preview::model3d`).
     Model,
-    /// A Typst document typeset in process (`preview::typst_view`).
-    Typst,
     /// An asciinema recording played (`preview::cast`).
     Cast,
     /// Windows' own previewer for the type, over `fallback`.
@@ -213,7 +211,6 @@ pub fn is_profilable(entry: &FileEntry) -> bool {
 pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
     let mut views = Vec::new();
     let notebook = is_notebook(entry);
-    let typst = entry.ext == "typ";
     let small = small_of(entry);
     let sheet = is_sheet(entry);
     // E-books and comics, 3D models and asciinema recordings have one view of their own, named for what it does.
@@ -230,13 +227,6 @@ pub fn views(entry: &FileEntry, changed: bool) -> Vec<ViewChoice> {
         views.push(choice(View::Source, t!("Source"), t!("The notebook's JSON as written")));
     } else if book {
         views.push(choice(View::File, t!("Book"), t!("The book, to read")));
-    } else if typst {
-        views.push(choice(
-            View::File,
-            t!("Typeset"),
-            t!("The document as Typst typesets it"),
-        ));
-        views.push(choice(View::Source, t!("Source"), t!("The Typst source as written")));
     } else if small.is_some() {
         views.push(choice(
             View::File,
@@ -378,9 +368,6 @@ pub fn choose(entry: &FileEntry, view: View) -> Choice {
     }
     if is_notebook(entry) {
         return Choice::of(if source { Body::Text } else { Body::Notebook });
-    }
-    if readable && !archived && entry.ext == "typ" {
-        return Choice::of(if source { Body::Text } else { Body::Typst });
     }
     if readable && !archived && one_of(entry, &MODELS) {
         return Choice::of(Body::Model);
