@@ -395,11 +395,17 @@ pub async fn thumbnail(state: State<'_, Thumbs>, path: String, size: u32, modifi
             None => Ok(Response::new(Thumb::none(true).encode(FROM_CACHE))),
         };
     }
-    let asked = path.clone();
-    let path = match crate::fsx::blocking(move || Ok(crate::archive::thumbnail_source(&asked))).await? {
-        None => path,
-        Some(Ok(copy)) => copy,
-        Some(Err(_)) => return Ok(Response::new(Thumb::none(true).encode(FROM_CACHE))),
+    // A file in an archive is drawn from a copy of it; the check looks at the disk, so it's made on a blocking thread,
+    // and only for a path whose names say it could be in one.
+    let path = if crate::archive::maybe_inside(&path) {
+        let asked = path.clone();
+        match crate::fsx::blocking(move || Ok(crate::archive::thumbnail_source(&asked))).await? {
+            None => path,
+            Some(Ok(copy)) => copy,
+            Some(Err(_)) => return Ok(Response::new(Thumb::none(true).encode(FROM_CACHE))),
+        }
+    } else {
+        path
     };
     let shared = &state.0;
     let mut answer = {

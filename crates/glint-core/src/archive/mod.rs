@@ -255,6 +255,20 @@ pub fn is_inside(path: &str) -> bool {
     locate(path).is_some_and(|found| !found.inner.is_empty())
 }
 
+/// Whether `path` could be inside an archive, told from its names alone, without the disk: a folder on its way is
+/// named like an archive, or some file has been found to be one by its first bytes. [`is_inside`] is the answer;
+/// this says when asking it (which looks at the disk) can be skipped.
+pub fn maybe_inside(path: &str) -> bool {
+    !state().sniffed.is_empty() || named_inside(path)
+}
+
+/// Whether a folder on `path`'s way is named like an archive.
+fn named_inside(path: &str) -> bool {
+    let mut parts: Vec<&str> = path.split(['\\', '/']).filter(|part| !part.is_empty()).collect();
+    parts.pop();
+    parts.iter().any(|part| Format::claimed(part).is_some())
+}
+
 /// Whether files can't be written into `path`: an archive, or a folder in one.
 pub fn is_read_only(path: &str) -> bool {
     crate::remote::is_remote(path) || locate(path).is_some()

@@ -1309,3 +1309,13 @@ fn lists_50000_entries_in_milliseconds() {
         assert_eq!(top.entries, 50_000 + 1 + 500 + 3500);
     }
 }
+
+#[test]
+fn only_a_path_named_like_it_could_be_in_an_archive_asks_the_disk() {
+    // By name (what other tests sniffed would make `maybe_inside` say yes to anything).
+    assert!(!named_inside(r"C:\Photos\beach.jpg"));
+    assert!(!named_inside(r"C:\Downloads\release.zip"), "an archive itself isn't in one");
+    assert!(named_inside(r"C:\Downloads\release.zip\docs\a.png"));
+    assert!(named_inside("D:/backups/old.tar.gz/etc/hosts"));
+    assert!(maybe_inside(r"C:\Downloads\release.zip\docs\a.png"));
+}
