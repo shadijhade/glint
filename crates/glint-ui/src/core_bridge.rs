@@ -15,7 +15,7 @@
 //!   each job to it (`PostMessageW`, the boxed job in `LPARAM`) and that window's own WndProc runs it, from
 //!   whichever message pump is running. Call [`post_to_ui`] to do the same from UI code.
 //! - **Windows**: each GPUI window registers as a `host::Window` ([`register_window`]) so core's
-//!   `get_webview_window("main")` and shell dialogs' owner HWND keep working.
+//!   `window("main")` and shell dialogs' owner HWND keep working.
 //!
 //! **Calling core from a view.** Core's `async fn`s are driven on core's own runtime and awaited from a GPUI
 //! task, so the UI thread never waits ([`run`]):
@@ -276,7 +276,7 @@ pub fn hwnd_of(window: &Window) -> Option<HWND> {
     }
 }
 
-/// Registers `window` with core as `label` ("main", "quick"…), so `get_webview_window(label)` finds it and
+/// Registers `window` with core as `label` ("main", "quick"…), so `window(label)` finds it and
 /// shell dialogs can use its HWND as their owner. Pair with [`unregister_window`] when it closes.
 pub fn register_window(cx: &App, label: &str, window: &Window) {
     let (Some(hwnd), Some(core)) = (hwnd_of(window), cx.try_global::<Core>()) else {

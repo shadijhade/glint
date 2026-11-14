@@ -646,8 +646,8 @@ impl MenuHost {
 fn main_window(cx: &App) -> Option<glint_core::host::Window> {
     let core = cx.try_global::<Core>()?;
     core.app
-        .get_webview_window(crate::workspace::MAIN)
-        .or_else(|| core.app.webview_windows().into_values().next())
+        .window(crate::workspace::MAIN)
+        .or_else(|| core.app.windows().into_values().next())
 }
 
 /// An editor's name for "Open with <name>": its file's name without ".exe" (`editorName`).

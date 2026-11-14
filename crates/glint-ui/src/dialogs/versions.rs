@@ -52,8 +52,8 @@ pub struct Source {
 pub fn core_source(cx: &App) -> Source {
     let host = cx.try_global::<core_bridge::Core>().and_then(|core| {
         core.app
-            .get_webview_window(crate::workspace::MAIN)
-            .or_else(|| core.app.webview_windows().into_values().next())
+            .window(crate::workspace::MAIN)
+            .or_else(|| core.app.windows().into_values().next())
     });
     let need = move || host.clone().ok_or_else(|| "Windows didn't answer".to_string());
     let (h1, h2, h3) = (need.clone(), need.clone(), need);

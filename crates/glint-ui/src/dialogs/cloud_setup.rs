@@ -292,7 +292,7 @@ impl Backend for CoreBackend {
     }
 
     fn authorize(&self, help: String) -> Fut<String> {
-        let Some(window) = self.app.get_webview_window(crate::workspace::MAIN) else {
+        let Some(window) = self.app.window(crate::workspace::MAIN) else {
             return Box::pin(async { Err(t!("Glint's window isn't open").to_string()) });
         };
         flat(glint_core::rclone::rclone_authorize(window, help))

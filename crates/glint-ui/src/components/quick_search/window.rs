@@ -32,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowRect, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
 };
 
-/// The label core knows this window by (`get_webview_window("quick")`), for `open_item`'s owner and drag-out.
+/// The label core knows this window by (`window("quick")`), for `open_item`'s owner and drag-out.
 pub const LABEL: &str = "quick";
 /// The window's size in logical pixels (`inner_size(640.0, 440.0)`).
 const WIDTH: f32 = 640.;

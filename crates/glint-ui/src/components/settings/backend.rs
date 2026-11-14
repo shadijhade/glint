@@ -225,7 +225,7 @@ impl CoreBackend {
 
     /// The main window core's calls take as their owner, or why there is none.
     fn window(app: &host::AppHandle) -> Result<host::Window, String> {
-        app.get_webview_window(crate::workspace::MAIN)
+        app.window(crate::workspace::MAIN)
             .ok_or_else(|| crate::t!("Glint's window isn't open").to_string())
     }
 }
