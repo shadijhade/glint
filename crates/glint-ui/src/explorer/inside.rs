@@ -248,8 +248,9 @@ struct Elapsed {
 /// Reads one of ripgrep's lines. Only `match` and `summary` messages are used; anything else, and text that
 /// isn't JSON, is skipped.
 fn parse_line(line: &str) -> Option<Said> {
-    // The JSON always starts with the type field, so most lines are told apart without parsing them.
-    if !line.starts_with(r#"{"type":"match""#) && !line.starts_with(r#"{"type":"summary""#) {
+    // Most lines are told apart without parsing them: the JSON starts with the type field, except ripgrep 15's
+    // summary, which ends with it.
+    if !line.starts_with(r#"{"type":"match""#) && !glint_core::is_rg_summary(line) {
         return None;
     }
     let parsed: Line = serde_json::from_str(line).ok()?;
@@ -766,10 +767,18 @@ mod tests {
                 line("C:\\x\\a.txt", "    the needle is here\n", 3, &[(8, 14)]),
                 "not json".into(),
                 r#"{"type":"summary","data":{"elapsed_total":{"secs":1,"nanos":500000000}}}"#.into(),
+                // ripgrep 15 writes the summary with its type last.
+                r#"{"data":{"elapsed_total":{"secs":2,"nanos":0}},"type":"summary"}"#.into(),
             ],
         };
         let said = parse(&event);
-        assert_eq!(said.len(), 2);
+        assert_eq!(said.len(), 3);
+        assert_eq!(
+            said[2],
+            Said::Summary {
+                elapsed_ms: Some(2000.)
+            }
+        );
         let Said::Matches(matches) = &said[0] else {
             panic!("matches first")
         };
