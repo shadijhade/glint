@@ -154,8 +154,6 @@ pub enum MenuEvent {
     Media { paths: Vec<String>, tool: MediaTool },
     /// "Edit song details…" (`openSongs`).
     EditSongs { paths: Vec<String> },
-    /// "Export as PDF" of Markdown (`pdfFromMarkdown`) or of Typst (`exportTypstPdf`).
-    ExportPdf { paths: Vec<String>, typst: bool },
     /// "Convert document…" (`openDocConvert`).
     ConvertDocument { paths: Vec<String> },
     /// "Query N files together…" (`queryTogether`).

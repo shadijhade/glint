@@ -150,24 +150,6 @@ pub(crate) fn start(cx: &mut App) {
         .detach();
         return;
     }
-    // `look17:pdf|<file.md>`: Export as PDF on the Markdown file (the PDF lands beside it), left open for a look.
-    if let Some(file) = script.strip_prefix("look17:pdf|") {
-        let file = file.to_string();
-        let folder = glint_model::paths::parent_path(&file);
-        explorer::explorer(cx).update(cx, |e, cx| e.navigate(folder, Default::default(), cx));
-        cx.spawn(async move |cx| {
-            cx.background_executor().timer(Duration::from_millis(900)).await;
-            cx.update(|cx| {
-                if let Some(main) = startup::main_window(cx) {
-                    let _ = main.update(cx, |_, window, cx| {
-                        crate::dialogs::doc_convert::export_pdf(window, cx, vec![file], false)
-                    });
-                }
-            });
-        })
-        .detach();
-        return;
-    }
     // `map:<folder>`: the folder's disk usage map, left open for a look.
     if let Some(folder) = script.strip_prefix("map:") {
         let folder = folder.to_string();
@@ -201,7 +183,7 @@ pub(crate) fn start(cx: &mut App) {
         return;
     };
     let (name, folder) = (name.to_string(), PathBuf::from(folder));
-    if !["ops", "wave8", "wave9", "wave11"].contains(&name.as_str()) {
+    if !["ops", "wave8", "wave9"].contains(&name.as_str()) {
         eprintln!("glint: GLINT_SELFTEST: unknown script {script:?}");
         return;
     }
@@ -209,7 +191,6 @@ pub(crate) fn start(cx: &mut App) {
         let log = match name.as_str() {
             "wave8" => wave8_checks(&folder, cx).await,
             "wave9" => wave9_checks(&folder, cx).await,
-            "wave11" => wave11_checks(&folder, cx).await,
             _ => ops(&folder, cx).await,
         };
         let _ = std::fs::write(folder.join("selftest.log"), log.join("\r\n"));
@@ -635,26 +616,4 @@ async fn wave9_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     log
 }
 
-/// `GLINT_SELFTEST=wave11:<folder>` (a scratch folder holding `notes.md` and `doc.typ`): both exported to PDF in
-/// process (Markdown through the Typst mapping, Typst directly), each PDF checked to begin with `%PDF`.
-async fn wave11_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
-    let mut log = Vec::new();
-    let check = |log: &mut Vec<String>, step: &str, ok: bool| {
-        log.push(format!("{} {step}", if ok { "OK  " } else { "FAIL" }));
-        ok
-    };
-    for (name, typst) in [("notes.md", false), ("doc.typ", true)] {
-        let file = folder.join(name).to_string_lossy().into_owned();
-        let pdf = folder.join(name).with_extension("pdf");
-        in_main(cx, |window, cx| {
-            crate::dialogs::doc_convert::export_pdf(window, cx, vec![file.clone()], typst)
-        });
-        let made = wait_for(cx, Duration::from_secs(60), |_| {
-            std::fs::read(&pdf).is_ok_and(|bytes| bytes.len() > 500 && bytes.starts_with(b"%PDF"))
-        })
-        .await;
-        let size = std::fs::metadata(&pdf).map(|m| m.len()).unwrap_or(0);
-        check(&mut log, &format!("{name} to PDF: {size} bytes"), made);
-    }
-    log
-}
+

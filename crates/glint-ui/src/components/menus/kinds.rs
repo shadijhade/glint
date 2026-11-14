@@ -146,11 +146,6 @@ pub fn can_convert_doc(e: &FileEntry) -> bool {
     readable(e) && !e.dir && has(DOC_READS, &ext_of(&e.name))
 }
 
-/// A Typst file, for Export as PDF (`isTypst`).
-pub fn is_typst(e: &FileEntry) -> bool {
-    readable(e) && !e.dir && ext_of(&e.name) == "typ"
-}
-
 /// A song whose details Glint edits (`isSong`).
 pub fn is_song(e: &FileEntry) -> bool {
     !e.dir && readable(e) && has(SONGS, &ext_of(&e.name))
@@ -250,7 +245,6 @@ mod tests {
     fn documents_songs_and_shrinkables_use_the_dialogs_lists() {
         assert!(can_convert_doc(&file("C:\\x", "a.docx", 1, 0)));
         assert!(!can_convert_doc(&file("C:\\x", "a.png", 1, 0)));
-        assert!(is_typst(&file("C:\\x", "a.typ", 1, 0)));
         assert!(is_song(&file("C:\\x", "a.flac", 1, 0)));
         assert!(can_shrink(&file("C:\\x", "a.mp4", 1, 0)));
         assert!(!can_shrink(&file("C:\\x", "a.txt", 1, 0)));

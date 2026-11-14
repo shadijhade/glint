@@ -1100,9 +1100,6 @@ impl Workspace {
             MenuEvent::ConvertPictures { paths } => dialogs::convert::open(window, cx, paths.clone()),
             MenuEvent::Media { paths, tool } => dialogs::media::open(window, cx, paths.clone(), *tool),
             MenuEvent::EditSongs { paths } => dialogs::song::open(window, cx, paths.clone()),
-            MenuEvent::ExportPdf { paths, typst } => {
-                dialogs::doc_convert::export_pdf(window, cx, paths.clone(), *typst)
-            }
             MenuEvent::ConvertDocument { paths } => dialogs::doc_convert::open(window, cx, paths.clone(), None),
             MenuEvent::QueryTogether { paths } => dialogs::data_tools::query_together(window, cx, paths.clone()),
             MenuEvent::ConvertData { paths } => dialogs::data_tools::convert_data(window, cx, paths.clone()),

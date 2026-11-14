@@ -251,14 +251,6 @@ fn several_items_get_plural_labels_and_only_what_works_on_many() {
     let elsewhere = file("C:\\y", "gamma.txt", 1, 0);
     let menu = item_menu(&[text("alpha.txt"), elsewhere], &ctx());
     assert!(find(&menu, "Show more options").is_none());
-    // What only some of them can do is offered for those.
-    let menu = item_menu(&[text("alpha.txt"), text("beta.md")], &ctx());
-    match find(&menu, "Export as PDF").map(|e| e.run.clone()) {
-        Some(Run::Ask(MenuEvent::ExportPdf { paths, typst })) => {
-            assert_eq!((paths, typst), (vec!["C:\\x\\beta.md".to_string()], false))
-        }
-        other => panic!("{other:?}"),
-    }
 }
 
 #[test]

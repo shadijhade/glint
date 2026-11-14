@@ -99,7 +99,6 @@ pub mod svg_image;
 #[cfg(test)]
 mod tests;
 /// Typst documents typeset (TypstView.tsx).
-pub mod typst_view;
 
 pub use choose::{choose, effective_view, views, Body, Choice, Fallback, View};
 pub use frame::{chosen, Chosen, EntryEvent, EntryView, Place};

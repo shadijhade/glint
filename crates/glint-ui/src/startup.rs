@@ -76,8 +76,6 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
     // Early, before the saved state is first written: the updater tells a first start after an update by it. (A
     // secondary window's stays idle; see `Updater::start`.)
     start_updater(cx);
-    // The system fonts Typst sets documents in, found once in the background (Typst previews, PDF export).
-    crate::typst_engine::warm_fonts();
     // Git's status for the folders shown, and File Explorer's on-demand folders the menus offer to hide.
     crate::components::git::init(cx);
     explorer::explorer(cx).update(cx, |e, cx| e.refresh_on_demand(cx).detach());

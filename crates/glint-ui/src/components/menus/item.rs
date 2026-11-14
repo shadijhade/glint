@@ -20,7 +20,6 @@ use glint_model::entries::{
     attr, cloud_state, is_archive_file, is_archived, is_browsable, is_closed, is_cloud_file, is_recycled, is_remote,
     CloudState, FileEntry, InArchive,
 };
-use glint_model::file_types::is_markdown;
 use glint_model::paths::{is_folder_path, is_gallery, is_recent, is_recycle_bin, parent_path, same_path};
 
 /// The facts about the pane the items are in. Built by the host from the explorer, the saved state and
@@ -657,36 +656,6 @@ pub fn item_menu(targets: &[FileEntry], c: &ItemCtx) -> Vec<Node> {
                 }),
             ],
         )));
-    }
-    if !fixed && targets.iter().any(is_markdown) {
-        m.push(
-            Entry::ask(
-                t!("Export as PDF"),
-                IconName::FileDown,
-                MenuEvent::ExportPdf {
-                    paths: targets
-                        .iter()
-                        .filter(|e| is_markdown(e))
-                        .map(|e| e.path.clone())
-                        .collect(),
-                    typst: false,
-                },
-            )
-            .node(),
-        );
-    }
-    if !fixed && targets.iter().any(is_typst) {
-        m.push(
-            Entry::ask(
-                t!("Export as PDF"),
-                IconName::FileDown,
-                MenuEvent::ExportPdf {
-                    paths: paths.clone(),
-                    typst: true,
-                },
-            )
-            .node(),
-        );
     }
     if !fixed && targets.iter().any(can_convert_doc) {
         m.push(

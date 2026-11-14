@@ -38,7 +38,6 @@ mod startup;
 pub mod state;
 pub mod theme;
 /// Typst in process: a World over the disk and the system fonts, compiling to pages and PDF.
-pub mod typst_engine;
 /// Glint keeping itself up to date: latest.json, the signed installer, the Update button.
 pub mod updater;
 pub mod workspace;

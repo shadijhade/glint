@@ -9,8 +9,6 @@
 //! A document that's mostly Arabic, Persian or Hebrew is marked so (`lang`, `dir`), so its PDF, Word and
 //! HTML read right to left.
 //!
-//! Typst also gives .typ files a preview (their PDF, made into Glint's cache) and Export as PDF, unless
-//! they import Typst packages, which download from the internet.
 
 use crate::actions::{self, Job, Output, Progress, Report};
 use crate::fsx::blocking;
@@ -226,29 +224,6 @@ fn direction_of(text: &str) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-/// A .typ file's preview: its PDF, made into Glint's cache (made again only when the file changed).
-pub async fn typst_preview(path: String) -> Result<String, String> {
-    blocking(move || {
-        let file = PathBuf::from(&path);
-        let modified = fs::metadata(&file).and_then(|m| m.modified()).map_err(|e| e.to_string())?;
-        let stamp = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        let cache = crate::tools::data_dir().ok_or("Glint's data folder isn't available")?.join("typst-previews");
-        fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-        let key = format!("{:016x}-{stamp}", crate::media_tools::seahash(&path.to_lowercase()));
-        let out = cache.join(format!("{key}.pdf"));
-        if !out.is_file() {
-            // Older previews of the same file go.
-            let prefix = key.split('-').next().unwrap_or_default().to_string();
-            for old in fs::read_dir(&cache).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&prefix)) {
-                let _ = fs::remove_file(old.path());
-            }
-            compile_typst(&file, file.parent().unwrap_or(Path::new(".")), &out)?;
-        }
-        Ok(out.to_string_lossy().into_owned())
-    })
-    .await
 }
 
 #[cfg(test)]
