@@ -109,7 +109,7 @@ pub fn service_name(kind: &str, providers: &[Provider]) -> SharedString {
 /// (`remoteNameFor`). `taken` are the names there already, compared in lower case.
 ///
 /// NOTE(port): the TypeScript decomposed accents first (NFKD), so "é" became "e"; here an accented letter
-/// becomes a dash, which only matters for a name that has one (the same as `devices::remote_id`).
+/// becomes a dash, which only matters for a name that has one (the same as `clouds::remote_id`).
 pub fn remote_name_for(name: &str, taken: &[String]) -> String {
     let mut base = String::new();
     for ch in name.to_lowercase().chars() {
@@ -193,7 +193,7 @@ pub fn service_icon(kind: &str) -> IconName {
 /// the connections there are.
 pub fn connection_for(name: &str, remote: &str, kind: &str, taken_ids: &[String]) -> RemoteConnection {
     RemoteConnection {
-        id: crate::components::settings::devices::remote_id(name, taken_ids),
+        id: crate::components::settings::clouds::remote_id(name, taken_ids),
         name: name.to_string(),
         kind: glint_model::store::RemoteKind::Rclone,
         rclone: Some(remote.to_string()),
@@ -961,7 +961,7 @@ impl Setup {
         }
         let taken: Vec<String> = self.taken_ids();
         let mut made = connection.clone();
-        made.id = crate::components::settings::devices::remote_id(&name, &taken);
+        made.id = crate::components::settings::clouds::remote_id(&name, &taken);
         made.name = name;
         self.done = true;
         cx.emit(SetupEvent::Done(made));

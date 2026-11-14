@@ -901,9 +901,6 @@ impl Workspace {
             SidebarRequest::ContextMenu { path, position } => self
                 .menus
                 .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
-            SidebarRequest::SendToDevice { id, paths } => {
-                dialogs::nearby::send_to_device(window, cx, id.clone(), paths.clone())
-            }
         }
     }
 
@@ -1112,9 +1109,6 @@ impl Workspace {
             }
             MenuEvent::BackUp { folder } => dialogs::backup::open(window, cx, folder.clone()),
             // Sending and sharing.
-            MenuEvent::SendToDevice { device, paths } => {
-                dialogs::nearby::send_to_device(window, cx, device.clone(), paths.clone())
-            }
             MenuEvent::SendNearby { paths } => {
                 dialogs::nearby::open(window, cx, paths.clone());
             }

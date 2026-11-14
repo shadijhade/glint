@@ -73,7 +73,7 @@ static FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
 
 fn own_info(port: u16, announce: Option<bool>) -> Info {
     Info {
-        alias: format!("Glint on {}", crate::devices::this_pc()),
+        alias: format!("Glint on {}", std::env::var("COMPUTERNAME").unwrap_or_else(|_| "This PC".into())),
         version: "2.1".into(),
         device_model: Some("Glint".into()),
         device_type: Some("desktop".into()),

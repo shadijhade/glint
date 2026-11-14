@@ -24,7 +24,6 @@ pub mod data_lens;
 pub mod dedup;
 pub mod duck;
 pub mod defender;
-pub mod devices;
 pub mod dialogs;
 pub mod docconvert;
 // (window/app module, rewritten for GPUI) mod dragdrop;

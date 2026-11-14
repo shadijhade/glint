@@ -1,4 +1,4 @@
-//! Files On-Demand for remotes: a remote connection (an rclone cloud, S3, WebDAV, SFTP, a paired PC)
+//! Files On-Demand for remotes: a remote connection (an rclone cloud, S3, WebDAV, SFTP)
 //! shown in File Explorer, and every app's Open dialog, as a folder of placeholders, with Windows' Cloud
 //! Files API, as OneDrive does: names and sizes come when a folder is opened, a file's bytes when an app
 //! reads it, downloaded through Glint's remote clients (remote/). Read-only in this version: deleting or
@@ -67,25 +67,23 @@ pub async fn ondemand_unmount(id: String) -> Result<(), String> {
     .await
 }
 
-/// A remote's placeholders in `folder`, and gone again (for the end-to-end test in devices.rs).
-#[cfg(test)]
-pub(crate) fn mount_folder(id: &str, folder: &std::path::Path) -> Result<(), String> {
-    imp::mount(id, folder)
-}
-
-#[cfg(test)]
-pub(crate) fn unmount_folder(id: &str, folder: &std::path::Path) -> Result<(), String> {
-    imp::unmount(id, folder)
-}
-
-/// Connects the remotes shown in File Explorer again, as Glint starts.
+/// Connects the remotes shown in File Explorer again, as Glint starts (the app has sent its connections by
+/// then). One whose connection is gone (a paired PC's, since 0.12, or one removed while Glint was closed) has its
+/// placeholders taken out of File Explorer instead.
 pub fn start() {
     let mounts = saved();
     if mounts.is_empty() {
         return;
     }
     std::thread::spawn(move || {
-        for mount in mounts {
+        let (kept, gone): (Vec<Mount>, Vec<Mount>) = mounts.into_iter().partition(|m| crate::remote::is_configured(&m.id));
+        for mount in &gone {
+            let _ = imp::unmount(&mount.id, &PathBuf::from(&mount.folder));
+        }
+        if !gone.is_empty() {
+            save(&kept);
+        }
+        for mount in kept {
             let _ = imp::mount(&mount.id, &PathBuf::from(&mount.folder));
         }
     });
