@@ -1,496 +1,360 @@
-# Glint: next release plan
+# Glint 0.12: lighter, quicker, tidier
 
-> **Note (0.10):** this plan was written when Glint's interface was a Tauri/WebView2 app. The interface is GPUI now (`crates/glint-ui`) and the engine's Rust files live in `crates/glint-core/src` (links here point there); the plan's mentions of `.tsx` files, WebView2, Vite, three.js, SpessaSynth and the like, and its test counts, describe the old build and are kept as the record of what was planned and checked.
+*Planned 2026-11-14 from master at `47c33fa` and approved the same day; nothing is built yet. This file is the brief
+for whoever implements it: start at M0, keep the numbers in the table at the end. The plans for 0.9 to 0.11 that
+were here are in git history (`git show 47c33fa:NEXT_RELEASE.md`).*
 
-*Part 1 (reviewed and built 2026-11-09) is on master as 373b14e, not released. Part 2 was planned and built the same day and is on master as cb203c0, not released either. Part 3 is a list of candidates to choose from, not a plan yet.*
+## Context
 
-## Part 3: hidden gems to review (listed 2026-11-09)
+0.10 and 0.11 moved Glint to a native window and added a lot. This release adds nothing: it removes what is dead or
+not worth its weight, makes what stays cheaper, and repairs what the move dropped. The list comes from an audit of
+`47c33fa`: the 0.11.0 release build read symbol by symbol (`scripts/dev/size-by-crate.py`), every function traced
+from the app's entry points (`scripts/dev/unreached-fns.py`), and two read-only sweeps of the UI and the engine.
+Items marked **V** were confirmed by reading the code; **S** items come from the sweeps and must be confirmed (and
+measured) before they are changed.
 
-*Each item was checked against what Glint already has: the 34 tools in [tools.rs](crates/glint-core/src/tools.rs), the crates and npm packages, and parts 1 and 2 with their "if there's room" and "cut" tables. Nothing here repeats them. Versions and licenses were checked on 2026-11-09, and the seven rules still apply. Effort: **S** is about half a day, **M** a day or two, **L** more.*
+**What the audit found**
+- `Glint.exe` is **174.1 MB** (setup 45.75 MB, MSIX 68.1 MB; the Tauri exe was 53 MB): 124.5 MB of code, 43.2 MB of
+  read-only data, 964 crates. Biggest crates in the code: glint-ui 14.6 MB, gpui 10.2 MB, glint-core 6.6 MB, tokio
+  5.9 MB (one task harness per call site, 11,564 symbols). What a dependency takes with it (it and every crate only
+  it brings in, estimates): **Typst 18.5 MB** (81 crates), **Mermaid (merman) 15.9 MB** (21), **iroh 4.5 MB** (48),
+  tantivy 2.6 MB, gix 2.4 MB, rusqlite 1.4 MB, RaTeX 1.2 MB. Their data and unwind tables come on top.
+- **Six background services the old app started once its page had painted are never started since 0.10** (the old
+  `app_ready`: `git show b55e18b^:src-tauri/src/lib.rs`, lines 222-242): `content::start`, `media_ai::start`,
+  `devices::start`, `ondemand::start`, `backup::start_scheduler`, `dialogs::listen`. So the content index does not
+  catch up after a restart, daily and weekly backups never run, remotes shown in File Explorer are not connected
+  again, and `Ctrl+Alt+G` does nothing. The README promises all four.
+- Hot paths still do per-key and per-folder work nobody sees (part D), the copy queue's progress event is quadratic,
+  and the index service repeats per-hit work and never cancels a stale scan (parts E, F).
 
-### Build status (part 3, started 2026-11-09)
-
-You picked H1, H2, H4, H9 and H19 on 2026-11-09. All five are built and tested in a release test copy; nothing is committed yet.
-
-- **H1 Compress in place** ([wof.rs](crates/glint-core/src/wof.rs), CompressInPlaceDialog.tsx): measure, compress a few files at a time, decompress, and Undo (by an id kept for the run). WOF hides its reparse point from folder listings, so each file that might be compressed is asked, in parallel. The estimate compresses a sample of at most 6 MB for real with each algorithm, in a hidden file on the same drive. Read-only files are compressed too, dates stay, and the user's own files need no admin rights. It's in the file menu (Compress to → In place), Ctrl+K, and Make smaller's row for folders. Measuring node_modules (24,000 files) takes 0.6 s, Program Files\Git 0.9 s. In the test copy, 7.1 MB of text took 284 KB with XPRESS 8K, and Undo put it back.
-- **H2 Drive health** ([drivehealth.rs](crates/glint-core/src/drivehealth.rs), DriveHealth.tsx): no admin rights and no change to the service after all. A disk opened with no access rights still answers `IOCTL_STORAGE_QUERY_PROPERTY` (the NVMe health log, the temperature), `IOCTL_STORAGE_GET_COUNTERS`, and `IOCTL_STORAGE_PREDICT_FAILURE` (a SATA drive's SMART table and its own prediction). This PC shows a badge on each drive (its temperature, or Check or Failing), a banner when a disk isn't healthy, and a details dialog. This PC's NVMe drive (5% of its life used, 47 TB written) and its SATA SSD both read.
-- **H4 Old text encodings** ([textenc.rs](crates/glint-core/src/textenc.rs)): byte order marks, UTF-16 without one, valid UTF-8, else chardetng's guess with this PC's code page as the region hint. Text previews get an encoding chip (Read as…, Convert to UTF-8); Search inside files instantly reads text files in their own encoding, and re-reads once the ones it indexed garbled; meaning search's notes too. Convert to UTF-8 runs through actions.rs: in the file's place, the original recycled, Ctrl+Z, a byte order mark for CSV and TSV (Excel reads UTF-8 by it), the date kept. Also in Ctrl+K for selected text files.
-- **H9 Word documents** (DocxView.tsx, docx-preview 0.4.1, Apache-2.0): in a shadow root, loaded only when needed (a 171 KB chunk). Pages are scaled to the pane, or the text flows to it when the pane is narrower than 520 px; a document that doesn't say its page size gets Word's A4. Links open in the browser and embedded HTML isn't shown. An Arabic document lays out right to left.
-- **H19 mimalloc**, in Glint.exe only (crate 0.1.52, mimalloc 3.3.2 by default). `Glint.exe bench`, release builds, two runs each: the 100,000-file folder 41.7 → 29.2 ms (its sort 11.8 → 4.7 ms), WinSxS 22.7 → 18.3 ms, System32 2.3 → 1.5 ms; searches (in the service) unchanged. The service keeps Windows' allocator: it can't be measured without installing it.
-- **Checks**: cargo test 315 pass, clippy `-D warnings` clean, tsc and vite build clean. In a release test copy, scratchpad e2e-h.mjs passed 20 of 20: encodings read and converted, compress, measure, Undo, drive health, Word documents in the pane (reflowed) and in Quick Look (pages), the encoding menu, the Compress in place dialog and This PC's badges and details on screen.
-
-### Top picks: small, with little or nothing to download
-
-| # | Feature | Engine | Why | Effort |
-| :--- | :--- | :--- | :--- | :--- |
-| H1 | **Compress in place**: folders take less space and still open normally (games, apps, SDKs, old projects). The saving is estimated first, and Undo decompresses | Windows' transparent compression (WOF: XPRESS 4K–16K or LZX), called directly through `WofSetFileDataLocation`. It's the engine behind `compact /exe` and [CompactGUI](https://github.com/IridiumIO/CompactGUI) | Nothing to download. On this PC, without admin, LZX stored a 5.6 MB text file in 20 KB. Photos, videos and archives are skipped because they don't shrink. A file an app rewrites is stored uncompressed again | S–M |
-| H2 | **Drive health** in This PC: temperature, wear, read and write errors, hours used, and a warning on a drive that's failing | Windows' storage reliability counters (`MSFT_StorageReliabilityCounter`), read by the index service | Reading them needs admin (refused here, unelevated), and the service runs as SYSTEM and updates itself. [smartmontools](https://www.smartmontools.org/) (`smartctl -j`, GPL-2.0) comes in only if full SMART attributes and self-tests are wanted later | M |
-| H3 | **Test drive speed** on a drive's menu: read and write speeds, for large and small blocks | [DiskSpd](https://github.com/microsoft/diskspd) 2.3 (Microsoft, MIT, 3.4 MB) | It's what CrystalDiskMark runs underneath. It writes a test file on that drive, then deletes it | S |
-| H4 | **Old text files read right**: legacy encodings (Arabic Windows-1256, Cyrillic, Chinese…) detected in previews, the content index and subtitles, plus **Convert to UTF-8** | [chardetng](https://docs.rs/crate/chardetng) 1.0 (Firefox's detector, pure Rust, Apache-2.0/MIT), over encoding_rs, which is already in the build | Old Arabic .txt and .srt files show as gibberish today, and search misses their words | S |
-| H5 | **Steady video**: shaky phone videos stabilized, in Media | FFmpeg's vid.stab filters, in two passes | Already in the essentials build Glint installs, so no new tool | S |
-| H6 | **Clean up a recording**: one click removes background noise, evens out the volume and trims long silences | FFmpeg's `afftdn` and `silenceremove`, plus the two-pass `loudnorm` Glint already has. Optionally [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) 0.5.6 (`deep-filter.exe`, Rust, MIT/Apache-2.0, 25.6 MB) | FFmpeg removes steady hiss and hum. DeepFilterNet also removes keyboards, traffic and other voices, but it's a second engine for one job (rule 6), so it's your call | S, or M with DeepFilterNet |
-| H7 | **Motion photos**: the short video inside Samsung and Google phone photos plays in Quick Look, with **Save the video** and **Keep only the photo**. iPhone Live Photos (a photo plus a .mov) show as one item | ExifTool, already installed (`MotionPhotoVideo`). Glint reads the offsets in Google's XMP container itself | Recent Android phones take these by default, and File Explorer shows only the still | S–M |
-| H8 | **360° photos and videos** open as a sphere you drag around, not a stretched picture | [Photo Sphere Viewer](https://photo-sphere-viewer.js.org/) 5.15.1 (MIT), on the three.js Glint already ships | They're found by the picture's `GPano` projection tag | S |
-| H9 | **Word documents without Office**: headings, tables and pictures laid out in the preview | [docx-preview](https://www.npmjs.com/package/docx-preview) 0.4.1 (Apache-2.0) | Without Office, Windows has no previewer for .docx (none is registered on this PC), so the pane shows an icon. Right-to-left needs testing | S |
-| H10 | **Fonts**: sample text in Latin and Arabic at several sizes, every glyph, and the font's names and license. **Install for me** works without admin | WebView2's `FontFace` and [opentype.js](https://www.npmjs.com/package/opentype.js) 2.0.0 (MIT), plus the per-user fonts folder | Windows has no previewer for fonts either, so the pane shows an icon | S |
-
-### More good ones: more work, or a narrower audience
-
-| # | Feature | Engine | Why | Effort |
-| :--- | :--- | :--- | :--- | :--- |
-| H11 | **Name songs automatically**: unknown songs get their title, artist, album and cover from their sound, in Song details | [Chromaprint](https://github.com/acoustid/chromaprint)'s fpcalc 1.6.2 (LGPL-2.1, 1.7 MB) makes the fingerprint on the PC. [AcoustID](https://acoustid.org/webservice) and MusicBrainz look it up | It goes online, so only on **Look up online** (rule 4), and it sends only the fingerprint and the length. AcoustID is free for non-commercial use, needs a key registered for Glint, and allows 3 requests a second | M |
-| H12 | **Make bigger**: 2× or 4× sharper photos and screenshots, the other half of Make smaller | [upscayl-bin](https://github.com/upscayl/upscayl-ncnn) (Upscayl's maintained Real-ESRGAN for Vulkan, 2025-12-07, 2.3 MB; AGPL-3.0, run as a separate program like Ghostscript) with [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)'s BSD-3 models | It runs on any Vulkan graphics card (NVIDIA, AMD, Intel) and is hidden where there's none. It isn't the ONNX path that E15 deferred | M |
-| H13 | **Old Outlook mailboxes**: a .pst opens like a folder of emails, previewed and searched like .eml files. Attachments are saved with the internet's mark | Microsoft's [outlook-pst](https://github.com/microsoft/outlook-pst-rs) 1.2.0 crate (MIT, pure Rust) | People keep PSTs for decades and need Outlook to open them. Read-only, in a worker process | M |
-| H14 | **Event logs as tables**: .evtx files show time, level, source, ID and message, filtered, searchable and exportable to CSV | The [evtx](https://github.com/omerbenamram/evtx) 0.15.1 crate (2026-11-01, MIT/Apache-2.0) | For troubleshooting and IT. Exported logs open as they are; Windows' live logs need admin | S–M |
-| H15 | **What made this program?** in the File X-Ray: the installer type (Inno Setup, NSIS…), packer (UPX…), compiler, .NET or Electron | [Detect It Easy](https://github.com/horsicq/DIE-engine) 4.0.0 (`diec`, MIT, 30 MB, released 2026-11-05) | It tells whether an installer opens as a folder and whether a program is packed. 3.21 fixed a path-traversal bug (CVE-2026-43616), so pin 4.0.0 or newer | S |
-| H16 | **Diagrams**: draw.io files (.drawio, .drawio.svg, .drawio.png) and Excalidraw files drawn in the preview | draw.io's viewer ([jgraph/drawio](https://github.com/jgraph/drawio) 32.6.10, Apache-2.0) and [@excalidraw/excalidraw](https://www.npmjs.com/package/@excalidraw/excalidraw) 0.18.1 (MIT) | Common in projects, and nothing else in Windows shows them. Each loads only when such a file is opened | S–M |
-| H17 | **SVGs in Make smaller**: editor leftovers stripped, paths merged | [oxvg](https://github.com/noahbald/oxvg) 0.0.9 (MIT, a Rust port of SVGO), in-process | It's early (0.0.x), so try it against SVGO's own test files first | S |
-| H18 | **MIDI files play in Quick Look** | [SpessaSynth](https://www.npmjs.com/package/spessasynth_lib) 4.4.7 (Apache-2.0) with a General MIDI SoundFont | WebView2 can't play .mid. The SoundFont is most of the size (about 30 MB, downloaded on first use) | S |
-| H19 | **Faster memory allocation** in Glint and the service | [mimalloc](https://github.com/microsoft/mimalloc) (Microsoft, MIT; upstream v3.6.1, 2026-10-30) through the `mimalloc` crate 0.1.52 | One line in each program, kept only if the bench harness shows a gain (rule 7) | S |
-
-### Bigger bets
-
-| # | Feature | Engine | Why it's big | Effort |
-| :--- | :--- | :--- | :--- | :--- |
-| H20 | **Map of photos and GPS tracks**: photos with a location on a map, grouped by place, and .gpx, .kml and .geojson previews. Later, **Add location from a GPX track** | [MapLibre GL JS](https://maplibre.org/) 6.17.0 and [PMTiles](https://docs.protomaps.com/) 4.5.0 (both BSD-3). A Protomaps world map to zoom 5 (about 17 MB, OpenStreetMap data, credited) works offline. ExifTool's `-geotag` for the GPX step | Glint already reads photos' GPS. Street-level detail needs map tiles from the internet or a downloaded region, so it's offered, never automatic (rule 4) | M–L |
-| H21 | **Recover deleted files** beyond the Recycle Bin: recently deleted files on NTFS drives are listed and copied to another drive. Formatted camera cards and USB sticks are recovered by file signatures | The index service already reads the MFT, where a deleted file's record stays until it's reused. [PhotoRec](https://www.cgsecurity.org/wiki/PhotoRec) (GPL-2.0; 7.2 stable, 7.3 beta, Windows builds, scriptable with `/cmd`) handles the cards | Raw reads need the service, and recovered files must go to another drive. On SSDs, TRIM usually erases deleted data quickly, and the screen must say so plainly | L |
-
-### Worth watching: not ready yet
-
-| Idea | What's missing |
+**Decisions made (2026-11-14)**
+| Feature | Decision |
 | :--- | :--- |
-| Windows AI APIs on Copilot+ PCs: Image Super Resolution (up to 8×), Image Description, Object Erase and Phi Silica summaries, free on the NPU | Copilot+ PCs only, and they need package identity: the Store build has it, the installer build doesn't. Object Erase is still experimental |
-| App Actions on Windows: list and run the actions other apps register (Photos' Remove background, for example) from a file's menu | The catalog API (`Windows.AI.Actions.Hosting`) is still marked prerelease |
-| Translate subtitles and text files offline, Arabic included, with Firefox's engine | Arabic is on Firefox Translations' list, but the standalone engine ([bergamot-translator](https://github.com/browsermt/bergamot-translator)) hasn't changed since 2024-05, and the models repository was archived in 2025-12. The local AI bet would cover this |
-| Smooth motion (60 fps from 30) | [rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan)'s last build is from 2022 |
+| Mermaid diagrams | **Remove** (a mermaid block shows as code) |
+| Built-in Typst | **Remove**; `.typ` preview and Export as PDF are **dropped entirely** (`.typ` shows as text). Convert document keeps its PDF route through the pandoc and typst *tools* |
+| Paired devices (iroh) | **Remove** |
+| Photo, speech and meaning search (local AI) | **Remove all three** |
+| Calculator in Ctrl+K, everything else | Keep |
 
-### Looked at and left out
+**Intended outcome**: a 0.12.0 whose exe is roughly 40-55 MB smaller, whose idle and per-key costs are measurably
+lower, with the dropped services running again, and with no dead code or migration scaffolding left. Expected, not
+promised: the table in M0 decides.
 
-| Idea | Why |
-| :--- | :--- |
-| CompactGUI itself | A GPL-3.0 WPF app; H1 calls the same Windows API |
-| Real-ESRGAN's own Vulkan build | Its last binaries are from 2022; upscayl-bin is the maintained fork |
-| FFmpeg's `arnndn` noise models | Their repository has no license |
-| smartctl as H2's first engine | Windows' own counters need no download |
-| MarkItDown | doctext.rs and pandoc already turn documents into text and Markdown |
-| croc, magic-wormhole | sendme (iroh) already sends files by ticket |
-| xan, csvlens, tabiew | DuckDB covers them (rule 6) |
-| ouch | 7-Zip covers it |
-| dua, dust, kondo | pdu and Clean up cover them |
-| gifski | AGPL-3.0, and Media already makes GIFs with FFmpeg |
-| Writing disk images to USB sticks (Rufus-style) | One wrong drive gets erased, and caligula has no Windows build |
-| New Rust explorers for Windows from 2026 posts (MTT File Manager, PowerFolder) | Apps, not tools to integrate |
+## Ground rules
 
-### Decisions for you
+1. **Measure first, keep the numbers.** Run M0 before any change and again after each part; put both in the table at
+   the end of this file. A change that is not measurably better and is not a removal or a fix is reverted. Never
+   state a cause or a saving that was not measured: say "estimate".
+2. **Where to work.** The main checkout `C:\Repos\VisualStudioRepos\shadui-ripgrep`, branch `master` (no branches, no
+   PRs; `git pull` first, the user also works from a second PC). Commit locally, one commit per item id, only once the
+   user has said to commit as you go; **never push** without their word.
+3. **Build folder.** `$env:CARGO_TARGET_DIR = "E:/glint-gpui-target/ui"` (the existing cache; the checkout has no
+   `target/`). E: had ~31 GB free on 2026-11-14: when it drops under 10 GB delete old folders under
+   `debug\incremental` only, and say so. Never delete `E:\glint-gpui-target` itself, and touch nothing in
+   `D:\glint-build`, `D:\glint-head`, `D:\glint-target`.
+4. **The user's own Glint.** Before launching anything, check for a running `Glint*` process. A copy the user started
+   is left alone: do not kill it, overwrite its exe or run the e2e harness (it swaps the profile under it). Build to
+   another name and wait. Never click the "Instant search has an update" notice's Update button (UAC), and never run
+   an uninstaller of a test copy.
+5. **Builds to use.** Size: plain `cargo build --release -p glint -p shadui-index`. Speed: the windowed,
+   dev-behaving optimized build `cargo build --release -p glint --config "profile.release.package.glint-ui.debug-assertions=true"`
+   (the flag on glint-ui only, or it becomes a console program and every start measures 170 ms of console), copied to
+   `E:\glint-gpui-target\ui\perf\Glint-next.exe`. e2e: the debug build `cargo build -p glint`.
+6. **Checks before saying an item is done**: `cargo test --workspace` (write the output to a file and grep it; piping
+   into `head` cuts the run short), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`. After
+   each *part*: e2e `powershell -STA -File tests\e2e\run.ps1` (18 checks, ~100 s, takes the real mouse and keyboard:
+   **ask the user first**). A check that fails once is a fault until the app's log says otherwise
+   (`GLINT_FRAME_LOG=1`, `GLINT_E2E_STDERR=<file>`). Run the whole set again on the very last state.
+7. **Crates.** No new crate without the user's OK. After any change to dependencies: `npm run licenses`, commit
+   `THIRD_PARTY_CRATES.md`, `cargo deny check`. cargo-deny 0.20.2 and cargo-about 0.9.3 are not on PATH here (0.11 used
+   copies in a session's scratchpad): ask before installing them.
+8. **Vendored GPUI.** Every change under `vendor/` gets a row in `docs/gpui/VENDOR.md`.
+9. **Rules of the code** stay those of `docs/gpui/STANDARDS.md` (§3 Rust rules, §5 UI rules, §7 "Done means"):
+   never run modal loops or Win32 calls that message a GPUI window inside GPUI callbacks (`core_bridge::post_to_ui`),
+   `notify` during a draw is dropped (`window.on_next_frame`), test helpers must not return a window from under
+   `testing::lock()`.
+10. **Do not touch** (looks like clean-up, is not): the names `shadui-index`, `com.shado.shadui-ripgrep`,
+    `com.shado.glint.store`, `TAURI_SIGNING_PRIVATE_KEY*` (installed copies, user data and secrets depend on them);
+    `latest.json`'s format and the installer's command line (docs/releasing.md, "Change none of them"); the
+    `old_settings/` import (0.9.x users still arrive); the pre-made Quick Search window; `panic = "unwind"`
+    (`core_bridge::run` turns a panicking task into an `Err`); the "Ported from …tsx" tables in module docs (history,
+    not worth the churn).
 
-1. **Which items to build**: the top picks (H1–H10) as one batch, or your own list of numbers.
-2. **DeepFilterNet (H6)**: FFmpeg alone, or the stronger second engine?
-3. **Online look-ups** (H11's songs, H20's street maps): worth a consent step, or offline only?
-4. **The bigger bets (H20, H21)**: this release, or a later one? H2 and H21 change the index service, which then has to update itself on people's PCs (not yet tried on the real service).
+## M0. Baseline (before anything, then after each part)
 
-### Facts checked (2026-11-09)
-
-- On this PC: `compact /c /exe:lzx` worked unelevated (5.6 MB stored in 20 KB). `Get-StorageReliabilityCounter` unelevated was refused ("Access to a CIM resource was not available to the client"). No preview handler is registered for .docx, .ttf or .otf. encoding_rs 0.8.42 is already in Cargo.lock
-- [WofSetFileDataLocation](https://learn.microsoft.com/windows/win32/api/wofapi/nf-wofapi-wofsetfiledatalocation); [CompactGUI](https://github.com/IridiumIO/CompactGUI/releases) v4.0.0-beta.12, 2026-09-21, GPL-3.0
-- [DiskSpd 2.3](https://github.com/microsoft/diskspd/releases), 2026-09-04, MIT, `DiskSpd.ZIP`
-- [smartmontools 7.5](https://www.smartmontools.org/), 2025-04-30, GPL-2.0, a Windows setup program, winget `smartmontools.smartmontools`
-- [chardetng](https://docs.rs/crate/chardetng) 1.0.0 detects windows-1256 (Arabic, Persian, Urdu)
-- [Gyan's builds](https://www.gyan.dev/ffmpeg/builds/): libvidstab is in essentials, whisper only in full
-- [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet/releases) v0.5.6, 2023-08-31: `deep-filter-0.5.6-x86_64-pc-windows-msvc.exe`, 25.6 MB, MIT/Apache-2.0, repository still active (2026-11-06). [arnndn-models](https://github.com/richardpl/arnndn-models) has no license
-- ExifTool's [`MotionPhotoVideo`](https://exiftool.org/forum/index.php?msg=83607) for Samsung motion photos (JPEG and HEIC)
-- npm: Photo Sphere Viewer 5.15.1 (MIT), docx-preview 0.4.1 (Apache-2.0), opentype.js 2.0.0 (MIT), @excalidraw/excalidraw 0.18.1 (MIT), spessasynth_lib 4.4.7 (Apache-2.0), maplibre-gl 6.17.0 and pmtiles 4.5.0 (BSD-3-Clause)
-- [Chromaprint 1.6.2](https://github.com/acoustid/chromaprint/releases), 2026-10-15, `chromaprint-fpcalc-1.6.2-windows-x86_64.zip`. [AcoustID's web service](https://acoustid.org/webservice): free for non-commercial use, needs an application key, at most 3 requests a second, sends the fingerprint and duration
-- [upscayl-ncnn](https://github.com/upscayl/upscayl-ncnn/releases) 20251207, AGPL-3.0, Windows zip 2.3 MB. [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) is BSD-3-Clause; its own Vulkan build was last released in 2022
-- [outlook-pst](https://github.com/microsoft/outlook-pst-rs) 1.2.0, 2026-03-17, MIT
-- [evtx](https://github.com/omerbenamram/evtx/releases) v0.15.1, 2026-11-01
-- [Detect It Easy](https://github.com/horsicq/DIE-engine/releases) 4.0.0, 2026-11-05, MIT, `die_win64_4.0.0.zip` 29.9 MB. [CVE-2026-43616](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2026-43616) was fixed in 3.21
-- [draw.io](https://github.com/jgraph/drawio/releases) v32.6.10, 2026-11-04, Apache-2.0. [oxvg](https://github.com/noahbald/oxvg/releases) v0.0.9, 2026-10-05, MIT
-- [mimalloc](https://github.com/microsoft/mimalloc/releases) v3.6.1, 2026-10-30. The `mimalloc` crate 0.1.52 has a `v2` feature and no `v3` one, so v3 looks like its default (confirm when building)
-- [Protomaps downloads](https://docs.protomaps.com/basemaps/downloads). A zoom-5 world extract measured about 17 MB in an [older write-up](https://www.antoniogioia.com/protomaps-open-source-single-file-maps); v4 trimmed the low zooms further
-- [TestDisk & PhotoRec](https://www.cgsecurity.org/wiki/TestDisk_Download): 7.2 stable, 7.3 beta, Windows 64-bit builds
-- [Windows AI imaging APIs](https://learn.microsoft.com/windows/ai/apis/imaging): Copilot+ PCs, package identity required. [App Actions hosting](https://learn.microsoft.com/uwp/api/windows.ai.actions.hosting) is marked prerelease
-- [Firefox Translations](https://www.firefox.com/features/translate/) lists Arabic. mozilla/firefox-translations-models was archived on 2025-12-15, and browsermt/bergamot-translator was last pushed on 2024-05-12
-- [rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan/releases) was last released on 2022-10-29
-
----
-
-## Part 2 (planned 2026-11-09)
-
-### Build status (part 2, started 2026-11-09)
-
-- **G9 pins**: fd 10.5.2 (bundled binary replaced), ast-grep 0.51.1, YARA-X 1.23.0, Kingfisher 2.17.0, rclone 1.76.0, uv 0.13.7, jaq 3.1.2, onefetch 3.2.0; all eight downloaded and unpacked by `pinned_releases` (which now takes `TOOLS=id,id`). THIRD_PARTY_CRATES.md is left for release prep (cargo-about isn't installed on this PC).
-- **New tools** in tools.rs, the installer's Extra tools page (rows 27–32, group 7 Backups) and docs/tools.md: ab-av1 0.11.7, libjxl 0.12.0 (cjxl + djxl), Ghostscript 10.08.0 (its NSIS installer opened by 7-Zip, installed first when missing; Program Files\gs found too), pandoc 3.13, Typst 0.15.1, restic 0.19.1. All six downloaded and unpacked by `pinned_releases`.
-- **G1 Make smaller**: shrink.rs + ShrinkDialog.tsx (menu, Ctrl+K, Back to JPEG for .jxl). On real files: a 94 MB 1080p clip → 4.0 MB at VMAF 95 (H.264, 18 s) or 4.3 MB (HEVC); a 3.6 MB JPEG → 953 KB (MozJPEG 80) or 3.2 MB JPEG XL that djxl turns back into the identical file; a 3.2 MB BMP → 102 KB PNG; a 3.7 MB Word file → 405 KB; a 4.7 MB picture PDF → 435 KB (150 dpi). Dates modified kept; nothing bigger kept. HDR videos keep their colours as HEVC/AV1 (10-bit, colour tags passed on) and are refused as H.264.
-- **Fix found on the way**: Convert pictures failed ("rimage made nothing") for names with extra dots (`Screenshot 10.15.32.png`): rimage keeps every dot, convert.rs's lookup cut them.
-- **G2 Convert documents**: docconvert.rs + DocConvertDialog.tsx (menu, Ctrl+K), .typ previews (TypstView.tsx, cached PDFs) and Export as PDF for .typ. PDFs are two steps (pandoc → Typst source with its pictures in the work folder → `typst compile --root work`), since Typst refuses pandoc's absolute picture paths. Mostly-Arabic or Hebrew documents get `lang`/`dir=rtl` (checked: the PDF reads right to left). Word, HTML and Markdown (with an Arabic name) into PDF, Word, Markdown, HTML and EPUB all pass.
-- **G1 + G2 in the real app** (test copy, its own commands over CDP): 15 of 15 checks passed, Ghostscript installed for real through its installer and 7-Zip; both dialogs checked on screen from Ctrl+K.
-- **G4 books**: foliate-js vendored at commit 78914ae (src/vendor/foliate, MIT, SOURCE.md says what changed: zip.js from `@zip.js/zip.js` 2.24.0, PDF branch dropped); BookView.tsx in the preview for EPUB, MOBI, AZW3, FB2, FBZ, CBZ (loaded only when one is shown): contents, text size, dark pages, the place remembered, Read aloud with local voices only. CBR not done.
-- **G5**: songtags.rs (lofty: title, artist, album, album artist, track, total, year, genre, cover; copies take the songs' places, so Undo restores them; tested writing and clearing on a WAV with an Arabic artist) + SongDialog.tsx (one song or many; titles and tracks from file names; number the tracks); Media's **Even volume** (two-pass loudnorm, linear; a −48 LUFS recording came out at −16.0); a waveform under the audio player (decoded in the page, click to seek).
-- **G6**: SmallPreviews.tsx (lazy): vCard and iCalendar cards; .eml (postal-mime 4.1.4) and Outlook .msg (@kenjiuno/msgreader 1.29.0) with a sandboxed frame whose policy blocks everything from the internet, inline pictures kept, attachments opened through attachments.rs (saved to temp with the internet zone's mark); Krita/OpenRaster/Procreate/Sketch pictures (zip.js); Graphviz (@hpcc-js/wasm-graphviz 1.30.0; Word 97 .dot templates told apart); Mermaid files.
-- **G3 backups**: backup.rs (restic; plans in the data folder's backups.json, one repository "Glint backup" per chosen place, password in Credential Manager under Glint/backup/<place>, `cat config` exit codes 10/12 tell new from wrong-password; backup with JSON progress, skipped open files listed, exit 3 still a backup; then `forget --prune` 7/4/12 and a monthly `check`; Open/Compare/Restore/Restore a copy through `restore <snapshot>:<folder>` with `--include`, since `dump` writes to stdout; daily/weekly runs from a scheduler thread while Glint runs, with a notice) + BackupDialog.tsx (a drive or folder, or a cloud from rclone's remotes) and a "Glint's backups" section in Previous versions. Tested for real with restic 0.19.1: set up, two backups (the second adding only the changed file), versions, Open of a file and a folder with an Arabic name, a wrong password refused. Restore through the UI not tried yet.
-- **G7**: scanned PDFs into the content index (ocr::pdf_pages: pages drawn by Windows' PDF renderer, read by Windows OCR, up to 50 pages and 200 MB, only when the PDF has no text and pictures are on; tested on a JPEG-only PDF); files dropped on a paired PC in the sidebar are sent to it (Place's `dropAs="device:<id>"`, "Send to <PC>" on the drag). E15 (GPU/NPU) not done.
-- **Part 2 in the real app** (fresh test build): song details read, written from the name and read back (Arabic artist); Even volume; a backup set up, run twice (3 new, then 1 changed), two versions, a restored copy of a file and of a folder, Open from a backup, a wrong password refused; an attachment saved with the internet zone's mark: 13 of 14 (the miss was the harness reading Tauri's progress channel raw). On screen: EPUB and CBZ in the reader, contacts, an invite, an email (inline picture shown, the tracking picture not loaded, the attachment listed), an OpenRaster picture, Graphviz, Mermaid, the song's waveform with its new details, and the Back up, Song details and Even volume dialogs. After the lazy row lookup, applying a 100,000-file listing went 33 → 13 ms: that folder 82 → 68 ms on screen (README: 114), WinSxS 51 → 48 (73), System32 12.
-- **Checks**: cargo test 312 passed (16 ignored real-file ones run separately: shrinks_real_files, converts_real_documents, backs_up_and_restores_for_real, sort_speed_on_real_folders, pinned_releases), clippy -D warnings clean, both .check.ts, vite build. README's next-version list and docs/tools.md updated; Arabic added for the new menu items. Left for release prep: THIRD_PARTY_CRATES.md (cargo-about), the README benchmark table, and the hardware checks.
-- **G8 speed, measured**: sort_entries moves small records with a 32-byte key head and makes keys on several threads for big folders: WinSxS's sort 8.5 → 3.1 ms, 100,000 files 6.8 → 6.1 ms (moving the entries is the rest), identical order (property test at 25,000 names). The page's profile (marks list:start/arrived/decoded/apply/shown, kept for the bench) showed the path → row map, built on every listing, cost 20–30 ms per 100,000 rows (V8 flattening freshly joined path strings); it's now worked out only when a row is looked up. Before that fix: 100,000 files 82 ms on screen (README: 114), WinSxS 51 (73), System32 12. S3 (lazy dialogs) and S4 (thumbnails) not done: thumbnails already run in-process on up to 8 threads through Windows' photo provider, which also fills Windows' cache, so a faster decoder would have to bypass it.
-
-### The idea
-
-Part 1 made Glint **do things to files**: media, PDFs, data, metadata, disk images, encryption, phones. Part 2 finishes the jobs people still leave File Explorer for: **make files smaller**, **turn one kind of document into another**, **keep safe copies**, **read books**, **fix song details**. It also makes a 100,000-file folder open nearly as fast as a small one, and clears what's owed before a release: tool pins, notices, and the checks only real hardware can do.
-
-Part 1's seven rules still apply: no terminal, installed on first use, in-process when small, nothing leaves the PC unasked, undoable, one engine per job, measured.
-
-What Glint already does was checked first, so nothing here repeats it. Sandbox, file locks, batch rename with photo and song details, checksums, resizing and converting pictures, replace in files, folder compare and sync, the terminal, Clean up (Czkawka), Magika, Kingfisher, YARA-X, zoxide and meaning search are all in. There are no open GitHub issues.
-
-### Today's bench (this PC, release build of 373b14e)
-
-| Measure | In Rust | On screen (README) |
-| :--- | ---: | ---: |
-| A folder of 100,000 files: enumerate / sort / encode | 31 / 14 / 1.7 ms = 40 ms (3.9 MB sent) | 114 ms |
-| `C:\Windows\WinSxS`, 25,228 items | 11.6 / 11.7 / 1.3 ms = 23 ms | 73 ms |
-| Typo search `kernal32`, 3 drives, through the installed 0.9.0 service | 100 ms | |
-| Start: main 864 KB + vendor 281 KB of script, with about two dozen dialogs inside (a quarter of the page's source) | | launch to first folder 441 ms |
-
-Big folders spend about two-thirds of their time in the page, decoding and drawing. WinSxS's sort is half of its time in Rust. Typo search won't feel part 1's E16 until the service updates.
-
-### Core scope (recommended)
-
-#### G1. Make smaller
-
-One **Make smaller** for any selection, from the menu and `Ctrl+K`. It lists each file with the engine it will use and the saving (estimated from samples for videos, real as each one finishes), then saves beside the originals or replaces them (originals to the Recycle Bin, and Undo brings them back).
-
-- **Videos: looks the same, smaller.** [ab-av1](https://github.com/alexheretic/ab-av1) 0.11.7 (MIT, one `ab-av1.exe`) encodes short samples to find the lowest quality setting whose score stays above a target, then encodes the whole video with FFmpeg. The score is XPSNR, a filter built into every FFmpeg since 7.1 (so Gyan's essentials build works), or VMAF where the build has libvmaf. Progress comes as JSON lines (`--stdout-format json`). To check at build time: how it drives NVENC, AMF and Quick Sync, which Media already finds.
-- **Photos.** *Same JPEG, smaller*: MozJPEG through rimage (already a tool), never bigger, details kept. *JPEG XL, lossless*: `cjxl` from [libjxl](https://github.com/libjxl/libjxl) 0.12.0 (BSD-3-Clause) repacks a JPEG about 20% smaller, and **Back to JPEG** (`djxl`) gives back the very same file. Windows 11 opens JPEG XL (Microsoft's JPEG XL extension, and Photos), and Chrome decodes it by default from version 155.
-- **PNGs**: OxiPNG through rimage, lossless.
-- **PDFs full of pictures**: [Ghostscript](https://www.ghostscript.com) 10.08.0 rewrites them with pictures at 150 dpi (*for screens and mail*) or 300 dpi (*for print*). pdfcpu's optimize stays the lossless choice. Ghostscript is AGPL-3.0, so it runs as a separate program downloaded from Artifex's own release, in the Job Object with `-dSAFER`. Its installer is NSIS; to check at build time whether 7-Zip unpacks it (nothing in it runs), as Glint does with 7-Zip's own installer. pdfcpu can't do this job: its `images update` only swaps a picture for one of the same size, and not one with a mask.
-- **Word, PowerPoint and Excel files**: their pictures recompressed (PowerPoint's *Compress Pictures*, for all three, many files at once), by Glint's zip code and rimage.
-- **Folders**: the existing Compress, offered in the same dialog.
-
-#### G2. Convert documents
-
-[pandoc](https://pandoc.org) 3.13 (GPL-2.0-or-later, run as a separate program; winget `JohnMacFarlane.Pandoc`), with [Typst](https://typst.app) 0.15.1 (Apache-2.0; winget `Typst.Typst`) making its PDFs.
-
-- Right-click → **Convert document**: Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF, reStructuredText, Org and Jupyter notebooks into one another, to **PDF** without LaTeX or Word, and Markdown to **PowerPoint**.
-- pandoc runs with `--sandbox`, so it reads only the files it's given and nothing from the network. Typst compiles pandoc's output; a document that imports Typst packages is refused, since those download (rule 4).
-- The dialog says what's kept (text, headings, lists, tables, pictures, footnotes, links) and what isn't (Word's exact page layout). An exact-look PDF of a Word file stays Word's or Windows' printing job.
-- `.typ` files get a preview and **Export as PDF**. This moves up from part 1's *If there's room*, since Typst comes anyway.
-
-#### G3. Back up with restic
-
-[restic](https://restic.net) 0.19.1 (BSD-2-Clause; winget `restic.restic`).
-
-- Right-click a folder → **Back up…** to a USB drive, a network folder, or any cloud in Remote (restic's `rclone:` backend, pointed at Glint's rclone with `-o rclone.program`). Encrypted and deduplicated, each backup adding only what changed. The password goes into Windows Credential Manager, with a reminder to keep a copy elsewhere too: without it, the backup can't be read.
-- Backups appear in the Previous versions panel beside shadow copies, with the same **Open**, **Compare**, **Restore** and **Restore a copy** (`snapshots`, `ls` and `dump` with `--json`, `restore --include`).
-- They can run on a schedule through folder rules (daily or weekly), keeping 7 daily, 4 weekly and 12 monthly backups (`forget --prune`), with a monthly `check`. The folder shows when it was last backed up.
-- Not in the first version: files an app holds open (Outlook's PST) need a shadow copy and administrator rights (`--use-fs-snapshot`), so they're listed as skipped. Part 1's verdict stands: restic, not rustic, while rustic calls itself beta.
-
-#### G4. Books and comics
-
-[foliate-js](https://github.com/johnfactotum/foliate-js) (MIT, plain JavaScript, bundled and loaded only when needed).
-
-- EPUB, Kindle's MOBI and AZW3, FB2, and comics (CBZ; CBR through Glint's RAR reader) in the preview and a reading view. It has pages or scrolling, the contents, search, text size and dark pages, and remembers the page you stopped at. Glint's content index already reads EPUB text.
-- Windows hasn't had a built-in e-book reader since the old Edge, which read EPUB, was replaced in 2020. Books with DRM can't open, and the preview says so.
-- **Read aloud** with Windows' own voices, through the page's speech API. Only voices on this PC are offered; Edge's online voices are left out (rule 4).
-
-#### G5. Song details and sound
-
-No new tools: [lofty](https://github.com/Serial-ATA/lofty-rs), already used to read tags, and FFmpeg.
-
-- **Edit song details**: title, artist, album, track, year, genre and cover art, for MP3, FLAC, M4A, Ogg, Opus and WAV. Edit one song or many (fill in from file names, number the tracks), with Undo. ExifTool only reads MP3 tags; lofty writes them.
-- **Even out the volume**: two-pass EBU R128 (`loudnorm`) in Media, for podcasts, lectures, and music gathered from different sources.
-- The audio preview gets a **waveform**, and the trim handles that videos got in part 1.
-
-#### G6. Previews people run into
-
-Small readers, no new tools:
-
-- Contacts (`.vcf`) and calendar invites (`.ics`) as cards.
-- Emails (`.eml`, and Outlook's `.msg` read from its compound file), with their attachments listed and openable.
-- The pictures that Krita (`.kra`), OpenRaster (`.ora`), Procreate and Sketch files keep inside them.
-- Graphviz (`.dot`, `.gv`) drawn in the page (@hpcc-js/wasm-graphviz, Apache-2.0), and Mermaid files (`.mmd`) through the Markdown preview's Mermaid.
-
-#### G7. What part 1 left
-
-- **Scanned PDFs searchable**: for PDFs with no text in them, pages are drawn by Windows' PDF renderer (as thumbs.rs does) and read by Windows OCR into the content index, in the background below normal priority.
-- **Drop onto a device** in the sidebar. Send to <PC> is there; the drop target isn't.
-- **E15, AI on the GPU and NPU**, with photos batched (part 1's text below). It's what makes *Remove background* and searching for moments in videos practical later.
-
-#### G8. Speed
-
-- **S1. The first screen first.** Rust already sorts, so it can send the rows that fit on screen in a small first message and the rest after. The page draws them at once, decodes the rest into typed arrays, and makes row objects only for rows on screen, instead of 100,000 objects up front. Target: 100,000 files on screen in about 50 ms (114 now), WinSxS in about 35 (73 now).
-- **S2. Sorting.** Each name's sort key (case-folded, numbers compared as numbers) is worked out once, with a parallel sort above about 10,000 items. Target: WinSxS's sort from 11.7 ms to under 4.
-- **S3. A lighter start.** The dialogs load when first opened (`React.lazy`, fetched while the app is idle), not with the main script. Launch to first folder is measured before and after, and only a measured gain is claimed.
-- **S4. Thumbnails of new photos** (242 ms for the 30 on screen, about 220 a second): Windows' cache stays first, then JPEGs are decoded at reduced size by WIC on a pool of threads, and thumbnails are sent without BMP's uncompressed bulk. Target: twice as fast, on the README's 1,200 photos.
-- **S5. Ship part 1's E16.** Typo search falls from ~100 ms to ~10–25 ms only once the index service updates, so the release carries the new service and its self-update gets tried for real (G9).
-
-#### G9. Fixes and finish
-
-- **With you, on real hardware**: part 1's F17 list (the service updating itself under the SCM, Previous versions through it, two PCs paired, the MCP confirm dialogs clicked through), plus LocalSend with a real phone both ways and Send to my PC between two PCs.
-- **Tool pins behind their latest release**: fd 10.5.0 → 10.5.2 (bundled), ast-grep 0.51.1, YARA-X 1.23.0, Kingfisher 2.17.0, rclone 1.76.0, uv 0.13.7, jaq 3.1.2, onefetch 3.2.0; then `pinned_releases` to check them.
-- **Before the release**: third-party notices regenerated for the new crates (age, hyper and their dependencies) and three.js, and the README's benchmark table re-measured with the bench.
-
-### If there's room
-
-Part 1's list still stands (fq, Remove background, SigLIP 2, phones over MTP, editing zips in place, Paste as link, the history slider, osv-scanner, mergiraf, lazygit and scc, writable remotes), minus Typst, which is now in G2. New to it:
-
-| Feature | Engine | Why it isn't core |
+| Measure | How | 0.11.0 |
 | :--- | :--- | :--- |
-| **Glint as a viewer**: pictures, videos and PDFs opened from the desktop or another app straight into Quick Look | Glint (file associations, with the tray process already running) | Needs Default apps registration in the installer and the Store package, and a window of its own |
-| **Save as audio** for text, Markdown and e-books | Windows' voices | Read aloud (G4) covers most of it |
-| **Picture to SVG** (logos, scanned drawings) | [vtracer](https://github.com/visioncortex/vtracer) (MIT) | A small audience |
-
-### Still to decide: local AI actions
-
-Part 1's bet, refreshed. llama.cpp's daily builds (b12224, 2026-11-09) include Windows CPU, Vulkan, CUDA, OpenVINO, SYCL and ROCm builds. New: if **Ollama** or **LM Studio** is already on the PC (both serve an OpenAI-style API on the PC itself), Glint uses it and its models instead of downloading another 1–3 GB. The rest is unchanged: Summarize, Ask (answers grounded in the content index), Suggest names and Translate, with a small Apache-2.0 model chosen against an Arabic test set first.
-
-### Cut or later
-
-| Idea | Verdict | Why |
-| :--- | :--- | :--- |
-| yt-dlp | Cut | Downloading from video sites breaks most of their terms, and puts the Store listing at risk |
-| LibreOffice for Office → PDF | Cut | About 350 MB; pandoc and Typst cover structure, and Word or Windows' printing covers the exact look |
-| Tesseract, OCRmyPDF | Cut | Tesseract has no official Windows build and OCRmyPDF is a Python stack; Windows OCR already does the reading |
-| Syncthing | Cut | Folder rules (rclone) and devices (iroh) already sync |
-| jpegli | Later | It left libjxl in 0.12 for google/jpegli, which has no releases yet; MozJPEG covers the job now |
-| Kokoro or Piper voices | Later | Windows' voices read aloud, Arabic included, with nothing to download |
-
-### Suggested order
-
-1. G9's pins and notices; the hardware checks whenever two PCs and a phone are at hand.
-2. G1 Make smaller and G2 Convert documents: the most visible, on proven tools.
-3. G8 speed (S1–S4), measured before and after.
-4. G4 books, G5 songs, G6 previews.
-5. G3 backups: the most new surface, and backups need the most testing (real USB drives, a cloud, restores done for real).
-6. G7.
-
-### Decisions for you
-
-1. **Scope**: part 2's core as written?
-2. **Backups (G3)**: in this release, or a release of their own?
-3. **Local AI actions**: this release, the next, or not at all?
-4. **Version** (still open from part 1): 1.0 once the hardware checks pass, or 0.10?
-
-### Facts checked (2026-11-09)
-
-- [pandoc 3.13](https://github.com/jgm/pandoc/releases/tag/3.13), 2026-10-26, Windows zip and MSI; `--sandbox` limits reading to the files given ([MANUAL](https://github.com/jgm/pandoc/blob/main/MANUAL.txt)); Typst has been a `--pdf-engine` since pandoc 3.1.2 ([release](https://newreleases.io/project/github/jgm/pandoc/release/3.1.2))
-- [Typst 0.15.1](https://github.com/typst/typst/releases/tag/v0.15.1), 2026-07-17, Windows x64 zip
-- [restic 0.19.1](https://restic.net/blog/2026-07-05/restic-0.19.1-released/), 2026-07-05, `restic_0.19.1_windows_amd64.zip`; `-o rclone.program` ([docs](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html))
-- [ab-av1 0.11.7](https://github.com/alexheretic/ab-av1/releases/tag/v0.11.7), 2026-08-21, MIT, `ab-av1.exe`; XPSNR since 0.9.0, JSON lines since 0.11.5
-- [libjxl 0.12.0](https://github.com/libjxl/libjxl/releases/tag/v0.12.0), 2026-07-01, `jxl-x64-windows-static.zip`; jpegli moved to google/jpegli
-- [Chrome ships JPEG XL decoding from Chrome 155](https://developer.chrome.com/blog/jpeg-xl-in-chrome) (2026-10-06); Windows 11 opens JPEG XL with Microsoft's extension ([The Register](https://www.theregister.com/2026/01/14/google_rekindles_relationship_with_jilted/))
-- [Ghostscript 10.08.0](https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/tag/gs10080), 2026-09-08, `gs10080w64.exe`
-- [pdfcpu `images update`](https://pdfcpu.io/images/images_update): same width and height only, no soft mask or alpha
-- [foliate-js](https://github.com/johnfactotum/foliate-js): MIT; EPUB, MOBI, KF8 (AZW3), FB2, CBZ
-- [llama.cpp b12224](https://github.com/ggml-org/llama.cpp/releases/tag/b12224), 2026-11-09: Windows CPU, Vulkan, CUDA, OpenVINO, SYCL and ROCm builds
-- This PC's FFmpeg (Gyan 9.0.2 full) has `xpsnr`, `libvmaf`, `loudnorm`, `showwavespic`, `whisper` and SVT-AV1. whisper.cpp's pin (b5454) is v1.9.5's build, so it's current.
-- Pins against the latest releases: each repository's GitHub releases, 2026-11-09
-
----
-
-## Part 1 (built 2026-11-09, not released)
-
-### Build status (2026-11-09)
-
-Pushed to master as 373b14e (not released):
-
-- **E12 bench harness**: `Glint.exe bench [--copy N] [--runs N] [folders]` (bench.rs) and `npm run bench [-- --start]` (scripts/bench.mjs, results in bench-results/, compared run to run; `--start` launches Glint and times launch → first folder painted).
-- **A1 media studio**: media_tools.rs + MediaDialog/MediaTools: trim (copied or exact), convert and shrink (H.264/HEVC/AV1, hardware encoders found once a session), sound alone, GIF/WebP, subtitles (whisper.cpp), and a playable copy for videos WebView2 can't play.
-- **A2 PDF tools**: pdf_tools.rs + PdfDialog (pdfcpu 0.16.4, long flags, `--offline`, passwords passed by file).
-- **A3 DuckDB 2.0.0**: duck.rs (Query in place, Profile tab, Query together, Convert data), sandboxed by `allowed_paths`, `enable_external_access=false`, `lock_configuration`, and `query()`.
-- **A4 Remove personal info**: metadata.rs + MetadataDialog (ExifTool 13.61 from SourceForge; Office files cleaned in Rust; PDFs rewritten by pdfcpu after).
-- **A5 disk images**: archive/image.rs (7-Zip 26.06, unpacked from its own installer by Glint's 7z reader; Program Files' 7-Zip found too).
-- **A6 Encrypt**: vault.rs (age 0.12.1, passphrase or age1 keys; folders as .tar.zst.age).
-- **B7**: Group by (list view, header menu and Ctrl+K; groups.ts), the Columns view (Ctrl+Shift+9: the folder above, this one, what's in the focused folder; ← and →), and live counts on saved searches.
-- **B8**: notebooks, 3D models (three.js 0.187, loaded on demand), Markdown → PDF (print.html + print.rs, WebView2 PrintToPdf).
-- **C9**: LocalSend (localsend.rs, Nearby dialog: scan by multicast and subnet, send, receive while open) and Send to my PC (iroh Push in devices.rs).
-- **C10**: six read-only MCP tools (the MCP process now finds Glint's data folder itself).
-- **D11**: OCR text of pictures in the content index (Settings switch, on by default). *Image-only PDFs not OCRed yet.*
-- **E13**: the copy queue copies files under 1 MB eight at a time (conflicts asked first). **E14**: the last session's folders read at start (startup.rs).
-- **E16 typo search** (index crate, query.rs): before any word layout or edit table, a name is ruled out if it lacks more of the word's characters than the typos allowed (a branch-free 64-bit mask) or has no word starting with the word's first or second letter. On 3.4M real names from C:\: 44–106 ms → 8–24 ms per typo search (as typed: 3–7 ms); on the crate's 3M synthetic names: 22–29 → 4–15 ms. Every name's answer is checked identical with and without the checks (`real_names_close_matches`, NAMES=file), plus a 200,000-case random property test. Reaches users when the service updates.
-- *Not built this round*: E15 (Windows ML / DirectML for photo AI).
-
-Verified on the real app (a test copy with its own identifier, driven over CDP): 44 of 45 end-to-end checks passed at first (trim, convert, shrink to size, sound, GIF, a playable copy of an AVI; PDF merge, split, keep, encrypt, wrong password, decrypt, stamp; DuckDB query, profile, join, convert, and its refusals of writes and other files; metadata read, scrub, date shift; age encrypt/decrypt, wrong passphrase, a folder; Markdown → PDF; 7-Zip listing an installer; Nearby scan; index counts). The one failure, 7-Zip unpacked from its installer, is fixed (the signature also appears in the installer's own code) and passed on the rebuilt copy. Group by and Columns checked on screen; the MCP tools answered over stdio. 289 Rust tests, clippy -D warnings, both .check.ts and the frontend build pass.
-
-#### What the bench says (this PC, release build)
-
-| Measure | Result |
-| :--- | :--- |
-| System32 (5,097 items) in Rust: enumerate / sort / encode | 1.5 / 0.8 / 0.1 ms, 2.3 ms in all |
-| Index name search, 3 drives | 5–7 ms |
-| Index typo search, 3 drives (ranked), through the installed 0.9.0 service | 82–98 ms (in-process on 3.4M real names after E16: 8–24 ms) |
-| 5,000 small files copied one at a time / 16 at a time | 1.86 s / 0.95 s |
-| Launch to first folder painted (test copy) | 441 ms; 445 vs 437 ms with and without the start-up read-ahead |
-
-So: the README's 12 ms for System32 is ~2 ms of Rust and ~10 ms of IPC, decoding and drawing in the page, which makes the draft's 3.1 (NtQueryDirectoryFileEx, arena, u64 sort keys) worth at most ~1–2 ms; the page side is where folder time goes. Typo search, at ~80–100 ms end to end, was the clearest engine target: done (E16 above). The copy pool halves small-file copies. The start-up read-ahead saves nothing for a normal folder (the listing is ~2 ms against ~440 ms of WebView2 starting); it can only help a first folder that's slow to read (a big or network one).
-
-### The idea
-
-0.9.5 was about **finding and seeing** files: photo, speech and content search, previous versions, devices. This release is about **doing things to files without leaving Glint**: trim a video, merge PDFs, query a 5 GB Parquet file, strip a photo's location, open an ISO, send to a phone. Each is one right-click away, backed by the best open-source engine for the job, installed on first use. Alongside it, speed work aimed at the waits people actually notice.
-
-Every new feature follows these rules (the draft's five, sharpened):
-
-1. **No terminal.** The feature lives where the file is: its menu, the preview, Quick Look, `Ctrl+K`. Arguments are built in Rust from typed options ([tools.rs](crates/glint-core/src/tools.rs)), never from raw UI text.
-2. **Installed on first use** through tools.rs (winget, else the pinned GitHub release checked by SHA-256), listed in Settings → Tools and on the installer's Extra tools page.
-3. **In-process when it's small and pure Rust** (age, resvg, like zip, 7z and tantivy today); a separate program when it's big, not Rust, or a crash would hurt (FFmpeg, DuckDB, 7-Zip), run in the Job Object ([proc.rs](crates/glint-core/src/proc.rs)) with limits.
-4. **Nothing leaves the PC unless the user asks.** A tool that goes online by default (DuckDB's extension autoload, osv-scanner's API, Typst's package downloads, fetching SSH keys from GitHub) runs offline, or asks first each time it would go online.
-5. **Undoable.** Anything that writes puts its result next to the original or recycles the original, as Convert pictures does, and Undo takes it back as one step.
-6. **One engine per job.** No second tool for what an installed one already does (DuckDB's `SUMMARIZE` instead of qsv).
-7. **Measured.** Every speed claim comes from the bench harness (E12), and the README's benchmark table is re-measured with it.
-
-### Where things stand
-
-- **24 tools in tools.rs today:** ripgrep, fd and pdu (bundled); Czkawka, Difftastic, FFmpeg, Magika, c2patool, whisper.cpp, YARA-X, Kingfisher, ast-grep, jaq, zoxide, rimage, onefetch, tokei, just, uv, Bun, sendme, dufs, rclone and Nushell.
-- **Still untried for real from 0.9.5:** Previous versions through the real service, devices between two real PCs, the MCP confirm dialogs clicked through, the service updating itself under the SCM, ReFS indexing (no ReFS volume here), odr.exe registration (not on this Windows build).
-- **The draft's code facts hold:** [fsx.rs](crates/glint-core/src/fsx.rs) lists with `FindFirstFileExW` + `FIND_FIRST_EX_LARGE_FETCH`; `shared.rs` (Tauri's, removed in 0.10) creates a shared buffer per post over 256 KB; [ioring.rs](crates/glint-core/src/ioring.rs) creates a ring per call (used by dedup.rs and media.rs); [sql.rs](crates/glint-core/src/sql.rs) caps loads at 256 MB and 1M rows; [photos.rs](crates/glint-core/src/photos.rs) runs CLIP on the CPU one picture per run; [thumbs.rs](crates/glint-core/src/thumbs.rs) sends BMPs; [mcp.rs](crates/glint-core/src/mcp.rs) has 9 tools.
-- **Not there yet:** Group by, a columns (Miller) view, phones and cameras (MTP), video conversion ([convert.rs](crates/glint-core/src/convert.rs) is pictures only), creating links, exporting Markdown, 3D model or notebook previews, pushing files to a paired device, OCR text in the content index. The copy queue ([queue.rs](crates/glint-core/src/queue.rs)) runs one worker, file by file, with `CopyFileEx`.
-
-### Core scope (recommended)
-
-#### A. Do it in Glint
-
-**A1. Media studio.** FFmpeg and whisper.cpp, both already tools.
-
-- **Trim:** handles on the preview's and Quick Look's scrubber. **Save trim** cuts without re-encoding (`-c copy`, at keyframes, well under a second) or frame-exact (re-encoding only the cut).
-- **Convert and shrink…:** "fit under 10 / 25 / 50 MB" works out the bitrate from the length; hardware encoders when the PC has them (NVENC, AMF and Quick Sync are all in Gyan's essentials build), x264 otherwise. Extract audio (MP3, M4A, Opus, FLAC). A clip to GIF (palettegen) or animated WebP.
-- **Every video plays in Quick Look:** what WebView2 can't play (AVI, WMV, FLV, MPEG-TS, MKV with codecs it lacks) is remuxed on the fly to fragmented MP4 (`-c copy`), and transcoded only when the codec itself won't play.
-- **Make subtitles:** a video's speech as an `.srt` beside it (whisper-cli `-osrt`), in its own language or translated to English (`-tr`).
-- Where: a new `media_tools.rs` beside convert.rs; [scrub.rs](crates/glint-core/src/scrub.rs) (Media Foundation frames) gives the trim bar its pictures. Gyan's essentials build has no SVT-AV1 or dav1d (full build only), so AV1 encoding is hardware-only unless a full build is found.
-
-**A2. PDF tools.** [pdfcpu](https://github.com/pdfcpu/pdfcpu) (Apache-2.0, Go, one exe; v0.16.2 checked).
-
-- Merge (in selection order, drag to reorder), split by ranges or into single pages, extract, rotate or delete pages, optimize (bytes saved shown), extract images, add or remove passwords, text and image stamps.
-- Results land beside the originals and Undo recycles them. pdfcpu's JSON output drives the dialogs; page thumbnails come from Windows' PDF renderer, which thumbs.rs already uses.
-
-**A3. Big data files.** [DuckDB 2.0 LTS](https://duckdb.org/2026/10/21/announcing-duckdb-200) (MIT, released 2026-10-21).
-
-- Once installed, **Query** reads CSV, TSV, JSON(L) and Parquet in place at any size, so the 256 MB / 1M-row caps go away for them (workbooks keep calamine → SQLite).
-- **Query together:** several selected data files as tables named after their stems, joins across them.
-- **Profile** tab: `SUMMARIZE` gives each column's type, min and max, approximate distinct count, mean, spread, quartiles and nulls, plus `histogram()` bars. This replaces the draft's qsv.
-- **Convert data…:** CSV ⇄ Parquet (zstd) ⇄ JSONL with `COPY … TO`, optionally partitioned by a column.
-- Safety to match sql.rs's read-only authorizer: `-readonly`, `autoinstall_known_extensions=false`, `autoload_known_extensions=false`, `enable_external_access=false` with `allowed_directories` set to the files' folders, then `lock_configuration=true` (check the names against the 2.0 docs). It runs in the Job Object with today's 10-second and memory limits.
-
-**A4. Remove personal metadata.** [ExifTool](https://exiftool.org/) (winget `OliverBetz.ExifTool`).
-
-- Photos, videos, PDFs and Office files: it shows exactly which tags go (GPS, serial numbers, owner, software, edit history) and keeps orientation and color profile; the result goes beside the original, or in place with Undo.
-- Edit Date taken, title, artist and album, and a PDF's title and author, from the preview's details.
-
-**A5. Disk images and installers open like folders.** 7-Zip 26.x (LGPL-2.1 with the unRAR restriction; 26.05 reported 2026-10-21).
-
-- ISO, IMG, VHD/VHDX, VMDK, QCOW2, DMG, WIM/ESD, ext4, APFS, HFS and squashfs images, NSIS installers, DEB, RPM, CPIO, CHM: browse, preview, copy out. See what an installer holds without running it.
-- Glint's own readers stay first for zip, 7z, RAR, cab, tar and msi (faster, already hardened); 7-Zip only takes what they can't read, through `l -slt` listings and `x` of the chosen entries, in the Job Object.
-- 7-Zip fixes archive-parsing vulnerabilities often (26.03 and 26.04 this year), so its pin has to follow its releases.
-- Install route to settle: winget's `7zip.7zip` installs for all users (UAC). The official x64 installer is a 7z self-extractor, which Glint's own 7z reader may be able to unpack.
-
-**A6. Encrypt with age.** The [`age`](https://github.com/str4d/rage) crate, in-process (MIT/Apache-2.0, from rage's repository).
-
-- Right-click → **Encrypt…** with a passphrase or an SSH public key (a file, or a GitHub user's published keys, after asking); folders become `.tar.zst.age`.
-- `.age` files open like archives after the passphrase or private key, and work with age and rage on any OS. The passphrase can be kept in Windows Credential Manager ([credentials.rs](crates/glint-core/src/credentials.rs)).
-- Replaces the draft's rage.exe: same format, nothing to download.
-
-#### B. Explorer and previews
-
-**B7. Group by, a Columns view, live smart folders** (no new tools).
-
-- Group by Kind, Date (Today, Yesterday, Earlier this week…), Size, Type, Git status or Tag: collapsible, each group with its total, in the list, the grid and search results.
-- Columns view (Miller): parent, current and child folders side by side with the preview last; the arrow keys move between them. `Ctrl+Shift+1/3/4` are still free and mean icon sizes in File Explorer, so they should pick the grid's tile sizes; Columns gets a key of its own.
-- Saved searches show a live count and open as virtual folders, kept fresh by the index.
-
-**B8. Previews File Explorer lost or never had** (no new tools).
-
-- **3D models** (STL, OBJ, GLB/glTF, 3MF, PLY) drawn in the page with three.js (MIT, bundled, loaded only when needed). Microsoft deprecated 3D Viewer and [pulled it from the Store on 2026-07-01](https://learn.microsoft.com/windows/whats-new/deprecated-features).
-- **Jupyter notebooks** (.ipynb) with their outputs: text, pictures and Markdown cells (comrak); nothing in them runs.
-- **Export as PDF** for Markdown, through WebView2's own PrintToPdf in a hidden window: exactly what the preview shows, math and Mermaid included. No Typst or pandoc needed for this.
-
-#### C. Connected
-
-**C9. Phones and computers nearby.** The [LocalSend protocol](https://github.com/localsend/protocol), built in.
-
-- Glint shows up in the LocalSend apps (Android, iOS, macOS, Linux, Windows) on the same network, and they show up in Glint: send a selection to a phone, receive into Downloads with a toast. No account, no internet, HTTPS between devices.
-- Built from the open spec. The existing Rust crates (`localsend` by LocalSend's author, last updated 2025-01; `localsend-rs`, 2026-01) are references, not dependencies, until one proves complete. Needs the same firewall handling as Share on this network.
-- **Drop to device** for paired PCs (iroh, [devices.rs](crates/glint-core/src/devices.rs)): drag onto a device in the sidebar, or **Send to <PC>**, into its Inbox folder with a toast there. Today devices only browse, read-only.
-
-**C10. More for AI agents** (mcp.rs, no new tools). Read-only `search_content` (tantivy), `search_photos` (`shows:`), `search_speech` (`says:`), `search_code` (ast-grep), `query_data` (sql.rs, or DuckDB when installed) and `compare_files` (Difftastic), each with the same folder scope and limits as today's tools.
-
-#### D. Search
-
-**D11. Words in screenshots and scans.** [ocr.rs](crates/glint-core/src/ocr.rs) (Windows OCR) feeds the content index ([content.rs](crates/glint-core/src/content.rs)): pictures and image-only PDFs in indexed folders become searchable by the text in them, read in the background below normal priority. Today OCR runs only for Copy text and Documents search's *Images too*.
-
-#### E. Speed you can feel
-
-**E12. A bench harness first.** `npm run bench` (or a Rust bench binary) replays the README's table on this PC (folder open, name search, folder sizes, thumbnails, archive open, copies) plus cold start, from fresh starts, and writes JSON to compare runs. Each item below states its before and after from it.
-
-**E13. Copying many small files.** The copy queue is one worker copying file by file. A pool of workers for small files (and unbuffered I/O for big ones) is where Glint can beat File Explorer by a margin people feel. Compare with Explorer and `robocopy /MT` on 50,000 small files.
-
-**E14. Cold start.** Read the last folder while WebView2 starts and hand it over when the page mounts (the draft's 3.7). The target comes from measuring launch to first folder painted; the draft's "under 40 ms" can't be met while WebView2's own processes take longer than that to start.
-
-**E15. AI on GPU and NPU.** [Windows ML](https://github.com/microsoft/WindowsML) (generally available since 2025-09; on Windows 11 24H2 and later, Windows downloads and updates the NPU and GPU execution providers) for `shows:` and meaning search, with a DirectML build of ONNX Runtime as the fallback for older Windows, and pictures batched (the draft's 16 per run; today it's 1). This corrects the draft: [DirectML](https://learn.microsoft.com/windows/ai/directml) is in sustained engineering, and ONNX Runtime's DirectML provider uses DirectML 1.15.2, a redistributable rather than Windows' own copy, so it's an extra download, not "zero". Speech stays on the CPU: whisper.cpp's official Windows releases have no Vulkan build to pin.
-
-**E16. Engine work where the harness points.** The draft's 3.1 (`NtQueryDirectoryFileEx` into one arena, `u64` sort prefixes), 3.2 (a persistent shared-buffer ring) and 3.4 (64-bit name masks in the index for fuzzy search), each only once the profile shows its stage is a real share of a wait. A difference under one frame (~16 ms) isn't visible, so System32's 12 ms isn't a target; 100,000 files (114 ms) and fuzzy search (about 30 ms in the service) are.
-
-#### F. Finish what 0.9.5 started
-
-**F17.** Before release, run the untried list for real: Previous versions through the updated service, two real PCs paired, the MCP confirm dialogs clicked through, the service updating itself under the SCM, ReFS once a volume is available, odr.exe once Windows ships it.
-
-### If there's room (next in line)
-
-| Feature | Engine | Why it isn't core |
-| :--- | :--- | :--- |
-| **Structure** tab for binary formats (MP4, PNG, ELF, Wasm, PCAP, Protobuf…), the hex view highlighting each field's bytes | [fq](https://github.com/wader/fq) v0.18.0 (MIT, Go) | A narrower audience; the hex sync is real UI work |
-| `.typ` previews and PDF export | [Typst](https://typst.app/docs/changelog/0.15.1/) 0.15.1 (Apache-2.0, winget `Typst.Typst`) | Small audience; previews must block package downloads (rule 4) |
-| **Remove background**, in batches, to transparent PNGs | BiRefNet-lite (MIT, 115 MB fp16 ONNX) on the existing ONNX Runtime | A big model download; Photos already does single pictures |
-| `shows:` in Arabic and other languages, and moments inside videos | SigLIP 2 (Apache-2.0, multilingual Gemma tokenizer) on the same runtime; video frames from scrub.rs | Needs a re-index and model testing |
-| Phones and cameras (MTP) as places | Windows Portable Devices / the shell namespace | Not a path-based file system: a new kind of location, like remotes |
-| Edit zip archives in place (paste, delete, rename inside) | the zip crate's raw copy of untouched entries | 7z can't do the same (solid blocks), so zip only at first |
-| **Paste as link** (hard link, symbolic link, junction) | Win32 | Small, for power users |
-| File history slider in the Changes tab, a structural diff at each commit | gix (already used) + Difftastic | UI work; developers only |
-| Dependency vulnerabilities on the repository card | [osv-scanner](https://google.github.io/osv-scanner/usage/offline-mode) `--offline` with its downloaded databases | Only offline mode fits rule 4, and the database download needs a consent step |
-| Resolve Git conflicts by structure; lazygit in the terminal pane; scc for code stats | mergiraf (GPL-3.0, run as a separate program; winget `Mergiraf.Mergiraf`), lazygit (MIT), scc (MIT) | Developer niceties. scc would replace tokei, which is stuck at 12.1.2 because its later releases ship no programs |
-| Remotes writable from File Explorer and other apps | Cloud Files write-back in [ondemand.rs](crates/glint-core/src/ondemand.rs) | Needs change detection, upload, in-sync states and conflict handling; the data-loss risk calls for a release of its own |
-
-On writable remotes, the draft named the dehydrate callback, which is about freeing space. Edits arrive as writes to hydrated placeholders that Glint must notice, upload and then mark in sync (`CfSetInSyncState`); renames and deletes come as `NOTIFY_RENAME` and `NOTIFY_DELETE` callbacks.
-
-### A bet to decide on: local AI actions
-
-Moved to part 2's *Still to decide: local AI actions*, with what's changed since.
-
-### Cut, replaced or later
-
-| Draft item | Verdict | Why |
-| :--- | :--- | :--- |
-| qsv | Cut | DuckDB's `SUMMARIZE` and `COPY` cover profiling, de-duplicating and splitting: one install, not two |
-| rage.exe | Replaced | The `age` crate in-process: same format, no download |
-| resvg.exe | Replaced | The resvg crate in-process for SVG → PNG and multi-size ICO |
-| capa | Later | A large bundled Python program whose analysis takes a while per file; YARA-X, Magika, Defender and the PE preview cover most of what people need. If it comes, it's a button in the File X-Ray, never automatic |
-| rustic snapshots | Later | Its README still calls it beta and not for production backups (0.11.3 checked), and backups can't be the experimental part. When this comes, restic (the same repository format, mature) is the safer engine |
-| git-cliff, Jujutsu | Later | Small audiences |
-| Persistent IoRing (3.3) | Cut unless measured | ioring.rs already batches with IoRing; keeping a ring alive saves microseconds per call, nowhere near the 2.5–4× claimed |
-| 8 KB shared-memory threshold (3.2) | Measure | Below some size the main-thread hop costs more than JSON; the harness finds the crossover |
-| `ImageBitmap` worker for thumbnails (3.6) | Measure | First find where the 71 ms goes: shell lookups, decoding or painting |
-| whisper.cpp on the GPU | Later | No official Windows Vulkan build to pin |
-
-### Suggested order
-
-1. Bench harness (E12) and the 0.9.5 finish list (F17): every later claim is then honest, and the debt is cleared.
-2. Media studio (A1) and PDF tools (A2): the most visible additions, on proven tools.
-3. DuckDB (A3), metadata (A4), 7-Zip (A5), age (A6).
-4. Group by and Columns (B7), previews (B8), OCR in the index (D11).
-5. LocalSend and Drop to device (C9), MCP (C10).
-6. Speed items E13–E16 as the harness directs; then re-measure the README's table.
-
-### Decisions for you
-
-Answered 2026-11-09: the core scope was built ("Yes, start building"). Local AI actions and the version are still open, in part 2's decisions.
-
-### Facts checked (2026-11-09)
-
-- DuckDB 2.0.0 LTS released 2026-10-21, CLI available at launch: [announcement](https://duckdb.org/2026/10/21/announcing-duckdb-200)
-- Windows ML generally available since 2025-09, Windows-managed execution providers, hardware ones on 24H2+: [microsoft/WindowsML](https://github.com/microsoft/WindowsML); DirectML in sustained engineering: [DirectML docs](https://learn.microsoft.com/windows/ai/directml); ONNX Runtime's DirectML provider on DirectML 1.15.2: [ORT docs](https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html)
-- osv-scanner's `--offline` sends nothing once its databases are downloaded: [offline mode](https://google.github.io/osv-scanner/usage/offline-mode)
-- LocalSend protocol spec: [localsend/protocol](https://github.com/localsend/protocol); Rust crates: [localsend](https://lib.rs/crates/localsend), [localsend-rs](https://github.com/CrossCopy/localsend-rs)
-- 7-Zip 26.05 (2026-10-21) reported, not yet confirmed on 7-zip.org: [Impress Watch](https://forest.watch.impress.co.jp/docs/news/2150176.html)
-- Typst 0.15.1 (2026-07-17): [changelog](https://typst.app/docs/changelog/0.15.1/); fq v0.18.0: [releases](https://github.com/wader/fq/releases); pdfcpu v0.16.2: [release notes](https://newreleases.io/project/github/pdfcpu/pdfcpu/release/v0.16.2)
-- rustic 0.11.3, README still "beta": [release](https://newreleases.io/project/github/rustic-rs/rustic/release/v0.11.3)
-- Gyan's FFmpeg 9.0.2 (2026-09-19): NVENC, AMF and libvpl in every build, SVT-AV1 and dav1d in the full build only: [gyan.dev](https://www.gyan.dev/ffmpeg/builds/)
-- 3D Viewer deprecated, removed from the Store 2026-07-01: [deprecated features](https://learn.microsoft.com/windows/whats-new/deprecated-features)
-- SigLIP 2 uses a multilingual (Gemma) tokenizer: [paper](https://arxiv.org/abs/2502.14786); BiRefNet-lite ONNX is MIT, 224 MB fp32 / 115 MB fp16: [onnx-community](https://huggingface.co/onnx-community/BiRefNet_lite-ONNX)
-- Foundry Local's CLI is under Microsoft's license terms (the SDK is MIT): [winget listing](https://winget.ragerworks.com/package/Microsoft.FoundryLocal)
-- llama.cpp's official releases include a Windows x64 Vulkan build: [b9196 notes](https://knightli.com/en/2026/05/18/llama-cpp-windows-cuda-vulkan-gguf/)
+| `Glint.exe`, setup, code and data | file sizes; `python scripts/dev/size-by-crate.py --json <file>` for sections, crates and what each dependency takes; `--compare <file>` against the last run | 174,127,104 B; 45,752,959 B; .text 124.5 MB, .rdata 43.2 MB |
+| Crates compiled | `cargo tree --locked --offline -p glint --target x86_64-pc-windows-msvc -e normal --prefix none \| sort -u \| wc -l` | 964 |
+| Release build time | wall time of the release build after `cargo clean -p glint-ui -p glint-core -p glint` | record |
+| Cold start | `npm run bench -- --start` (launch to first folder painted, 5 runs) | record (231 ms on 2026-11-11) |
+| Engine | `npm run bench` (and `-- --copy 5000`) | record |
+| Key to frame, folder to screen | `GLINT_FRAME_LOG=1` with scratch scenarios on `tests/e2e/lib/Harness.ps1` (arrow keys and Ctrl+A in a folder of 100,000 made in a scratch folder, never at a drive's top; Ctrl+wheel zoom; open 20 folders in a row): read the `input … ms=`, `nav shown` and `span name=` lines | record |
+| Memory at rest | 15 s after the first folder: `Get-Process Glint-next \| select PrivateMemorySize64, WorkingSet64` (start without `GLINT_BENCH_START`, which quits) | record (~316 MB private, ~123 MB working set on 2026-11-11) |
+| Idle CPU | `TotalProcessorTime` delta over 120 s with the window resting, and again hidden in the tray | record |
+
+New spans are added with `crate::perf::span("name")` (`crates/glint-ui/src/perf.rs`). To find an unknown slow
+handler, time each observer call in vendored `gpui-pre` `app.rs` (`apply_notify_effect`, `apply_emit_effect`) in a
+debug build, then revert.
+
+## Part A. Repair what the move dropped (do first; small)
+
+**A1. Start the four services again (V).** In `crates/glint-ui/src/startup.rs`, where `quick_search::warm(cx)` runs
+after the first folder (the `services.*` block around line 180), add a `services.background` flag (off in tests, off in
+a secondary window, as `core_bridge::init_with`'s `housekeeping`) that, once per process and at least 1 s after the
+first folder is on screen, calls from a background thread:
+`glint_core::content::start(&app)`, `glint_core::ondemand::start()`, `glint_core::backup::start_scheduler(app.clone())`,
+`glint_core::dialogs::listen()`. (`devices::start` and `media_ai::start` are deleted in part B.) Make
+`start_scheduler` return without spawning its thread when no plan has a schedule other than `Manual`, and start it
+when a plan gets one (`backup_schedule`, `backup_setup`). The UI already listens for `backup-finished`
+(`startup.rs:503`) and reports the folder shown for `Ctrl+Alt+G` (`explorer/start.rs:271`).
+*Done when*: a headless test proves each is called once and not in tests' default services; by hand in a scratch
+profile: the content index finds a file changed while Glint was closed; `Ctrl+Alt+G` in Notepad's Open dialog jumps
+to the folder shown; a plan set to daily with its last run a day old backs up within about a minute of start; start
+time (M0) unchanged.
+
+## Part B. Removals
+
+Each removal is one commit: delete the code, its tests, its strings (`crates/glint-model/src/i18n_ar.rs` too), its
+menu and palette entries, its Settings section, its MCP tools (`crates/glint-core/src/mcp.rs`), its README, docs and
+website mentions, then drop the dependency and let `cargo check --workspace --all-targets` name what is now unused
+(follow the `dead_code` warnings until clean). Find every touchpoint with the grep given; the files listed are where
+most of it is. **Read B6 before deleting B3's and B4's modules** (it needs their paths).
+
+**B1. Mermaid.** `rg -i "mermaid|merman" crates`: `components/preview/diagram.rs` (keep its Graphviz half and
+`layout-rs`), `preview/markdown.rs`, `preview/small.rs`, `preview/svg_image.rs`, `preview/choose.rs`,
+`glint-model/src/small_kinds.rs`. Remove `merman` from `crates/glint-ui/Cargo.toml`. A ```` ```mermaid ```` block and
+a `.mmd` file show as code and text. Math (RaTeX) and Graphviz stay.
+
+**B2. Built-in Typst, `.typ` preview, Export as PDF.** `rg -i typst crates`: delete
+`crates/glint-ui/src/typst_engine.rs`, `components/preview/typst_view.rs`, the `export_pdf` half of
+`dialogs/doc_convert.rs` and `MenuEvent::ExportPdf` (`components/menus/event.rs`, `item.rs`, `kinds.rs`), the Typst
+kind in `preview/choose.rs` and `preview/frame.rs`, `typst_engine::warm_fonts()` at `startup.rs:78` (a full system
+font scan at every start goes with it), the `wave11` self-test, math's and diagrams' PDF-export code. Remove `typst`,
+`typst-pdf`, `typst-render`, `typst-kit` from glint-ui. In glint-core delete `docconvert::typst_preview`; **keep**
+`compile_typst` and the `typst` entry in `tools.rs` (Convert document → PDF uses the tool). `.typ` previews as text.
+
+**B3. Paired devices.** `rg "glint_core::devices|devices::devices_|RemoteKind::Device|remote::device|iroh" crates`:
+delete `crates/glint-core/src/devices.rs`, `remote/device.rs` and the `"device"` arm in `remote/mod.rs:220`,
+`components/settings/devices.rs` and its calls in `settings/backend.rs:322-338`, `RemoteKind::Device` in
+glint-model's store with its uses (`components/menus/mod.rs:465` and `:671`, the Send-to-device entries;
+`sidebar/drop.rs`, `sidebar/mod.rs:1021`, `sidebar/rows.rs:305`), the device-files listener in `startup.rs`
+(~line 497). **First move `settings::devices::remote_id`** to where its other users are (`settings/clouds.rs:6`,
+`dialogs/cloud_setup.rs:196` and `:963`). Remove `iroh` from glint-core. LocalSend (Nearby), the sendme tool, and
+on-demand remotes for clouds, S3, WebDAV and SFTP stay. ("device" in `metadata.rs` and "paired" in the compare code
+are other things.)
+
+**B4. Photo, speech and meaning search.** `rg -i "media_ai|photos::|meaning::|multilingual|speech::|shows:|says:|whisper" crates`:
+delete `crates/glint-core/src/photos.rs`, `media_ai.rs`, `speech.rs`, `meaning.rs`, `multilingual.rs`, their
+Settings rows (`components/settings/media.rs`, `tools.rs`, `backend.rs`), the `shows:`/`says:` filters
+(`glint-model/src/entries.rs`, `components/address_bar/search.rs`; typed afterwards they are plain words), the
+Meaning mode of the documents search (`doctext.rs:830-844`, `lib.rs:427`), the hand-off in `find.rs:380-388`, their
+MCP tools (`mcp.rs:509-517`), `tools.rs:1292`. Remove `ort` and `unicode-properties` from glint-core.
+**Subtitles must keep working (V):** Media's Subtitles task runs whisper.cpp with speech search's model
+(`media_tools.rs:247`, `:566`: `speech::installed()`, `speech::model_path()`). Before deleting `speech.rs`, move the
+Whisper model's path, installed check and download into `media_tools.rs` (or a small `whisper.rs`), let the
+Subtitles task offer the download itself, and keep the `whisper` tool entry. Keep Windows' OCR (`ocr.rs`) and Read
+aloud.
+
+**B5. ast-grep leftovers (V).** The Text screen went in 0.11 (README line 331) but its engine stayed: delete
+`run_ast_grep`, `ast_grep_search`, `ast_grep_apply`, `read_file_content`, `read_file_chunk`, `doc_lines` in
+`crates/glint-core/src/lib.rs`, the whole `codesearch.rs`, the `ast-grep` entry in `tools.rs` (line 243), and its
+mentions in README line 560 and `docs/tools.md`.
+
+**B6. What stays on users' PCs, and old state (V: needed; the design is yours).** Before deleting B3 and B4, list from
+their code every file and folder they wrote under Glint's data folders (`tools::data_dir()`: the CLIP model and ONNX
+Runtime ~240 MB, Model2Vec 30/128 MB, the photo and speech libraries (JSONL), device keys and pairings; **not**
+Whisper's model, which Subtitles keeps). Add `glint_core::retired::sweep()`: run once per start on a background thread
+(with A1's block), it deletes exactly those paths if present and nothing else, and is covered by a test with a temp
+data folder. Loading must tolerate old files: a `state.json` with the removed settings and with remotes of kind
+"device" loads (those remotes and their `ondemand.json` mounts are dropped, the placeholders unmounted); add a test
+with such a fixture. The release notes say the downloads were removed.
+
+**B7. Unreached code (V for the ones named).** `python scripts/dev/unreached-fns.py` lists it (2026-11-14: glint-core
+29 functions, glint-model 11, glint-ui 151). Delete, then follow the warnings:
+- glint-core: `markdown.rs` (`markdown_html`, `render`; then the `comrak` dependency); `host.rs` (`app_config_dir`,
+  `app_cache_dir`, `app_log_dir`, `resource_dir`, `home_dir`, `is_visible`, `headless`, `async_runtime::handle`);
+  `shell::clipboard_text` (all three); `sandbox::sandbox_available`, `textenc::text_cancel`,
+  `versions::shadow_copies`; `meaning_status` goes with B4. (`sheet::load_parquet` looks unused but `sql.rs:164`
+  calls it: keep it.)
+- glint-model: `entries::sort_entries`, `merge_sorted` and `prop_test_now`, `color::hsl_of`, `columns::grid_templates`
+  and `drop_class` (CSS for the web page), `columns::folder_kind`, `groups::group_of`, `i18n::language_of` (tests
+  only), `cast::output_until`, `json_tree::to_json`, `file_types::preview_kind`, `paths::clear_shadow_names`,
+  `store::remove_from_history`.
+- glint-ui: about 150 `pub` accessors named only by tests (`run_state`, `again_input`, `shown_cells`,
+  `drawn_pages`…): mark them `#[cfg(test)]` or delete them. The script's second list adds `svg_image::clear`,
+  `held`, `peek` (test helpers), `platform/tray::configure`, `dialogs/backup::can_back_up`, `preview/sheet::is_workbook`,
+  `dialogs/media_tools::name_of`, `preview/quick_look::current`.
+
+The script matches by name, so check each hit with `rg` before deleting. Its second list also names the A1 starters
+(`content::start`, `ondemand::start`, `dialogs::listen`): those are wired up, not deleted. Ignore the test functions it
+lists in `wof.rs`, `ioring.rs`, `tags.rs` and `drivehealth.rs` (real-PC checks run by hand).
+
+## Part C. A smaller, faster-building exe
+
+**C1. One task harness, not thousands (V).** Every engine call is `core_bridge::run(future)` →
+`host::async_runtime::spawn::<F>` and, inside, `fsx::blocking(closure)` → `spawn_blocking::<F, R>`: tokio's harness is
+compiled once per future and per closure type (190 + 190 call sites). In `crates/glint-core/src/host.rs:470-482` keep
+the signatures and box inside:
+`RUNTIME.spawn(Box::pin(future) as Pin<Box<dyn Future<Output = F::Output> + Send>>)` and
+`RUNTIME.spawn_blocking(Box::new(run) as Box<dyn FnOnce() -> R + Send>)`. That leaves one instantiation per *result*
+type. If the size script still shows tokio above ~2 MB, erase the result too: a non-generic
+`spawn_boxed(Pin<Box<dyn Future<Output = ()> + Send>>)` with the answer sent through a one-shot channel in
+`core_bridge::run` (`crates/glint-ui/src/core_bridge.rs:322`) and `fsx::blocking` (`fsx.rs:26`); a panic must still
+come back as `Err` (the test in `core_bridge.rs` near line 428 says so). *Done when*: tokio's share is measured
+before and after, tests pass, bench unchanged.
+
+**C2. Compile cold code for size (measure, then keep or drop).** In the root `Cargo.toml` add
+`[profile.release.package.<name>] opt-level = "s"` for the big crates that never sit on a hot path, then for
+`glint-ui` itself (most of its 14.6 MB, and the gpui and tokio code made for its types, follows its setting). Order:
+(a) cold dependencies: `gix`, `parquet`, `calamine`, `lofty`, `rusqlite`/`libsqlite3-sys`, `age`,
+`alacritty_terminal`, `sevenz-rust2`, `zip`, `pdf-extract`, `lopdf`, `hyper`, `reqwest`, `rustls`, `syntect`,
+`markdown`, `layout-rs`, `ratex-*`, `jaq-*`, `fend-core`, `nom-exif`, `msi`, `resvg`, `usvg`; (b) `glint-ui` at
+`"s"`, else `2`. Leave at 3: `glint-core`, `glint-model`, `shadui-index`, `gpui-*`, `rayon*`, `tantivy`, `regex*`,
+`image` and its codecs. *Gate*: each step is kept only if the exe shrinks by 1 MB or more and M0's key-to-frame,
+100,000-file open, scroll frame times and bench stay within 5%. One optional experiment at the end: `lto = "fat"`;
+adopt only if the release build stays under about 12 minutes.
+
+**C3. One copy of each big dependency (V: who pulls what).** `resvg`/`usvg` 0.45.1 come from vendored
+`gpui-component`, 0.46.0 from vendored `gpui-pre` (0.47 leaves with Typst): move `vendor/gpui-component-0.9.1` to
+0.46.0 (and `tiny-skia` with it). `windows` 0.58 comes only from vendored `gpui-base` and `gpui-component` (the rest
+is 0.62): try moving both to 0.62; if it is more than mechanical, stop and leave a note. Vendored `gpui-pre`'s
+`image` features include `exr`, `tiff`, `dds`, `hdr`, `ff`: keep only the formats Glint shows through GPUI's `img`
+(check `components/preview` and `file_grid/thumbnail.rs` first). VENDOR.md rows for all three.
+
+**C4. Dependencies nobody uses (V).** `comrak` (B7); `unicode-segmentation` and `unicode-normalization` in
+`crates/glint-model/Cargo.toml` (no use in its sources); `mimalloc` in `crates/glint-core/Cargo.toml` (only
+`crates/glint/src/main.rs` uses it). After B and C, prune `windows` features no file uses any more in `glint-core`
+and `glint-ui` (remove one, `cargo check`, repeat), and confirm with `cargo tree -d --target x86_64-pc-windows-msvc`.
+
+**C5. serde derives that serialize nothing (S, low priority).** 153 `derive(Serialize…)` in glint-core date from
+the JSON bridge. Where a type no longer crosses JSON (not emitted, not saved, not sent to a worker process or MCP),
+drop the derive. Only if C1-C4 leave time; the gain is about 1 MB and build time.
+
+## Part D. The window: work nobody sees (all V unless marked)
+
+Every arrow key ends in `apply_selection` → `cx.notify()` on the explorer, and every view that observes the explorer
+runs, both panes' hidden views included. Measure each with a span first.
+
+| # | What | Where | Change | Done when |
+| :--- | :--- | :--- | :--- | :--- |
+| D1 | Any settings change re-applies the whole theme: `state::update` always calls `theme::apply`, which enumerates every installed font family twice (`installed_family` → `all_font_names()`), rebuilds the tokens and refreshes every window. 68 callers, among them each Ctrl+wheel zoom notch, sort and group clicks, column and preview resizes, show hidden | `state.rs:57`, `theme.rs:681`, `theme.rs:757` | Re-apply the theme only when theme, accent, backdrop, font size or language changed (compare before and after); resolve the two font families once (cached until `theme::init` runs again) | Ctrl+wheel zoom: no `all_font_names` in the frame log's spans; zoom key-to-frame drops |
+| D2 | A folder opened emits `MemoryChanged` twice (`remember_last_folder`, then after `record_visit`), each cloning visits (300), folder views (500) and the session, then `update_app` deep-clones the whole `AppState` for the saver; `Persistence`'s observers then rebuild (sidebar, Quick Search's recents while its window is hidden, the jump list: observers V, their cost S) | `explorer/nav.rs:497-502`, `nav.rs:569`, `startup.rs:687-700`, `persistence.rs:520`, `quick_search/mod.rs:201`, `startup.rs:1099` | One emit per navigation; the saver takes its snapshot when it writes (a dirty flag), not per change; observers compare the part they show (visits, pinned) and return early; Quick Search refreshes its recents when it is shown | `nav shown` for 20 folders in a row; one `MemoryChanged` per open in a test |
+| D3 | The sidebar rebuilds all its rows on every explorer notify (clones pinned, saved searches, remotes, known folders, drives; `build_rows`; `key_of` lowercases per row) and its tree never closes the ancestors it revealed, so it slows over a session (S for the growth) | `sidebar/mod.rs:218`, `mod.rs:279-376`, `sidebar/rows.rs:355`, `sidebar/tree.rs:56`, `mod.rs:424` | Refresh only when its inputs changed (path, listing pointer, the three lists, settings); cap or prune the revealed tree | arrow-key spans show no sidebar work; rows identical in tests |
+| D4 | 3-5 linear `position_of` scans per arrow key (each compares paths over the whole list) | `explorer/rows.rs:279`; callers `file_list/mod.rs:710`, `:788`, `status_bar/summary.rs:268`, `explorer/select.rs:78`, `file_grid/mod.rs:359` | Keep the focused row's index beside the selection (checked against the row before use), or a lazy path → index map on `Rows` | arrow key in 100,000: key-to-frame |
+| D5 | With several items selected the status bar hashes every row's path and clones every selected path on each notify (Ctrl+A in 100,000 = 100,000 `String`s per key); the status bar and each pane head recompute a 4,000-entry spectrum per notify | `status_bar/summary.rs:262-280`, `summary.rs:254`, `pane_head/mod.rs:117` | Use `Rows::chosen` (written for exactly this, `rows.rs:303`) and return counts and bytes without cloning paths unless asked; cache summary and spectrum by listing pointer + sizes version + selection version | Ctrl+A then arrows in 100,000 |
+| D6 | `sync_readmes` scans the whole listing for a README on every explorer notify, for both panes | `workspace.rs:435-451`, `components/git/words.rs:398` | Remember the answer per listing (`Arc` pointer) | span gone on arrow keys |
+| D7 | Start: each pane's `ThisPc::new` asks every physical drive for its health (SMART/NVMe IOCTLs, can wake a sleeping disk) and makes its own `IndexModel`, before the window shows; all ten views of the second pane are built (and observe the explorer) though one pane is shown | `this_pc/mod.rs:162-178`, `workspace.rs:184` | Ask for drive health when This PC is first shown; one shared `IndexModel`; (larger, optional) build pane 1's views when the second pane opens | start time and memory at rest (M0) |
+| D8 | Hidden views that work anyway: `FrequentFolders::rebuild` ×2 panes per notify; the address bar's `Seen::of` and `t!("Search {folder}")` per notify; the preview pane's `.git` scan of every new listing on the UI thread; each arriving thumbnail notifies four observers (S) | `frequent_folders/mod.rs:110-132`, `address_bar/mod.rs:283-386`, `preview/pane.rs:59-66`, `file_grid/thumbnail.rs:850` | Rebuild only while shown or when visits changed; guard by inputs; take `repo` from the reading thread (the listing already knows its entries); coalesce thumbnail notifies to one per frame | spans; first view of a folder of 500 pictures |
+| D9 | Whole-list copies: grouping deep-clones every row (then `group_rows` copies again); `match_selection` runs `encode_utf16().count()` over every entry on the UI thread when a listing arrives with something to select; a search inside files clones the whole hit map and rebuilds entries per event batch (quadratic) | `explorer/rows.rs:422`, `explorer/nav.rs:185-196`, `explorer/inside.rs:586-631` | Group over indices or `Arc`ed rows; match on the reading thread; append batches (throttle as `find.rs`'s `worth_waiting` does) | grouped filter keystroke in 20,000; a search with 50,000 hits |
+| D10 | `Prefs::read` clones the column list and both exclusion lists to read one bool (S) | `nav.rs:505`, `:548`, `model.rs:453`, `:468` | Read the field | - |
+
+## Part E. The engine
+
+| # | What | Where | Change | Done when |
+| :--- | :--- | :--- | :--- | :--- |
+| E1 (V) | The `copy-queue` event clones every job with `made` (a from/to pair per file copied so far) and `errors`, turns it into a JSON `Value`, and the UI clones and decodes it, every 150 ms: quadratic over a big copy, and finished jobs are sent again and again | `glint-core/src/queue.rs:34-59`, `:126-141`, `host.rs:247`, `glint-ui/src/explorer/queue.rs:87` | Send progress numbers per tick; `made` and `errors` once, when a job finishes (or as deltas); nothing for jobs that did not change | `npm run bench -- --copy 5000` and a copy of 50,000 small files: UI frame times flat |
+| E2 (V) | Text search: `rg --json` lines (begin, end, context too) are batched into a JSON event, deep-cloned and parsed line by line on the UI thread; no `--max-columns`, so a hit in a minified file carries its whole line | `lib.rs:337-398`, `:518-542`, `explorer/model.rs:824`, `explorer/inside.rs:255` | Forward only `match` and `summary` lines; cap line length (`--max-columns` with a preview; check how the UI shows a cut line); deliver through a typed `core_bridge::stream` channel and parse off the UI thread | a search with 100,000 matches; a hit in a 5 MB one-line file |
+| E3 (V) | Selecting a folder counts its contents through `fsx::list_dir`: read, natural sort, encode, decode, to count three numbers | `components/preview/sources.rs:150-174` | A `fsx::count_dir` that only reads (`read_dir`, no sort, no encode) | arrowing over folders of 100,000 |
+| E4 (V) | Thumbnails travel as BMP bytes: encoded, copied whole again into the answer (`Thumb::encode`, memory hits included), decoded by the UI; every request first hops to the blocking pool for `archive::thumbnail_source` | `thumbs.rs:72-80`, `:399-419`, `file_grid/thumbnail.rs:128` | Hand BGRA pixels over typed (an `Arc`), as `list_folder` hands entries; skip the archive hop for paths that are not inside an archive | first view of 500 pictures; allocations |
+| E5 (S) | Song preview reads tags twice and base64-encodes a cover it throws away; `media_details_many` formats display strings its callers drop and opens each picture twice | `media.rs:79`, `:145`, `:209-286`, `:328-334`, `preview/sources.rs:204`, `player/sources.rs:97-143` | A `cover` flag off for rows; the cover as bytes once; a numbers-only variant for row facts | - |
+| E6 (V timers; S rest) | Idle wakeups: folder rules start three threads (500 ms, 2 s, 1 h) the first time a rule is on and never stop them; the rules tick holds the engine lock across `metadata()` | `rules.rs:565-582`, `:454-502` | Run the timers only while a rule is on; stat outside the lock | idle CPU (M0) with no rule on equals a profile that never had one |
+| E7 (S) | The Git watcher is recursive over the whole repository (`target/`, `node_modules/`); each event lowercases and replaces its path and takes a global lock even for noise; `git_view` discovers the repository twice, lowercases every index entry at the root, and polls a watchdog every 10 ms | `git.rs:189-339`, `:531-567` | Filter noise without allocating and before the lock; build `tracked` only when needed; one discover | a `cargo build` in an open repository: Glint's CPU |
+| E8 (S) | `proc::locate` scans PATH and four package managers on every call, also for availability checks; `tags::read` opens `path:glint.tags` for every visible row, on any drive | `proc.rs:148-191`, `tags.rs:21-28`, `row_facts.rs` | Cache locations (forget on install and uninstall); skip tags on remote and non-NTFS listings | a network folder's rows |
+| E9 (S) | Read-ahead listings for tabs never opened stay encoded in `startup::WARM` for the process's life | `glint-core/src/startup.rs:17-60` | Drop what was not taken after a minute | memory at rest |
+| E10 (S, if time) | Still encoded then decoded: index and fd results (`find.rs:240-286`, `explorer/source.rs:1012`), listings of archives, Recycle Bin, Recent, Gallery, remotes (`fsx.rs:79-135`), the jq worker's answer, QR as SVG text | as given | Hand them over typed, as `list_folder` does | search of 500,000 hits |
+
+## Part F. The index service (`crates/shadui-index`)
+
+No change to the pipe protocol: 0.12's app must work with a 0.9-0.11 service and the reverse. The installed service
+here is 0.9.0 and replacing it needs the user's OK (UAC): prove these with unit tests and an `#[ignore]`d bench test
+that builds a synthetic tree of about 2 million names and times `Tree::search` and `rank` before and after.
+
+| # | What | Where | Change |
+| :--- | :--- | :--- | :--- |
+| F1 (V) | Every matching name walks all its ancestors to the scope, testing hidden and every name exclusion (~40 globs from Quick Search's defaults) at each; only the path-term branch remembers the last parent | `tree.rs:905-910`, `:1008-1025`, `query.rs:920` | Remember the answer per parent inside each chunk (the last parent, then a small map): siblings cost one walk |
+| F2 (V) | A newer key press does not stop the scan before it: `tree.search` and ranking run to the end under the read lock, and the closed pipe is noticed only at the first write; fast typing stacks full scans up to the 16-client cap, then the app falls back to fd | `engine.rs:629-653`, `:799-843`, `pipe.rs:151-200`, `find.rs:270-295` | A stop flag per connection, set when the client has gone (peek the pipe between chunks, or a watcher), checked per chunk in `search` and before ranking |
+| F3 (V) | Any query with `ext:`, `size:` or a path asks the service for its status first (`same_service`), and `status` counts every record of every drive under the lock | `find.rs:301-315`, `engine.rs:573-587`, `tree.rs:1105-1124` | App: remember the service's version for the session (forget it on a pipe error and after a service update). Service: keep file and folder counts as it applies changes, or cache them per tree generation |
+| F4 (S) | A ranked search collects every match (three copies of the ids), ranks them all, then keeps `max` | `tree.rs:875-1000` | Only if 1-2 letter queries are still slow after F1-F3: keep the best `max` per chunk |
+| F5 (S) | Idle: the journal is polled every 250 ms per drive, drives found again every 60 s; totals are recomputed hourly under the write lock and the snapshot saved under the read lock | `engine.rs:28`, `:172`, `:397-469`, `volume.rs:519-529` | A blocking journal read with a timeout instead of polling (stop must stay quick); the rest only noted |
+
+## Part G. Clean-ups
+
+- **G1 Manifests.** Root `Cargo.toml`: the first line still says "local branch gpui-migration; never pushed".
+  `crates/glint-model/Cargo.toml`: drop the per-module `[features]` and the 21 `#[cfg(feature = …)]` in its `lib.rs`
+  (the waves are over), fix "ported from the TypeScript in src/lib". `crates/glint-ui/Cargo.toml`: drop the empty
+  `[features]` block and the wave notes. `crates/glint-core/Cargo.toml`: comments that say "already in the build
+  through Tauri", the empty `[target.'cfg(not(any(android, ios)))']` comment about Tauri's updater, the description.
+- **G2 Docs.** In `docs/gpui/`: keep `STANDARDS.md` (cut §4 "Porting TypeScript" and §6 "src-tauri to glint-core"),
+  `VENDOR.md`, `rtl-fix.patch`; delete `migration-plan.md`, `TRACKER.md`, `parity-strings.md`, `previews-native.md`,
+  `UI-SKELETON.md` if nothing links to them, and `reference/spike-*.rs`; fix links (`scripts/gpui-installer.mjs`
+  cites the migration plan). README, `docs/tools.md`, CONTRIBUTING's code map and `site/` for everything part B
+  removed; a "New in 0.12" section with a plain **Removed** list. Leave the website undeployed (the user's word).
+- **G3 Notes in the code.** Settle the 15 `TODO(coordinator)` (`rg "TODO\(coordinator\)" crates`: private copies of a
+  helper "until it is exported": export it once and delete the copy, e.g. `verbs::launch_exe`, `shell::in_sta`,
+  `sftp::UNKNOWN_HOST`, the two rankers in `quick_search/search.rs` and the palette, `file_list::drop_path`) and the
+  7 `PORT ME` (`rg "PORT ME" crates`: do it or delete the note; `workspace.rs:1010` hides the native preview under a
+  menu). Reword comments about the web app only in files already being edited.
+- **G4 Scripts.** `package.json`: `gpui:installer` → `installer` (update docs/releasing.md, release.yml and
+  `scripts/release.mjs` callers); `.gitignore`'s web-era lines.
+- **G5 Self-test hooks.** `crates/glint-ui/src/selftest.rs` (660 lines, debug only): delete the wave scripts the e2e
+  harness now covers (`wave8`, `wave9`, `wave11`, `look13`, `look14`); keep `ops:` and `show:` if still used for
+  captures.
+- **G6 Vendor.** Delete `vendor/gpui-pre-0.3.12/examples` (56 files, 5 MB) and its 44 `[[example]]` entries, and the
+  vendored crates' own `Cargo.lock`, `tests/`, `benches/` if the build and `cargo metadata` do not need them; a
+  VENDOR.md row.
+- **G7 Housekeeping, only on the user's yes (destructive):** worktrees `.claude/worktrees/intelligent-benz-a0d24e`,
+  `objective-wiles-12a035`, `next-release`, `D:/glint-build/next`; branches `next`, `worktree-next-release`,
+  `gpui-migration` (its worktree holds the build-cache junction: keep it until every build uses
+  `CARGO_TARGET_DIR`); the remote branch `origin/imgbot`.
+
+## Order and size
+
+1. **M0 baseline** (half a day with the scenario scripts).
+2. **A1** (S). 3. **B5, B7, C4** (S each: pure deletions). 4. **B1, B2** (M each), then **B6 + B3, B4** (M each).
+5. **C1** (S), **C3** (S-M), **C2** (M: mostly build and measure time). Run M0 again.
+6. **D1, D2, D5, D4** (the per-key and per-folder ones; S-M each), then **D3, D6, D7, D8, D9, D10**. Run M0 again.
+7. **E1, E2, E3, E4** (M each), then **E6, E8, E9**, then E5, E7, E10 as time allows.
+8. **F1, F3** (S), **F2** (M), F4 and F5 only if measured as needed.
+9. **G1-G6**, README and notes, the final M0, the full check set (rule 6), then stop and report: releasing (the
+   version bump to 0.12.0, `npm run release`, Scoop, winget, MSIX, the website) happens only on the user's word.
+
+## Verification (end to end)
+
+- The M0 table, before and after, below, with `size-by-crate.py --compare` against the 0.11.0 run.
+- `cargo test --workspace`, clippy, fmt, `npm run test:signing`, `npm run licenses -- --check`, `cargo deny check`;
+  e2e 18/18 on the debug build (ask before taking the mouse), each failing check run again alone.
+- By hand in a scratch profile (the optimized dev-behaving build, a made-up folder in a scratch folder): A1's four
+  services; a Markdown file with mermaid, math and Graphviz blocks (code, drawn, drawn); a `.typ` file (text);
+  Convert document → PDF still offers the tools; Settings shows no Devices, photo, speech or meaning rows; an old
+  `state.json` with those settings and a device remote loads; `retired::sweep` removes a planted model folder and
+  nothing else; Subtitles on a video still runs; a copy of 50,000 files; a text search with 100,000 matches; Quick
+  Search typed fast.
+- Not verifiable here without the user: the real index service (UAC), Narrator, a second PC, the Store copy.
+
+## The audit scripts (`scripts/dev/`)
+
+- **`size-by-crate.py [Glint.exe]`** reads the exe's PDB (beside the exe) with Windows' dbghelp.dll and credits each
+  symbol's code to the crate its mangled name names (generic code counts for the crate that defines it unless that
+  is the standard library). It prints the sections, the biggest crates, and what removing each direct dependency
+  would take out (it and every crate only it brings in, from `cargo metadata`); `--group NAME=dep,dep` counts a set
+  together, `--json` saves a run, `--compare` prints the change. Thin LTO hides private symbols, so shares are a few
+  percent off: for a decision, build with and without the thing and compare the files.
+- **`unreached-fns.py`** lists functions nothing in the shipping app reaches by name (test code set aside), and free
+  functions never named with their module (`content::start`). It matches by name, so check each hit with `rg`.
+
+## Results
+
+| Measure | 0.11.0 | after A-B | after C | after D-F | 0.12.0 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `Glint.exe` | 174,127,104 B | | | | |
+| setup | 45,752,959 B | | | | |
+| .text / .rdata | 124.5 / 43.2 MB | | | | |
+| crates compiled | 964 | | | | |
+| release build | | | | | |
+| cold start | | | | | |
+| arrow key in 100,000 (key to frame) | | | | | |
+| Ctrl+wheel zoom (key to frame) | | | | | |
+| 20 folders opened (`nav shown`) | | | | | |
+| memory at rest (private / working set) | | | | | |
+| idle CPU over 120 s (shown / in the tray) | | | | | |
