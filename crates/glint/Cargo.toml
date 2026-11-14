@@ -13,7 +13,8 @@ path = "src/main.rs"
 [dependencies]
 glint-ui = { path = "../glint-ui" }
 glint-core = { path = "../glint-core" }
-# The same allocator and version as glint-core uses (Glint.exe sets it as the global allocator).
+# Microsoft's allocator, Glint.exe's global allocator (main.rs): listing and sorting make and free many small
+# strings. Kept for what `npm run bench` measured in 0.10 (H19); the instant search service keeps Windows' own.
 mimalloc = { version = "0.1.52", default-features = false }
 
 [build-dependencies]
