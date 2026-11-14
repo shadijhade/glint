@@ -670,19 +670,54 @@ fn pixels_of(size: FontSize) -> Pixels {
 }
 
 /// A font family that exists on this PC: the wanted one, else the fallback.
-fn installed_family(cx: &App, wanted: &'static str, fallback: &'static str) -> SharedString {
-    let names = cx.text_system().all_font_names();
-    if names.iter().any(|name| name == wanted) {
-        wanted.into()
-    } else {
-        fallback.into()
+/// The sans and monospace families the theme sets, each the one wanted if it's installed, else its fallback. Looked
+/// up once (until [`init`] runs again): listing the installed fonts asks DirectWrite for every family.
+struct Families {
+    sans: SharedString,
+    mono: SharedString,
+}
+
+impl Global for Families {}
+
+fn families(cx: &mut App) -> (SharedString, SharedString) {
+    if let Some(known) = cx.try_global::<Families>() {
+        return (known.sans.clone(), known.mono.clone());
     }
+    let names = cx.text_system().all_font_names();
+    let installed = |wanted: &'static str, fallback: &'static str| -> SharedString {
+        if names.iter().any(|name| name == wanted) {
+            wanted.into()
+        } else {
+            fallback.into()
+        }
+    };
+    let (sans, mono) = (installed(SANS, SANS_FALLBACK), installed(MONO, MONO_FALLBACK));
+    cx.set_global(Families {
+        sans: sans.clone(),
+        mono: mono.clone(),
+    });
+    (sans, mono)
+}
+
+/// How many times [`apply`] has run in this app (tests check that a change the theme doesn't read leaves it).
+#[cfg(test)]
+struct Applied(usize);
+
+#[cfg(test)]
+impl Global for Applied {}
+
+#[cfg(test)]
+pub fn times_applied(cx: &App) -> usize {
+    cx.try_global::<Applied>().map_or(0, |applied| applied.0)
 }
 
 /// Start-up step 2: builds the theme, then reads Windows' accent color (off the UI thread) and watches for
 /// changes to it and to light/dark. Needs `gpui_kit::init` and `state::init` to have run.
 pub fn init(cx: &mut App) {
     motion::init(cx);
+    if cx.has_global::<Families>() {
+        cx.remove_global::<Families>();
+    }
     apply(cx);
     // Windows' accent: read now, and again whenever Windows says it changed.
     let (changed, changes) = async_channel::unbounded::<WindowsAccent>();
@@ -722,6 +757,8 @@ pub fn on_appearance_changed(cx: &mut App) {
 /// Recomputes the tokens from the settings and Windows' state, and maps them onto gpui-component's theme.
 /// Call after anything the theme depends on changed ([`crate::state::update`] does).
 pub fn apply(cx: &mut App) {
+    #[cfg(test)]
+    cx.set_global(Applied(times_applied(cx) + 1));
     let (choice, accent_choice, backdrop_choice, font_size) = {
         let s = crate::state::settings(cx);
         (s.theme, s.accent, s.backdrop, s.font_size)
@@ -746,8 +783,7 @@ pub fn apply(cx: &mut App) {
     } else {
         None
     };
-    let sans = installed_family(cx, SANS, SANS_FALLBACK);
-    let mono = installed_family(cx, MONO, MONO_FALLBACK);
+    let (sans, mono) = families(cx);
     let font_size = pixels_of(font_size);
     let chrome = if backdrop.is_some() {
         hsla(0., 0., 0., 0.)
