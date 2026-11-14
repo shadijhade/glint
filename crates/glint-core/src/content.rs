@@ -13,6 +13,7 @@ use crate::fsx::blocking;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tantivy::collector::TopDocs;
@@ -105,6 +106,10 @@ struct Content {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// Paths reported changed, indexed together a moment later.
     pending: Mutex<HashSet<PathBuf>>,
+    /// Changes taken from `pending` are being indexed, not committed yet.
+    applying: AtomicBool,
+    /// The folders have been read through once since the index was opened (a start's catch-up is done).
+    caught_up: AtomicBool,
 }
 
 static CONTENT: OnceLock<Arc<Content>> = OnceLock::new();
@@ -184,6 +189,8 @@ fn open() -> Result<Arc<Content>, String> {
         status: Mutex::default(),
         watcher: Mutex::default(),
         pending: Mutex::default(),
+        applying: AtomicBool::new(false),
+        caught_up: AtomicBool::new(false),
     });
     content.load_known();
     let _ = CONTENT.set(content.clone());
@@ -475,6 +482,19 @@ impl Content {
         }
         self.commit();
         self.status.lock().unwrap().indexing = false;
+        if self.config.read().unwrap().enabled {
+            self.caught_up.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Whether the index holds the folders as they are: its catch-up since it was opened is done, it isn't reading
+    /// the folders again, and every change seen is in it. A search it answered otherwise could miss what's new (a
+    /// file made a second ago), so ripgrep answers until then.
+    fn current(&self) -> bool {
+        self.caught_up.load(Ordering::SeqCst)
+            && !self.status.lock().unwrap().indexing
+            && !self.applying.load(Ordering::SeqCst)
+            && self.pending.lock().unwrap().is_empty()
     }
 
     fn commit(&self) {
@@ -505,8 +525,11 @@ impl Content {
             if !content.config.read().unwrap().enabled {
                 return;
             }
+            // Marked as being applied before they leave `pending`, so the index never looks current in between.
+            content.applying.store(true, Ordering::SeqCst);
             let paths: Vec<PathBuf> = content.pending.lock().unwrap().drain().collect();
             if paths.is_empty() {
+                content.applying.store(false, Ordering::SeqCst);
                 continue;
             }
             {
@@ -516,6 +539,7 @@ impl Content {
                 }
             }
             content.commit();
+            content.applying.store(false, Ordering::SeqCst);
         });
     }
 
@@ -603,9 +627,10 @@ pub async fn content_configure(enabled: bool, folders: Vec<String>, pictures: Op
     .await
 }
 
-/// Whether the content index covers `path` (and is on).
+/// Whether the content index covers `path`, is on, and is current (see `Content::current`): only then does it answer
+/// a search, instead of ripgrep.
 pub fn content_covers(path: String) -> bool {
-    CONTENT.get().is_some_and(|c| c.config.read().unwrap().enabled && c.covered(Path::new(path.trim_end_matches('\\'))))
+    CONTENT.get().is_some_and(|c| c.config.read().unwrap().enabled && c.current() && c.covered(Path::new(path.trim_end_matches('\\'))))
 }
 
 #[derive(Deserialize)]
@@ -659,6 +684,44 @@ pub async fn run_content_search(window: Window, request: ContentSearch, search_i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An index in memory, on, with no folders.
+    fn in_memory() -> Content {
+        let (schema, f) = schema();
+        let index = Index::create_in_ram(schema);
+        let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into().unwrap();
+        let writer = index.writer(15_000_000).unwrap();
+        Content {
+            dir: std::env::temp_dir(),
+            _index: index,
+            reader,
+            writer: Mutex::new(writer),
+            f,
+            known: Mutex::default(),
+            config: RwLock::new(Config { enabled: true, folders: Vec::new(), pictures: false }),
+            status: Mutex::default(),
+            watcher: Mutex::default(),
+            pending: Mutex::default(),
+            applying: AtomicBool::new(false),
+            caught_up: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn the_index_answers_only_once_it_holds_the_folders_as_they_are() {
+        let content = Arc::new(in_memory());
+        assert!(!content.current(), "not before its catch-up after a start");
+        content.reconcile();
+        assert!(content.current(), "caught up");
+        content.pending.lock().unwrap().insert(PathBuf::from(r"C:\a.txt"));
+        assert!(!content.current(), "a change seen and not indexed yet");
+        content.pending.lock().unwrap().clear();
+        content.applying.store(true, Ordering::SeqCst);
+        assert!(!content.current(), "a change being indexed");
+        content.applying.store(false, Ordering::SeqCst);
+        content.status.lock().unwrap().indexing = true;
+        assert!(!content.current(), "reading the folders again");
+    }
 
     #[test]
     fn folders_and_words_as_the_index_keeps_them() {
