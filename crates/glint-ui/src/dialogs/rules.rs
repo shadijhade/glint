@@ -71,11 +71,24 @@ impl CoreBackend {
     }
 }
 
-/// core's own rule type for a saved one (the same JSON shape; the saved one types its choices).
+/// core's own rule type for a saved one (the saved one types its choices; core takes their words).
 pub fn to_core(rule: &FolderRule) -> glint_core::rules::Rule {
-    serde_json::to_value(rule)
-        .and_then(serde_json::from_value)
-        .unwrap_or_default()
+    glint_core::rules::Rule {
+        id: rule.id.clone(),
+        name: rule.name.clone(),
+        on: rule.on,
+        folder: rule.folder.clone(),
+        subfolders: rule.subfolders,
+        names: rule.names.clone(),
+        min_size: rule.min_size,
+        max_size: rule.max_size,
+        older_than_days: rule.older_than_days,
+        action: rule.action.as_str().to_string(),
+        target: rule.target.clone(),
+        pattern: rule.pattern.clone(),
+        sync: rule.sync.map(|sync| sync.as_str().to_string()).unwrap_or_default(),
+        every: rule.every.unwrap_or(0),
+    }
 }
 
 /// Waits for a core call and flattens the two layers of failure (the task panicking, the call failing).

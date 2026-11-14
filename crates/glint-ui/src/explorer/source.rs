@@ -506,14 +506,14 @@ impl Source for CoreSource {
             lane.to_string(),
             progress_channel(progress),
         ));
-        Box::pin(async move { staged_from(&running.await??) })
+        Box::pin(async move { running.await? })
     }
 
     fn compress(&self, request: CompressRequest, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
-        // core's format enum isn't exported: it reads its own word ("zip", "7z", "tar.zst").
-        let format = match serde_json::from_value(serde_json::Value::String(request.format.ext().to_string())) {
-            Ok(format) => format,
-            Err(e) => return Box::pin(async move { Err(e.to_string()) }),
+        let format = match request.format {
+            CompressFormat::Zip => glint_core::archive::CompressFormat::Zip,
+            CompressFormat::SevenZ => glint_core::archive::CompressFormat::SevenZ,
+            CompressFormat::TarZst => glint_core::archive::CompressFormat::TarZst,
         };
         let running = core_bridge::run(glint_core::archive::archive_compress(
             request.paths,
@@ -524,7 +524,7 @@ impl Source for CoreSource {
             request.password,
             progress_channel(progress),
         ));
-        Box::pin(async move { staged_from(&running.await??) })
+        Box::pin(async move { running.await? })
     }
 
     fn extract_here(&self, path: &str, lane: &str, progress: ProgressSink) -> Fut<Result<Staged, String>> {
@@ -533,7 +533,7 @@ impl Source for CoreSource {
             lane.to_string(),
             progress_channel(progress),
         ));
-        Box::pin(async move { staged_from(&running.await??) })
+        Box::pin(async move { running.await? })
     }
 
     fn cancel_stage(&self, lane: &str) {
@@ -679,17 +679,15 @@ impl Source for CoreSource {
                 .ok_or_else(|| "Glint's search isn't ready yet".to_string())?;
             match engine {
                 InsideEngine::Ripgrep => {
-                    // The request's fields are private to core: it builds its own arguments from the JSON.
-                    let text = serde_json::from_value(serde_json::json!({
-                        "query": request.query,
-                        "path": request.path,
-                        "caseSensitive": request.options.case_sensitive,
-                        "wholeWord": request.options.whole_word,
-                        "regex": request.options.regex,
-                        "exclusions": request.exclusions,
-                        "everything": request.everything,
-                    }))
-                    .map_err(|e| e.to_string())?;
+                    let text = glint_core::TextSearch {
+                        query: request.query,
+                        path: request.path,
+                        case_sensitive: request.options.case_sensitive,
+                        whole_word: request.options.whole_word,
+                        regex: request.options.regex,
+                        exclusions: request.exclusions,
+                        everything: request.everything,
+                    };
                     glint_core::run_ripgrep_batched(window, text, request.id, request.max_results, state).await
                 }
                 InsideEngine::Documents => {
@@ -850,7 +848,7 @@ impl Source for CoreSource {
             lane.to_string(),
             counting_channel(progress),
         ));
-        Box::pin(async move { staged_from(&running.await??) })
+        Box::pin(async move { running.await? })
     }
 
     fn scripts(&self) -> Fut<Result<Vec<Script>, String>> {
@@ -921,14 +919,11 @@ pub struct CompressRequest {
 /// A channel core's staging work reports to: only a changed percent is passed on (core reports often).
 fn progress_channel(sink: ProgressSink) -> Channel<glint_core::archive::StageProgress> {
     let last = std::sync::atomic::AtomicI64::new(-1);
-    Channel::new(move |message: glint_core::archive::StageProgress| {
-        // core's fields are crate-private: JSON is how they are read.
-        if let Ok(progress) = serde_json::to_value(&message).and_then(serde_json::from_value::<StageProgress>) {
-            let percent = i64::from(progress.percent());
-            if last.swap(percent, std::sync::atomic::Ordering::Relaxed) != percent {
-                // A closed sink means the work was left; core keeps going and finishes on its own.
-                let _ = sink.try_send(progress);
-            }
+    Channel::new(move |progress: StageProgress| {
+        let percent = i64::from(progress.percent());
+        if last.swap(percent, std::sync::atomic::Ordering::Relaxed) != percent {
+            // A closed sink means the work was left; core keeps going and finishes on its own.
+            let _ = sink.try_send(progress);
         }
         Ok(())
     })
@@ -939,25 +934,15 @@ fn progress_channel(sink: ProgressSink) -> Channel<glint_core::archive::StagePro
 fn counting_channel(sink: ProgressSink) -> Channel<glint_core::archive::StageProgress> {
     let started = std::time::Instant::now();
     let last = std::sync::atomic::AtomicU64::new(0);
-    Channel::new(move |message: glint_core::archive::StageProgress| {
+    Channel::new(move |progress: StageProgress| {
         let now = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX).max(1);
         let before = last.load(std::sync::atomic::Ordering::Relaxed);
         if before == 0 || now.saturating_sub(before) >= 100 {
             last.store(now, std::sync::atomic::Ordering::Relaxed);
-            // core's fields are crate-private: JSON is how they are read.
-            if let Ok(progress) = serde_json::to_value(&message).and_then(serde_json::from_value::<StageProgress>) {
-                let _ = sink.try_send(progress);
-            }
+            let _ = sink.try_send(progress);
         }
         Ok(())
     })
-}
-
-/// What core's staging made, as the model reads it.
-fn staged_from(staged: &impl serde::Serialize) -> Result<Staged, String> {
-    serde_json::to_value(staged)
-        .and_then(serde_json::from_value)
-        .map_err(|e| format!("Glint couldn't read what was extracted: {e}"))
 }
 
 /// What core's search said, as a [`Found`].

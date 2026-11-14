@@ -9,8 +9,6 @@
 //! is a [`Subject`]: `“{name}”` for one item, else `plural(count, "item")` ("3 items"). A name is the last part
 //! of a path.
 
-use serde::Deserialize;
-
 // ---- Asking glint-core -------------------------------------------------------------------------------------
 
 /// What Compress to writes (`CompressFormat` in fs.ts): a zip (Deflate), a 7z (LZMA2) or a tar.zst (Zstandard).
@@ -71,47 +69,8 @@ impl StagePurpose {
     }
 }
 
-/// A file that couldn't be had (password-protected, damaged…), with the reason.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
-pub struct Skipped {
-    pub path: String,
-    pub reason: String,
-}
-
-/// What a staging, a compression or an extraction made (`Staged` in fs.ts).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
-pub struct Staged {
-    /// The staging folder, to delete once its contents are copied. After Extract here, the folder made (or the one
-    /// file, for a single compressed file).
-    pub folder: String,
-    /// The copy of each item asked for that could be made, in order. After Compress, the archive is `paths[0]`.
-    pub paths: Vec<String>,
-    /// Files that couldn't be had, with the reason.
-    pub skipped: Vec<Skipped>,
-    pub bytes: u64,
-}
-
-/// How far a staging has come: `done` of `total` (the unit is core's; `total` is 0 while it isn't known).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
-pub struct StageProgress {
-    pub done: u64,
-    pub total: u64,
-}
-
-impl StageProgress {
-    /// The whole percent `done` of `total` is (`Math.floor(100 * done / total)`), at most 100; 0 while the total
-    /// isn't known.
-    pub fn percent(&self) -> u8 {
-        if self.total == 0 {
-            return 0;
-        }
-        let percent = u128::from(self.done) * 100 / u128::from(self.total);
-        u8::try_from(percent.min(100)).unwrap_or(100)
-    }
-}
+/// What a staging, a compression or an extraction made, what it skipped, and how far it has come: core's own.
+pub use glint_core::archive::{Skipped, StageProgress, Staged};
 
 /// Where a source reports progress to. Cheap to clone and safe to send from any thread: core's workers send.
 pub type ProgressSink = async_channel::Sender<StageProgress>;
@@ -302,18 +261,6 @@ mod tests {
             Subject::Many(2)
         );
         assert_eq!(Subject::of(&[]), Subject::Many(0));
-    }
-
-    #[test]
-    fn core_s_json_reads_as_a_staged_result() {
-        let staged: Staged = serde_json::from_value(serde_json::json!({
-            "folder": "C:\\Temp\\Glint\\s1", "paths": ["C:\\Temp\\Glint\\s1\\x.txt"],
-            "skipped": [{"path": "C:\\a.zip\\y.txt", "reason": "Password-protected"}], "bytes": 12
-        }))
-        .expect("staged parses");
-        assert_eq!(staged.paths.len(), 1);
-        assert_eq!(staged.skipped[0].reason, "Password-protected");
-        assert_eq!(staged.bytes, 12);
     }
 
     #[test]

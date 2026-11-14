@@ -70,12 +70,10 @@ impl ArchiveProbe {
         ArchiveProbe {
             progress: Arc::new(|path| {
                 let found = glint_core::archive::archive_progress(path.to_string())?;
-                // Core keeps the fields private; it is serialised for the interface, so it is read that way.
-                let value = serde_json::to_value(&found).ok()?;
                 Some(ArchiveRead {
-                    archive: value.get("path")?.as_str()?.to_string(),
-                    done: value.get("done")?.as_u64()?,
-                    total: value.get("total").and_then(|t| t.as_u64()).unwrap_or(0),
+                    archive: found.path,
+                    done: found.done,
+                    total: found.total,
                 })
             }),
             cancel: Arc::new(|path| glint_core::archive::cancel_archive_read(path.to_string())),

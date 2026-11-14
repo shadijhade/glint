@@ -183,22 +183,14 @@ impl Sources {
             }),
             archive: Rc::new(|path| {
                 let path = path.to_string();
-                let running = core_bridge::run(async move {
-                    let peek = glint_core::archive::archive_peek(path).await?;
-                    serde_json::to_value(peek).map_err(|e| e.to_string())
-                });
+                let running = core_bridge::run(glint_core::archive::archive_peek(path));
                 Box::pin(async move {
-                    let value = flat(running.await)?;
-                    let number = |key: &str| value.get(key).and_then(serde_json::Value::as_u64);
+                    let peek = flat(running.await)?;
                     Ok(ArchiveFacts {
-                        format: value
-                            .get("format")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        packed: number("packed").unwrap_or(0),
-                        entries: number("entries").and_then(|n| usize::try_from(n).ok()),
-                        unpacked: number("unpacked"),
+                        format: peek.format.to_string(),
+                        packed: peek.packed,
+                        entries: peek.entries.and_then(|n| usize::try_from(n).ok()),
+                        unpacked: peek.unpacked,
                     })
                 })
             }),

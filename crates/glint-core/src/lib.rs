@@ -319,20 +319,17 @@ pub async fn stop_tools(state: State<'_, AppState>) -> Result<(), String> {
     .await
 }
 
-/// A text search as Text mode asks for it. ripgrep's arguments are built here from these, never
-/// passed through from the UI (a flag like `--pre` would run a program).
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// A text search as the window asks for it. ripgrep's arguments are built here from these, never passed
+/// through (a flag like `--pre` would run a program).
 pub struct TextSearch {
-    query: String,
-    path: String,
-    case_sensitive: bool,
-    whole_word: bool,
-    regex: bool,
-    exclusions: Vec<String>,
+    pub query: String,
+    pub path: String,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub regex: bool,
+    pub exclusions: Vec<String>,
     /// Searching again, skipping nothing: hidden files, what .gitignore files list and the exclusions too.
-    #[serde(default)]
-    everything: bool,
+    pub everything: bool,
 }
 
 pub fn rg_args(search: &TextSearch, folder: &str) -> Vec<String> {

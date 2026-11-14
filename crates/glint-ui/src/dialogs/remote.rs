@@ -72,14 +72,24 @@ fn flat<T: Send + 'static>(call: impl Future<Output = Result<T, String>> + Send 
     Box::pin(async move { joined.await.and_then(|inner| inner) })
 }
 
-/// core's connection for a saved one (the same JSON shape; the saved one types its choices). A port beyond
-/// 65535 is cut to it, so one wrong digit can't make the whole connection blank.
-fn to_core(connection: &RemoteConnection) -> glint_core::remote::Connection {
-    let mut connection = connection.clone();
-    connection.port = connection.port.map(|p| p.min(65_535));
-    serde_json::to_value(&connection)
-        .and_then(serde_json::from_value)
-        .unwrap_or_default()
+/// core's connection for a saved one (the saved one types its choices; core takes their words). A port beyond
+/// 65535 is cut to it.
+pub(crate) fn to_core(connection: &RemoteConnection) -> glint_core::remote::Connection {
+    glint_core::remote::Connection {
+        id: connection.id.clone(),
+        name: connection.name.clone(),
+        kind: connection.kind.as_str().to_string(),
+        endpoint: connection.endpoint.clone(),
+        region: connection.region.clone(),
+        bucket: connection.bucket.clone(),
+        user: connection.user.clone(),
+        host: connection.host.clone().unwrap_or_default(),
+        port: connection.port.map_or(0, |port| port.min(65_535) as u16),
+        key: connection.key.clone().unwrap_or_default(),
+        root: connection.root.clone(),
+        thumbnails: connection.thumbnails.unwrap_or(false),
+        rclone: connection.rclone.clone().unwrap_or_default(),
+    }
 }
 
 /// glint-core's remote connections.
@@ -2086,5 +2096,27 @@ mod tests {
         c.port = Some(70_000);
         assert_eq!(to_core(&c).port, 65_535);
         assert_eq!(to_core(&c).host, "h");
+    }
+
+    #[test]
+    fn a_saved_connection_is_handed_to_core_field_by_field() {
+        let mut c = saved("x", "X", RemoteKind::Rclone);
+        c.root = "Photos".into();
+        c.rclone = Some("gdrive".into());
+        c.thumbnails = Some(true);
+        let core = to_core(&c);
+        assert_eq!(
+            (
+                core.id.as_str(),
+                core.name.as_str(),
+                core.kind.as_str(),
+                core.root.as_str(),
+                core.rclone.as_str()
+            ),
+            ("x", "X", "rclone", "Photos", "gdrive")
+        );
+        assert!(core.thumbnails);
+        // What isn't set is core's default.
+        assert_eq!((core.port, core.key.as_str(), core.host.as_str()), (0, "", ""));
     }
 }

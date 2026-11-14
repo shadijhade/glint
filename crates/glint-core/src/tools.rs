@@ -638,23 +638,23 @@ pub fn command(id: &str) -> Result<Command, String> {
     Ok(command)
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolStatus {
-    id: &'static str,
-    name: &'static str,
-    used_for: &'static str,
+    pub id: &'static str,
+    pub name: &'static str,
+    pub used_for: &'static str,
     /// What Install tries first on this PC: "winget" (where it's on the PC and has the tool, for one that
     /// doesn't come with Glint), else "release".
-    source: &'static str,
+    pub source: &'static str,
     /// Where the copy that runs came from: "bundled", "downloaded" or "installed"; None when it's missing.
-    origin: Option<&'static str>,
-    path: Option<String>,
-    version: Option<String>,
+    pub origin: Option<&'static str>,
+    pub path: Option<String>,
+    pub version: Option<String>,
     /// The version its release download gets.
-    pinned: Option<&'static str>,
+    pub pinned: Option<&'static str>,
     /// Glint downloaded this copy, so it can remove it.
-    removable: bool,
+    pub removable: bool,
 }
 
 fn status(tool: &'static Tool) -> ToolStatus {
@@ -718,11 +718,11 @@ fn version_in(text: &str) -> Option<String> {
 }
 
 /// How an install is going, for its progress bar: what it's doing, and bytes when it's downloading.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Progress {
-    pub(crate) stage: String,
-    pub(crate) done: u64,
-    pub(crate) total: u64,
+    pub stage: String,
+    pub done: u64,
+    pub total: u64,
 }
 
 /// Installs running now: winget's process per tool, or a download's stop flag.
@@ -1309,9 +1309,8 @@ fn said_as_it_goes(status: Option<StatusLine>, heard: Arc<Mutex<Instant>>) -> Ch
     let stage = Mutex::new(String::new());
     Channel::new(move |progress: Progress| {
         *heard.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-        let Ok(progress) = serde_json::to_value(&progress) else { return Ok(()) };
-        let now = progress["stage"].as_str().unwrap_or_default();
-        let (done, total) = (progress["done"].as_u64().unwrap_or(0), progress["total"].as_u64().unwrap_or(0));
+        let now = progress.stage.as_str();
+        let (done, total) = (progress.done, progress.total);
         if let Some(status) = &status {
             status.show(&if total > 0 { format!("{now} {} of {}", megabytes(done), megabytes(total)) } else { now.to_string() });
         }

@@ -531,15 +531,18 @@ pub struct DeepRequest {
 impl DeepRequest {
     /// The folders with the options that change the answer (`deepKey`): an answer is for that key only.
     pub fn key(&self) -> String {
-        serde_json::json!([
-            self.left.to_lowercase(),
-            self.right.to_lowercase(),
-            self.subfolders,
-            self.contents,
-            self.hidden,
-            self.exclude
-        ])
-        .to_string()
+        // Debug quotes each name, so no two requests share a key.
+        format!(
+            "{:?}",
+            (
+                self.left.to_lowercase(),
+                self.right.to_lowercase(),
+                self.subfolders,
+                self.contents,
+                self.hidden,
+                &self.exclude
+            )
+        )
     }
 }
 
