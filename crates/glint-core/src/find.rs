@@ -296,10 +296,22 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
     answered
 }
 
-/// Whether the running service is this app's version (so it reads every filter this app knows).
+/// Whether the running service is this app's version (so it reads every filter this app knows). Asked before
+/// every search with a filter or a path (as each key is typed), and the service counts every record to answer,
+/// so the answer is kept a minute; a service that didn't answer is asked again next time.
 #[cfg(windows)]
 pub(crate) fn same_service() -> bool {
-    shadui_index::client::status().is_ok_and(|status| status.version == shadui_index::VERSION)
+    static KNOWN: std::sync::Mutex<Option<(bool, std::time::Instant)>> = std::sync::Mutex::new(None);
+    const KNOWN_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+    if let Some((same, at)) = *KNOWN.lock().unwrap_or_else(|e| e.into_inner()) {
+        if at.elapsed() < KNOWN_FOR {
+            return same;
+        }
+    }
+    let Ok(status) = shadui_index::client::status() else { return false };
+    let same = status.version == shadui_index::VERSION;
+    *KNOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some((same, std::time::Instant::now()));
+    same
 }
 
 #[cfg(not(windows))]

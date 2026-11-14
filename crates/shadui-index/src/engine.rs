@@ -134,11 +134,30 @@ struct Slot {
     history: Mutex<History>,
     /// Whether the saved history was read (once: it outlives a new read of the disk).
     history_loaded: AtomicBool,
+    /// The tree's counts, and when they were worked out.
+    counted: Mutex<Option<(Instant, crate::tree::TreeStats)>>,
 }
+
+/// How long the tree's counts are given as they were: counting goes over every record under the tree's lock, and
+/// the app asks for the status before searches with filters (and every second or so while a drive is read).
+const COUNTED_FOR: Duration = Duration::from_secs(2);
 
 impl Slot {
     fn new(letter: char, tree: Tree, ready: bool, status: VolumeStatus) -> Slot {
-        Slot { letter, tree: RwLock::new(tree), ready: AtomicBool::new(ready), status: Mutex::new(status), history: Mutex::default(), history_loaded: AtomicBool::new(false) }
+        Slot { letter, tree: RwLock::new(tree), ready: AtomicBool::new(ready), status: Mutex::new(status), history: Mutex::default(), history_loaded: AtomicBool::new(false), counted: Mutex::new(None) }
+    }
+
+    /// The tree's counts, worked out again once they're [`COUNTED_FOR`] old.
+    fn counts(&self) -> crate::tree::TreeStats {
+        let mut counted = self.counted.lock().unwrap();
+        if let Some((at, stats)) = *counted {
+            if at.elapsed() < COUNTED_FOR {
+                return stats;
+            }
+        }
+        let stats = self.tree.read().unwrap().stats();
+        *counted = Some((Instant::now(), stats));
+        stats
     }
 }
 
@@ -577,7 +596,7 @@ impl Engine {
             .map(|slot| {
                 let mut status = slot.status.lock().unwrap().clone();
                 if slot.ready.load(Ordering::SeqCst) {
-                    let stats = slot.tree.read().unwrap().stats();
+                    let stats = slot.counts();
                     (status.files, status.folders, status.memory) = (stats.files, stats.folders, stats.memory);
                 }
                 status
