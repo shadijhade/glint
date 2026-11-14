@@ -514,6 +514,8 @@ pub struct Thumbnails {
     run_ids: u64,
     /// Pictures let go of that the GPU's atlas may still hold: a view with a window frees them.
     evicted: Vec<Arc<RenderImage>>,
+    /// The views are about to be told that pictures arrived (see `arrived`).
+    telling: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -572,6 +574,7 @@ impl Thumbnails {
             runs: HashMap::new(),
             run_ids: 0,
             evicted: Vec::new(),
+            telling: false,
             _subscriptions: subscriptions,
         }
     }
@@ -760,8 +763,7 @@ impl Thumbnails {
                     this.hold(key, drawn, css_box);
                 }
                 this.evict();
-                cx.emit(Arrived);
-                cx.notify();
+                this.arrived(cx);
             })
             .ok();
         })
@@ -816,8 +818,25 @@ impl Thumbnails {
             }
         }
         self.evict();
-        cx.emit(Arrived);
-        cx.notify();
+        self.arrived(cx);
+    }
+
+    /// Pictures arrived: the views that draw them (the grid and the list of each pane, the status bar, the
+    /// preview's deck) are told once for all the answers already waiting on the UI thread, not once each. The
+    /// telling is a task of its own, queued behind them.
+    fn arrived(&mut self, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.telling, true) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, cx| {
+                this.telling = false;
+                cx.emit(Arrived);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Keeps a picture (`hold`), as the file's latest.
