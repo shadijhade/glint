@@ -8,7 +8,7 @@ use crate::update::{self, Updater};
 use crate::win::{self, os_error, wide, Handle, SecurityDescriptor};
 use std::io::{self, Read, Write};
 use std::os::windows::io::AsRawHandle;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -217,6 +217,44 @@ fn receive_update(io: &mut PipeIo, signature: &str, size: u64, updater: Option<&
     updater.ok_or("this one doesn't update itself (it isn't running as the installed service)")?.take(&exe, signature)
 }
 
+/// Whether the client of a connection has gone (closed its end): an app typing fast closes the connection of
+/// the search a newer key press replaced, and that search then stops (`Engine::search_until`). The pipe is asked
+/// (`PeekNamedPipe`, which fails once the other end is closed) at most every 2 ms, by whichever of the search's
+/// threads asks first; nothing else uses the pipe while the search runs.
+struct ClientGone {
+    pipe: isize,
+    began: Instant,
+    /// When the pipe was last asked, in µs since `began`.
+    asked: AtomicU64,
+    gone: AtomicBool,
+}
+
+impl ClientGone {
+    const EVERY_US: u64 = 2_000;
+
+    fn new(pipe: &Handle) -> Self {
+        ClientGone { pipe: pipe.0 .0 as isize, began: Instant::now(), asked: AtomicU64::new(0), gone: AtomicBool::new(false) }
+    }
+
+    fn check(&self) -> bool {
+        if self.gone.load(Ordering::Relaxed) {
+            return true;
+        }
+        let now = self.began.elapsed().as_micros() as u64;
+        let asked = self.asked.load(Ordering::Relaxed);
+        if now.saturating_sub(asked) < Self::EVERY_US
+            || self.asked.compare_exchange(asked, now, Ordering::Relaxed, Ordering::Relaxed).is_err()
+        {
+            return false;
+        }
+        let gone = unsafe { PeekNamedPipe(HANDLE(self.pipe as *mut _), None, 0, None, None, None) }.is_err();
+        if gone {
+            self.gone.store(true, Ordering::Relaxed);
+        }
+        gone
+    }
+}
+
 /// Serves one connection: one request, its answer, then the pipe is closed.
 fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
     if !request_arrives(&pipe, REQUEST_WAIT) {
@@ -228,7 +266,10 @@ fn answer(pipe: Handle, engine: &Engine, updater: Option<&Updater>) {
     let mut stop_after = None;
     let result = match request {
         Request::Status => proto::write_message(&mut io, &Message::Status(engine.status())),
-        Request::Search(request) => engine.search(&request, &mut io),
+        Request::Search(request) => {
+            let gone = ClientGone::new(&pipe);
+            engine.search_until(&request, &mut io, &|| gone.check())
+        }
         Request::Sizes { path } => {
             let answer = match engine.sizes(&path) {
                 Ok(sizes) => Message::Sizes(sizes),
@@ -307,6 +348,43 @@ mod tests {
 
     fn test_pipe(tag: &str) -> String {
         format!(r"\\.\pipe\shadui-index-test-{tag}-{}", std::process::id())
+    }
+
+    /// The app ends a search while the service is still scanning (a newer key press): the client's wait ends at once
+    /// without an error, and the service's side sees the client has gone.
+    #[test]
+    fn a_search_the_app_ends_closes_its_pipe_and_the_service_sees_it() {
+        let name = test_pipe("cancel");
+        let me = win::current_user_sid().unwrap();
+        let sd = SecurityDescriptor::from_sddl(&format!("{}(A;;GA;;;{me})", sddl(&[]))).unwrap();
+        let pipe = instance(&name, &sd, true).unwrap();
+        let cancel = Arc::new(client::Cancel::default());
+        let app = {
+            let (name, cancel) = (name.clone(), cancel.clone());
+            thread::spawn(move || {
+                let trust = |_: &str| true;
+                let request = SearchRequest { query: "pdf".into(), roots: vec![r"T:\".into()], hidden: false, exclude: vec![], max_results: None, fuzzy: false, rank: false };
+                let ended = client::search_on_until(client::connect_to(&name, &trust).unwrap(), &request, &cancel, |_| true);
+                (ended.is_ok(), Instant::now())
+            })
+        };
+        // The service's side: the request arrives, and no answer comes yet (a scan of millions of names).
+        let _ = unsafe { ConnectNamedPipe(pipe.0, None) };
+        assert!(request_arrives(&pipe, Duration::from_secs(10)));
+        assert!(matches!(proto::read_request(&mut PipeIo(&pipe)), Ok(Request::Search(_))));
+        let gone = ClientGone::new(&pipe);
+        thread::sleep(Duration::from_millis(50));
+        assert!(!gone.check(), "the app still waits");
+        let cancelled = Instant::now();
+        cancel.cancel();
+        let (ok, ended) = app.join().unwrap();
+        assert!(ok, "ending it isn't an error");
+        assert!(ended.duration_since(cancelled) < Duration::from_secs(2), "the wait ended at once");
+        let asked = Instant::now();
+        while !gone.check() && asked.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(3));
+        }
+        assert!(gone.check(), "the service sees the client has gone");
     }
 
     #[test]
