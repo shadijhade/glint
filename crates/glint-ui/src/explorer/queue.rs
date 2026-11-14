@@ -60,7 +60,9 @@ pub(super) async fn queue_in(
     sources: Vec<String>,
     dest: String,
 ) {
-    let Ok((source, verify)) = this.update(cx, |this, cx| (this.source.clone(), Prefs::read(cx).verify_copies)) else {
+    let Ok((source, verify)) = this.update(cx, |this, cx| {
+        (this.source.clone(), Prefs::one(cx, |s| s.verify_copies))
+    }) else {
         return;
     };
     match source.queue_add(kind, sources, dest, verify).await {

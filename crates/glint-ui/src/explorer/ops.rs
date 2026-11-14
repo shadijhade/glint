@@ -335,7 +335,7 @@ impl Explorer {
         let dest = dest.to_string();
         if is_recycle_bin(&dest) {
             let count = paths.len();
-            let confirm = Prefs::read(cx).confirm_delete;
+            let confirm = Prefs::one(cx, |s| s.confirm_delete);
             return cx.spawn(async move |this, cx| {
                 let op = FileOp::Delete {
                     paths,
@@ -430,7 +430,7 @@ impl Explorer {
             self.closed_notice(Some(tab), cx);
             return Task::ready(());
         }
-        let confirm = Prefs::read(cx).confirm_delete;
+        let confirm = Prefs::one(cx, |s| s.confirm_delete);
         let count = paths.len();
         cx.spawn(async move |this, cx| {
             let op = FileOp::Delete {
