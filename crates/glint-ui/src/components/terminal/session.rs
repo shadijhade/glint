@@ -14,7 +14,8 @@
 
 use super::emu::Screen;
 use crate::core_bridge;
-use glint_core::host::ipc::{Channel, InvokeResponseBody};
+use glint_core::host::ipc::Channel;
+use glint_core::term::TermOutput;
 use gpui_kit::{App, Global};
 use std::future::Future;
 use std::pin::Pin;
@@ -42,7 +43,7 @@ pub struct Spawn {
     pub cols: u16,
     pub rows: u16,
     /// Where core sends the session's output and reports.
-    pub output: Channel<InvokeResponseBody>,
+    pub output: Channel<TermOutput>,
 }
 
 /// What happens in a session besides its output (`TermEvent` in terminal.ts).
@@ -52,21 +53,6 @@ pub enum SessionEvent {
     Cwd(String),
     /// The shell ended with this code.
     Exit(u32),
-}
-
-/// Reads core's JSON report: `{"kind":"cwd","path":…}` or `{"kind":"exit","code":…}`.
-pub fn parse_event(json: &str) -> Option<SessionEvent> {
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    match value.get("kind")?.as_str()? {
-        "cwd" => Some(SessionEvent::Cwd(value.get("path")?.as_str()?.to_string())),
-        "exit" => Some(SessionEvent::Exit(
-            value
-                .get("code")
-                .and_then(serde_json::Value::as_u64)
-                .map_or(0, |c| c as u32),
-        )),
-        _ => None,
-    }
 }
 
 /// How the terminal reaches glint-core's sessions.
@@ -278,14 +264,15 @@ impl Waker {
 
 /// The channel core sends a session's output on. Bytes are parsed into `screen` right here (on core's reader
 /// thread); reports go to `msgs`.
-pub fn output_channel(screen: Screen, msgs: async_channel::Sender<Msg>) -> Channel<InvokeResponseBody> {
-    Channel::new(move |body| {
-        match body {
-            InvokeResponseBody::Raw(bytes) => screen.feed(&bytes),
-            InvokeResponseBody::Json(json) => {
-                if let Some(event) = parse_event(&json) {
-                    let _ = msgs.try_send(Msg::Session(event));
-                }
+pub fn output_channel(screen: Screen, msgs: async_channel::Sender<Msg>) -> Channel<TermOutput> {
+    Channel::new(move |output| {
+        match output {
+            TermOutput::Data(bytes) => screen.feed(&bytes),
+            TermOutput::Cwd(path) => {
+                let _ = msgs.try_send(Msg::Session(SessionEvent::Cwd(path)));
+            }
+            TermOutput::Exit(code) => {
+                let _ = msgs.try_send(Msg::Session(SessionEvent::Exit(code)));
             }
         }
         Ok(())
@@ -306,7 +293,7 @@ pub(crate) mod fake {
         pub resizes: Mutex<Vec<(u32, u16, u16)>>,
         pub closed: Mutex<Vec<u32>>,
         pub spawned: Mutex<Vec<(String, String, u16, u16)>>,
-        pub outputs: Mutex<Vec<Channel<InvokeResponseBody>>>,
+        pub outputs: Mutex<Vec<Channel<TermOutput>>>,
     }
 
     impl Log {
@@ -320,14 +307,21 @@ pub(crate) mod fake {
         /// Sends bytes as the shell's output on the last session started.
         pub fn print(&self, text: &str) {
             if let Some(output) = self.outputs.lock().ok().and_then(|o| o.last().cloned()) {
-                let _ = output.send(InvokeResponseBody::Raw(text.as_bytes().to_vec()));
+                let _ = output.send(TermOutput::Data(text.as_bytes().to_vec()));
             }
         }
 
-        /// Sends a report as core would: `{"kind":"cwd","path":…}`.
-        pub fn report(&self, json: &str) {
+        /// Says the shell's prompt is in `path`, as core would.
+        pub fn cwd(&self, path: &str) {
             if let Some(output) = self.outputs.lock().ok().and_then(|o| o.last().cloned()) {
-                let _ = output.send(InvokeResponseBody::Json(json.to_string()));
+                let _ = output.send(TermOutput::Cwd(path.to_string()));
+            }
+        }
+
+        /// Says the shell ended with `code`, as core would.
+        pub fn exit(&self, code: u32) {
+            if let Some(output) = self.outputs.lock().ok().and_then(|o| o.last().cloned()) {
+                let _ = output.send(TermOutput::Exit(code));
             }
         }
     }
@@ -388,19 +382,6 @@ mod tests {
     use crate::components::terminal::emu::Hooks;
     use std::time::{Duration, Instant};
 
-    #[test]
-    fn core_reports_are_read() {
-        assert_eq!(
-            parse_event(r#"{"kind":"cwd","path":"C:\\Users\\me"}"#),
-            Some(SessionEvent::Cwd("C:\\Users\\me".into()))
-        );
-        assert_eq!(parse_event(r#"{"kind":"exit","code":3}"#), Some(SessionEvent::Exit(3)));
-        assert_eq!(parse_event(r#"{"kind":"exit"}"#), Some(SessionEvent::Exit(0)));
-        assert_eq!(parse_event(r#"{"kind":"other"}"#), None);
-        assert_eq!(parse_event("not json"), None);
-        assert_eq!(parse_event(r#"{"kind":"cwd"}"#), None);
-    }
-
     fn wait_until(mut done: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -456,11 +437,9 @@ mod tests {
         let screen = Screen::new(80, 4, hooks);
         let channel = output_channel(screen.clone(), tx);
         for _ in 0..50 {
-            channel.send(InvokeResponseBody::Raw(b"x".to_vec())).unwrap();
+            channel.send(TermOutput::Data(b"x".to_vec())).unwrap();
         }
-        channel
-            .send(InvokeResponseBody::Json(r#"{"kind":"cwd","path":"D:\\"}"#.into()))
-            .unwrap();
+        channel.send(TermOutput::Cwd("D:\\".into())).unwrap();
         screen.with(|e| assert_eq!(e.visible_text()[0], "x".repeat(50)));
         let mut wakes = 0;
         let mut reports = Vec::new();
@@ -474,7 +453,7 @@ mod tests {
         assert_eq!(wakes, 1, "50 chunks, one wake");
         assert_eq!(reports, vec![SessionEvent::Cwd("D:\\".into())]);
         waker.rearm();
-        channel.send(InvokeResponseBody::Raw(b"y".to_vec())).unwrap();
+        channel.send(TermOutput::Data(b"y".to_vec())).unwrap();
         assert!(
             matches!(rx.try_recv(), Ok(Msg::Wake)),
             "the next output after a redraw wakes again"

@@ -27,10 +27,6 @@ pub enum Codec {
 impl Codec {
     pub const ALL: [Codec; 6] = [Codec::Plain, Codec::Gz, Codec::Xz, Codec::Bz2, Codec::Zst, Codec::Lz4];
 
-    pub fn index(self) -> u8 {
-        Codec::ALL.iter().position(|&c| c == self).unwrap_or(0) as u8
-    }
-
     /// The extension a file compressed this way ends in ("" for none).
     pub fn ext(self) -> &'static str {
         match self {

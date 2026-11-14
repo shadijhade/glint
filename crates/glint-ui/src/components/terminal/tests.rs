@@ -301,12 +301,12 @@ fn the_pane_follows_the_folder_shown_and_the_shells_prompt(cx: &mut TestAppConte
     env.goto("C:\\a");
     assert_eq!(env.log.written(), "");
     // The first prompt: the pane went somewhere while the shell was busy, so now the shell follows.
-    env.log.report(r#"{"kind":"cwd","path":"C:\\"}"#);
+    env.log.cwd("C:\\");
     env.wait_written("Set-Location -LiteralPath 'C:\\a'\r");
     // It is busy until the next prompt, so a move now does not pile up a second cd.
     env.goto("C:\\b");
     assert_eq!(env.log.written(), "Set-Location -LiteralPath 'C:\\a'\r");
-    env.log.report(r#"{"kind":"cwd","path":"C:\\a"}"#);
+    env.log.cwd("C:\\a");
     let view = env.view();
     // The pane was at C:\b while the shell went to C:\a: the explorer follows the shell.
     settle(&mut env.cx, |cx| {
@@ -316,10 +316,10 @@ fn the_pane_follows_the_folder_shown_and_the_shells_prompt(cx: &mut TestAppConte
     // At its prompt, a folder opened in the pane is cd'd to.
     env.goto("C:\\b");
     env.wait_written("Set-Location -LiteralPath 'C:\\a'\rSet-Location -LiteralPath 'C:\\b'\r");
-    env.log.report(r#"{"kind":"cwd","path":"C:\\b"}"#);
+    env.log.cwd("C:\\b");
     settle(&mut env.cx, |cx| cx.update(|_, cx| view.read(cx).is_idle()));
     // The shell went somewhere on its own: the explorer follows.
-    env.log.report(r#"{"kind":"cwd","path":"C:\\a"}"#);
+    env.log.cwd("C:\\a");
     settle(&mut env.cx, |cx| {
         cx.update(|_, cx| crate::explorer::explorer(cx).read(cx).current_path() == "C:\\a")
     });
@@ -333,11 +333,11 @@ fn following_can_be_switched_off(cx: &mut TestAppContext) {
     env.cx
         .update(|_, cx| state::update(cx, |settings| settings.terminal_follow = false));
     env.goto("C:\\a");
-    env.log.report(r#"{"kind":"cwd","path":"C:\\"}"#);
+    env.log.cwd("C:\\");
     let view = env.view();
     settle(&mut env.cx, |cx| cx.update(|_, cx| view.read(cx).is_idle()));
     assert_eq!(env.log.written(), "", "not following: nothing is typed");
-    env.log.report(r#"{"kind":"cwd","path":"C:\\b"}"#);
+    env.log.cwd("C:\\b");
     settle(&mut env.cx, |_| true);
     assert_eq!(env.shown_folder(), "C:\\a", "nor does the pane move");
 }
@@ -358,12 +358,12 @@ fn a_task_is_typed_at_the_first_prompt_and_the_tab_is_reused_when_it_is_back_at_
     assert_eq!(env.log.spawned.lock().unwrap()[0].1, "C:\\a");
     // Nothing is typed before the prompt is there.
     assert_eq!(env.log.written(), "");
-    env.log.report(r#"{"kind":"cwd","path":"C:\\a"}"#);
+    env.log.cwd("C:\\a");
     env.wait_written("npm run build\r");
     // The tab is named after the task.
     assert_eq!(env.role_of("npm run build"), Some(Role::Tab));
     // Back at its prompt in the same folder: the same tab runs it again.
-    env.log.report(r#"{"kind":"cwd","path":"C:\\a"}"#);
+    env.log.cwd("C:\\a");
     let view = env.view();
     settle(&mut env.cx, |cx| cx.update(|_, cx| view.read(cx).is_idle()));
     env.cx
@@ -391,7 +391,7 @@ fn a_script_job_is_typed_in_the_tabs_shell_quoting(cx: &mut TestAppContext) {
         .update(|window, cx| pane.update(cx, |pane, cx| pane.run_job(&job, window, cx)));
     let log = env.log.clone();
     settle(&mut env.cx, move |_| log.outputs.lock().unwrap().len() == 1);
-    env.log.report(r#"{"kind":"cwd","path":"C:\\a"}"#);
+    env.log.cwd("C:\\a");
     env.wait_written("& 'C:\\Tools\\clean it.ps1' 'C:\\a\\one''s.txt'\r");
 }
 
@@ -449,7 +449,7 @@ fn a_shell_that_ends_says_so_dimmed_and_takes_no_more_keys(cx: &mut TestAppConte
     let _guard = testing::lock();
     let mut env = open(cx, &SHELLS);
     env.start();
-    env.log.report(r#"{"kind":"exit","code":3}"#);
+    env.log.exit(3);
     settle(&mut env.cx, |env| env.update(|_, _| true));
     let view = env.view();
     settle(&mut env.cx, |cx| cx.update(|_, cx| view.read(cx).exited() == Some(3)));
@@ -466,7 +466,7 @@ fn a_shell_that_ends_says_so_dimmed_and_takes_no_more_keys(cx: &mut TestAppConte
         .update(|window, cx| pane.update(cx, |pane, cx| pane.open("C:\\", window, cx)));
     let log = env.log.clone();
     settle(&mut env.cx, move |_| log.outputs.lock().unwrap().len() == 2);
-    env.log.report(r#"{"kind":"exit","code":0}"#);
+    env.log.exit(0);
     let view = env.view();
     settle(&mut env.cx, |cx| cx.update(|_, cx| view.read(cx).exited() == Some(0)));
     assert!(env.text().iter().any(|row| row == "[PowerShell ended.]"));

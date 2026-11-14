@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use crate::host::ipc::{Channel, InvokeResponseBody};
+use crate::host::ipc::Channel;
 
 /// A shell the pane can run.
 #[derive(Serialize, Clone, Debug)]
@@ -162,14 +162,14 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// What happens in a session besides its output (which comes as raw bytes on the same channel).
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum TermEvent {
+/// What a session sends: the shell's output as it wrote it, the folder its prompt says it's in, its end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TermOutput {
+    Data(Vec<u8>),
     /// Its prompt said it's in this folder.
-    Cwd { path: String },
-    /// The shell ended.
-    Exit { code: u32 },
+    Cwd(String),
+    /// The shell ended with this code.
+    Exit(u32),
 }
 
 /// ConPTY's first words: where's the cursor? It waits for the answer before the shell starts.
@@ -205,11 +205,11 @@ fn session(id: u32) -> Result<Arc<Session>, String> {
 /// Starts `shell` (an id from [`shells`]) in `cwd`, `cols` × `rows`; its output, folder reports and
 /// end come on `on_output`. Returns the session's id. Opening a pseudo console and starting a shell
 /// takes a while, so it's done off the UI thread.
-pub async fn term_spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<InvokeResponseBody>) -> Result<u32, String> {
+pub async fn term_spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<TermOutput>) -> Result<u32, String> {
     crate::fsx::blocking(move || spawn(shell, cwd, cols, rows, on_output)).await
 }
 
-fn spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<InvokeResponseBody>) -> Result<u32, String> {
+fn spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<TermOutput>) -> Result<u32, String> {
     let shell = shells().into_iter().find(|s| s.id == shell).ok_or_else(|| format!("{shell} isn't installed"))?;
     let pty = native_pty_system().openpty(PtySize { rows: rows.max(2), cols: cols.max(10), pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
     let mut child = pty.slave.spawn_command(command_for(&shell, &cwd)).map_err(|e| format!("Couldn't start {}: {e}", shell.name))?;
@@ -235,9 +235,9 @@ fn spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<In
                     };
                     first = false;
                     for path in scanner.feed(data) {
-                        let _ = output.send(InvokeResponseBody::Json(serde_json::to_string(&TermEvent::Cwd { path }).unwrap_or_default()));
+                        let _ = output.send(TermOutput::Cwd(path));
                     }
-                    if !data.is_empty() && output.send(InvokeResponseBody::Raw(data.to_vec())).is_err() {
+                    if !data.is_empty() && output.send(TermOutput::Data(data.to_vec())).is_err() {
                         break;
                     }
                 }
@@ -248,7 +248,7 @@ fn spawn(shell: String, cwd: String, cols: u16, rows: u16, on_output: Channel<In
         let code = child.wait().map(|status| status.exit_code()).unwrap_or(1);
         // Closing the pseudo console ends the reader too.
         SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
-        let _ = on_output.send(InvokeResponseBody::Json(serde_json::to_string(&TermEvent::Exit { code }).unwrap_or_default()));
+        let _ = on_output.send(TermOutput::Exit(code));
     });
     Ok(id)
 }

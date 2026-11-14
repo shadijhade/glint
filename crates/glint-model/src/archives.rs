@@ -1,41 +1,10 @@
 //! Ported from src/lib/archives.ts.
 //!
-//! The archives Glint reads (src-tauri/src/archive/read.rs): the label of each format by its code, as a
-//! listing's header and a disk-usage map's engine give it, and which file names Enter opens like folders.
+//! The archives Glint reads (glint-core's archive/read.rs): which file names Enter opens like folders.
 //!
 //! NOTE(port): the TypeScript file also held three zustand stores (`usePasswordAsk`, `useCompressAsk`,
 //! `useUnlocks`) and `askArchivePassword`. They are live UI state, so the GPUI layer owns them and they
 //! are not ported here.
-
-/// The label of each archive format by its code.
-///
-/// NOTE(port): the TypeScript type `ArchiveFormat` is a union of these strings. They travel as text in
-/// listings, so they stay `&str` constants rather than an enum.
-pub const ARCHIVE_FORMATS: [&str; 23] = [
-    "zip",
-    "7z",
-    "tar",
-    "tar.gz",
-    "tar.xz",
-    "tar.bz2",
-    "tar.zst",
-    "tar.lz4",
-    "gz",
-    "xz",
-    "bz2",
-    "zst",
-    "lz4",
-    "cab",
-    "msi",
-    "rar",
-    "ncdu",
-    "ncdu.gz",
-    "ncdu.xz",
-    "ncdu.bz2",
-    "ncdu.zst",
-    "ncdu.lz4",
-    "disk image",
-];
 
 /// Disk images, installers and packages 7-Zip reads (archive/image.rs): Enter browses these...
 pub const IMAGES_BROWSED: [&str; 25] = [
@@ -167,11 +136,9 @@ mod tests {
 
     #[test]
     fn extension_lists_cover_the_typescript_arrays() {
-        assert_eq!(ARCHIVE_FORMATS.len(), 23);
         assert!(is_browsed_ext("DMG") && is_browsed_ext("ncdu") && is_browsed_ext("tgz"));
         assert!(!is_browsed_ext("docx"));
         assert!(is_on_request_ext("iso") && is_on_request_ext("EXE") && is_on_request_ext("msi"));
         assert!(!is_on_request_ext("zip"));
-        assert!(SINGLE_FILE.iter().all(|f| ARCHIVE_FORMATS.contains(f)));
     }
 }

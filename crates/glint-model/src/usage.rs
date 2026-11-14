@@ -1,20 +1,16 @@
 //! Ported from src/lib/usage.ts.
 //!
 //! The disk usage map: a folder's biggest files and folders a few levels down, as the index service, pdu or
-//! an archive's own list of entries drew it. This module reads the binary buffer `disk_usage` returns
-//! (layout documented on `encode_map` in src-tauri/src/usage.rs), lays it out as a squarified treemap,
-//! finds what is under a point, works out what grew, and prunes or narrows a map.
+//! an archive's own list of entries drew it. This module makes the map of the items `disk_usage` measured, lays
+//! it out as a squarified treemap, finds what is under a point, works out what grew, and prunes or narrows a map.
 //!
-//! NOTE(port): the TypeScript map held typed arrays viewed in place on the buffer. Here the arrays are
-//! owned `Vec`s (the buffer may not be aligned, and may not outlive the call). Pixels are `f32` in the
-//! layout (the TypeScript used `Float32Array`) while the geometry math itself runs in `f64`, as it did.
+//! Pixels are `f32` in the layout while the geometry math itself runs in `f64`.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::ops::Range;
 
-use crate::archives::ARCHIVE_FORMATS;
 use crate::entries::{attr, with_details, FileEntry, RawEntry};
 use crate::js::{js_max, js_min};
 use crate::paths::join_path;
@@ -22,21 +18,22 @@ use crate::paths::join_path;
 /// The folder mapped has no parent.
 pub const NO_PARENT: u32 = 0xffff_ffff;
 
-/// Who drew a map: `"index"`, `"pdu"`, or (a folder in an archive) the archive's own list of entries,
-/// by its format (one of [`ARCHIVE_FORMATS`]).
+/// Who drew a map: `"index"`, `"pdu"`, or (a folder in an archive) the archive's own list of entries, by its
+/// format ("zip", "7z"…).
 pub type UsageEngine = &'static str;
 
-/// Looks up an engine by the number usage.rs's `encode_map` writes: 2 and up are archives, by their
-/// format's code. An unknown number reads as pdu.
-fn engine_by_code(code: u32) -> UsageEngine {
-    match code {
-        0 => "index",
-        1 => "pdu",
-        n => usize::try_from(n - 2)
-            .ok()
-            .and_then(|k| ARCHIVE_FORMATS.get(k).copied())
-            .unwrap_or("pdu"),
-    }
+/// One item of a map as it was measured.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UsageItem {
+    /// Where the folder it's in is in the map; [`NO_PARENT`] for the folder mapped, always first.
+    pub parent: u32,
+    pub name: String,
+    /// Files: their size. Folders: everything below them.
+    pub size: u64,
+    /// Last write time, Unix ms (0 when unknown).
+    pub modified: i64,
+    /// FILE_ATTRIBUTE_* bits; folders have the directory bit.
+    pub attrs: u32,
 }
 
 /// A disk-usage map of a folder: its biggest files and folders a few levels down. Node 0 is the folder
@@ -88,11 +85,9 @@ pub const WAS_NOT_THERE: f64 = -1.0;
 /// An item's size at the mark when it is a file written since (what it held isn't kept).
 pub const WRITTEN_SINCE: f64 = -2.0;
 
-/// Why a usage buffer could not be read.
+/// Why the items measured make no map.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsageError {
-    /// The buffer ends before something its header promises.
-    Truncated,
     /// A node's parent does not come before it.
     BadParent,
 }
@@ -100,9 +95,61 @@ pub enum UsageError {
 impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            UsageError::Truncated => f.write_str("the usage map is shorter than its header says"),
             UsageError::BadParent => f.write_str("a node's parent does not come before it in the usage map"),
         }
+    }
+}
+
+impl UsageMap {
+    /// The map of `path` made of its items as measured: the folder first, each item after the folder it's in.
+    /// Who drew it and how (`engine`, `elapsed`, the flags, `growth`) are the caller's to set: it's drawn by pdu,
+    /// at once, until then. An item whose parent doesn't come before it makes no map.
+    pub fn of_items(path: String, items: Vec<UsageItem>) -> Result<UsageMap, UsageError> {
+        let count = items.len();
+        let (mut size, mut modified) = (Vec::with_capacity(count), Vec::with_capacity(count));
+        let (mut attrs, mut parent) = (Vec::with_capacity(count), Vec::with_capacity(count));
+        let (mut names, mut paths) = (Vec::with_capacity(count), Vec::<String>::with_capacity(count));
+        let (mut first, mut end) = (vec![0u32; count], vec![0u32; count]);
+        for (i, item) in items.into_iter().enumerate() {
+            size.push(item.size as f64);
+            modified.push(item.modified as f64);
+            attrs.push(item.attrs);
+            parent.push(item.parent);
+            if i == 0 {
+                paths.push(path.clone());
+                names.push(item.name);
+                continue;
+            }
+            let p = item.parent as usize;
+            if p >= i {
+                return Err(UsageError::BadParent);
+            }
+            // `p < i`, so `paths`, `first` and `end` all have it.
+            paths.push(join_path(&paths[p], &item.name));
+            names.push(item.name);
+            if end[p] == 0 {
+                first[p] = i as u32; // i < count, which came from a u32
+            }
+            end[p] = i as u32 + 1;
+        }
+        Ok(UsageMap {
+            path,
+            engine: "pdu",
+            elapsed: 0.0,
+            limited: false,
+            service_too_old: false,
+            growth_too_old: false,
+            growth: None,
+            count,
+            size,
+            modified,
+            attrs,
+            parent,
+            names,
+            paths,
+            first,
+            end,
+        })
     }
 }
 
@@ -145,125 +192,6 @@ fn ancestors(map: &UsageMap, i: usize) -> impl Iterator<Item = usize> + '_ {
         steps += 1;
         p = parent_at(map, at);
         Some(at)
-    })
-}
-
-fn bytes_at(buf: &[u8], at: usize, len: usize) -> Result<&[u8], UsageError> {
-    let end = at.checked_add(len).ok_or(UsageError::Truncated)?;
-    buf.get(at..end).ok_or(UsageError::Truncated)
-}
-
-fn u32_at(buf: &[u8], at: usize) -> Result<u32, UsageError> {
-    let b = bytes_at(buf, at, 4)?;
-    Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-}
-
-fn f64_at(buf: &[u8], at: usize) -> Result<f64, UsageError> {
-    let b = bytes_at(buf, at, 8)?;
-    Ok(f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
-}
-
-fn f64s(buf: &[u8], at: usize, count: usize) -> Result<Vec<f64>, UsageError> {
-    let bytes = bytes_at(buf, at, count.checked_mul(8).ok_or(UsageError::Truncated)?)?;
-    Ok(bytes
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .map(|c| f64::from_le_bytes(*c))
-        .collect())
-}
-
-fn u32s(buf: &[u8], at: usize, count: usize) -> Result<Vec<u32>, UsageError> {
-    let bytes = bytes_at(buf, at, count.checked_mul(4).ok_or(UsageError::Truncated)?)?;
-    Ok(bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| u32::from_le_bytes(*c))
-        .collect())
-}
-
-/// Reads `disk_usage`'s buffer (layout documented on `encode_map` in usage.rs). Every read is checked:
-/// a short or inconsistent buffer is an error, never a panic.
-pub fn decode_usage(buffer: &[u8]) -> Result<UsageMap, UsageError> {
-    let count = u32_at(buffer, 0)? as usize;
-    let path_bytes = u32_at(buffer, 4)? as usize;
-    let elapsed = f64_at(buffer, 8)?;
-    let engine = engine_by_code(u32_at(buffer, 16)?);
-    let flags = u32_at(buffer, 20)?;
-    let (limited, service_too_old, grew, growth_too_old) =
-        (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0, flags & 8 != 0);
-    // With what grew, the mark's numbers come first and each item's earlier size after its date.
-    let mut at: usize = if grew { 56 } else { 24 };
-    let size = f64s(buffer, at, count)?;
-    let modified = f64s(buffer, at.saturating_add(count.saturating_mul(8)), count)?;
-    at = at.saturating_add(count.saturating_mul(16));
-    let mut growth = None;
-    if grew {
-        growth = Some(UsageGrowth {
-            since: f64_at(buffer, 24)?,
-            oldest: f64_at(buffer, 32)?,
-            drive_then: f64_at(buffer, 40)?,
-            drive_now: f64_at(buffer, 48)?,
-            previous: f64s(buffer, at, count)?,
-        });
-        at = at.saturating_add(count.saturating_mul(8));
-    }
-    let attrs = u32s(buffer, at, count)?;
-    let parent = u32s(buffer, at.saturating_add(count.saturating_mul(4)), count)?;
-    let lengths = u32s(buffer, at.saturating_add(count.saturating_mul(8)), count)?;
-    let text = at.saturating_add(count.saturating_mul(12));
-    let path = String::from_utf8_lossy(bytes_at(buffer, text, path_bytes)?).into_owned();
-    let all_bytes = buffer
-        .get(text.saturating_add(path_bytes)..)
-        .ok_or(UsageError::Truncated)?;
-    // Name lengths count UTF-16 units (the TypeScript sliced a JS string), so slice in those.
-    let all: Vec<u16> = String::from_utf8_lossy(all_bytes).encode_utf16().collect();
-    let mut names = Vec::with_capacity(count);
-    let mut paths: Vec<String> = Vec::with_capacity(count);
-    let mut first = vec![0u32; count];
-    let mut end = vec![0u32; count];
-    let mut cursor = 0usize;
-    for i in 0..count {
-        let len = lengths.get(i).map_or(0, |&l| l as usize);
-        let from = cursor.min(all.len());
-        cursor = cursor.saturating_add(len);
-        let to = cursor.min(all.len());
-        let name = String::from_utf16_lossy(all.get(from..to).unwrap_or(&[]));
-        if i == 0 {
-            paths.push(path.clone());
-            names.push(name);
-            continue;
-        }
-        let p = parent.get(i).map_or(usize::MAX, |&p| p as usize);
-        if p >= i {
-            return Err(UsageError::BadParent);
-        }
-        // `p < i`, so `paths`, `first` and `end` all have it.
-        paths.push(join_path(&paths[p], &name));
-        names.push(name);
-        if end[p] == 0 {
-            first[p] = i as u32; // i < count, which came from a u32
-        }
-        end[p] = i as u32 + 1;
-    }
-    Ok(UsageMap {
-        path,
-        engine,
-        elapsed,
-        limited,
-        service_too_old,
-        growth_too_old,
-        growth,
-        count,
-        size,
-        modified,
-        attrs,
-        parent,
-        names,
-        paths,
-        first,
-        end,
     })
 }
 
@@ -723,52 +651,17 @@ mod tests {
         }
     }
 
-    /// The layout usage.rs's `encode_map` writes. `growth`: the mark's since, oldest, drive then and now,
-    /// and each item's size then.
-    fn encode_map(
-        path: &str,
-        nodes: &[Node],
-        elapsed: f64,
-        engine: u32,
-        flags: u32,
-        growth: Option<([f64; 4], Vec<f64>)>,
-    ) -> Vec<u8> {
-        let mut b = Vec::new();
-        b.extend((nodes.len() as u32).to_le_bytes());
-        b.extend((path.len() as u32).to_le_bytes());
-        b.extend(elapsed.to_le_bytes());
-        b.extend(engine.to_le_bytes());
-        b.extend((flags | if growth.is_some() { 4 } else { 0 }).to_le_bytes());
-        if let Some((block, _)) = &growth {
-            for v in block {
-                b.extend(v.to_le_bytes());
-            }
-        }
-        for n in nodes {
-            b.extend(n.size.to_le_bytes());
-        }
-        for n in nodes {
-            b.extend(n.modified.to_le_bytes());
-        }
-        if let Some((_, previous)) = &growth {
-            for v in previous {
-                b.extend(v.to_le_bytes());
-            }
-        }
-        for n in nodes {
-            b.extend((n.attrs | if n.dir { 0x10 } else { 0 }).to_le_bytes());
-        }
-        for n in nodes {
-            b.extend(n.parent.to_le_bytes());
-        }
-        for n in nodes {
-            b.extend((n.name.encode_utf16().count() as u32).to_le_bytes());
-        }
-        b.extend(path.as_bytes());
-        for n in nodes {
-            b.extend(n.name.as_bytes());
-        }
-        b
+    fn items(nodes: &[Node]) -> Vec<UsageItem> {
+        nodes
+            .iter()
+            .map(|n| UsageItem {
+                parent: n.parent,
+                name: n.name.to_string(),
+                size: n.size as u64,
+                modified: n.modified as i64,
+                attrs: n.attrs | if n.dir { attr::DIRECTORY } else { 0 },
+            })
+            .collect()
     }
 
     // C:\ 1000: Windows 600 (System32 400 (big.dll 300), notes.txt 50), Users 300 (é😀.mkv 250), pagefile.sys 60;
@@ -793,24 +686,32 @@ mod tests {
     }
 
     fn usage() -> UsageMap {
-        decode_usage(&encode_map("C:\\", &sample(), 3.5, 0, 1, None)).unwrap()
+        UsageMap {
+            engine: "index",
+            elapsed: 3.5,
+            limited: true,
+            ..UsageMap::of_items("C:\\".into(), items(&sample())).unwrap()
+        }
     }
 
     fn grown() -> UsageMap {
         let previous = vec![700.0, 200.0, 350.0, 60.0, WAS_NOT_THERE, WRITTEN_SINCE, 250.0, 300.0];
-        decode_usage(&encode_map(
-            "C:\\",
-            &sample(),
-            1.0,
-            0,
-            0,
-            Some(([1e12, 9e11, 5000.0, 5300.0], previous)),
-        ))
-        .unwrap()
+        UsageMap {
+            engine: "index",
+            elapsed: 1.0,
+            growth: Some(UsageGrowth {
+                since: 1e12,
+                oldest: 9e11,
+                drive_then: 5000.0,
+                drive_now: 5300.0,
+                previous,
+            }),
+            ..UsageMap::of_items("C:\\".into(), items(&sample())).unwrap()
+        }
     }
 
     #[test]
-    fn decodes_a_map() {
+    fn a_map_is_made_of_its_items() {
         let usage = usage();
         assert_eq!(
             (
@@ -842,35 +743,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_engine_and_service_flags() {
-        // pdu drew it, because the index service is too old to map.
-        let fallback = decode_usage(&encode_map("D:\\x", &sample()[..1], 0.0, 1, 2, None)).unwrap();
-        assert_eq!(
-            (fallback.engine, fallback.limited, fallback.service_too_old),
-            ("pdu", false, true)
-        );
-        // A folder in an archive is mapped from the archive's own list of entries.
-        let engines: Vec<_> = [2, 3]
-            .iter()
-            .map(|&e| {
-                decode_usage(&encode_map("C:\\a.zip", &sample()[..1], 0.0, e, 0, None))
-                    .unwrap()
-                    .engine
-            })
-            .collect();
-        assert_eq!(engines, ["zip", "7z"]);
-        // An engine number nobody knows reads as pdu.
-        assert_eq!(
-            decode_usage(&encode_map("C:\\", &sample()[..1], 0.0, 999, 0, None))
-                .unwrap()
-                .engine,
-            "pdu"
-        );
-        let old = decode_usage(&encode_map("C:\\", &sample(), 1.0, 0, 8, None)).unwrap();
-        assert!(old.growth_too_old);
-    }
-
-    #[test]
     fn turns_nodes_into_entries() {
         let mapped = usage_entries(&usage());
         assert_eq!(
@@ -887,29 +759,14 @@ mod tests {
     }
 
     #[test]
-    fn refuses_short_or_broken_buffers() {
-        let whole = encode_map("C:\\", &sample(), 3.5, 0, 1, None);
-        // Cut anywhere inside the header or the arrays: an error, never a panic.
-        for cut in 0..(24 + 28 * 8) {
-            assert_eq!(decode_usage(&whole[..cut]), Err(UsageError::Truncated), "cut at {cut}");
-        }
-        // Cut in the text: it still reads, with the names it has.
-        assert!(decode_usage(&whole[..whole.len() - 1]).is_ok());
-        // A huge count cannot overflow the offsets.
-        let mut huge = whole.clone();
-        huge[..4].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert_eq!(decode_usage(&huge), Err(UsageError::Truncated));
-        // A path longer than the buffer.
-        let mut long_path = whole.clone();
-        long_path[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert_eq!(decode_usage(&long_path), Err(UsageError::Truncated));
-        // A parent that does not come before its child.
+    fn an_item_whose_folder_comes_after_it_makes_no_map() {
         let mut nodes = sample();
         nodes[1].parent = 5;
         assert_eq!(
-            decode_usage(&encode_map("C:\\", &nodes, 0.0, 0, 0, None)),
+            UsageMap::of_items("C:\\".into(), items(&nodes)),
             Err(UsageError::BadParent)
         );
+        assert_eq!(UsageMap::of_items("C:\\".into(), Vec::new()).map(|m| m.count), Ok(0));
     }
 
     #[test]

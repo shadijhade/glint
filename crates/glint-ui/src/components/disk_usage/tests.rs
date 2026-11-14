@@ -28,7 +28,7 @@ fn now_ms() -> i64 {
 /// A node of a fixture map: name, folder or not, size, the node it is in, and how many days ago it changed.
 type Node = (&'static str, bool, f64, u32, f64);
 
-/// A map as `decode_usage` would read it: `nodes` in the index's order (the folder first, each folder's items
+/// A map as core's measuring makes it: `nodes` in the index's order (the folder first, each folder's items
 /// together after it).
 fn build_map(path: &str, engine: &'static str, nodes: &[Node]) -> UsageMap {
     let count = nodes.len();
