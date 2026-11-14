@@ -72,6 +72,8 @@ pub struct WindowsPlatform {
     /// Flag to instruct the `VSyncProvider` thread to invalidate the directx devices
     /// as resizing them has failed, causing us to have lost at least the render target.
     invalidate_devices: Arc<AtomicBool>,
+    /// Glint: lets the `VSyncProvider` thread rest while nothing draws (see `VsyncRest`).
+    vsync_rest: Arc<VsyncRest>,
     handle: HWND,
     suspend_resume_notification: RefCell<Option<HPOWERNOTIFY>>,
     power_saving_notification: RefCell<Option<HPOWERNOTIFY>>,
@@ -299,6 +301,7 @@ impl WindowsPlatform {
             has_package_identity: has_package_identity(),
             drop_target_helper,
             invalidate_devices: Arc::new(AtomicBool::new(false)),
+            vsync_rest: Arc::new(VsyncRest::default()),
             app_identity: RefCell::new(None),
             system_notifications: RefCell::new(SystemNotificationState::new()),
         })
@@ -331,6 +334,7 @@ impl WindowsPlatform {
             disable_direct_composition: self.disable_direct_composition,
             directx_devices: self.inner.state.directx_devices.borrow().clone().unwrap(),
             invalidate_devices: self.invalidate_devices.clone(),
+            vsync_rest: self.vsync_rest.clone(),
             draw_coordinator: self.inner.state.draw_coordinator.clone(),
         }
     }
@@ -448,6 +452,7 @@ impl WindowsPlatform {
             // Not joined: the thread can be sending this thread a message. It exits after its
             // next vsync, and drops its reference to the devices then.
             stop.store(true, Ordering::Release);
+            self.vsync_rest.wake();
         }
         self.inner.state.directx_devices.borrow_mut().take();
     }
@@ -463,12 +468,24 @@ impl WindowsPlatform {
         let validation_number = self.inner.validation_number;
         let all_windows = Arc::downgrade(&self.raw_window_handles);
         let invalidate_devices = self.invalidate_devices.clone();
+        let rest = self.vsync_rest.clone();
 
         std::thread::Builder::new()
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
+                // Glint: ticks in a row with no frame drawn, the frames drawn as of the last tick, and whether a
+                // window was on screen then (see `VsyncRest`).
+                let (mut idle_ticks, mut drawn_before, mut shown_any) = (0u32, rest.drawn(), true);
                 loop {
+                    if idle_ticks >= VsyncRest::IDLE_TICKS && !rest.held() {
+                        // Nothing drew: rest until a window has something to draw, looking once a second
+                        // while one is on screen (in case something dirtied it without saying so), and every
+                        // ten with all of them hidden.
+                        rest.rest(std::time::Duration::from_secs(if shown_any { 1 } else { 10 }));
+                        idle_ticks = 0;
+                        drawn_before = rest.drawn();
+                    }
                     let signal_source = vsync_provider.wait_for_vsync();
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
                     if stop.load(Ordering::Acquire) {
@@ -489,12 +506,14 @@ impl WindowsPlatform {
                     let Some(all_windows) = all_windows.upgrade() else {
                         break;
                     };
+                    shown_any = false;
                     for hwnd in all_windows.read().iter() {
                         unsafe {
+                            let shown = IsWindowVisible(hwnd.as_raw()).as_bool()
+                                && !IsIconic(hwnd.as_raw()).as_bool();
+                            shown_any |= shown;
                             if let Some(signal_at) = signal_at {
-                                if IsWindowVisible(hwnd.as_raw()).as_bool()
-                                    && !IsIconic(hwnd.as_raw()).as_bool()
-                                {
+                                if shown {
                                     hwnd.frame_signal.record(signal_at, signal_source);
                                 } else {
                                     // Hidden windows may not consume WM_PAINT until shown again.
@@ -505,6 +524,14 @@ impl WindowsPlatform {
                                 .ok()
                                 .log_err();
                         }
+                    }
+                    // A frame drawn since the last tick (by this one's invalidation or ahead of it) keeps the
+                    // thread ticking.
+                    let drawn = rest.drawn();
+                    if drawn != drawn_before {
+                        (drawn_before, idle_ticks) = (drawn, 0);
+                    } else {
+                        idle_ticks = idle_ticks.saturating_add(1);
                     }
                 }
             })
@@ -1481,6 +1508,7 @@ impl Drop for WindowsPlatform {
     fn drop(&mut self) {
         if let Some(stop) = self.vsync_stop.borrow_mut().take() {
             stop.store(true, Ordering::Release);
+            self.vsync_rest.wake();
         }
         unsafe {
             if let Some(notification) = self.suspend_resume_notification.borrow_mut().take() {
@@ -1512,6 +1540,8 @@ pub(crate) struct WindowCreationInfo {
     /// Flag to instruct the `VSyncProvider` thread to invalidate the directx devices
     /// as resizing them has failed, causing us to have lost at least the render target.
     pub(crate) invalidate_devices: Arc<AtomicBool>,
+    /// Glint: see `VsyncRest`.
+    pub(crate) vsync_rest: Arc<VsyncRest>,
     /// Shared with [`WindowsPlatformState::draw_coordinator`] and every other window.
     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
 }

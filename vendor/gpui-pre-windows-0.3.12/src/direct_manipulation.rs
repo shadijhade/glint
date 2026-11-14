@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use anyhow::Result;
 use gpui::*;
@@ -29,7 +30,7 @@ pub(crate) struct DirectManipulationHandler {
 }
 
 impl DirectManipulationHandler {
-    pub fn new(window: HWND, scale_factor: f32) -> Result<Self> {
+    pub fn new(window: HWND, scale_factor: f32, rest: Arc<VsyncRest>) -> Result<Self> {
         unsafe {
             let manager: IDirectManipulationManager =
                 CoCreateInstance(&DirectManipulationManager, None, CLSCTX_INPROC_SERVER)?;
@@ -71,6 +72,7 @@ impl DirectManipulationHandler {
                     window,
                     Rc::clone(&scale_factor),
                     Rc::clone(&pending_events),
+                    rest,
                 )
                 .into();
 
@@ -143,6 +145,10 @@ struct DirectManipulationEventHandler {
     last_y_offset: Cell<f32>,
     scroll_phase: Cell<TouchPhase>,
     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
+    /// Glint: a gesture runs (or glides on): the vsync thread's ticks advance it, so they're held meanwhile
+    /// (see `VsyncRest`).
+    rest: Arc<VsyncRest>,
+    holding: Cell<bool>,
 }
 
 impl DirectManipulationEventHandler {
@@ -150,6 +156,7 @@ impl DirectManipulationEventHandler {
         window: HWND,
         scale_factor: Rc<Cell<f32>>,
         pending_events: Rc<RefCell<Vec<PlatformInput>>>,
+        rest: Arc<VsyncRest>,
     ) -> Self {
         Self {
             window,
@@ -160,6 +167,20 @@ impl DirectManipulationEventHandler {
             last_y_offset: Cell::new(0.0),
             scroll_phase: Cell::new(TouchPhase::Started),
             pending_events,
+            rest,
+            holding: Cell::new(false),
+        }
+    }
+
+    /// Glint: holds the ticks while the viewport runs or glides, lets them go otherwise.
+    fn hold_ticks(&self, status: DIRECTMANIPULATION_STATUS) {
+        let busy = status == DIRECTMANIPULATION_RUNNING || status == DIRECTMANIPULATION_INERTIA;
+        if busy != self.holding.replace(busy) {
+            if busy {
+                self.rest.hold();
+            } else {
+                self.rest.release();
+            }
         }
     }
 
@@ -204,6 +225,15 @@ impl DirectManipulationEventHandler {
     }
 }
 
+impl Drop for DirectManipulationEventHandler {
+    fn drop(&mut self) {
+        // Glint: a window closed mid-gesture doesn't hold the ticks for good.
+        if self.holding.get() {
+            self.rest.release();
+        }
+    }
+}
+
 impl IDirectManipulationViewportEventHandler_Impl for DirectManipulationEventHandler_Impl {
     fn OnViewportStatusChanged(
         &self,
@@ -214,6 +244,7 @@ impl IDirectManipulationViewportEventHandler_Impl for DirectManipulationEventHan
         if current == previous {
             return Ok(());
         }
+        self.hold_ticks(current);
 
         // A new gesture interrupted inertia, so end the old sequence.
         if current == DIRECTMANIPULATION_RUNNING && previous == DIRECTMANIPULATION_INERTIA {
