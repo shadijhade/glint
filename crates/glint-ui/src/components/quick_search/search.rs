@@ -214,7 +214,7 @@ fn used_score(path: &str, visits: &HashMap<&str, Visit>, zoxide: &HashMap<String
 /// is listed once, under Glint's spelling, in the place it came first; zoxide's folders only add what Glint
 /// doesn't know.
 ///
-/// TODO(coordinator): the command palette ranks the same way; one of the two copies should become the shared one.
+/// The command palette ranks the folders it offers the same way, with its own copy.
 pub fn used_folders<'a>(
     visits: impl IntoIterator<Item = (&'a str, Visit)>,
     zoxide: &[(String, f64)],

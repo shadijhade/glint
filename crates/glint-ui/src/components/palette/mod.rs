@@ -586,8 +586,8 @@ fn carry_out(run: Run, window: &mut Window, cx: &mut App) {
         Run::Saved(saved) => {
             explorer(cx).update(cx, |e, cx| e.run_saved_search(saved, cx).detach());
         }
-        // PORT ME(coordinator): nothing the palette can call runs a task in the terminal pane yet, so the palette
-        // is not given any (`Sources::core`); this is what it will do.
+        // Nothing the palette can call runs a task in the terminal pane yet, so it's given none (`Sources::core`);
+        // this is what it does with one.
         Run::Task { folder, command } => {
             window.defer(cx, move |window, cx| {
                 crate::workspace::run_task(folder, command, window, cx)

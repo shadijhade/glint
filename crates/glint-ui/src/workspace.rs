@@ -1016,7 +1016,6 @@ impl Workspace {
     /// [`run_menu_command`].
     pub fn menu_command(&mut self, event: &MenuEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            // PORT ME(preview pane): hide the native preview while a menu covers it (preview_host::hide/reveal).
             // A menu covers the preview pane: Windows' previewer (a window of its own) steps aside meanwhile.
             MenuEvent::Shown => preview::cover(cx),
             MenuEvent::Closed => preview::uncover(cx),

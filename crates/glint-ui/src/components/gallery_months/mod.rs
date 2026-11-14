@@ -84,7 +84,6 @@ pub fn months_of(rows: &Rows) -> Vec<Month> {
 /// The local year and month (0 to 11) of a time in Unix milliseconds, from Windows' own time zone rules (what JS's
 /// `getFullYear()` and `getMonth()` read). A time Windows can't convert falls back to UTC.
 pub fn local_month(ms: i64) -> Option<(i64, u32)> {
-    // TODO(coordinator): from a shared date helper (dialogs::batch_rename keeps a private copy of this too).
     use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
     use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
     // FILETIME counts 100 ns from 1601.

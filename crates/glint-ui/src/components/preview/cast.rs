@@ -504,20 +504,8 @@ impl CastView {
     }
 }
 
-/// How far across a track of `width` the pointer at `x` is (0 to 1), from the track's start edge; the bar starts
-/// at the right edge in right to left.
-// TODO(coordinator): from `preview::player::engine::across`.
-pub fn across(x: f32, left: f32, width: f32, rtl: bool) -> f64 {
-    if width <= 0. {
-        return 0.;
-    }
-    let fraction = f64::from(((x - left) / width).clamp(0., 1.));
-    if rtl {
-        1. - fraction
-    } else {
-        fraction
-    }
-}
+/// How far across a track of `width` the pointer at `x` is (0 to 1), from the track's start edge: the player's.
+pub use super::player::engine::across;
 
 /// Does the background task's jobs, in order.
 fn run(screen: &crate::components::terminal::emu::Screen, cast: &Cast, jobs: &[Op]) {

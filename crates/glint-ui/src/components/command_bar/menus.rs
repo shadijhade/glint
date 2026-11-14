@@ -11,8 +11,8 @@
 //! `Run` has no variant for "call the bar". A `Pick` is encoded as `Task::Navigate("command-bar:<id>")` and decoded
 //! by the bar when the row comes back; nothing else ever sees one (the bar draws these menus itself, not the
 //! shared `MenuHost`, which would try to open the folder).
-// PORT ME(coordinator): a `Run::Custom(u32)` (or any variant a caller can fill) in menus/spec.rs would let a row
-// carry its own meaning, and this encoding could go.
+// (A `Run::Custom(u32)` in menus/spec.rs, a variant a caller can fill, would let a row carry its own meaning and
+// this encoding go.)
 
 use super::facts::{Facts, Pair};
 use crate::actions::BINDINGS;

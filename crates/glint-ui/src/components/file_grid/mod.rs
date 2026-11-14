@@ -78,7 +78,7 @@ use crate::kit::prelude::*;
 use crate::platform::dragdrop::{Answer, DropEffect, Under};
 use crate::{drops, i18n, state, t, theme};
 use glint_model::columns::DESCENDING;
-use glint_model::entries::{is_archive_file, is_archived, is_closed, is_recycled, FileEntry, Sort, SortKey};
+use glint_model::entries::{is_archive_file, is_archived, is_recycled, FileEntry, Sort, SortKey};
 use glint_model::grid::{
     grid_columns, grid_move, keep_place, marquee_hits, place_of, tile_layout, top_of, GridLayout, Point as ContentPoint,
 };
@@ -1114,11 +1114,8 @@ impl FileGrid {
 }
 
 /// A folder that files dragged in can be dropped on: not one in an archive (read-only), nor one Windows keeps
-/// closed, nor one in the Recycle Bin (`dropPath`).
-// TODO(coordinator): from file_list::drop_path (the list's copy), once the views share it.
-fn drop_folder(entry: &FileEntry) -> Option<&str> {
-    (entry.dir && !is_archived(entry) && !is_closed(entry) && !is_recycled(entry)).then_some(entry.path.as_str())
-}
+/// closed, nor one in the Recycle Bin (`dropPath`). The list's own.
+use crate::components::file_list::drop_path as drop_folder;
 
 /// A listener that tiles call with their index and the event.
 fn handler<E: 'static>(
