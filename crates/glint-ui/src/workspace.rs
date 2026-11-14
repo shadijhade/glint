@@ -134,8 +134,9 @@ pub struct Workspace {
     /// The preview pane at the end edge, while the setting shows it: dropped while hidden, since Windows'
     /// previewers are windows of their own that go only with it.
     preview: Option<Entity<PreviewPane>>,
-    /// The first pane and, in dual-pane view, the second.
-    panes: [PaneViews; 2],
+    /// The first pane and, once dual-pane view first opens, the second: its ten views are made then, not at
+    /// start (each observes the explorer, and so worked on every key press with one pane shown).
+    panes: [Option<PaneViews>; 2],
     /// What is shared or being sent, for the toolbar's Sharing button (None without core, as in tests).
     sharing: Option<Entity<dialogs::share::Sharing>>,
     /// The command bar above the panes.
@@ -187,24 +188,8 @@ impl Workspace {
         let status = cx.new(|cx| StatusBar::new(window, cx));
         let queue = cx.new(|cx| CopyQueue::new(window, cx));
         let menus = cx.new(MenuHost::new);
-        let panes = [0, 1].map(|pane| {
-            let list = cx.new(|cx| FileList::new(pane, window, cx));
-            let columns = cx.new(|cx| ColumnsView::new(pane, window, cx));
-            // The Columns view draws the pane's own list between its two side columns.
-            columns.update(cx, |columns, cx| columns.set_center(list.clone().into(), cx));
-            PaneViews {
-                list,
-                grid: cx.new(|cx| FileGrid::new(pane, window, cx)),
-                this_pc: cx.new(|cx| ThisPc::new(pane, window, cx)),
-                usage: cx.new(|cx| DiskUsage::new(pane, window, cx)),
-                columns,
-                months: cx.new(|cx| GalleryMonths::new(pane, window, cx)),
-                frequent: cx.new(|cx| FrequentFolders::new(pane, window, cx)),
-                compare: cx.new(|cx| CompareBar::new(pane, window, cx)),
-                bars: cx.new(|cx| PaneBars::new(pane, window, cx)),
-                head: cx.new(|cx| PaneHead::new(pane, window, cx)),
-            }
-        });
+        let (first, first_subscriptions) = Self::build_pane(0, window, cx);
+        subscriptions.extend(first_subscriptions);
         let command_bar = cx.new(|cx| CommandBar::new(window, cx));
         // In the dock the status bar's words are at the island's two sides: it leaves them room.
         command_bar.update(cx, |bar, cx| bar.set_side_room(DOCK_SIDE_ROOM, cx));
@@ -228,42 +213,6 @@ impl Workspace {
         subscriptions.push(cx.subscribe_in(&sidebar, window, Self::on_sidebar_request));
         subscriptions.push(cx.subscribe_in(&menus, window, Self::on_menu_event));
         subscriptions.push(cx.subscribe_in(&queue, window, Self::on_queue_event));
-        for (pane, views) in panes.iter().enumerate() {
-            subscriptions.push(cx.subscribe_in(&views.list, window, move |this, _, event, window, cx| {
-                this.on_list_event(pane, event, window, cx)
-            }));
-            // Items inside an archive are extracted first, then dragged as copies.
-            subscriptions.push(
-                cx.subscribe_in(&views.list, window, |_, _, event: &DragFromArchive, _, cx| {
-                    Self::drag_from_archive(event.paths.clone(), None, cx)
-                }),
-            );
-            subscriptions.push(cx.subscribe_in(&views.grid, window, move |this, _, event, window, cx| {
-                this.on_grid_event(pane, event, window, cx)
-            }));
-            subscriptions.push(
-                cx.subscribe_in(&views.this_pc, window, move |this, _, event, window, cx| {
-                    this.on_this_pc_event(event, window, cx)
-                }),
-            );
-            subscriptions.push(
-                cx.subscribe_in(&views.usage, window, move |this, _, event, window, cx| {
-                    this.on_usage_event(pane, event, window, cx)
-                }),
-            );
-            // A right-click on a frequent folder: the shared folder menu, as on This PC's tiles.
-            subscriptions.push(cx.subscribe_in(
-                &views.frequent,
-                window,
-                |this, _, event: &FrequentFoldersEvent, window, cx| {
-                    match event {
-                        FrequentFoldersEvent::ContextMenu { path, position } => this
-                            .menus
-                            .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
-                    }
-                },
-            ));
-        }
         // Git read a tab's folder again: its marks go to the explorer's rows (the git: filter, Group by Git).
         let git = git::shared(cx);
         subscriptions.push(cx.subscribe(&git, |_, _, event: &GitEvent, cx| match event {
@@ -347,7 +296,7 @@ impl Workspace {
         // The file view has the keyboard from the start, so the arrows work at once.
         cx.defer_in(window, |this, window, cx| this.focus_files(window, cx));
 
-        Self {
+        let mut this = Self {
             focus: cx.focus_handle(),
             tabs,
             address,
@@ -357,7 +306,7 @@ impl Workspace {
             menus,
             settings_events: None,
             preview: None,
-            panes,
+            panes: [Some(first), None],
             sharing,
             command_bar,
             sidebar_width: SIDEBAR_START,
@@ -371,6 +320,76 @@ impl Workspace {
             shown: [None, None],
             _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
+        };
+        // A session restored in dual-pane view shows the second pane from the first frame.
+        if explorer::explorer(cx).read(cx).shown_panes().len() > 1 {
+            this.ensure_pane(1, window, cx);
+        }
+        this
+    }
+
+    /// Pane `pane`'s views, and what the window hears from them.
+    fn build_pane(pane: usize, window: &mut Window, cx: &mut Context<Self>) -> (PaneViews, Vec<Subscription>) {
+        let list = cx.new(|cx| FileList::new(pane, window, cx));
+        let columns = cx.new(|cx| ColumnsView::new(pane, window, cx));
+        // The Columns view draws the pane's own list between its two side columns.
+        columns.update(cx, |columns, cx| columns.set_center(list.clone().into(), cx));
+        let views = PaneViews {
+            list,
+            grid: cx.new(|cx| FileGrid::new(pane, window, cx)),
+            this_pc: cx.new(|cx| ThisPc::new(pane, window, cx)),
+            usage: cx.new(|cx| DiskUsage::new(pane, window, cx)),
+            columns,
+            months: cx.new(|cx| GalleryMonths::new(pane, window, cx)),
+            frequent: cx.new(|cx| FrequentFolders::new(pane, window, cx)),
+            compare: cx.new(|cx| CompareBar::new(pane, window, cx)),
+            bars: cx.new(|cx| PaneBars::new(pane, window, cx)),
+            head: cx.new(|cx| PaneHead::new(pane, window, cx)),
+        };
+        let mut subscriptions = Vec::new();
+        subscriptions.push(cx.subscribe_in(&views.list, window, move |this, _, event, window, cx| {
+            this.on_list_event(pane, event, window, cx)
+        }));
+        // Items inside an archive are extracted first, then dragged as copies.
+        subscriptions.push(
+            cx.subscribe_in(&views.list, window, |_, _, event: &DragFromArchive, _, cx| {
+                Self::drag_from_archive(event.paths.clone(), None, cx)
+            }),
+        );
+        subscriptions.push(cx.subscribe_in(&views.grid, window, move |this, _, event, window, cx| {
+            this.on_grid_event(pane, event, window, cx)
+        }));
+        subscriptions.push(
+            cx.subscribe_in(&views.this_pc, window, move |this, _, event, window, cx| {
+                this.on_this_pc_event(event, window, cx)
+            }),
+        );
+        subscriptions.push(
+            cx.subscribe_in(&views.usage, window, move |this, _, event, window, cx| {
+                this.on_usage_event(pane, event, window, cx)
+            }),
+        );
+        // A right-click on a frequent folder: the shared folder menu, as on This PC's tiles.
+        subscriptions.push(cx.subscribe_in(
+            &views.frequent,
+            window,
+            |this, _, event: &FrequentFoldersEvent, window, cx| {
+                match event {
+                    FrequentFoldersEvent::ContextMenu { path, position } => this
+                        .menus
+                        .update(cx, |menus, cx| menus.open_folder_menu(path, *position, window, cx)),
+                }
+            },
+        ));
+        (views, subscriptions)
+    }
+
+    /// Makes pane `pane`'s views if they aren't made yet (the second pane's, the first time it is shown).
+    fn ensure_pane(&mut self, pane: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panes[pane].is_none() {
+            let (views, subscriptions) = Self::build_pane(pane, window, cx);
+            self.panes[pane] = Some(views);
+            self._subscriptions.extend(subscriptions);
         }
     }
 
@@ -407,6 +426,9 @@ impl Workspace {
 
     /// The explorer changed: a grid that went out of sight lets its thumbnails go, and the window redraws.
     fn follow_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if explorer::explorer(cx).read(cx).shown_panes().len() > 1 {
+            self.ensure_pane(1, window, cx);
+        }
         let active = explorer::explorer(cx).read(cx).active_pane().min(1);
         for pane in 0..2 {
             let now = Self::shown_in(pane, cx);
@@ -415,13 +437,15 @@ impl Workspace {
             if pane == active && now != self.shown[pane] && self.view_focused(pane, self.shown[pane], window, cx) {
                 cx.defer_in(window, |this, window, cx| this.focus_files(window, cx));
             }
-            if self.shown[pane] == Some(Shown::Grid) && now != Some(Shown::Grid) {
-                self.panes[pane].grid.update(cx, |grid, cx| grid.pause(cx));
-            }
-            // The Columns view draws the list too: going between the two keeps it.
-            let lists = |shown: Option<Shown>| matches!(shown, Some(Shown::List) | Some(Shown::Columns));
-            if lists(self.shown[pane]) && !lists(now) {
-                self.panes[pane].list.update(cx, |list, cx| list.pause(cx));
+            if let Some(views) = &self.panes[pane] {
+                if self.shown[pane] == Some(Shown::Grid) && now != Some(Shown::Grid) {
+                    views.grid.update(cx, |grid, cx| grid.pause(cx));
+                }
+                // The Columns view draws the list too: going between the two keeps it.
+                let lists = |shown: Option<Shown>| matches!(shown, Some(Shown::List) | Some(Shown::Columns));
+                if lists(self.shown[pane]) && !lists(now) {
+                    views.list.update(cx, |list, cx| list.pause(cx));
+                }
             }
             self.shown[pane] = now;
         }
@@ -487,7 +511,9 @@ impl Workspace {
 
     /// Whether pane `pane`'s view `shown` has the keyboard (This PC's: the window keeps it, see `focus_files`).
     fn view_focused(&self, pane: usize, shown: Option<Shown>, window: &Window, cx: &App) -> bool {
-        let views = &self.panes[pane];
+        let Some(views) = &self.panes[pane] else {
+            return false;
+        };
         match shown {
             Some(Shown::List) | Some(Shown::Columns) => views.list.focus_handle(cx).contains_focused(window, cx),
             Some(Shown::Grid) => views.grid.read(cx).focus_handle().contains_focused(window, cx),
@@ -515,18 +541,20 @@ impl Workspace {
     /// Gives the keyboard to the active pane's file view (the list, the grid, the map, or This PC's first tile).
     fn focus_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pane = explorer::explorer(cx).read(cx).active_pane().min(1);
+        let Some(views) = &self.panes[pane] else {
+            window.focus(&self.focus, cx);
+            return;
+        };
         match Self::shown_in(pane, cx) {
             Some(Shown::DiskUsage) => {
-                let handle = self.panes[pane].usage.read(cx).focus_handle().clone();
+                let handle = views.usage.read(cx).focus_handle().clone();
                 window.focus(&handle, cx);
             }
             Some(Shown::Grid) => {
-                let handle = self.panes[pane].grid.read(cx).focus_handle().clone();
+                let handle = views.grid.read(cx).focus_handle().clone();
                 window.focus(&handle, cx);
             }
-            Some(Shown::List) | Some(Shown::Columns) => {
-                self.panes[pane].list.update(cx, |list, cx| list.focus(window, cx))
-            }
+            Some(Shown::List) | Some(Shown::Columns) => views.list.update(cx, |list, cx| list.focus(window, cx)),
             // This PC's tiles take the keyboard when clicked or tabbed to; the window keeps it meanwhile.
             Some(Shown::ThisPc) | None => window.focus(&self.focus, cx),
         }
@@ -954,12 +982,14 @@ impl Workspace {
                 menus.open_background_menu(pane, Some(*position), window, cx)
             }),
             FileGridEvent::DragStart { paths, from_archive } => {
+                let Some(grid) = self.panes[pane].as_ref().map(|views| views.grid.clone()) else {
+                    return;
+                };
                 if *from_archive {
                     // They're extracted first, then dragged as copies.
-                    Self::drag_from_archive(paths.clone(), Some(self.panes[pane].grid.clone()), cx);
+                    Self::drag_from_archive(paths.clone(), Some(grid), cx);
                 } else {
                     let drag = dragdrop::drag_out(cx, MAIN, paths.clone(), false);
-                    let grid = self.panes[pane].grid.clone();
                     cx.spawn(async move |_, cx| {
                         let effect = drag.await;
                         if let Err(error) = &effect {
@@ -1595,7 +1625,9 @@ impl Workspace {
 
     /// Pane `pane`: the view its tab asks for, and the zone a dragged tab can be dropped on.
     fn pane(&self, pane: usize, cx: &App) -> AnyElement {
-        let views = &self.panes[pane];
+        let Some(views) = &self.panes[pane] else {
+            return div().size_full().into_any_element();
+        };
         let view: AnyElement = match Self::shown_in(pane, cx) {
             Some(Shown::ThisPc) => views.this_pc.clone().into_any_element(),
             Some(Shown::DiskUsage) => views.usage.clone().into_any_element(),
