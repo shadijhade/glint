@@ -151,6 +151,9 @@ pub struct Workspace {
     tools: Option<Entity<settings::tools::Tools>>,
     /// Each pane's README card above its files, with the README's path, while the folder has one.
     readmes: [Option<(String, Entity<ReadmeCard>)>; 2],
+    /// Each pane's README as last looked for, with the listing it was looked for in: the explorer changes on every
+    /// key press, its listings far less often.
+    readmes_found: [Option<(std::sync::Arc<[FileEntry]>, Option<FileEntry>)>; 2],
     /// What each pane showed at the last look, so a grid going out of sight lets its thumbnails go.
     shown: [Option<Shown>; 2],
     /// Files dragged over the window from File Explorer and other apps arrive here, as long as it lives
@@ -361,6 +364,7 @@ impl Workspace {
             sizing: false,
             tools: None,
             readmes: [None, None],
+            readmes_found: [None, None],
             shown: [None, None],
             _drop_target: Self::take_drops(window, cx),
             _subscriptions: subscriptions,
@@ -435,7 +439,7 @@ impl Workspace {
     fn sync_readmes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let show = state::settings(cx).show_readme;
         for pane in 0..2 {
-            let wanted: Option<FileEntry> = {
+            let listing = {
                 let explorer = explorer::explorer(cx);
                 let explorer = explorer.read(cx);
                 explorer
@@ -448,8 +452,16 @@ impl Workspace {
                     })
                     .and_then(|tab| tab.listing.as_ref())
                     .filter(|listing| !listing.from_index)
-                    .and_then(|listing| git::readme_of(&listing.entries).cloned())
+                    .map(|listing| listing.entries.clone())
             };
+            let wanted: Option<FileEntry> = listing.and_then(|entries| match &self.readmes_found[pane] {
+                Some((seen, found)) if std::sync::Arc::ptr_eq(seen, &entries) => found.clone(),
+                _ => {
+                    let found = git::readme_of(&entries).cloned();
+                    self.readmes_found[pane] = Some((entries, found.clone()));
+                    found
+                }
+            });
             match (wanted, &self.readmes[pane]) {
                 (Some(entry), Some((path, card))) => {
                     if *path != entry.path {
