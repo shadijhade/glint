@@ -54,7 +54,7 @@ Glint knows Scoop installed it when its folder is `<scoop>\apps\<app>\<version>`
 
 A release build runs once per session, under one name that every release build shares, so it hands its folders to your installed Glint if that's running, and the entries it adds have the installed Glint's name. A debug build (`cargo run -p glint`) has an instance name of its own and starts next to an installed Glint, but it is not an installed copy, so the switches are greyed out in it and it cannot write the entries. Glint has no build-time identifier to change any more (until 0.10 a Tauri config overlay made a stand-in with its own name), so try changes to the entries and the uninstaller like this:
 
-1.  Use a machine or a Windows account you can lose: the setup always installs to `%LOCALAPPDATA%\Glint` and uses the same registry keys, so a test setup would replace your own install. Build it with `npm run gpui:installer`.
+1.  Use a machine or a Windows account you can lose: the setup always installs to `%LOCALAPPDATA%\Glint` and uses the same registry keys, so a test setup would replace your own install. Build it with `npm run installer`.
 2.  Install it with `/S /NS` (silent, no shortcuts).
 3.  Turning the options on changes File Explorer for your account while they're on. Before you do, export `HKCU\Software\Classes\Directory` and `HKCU\Software\Classes\Drive` with `reg export`, and compare afterwards.
 4.  Uninstall it with its `uninstall.exe /S`.
