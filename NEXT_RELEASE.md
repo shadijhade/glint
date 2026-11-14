@@ -346,16 +346,39 @@ that builds a synthetic tree of about 2 million names and times `Tree::search` a
 
 ## Results
 
-| Measure | 0.11.0 | after A-B | after C | after D-F | 0.12.0 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `Glint.exe` | 174,127,104 B | | | | |
-| setup | 45,752,959 B | | | | |
-| .text / .rdata | 124.5 / 43.2 MB | | | | |
-| crates compiled | 964 | | | | |
-| release build | | | | | |
-| cold start | | | | | |
-| arrow key in 100,000 (key to frame) | | | | | |
-| Ctrl+wheel zoom (key to frame) | | | | | |
-| 20 folders opened (`nav shown`) | | | | | |
-| memory at rest (private / working set) | | | | | |
-| idle CPU over 120 s (shown / in the tray) | | | | | |
+Measured on this PC (2026-11-14), release builds (`cargo build --release -p glint -p shadui-index`), sizes with
+`scripts/dev/size-by-crate.py`. The app was not run for timings (the user's own Glint was open, and they asked for no
+app runs): the rows that need the window are empty, and so is the setup's size (makensis isn't on this PC's PATH).
+
+| Measure | 0.11.0 | after A-B | after C | 0.12.0 (A-G) |
+| :--- | :--- | :--- | :--- | :--- |
+| `Glint.exe` | 174,127,104 B | 100,507,648 B | 93,347,328 B | 93,284,352 B (-46%) |
+| setup | 45,752,959 B | | | not built |
+| .text / .rdata | 124.5 / 43.2 MB | 73.3 / 23.2 MB | 68.2 / 21.6 MB | 68.2 / 21.6 MB |
+| tokio's code | 5.87 MB | 4.62 MB | 0.76 MB | 0.92 MB |
+| crates compiled | 964 | 746 | 724 | 724 |
+| release build of Glint's crates (after `cargo clean -p glint-ui -p glint-core -p glint`) | 269 s | | | 128 s |
+| engine bench: list System32 (all) | 1.49 ms | | 1.48 ms | 1.50-1.52 ms |
+| engine bench: copy 5000 small files, one at a time / 16 at a time (single runs, Defender's share varies) | 1,861 / 1,078 ms | | 1,515 / 1,234 ms | 1,449 / 968 ms |
+| engine bench: index search and typo search (the installed 0.9 service answers: not this build's code) | 7.2 / 28.3 ms | | 5.5 / 30.0 ms | 8.2-8.5 / 36.5-37.8 ms |
+| index service, synthetic 1.8 million files, "report" under 40 exclusions (F1's ignored bench) | | | | 11.3 to 7.9 ms |
+| cold start | | | | |
+| arrow key in 100,000 (key to frame) | | | | |
+| Ctrl+wheel zoom (key to frame) | | | | |
+| 20 folders opened (`nav shown`) | | | | |
+| memory at rest (private / working set) | | | | |
+| idle CPU over 120 s (shown / in the tray) | | | | |
+
+Per part (sizes): B took 73.6 MB out of the exe (Mermaid 14.5, Typst and its crates ~15, iroh and QUIC ~3.4, the
+rest their dependencies and the code that used them); C1 2.7 MB (tokio 4.62 to 0.94 MB); C3 and C4 2.7 MB; C2 1.8 MB.
+
+**Done**: A1; B1-B7 (B5 corrected: ast-grep stays for the MCP server); C1-C4 (C2's cold crates; glint-ui at "s" and
+fat LTO weren't tried, since judging them needs app timings); D1-D10; E1, E2 (with a fix: ripgrep 15's summary was
+never read), E3, E4 (the archive hop only), E6, E7 (the noise filter only), E8 (program locations only), E9;
+F1, F3; G1-G6; notices regenerated (cargo-about 0.9.3) and cargo-deny 0.20.2 passing.
+
+**Not done, and why**: D2's deferred save snapshot, D3's pruning of the revealed tree, D7's lazy second-pane views and
+D8's thumbnail coalescing (small, and their worth needs app timings); E4's thumbnails as typed pixels, E5, E7's
+discover and tracked-set work, E8's tags on non-NTFS listings, E10 (larger changes, S items); F2 (a stop flag per
+pipe connection, which helps only once the installed 0.9 service is updated, with UAC), F4 and F5 (not shown to be
+needed); C5. The e2e harness and every app-run measure above: not run, at the user's word.
