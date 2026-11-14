@@ -158,8 +158,8 @@ impl Harness {
     }
 
     /// Reads a copy-queue event in and waits for the explorer to have handled it.
-    fn queue_says(&self, cx: &mut TestAppContext, jobs: serde_json::Value) {
-        cx.update(|cx| crate::core_bridge::emit(cx, "copy-queue", jobs));
+    fn queue_says(&self, cx: &mut TestAppContext, jobs: Vec<glint_core::queue::JobView>) {
+        cx.update(|cx| crate::core_bridge::emit(cx, crate::core_bridge::CoreEvent::CopyQueue(jobs)));
         for _ in 0..10 {
             cx.run_until_parked();
             std::thread::sleep(Duration::from_millis(5));
@@ -477,12 +477,35 @@ fn a_finished_queue_job_offers_undo_reports_errors_and_reads_the_folder_again(cx
     let _guard = testing::lock();
     let h = harness(cx);
     assert!(h.go(cx, "C:\\b"));
+    use glint_core::queue::{Failure, JobView, Made};
     let job = |state: &str| {
-        serde_json::json!([{
-            "id": 7, "kind": "copy", "sources": ["C:\\a\\one.txt", "C:\\a\\two.txt"], "dest": "C:\\b",
-            "state": state, "errors": [{"path": "C:\\a\\two.txt", "error": "Access is denied"}],
-            "made": [{"from": "C:\\a\\one.txt", "to": "C:\\b\\one.txt"}]
-        }])
+        vec![JobView {
+            id: 7,
+            kind: "copy".into(),
+            sources: vec!["C:\\a\\one.txt".into(), "C:\\a\\two.txt".into()],
+            dest: "C:\\b".into(),
+            state: state.into(),
+            errors: vec![Failure {
+                path: "C:\\a\\two.txt".into(),
+                error: "Access is denied".into(),
+            }],
+            made: vec![Made {
+                from: "C:\\a\\one.txt".into(),
+                to: "C:\\b\\one.txt".into(),
+            }],
+            ..JobView::default()
+        }]
+    };
+    let moving = |state: &str, made: Vec<Made>| {
+        vec![JobView {
+            id: 8,
+            kind: "move".into(),
+            sources: vec!["C:\\a\\two.txt".into()],
+            dest: "C:\\b".into(),
+            state: state.into(),
+            made,
+            ..JobView::default()
+        }]
     };
     // Running: nothing yet.
     h.queue_says(cx, job("copying"));
@@ -520,11 +543,7 @@ fn a_finished_queue_job_offers_undo_reports_errors_and_reads_the_folder_again(cx
     assert_eq!(h.names(cx), ["b1.txt"]);
 
     // A finished move can be taken back.
-    let moved = serde_json::json!([{
-        "id": 8, "kind": "move", "sources": ["C:\\a\\two.txt"], "dest": "C:\\b", "state": "copying",
-        "made": []
-    }]);
-    h.queue_says(cx, moved);
+    h.queue_says(cx, moving("copying", Vec::new()));
     h.disk.folder(
         "C:\\b",
         vec![file("C:\\b", "b1.txt", 1, 1), file("C:\\b", "two.txt", 200, 20)],
@@ -533,10 +552,13 @@ fn a_finished_queue_job_offers_undo_reports_errors_and_reads_the_folder_again(cx
         .folder("C:\\a", vec![folder("C:\\a", "sub"), file("C:\\a", "one.txt", 100, 10)]);
     h.queue_says(
         cx,
-        serde_json::json!([{
-            "id": 8, "kind": "move", "sources": ["C:\\a\\two.txt"], "dest": "C:\\b", "state": "done",
-            "made": [{"from": "C:\\a\\two.txt", "to": "C:\\b\\two.txt"}]
-        }]),
+        moving(
+            "done",
+            vec![Made {
+                from: "C:\\a\\two.txt".into(),
+                to: "C:\\b\\two.txt".into(),
+            }],
+        ),
     );
     assert!(h.said().iter().any(|n| matches!(n, OpNotice::Moved { count: 1, .. })));
     assert_eq!(h.next_undo(cx).map(|(_, l)| l).as_deref(), Some("move of 1 item"));

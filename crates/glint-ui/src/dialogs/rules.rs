@@ -2051,11 +2051,8 @@ pub fn hear_rules(cx: &mut App, backend: Arc<dyn Backend>, say: Say) {
     });
     let weak = toasts.downgrade();
     cx.subscribe(&events, move |_, event: &core_bridge::CoreEvent, cx| {
-        if event.name != "rule-did" {
-            return;
-        }
-        if let Ok(done) = serde_json::from_value::<Done>(event.payload.clone()) {
-            let _ = weak.update(cx, |toasts, cx| toasts.heard(done, cx));
+        if let core_bridge::CoreEvent::RuleDid(done) = event {
+            let _ = weak.update(cx, |toasts, cx| toasts.heard(done.clone(), cx));
         }
     })
     .detach();
@@ -2964,7 +2961,7 @@ mod tests {
             hear_rules(cx, backend, say);
             assert!(rule_toasts(cx).is_some());
             let one = done(41, "Invoices", "move", "C:\\In\\a.pdf", Some("D:\\Docs\\a.pdf"));
-            core_bridge::emit(cx, "rule-did", serde_json::to_value(&one).unwrap_or_default());
+            core_bridge::emit(cx, core_bridge::CoreEvent::RuleDid(one));
         });
         visual.run_until_parked();
         assert!(!has(&mut visual, "Undo"), "said a moment later, all of it at once");

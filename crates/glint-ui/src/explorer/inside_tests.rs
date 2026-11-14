@@ -69,7 +69,7 @@ impl Rig {
     /// What the content search says, applied.
     fn say(&self, cx: &mut TestAppContext, kind: &str, lines: Vec<String>) {
         let event = inside_event(&self.inside_id(), kind, lines);
-        self.explorer.update(cx, |e, cx| e.inside_heard(event, cx));
+        self.explorer.update(cx, |e, cx| e.inside_heard(&event, cx));
         for _ in 0..4 {
             cx.run_until_parked();
         }
@@ -238,7 +238,7 @@ fn a_newer_search_and_leaving_the_results_end_the_content_search(cx: &mut TestAp
         "data",
         vec![inside_match("C:\\proj\\readme.md", "needle\n", 1, 0, 6)],
     );
-    r.explorer.update(cx, |e, cx| e.inside_heard(stale, cx));
+    r.explorer.update(cx, |e, cx| e.inside_heard(&stale, cx));
     cx.run_until_parked();
     assert_eq!(r.run_of(cx).inside.matches, 0);
 

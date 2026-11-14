@@ -653,7 +653,7 @@ pub async fn run_content_search(window: Window, request: ContentSearch, search_i
         };
         let found = content.search(&request.query, &folder, max);
         let emit = |kind: &str, lines: Vec<String>| {
-            let _ = window.emit("search-event", crate::SearchEvent { id: search_id.clone(), r#type: kind.into(), lines });
+            window.emit(crate::host::Event::Search(crate::SearchEvent { id: search_id.clone(), kind: kind.into(), lines }));
         };
         let mut batch = Vec::new();
         let mut matches = 0;

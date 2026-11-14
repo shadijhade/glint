@@ -170,38 +170,6 @@ fn the_taskbar_follows_the_running_jobs() {
     assert_ne!(key(400), key(403));
 }
 
-#[test]
-fn core_events_become_jobs_and_other_payloads_do_not() {
-    let mut made = job(7, "done");
-    made.errors = vec![Failure {
-        path: "C:\\a\\b.txt".into(),
-        error: "Access is denied".into(),
-    }];
-    made.made = vec![Made {
-        from: "C:\\a\\b.txt".into(),
-        to: "D:\\b.txt".into(),
-    }];
-    made.conflict = Some("D:\\x.txt".into());
-    made.finished = Some(5_000);
-    let payload = serde_json::to_value(vec![job(1, "copying"), made.clone()]).expect("JobView serializes");
-    let jobs = jobs_from_json(&payload).expect("an array");
-    assert_eq!(jobs.len(), 2);
-    assert_eq!(jobs[0].sources, job(1, "copying").sources);
-    assert_eq!(jobs[0].speed, 100.0);
-    let back = &jobs[1];
-    assert_eq!(back.id, 7);
-    assert_eq!(back.errors, made.errors);
-    assert_eq!(back.made, made.made);
-    assert_eq!(back.conflict.as_deref(), Some("D:\\x.txt"));
-    assert_eq!((back.started, back.finished), (Some(1_000), Some(5_000)));
-    // The empty object core_bridge's own test sends isn't a list; a job without an id is dropped.
-    assert!(jobs_from_json(&serde_json::json!({})).is_none());
-    assert_eq!(
-        jobs_from_json(&serde_json::json!([{ "kind": "copy" }])).map(|j| j.len()),
-        Some(0)
-    );
-}
-
 // ---- The panel ---------------------------------------------------------------------------------------
 
 /// A queue service that records what it is told.
@@ -239,8 +207,7 @@ fn open(cx: &mut TestAppContext, fake: Fake) -> (VisualTestContext, Entity<CopyQ
 }
 
 fn tell(cx: &mut VisualTestContext, jobs: &[JobView]) {
-    let payload = serde_json::to_value(jobs).expect("JobView serializes");
-    cx.update(|_, cx| core_bridge::emit(cx, "copy-queue", payload));
+    cx.update(|_, cx| core_bridge::emit(cx, core_bridge::CoreEvent::CopyQueue(jobs.to_vec())));
 }
 
 fn has(cx: &mut VisualTestContext, label: &str) -> bool {

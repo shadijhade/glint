@@ -6,7 +6,6 @@
 //! `Channel`s are callbacks the caller passes in; `State` is what the app registered with `manage`.
 //! Window-specific calls go through [`Window`], which the UI registers for each of its windows.
 
-use serde::Serialize;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
@@ -61,13 +60,28 @@ impl From<Error> for String {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// An event for the UI: its name (as the web UI listened for it), the window it's for (none: every
-/// window), and its payload as JSON.
-#[derive(Debug, Clone)]
-pub struct Event {
-    pub name: String,
-    pub target: Option<String>,
-    pub payload: serde_json::Value,
+/// What the engine tells the window as it happens, from any thread ([`AppHandle::emit`]). The window gets each,
+/// in order, on its own thread.
+#[derive(Debug)]
+pub enum Event {
+    /// A folder on screen changed on disk (`watch.rs`).
+    DirChanged(String),
+    /// A repository on screen changed (`git.rs`): its root.
+    GitChanged(String),
+    /// What a search inside files found so far, or how it ended (`search_text`, the content index).
+    Search(crate::SearchEvent),
+    /// The copy queue's jobs as they are now (`queue.rs`).
+    CopyQueue(Vec<crate::queue::JobView>),
+    /// A folder rule did something to a file (`rules.rs`).
+    RuleDid(crate::rules::Done),
+    /// rclone has its sign-in page ready at this address (`rclone.rs`).
+    RcloneSignIn(String),
+    /// A file came from a nearby device (`localsend.rs`): who sent it, and where it was saved.
+    NearbyReceived { from: String, path: String },
+    /// The Gallery read the dates of more of its pictures (`gallery.rs`).
+    GalleryDated,
+    /// A scheduled backup ran (`backup.rs`).
+    BackupFinished(crate::backup::Finished),
 }
 
 type EventSink = dyn Fn(Event) + Send + Sync;
@@ -101,6 +115,10 @@ impl AppHandle {
         }))
     }
 
+    /// Tells the window `event`. Never waits, from any thread.
+    pub fn emit(&self, event: Event) {
+        (self.0.events)(event)
+    }
 
     /// Registers the window the UI opened under `label` ("main", "quick"…).
     pub fn register_window(&self, window: Window) {
@@ -217,21 +235,6 @@ pub trait Manager {
     }
 }
 
-/// Sending events to the UI (Tauri's `Emitter`).
-pub trait Emitter: Manager {
-    fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) -> Result<()> {
-        let payload = serde_json::to_value(payload).map_err(|e| Error(e.to_string()))?;
-        (self.app_handle().0.events)(Event { name: event.into(), target: None, payload });
-        Ok(())
-    }
-
-    fn emit_to<S: Serialize + Clone>(&self, target: &str, event: &str, payload: S) -> Result<()> {
-        let payload = serde_json::to_value(payload).map_err(|e| Error(e.to_string()))?;
-        (self.app_handle().0.events)(Event { name: event.into(), target: Some(target.into()), payload });
-        Ok(())
-    }
-}
-
 impl Manager for AppHandle {
     fn app_handle(&self) -> &AppHandle {
         self
@@ -256,8 +259,6 @@ impl AppHandle {
         PathResolver
     }
 }
-
-impl Emitter for AppHandle {}
 
 type WindowCall = dyn Fn() -> bool + Send + Sync;
 
@@ -319,8 +320,9 @@ impl Window {
         Ok((self.scale)())
     }
 
-    pub fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) -> Result<()> {
-        self.app.emit_to(&self.label, event, payload)
+    /// Tells the window `event` (every window hears every event).
+    pub fn emit(&self, event: Event) {
+        self.app.emit(event)
     }
 
     pub fn app_handle(&self) -> &AppHandle {

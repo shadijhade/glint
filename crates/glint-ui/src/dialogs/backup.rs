@@ -1367,45 +1367,40 @@ pub fn open_with(
     (model, view)
 }
 
-/// A scheduled backup that ran while Glint was open (core's `backup-finished`, which App.tsx listened for): a
-/// quiet notice when it worked, a loud one when it didn't. Returns (worked, title, detail), or nothing for a
-/// payload that names no source.
-pub fn finished_words(payload: &serde_json::Value) -> Option<(bool, String, String)> {
-    let source = payload.get("source")?.as_str()?;
-    // The folder's own name, else all of it (`source.split("\\").pop() || source`).
+/// A scheduled backup that ran while Glint was open: a quiet notice when it worked, a loud one when it didn't.
+/// Returns (worked, title, detail).
+pub fn finished_words(finished: &glint_core::backup::Finished) -> (bool, String, String) {
+    let source = finished.source.as_str();
+    // The folder's own name, else all of it.
     let name = source.rsplit('\\').next().filter(|n| !n.is_empty()).unwrap_or(source);
-    let result = payload.get("result").filter(|r| !r.is_null());
-    let result_error = result.and_then(|r| r.get("error")).and_then(|e| e.as_str());
-    let worked = result
-        .and_then(|r| r.get("ok"))
-        .and_then(|ok| ok.as_bool())
-        .unwrap_or(false);
-    if worked {
-        return Some((
+    match &finished.result {
+        // A warning (files busy) stays with a backup that worked.
+        Ok(run) if run.ok => (
             true,
             t!("Backed up “{name}”", name = name).to_string(),
-            result_error.unwrap_or_default().to_string(),
-        ));
+            run.error.clone().unwrap_or_default(),
+        ),
+        Ok(run) => (
+            false,
+            t!("Couldn't back up “{name}”", name = name).to_string(),
+            run.error.clone().unwrap_or_default(),
+        ),
+        Err(error) => (
+            false,
+            t!("Couldn't back up “{name}”", name = name).to_string(),
+            error.clone(),
+        ),
     }
-    let reason = result_error
-        .or_else(|| payload.get("error").and_then(|e| e.as_str()))
-        .unwrap_or_default();
-    Some((
-        false,
-        t!("Couldn't back up “{name}”", name = name).to_string(),
-        reason.to_string(),
-    ))
 }
 
 /// Says in the main window what a scheduled backup did (`notify` shows a notification there).
-pub fn tell_finished(payload: &serde_json::Value, notify: impl FnOnce(Notification)) {
-    if let Some((worked, title, detail)) = finished_words(payload) {
-        notify(if worked {
-            Notification::info(detail).title(title)
-        } else {
-            Notification::error(detail).title(title)
-        });
-    }
+pub fn tell_finished(finished: &glint_core::backup::Finished, notify: impl FnOnce(Notification)) {
+    let (worked, title, detail) = finished_words(finished);
+    notify(if worked {
+        Notification::info(detail).title(title)
+    } else {
+        Notification::error(detail).title(title)
+    });
 }
 
 // ---- Tests -------------------------------------------------------------------------------------------------
@@ -1422,49 +1417,45 @@ mod tests {
     #[test]
     fn a_scheduled_backup_that_finished_is_told_quietly_and_one_that_failed_loudly() {
         let _guard = testing::lock();
-        let worked = serde_json::json!({
-            "source": "C:\\Users\\me\\Documents",
-            "result": { "ok": true, "error": null, "totalFiles": 12 },
-            "error": null
-        });
+        use glint_core::backup::{Finished, LastRun};
+        let ran = |source: &str, ok: bool, error: Option<&str>| Finished {
+            source: source.into(),
+            result: Ok(LastRun {
+                ok,
+                error: error.map(str::to_string),
+                total_files: 12,
+                ..LastRun::default()
+            }),
+        };
         assert_eq!(
-            finished_words(&worked),
-            Some((true, "Backed up “Documents”".to_string(), String::new()))
+            finished_words(&ran("C:\\Users\\me\\Documents", true, None)),
+            (true, "Backed up “Documents”".to_string(), String::new())
         );
         // A backup that worked with a warning keeps the warning.
-        let warned = serde_json::json!({
-            "source": "D:\\Photos",
-            "result": { "ok": true, "error": "2 files were busy" },
-            "error": null
-        });
         assert_eq!(
-            finished_words(&warned),
-            Some((true, "Backed up “Photos”".to_string(), "2 files were busy".to_string()))
+            finished_words(&ran("D:\\Photos", true, Some("2 files were busy"))),
+            (true, "Backed up “Photos”".to_string(), "2 files were busy".to_string())
         );
-        // Its result's own reason first, else the run's.
-        let failed = serde_json::json!({
-            "source": "D:\\Photos",
-            "result": { "ok": false, "error": "The repository is locked" },
-            "error": "ignored"
-        });
         assert_eq!(
-            finished_words(&failed),
-            Some((
+            finished_words(&ran("D:\\Photos", false, Some("The repository is locked"))),
+            (
                 false,
                 "Couldn't back up “Photos”".to_string(),
                 "The repository is locked".to_string()
-            ))
+            )
         );
-        let never_ran = serde_json::json!({ "source": "D:\\", "result": null, "error": "restic isn't installed" });
+        let never_ran = Finished {
+            source: "D:\\".into(),
+            result: Err("restic isn't installed".into()),
+        };
         assert_eq!(
             finished_words(&never_ran),
-            Some((
+            (
                 false,
                 "Couldn't back up “D:\\”".to_string(),
                 "restic isn't installed".to_string()
-            ))
+            )
         );
-        assert_eq!(finished_words(&serde_json::json!({ "result": null })), None);
     }
 
     fn plan(source: &str) -> Plan {

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use crate::host::ipc::Channel;
-use crate::host::{AppHandle, Emitter};
+use crate::host::{AppHandle, Event};
 
 const MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 167);
 const PORT: u16 = 53317;
@@ -464,7 +464,7 @@ async fn route(request: hyper::Request<hyper::body::Incoming>, from: IpAddr, por
             }
             match save(request.into_body(), &name, size).await {
                 Ok(to) => {
-                    let _ = app.emit("nearby-received", serde_json::json!({ "from": from_name, "path": to.to_string_lossy() }));
+                    app.emit(Event::NearbyReceived { from: from_name, path: to.to_string_lossy().into_owned() });
                     reply(200, "{}")
                 }
                 Err(e) => reply(500, serde_json::to_vec(&serde_json::json!({ "message": e })).unwrap_or_default()),

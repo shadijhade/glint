@@ -152,16 +152,9 @@ pub fn inside_unasked(scope: &str) -> bool {
 
 // ---- What core sends -----------------------------------------------------------------------------------
 
-/// One `search-event` as core emitted it: the search it belongs to, its kind ("data", "error", "finished")
-/// and ripgrep's JSON lines.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-pub struct RawEvent {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-    #[serde(default)]
-    pub lines: Vec<String>,
-}
+/// One event of a search inside files as core sent it: the search it belongs to, its kind ("data", "error",
+/// "finished") and ripgrep's JSON lines.
+pub use glint_core::SearchEvent as RawEvent;
 
 /// One match line (ripgrep's `match` message).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -467,13 +460,13 @@ impl Explorer {
     }
 
     /// One of core's `search-event`s: handed to the pump, which applies them in order.
-    pub fn inside_heard(&mut self, event: RawEvent, cx: &mut Context<Self>) {
+    pub fn inside_heard(&mut self, event: &glint_core::SearchEvent, cx: &mut Context<Self>) {
         if self.searching.inside.as_ref().is_none_or(|job| job.id != event.id) {
             return;
         }
         self.ensure_inside_pump(cx);
         if let Some(events) = &self.searching.inside_events {
-            if events.try_send(event).is_ok() {
+            if events.try_send(event.clone()).is_ok() {
                 self.searching.inside_waiting += 1;
             }
         }
