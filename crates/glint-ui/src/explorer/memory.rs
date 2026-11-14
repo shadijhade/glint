@@ -21,6 +21,14 @@ use glint_model::store::{AppState, FolderView, FolderViewPatch, OrderedMap, Sess
 #[derive(Clone, Debug, Default)]
 pub struct Memory {
     app: AppState,
+    /// Changes whenever the visits do (a new value from the whole process, so another memory never has the same).
+    visits_version: u64,
+}
+
+/// The next [`Memory::visits_version`].
+fn next_visits_version() -> u64 {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    LAST.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
 }
 
 impl Memory {
@@ -31,7 +39,10 @@ impl Memory {
 
     /// Remembering what a loaded `AppState` holds.
     pub fn from_app_state(app: AppState) -> Self {
-        Memory { app }
+        Memory {
+            app,
+            visits_version: next_visits_version(),
+        }
     }
 
     /// The whole `AppState`, for saving. Only the four parts above are the explorer's.
@@ -52,6 +63,11 @@ impl Memory {
     /// Folders opened, for ranking in the command palette (`visits`).
     pub fn visits(&self) -> &OrderedMap<Visit> {
         &self.app.visits
+    }
+
+    /// Changes whenever [`Memory::visits`] do: what ranks them can tell it has nothing new to rank.
+    pub fn visits_version(&self) -> u64 {
+        self.visits_version
     }
 
     /// A folder's own view, as last set there (`folderViews[path.toLowerCase()]`).
@@ -82,6 +98,7 @@ impl Memory {
 
     pub(super) fn record_visit(&mut self, path: &str, now: i64) {
         self.app.record_visit(path, now);
+        self.visits_version = next_visits_version();
     }
 
     pub(super) fn set_folder_view(&mut self, path: &str, view: Option<FolderViewPatch>, now: i64) {
@@ -116,6 +133,18 @@ mod tests {
         assert_eq!(memory.folder_view("c:\\PHOTOS").and_then(|v| v.sort), Some(sort));
         memory.set_folder_view("C:\\Photos", None, 6);
         assert!(memory.folder_view("C:\\Photos").is_none());
+    }
+
+    #[test]
+    fn the_visits_version_changes_with_the_visits_and_with_another_memory() {
+        let mut memory = Memory::new();
+        let first = memory.visits_version();
+        memory.record_visit("C:\\a", 1000);
+        let second = memory.visits_version();
+        assert_ne!(first, second);
+        assert!(memory.set_last_folder("C:\\a"));
+        assert_eq!(memory.visits_version(), second, "the last folder isn't a visit");
+        assert_ne!(Memory::from_app_state(AppState::default()).visits_version(), second);
     }
 
     #[test]

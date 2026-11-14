@@ -99,6 +99,9 @@ pub struct FrequentFolders {
     tiles: Vec<Tile>,
     /// The tile (by index) files dragged over would drop into, while the drop is taken; the tiles light from it.
     drop_over: Rc<Cell<Option<usize>>>,
+    /// The visits ranked last ([`crate::explorer::Memory::visits_version`]): the explorer changes on every key
+    /// press, its visits once per folder opened.
+    ranked: Option<u64>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -112,6 +115,7 @@ impl FrequentFolders {
             pane,
             tiles: Vec::new(),
             drop_over: Rc::new(Cell::new(None)),
+            ranked: None,
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
@@ -130,6 +134,11 @@ impl FrequentFolders {
 
     /// Ranks the visits again. Tiles keep their focus handles by position, so the keyboard stays put.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
+        let version = explorer(cx).read(cx).memory().visits_version();
+        if self.ranked == Some(version) {
+            return;
+        }
+        self.ranked = Some(version);
         let now = now_ms();
         let folders = explorer(cx).read_with(cx, |explorer, _| frequent(explorer.memory().visits(), now));
         if folders == self.paths() {
