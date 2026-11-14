@@ -116,6 +116,9 @@ enum Shown {
 }
 
 /// The main window's content.
+/// A pane's README as last looked for, with the listing it was looked for in.
+type ReadmeFound = Option<(std::sync::Arc<[FileEntry]>, Option<FileEntry>)>;
+
 pub struct Workspace {
     focus: FocusHandle,
     tabs: Entity<TabStrip>,
@@ -153,7 +156,7 @@ pub struct Workspace {
     readmes: [Option<(String, Entity<ReadmeCard>)>; 2],
     /// Each pane's README as last looked for, with the listing it was looked for in: the explorer changes on every
     /// key press, its listings far less often.
-    readmes_found: [Option<(std::sync::Arc<[FileEntry]>, Option<FileEntry>)>; 2],
+    readmes_found: [ReadmeFound; 2],
     /// What each pane showed at the last look, so a grid going out of sight lets its thumbnails go.
     shown: [Option<Shown>; 2],
     /// Files dragged over the window from File Explorer and other apps arrive here, as long as it lives

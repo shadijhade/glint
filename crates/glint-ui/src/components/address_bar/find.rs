@@ -144,7 +144,7 @@ impl AddressBar {
     }
 
     /// The switches of the search inside files (match case, whole words, a regular expression; documents,
-    /// pictures' text, meaning), as they are saved.
+    /// pictures' text), as they are saved.
     fn options(cx: &App) -> SearchOptions {
         crate::persistence::app(cx).map(|app| app.options).unwrap_or_default()
     }

@@ -13,7 +13,7 @@
 //!
 //! Core has one content search at a time: a newer one ends the older (in any tab), which keeps what it found.
 //! Which engine answers follows the search box's switches (`persistence::app(cx).options`): the content index for
-//! plain words in a folder it covers, the documents' reader when Documents or Meaning is on, else ripgrep.
+//! plain words in a folder it covers, the documents' reader when Documents is on, else ripgrep.
 //!
 //! What core finds comes as `search-event`s ([`Explorer::inside_heard`]). One pump reads them in order: each is
 //! parsed on a background thread, the files not seen yet are read for their size and date through the [`Source`],
@@ -51,7 +51,7 @@ pub enum InsideEngine {
     Ripgrep,
     /// The content index, for plain words in a folder it covers (`run_content_search`).
     Index,
-    /// Documents (PDF, Office, books), pictures' text, and Meaning (`run_doc_search`).
+    /// Documents (PDF, Office, books) and pictures' text (`run_doc_search`).
     Documents,
 }
 
