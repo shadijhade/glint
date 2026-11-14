@@ -15,7 +15,6 @@ struct Env {
     view: Entity<PlayerView>,
     visual: VisualTestContext,
     opening: Rc<Opening>,
-    answers: Rc<Answers>,
 }
 
 fn entry(name: &str, size: u64) -> FileEntry {
@@ -29,17 +28,12 @@ fn open_entry(cx: &mut TestAppContext, entry: FileEntry, kind: Kind, setup: impl
     setup(&answers);
     cx.update(|cx| {
         testing::init(cx);
-        init_with(cx, fake::sources(opening.clone(), answers.clone()));
+        init_with(cx, fake::sources(opening.clone(), answers));
     });
     let (visual, view) = testing::open_window(cx, move |window, cx| {
         cx.new(|cx| PlayerView::new(entry, kind, window, cx))
     });
-    let mut env = Env {
-        view,
-        visual,
-        opening,
-        answers,
-    };
+    let mut env = Env { view, visual, opening };
     env.settle();
     env
 }
@@ -460,7 +454,7 @@ fn the_trim_bar_seeks_and_plays_a_part_that_stops_at_its_end(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
-fn a_file_in_an_archive_has_no_trim_waveform_or_transcript(cx: &mut TestAppContext) {
+fn a_file_in_an_archive_has_no_trim_or_waveform(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     testing::set_rtl(false);
     let mut archived = entry("inside.mp3", 1000);
@@ -472,7 +466,7 @@ fn a_file_in_an_archive_has_no_trim_waveform_or_transcript(cx: &mut TestAppConte
     // It is the copy that plays.
     assert_eq!(env.opening.opened.borrow()[0].0, "C:\\tmp\\inside.mp3");
     env.say([Event::Loaded(fake::song(5.))]);
-    assert!(env.read(|v| v.trim().is_none() && v.transcript().is_none() && v.waveform().is_none()));
+    assert!(env.read(|v| v.trim().is_none() && v.waveform().is_none()));
     assert!(!env.has_id("trim-open"));
 }
 
@@ -580,105 +574,6 @@ fn letting_go_of_the_view_stops_the_engine_and_a_playing_one_too(cx: &mut TestAp
     assert!(opening.is_dropped(), "the sound stops with the view");
 }
 
-// ---- The transcript -----------------------------------------------------------------------------------------
-
-fn said() -> Heard {
-    Heard {
-        lang: "ar".into(),
-        parts: vec![
-            (0, "مرحبا بكم".into()),
-            (5000, "hello world".into()),
-            (65_000, "third".into()),
-        ],
-        hits: vec![1],
-    }
-}
-
-#[gpui_kit::test]
-fn the_transcript_lists_what_was_said_and_a_part_plays_from_there(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    testing::set_rtl(true);
-    let mut env = open_entry(cx, entry("talk.mp4", 5_000_000), Kind::Video, |answers| {
-        *answers.heard.borrow_mut() = Some(said());
-    });
-    env.say([Event::Loaded(fake::film(100., 640, 360))]);
-    assert!(env.has("What's said (ar)"));
-    assert!(env.has("0:00 مرحبا بكم") && env.has("0:05 hello world") && env.has("1:05 third"));
-    assert_eq!(env.answers.asked.borrow()[0], None);
-    env.click(("transcript-part", 1usize));
-    assert_eq!(env.last_seek(), Some(5.));
-    assert!(env.opening.was_sent(&Command::Play));
-    // The words `says:` searched for are read again when they change.
-    let transcript = env.read(|v| v.transcript().cloned()).expect("a transcript");
-    transcript.update(&mut env.visual, |t, cx| t.set_words("hello".into(), cx));
-    env.settle();
-    assert_eq!(env.answers.asked.borrow().last(), Some(&Some("hello".to_string())));
-    // The same words are not asked twice.
-    let asked = env.answers.asked.borrow().len();
-    transcript.update(&mut env.visual, |t, cx| t.set_words("hello".into(), cx));
-    assert_eq!(env.answers.asked.borrow().len(), asked);
-    testing::set_rtl(false);
-}
-
-#[gpui_kit::test]
-fn the_arrows_and_enter_play_a_part_from_the_keyboard(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    testing::set_rtl(false);
-    let mut env = open_entry(cx, entry("talk.mp4", 5_000_000), Kind::Video, |answers| {
-        *answers.heard.borrow_mut() = Some(said());
-    });
-    env.say([Event::Loaded(fake::film(100., 640, 360))]);
-    let transcript = env.read(|v| v.transcript().cloned()).expect("a transcript");
-    // The part that says the words is where the arrows start.
-    assert_eq!(transcript.read_with(&env.visual, |t, _| t.cursor()), 1);
-    let focus = transcript.read_with(&env.visual, |t, _| t.focus.clone());
-    env.visual.update(|window, cx| focus.focus(window, cx));
-    env.settle();
-    env.press("down");
-    assert_eq!(transcript.read_with(&env.visual, |t, _| t.cursor()), 2);
-    env.press("down");
-    assert_eq!(
-        transcript.read_with(&env.visual, |t, _| t.cursor()),
-        2,
-        "not past the last"
-    );
-    env.press("enter");
-    assert_eq!(env.last_seek(), Some(65.));
-    env.press("up");
-    env.press("space");
-    assert_eq!(env.last_seek(), Some(5.));
-}
-
-#[gpui_kit::test]
-fn a_long_transcript_draws_only_the_rows_that_are_visible(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    testing::set_rtl(false);
-    let mut env = open_entry(cx, entry("talk.mp4", 5_000_000), Kind::Video, |answers| {
-        *answers.heard.borrow_mut() = Some(Heard {
-            lang: "en".into(),
-            parts: (0..2000).map(|i| (i * 3000, format!("part number {i}"))).collect(),
-            hits: vec![],
-        });
-    });
-    env.say([Event::Loaded(fake::film(6000., 640, 360))]);
-    assert!(env.has_id(("transcript-part", 0usize)));
-    assert!(!env.has_id(("transcript-part", 1999usize)));
-    let moved = env.view.update(&mut env.visual, |v, cx| v.page(true, cx));
-    assert!(moved);
-    env.settle();
-}
-
-#[gpui_kit::test]
-fn a_recording_nobody_heard_has_no_transcript_box(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    testing::set_rtl(false);
-    let mut env = open(cx, "talk.mp4", Kind::Video);
-    env.say([Event::Loaded(fake::film(100., 640, 360))]);
-    assert!(!env.has_id("transcript"));
-    assert!(env.read(|v| v.transcript().is_some()));
-    assert!(!env.view.update(&mut env.visual, |v, cx| v.page(true, cx)));
-}
-
 // ---- Scrubbing over a tile ---------------------------------------------------------------------------------
 
 fn tile_frames() -> Arc<scrub::Frames> {
@@ -754,9 +649,7 @@ fn a_tile_whose_frames_cannot_be_read_stays_quiet(cx: &mut TestAppContext) {
 fn every_control_has_a_name_and_none_is_named_twice(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     testing::set_rtl(false);
-    let mut env = open_entry(cx, entry("clip.mp4", 5_000_000), Kind::Video, |answers| {
-        *answers.heard.borrow_mut() = Some(said());
-    });
+    let mut env = open_entry(cx, entry("clip.mp4", 5_000_000), Kind::Video, |_| {});
     env.say([Event::Loaded(fake::film(65., 640, 360))]);
     for label in [
         "Play",
@@ -765,7 +658,6 @@ fn every_control_has_a_name_and_none_is_named_twice(cx: &mut TestAppContext) {
         "Volume",
         "Playback speed: 1×",
         "Player controls",
-        "What's said (ar)",
     ] {
         let count = env.visual.update(|window, cx| {
             window.render_frame(cx);

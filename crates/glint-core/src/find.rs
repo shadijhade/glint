@@ -375,30 +375,6 @@ pub async fn find_files(
     on_event: Channel,
     lane: String,
 ) -> Result<(), String> {
-    // shows: and says: (what's in photos, what's said in recordings: media_ai.rs) are answered from
-    // what their models learned, best match first.
-    if let Some(ask) = crate::media_ai::asked(&query) {
-        let run = state.finds.start(&lane);
-        let finds = state.finds.clone();
-        let max = options.max_results.filter(|&m| m > 0).unwrap_or(1000);
-        thread::spawn(move || {
-            let started = Instant::now();
-            tell(&on_event, FindEvent::Started { engine: ask.engine() });
-            let mut count = 0;
-            match crate::media_ai::search(&ask, &roots, max, &run.stop) {
-                Ok(entries) => {
-                    count = entries.len();
-                    if !entries.is_empty() {
-                        let _ = on_event.send(InvokeResponseBody::Raw(encode_items("", &entries, &[], 0.0, false)));
-                    }
-                }
-                Err(message) => tell(&on_event, FindEvent::Error { message }),
-            }
-            tell(&on_event, FindEvent::Finished { count, elapsed: ms_since(started), limited: false, fuzzy: false });
-            finds.finished(&lane, &run);
-        });
-        return Ok(());
-    }
     let (terms, filters) = parse(&query)?;
     if terms.is_empty() && filters.is_empty() {
         return Err("Type part of a file name to search for".into());

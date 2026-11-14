@@ -30,49 +30,6 @@ pub fn describe_progress(fetch: &Fetch) -> SharedString {
     )
 }
 
-/// What a finished meaning-model download says: the notice's title and its sentence (`installMeaning` and
-/// `installMultilingual` of meaning.ts).
-fn meaning_downloaded(multilingual: bool) -> (SharedString, SharedString) {
-    if multilingual {
-        (
-            t!("The 101-language meaning model is downloaded"),
-            t!("Meaning search reads Arabic, Chinese, Spanish and 98 more languages now."),
-        )
-    } else {
-        (
-            t!("The meaning model is downloaded"),
-            t!("Meaning search ranks passages by what they're about."),
-        )
-    }
-}
-
-/// The title of the notice when a meaning-model download fails.
-fn meaning_download_failed(multilingual: bool) -> SharedString {
-    if multilingual {
-        t!("Couldn't download the 101-language model")
-    } else {
-        t!("Couldn't download the meaning model")
-    }
-}
-
-/// What removing a meaning model says.
-fn meaning_removed(multilingual: bool) -> SharedString {
-    if multilingual {
-        t!("The 101-language model is removed")
-    } else {
-        t!("The meaning model is removed")
-    }
-}
-
-/// The title of the notice when removing a meaning model fails.
-fn meaning_remove_failed(multilingual: bool) -> SharedString {
-    if multilingual {
-        t!("Couldn't remove the 101-language model")
-    } else {
-        t!("Couldn't remove the meaning model")
-    }
-}
-
 /// What Install will do, for its tooltip (`installHint`).
 pub fn install_hint(tool: &ToolInfo) -> SharedString {
     if tool.source == "release" {
@@ -89,29 +46,23 @@ pub fn install_hint(tool: &ToolInfo) -> SharedString {
     }
 }
 
-/// The tools and the meaning models, and the installs under way.
+/// The tools, and the installs under way.
 pub struct Tools {
     backend: Arc<dyn Backend>,
     tools: Vec<ToolInfo>,
     /// Installs and removals running now, by tool id.
     busy: HashMap<String, Fetch>,
     checking: bool,
-    /// (the English meaning model, the 101-language one) are downloaded.
-    meaning: (bool, bool),
-    /// A meaning download under way (both models share it).
-    meaning_progress: Option<Fetch>,
 }
 
 impl Tools {
-    /// Looks for every tool at once (`useEffect(check)`) and for the meaning models.
+    /// Looks for every tool at once (`useEffect(check)`).
     pub fn new(backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             backend,
             tools: Vec::new(),
             busy: HashMap::new(),
             checking: false,
-            meaning: (false, false),
-            meaning_progress: None,
         };
         this.refresh(window, cx);
         this
@@ -132,12 +83,7 @@ impl Tools {
         self.busy.get(id)
     }
 
-    /// Whether the meaning models are downloaded: (English, 101 languages).
-    pub fn meaning(&self) -> (bool, bool) {
-        self.meaning
-    }
-
-    /// Asks where each tool is and its version, and which meaning models there are (`check`, `refreshMeaning`).
+    /// Asks where each tool is and its version (`check`).
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.checking {
             return;
@@ -145,16 +91,12 @@ impl Tools {
         self.checking = true;
         cx.notify();
         let tools = self.backend.tools_status();
-        let models = self.backend.meaning_models();
         cx.spawn_in(window, async move |this, cx| {
-            let (tools, models) = (tools.await, models.await);
+            let tools = tools.await;
             this.update(cx, |this, cx| {
                 this.checking = false;
                 if let Ok(tools) = tools {
                     this.tools = tools;
-                }
-                if let Ok(models) = models {
-                    this.meaning = (models.english, models.multilingual);
                 }
                 cx.notify();
             })
@@ -251,78 +193,6 @@ impl Tools {
         self.backend.cancel_install(id.to_string());
     }
 
-    /// Downloads a meaning model (`installMeaning`, `installMultilingual`).
-    /// How far the meaning model's download is, while it downloads (the text search card shows it).
-    pub fn meaning_progress(&self) -> Option<&Fetch> {
-        self.meaning_progress.as_ref()
-    }
-
-    pub fn install_meaning(&mut self, multilingual: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.meaning_progress.is_some() {
-            return;
-        }
-        self.meaning_progress = Some(Fetch {
-            stage: t!("Starting").to_string(),
-            done: 0,
-            total: 0,
-        });
-        cx.notify();
-        let (progress, heard) = async_channel::unbounded();
-        let asked = self.backend.meaning_install(multilingual, progress);
-        cx.spawn_in(window, async move |this, cx| {
-            while let Ok(fetch) = heard.recv().await {
-                if this
-                    .update(cx, |this, cx| {
-                        this.meaning_progress = Some(fetch);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        })
-        .detach();
-        cx.spawn_in(window, async move |this, cx| {
-            let answer = asked.await;
-            this.update_in(cx, |this, window, cx| {
-                this.meaning_progress = None;
-                match answer {
-                    Ok(()) => {
-                        this.refresh(window, cx);
-                        let (title, description) = meaning_downloaded(multilingual);
-                        good(window, cx, title, Some(description));
-                    }
-                    Err(reason) if reason == "cancelled" => {}
-                    Err(reason) => bad(window, cx, meaning_download_failed(multilingual), reason),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Deletes a downloaded meaning model.
-    pub fn remove_meaning(&mut self, multilingual: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let asked = self.backend.meaning_remove(multilingual);
-        cx.spawn_in(window, async move |this, cx| {
-            let answer = asked.await;
-            this.update_in(cx, |this, window, cx| {
-                match answer {
-                    Ok(()) => {
-                        this.refresh(window, cx);
-                        good(window, cx, meaning_removed(multilingual), None);
-                    }
-                    Err(reason) => bad(window, cx, meaning_remove_failed(multilingual), reason),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     /// One program Glint drives: its version, where it came from, and Install, Stop or Remove (`ToolRow`).
     fn tool_row(&self, tool: &ToolInfo, cx: &mut Context<Self>, t: &theme::Tokens) -> AnyElement {
         let slot = format!("tool-{}", tool.id);
@@ -390,75 +260,6 @@ impl Tools {
         };
         widgets::setting_row(label, Some(hint), controls, t).into_any_element()
     }
-
-    /// The meaning model's row (`MeaningRow`).
-    fn meaning_row(&self, cx: &mut Context<Self>, t: &theme::Tokens) -> AnyElement {
-        let (english, _) = self.meaning;
-        let hint = if english {
-            t!("Meaning search in Text: passages ranked by what they're about (Model2Vec, 30 MB, MIT) · Downloaded by Glint")
-        } else {
-            t!("Meaning search in Text: passages ranked by what they're about (Model2Vec, 30 MB, MIT) · Not downloaded")
-        };
-        let controls = match &self.meaning_progress {
-            Some(fetch) => vec![
-                div()
-                    .max_w(space(56.))
-                    .truncate()
-                    .text_size(theme::size::XS)
-                    .text_color(t.muted_foreground)
-                    .child(describe_progress(fetch))
-                    .into_any_element(),
-                widgets::button("meaning-stop", t!("Stop"), None)
-                    .on_click(cx.listener(|this, _, _, _| this.cancel("meaning")))
-                    .into_any_element(),
-            ],
-            None if english => vec![widgets::button("meaning-remove", t!("Remove"), None)
-                .on_click(cx.listener(|this, _, window, cx| this.remove_meaning(false, window, cx)))
-                .into_any_element()],
-            None => vec![
-                widgets::primary_button("meaning-download", t!("Download"), Some(IconName::Download))
-                    .tooltip(t!(
-                        "Downloads it from Hugging Face and checks it against its pinned checksum"
-                    ))
-                    .on_click(cx.listener(|this, _, window, cx| this.install_meaning(false, window, cx)))
-                    .into_any_element(),
-            ],
-        };
-        widgets::setting_row(t!("Meaning model (potion-base-8M)"), Some(hint), controls, t).into_any_element()
-    }
-
-    /// The 101-language meaning model's row (`MultilingualRow`).
-    fn multilingual_row(&self, cx: &mut Context<Self>, t: &theme::Tokens) -> AnyElement {
-        let (_, multilingual) = self.meaning;
-        let hint = if multilingual {
-            t!("Meaning search in Arabic, Chinese, Spanish and 98 more (Model2Vec, 512 MB to download, 130 MB in memory, MIT) · Downloaded: meaning search uses it")
-        } else {
-            t!("Meaning search in Arabic, Chinese, Spanish and 98 more (Model2Vec, 512 MB to download, 130 MB in memory, MIT) · Not downloaded")
-        };
-        let controls = if self.meaning_progress.is_some() {
-            Vec::new()
-        } else if multilingual {
-            vec![widgets::button("multilingual-remove", t!("Remove"), None)
-                .on_click(cx.listener(|this, _, window, cx| this.remove_meaning(true, window, cx)))
-                .into_any_element()]
-        } else {
-            vec![
-                widgets::button("multilingual-download", t!("Download"), Some(IconName::Download))
-                    .tooltip(t!(
-                        "Downloads it from Hugging Face and checks it against its pinned checksums"
-                    ))
-                    .on_click(cx.listener(|this, _, window, cx| this.install_meaning(true, window, cx)))
-                    .into_any_element(),
-            ]
-        };
-        widgets::setting_row(
-            t!("Meaning in 101 languages (potion-multilingual-128M)"),
-            Some(hint),
-            controls,
-            t,
-        )
-        .into_any_element()
-    }
 }
 
 impl Render for Tools {
@@ -484,8 +285,6 @@ impl Render for Tools {
         for tool in &tools {
             rows.push(self.tool_row(tool, cx, &t));
         }
-        rows.push(self.meaning_row(cx, &t));
-        rows.push(self.multilingual_row(cx, &t));
         rows.push(
             widgets::note(
                 t!("ripgrep, fd and pdu come with Glint. Other tools install when a feature needs them, for your account only: with winget, or from the tool's own GitHub release, which Glint checks against the checksum it knows for it before unpacking anything."),
@@ -573,38 +372,4 @@ pub fn needed(tools: &Entity<Tools>, id: &str, why: SharedString, icon_name: Ico
             .children(controls)
             .into_any_element(),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::testing;
-
-    #[test]
-    fn the_meaning_models_say_what_they_did_in_the_web_apps_words() {
-        let _guard = testing::lock();
-        assert_eq!(
-            meaning_downloaded(false),
-            (
-                SharedString::from("The meaning model is downloaded"),
-                SharedString::from("Meaning search ranks passages by what they're about.")
-            )
-        );
-        assert_eq!(
-            meaning_downloaded(true),
-            (
-                SharedString::from("The 101-language meaning model is downloaded"),
-                SharedString::from("Meaning search reads Arabic, Chinese, Spanish and 98 more languages now.")
-            )
-        );
-        assert_eq!(meaning_download_failed(false), "Couldn't download the meaning model");
-        assert_eq!(
-            meaning_download_failed(true),
-            "Couldn't download the 101-language model"
-        );
-        assert_eq!(meaning_removed(false), "The meaning model is removed");
-        assert_eq!(meaning_removed(true), "The 101-language model is removed");
-        assert_eq!(meaning_remove_failed(false), "Couldn't remove the meaning model");
-        assert_eq!(meaning_remove_failed(true), "Couldn't remove the 101-language model");
-    }
 }

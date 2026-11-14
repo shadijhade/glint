@@ -1,5 +1,5 @@
 //! Media studio: FFmpeg (a tool Glint installs) trims, converts, shrinks to a size, takes the sound out
-//! of and makes GIFs of videos and recordings, and whisper.cpp (speech search's) writes their
+//! of and makes GIFs of videos and recordings, and whisper.cpp (whisper.rs) writes their
 //! subtitles; and a video WebView2 can't play is remuxed (or, when its codec is the problem, converted)
 //! into a copy it can, for the preview and Quick Look. Each action runs through actions.rs, so what's
 //! made lands beside the originals (or in their place) and Undo takes it back.
@@ -244,8 +244,8 @@ pub async fn media_run(window: Window, files: Vec<String>, task: Task, output: O
     STOP.store(false, Ordering::SeqCst);
     blocking(move || {
         ffmpeg()?;
-        if matches!(task, Task::Subtitles { .. }) && !crate::speech::installed() {
-            return Err("Subtitles need speech search's model: turn on speech search in Settings → Search, or install it from here.".into());
+        if matches!(task, Task::Subtitles { .. }) && !crate::whisper::installed() {
+            return Err("Subtitles need whisper.cpp and its model: install them from here.".into());
         }
         let jobs: Vec<Job> = files.iter().map(Job::one).collect();
         // Videos keep the CPU (or the GPU) busy on their own: one at a time; sounds, a few.
@@ -563,7 +563,7 @@ fn subtitles(file: &Path, info: &Probe, translate: bool, part: &(dyn Fn(f32) + S
     let mut command = base()?;
     command.arg("-i").arg(file).args(["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]).arg(&wav);
     run(command, info.duration, &|p| part(p * 0.1))?;
-    let model = crate::speech::model_path().ok_or("Speech search's model isn't installed")?;
+    let model = crate::whisper::model_path().ok_or("Whisper's model isn't installed")?;
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
     let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "subtitles".into());
     let base_out = work.join(&stem);

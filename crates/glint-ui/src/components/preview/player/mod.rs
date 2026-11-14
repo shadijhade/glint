@@ -1,4 +1,4 @@
-//! Video and audio played with Media Foundation, with Trim, the waveform, the transcript and scrubbing
+//! Video and audio played with Media Foundation, with Trim, the waveform and scrubbing
 //! (`VideoPreview` and `AudioPreview` of FilePreview.tsx, Waveform.tsx, VideoScrub.tsx; previews-native.md
 //! section 10, approach A).
 //!
@@ -8,7 +8,6 @@
 //! | `onError` and `CantPlay`                    | the engine's [`Event::Failed`] and `media_tools::cant_play` |
 //! | `TrimBar` under the player                  | `media_tools::trim_bar`, wired to the engine here           |
 //! | `Waveform`                                  | [`wave`]: Media Foundation decodes, [`PlayerView`] draws    |
-//! | `Transcript`                                | [`transcript::Transcript`]                                  |
 //! | `VideoScrub` over a grid tile               | [`scrub::Scrub`]                                            |
 //!
 //! **How it plays.** The engine is Media Foundation's `IMFMediaEngine` in frame-server mode, on a thread of its
@@ -26,7 +25,8 @@
 //! Left and Right arrows seek 5 seconds (the way the bar points: they swap in Arabic), J and L 10; Up and Down the
 //! volume; M mutes; Home and End go to the start and the end. On the volume slider the arrows change the volume.
 //! Click the picture to play and pause. The keys are bound by [`bind_keys`] (the first view made does it) in the
-//! contexts `"Player"`, `"PlayerVolume"` and `"Transcript"`, deeper than Quick Look's, so they win there. Not
+//! contexts `"Player"` and `"PlayerVolume"`, deeper than Quick Look's, so they win there. (The transcript of what
+//! speech search heard went with speech search in 0.12.) Not
 //! ported: the browser's fullscreen button (Quick Look's Maximize is the way to a bigger player).
 //!
 //! # Wiring (for the preview pane)
@@ -38,8 +38,6 @@
 //!   take this arm too (the fallback for them is `Body::Icon` today).
 //! - **When the selection moves.** The frame builds a new body for a new file and drops the old one, which stops
 //!   it; nothing is called. (A body kept for the same file needs nothing either.)
-//! - **Quick Look's Page Up and Down.** `page_of!(…, PlayerView)` in `EntryView::page_body`: [`PlayerView::page`]
-//!   scrolls the transcript when it has one.
 //! - **Frames.** Call [`release_retired`] from the pane's render beside `picture::release_retired`: it lets the
 //!   pictures of views that have gone go of the GPU.
 //! - **The grid.** A tile that shows a video lays a [`scrub::Scrub`] over itself (see its notes).
@@ -52,17 +50,14 @@ pub mod scrub;
 pub mod sources;
 #[cfg(test)]
 mod tests;
-pub mod transcript;
 pub mod wave;
 
 pub use engine::{Command, Engine, Event, Facts, Frame, Kind, Opened};
 pub use scrub::Scrub;
-pub use sources::{init_with, player_sources, Heard, PlayerSources};
-pub use transcript::{Transcript, TranscriptEvent};
+pub use sources::{init_with, player_sources, PlayerSources};
 
 use super::states::{centered, Waiting};
 use crate::dialogs::media_tools::{self, CantPlay, CantPlayEvent, TrimBar, TrimEvent};
-use crate::explorer;
 use crate::kit::prelude::*;
 use crate::{i18n, t, theme};
 use engine::{across, clock, next_speed, speed_label};
@@ -75,7 +70,6 @@ use gpui_kit::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
-use transcript::says_words;
 
 actions!(
     glint_player,
@@ -92,9 +86,6 @@ actions!(
         ToggleMute,
         ToStart,
         ToEnd,
-        RowUp,
-        RowDown,
-        RowPlay,
     ]
 );
 
@@ -138,7 +129,6 @@ pub fn bind_keys(cx: &mut App) {
     cx.set_global(Bound);
     let player = Some("Player");
     let volume = Some("PlayerVolume");
-    let rows = Some("Transcript");
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, player),
         KeyBinding::new("k", TogglePlay, player),
@@ -156,10 +146,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", VolumeUp, volume),
         KeyBinding::new("down", VolumeDown, volume),
         KeyBinding::new("m", ToggleMute, volume),
-        KeyBinding::new("up", RowUp, rows),
-        KeyBinding::new("down", RowDown, rows),
-        KeyBinding::new("enter", RowPlay, rows),
-        KeyBinding::new("space", RowPlay, rows),
     ]);
 }
 
@@ -224,7 +210,6 @@ pub struct PlayerView {
     trim: Option<Entity<TrimBar>>,
     /// Where the engine was last told to pause by itself.
     stop_sent: Option<f64>,
-    transcript: Option<Entity<Transcript>>,
     tasks: Vec<Task<()>>,
     _events: Option<Task<()>>,
     _card: Option<Subscription>,
@@ -259,23 +244,6 @@ impl PlayerView {
             subscriptions.push(cx.subscribe(trim, |this, _, event: &TrimEvent, cx| this.trim_asked(event, cx)));
             subscriptions.push(cx.observe(trim, |this, _, cx| this.sync_stop(cx)));
         }
-        let transcript = local.then(|| cx.new(|cx| Transcript::new(entry.path.clone(), says_of(cx), cx)));
-        if let Some(transcript) = &transcript {
-            subscriptions.push(cx.subscribe(transcript, |this, _, event: &TranscriptEvent, cx| {
-                let TranscriptEvent::Play(seconds) = event;
-                this.seek(*seconds, cx);
-                this.play(cx);
-            }));
-            // `says:` in the search changes what is marked.
-            if let Some(explorer) = explorer::try_explorer(cx) {
-                subscriptions.push(cx.observe(&explorer, |this, _, cx| {
-                    let words = says_of(cx);
-                    if let Some(transcript) = &this.transcript {
-                        transcript.update(cx, |transcript, cx| transcript.set_words(words, cx));
-                    }
-                }));
-            }
-        }
         let mut view = PlayerView {
             kind,
             local,
@@ -309,7 +277,6 @@ impl PlayerView {
             waiting_card,
             trim,
             stop_sent: None,
-            transcript,
             tasks: Vec::new(),
             _events: None,
             _card: None,
@@ -400,19 +367,6 @@ impl PlayerView {
     /// The Trim bar (a file on this PC's disk has one).
     pub fn trim(&self) -> Option<&Entity<TrimBar>> {
         self.trim.as_ref()
-    }
-
-    /// The transcript (a file on this PC's disk has one; it shows nothing until speech search has heard it).
-    pub fn transcript(&self) -> Option<&Entity<Transcript>> {
-        self.transcript.as_ref()
-    }
-
-    /// Page Down and Page Up in Quick Look: the transcript scrolls a page. Returns whether it moved.
-    pub fn page(&mut self, down: bool, cx: &mut Context<Self>) -> bool {
-        match &self.transcript {
-            Some(transcript) => transcript.update(cx, |transcript, cx| transcript.page(down, cx)),
-            None => false,
-        }
     }
 
     // ---- Starting --------------------------------------------------------------------------------------
@@ -793,21 +747,6 @@ impl Drop for PlayerView {
     }
 }
 
-/// The words `says:` searched for in the active tab's search (`useExplorer(...find.query)`).
-fn says_of(cx: &App) -> String {
-    let Some(explorer) = explorer::try_explorer(cx) else {
-        return String::new();
-    };
-    let explorer = explorer.read(cx);
-    let tab = explorer
-        .panes()
-        .get(explorer.active_pane())
-        .and_then(|pane| explorer.tab(pane.active));
-    tab.and_then(|tab| tab.find.as_ref())
-        .map(|find| says_words(&find.query))
-        .unwrap_or_default()
-}
-
 // ---- Drawing ---------------------------------------------------------------------------------------------
 
 impl Render for PlayerView {
@@ -887,11 +826,6 @@ impl Render for PlayerView {
                 self.trim
                     .clone()
                     .map(|trim| div().w_full().flex().justify_center().child(trim)),
-            )
-            .children(
-                self.transcript
-                    .clone()
-                    .map(|transcript| div().w_full().flex().justify_center().child(transcript)),
             )
             .into_any_element()
     }

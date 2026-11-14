@@ -294,7 +294,6 @@ impl EntryView {
             SheetPreview,
             NotebookView,
             ProgramPreview,
-            PlayerView,
             PdfView,
             BookView,
             DocxView,
