@@ -8,7 +8,7 @@ over the Tauri build in place: same folder, same registry keys, same shortcuts, 
 ## Build it
 
 ```
-npm run gpui:installer                      # cargo build --release -p glint, gather, makensis
+npm run installer                           # cargo build --release -p glint, gather, makensis
 node scripts/gpui-installer.mjs --dry-run   # check what it packs and print the makensis command; builds nothing
 ```
 
