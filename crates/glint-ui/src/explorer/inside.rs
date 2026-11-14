@@ -268,7 +268,8 @@ fn parse_line(line: &str) -> Option<Said> {
                 text: d.lines.and_then(|l| l.text),
                 line_number: d.line_number,
                 hits,
-                label: d.label,
+                // An empty label says nothing: the line is shown by its number.
+                label: d.label.filter(|label| !label.is_empty()),
             }]))
         }
         "summary" => Some(Said::Summary {
@@ -756,6 +757,22 @@ mod tests {
         assert!(!can_search_inside(THIS_PC));
         assert!(inside_unasked("C:\\Users\\me"));
         assert!(!inside_unasked("D:\\"), "a whole drive waits to be asked");
+    }
+
+    #[test]
+    fn an_empty_label_leaves_the_line_shown_by_its_number() {
+        let line = r#"{"type":"match","data":{"path":{"text":"C:\\a\\alpha.txt"},"lines":{"text":"the needle\n"},"line_number":2,"label":"","submatches":[{"match":{"text":"needle"},"start":4,"end":10}]}}"#;
+        let event = RawEvent {
+            id: "a".into(),
+            kind: "data".into(),
+            lines: vec![line.into()],
+        };
+        let said = parse(&event);
+        let Said::Matches(matches) = &said[0] else {
+            panic!("a match")
+        };
+        let hit = matches[0].hit();
+        assert_eq!((hit.line, hit.label), (Some(2), None));
     }
 
     #[test]
