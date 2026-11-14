@@ -486,26 +486,33 @@ fn complete(path: &str) -> bool {
     std::fs::OpenOptions::new().read(true).share_mode(1).open(path).is_ok()
 }
 
-/// Each half second: files that are complete now go to the first rule that takes them.
+/// Each half second: files that are complete now go to the first rule that takes them. They're looked at on the
+/// disk with the engine unlocked (a slow drive doesn't hold up the watchers' reports).
 fn tick() {
-    let ready: Vec<String> = {
+    let waiting: Vec<(String, u64, Instant)> = {
         let mut engine = engine();
-        let mut ready = Vec::new();
-        let mut moved = Vec::new();
-        for (path, (size, since)) in engine.pending.iter() {
-            match std::fs::metadata(path) {
-                Ok(m) if m.len() != *size => moved.push((path.clone(), m.len())),
-                Ok(_) if since.elapsed() >= SETTLE => ready.push(path.clone()),
-                Ok(_) => {}
-                Err(_) => ready.push(path.clone()),
+        engine.made.retain(|_, t| t.elapsed() < MADE);
+        engine.pending.iter().map(|(path, (size, since))| (path.clone(), *size, *since)).collect()
+    };
+    let mut ready = Vec::new();
+    let mut moved = Vec::new();
+    for (path, size, since) in waiting {
+        match std::fs::metadata(&path) {
+            Ok(m) if m.len() != size => moved.push((path, m.len())),
+            Ok(_) if since.elapsed() >= SETTLE => ready.push(path),
+            Ok(_) => {}
+            Err(_) => ready.push(path),
+        }
+    }
+    if !moved.is_empty() {
+        let mut engine = engine();
+        for (path, size) in moved {
+            // Only a file still waiting: one the watchers dropped meanwhile stays dropped.
+            if let Some(waiting) = engine.pending.get_mut(&path) {
+                *waiting = (size, Instant::now());
             }
         }
-        for (path, size) in moved {
-            engine.pending.insert(path, (size, Instant::now()));
-        }
-        engine.made.retain(|_, t| t.elapsed() < MADE);
-        ready
-    };
+    }
     let mut did = false;
     for path in ready {
         if !complete(&path) {
@@ -548,8 +555,9 @@ fn sweep() {
     }
 }
 
-/// The timers rules run on, from when one is first turned on: with none, Glint doesn't wake for them.
-static TIMERS: Once = Once::new();
+/// The timers' thread is running. It runs while a rule is on (or a file it saw still waits): with none, Glint
+/// doesn't wake for rules.
+static TIMERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn start(app: &AppHandle) {
     engine().app = Some(app.clone());
@@ -563,21 +571,38 @@ fn start(app: &AppHandle) {
     });
 }
 
+/// Starts the timers' thread unless it runs: every half second the files waiting, every 2 s the sync rules, every
+/// hour the rules for old files. It ends once no rule is on and nothing waits; turning one on starts it again.
 fn start_timers() {
-    TIMERS.call_once(|| {
-        std::thread::spawn(|| loop {
-            std::thread::sleep(Duration::from_millis(500));
-            tick();
-        });
-        std::thread::spawn(|| loop {
-            std::thread::sleep(Duration::from_secs(3600));
-            sweep();
-        });
+    use std::sync::atomic::Ordering;
+    if TIMERS.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
         let started = Instant::now();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(2));
-            sync_tick(started);
-        });
+        let (mut synced, mut swept) = (started, started);
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+            {
+                // Told and ended under the engine's lock, which set_rules holds to store the rules it then starts
+                // the timers for: a rule turned on as this ends always finds the thread to start again.
+                let engine = engine();
+                let idle = !engine.rules.iter().any(|r| r.on) && engine.pending.is_empty() && !engine.syncs.values().any(|s| s.running);
+                if idle {
+                    TIMERS.store(false, Ordering::SeqCst);
+                    return;
+                }
+            }
+            tick();
+            if synced.elapsed() >= Duration::from_secs(2) {
+                synced = Instant::now();
+                sync_tick(started);
+            }
+            if swept.elapsed() >= Duration::from_secs(3600) {
+                swept = Instant::now();
+                sweep();
+            }
+        }
     });
 }
 
@@ -599,9 +624,6 @@ pub async fn rules_set(app: AppHandle, rules: Vec<Rule>) -> Result<(), String> {
 
 fn set_rules(app: &AppHandle, rules: Vec<Rule>, latest: impl Fn() -> bool) {
     start(app);
-    if rules.iter().any(|r| r.on) {
-        start_timers();
-    }
     let mut watchers = Vec::new();
     let mut folders = HashSet::new();
     for rule in rules.iter().filter(|r| r.on && check(r).is_ok()) {
@@ -626,6 +648,11 @@ fn set_rules(app: &AppHandle, rules: Vec<Rule>, latest: impl Fn() -> bool) {
     if latest() {
         engine.watchers = watchers;
         engine.rules = rules;
+        // Started once the rules are where the timers look for them.
+        if engine.rules.iter().any(|r| r.on) {
+            drop(engine);
+            start_timers();
+        }
     }
 }
 
