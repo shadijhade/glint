@@ -48,7 +48,7 @@ pub fn on_core<T: Send + 'static>(future: impl Future<Output = Result<T, String>
 
 /// The main window core's calls take as their owner, or why there is none.
 pub fn main_window(app: &glint_core::host::AppHandle) -> Result<glint_core::host::Window, String> {
-    app.get_webview_window(crate::workspace::MAIN)
+    app.window(crate::workspace::MAIN)
         .ok_or_else(|| t!("Glint's window isn't open").to_string())
 }
 

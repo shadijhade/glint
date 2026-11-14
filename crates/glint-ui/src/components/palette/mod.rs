@@ -689,7 +689,7 @@ fn show_properties(path: String, cx: &mut App) {
     use glint_core::host::Manager as _;
     let Some(main) = cx
         .try_global::<core_bridge::Core>()
-        .and_then(|core| core.app.get_webview_window(crate::workspace::MAIN))
+        .and_then(|core| core.app.window(crate::workspace::MAIN))
     else {
         return;
     };

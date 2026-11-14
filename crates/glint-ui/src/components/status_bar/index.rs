@@ -161,7 +161,7 @@ impl Source {
                 let app = for_enable.clone();
                 Box::pin(async move {
                     let window = app
-                        .get_webview_window(crate::workspace::MAIN)
+                        .window(crate::workspace::MAIN)
                         .ok_or_else(|| t!("Glint's window isn't open").to_string())?;
                     glint_core::index::index_enable(window)
                         .await

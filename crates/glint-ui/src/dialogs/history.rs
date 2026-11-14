@@ -217,7 +217,7 @@ pub fn core_source(app: AppHandle) -> Source {
             let app = enable_app.clone();
             Box::pin(async move {
                 let window = app
-                    .get_webview_window("main")
+                    .window("main")
                     .ok_or_else(|| "the main window isn't registered".to_string())?;
                 glint_core::index::index_enable(window).await.map(|_| ())
             })

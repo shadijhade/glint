@@ -1,10 +1,8 @@
-//! The little of Tauri that Glint's Rust used, rebuilt without Tauri, so the modules moved from
-//! src-tauri keep their code: `tauri::` becomes `crate::host::` and nothing else has to change.
-//!
-//! The GPUI app makes one [`AppHandle`] at start with two hooks: where events go (the UI subscribes to
-//! them) and how to run something on the UI thread. Commands become plain functions; their
-//! `Channel`s are callbacks the caller passes in; `State` is what the app registered with `manage`.
-//! Window-specific calls go through [`Window`], which the UI registers for each of its windows.
+//! The engine's side of the app: one [`AppHandle`], which the window makes at start with its hooks: where
+//! [`Event`]s go (the window subscribes to them), how to run something on the UI thread, and how to quit.
+//! Long jobs report through [`ipc::Channel`]s, callbacks the caller passes in; `State` is what the app
+//! registered with `manage`. Window-specific calls go through [`Window`], which the window registers for each
+//! of its windows. Everything crosses as Rust values: nothing is encoded on the way.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -156,7 +154,8 @@ impl<T: Send + Sync + 'static> Clone for State<'_, T> {
     }
 }
 
-/// Where Tauri put an app's folders on Windows, for [`identifier`] (`IDENTIFIER`, or the Store copy's).
+/// Where the app's folders are on Windows, named for [`identifier`] (`IDENTIFIER`, or the Store copy's), as
+/// copies before 0.10 made them.
 pub struct PathResolver;
 
 impl PathResolver {
@@ -182,7 +181,7 @@ pub struct PackageInfo {
     pub version: String,
 }
 
-/// The calls modules made on the app handle (Tauri's `Manager`), so `use crate::host::Manager` keeps working.
+/// What modules ask of the app handle: its states, windows, folders and name.
 pub trait Manager {
     fn app_handle(&self) -> &AppHandle;
 
@@ -209,11 +208,12 @@ pub trait Manager {
             .unwrap_or_else(|| panic!("state {} wasn't registered with manage()", std::any::type_name::<T>()))
     }
 
-    fn get_webview_window(&self, label: &str) -> Option<Window> {
+    /// The window the UI registered as `label` ("main", "quick"…).
+    fn window(&self, label: &str) -> Option<Window> {
         self.app_handle().0.windows.read().ok()?.get(label).cloned()
     }
 
-    fn webview_windows(&self) -> HashMap<String, Window> {
+    fn windows(&self) -> HashMap<String, Window> {
         self.app_handle().0.windows.read().map(|w| w.clone()).unwrap_or_default()
     }
 
@@ -273,8 +273,6 @@ pub struct Window {
     focus: Arc<WindowCall>,
     scale: Arc<dyn Fn() -> f64 + Send + Sync>,
 }
-
-pub type WebviewWindow = Window;
 
 impl Window {
     /// Made by the UI for each window it opens; `show` and `focus` act for it.
@@ -361,14 +359,13 @@ pub mod previews {
     }
 }
 
-/// Commands' channels and binary answers.
+/// Long jobs' channels.
 pub mod ipc {
-    use super::{Error, Result};
+    use super::Result;
     use std::sync::Arc;
 
     /// A stream of `T` from a long job to whoever started it (progress, results as they come).
-    /// Without a type it carries JSON or bytes, as Tauri's untyped channels did.
-    pub struct Channel<T = InvokeResponseBody>(Arc<dyn Fn(T) -> Result<()> + Send + Sync>);
+    pub struct Channel<T>(Arc<dyn Fn(T) -> Result<()> + Send + Sync>);
 
     impl<T> Channel<T> {
         pub fn new(on_message: impl Fn(T) -> Result<()> + Send + Sync + 'static) -> Self {
@@ -388,33 +385,6 @@ pub mod ipc {
     impl<T> Clone for Channel<T> {
         fn clone(&self) -> Self {
             Self(self.0.clone())
-        }
-    }
-
-    /// Bytes a command answered with (listings, thumbnails): the GPUI side reads them directly.
-    #[derive(Debug, Clone, Default)]
-    pub struct Response(pub Vec<u8>);
-
-    impl Response {
-        pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
-            Self(bytes.into())
-        }
-
-        pub fn into_bytes(self) -> Vec<u8> {
-            self.0
-        }
-    }
-
-    /// What a raw channel carried in Tauri: JSON text or bytes.
-    #[derive(Debug, Clone)]
-    pub enum InvokeResponseBody {
-        Json(String),
-        Raw(Vec<u8>),
-    }
-
-    impl From<Error> for InvokeResponseBody {
-        fn from(error: Error) -> Self {
-            Self::Json(serde_json::Value::String(error.0).to_string())
         }
     }
 }
