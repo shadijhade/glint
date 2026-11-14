@@ -477,18 +477,7 @@ impl Source for CoreSource {
 
     fn new_kinds(&self) -> Fut<Result<Vec<NewKind>, String>> {
         let running = core_bridge::run(glint_core::newmenu::new_kinds());
-        Box::pin(async move {
-            Ok(running
-                .await??
-                .into_iter()
-                .map(|kind| NewKind {
-                    ext: kind.ext,
-                    name: kind.name,
-                    icon: kind.icon,
-                    by_app: kind.by_app,
-                })
-                .collect())
-        })
+        Box::pin(async move { running.await? })
     }
 
     fn new_file(&self, folder: &str, ext: &str) -> Fut<Result<Option<String>, String>> {

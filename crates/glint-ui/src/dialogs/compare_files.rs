@@ -155,46 +155,8 @@ fn is_picture(path: &str) -> bool {
 /// A boxed answer from glint-core (or a fake).
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
-/// A window of both files' bytes (`BytesWindow`): their sizes and the bytes from the same offset.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct BytesWindow {
-    pub left_size: u64,
-    pub right_size: u64,
-    pub left: Vec<u8>,
-    pub right: Vec<u8>,
-}
-
-/// Reads glint-core's `compare_bytes` answer: both sizes (u64), both lengths (u32), then the bytes, all
-/// little-endian.
-pub fn parse_bytes_answer(answer: &[u8]) -> Result<BytesWindow, String> {
-    let short = || "The bytes came back cut short".to_string();
-    let u64_at = |at: usize| {
-        answer
-            .get(at..at + 8)
-            .and_then(|b| <[u8; 8]>::try_from(b).ok())
-            .map(u64::from_le_bytes)
-    };
-    let u32_at = |at: usize| {
-        answer
-            .get(at..at + 4)
-            .and_then(|b| <[u8; 4]>::try_from(b).ok())
-            .map(u32::from_le_bytes)
-    };
-    let (left_size, right_size) = (u64_at(0).ok_or_else(short)?, u64_at(8).ok_or_else(short)?);
-    let left_len = usize::try_from(u32_at(16).ok_or_else(short)?).map_err(|e| e.to_string())?;
-    let right_len = usize::try_from(u32_at(20).ok_or_else(short)?).map_err(|e| e.to_string())?;
-    let left = answer.get(24..24 + left_len).ok_or_else(short)?.to_vec();
-    let right = answer
-        .get(24 + left_len..24 + left_len + right_len)
-        .ok_or_else(short)?
-        .to_vec();
-    Ok(BytesWindow {
-        left_size,
-        right_size,
-        left,
-        right,
-    })
-}
+/// A window of both files' bytes: their sizes and the bytes from the same offset.
+pub use glint_core::filediff::BytesWindow;
 
 /// What the dialog asks of glint-core: glint-core in the app ([`CoreBackend`]), a fake in tests.
 pub trait Backend: Send + Sync + 'static {
@@ -245,10 +207,7 @@ impl Backend for CoreBackend {
 
     fn bytes(&self, left: &str, right: &str, offset: u64, len: u32) -> Fut<BytesWindow> {
         let (left, right) = (left.to_string(), right.to_string());
-        Box::pin(async move {
-            let answer = glint_core::filediff::compare_bytes(left, right, offset, len).await?;
-            parse_bytes_answer(&answer.into_bytes())
-        })
+        Box::pin(glint_core::filediff::compare_bytes(left, right, offset, len))
     }
 
     fn next_difference(&self, left: &str, right: &str, from: u64) -> Fut<Option<u64>> {
@@ -4690,28 +4649,6 @@ mod tests {
             "no byte on the other side differs"
         );
         assert!(differing(&[], &[1]).is_empty());
-    }
-
-    #[test]
-    fn the_bytes_answer_is_read_and_a_short_one_is_refused() {
-        let mut answer = Vec::new();
-        answer.extend(10u64.to_le_bytes());
-        answer.extend(20u64.to_le_bytes());
-        answer.extend(2u32.to_le_bytes());
-        answer.extend(3u32.to_le_bytes());
-        answer.extend([1, 2, 7, 8, 9]);
-        let window = parse_bytes_answer(&answer).expect("a whole answer");
-        assert_eq!(
-            window,
-            BytesWindow {
-                left_size: 10,
-                right_size: 20,
-                left: vec![1, 2],
-                right: vec![7, 8, 9]
-            }
-        );
-        assert!(parse_bytes_answer(&answer[..answer.len() - 1]).is_err());
-        assert!(parse_bytes_answer(&[]).is_err());
     }
 
     #[test]

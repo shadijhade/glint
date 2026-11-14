@@ -478,35 +478,28 @@ fn read_at(path: &str, offset: u64, len: usize) -> Result<(u64, Vec<u8>), String
     Ok((size, bytes))
 }
 
-/// `len` bytes of each file from `offset` (at most 1 MB), for the hex view: both sizes (u64), both
-/// lengths (u32), then the bytes, little-endian.
-pub async fn compare_bytes(left: String, right: String, offset: u64, len: u32) -> Result<crate::host::ipc::Response, String> {
+/// A window of both files' bytes: their sizes, and their bytes from the same offset.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BytesWindow {
+    pub left_size: u64,
+    pub right_size: u64,
+    pub left: Vec<u8>,
+    pub right: Vec<u8>,
+}
+
+/// `len` bytes of each file from `offset` (at most 1 MB), for the hex view.
+pub async fn compare_bytes(left: String, right: String, offset: u64, len: u32) -> Result<BytesWindow, String> {
     blocking(move || {
         let len = len.min(1 << 20) as usize;
-        let ((left_size, left_bytes), (right_size, right_bytes)) = (read_at(&left, offset, len)?, read_at(&right, offset, len)?);
-        let mut out = Vec::with_capacity(24 + left_bytes.len() + right_bytes.len());
-        out.extend(left_size.to_le_bytes());
-        out.extend(right_size.to_le_bytes());
-        out.extend((left_bytes.len() as u32).to_le_bytes());
-        out.extend((right_bytes.len() as u32).to_le_bytes());
-        out.extend(left_bytes);
-        out.extend(right_bytes);
-        Ok(crate::host::ipc::Response::new(out))
+        let ((left_size, left), (right_size, right)) = (read_at(&left, offset, len)?, read_at(&right, offset, len)?);
+        Ok(BytesWindow { left_size, right_size, left, right })
     })
     .await
 }
 
-/// `len` bytes of a file from `offset` (at most 1 MB), for the preview's hex view: its size (u64,
-/// little-endian), then the bytes.
-pub async fn file_bytes(path: String, offset: u64, len: u32) -> Result<crate::host::ipc::Response, String> {
-    blocking(move || {
-        let (size, bytes) = read_at(&path, offset, len.min(1 << 20) as usize)?;
-        let mut out = Vec::with_capacity(8 + bytes.len());
-        out.extend(size.to_le_bytes());
-        out.extend(bytes);
-        Ok(crate::host::ipc::Response::new(out))
-    })
-    .await
+/// `len` bytes of a file from `offset` (at most 1 MB), for the preview's hex view, and its size.
+pub async fn file_bytes(path: String, offset: u64, len: u32) -> Result<(u64, Vec<u8>), String> {
+    blocking(move || read_at(&path, offset, len.min(1 << 20) as usize)).await
 }
 
 /// The first offset at or after `from` where the files differ (a byte, or one ending before the

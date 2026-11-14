@@ -2,9 +2,8 @@
 //! is at across it (ten frames, read as the pointer arrives), with where that is below (`VideoScrub` of
 //! VideoScrub.tsx).
 //!
-//! glint-core's `video_frames` reads the frames with Media Foundation's source reader and answers one buffer:
-//! `u32` count, width, height, `f64` seconds, then each frame's RGBA rows. [`parse_frames`] turns that into
-//! pictures in GPUI's BGRA, on a background thread. The frames of the last few videos are kept
+//! glint-core's `video_frames` reads the frames with Media Foundation's source reader, in the BGRA GPUI draws;
+//! [`frames_of`] makes each a picture, on a background thread. The frames of the last few videos are kept
 //! ([`BUDGET`] bytes of them) so running the pointer over a tile again is at once.
 //!
 //! **Using it.** A tile that shows a video puts a [`Scrub`] over itself (`cx.new(|cx| Scrub::new(path, width,
@@ -54,24 +53,22 @@ impl Frames {
     }
 }
 
-/// `video_frames`' answer as pictures; `None` for anything that isn't one.
-pub fn parse_frames(bytes: &[u8]) -> Option<Frames> {
-    let int = |at: usize| -> Option<u32> { Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?)) };
-    let (count, width, height) = (int(0)? as usize, int(4)?, int(8)?);
-    let seconds = f64::from_le_bytes(bytes.get(12..20)?.try_into().ok()?);
+/// `video_frames`' answer as pictures; `None` when there are none, or one isn't the size they say.
+pub fn frames_of(video: glint_core::scrub::VideoFrames) -> Option<Frames> {
+    let glint_core::scrub::VideoFrames {
+        width,
+        height,
+        seconds,
+        frames,
+    } = video;
+    let count = frames.len();
     let one = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
-    if count == 0 || count > 64 || one == 0 || bytes.len() != 20usize.checked_add(one.checked_mul(count)?)? {
+    if count == 0 || count > 64 || one == 0 || frames.iter().any(|frame| frame.len() != one) {
         return None;
     }
-    let images = bytes[20..]
-        .chunks_exact(one)
-        .map(|rgba| {
-            let mut bgra = rgba.to_vec();
-            for pixel in bgra.as_chunks_mut::<4>().0 {
-                pixel.swap(0, 2);
-            }
-            super::mf::bgra_image(width, height, bgra)
-        })
+    let images = frames
+        .into_iter()
+        .map(|bgra| super::mf::bgra_image(width, height, bgra))
         .collect::<Option<Vec<_>>>()?;
     Some(Frames {
         count,
@@ -321,24 +318,21 @@ impl Render for Scrub {
 mod tests {
     use super::*;
 
-    fn buffer(count: u32, width: u32, height: u32, seconds: f64) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        for n in [count, width, height] {
-            bytes.extend_from_slice(&n.to_le_bytes());
+    fn video(count: u32, width: u32, height: u32, seconds: f64) -> glint_core::scrub::VideoFrames {
+        glint_core::scrub::VideoFrames {
+            width,
+            height,
+            seconds,
+            // BGRA: red grows with the frame.
+            frames: (0..count)
+                .map(|frame| [30, 20, frame as u8 * 10, 255].repeat((width * height) as usize))
+                .collect(),
         }
-        bytes.extend_from_slice(&seconds.to_le_bytes());
-        for frame in 0..count {
-            for _ in 0..width * height {
-                // RGBA: red grows with the frame.
-                bytes.extend_from_slice(&[frame as u8 * 10, 20, 30, 255]);
-            }
-        }
-        bytes
     }
 
     #[test]
-    fn the_buffer_core_answers_becomes_bgra_pictures() {
-        let frames = parse_frames(&buffer(10, 4, 2, 125.5)).expect("frames");
+    fn the_frames_core_answers_become_pictures_as_they_are() {
+        let frames = frames_of(video(10, 4, 2, 125.5)).expect("frames");
         assert_eq!((frames.count, frames.width, frames.height), (10, 4, 2));
         assert_eq!(frames.seconds, 125.5);
         assert_eq!(frames.images.len(), 10);
@@ -347,20 +341,20 @@ mod tests {
     }
 
     #[test]
-    fn a_buffer_of_the_wrong_length_or_shape_is_nothing() {
-        let good = buffer(2, 2, 2, 1.);
-        assert!(parse_frames(&good[..good.len() - 1]).is_none());
-        assert!(parse_frames(&good[..19]).is_none());
-        assert!(parse_frames(&buffer(0, 2, 2, 1.)).is_none());
-        assert!(parse_frames(&buffer(2, 0, 2, 1.)).is_none());
-        let mut huge = buffer(2, 2, 2, 1.);
-        huge[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(parse_frames(&huge).is_none());
+    fn frames_of_the_wrong_size_or_none_at_all_are_nothing() {
+        let mut short = video(2, 2, 2, 1.);
+        short.frames[1].pop();
+        assert!(frames_of(short).is_none());
+        assert!(frames_of(video(0, 2, 2, 1.)).is_none());
+        assert!(frames_of(video(2, 0, 2, 1.)).is_none());
+        let mut huge = video(2, 2, 2, 1.);
+        huge.width = u32::MAX;
+        assert!(frames_of(huge).is_none());
     }
 
     #[test]
     fn the_pointer_picks_the_tenth_it_is_in() {
-        let frames = parse_frames(&buffer(10, 2, 2, 0.)).expect("frames");
+        let frames = frames_of(video(10, 2, 2, 0.)).expect("frames");
         assert_eq!(frames.seconds, 0.);
         let index = |at: f32| {
             frames
@@ -377,7 +371,7 @@ mod tests {
 
     #[test]
     fn the_cache_keeps_the_newest_within_its_budget() {
-        let small = |n: u32| Arc::new(parse_frames(&buffer(2, 2, 2, n as f64)).expect("frames"));
+        let small = |n: u32| Arc::new(frames_of(video(2, 2, 2, n as f64)).expect("frames"));
         remember("C:\\a.mp4", 64, small(1));
         remember("C:\\B.mp4", 64, small(2));
         assert_eq!(cached("c:\\b.MP4", 64).map(|f| f.seconds), Some(2.));

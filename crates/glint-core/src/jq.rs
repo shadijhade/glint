@@ -36,15 +36,17 @@ struct Ask {
     format: String,
 }
 
-/// How a query ended, sent before its values.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Head {
-    truncated: bool,
+/// What a query answered: how it ended, and its values as the worker printed them (a JSON array, read where
+/// they're shown).
+#[derive(Debug)]
+pub struct Queried {
+    /// The values stopped at the caps.
+    pub truncated: bool,
     /// The file couldn't be read as its format, the filter didn't compile, or it stopped with an
     /// error (after the values before it).
-    error: Option<String>,
-    elapsed: f64,
+    pub error: Option<String>,
+    pub elapsed: f64,
+    pub values: Vec<u8>,
 }
 
 /// Glint started as the data worker: reads the one file asked on its standard input, writes its
@@ -190,7 +192,7 @@ fn text_of(mut pipe: impl Read + Send + 'static, cap: usize) -> mpsc::Receiver<S
     rx
 }
 
-fn query(path: String, format: String, filter: String) -> Result<Vec<u8>, String> {
+fn query(path: String, format: String, filter: String) -> Result<Queried, String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
@@ -273,17 +275,12 @@ fn query(path: String, format: String, filter: String) -> Result<Vec<u8>, String
         _ if as_is => return Err("This file needs more memory than a preview has (1 GB), or is nested too deep.".into()),
         _ => return Err("The filter needed more memory than a preview has (1 GB), or went too deep.".into()),
     };
-    let head = Head { truncated: printed.truncated, error, elapsed: started.elapsed().as_secs_f64() * 1000.0 };
-    let mut answer = serde_json::to_vec(&head).map_err(|e| e.to_string())?;
-    answer.push(b'\n');
-    answer.extend_from_slice(&printed.values);
-    Ok(answer)
+    Ok(Queried { truncated: printed.truncated, error, elapsed: started.elapsed().as_secs_f64() * 1000.0, values: printed.values })
 }
 
-/// A JSON, YAML or TOML file's documents through a jq filter ("." for the file as it is): a line of
-/// JSON saying how it went (truncated, error, elapsed), then the values as a JSON array.
-pub async fn jq_query(path: String, format: String, filter: String) -> Result<crate::host::ipc::Response, String> {
-    crate::host::async_runtime::spawn_blocking(move || query(path, format, filter)).await.map_err(|e| e.to_string())?.map(crate::host::ipc::Response::new)
+/// A JSON, YAML or TOML file's documents through a jq filter ("." for the file as it is).
+pub async fn jq_query(path: String, format: String, filter: String) -> Result<Queried, String> {
+    crate::host::async_runtime::spawn_blocking(move || query(path, format, filter)).await.map_err(|e| e.to_string())?
 }
 
 /// Stops the query running, if any (its answer is "stopped").

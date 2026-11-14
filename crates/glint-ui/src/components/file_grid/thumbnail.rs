@@ -184,12 +184,7 @@ impl Header {
     }
 }
 
-/// A thumbnail's pixels as a picture GPUI draws (the same straight-alpha BGRA). `None` when they don't make
-/// the picture they say.
-pub(crate) fn picture(pixels: &glint_core::thumbs::Pixels) -> Option<Arc<RenderImage>> {
-    image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.bgra.clone())
-        .map(|buffer| Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
-}
+use crate::core_bridge::picture;
 
 /// A decoded picture's size in pixels.
 fn pixels_of(image: &RenderImage) -> (u32, u32) {

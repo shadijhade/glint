@@ -446,7 +446,7 @@ pub async fn cancel_thumbnails(state: State<'_, Thumbs>, lane: String, paths: Op
 }
 
 /// A thumbnail's pixels: top-down rows of straight-alpha BGRA, as the window draws them.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Pixels {
     pub width: u32,
     pub height: u32,

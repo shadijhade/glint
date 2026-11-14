@@ -188,7 +188,7 @@ pub fn new_menu(kinds: &[NewKind]) -> Vec<Node> {
                 IconName::FilePlus,
                 MenuEvent::NewOfKind { ext: kind.ext.clone() },
             )
-            .with_data_url_picture(kind.icon.as_deref()),
+            .with_picture(kind.icon.as_deref()),
         )
     }));
     items
@@ -645,7 +645,11 @@ mod tests {
         let kinds = [NewKind {
             ext: ".docx".into(),
             name: "Microsoft Word Document".into(),
-            icon: Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==".into()),
+            icon: Some(std::sync::Arc::new(glint_core::thumbs::Pixels {
+                width: 1,
+                height: 1,
+                bgra: vec![0, 0, 0, 255],
+            })),
             by_app: false,
         }];
         let nodes = new_menu(&kinds);

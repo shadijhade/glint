@@ -106,24 +106,9 @@ fn format_word(format: DataFormat) -> &'static str {
     }
 }
 
-/// What `jq_query` answers: a line of JSON saying how it went (`truncated`, `error`, `elapsed`), then the values as
-/// a JSON array.
-pub fn parse_answer(bytes: &[u8]) -> Result<JqAnswer, String> {
-    #[derive(serde::Deserialize)]
-    struct Head {
-        #[serde(default)]
-        truncated: bool,
-        #[serde(default)]
-        error: Option<String>,
-        #[serde(default)]
-        elapsed: f64,
-    }
-    let line = bytes
-        .iter()
-        .position(|&b| b == b'\n')
-        .ok_or("The answer had no header")?;
-    let head: Head = serde_json::from_slice(&bytes[..line]).map_err(|e| e.to_string())?;
-    let text = std::str::from_utf8(&bytes[line + 1..]).map_err(|e| e.to_string())?;
+/// What `jq_query` answered, its values (the worker's JSON array) read as the tree shows them.
+pub fn parse_answer(queried: glint_core::jq::Queried) -> Result<JqAnswer, String> {
+    let text = std::str::from_utf8(&queried.values).map_err(|e| e.to_string())?;
     // Numbers stay as written: a big integer or 1.50 isn't turned into a float and back.
     let values = match parse_json(text).map_err(|e| e.to_string())? {
         JsonValue::Array(items) => items,
@@ -131,9 +116,9 @@ pub fn parse_answer(bytes: &[u8]) -> Result<JqAnswer, String> {
     };
     Ok(JqAnswer {
         values,
-        truncated: head.truncated,
-        error: head.error.filter(|e| !e.is_empty()),
-        elapsed: head.elapsed,
+        truncated: queried.truncated,
+        error: queried.error.filter(|e| !e.is_empty()),
+        elapsed: queried.elapsed,
     })
 }
 
@@ -144,7 +129,7 @@ pub fn core_data_source() -> DataSource {
             Box::pin(async move {
                 let answer = glint_core::jq::jq_query(path, format_word(format).to_string(), filter).await?;
                 // The values can be many megabytes of JSON: read off the thread that runs core's tasks.
-                glint_core::host::async_runtime::spawn_blocking(move || parse_answer(&answer.into_bytes()))
+                glint_core::host::async_runtime::spawn_blocking(move || parse_answer(answer))
                     .await
                     .map_err(|e| e.to_string())?
             })
@@ -2014,10 +1999,19 @@ mod tests {
         assert_eq!(data_kind("C:\\a\\json"), None);
     }
 
+    fn queried(truncated: bool, error: Option<&str>, elapsed: f64, values: &[u8]) -> glint_core::jq::Queried {
+        glint_core::jq::Queried {
+            truncated,
+            error: error.map(str::to_string),
+            elapsed,
+            values: values.to_vec(),
+        }
+    }
+
     #[test]
-    fn an_answer_is_a_header_line_then_the_values_with_their_numbers_as_written() {
-        let bytes = b"{\"truncated\":true,\"error\":null,\"elapsed\":12.5}\n[{\"big\":123456789012345678901234567890,\"price\":1.50},[1,2],\"x\"]";
-        let answer = parse_answer(bytes).expect("a good answer");
+    fn an_answers_values_keep_their_numbers_as_written() {
+        let values = b"[{\"big\":123456789012345678901234567890,\"price\":1.50},[1,2],\"x\"]";
+        let answer = parse_answer(queried(true, None, 12.5, values)).expect("a good answer");
         assert!(answer.truncated);
         assert_eq!(answer.error, None);
         assert_eq!(answer.elapsed, 12.5);
@@ -2036,12 +2030,14 @@ mod tests {
             JsonValue::Big(glint_model::json_tree::JsonNumber::new("1.50"))
         );
         // An error with the values before it.
-        let with_error =
-            parse_answer(b"{\"truncated\":false,\"error\":\"cannot index\",\"elapsed\":1}\n[1]").expect("an answer");
+        let with_error = parse_answer(queried(false, Some("cannot index"), 1.0, b"[1]")).expect("an answer");
         assert_eq!(with_error.error.as_deref(), Some("cannot index"));
         assert_eq!(with_error.values.len(), 1);
-        assert!(parse_answer(b"no newline").is_err());
-        assert!(parse_answer(b"{}\nnot json").is_err());
+        assert_eq!(
+            parse_answer(queried(false, Some(""), 1.0, b"[]")).map(|a| a.error),
+            Ok(None)
+        );
+        assert!(parse_answer(queried(false, None, 1.0, b"not json")).is_err());
     }
 
     #[test]

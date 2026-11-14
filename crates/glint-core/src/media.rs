@@ -5,7 +5,6 @@
 //! metadata), a song's tags, length and cover (lofty: MP3, FLAC, M4A, Ogg, Opus, WAV, AIFF…).
 
 use crate::fsx::blocking;
-use base64::Engine;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use lofty::prelude::*;
 use nom_exif::{EntryValue, ExifDateTime, ExifTag, MediaKind, MediaParser, MediaSource, TrackInfoTag};
@@ -40,8 +39,8 @@ pub struct MediaDetails {
     pub track: Option<u32>,
     /// Latitude and longitude, where it was taken.
     pub place: Option<[f64; 2]>,
-    /// A song's cover, as a data: URL.
-    pub cover: Option<String>,
+    /// A song's cover: the picture as the file holds it (a JPEG, a PNG…).
+    pub cover: Option<Vec<u8>>,
     /// A picture's or video's size in pixels, as it shows (a photo turned by its EXIF is turned here).
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -327,9 +326,8 @@ fn song(path: &str, cover: bool) -> Option<MediaDetails> {
         }
         if cover {
             if let Some(picture) = tag.pictures().iter().find(|p| p.data().len() <= MAX_COVER) {
-                let mime = picture.mime_type().map(|m| m.as_str().to_string()).unwrap_or_else(|| "image/jpeg".into());
-                if mime.starts_with("image/") {
-                    out.cover = Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(picture.data())));
+                if picture.mime_type().is_none_or(|mime| mime.as_str().starts_with("image/")) {
+                    out.cover = Some(picture.data().to_vec());
                 }
             }
         }

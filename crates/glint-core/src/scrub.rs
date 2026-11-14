@@ -1,17 +1,25 @@
 //! Scrubbing a video in the grid: the pointer run across its tile shows the video at that point. The
 //! frames come from Windows' own Media Foundation (the codecs File Explorer and Photos use), read at
-//! evenly spaced points, made the tile's size, and handed to the page as RGBA in one buffer.
+//! evenly spaced points, and made the tile's size, in the BGRA the window draws.
 
 use crate::fsx::blocking;
 
-/// `count` frames of the video at `path`, evenly spaced, each `width` pixels wide: a buffer of
-/// u32 count, u32 width, u32 height, f64 seconds of video, then each frame's RGBA rows.
-pub async fn video_frames(path: String, count: u32, width: u32) -> Result<crate::host::ipc::Response, String> {
-    blocking(move || frames(&path, count.clamp(1, 24), width.clamp(32, 512)).map(crate::host::ipc::Response::new)).await
+/// A video's frames for scrubbing, evenly spaced: each `width` x `height` pixels of opaque BGRA rows.
+pub struct VideoFrames {
+    pub width: u32,
+    pub height: u32,
+    /// The video's length in seconds, 0 when it doesn't say.
+    pub seconds: f64,
+    pub frames: Vec<Vec<u8>>,
+}
+
+/// `count` frames of the video at `path`, evenly spaced, each `width` pixels wide.
+pub async fn video_frames(path: String, count: u32, width: u32) -> Result<VideoFrames, String> {
+    blocking(move || frames(&path, count.clamp(1, 24), width.clamp(32, 512))).await
 }
 
 #[cfg(windows)]
-fn frames(path: &str, count: u32, width: u32) -> Result<Vec<u8>, String> {
+fn frames(path: &str, count: u32, width: u32) -> Result<VideoFrames, String> {
     use windows::core::{GUID, PCWSTR};
     use windows::Win32::Media::MediaFoundation::*;
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
@@ -21,7 +29,7 @@ fn frames(path: &str, count: u32, width: u32) -> Result<Vec<u8>, String> {
     unsafe {
         let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
         MFStartup(MF_VERSION, MFSTARTUP_LITE).map_err(failed("Media Foundation didn't start"))?;
-        let result = (|| -> Result<Vec<u8>, String> {
+        let result = (|| -> Result<VideoFrames, String> {
             let mut attributes = None;
             MFCreateAttributes(&mut attributes, 1).map_err(failed("Media Foundation"))?;
             let attributes = attributes.ok_or("Media Foundation")?;
@@ -48,12 +56,7 @@ fn frames(path: &str, count: u32, width: u32) -> Result<Vec<u8>, String> {
                 .and_then(|v| u64::try_from(&v).ok())
                 .unwrap_or(0);
             let (out_w, out_h) = (width as usize, ((width as usize * src_h) / src_w).max(1));
-            let mut out = Vec::with_capacity(20 + count as usize * out_w * out_h * 4);
-            out.extend_from_slice(&count.to_le_bytes());
-            out.extend_from_slice(&(out_w as u32).to_le_bytes());
-            out.extend_from_slice(&(out_h as u32).to_le_bytes());
-            out.extend_from_slice(&(duration as f64 / 10_000_000.0).to_le_bytes());
-            let mut last: Option<Vec<u8>> = None;
+            let mut frames: Vec<Vec<u8>> = Vec::with_capacity(count as usize);
             for i in 0..count {
                 // The middle of each stretch, so the first frame isn't a black lead-in.
                 let at = (duration as f64 * (i as f64 + 0.5) / count as f64) as i64;
@@ -83,12 +86,11 @@ fn frames(path: &str, count: u32, width: u32) -> Result<Vec<u8>, String> {
                         scaled
                     }
                     // Past what can be read: the last frame again.
-                    None => last.clone().unwrap_or_else(|| vec![0; out_w * out_h * 4]),
+                    None => frames.last().cloned().unwrap_or_else(|| vec![0; out_w * out_h * 4]),
                 };
-                out.extend_from_slice(&pixels);
-                last = Some(pixels);
+                frames.push(pixels);
             }
-            Ok(out)
+            Ok(VideoFrames { width: out_w as u32, height: out_h as u32, seconds: duration as f64 / 10_000_000.0, frames })
         })();
         let _ = MFShutdown();
         if com {
@@ -99,11 +101,11 @@ fn frames(path: &str, count: u32, width: u32) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(not(windows))]
-fn frames(_path: &str, _count: u32, _width: u32) -> Result<Vec<u8>, String> {
+fn frames(_path: &str, _count: u32, _width: u32) -> Result<VideoFrames, String> {
     Err("Needs Windows".into())
 }
 
-/// BGRX rows (`stride` bytes apart, bottom up when negative) to `out_w`×`out_h` RGBA, each pixel the
+/// BGRX rows (`stride` bytes apart, bottom up when negative) to `out_w`×`out_h` opaque BGRA, each pixel the
 /// average of the source pixels it covers (a box filter: smooth, and quick at these sizes).
 fn scale(src: &[u8], src_w: usize, src_h: usize, stride: i32, out_w: usize, out_h: usize) -> Vec<u8> {
     let row = |y: usize| -> usize {
@@ -138,9 +140,9 @@ fn scale(src: &[u8], src_w: usize, src_h: usize, stride: i32, out_w: usize, out_
             }
             let at = (oy * out_w + ox) * 4;
             if let (Some(r), Some(g), Some(b)) = (r.checked_div(n), g.checked_div(n), b.checked_div(n)) {
-                out[at] = r as u8;
+                out[at] = b as u8;
                 out[at + 1] = g as u8;
-                out[at + 2] = b as u8;
+                out[at + 2] = r as u8;
             }
             out[at + 3] = 255;
         }
@@ -153,12 +155,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scales_bgrx_to_rgba_either_way_up() {
+    fn scales_bgrx_to_opaque_bgra_either_way_up() {
         // 2×2: top row blue, bottom row red (BGRX).
         let top_down = [255, 0, 0, 0, 255, 0, 0, 0, 0, 0, 255, 0, 0, 0, 255, 0];
         let out = scale(&top_down, 2, 2, 8, 1, 2);
-        assert_eq!(out, [0, 0, 255, 255, 255, 0, 0, 255], "blue then red, as RGBA");
+        assert_eq!(out, [255, 0, 0, 255, 0, 0, 255, 255], "blue then red, as BGRA");
         let out = scale(&top_down, 2, 2, -8, 1, 2);
-        assert_eq!(out, [255, 0, 0, 255, 0, 0, 255, 255], "bottom up: red first");
+        assert_eq!(out, [0, 0, 255, 255, 255, 0, 0, 255], "bottom up: red first");
     }
 }
