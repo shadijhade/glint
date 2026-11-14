@@ -126,6 +126,38 @@ fn on_this_disk(entry: &FileEntry) -> bool {
     !is_archived(entry) && !is_recycled(entry) && !is_remote_path(&entry.path)
 }
 
+/// Whether `path` is on another computer (a share, `\\server\share\…`, or a mapped network drive). A row there
+/// doesn't ask for its tags: each read is a trip over the network, one per row on screen. The selection's still
+/// are read (`ask_tags_of`), for the menus and the Tags dialog. A drive's kind is asked of Windows once a minute.
+fn on_network(path: &str) -> bool {
+    if path.starts_with(r"\\") {
+        return !path.starts_with(r"\\?\") || path.starts_with(r"\\?\UNC\");
+    }
+    let Some(letter) = path
+        .as_bytes()
+        .first()
+        .filter(|l| l.is_ascii_alphabetic() && path.as_bytes().get(1) == Some(&b':'))
+    else {
+        return false;
+    };
+    thread_local! {
+        static DRIVES: std::cell::RefCell<[Option<(bool, std::time::Instant)>; 26]> =
+            const { std::cell::RefCell::new([None; 26]) };
+    }
+    let index = usize::from(letter.to_ascii_uppercase() - b'A');
+    DRIVES.with(|drives| {
+        let mut drives = drives.borrow_mut();
+        match drives[index] {
+            Some((remote, asked)) if asked.elapsed() < std::time::Duration::from_secs(60) => remote,
+            _ => {
+                let remote = glint_core::fsx::on_other_computer(&format!("{}:\\", char::from(*letter)));
+                drives[index] = Some((remote, std::time::Instant::now()));
+                remote
+            }
+        }
+    })
+}
+
 // ---- Where the reads go -----------------------------------------------------------------------------------
 
 /// The one call into glint-core's media.rs that the rows need. The app uses [`CoreMedia`]; tests a fake.
@@ -296,7 +328,7 @@ impl RowFacts {
         let store = Self::store_for(&mut self.stores, &mut self.order, folder);
         let (mut tags, mut media) = (Vec::new(), Vec::new());
         for entry in entries {
-            if want.tags && on_this_disk(entry) {
+            if want.tags && on_this_disk(entry) && !on_network(&entry.path) {
                 ask_tags(store, folder, &entry.path, ticket, &mut tags);
             }
             if want.media.reads(entry) && on_this_disk(entry) {
@@ -905,6 +937,15 @@ mod tests {
         assert!(on_this_disk(&folder("C:\\x", "docs")));
         assert!(!on_this_disk(&inside));
         assert!(!on_this_disk(&gone));
+    }
+
+    #[test]
+    fn rows_on_other_computers_are_not_asked_for_tags() {
+        assert!(on_network(r"\\server\share\a.txt"));
+        assert!(on_network(r"\\?\UNC\server\share\a.txt"));
+        assert!(!on_network(r"\\?\C:\x\a.txt"), "a long local path");
+        assert!(!on_network(r"C:\x\a.txt"), "this PC's system drive");
+        assert!(!on_network("remote:abc/a.txt"));
     }
 
     // ---- The model, on fakes ----------------------------------------------------------------------------
