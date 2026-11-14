@@ -875,6 +875,13 @@ impl Tree {
     /// Every name below `search.scope` that matches, in index order; close matches (a matcher with
     /// typos allowed) the closest first.
     pub fn search(&self, search: &Search) -> Vec<u32> {
+        self.search_until(search, &|| false)
+    }
+
+    /// [`Tree::search`], given up once `gone` says no one waits for the answer any more (the app asked again,
+    /// a newer key press): each chunk of names asks first, so a scan of millions of names ends within a chunk's
+    /// time. What's found then is incomplete and goes unused.
+    pub fn search_until(&self, search: &Search, gone: &(dyn Fn() -> bool + Sync)) -> Vec<u32> {
         const CHUNK: usize = 1 << 14;
         let has_paths = search.matcher.has_paths();
         let found: Vec<Vec<(u32, u32)>> = self
@@ -883,6 +890,9 @@ impl Tree {
             .enumerate()
             .map(|(chunk, links)| {
                 let mut found = Vec::new();
+                if gone() {
+                    return found;
+                }
                 let mut chain = Vec::with_capacity(if has_paths { MAX_DEPTH } else { 0 });
                 let mut path_buf = Vec::with_capacity(if has_paths { 256 } else { 0 });
                 let mut last_parent = NONE;
@@ -1613,6 +1623,9 @@ mod tests {
         );
         // The best two of them all, whatever the index order.
         assert_eq!(paths(tree.rank(&found, &search, b"report", 2)), [r"Users\me\Report.docx", r"Users\me\docs\Report.pdf"]);
+        // No one waits for the answer any more: the scan gives up.
+        assert_eq!(tree.search_until(&search, &|| false), found);
+        assert!(tree.search_until(&search, &|| true).is_empty());
     }
 
     #[test]

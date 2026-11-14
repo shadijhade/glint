@@ -11,11 +11,12 @@ use std::fmt;
 use std::io;
 use std::path::Path;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HWND};
+use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_NONE, OPEN_EXISTING, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT};
 use windows::Win32::System::Pipes::WaitNamedPipeW;
 use windows::Win32::System::Services::{CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS};
-use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+use windows::Win32::System::Threading::{GetCurrentThreadId, GetExitCodeProcess, OpenThread, WaitForSingleObject, INFINITE, THREAD_TERMINATE};
+use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
@@ -313,10 +314,93 @@ pub fn search(request: &SearchRequest, on: impl FnMut(Event) -> bool) -> Result<
     search_on(connect()?, request, on)
 }
 
-pub(crate) fn search_on(pipe: Handle, request: &SearchRequest, mut on: impl FnMut(Event) -> bool) -> Result<(), Error> {
+/// [`search`], which another thread can end at once with [`Cancel::cancel`] (a newer key press): the read it
+/// waits in is cancelled and the pipe closed, so the service (from 0.12) stops scanning for it. An older service
+/// finds the pipe closed at its next write, as before. Ending it this way is not an error.
+pub fn search_until(request: &SearchRequest, cancel: &Cancel, on: impl FnMut(Event) -> bool) -> Result<(), Error> {
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+    search_on_until(connect()?, request, cancel, on)
+}
+
+/// Ends a [`search_until`] from another thread.
+#[derive(Default)]
+pub struct Cancel(std::sync::Mutex<CancelState>);
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: bool,
+    /// The thread waiting for the service's answer, while it waits: a handle of its own, closed when it's done.
+    reader: Option<isize>,
+}
+
+impl Cancel {
+    /// Marks the search ended, and cancels the read its thread waits in. A read about to begin isn't caught
+    /// (the search then ends at the service's next answer, as `on` would end it).
+    pub fn cancel(&self) {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.cancelled = true;
+        if let Some(reader) = state.reader {
+            unsafe {
+                let _ = CancelSynchronousIo(HANDLE(reader as *mut _));
+            }
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).cancelled
+    }
+
+    /// This thread waits for answers until the guard goes; None when the search was ended already.
+    fn reading(&self) -> Option<Reading<'_>> {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.cancelled {
+            return None;
+        }
+        let thread = unsafe { OpenThread(THREAD_TERMINATE, false, GetCurrentThreadId()) }.ok();
+        state.reader = thread.map(|t| t.0 as isize);
+        Some(Reading { cancel: self, thread })
+    }
+}
+
+/// See [`Cancel::reading`].
+struct Reading<'a> {
+    cancel: &'a Cancel,
+    thread: Option<HANDLE>,
+}
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        // Under the lock, so `cancel` never uses the handle once it's closed.
+        let mut state = self.cancel.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.reader = None;
+        if let Some(thread) = self.thread.take() {
+            unsafe {
+                let _ = CloseHandle(thread);
+            }
+        }
+    }
+}
+
+pub(crate) fn search_on(pipe: Handle, request: &SearchRequest, on: impl FnMut(Event) -> bool) -> Result<(), Error> {
+    search_on_until(pipe, request, &Cancel::default(), on)
+}
+
+pub(crate) fn search_on_until(pipe: Handle, request: &SearchRequest, cancel: &Cancel, mut on: impl FnMut(Event) -> bool) -> Result<(), Error> {
     let pipe = ask(pipe, &Request::Search(request.clone()))?;
+    let Some(_reading) = cancel.reading() else { return Ok(()) };
     let mut io = PipeIo(&pipe);
-    while let Some((kind, payload)) = proto::read_frame(&mut io, MAX_FRAME).map_err(Error::Io)? {
+    loop {
+        let frame = match proto::read_frame(&mut io, MAX_FRAME) {
+            Ok(frame) => frame,
+            Err(_) if cancel.is_cancelled() => return Ok(()),
+            Err(e) => return Err(Error::Io(e)),
+        };
+        let Some((kind, payload)) = frame else { break };
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
         let event = if kind == FRAME_HITS {
             Event::Hits(proto::decode_hits(&payload).map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?)
         } else {
