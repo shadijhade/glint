@@ -72,7 +72,31 @@ fn kind_of(path: &str) -> Option<&'static str> {
 
 /// A photo's, video's or song's details; None for other files, or when it says nothing.
 pub async fn media_details(path: String) -> Result<Option<MediaDetails>, String> {
-    blocking(move || Ok(details(&path, true))).await
+    blocking(move || Ok(details_kept(&path))).await
+}
+
+/// The last songs' details as read with their covers, by path, size and date: a song's preview asks twice (its
+/// details, then the player its cover), and each read went through the whole file's tags again. Two at most (a
+/// cover is 1 MB at most).
+static RECENT_SONGS: Mutex<Vec<((String, u64, Option<std::time::SystemTime>), Option<MediaDetails>)>> = Mutex::new(Vec::new());
+
+fn details_kept(path: &str) -> Option<MediaDetails> {
+    if kind_of(path) != Some("song") {
+        return details(path, true);
+    }
+    let meta = std::fs::metadata(path).ok();
+    let key = (path.to_lowercase(), meta.as_ref().map_or(0, |m| m.len()), meta.and_then(|m| m.modified().ok()));
+    if let Some((_, found)) = RECENT_SONGS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+        return found.clone();
+    }
+    let found = details(path, true);
+    let mut recent = RECENT_SONGS.lock().unwrap_or_else(|e| e.into_inner());
+    recent.retain(|(k, _)| k.0 != key.0);
+    recent.push((key, found.clone()));
+    if recent.len() > 2 {
+        recent.remove(0);
+    }
+    found
 }
 
 /// Many files' details at once, without covers (batch rename, the Date taken sort), four at a time.
@@ -132,13 +156,20 @@ fn details(path: &str, cover: bool) -> Option<MediaDetails> {
     let kind = kind_of(path)?;
     let mut found = match kind {
         "song" => song(path, cover),
-        _ => picture_or_video(path),
+        "video" => picture_or_video(path),
+        _ => None,
     };
-    // A picture's size from its header (EXIF sizes go stale when a photo is resized), but a RAW file's
-    // from its EXIF; turned as the photo shows.
-    let raw = Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| RAW.contains(&e.to_ascii_lowercase().as_str()));
-    if kind == "picture" && (!raw || found.as_ref().is_none_or(|f| f.width.is_none())) {
-        if let Ok(size) = imagesize::size(path) {
+    if kind == "picture" {
+        // The file is opened once: its header's size read, then its EXIF from the start again (it was opened once
+        // for each).
+        use std::io::Seek;
+        let mut reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        let size = imagesize::reader_size(&mut reader).ok();
+        found = reader.rewind().ok().and_then(|()| MediaSource::seekable(reader).ok()).and_then(picture_or_video_from);
+        // A picture's size from its header (EXIF sizes go stale when a photo is resized), but a RAW file's
+        // from its EXIF; turned as the photo shows.
+        let raw = Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| RAW.contains(&e.to_ascii_lowercase().as_str()));
+        if let Some(size) = size.filter(|_| !raw || found.as_ref().is_none_or(|f| f.width.is_none())) {
             let found = found.get_or_insert_with(MediaDetails::default);
             let (w, h) = (u32::try_from(size.width).ok(), u32::try_from(size.height).ok());
             (found.width, found.height) = if found.turned { (h, w) } else { (w, h) };
@@ -460,6 +491,38 @@ mod tests {
         assert_eq!(kind_of("C:\\a\\IMG_1.HEIC"), Some("picture"));
         assert_eq!(kind_of("C:\\a\\song.flac"), Some("song"));
         assert_eq!(kind_of("C:\\a\\notes.txt"), None);
+    }
+
+    /// A PNG of `w` × `h` with nothing in it but its header: what a picture's size is read from.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        out.extend_from_slice(&13u32.to_be_bytes());
+        out.extend_from_slice(b"IHDR");
+        out.extend_from_slice(&ihdr);
+        out.extend_from_slice(&[0, 0, 0, 0]);
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(b"IEND");
+        out.extend_from_slice(&[0, 0, 0, 0]);
+        out
+    }
+
+    #[test]
+    fn a_pictures_size_comes_from_one_opening_of_its_file() {
+        let dir = std::env::temp_dir().join(format!("glint-media-one-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wide.png");
+        std::fs::write(&path, png(640, 480)).unwrap();
+        let found = details(&path.to_string_lossy(), false).expect("a size to say");
+        assert_eq!((found.width, found.height), (Some(640), Some(480)));
+        // Not a picture after all, or gone: nothing to say.
+        std::fs::write(&path, b"not a picture").unwrap();
+        assert_eq!(details(&path.to_string_lossy(), false), None);
+        assert_eq!(details(&dir.join("gone.png").to_string_lossy(), false), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
