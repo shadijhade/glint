@@ -219,9 +219,16 @@ pub fn save_to(path: &Path, state: &AppState) -> Result<(), String> {
 enum Message {
     /// A newer state to write once things settle.
     Save(Box<AppState>),
+    /// The app's state changed: once things settle the worker asks for it (`Saver::start_asking`).
+    Changed,
+    /// The state the worker asked for: written now.
+    Write(Box<AppState>),
     /// Write now (this state), then say so.
     Flush(Box<AppState>, Sender<()>),
 }
+
+/// How long the worker waits for the state it asked for before asking again (and keeping the change in mind).
+const ASK_AGAIN: Duration = Duration::from_secs(10);
 
 /// Writes the state on a worker thread: debounced, atomic, never on the caller's thread. Cheap to clone.
 #[derive(Clone)]
@@ -232,6 +239,23 @@ pub struct Saver {
 impl Saver {
     /// Starts the worker for `path`. It ends when every `Saver` is dropped.
     pub fn start(path: PathBuf) -> Saver {
+        Self::start_with(path, None)
+    }
+
+    /// [`Saver::start`] for an app that says only that its state changed ([`Saver::changed`]): once things settle,
+    /// the worker asks for the state on the returned channel, and the app hands it over ([`Saver::write`]). The
+    /// state is copied once per save, not once per change: a folder opened changed it (and copied all of it, the
+    /// visits, the folders' views, the session) every time.
+    ///
+    /// The worker holds only a weak end of the channel: the strong one (returned) is the app's to keep and drop
+    /// on its own thread, so the channel is never closed by the worker as it ends (which would wake the task
+    /// waiting on it from the wrong thread).
+    pub fn start_asking(path: PathBuf) -> (Saver, async_channel::Sender<()>, async_channel::Receiver<()>) {
+        let (asks, asked) = async_channel::bounded(1);
+        (Self::start_with(path, Some(asks.downgrade())), asks, asked)
+    }
+
+    fn start_with(path: PathBuf, asks: Option<async_channel::WeakSender<()>>) -> Saver {
         let (to_worker, inbox) = mpsc::channel::<Message>();
         let spawned = std::thread::Builder::new().name("glint-persist".into()).spawn(move || {
             let write = |state: &AppState| {
@@ -239,12 +263,30 @@ impl Saver {
                     eprintln!("glint: couldn't save the state: {e}");
                 }
             };
+            // A state to write once things settle; changes the app hasn't handed over yet; when the app was asked
+            // for its state (and not answered yet); and when the wait for things to settle began.
             let mut pending: Option<Box<AppState>> = None;
+            let mut changed = false;
+            let mut asked: Option<Instant> = None;
             let mut first_pending_at = Instant::now();
+            // Asks the app for its state: the changes are its to hand over now. Without anyone to ask, forgotten.
+            let ask = |changed: &mut bool, asked: &mut Option<Instant>| {
+                let sent = asks
+                    .as_ref()
+                    .and_then(async_channel::WeakSender::upgrade)
+                    .is_some_and(|asks| {
+                        matches!(asks.try_send(()), Ok(()) | Err(async_channel::TrySendError::Full(_)))
+                    });
+                *asked = sent.then(Instant::now);
+                *changed = false;
+            };
             loop {
-                let received = if pending.is_some() {
+                let settling = pending.is_some() || (changed && asked.is_none());
+                let received = if settling {
                     let wait = DEBOUNCE.min(MAX_WAIT.saturating_sub(first_pending_at.elapsed()));
                     inbox.recv_timeout(wait)
+                } else if let Some(at) = asked {
+                    inbox.recv_timeout(ASK_AGAIN.saturating_sub(at.elapsed()))
                 } else {
                     inbox.recv().map_err(|_| RecvTimeoutError::Disconnected)
                 };
@@ -252,6 +294,12 @@ impl Saver {
                     Err(RecvTimeoutError::Timeout) => {
                         if let Some(state) = pending.take() {
                             write(&state);
+                        }
+                        if changed && asked.is_none() {
+                            ask(&mut changed, &mut asked);
+                        } else if asked.is_some_and(|at| at.elapsed() >= ASK_AGAIN) {
+                            // No answer: what was asked for is still to write.
+                            ask(&mut changed, &mut asked);
                         }
                     }
                     Err(RecvTimeoutError::Disconnected) => {
@@ -261,7 +309,7 @@ impl Saver {
                         return;
                     }
                     Ok(Message::Save(state)) => {
-                        if pending.is_none() {
+                        if !settling {
                             first_pending_at = Instant::now();
                         }
                         pending = Some(state);
@@ -272,8 +320,27 @@ impl Saver {
                             }
                         }
                     }
+                    Ok(Message::Changed) => {
+                        if !settling && asked.is_none() {
+                            first_pending_at = Instant::now();
+                        }
+                        changed = true;
+                        if asked.is_none() && first_pending_at.elapsed() >= MAX_WAIT {
+                            ask(&mut changed, &mut asked);
+                        }
+                    }
+                    Ok(Message::Write(state)) => {
+                        pending = None;
+                        write(&state);
+                        asked = None;
+                        // Changes since the app was asked: their own wait for quiet.
+                        if changed {
+                            first_pending_at = Instant::now();
+                        }
+                    }
                     Ok(Message::Flush(state, done)) => {
                         pending = None;
+                        changed = false;
                         write(&state);
                         let _ = done.send(());
                     }
@@ -289,6 +356,16 @@ impl Saver {
     /// Asks for `state` to be written soon (about 500 ms after the last ask).
     pub fn save_soon(&self, state: AppState) {
         let _ = self.to_worker.send(Message::Save(Box::new(state)));
+    }
+
+    /// The app's state changed: it's asked for once things settle (see [`Saver::start_asking`]).
+    pub fn changed(&self) {
+        let _ = self.to_worker.send(Message::Changed);
+    }
+
+    /// The state the worker asked for.
+    pub fn write(&self, state: AppState) {
+        let _ = self.to_worker.send(Message::Write(Box::new(state)));
     }
 
     /// Writes `state` now and waits (a few seconds at most) until it is on disk. For quitting, and from a
@@ -311,6 +388,8 @@ pub struct Persistence {
     set_aside: Option<PathBuf>,
     /// A secondary window's watch on the file, for as long as the app runs.
     _follow: Option<Follow>,
+    /// The strong end of the channel the saver asks for the state on (see `Saver::start_asking`).
+    _asks: Option<async_channel::Sender<()>>,
 }
 
 /// A secondary window's watch on `state.json`, with the one strong end of the channel it reports on (the watching
@@ -374,16 +453,36 @@ pub fn init_at(cx: &mut App, path: PathBuf) {
     }
     // The first start after the old app: its notice flags and recent tags (kept outside its store) come along.
     let took_old = !secondary && crate::old_settings::imported().is_some_and(|old| take_old_extras(&mut app, old));
-    let saver = (!loaded.keep_file && !secondary).then(|| Saver::start(path.clone()));
+    let (saver, asks, asked) = match (!loaded.keep_file && !secondary).then(|| Saver::start_asking(path.clone())) {
+        Some((saver, asks, asked)) => (Some(saver), Some(asks), Some(asked)),
+        None => (None, None, None),
+    };
     let follow = if secondary { follow_main(cx, &path) } else { None };
     cx.set_global(Persistence {
         app,
         saver: saver.clone(),
         set_aside: loaded.set_aside,
         _follow: follow,
+        _asks: asks,
     });
     if took_old {
         save_soon(cx);
+    }
+    // The saver asks for the state once changes settle: handed over as it is then.
+    if let Some(asked) = asked {
+        cx.spawn(async move |cx| {
+            while asked.recv().await.is_ok() {
+                // Ends with the saver's worker, which closes the channel.
+                cx.update(|cx| {
+                    if let Some(p) = cx.try_global::<Persistence>() {
+                        if let Some(saver) = &p.saver {
+                            saver.write(p.app.clone());
+                        }
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     cx.on_app_quit(move |cx| {
@@ -522,7 +621,7 @@ pub fn update_app(cx: &mut App, change: impl FnOnce(&mut AppState)) {
         let p = cx.global_mut::<Persistence>();
         change(&mut p.app);
         if let Some(saver) = &p.saver {
-            saver.save_soon(p.app.clone());
+            saver.changed();
         }
     }
 }
@@ -579,7 +678,7 @@ pub fn corrupt_file_set_aside(cx: &App) -> Option<&Path> {
 fn save_soon(cx: &App) {
     if let Some(p) = cx.try_global::<Persistence>() {
         if let Some(saver) = &p.saver {
-            saver.save_soon(p.app.clone());
+            saver.changed();
         }
     }
 }
@@ -1133,6 +1232,40 @@ mod tests {
         state.pinned.push("F:\\".into());
         saver.flush(state.clone());
         assert_eq!(load_from(&path).state, state, "flush has written when it returns");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_app_that_says_its_state_changed_is_asked_for_it_once_things_settle() {
+        let dir = temp_dir("asked");
+        let path = dir.join(STATE_FILE);
+        let (saver, _asks, asked) = Saver::start_asking(path.clone());
+        let started = Instant::now();
+        // Three changes in a row: asked for the state once, after a quiet moment, and nothing is written meanwhile.
+        for _ in 0..3 {
+            saver.changed();
+        }
+        assert!(asked.recv_blocking().is_ok());
+        assert!(
+            started.elapsed() >= DEBOUNCE - Duration::from_millis(50),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(asked.try_recv().is_err(), "once for the three");
+        assert!(!path.exists(), "nothing written before the state is handed over");
+        let mut state = sample();
+        saver.write(state.clone());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(load_from(&path).state, state, "what was handed over is written");
+        // A change after that: asked again.
+        saver.changed();
+        assert!(asked.recv_blocking().is_ok());
+        state.pinned.push("G:\\".into());
+        saver.flush(state.clone());
+        assert_eq!(load_from(&path).state, state);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
