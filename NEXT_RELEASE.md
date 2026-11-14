@@ -386,7 +386,37 @@ never read), E3, E4 (the archive hop only), E6, E7 (the noise filter only), E8 (
 F1, F3; G1-G6; notices regenerated (cargo-about 0.9.3) and cargo-deny 0.20.2 passing.
 
 **Not done, and why**: D2's deferred save snapshot, D3's pruning of the revealed tree, D7's lazy second-pane views and
-D8's thumbnail coalescing (small, and their worth needs app timings); E4's thumbnails as typed pixels, E5, E7's
-discover and tracked-set work, E8's tags on non-NTFS listings, E10 (larger changes, S items); F2 (a stop flag per
-pipe connection, which helps only once the installed 0.9 service is updated, with UAC), F4 and F5 (not shown to be
-needed); C5. The e2e harness and every app-run measure above: not run, at the user's word.
+D8's thumbnail coalescing (small, and their worth needs app timings); E5, E7's discover and tracked-set work, E8's
+tags on non-NTFS listings (larger changes, S items); F2 (a stop flag per pipe connection, which helps only once the
+installed 0.9 service is updated, with UAC), F4 and F5 (not shown to be needed). The app-run measures above: not run,
+at the user's word. E4's typed pixels, E10 and C5 were done afterwards, in the wave below.
+
+### Wave: no more encoding between the engine and the window
+
+The user's ask (2026-11-14): "cleaning and eliminate Tauri-Era, e.g Encoding / JSON Round-Trips Running In-Process".
+The engine and the window are one process since 0.10, but much of what crossed between them was still packed for the
+web page and unpacked again. Nine commits after `f7dbdc0`, each with the whole test suite passing:
+
+| What crossed | Before | Now |
+| :--- | :--- | :--- |
+| Every engine event (folder changed, copy queue, rules, search inside files, backups, files from nearby devices, rclone's sign-in page, Gallery dates, Git changes) | `serde_json::Value`, matched by name in each subscriber and decoded field by field or into a mirror struct | one `host::Event` enum, matched by variant |
+| Name search results | JSON text events plus `encode_items` bytes (sizes as doubles, name lengths in UTF-16 units) | `FindEvent` values with the entries as read |
+| Listings of archives, remotes, the Recycle Bin, Recent, the Gallery, folders read ahead at start | the same binary layout, decoded by glint-model | `fsx::Listing` values (folders keep the archive's or remote's details; items keep their own paths) |
+| Matches of a search inside files | ripgrep's JSON lines parsed in the window; Documents and the content index wrote ripgrep-style JSON (and a made-up summary) only for that | read once in the engine (a long line still cut around its first hit), sent as `TextMatch` values |
+| Disk-usage maps | packed like a listing, the archive format as a number | a `Measured` value, made into the map from its items |
+| Thumbnails | each a BMP, copied again behind an 8-byte header for every answer, decoded by GPUI's BMP reader | the BGRA pixels themselves, an `Arc` shared with the engine's memory; a PDF's page decoded to pixels by Windows |
+| Video scrub frames, jq preview answers, the hex views' bytes | headers of numbers before the data (the frames in RGBA, swapped back) | `VideoFrames` in BGRA, `Queried`, `BytesWindow`, `(size, bytes)` |
+| Song covers, New-menu icons | base64 data URLs (icons were encoded as PNG first) | the cover's own bytes; the icon's pixels |
+| The terminal's folder reports and exit | JSON text beside the shell's bytes on an untyped channel | `TermOutput` |
+| Staging results and progress, archive peeks and reads, tool status and install progress, MCP's setup, the text-search request, the compress format, the index's history, every saved remote and folder rule | turned into JSON and read back, because core's fields were private (or "the same JSON shape") | public fields, read as they are; saved choices handed over by the word they're saved as (pinned to their serde names by a test) |
+
+What went with them: `list_dir`, `encode_listing`, `encode_items`, `encode_map`, `encode_bmp`, glint-model's
+`decode_listing`, `decode_items` and `decode_usage`, `ARCHIVE_FORMATS` and the format codes, the `Emitter` trait,
+`host::ipc::InvokeResponseBody` and `Response`, the window's copies of `JobView`, `NewKind` and the history types, its
+base64 reader, the `get_webview_window`/`webview_windows` names, and 131 of glint-core's 164 serde derives (the 33
+left are what the MCP server answers with, what worker processes and the index service exchange, and what's saved).
+
+Measured: the code shrank by about 2,000 lines (140 files, +2,097 / -4,077); `Glint.exe` 93,284,352 -> 92,810,752 B
+(-0.47 MB: glint_ui -0.22 MB and gpui -0.30 MB of code, glint_core +0.37 MB, the parsing that moved into it); the
+release build of the changed crates took 133 s. Tests: core 293, model 231, window 2,330, index 92, all passing;
+clippy `-D warnings` clean. Per-event costs (CPU, allocations) weren't timed: the window wasn't run.

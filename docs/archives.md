@@ -115,7 +115,7 @@ The status bar shows it for every folder in an archive: *zip · 54,001 items rea
     -   where a path goes into an archive (`locate`), and finding one by its first bytes (`sniff`);
     -   the archives read (`opened`, by path, size and date);
     -   the operations the UI calls (`archive_extract`, `archive_stage`, `archive_extract_here`, `archive_compress`, `cancel_archive_stage`, `archive_unstage`, and for first reads `archive_progress`, `cancel_archive_read` and `archive_peek`; until 0.10 they were Tauri commands);
-    -   what `list_dir`, `resolve_path`, `read_text_preview`, `folder_sizes`, `disk_usage`, `find_files` and `thumbnail` ask of an archive.
+    -   what `list_folder`, `resolve_path`, `read_text_preview`, `folder_sizes`, `disk_usage`, `find_files` and `thumbnail` ask of an archive.
 -   `read.rs`:
     -   the formats (`Format`: what a name claims, what the first bytes say, the code the UI knows each by);
     -   every format behind one interface (`Source`);
