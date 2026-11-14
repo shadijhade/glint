@@ -16,7 +16,6 @@
 //! | `PatternEditor`                              | [`pattern::PatternEditor`]                         |
 //! | `InstantSearch`                              | [`instant::InstantSearch`]                         |
 //! | `ContentIndexSection`                        | [`content::ContentIndex`]                          |
-//! | `MediaSearchSection`                         | [`media::MediaSearch`]                             |
 //! | `AgentsSection`                              | [`agents::Agents`]                                 |
 //! | `CloudsSection`                              | [`clouds::Clouds`]                                 |
 //! | `ToolsSection`, `Meaning*Row`                | [`tools::Tools`]                                   |
@@ -37,7 +36,6 @@ pub mod content;
 mod general;
 pub mod instant;
 pub mod integration;
-pub mod media;
 pub mod pattern;
 mod shortcut;
 pub mod tools;
@@ -52,6 +50,7 @@ mod tests_general;
 #[cfg(test)]
 mod tests_services;
 
+pub(crate) use backend::fetch_channel;
 pub use backend::{Backend, CoreBackend, Fetch, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
 pub use clouds::Request as CloudsRequest;
 
@@ -188,7 +187,6 @@ pub struct SettingsView {
     pub(crate) exclusions: Entity<pattern::PatternEditor>,
     pub(crate) instant: Entity<instant::InstantSearch>,
     pub(crate) content: Entity<content::ContentIndex>,
-    pub(crate) media: Entity<media::MediaSearch>,
     pub(crate) agents: Entity<agents::Agents>,
     pub(crate) clouds: Entity<clouds::Clouds>,
     pub(crate) tools: Entity<tools::Tools>,
@@ -246,10 +244,6 @@ impl SettingsView {
         let content = {
             let backend = backend.clone();
             cx.new(|cx| content::ContentIndex::new(backend, window, cx))
-        };
-        let media = {
-            let backend = backend.clone();
-            cx.new(|cx| media::MediaSearch::new(backend, window, cx))
         };
         let agents = {
             let backend = backend.clone();
@@ -325,7 +319,6 @@ impl SettingsView {
             exclusions,
             instant,
             content,
-            media,
             agents,
             clouds,
             tools,

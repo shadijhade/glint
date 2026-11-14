@@ -29,7 +29,7 @@
 use super::find_types::*;
 use super::model::{Explorer, Prefs};
 use super::types::*;
-use glint_model::entries::{asks_models, matcher, terms, FileEntry};
+use glint_model::entries::{matcher, terms, FileEntry};
 use glint_model::paths::{in_archive_path, is_folder_path, is_recycle_bin, is_remote_path, is_root, THIS_PC};
 use glint_model::store::SearchOptions;
 use glint_model::text::{self, RgMatch, Submatch};
@@ -87,8 +87,6 @@ fn is_word(term: &str) -> bool {
                 | "files"
                 | "folder"
                 | "folders"
-                | "shows"
-                | "says"
                 | "width"
                 | "height"
                 | "taken"
@@ -104,11 +102,8 @@ fn is_word(term: &str) -> bool {
 
 /// The words of a search that are looked for inside files, as one phrase: its terms that are neither filters
 /// (`ext:pdf`), paths (`src\lib`) nor wildcards (`*.rs`). Empty when there is nothing to look for: no such term,
-/// one letter, a search for folders alone, or one that asks the photo and speech models.
+/// one letter, or a search for folders alone.
 pub fn inside_words(query: &str) -> String {
-    if asks_models(query) {
-        return String::new();
-    }
     let all = terms(query);
     let folders_only = all.iter().any(|t| {
         let t = t.to_ascii_lowercase();
@@ -402,11 +397,11 @@ impl Explorer {
         let run_id = id.clone();
         let starting = cx.spawn(async move |this, cx| {
             // Words alone, in a folder the content index covers, are answered by the index, in milliseconds.
-            let plain = !o.documents && !o.meaning && !o.regex && !o.case_sensitive && !o.whole_word && !everything;
+            let plain = !o.documents && !o.regex && !o.case_sensitive && !o.whole_word && !everything;
             let indexed = plain && source.inside_covers(&scope).await;
             let engine = if indexed {
                 InsideEngine::Index
-            } else if o.documents || o.meaning {
+            } else if o.documents {
                 InsideEngine::Documents
             } else {
                 InsideEngine::Ripgrep
@@ -717,7 +712,6 @@ mod tests {
         assert_eq!(inside_words("ext:pdf"), "", "filters alone look for nothing");
         assert_eq!(inside_words("a"), "", "one letter is in every file");
         assert_eq!(inside_words("folder: notes"), "", "folders hold no lines");
-        assert_eq!(inside_words("shows:dog on a beach"), "", "that asks the photo model");
         assert_eq!(inside_words("http://x"), "", "a slash makes it a path");
         assert_eq!(
             inside_words("12:30 meeting"),

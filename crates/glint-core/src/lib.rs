@@ -41,11 +41,8 @@ pub mod jq;
 // (window/app module, rewritten for GPUI) mod launch;
 pub mod locks;
 pub mod mcp;
-pub mod meaning;
 pub mod metadata;
-pub mod multilingual;
 pub mod media;
-pub mod media_ai;
 pub mod media_tools;
 pub mod newmenu;
 // (window/app module, rewritten for GPUI) mod native_preview;
@@ -55,7 +52,6 @@ pub mod openers;
 pub mod pdf_tools;
 pub mod pe;
 // (window/app module, rewritten for GPUI) mod print;
-pub mod photos;
 // (window/app module, rewritten for GPUI) mod placement;
 pub mod proc;
 pub mod projects;
@@ -81,7 +77,6 @@ pub mod shellmenu;
 pub mod sign;
 pub mod sql;
 // (window/app module, rewritten for GPUI) mod snap;
-pub mod speech;
 pub mod startup;
 pub mod shrink;
 pub mod sizes;
@@ -97,6 +92,7 @@ pub mod wof;
 pub mod verbs;
 pub mod versions;
 pub mod watch;
+pub mod whisper;
 // (window/app module, rewritten for GPUI) mod more_windows;
 // (WebView2's own installer check: not needed without WebView) mod webview;
 pub mod xray;
@@ -381,8 +377,7 @@ pub async fn run_doc_search(window: Window, request: doctext::DocSearch, search_
 
 pub fn doc_search(window: Window, request: doctext::DocSearch, search_id: String, max_results: Option<usize>, search: Slot, ticket: u64) -> Result<String, String> {
     let folder = text_folder(&request.path)?;
-    // By meaning, what's typed isn't a pattern: a regex that matches nothing stands in.
-    let pattern = if request.meaning { regex::Regex::new("a^").map_err(|e| e.to_string())? } else { doctext::pattern(&request)? };
+    let pattern = doctext::pattern(&request)?;
     if !text_current(ticket) {
         return Err("cancelled".into());
     }
@@ -397,16 +392,7 @@ pub fn doc_search(window: Window, request: doctext::DocSearch, search_id: String
         let emit = |r#type: &str, lines: Vec<String>| {
             let _ = window.emit("search-event", SearchEvent { id: search_id.clone(), r#type: r#type.into(), lines });
         };
-        // By meaning: the model (loaded here the first time), and words in what's typed that it knows.
-        let ready = if request.meaning {
-            meaning::model().and_then(|model| model.embed(&request.query).map(|_| ()).ok_or_else(|| "The meaning model knows none of those words: try others".to_string()))
-        } else {
-            Ok(())
-        };
-        match ready {
-            Err(message) => emit("error", vec![message]),
-            Ok(()) => doctext::search(run, &base, &request, &pattern, max, |lines| emit("data", lines)),
-        }
+        doctext::search(run, &base, &request, &pattern, max, |lines| emit("data", lines));
         emit("finished", Vec::new());
     });
     Ok(folder)

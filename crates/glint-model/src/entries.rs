@@ -1211,28 +1211,6 @@ fn filter_test<'a, 'f: 'a>(
     })
 }
 
-/// shows: and says: (photo and speech search, media_ai.rs) are asked of their models on Enter: typing them
-/// filters nothing.
-pub fn asks_models(query: &str) -> bool {
-    let bytes = query.as_bytes();
-    let mut before = None;
-    for (at, c) in query.char_indices() {
-        let start_ok = before.is_none_or(|p: char| p == '"' || is_js_space(p));
-        before = Some(c);
-        let rest = bytes.get(at..).unwrap_or(&[]);
-        if start_ok && (starts_with_ignore_case(rest, b"shows:") || starts_with_ignore_case(rest, b"says:")) {
-            return true;
-        }
-    }
-    false
-}
-
-fn starts_with_ignore_case(bytes: &[u8], prefix: &[u8]) -> bool {
-    bytes
-        .get(..prefix.len())
-        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-}
-
 /// A path term (`src\lib`, `path:docs`) cleaned up: `\\?\` and `path:` dropped, `/` made `\`, runs of `\`
 /// squeezed (a leading pair, for network paths, kept), a trailing `\` cut off (except a drive's).
 fn path_pattern(term: &str) -> String {
@@ -1291,9 +1269,6 @@ pub fn matcher_at<'a, 'f: 'a>(
     facts: Option<&'a FactsOf<'f>>,
     now: i64,
 ) -> Option<EntryTest<'a>> {
-    if asks_models(query) {
-        return None;
-    }
     let parts = terms(&query.to_lowercase());
     if parts.is_empty() {
         return None;
@@ -1927,16 +1902,6 @@ mod tests {
         assert_eq!(find("a+b(*"), "a+b(1).txt");
         assert_eq!(find("?.txt"), "a.txt,😀.txt");
         assert_eq!(find("[a]*"), "");
-    }
-
-    #[test]
-    fn typing_shows_or_says_filters_nothing() {
-        assert!(asks_models("shows:dog"));
-        assert!(asks_models("holiday Says:hello"));
-        assert!(asks_models("\"x\"shows:cat"));
-        assert!(!asks_models("slideshows:x"));
-        assert!(!asks_models("shows"));
-        assert!(matcher("shows:dog", None, None).is_none());
     }
 
     // ---- what photos, videos and songs say ----
