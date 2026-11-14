@@ -12,9 +12,8 @@ use regex::{NoExpand, Regex, RegexBuilder};
 use crate::js::is_js_space;
 use crate::store::SearchOptions;
 
-// TODO(coordinator): RgMatch belongs to the ripgrep module once it is ported (src/lib/ripgrep.ts). It lives
-// here for now, with only the fields segments() reads. Offsets are usize: whoever builds it from rg's JSON
-// must convert the numbers without `as` truncation, and reject values that do not fit.
+// RgMatch has only the fields segments() reads. Offsets are usize: whoever builds it from rg's JSON must convert the
+// numbers without `as` truncation, and reject values that do not fit.
 
 /// One hit inside a match line: the byte range rg reported for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

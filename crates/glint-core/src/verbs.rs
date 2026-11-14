@@ -53,9 +53,12 @@ pub fn repair(app: &AppHandle) {
     imp::repair(app);
 }
 
-/// The current user's registry and the exe its entries run, for the Run key too (Start with Windows).
+/// The current user's registry and the exe its entries run, for the Run key too (Start with Windows), the Jump
+/// List and the tray's File Explorer entries.
 #[cfg(windows)]
-pub(crate) use imp::{launch_exe, reg};
+pub use imp::{installed_exe, launch_exe};
+#[cfg(windows)]
+pub(crate) use imp::reg;
 
 #[cfg(windows)]
 mod imp {
@@ -268,7 +271,7 @@ mod imp {
     /// The exe the entries can run for as long as this copy is installed: the one the setup program
     /// installed, or a Scoop copy's through its `current` link. A portable copy or a dev build has
     /// none, as it could be moved or deleted with nothing to take the entries out.
-    pub(crate) fn installed_exe() -> Option<PathBuf> {
+    pub fn installed_exe() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
         if crate::installed_by_setup() {
             Some(exe)
@@ -280,7 +283,7 @@ mod imp {
     /// The exe other programs (AI agents, the Jump List) start Glint with: the installed one, or the
     /// Microsoft Store copy's alias, which stays put as updates come (its own exe's folder is named
     /// after its version), or this one.
-    pub(crate) fn launch_exe() -> Option<PathBuf> {
+    pub fn launch_exe() -> Option<PathBuf> {
         installed_exe().or_else(store_alias).or_else(|| std::env::current_exe().ok())
     }
 
