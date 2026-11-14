@@ -1,35 +1,10 @@
 [package]
 name = "glint-model"
-description = "Glint's pure logic, ported from the TypeScript in src/lib"
+description = "Glint's pure logic: entries, sorting and grouping, search terms, paths, the saved state, words"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-
-# One feature per module, so each can be built and tested alone while others are being ported.
-[features]
-default = ["archives", "paths", "cast", "cd", "color", "format", "grid", "hex", "i18n", "json_tree", "markdown", "plain", "rank", "small_kinds", "store", "entries", "file_types", "columns", "groups", "usage", "text"]
-archives = []
-paths = ["archives"]
-cast = []
-cd = []
-color = []
-format = ["i18n"]
-grid = []
-hex = []
-i18n = []
-json_tree = []
-markdown = []
-plain = []
-rank = []
-small_kinds = []
-store = ["grid", "rank", "entries", "file_types", "groups", "columns"]
-entries = ["paths", "archives"]
-file_types = ["entries"]
-columns = ["entries", "file_types", "grid", "rank", "groups"]
-groups = ["entries", "file_types"]
-usage = ["archives", "entries", "paths"]
-text = ["store"]
 
 [dependencies]
 serde.workspace = true
