@@ -21,13 +21,13 @@
 - **One `glint_core::host::AppHandle`, created at start and kept in a GPUI `Global` (`Core`).** Views reach it with `cx.global::<Core>()`.
 - **Events:**
   - `AppHandle`'s event hook sends each `host::Event` into an `async_channel`. A foreground task drains it into an entity, `CoreEvents`, which emits each one as a GPUI event.
-  - A view that cares calls `cx.subscribe(&core.events, |this, _, event, cx| ...)` and matches `event.name` (the same names the web UI listened for: "copy-queue", "dir-changed"…).
+  - A view that cares calls `core_bridge::subscribe(cx, |this, event, cx| ...)` and matches the `host::Event` variant it wants (`Event::CopyQueue(jobs)`, `Event::DirChanged(path)`…): values, never JSON.
   - Updates are coalesced: a view that gets many events per frame only marks itself dirty.
 - **Main-thread jobs** (what core passes to `run_on_main_thread`) **never run inside GPUI's executor**, because some open modal Win32 loops.
   - glint-ui creates its own hidden message-only window (`HWND_MESSAGE`) on the UI thread at start.
   - The hook posts each job to it (`PostMessageW`, the job boxed in `LPARAM`), and that window's own WndProc runs it.
 - **Core states:** register what src-tauri's `setup` registered with `manage` (`AppState`, `Thumbs`, `Installs`, the watchers…). Read `src-tauri/src/lib.rs`'s `run()` for the list. Do the same for the preview release hook (`host::previews::set_release_hook`) once native previews exist.
-- **Windows:** each GPUI window registers itself as a `host::Window` with its HWND, so `get_webview_window("main")` and shell dialogs' owner keep working.
+- **Windows:** each GPUI window registers itself as a `host::Window` with its HWND, so `window("main")` and shell dialogs' owner keep working.
 - **Calling core from a view:** the work goes to `cx.background_spawn(...)`. A core `async fn` is driven on core's runtime (`glint_core::host::async_runtime::spawn`) and awaited from the GPUI task. Then `this.update(cx, ...)` with the result.
 
 ## theme
