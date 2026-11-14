@@ -117,15 +117,11 @@ fn run(options: &Options) -> Report {
                 copy.len() as u64
             }),
         );
-        let mut sorted = entries.clone();
-        crate::fsx::sort_entries(&mut sorted);
-        add(format!("list {label}: encode"), time(options.runs, || crate::fsx::encode_listing(folder, &sorted, 0.0, None, false).len() as u64));
         add(
             format!("list {label}: all"),
             time(options.runs, || {
                 let Ok(mut entries) = crate::fsx::read_dir(folder) else { return 0 };
                 crate::fsx::sort_entries(&mut entries);
-                crate::fsx::encode_listing(folder, &entries, 0.0, None, false);
                 entries.len() as u64
             }),
         );

@@ -48,10 +48,10 @@ pub fn recent_kept() -> bool {
     kept()
 }
 
-/// Recent as a listing: `fsx::encode_items` with each item at its own path, newest first.
-pub fn listing(started: Instant) -> Result<Vec<u8>, String> {
+/// Recent as a listing: each item at its own path, newest first.
+pub fn listing(started: Instant) -> Result<fsx::Listing, String> {
     let entries = if kept() { crate::shell::in_sta(|| Ok(imp::items(&shortcuts())))? } else { Vec::new() };
-    Ok(fsx::encode_items(PLACE, &entries, &[], fsx::ms_since(started), false))
+    Ok(fsx::Listing::Items { location: PLACE.into(), entries, origins: Vec::new(), elapsed: fsx::ms_since(started) })
 }
 
 /// Takes items out of Recent (their shortcuts deleted, as File Explorer's Remove from Recent does): the

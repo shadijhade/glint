@@ -2,7 +2,7 @@
 //! a search or folder sizes need, without going back to the archive. Names are made safe for
 //! Windows here, once, so the path shown is exactly where an entry would be extracted to.
 
-use crate::fsx::{natural_key, Listed};
+use crate::fsx::natural_key;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
@@ -55,23 +55,7 @@ pub struct Node {
     pub children: Vec<u32>,
 }
 
-impl Listed for &Node {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn dir(&self) -> bool {
-        self.dir
-    }
-    fn size(&self) -> u64 {
-        self.size
-    }
-    fn modified(&self) -> i64 {
-        self.modified
-    }
-    fn attrs(&self) -> u32 {
-        self.attrs
-    }
-}
+
 
 #[derive(Debug)]
 pub struct Tree {

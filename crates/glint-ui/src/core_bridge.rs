@@ -337,6 +337,29 @@ pub fn stream<T: Send + 'static>() -> (host::ipc::Channel<T>, async_channel::Rec
     (channel, receiver)
 }
 
+/// One of core's entries as a row: its path (its own, or joined to `folder`), lowercase name and extension made
+/// beside it, the directory bit set as Windows sets it on folders, and where it came from (the Recycle Bin's).
+pub fn file_entry(
+    entry: glint_core::fsx::Entry,
+    folder: &str,
+    origin: Option<String>,
+) -> glint_model::entries::FileEntry {
+    use glint_model::entries::{attr, with_details, RawEntry};
+    let attrs = entry.attrs | if entry.dir { attr::DIRECTORY } else { 0 };
+    with_details(
+        RawEntry {
+            name: entry.name,
+            path: entry.path,
+            dir: attrs & attr::DIRECTORY != 0,
+            size: entry.size,
+            modified: entry.modified,
+            attrs,
+            origin,
+        },
+        folder,
+    )
+}
+
 /// Lets a view emit a core event to itself in tests and tools: same path as core's own `emit`.
 pub fn emit(cx: &App, name: &str, payload: serde_json::Value) {
     if let Some(core) = cx.try_global::<Core>() {
