@@ -510,7 +510,7 @@ cd glint
 cargo run -p glint
 ```
 
-The first build compiles GPUI and all the other dependencies, which takes several minutes; later ones take seconds. Everything builds into `target\ui` (set in `.cargo/config.toml`). `cargo build --release -p glint -p shadui-index` makes `Glint.exe` and the instant search service in `target\ui\release`, and `npm run gpui:installer` packs them into `Glint-setup.exe`. The Windows x64 builds of ripgrep, fd and pdu ship in `crates/glint/binaries/`; `crates/glint/build.rs` puts them next to the built `Glint.exe`. `npm run release`, or the release workflow when a version tag is pushed, builds a release on top of that: the update package the app installs, code signing, and the winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)).
+The first build compiles GPUI and all the other dependencies, which takes several minutes; later ones take seconds. Everything builds into `target\ui` (set in `.cargo/config.toml`). `cargo build --release -p glint -p shadui-index` makes `Glint.exe` and the instant search service in `target\ui\release`, and `npm run installer` packs them into `Glint-setup.exe`. The Windows x64 builds of ripgrep, fd and pdu ship in `crates/glint/binaries/`; `crates/glint/build.rs` puts them next to the built `Glint.exe`. `npm run release`, or the release workflow when a version tag is pushed, builds a release on top of that: the update package the app installs, code signing, and the winget and Scoop manifests ([docs/releasing.md](docs/releasing.md)).
 
 The checks to run before you commit:
 
