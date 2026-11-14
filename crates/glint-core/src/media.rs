@@ -78,7 +78,10 @@ pub async fn media_details(path: String) -> Result<Option<MediaDetails>, String>
 /// The last songs' details as read with their covers, by path, size and date: a song's preview asks twice (its
 /// details, then the player its cover), and each read went through the whole file's tags again. Two at most (a
 /// cover is 1 MB at most).
-static RECENT_SONGS: Mutex<Vec<((String, u64, Option<std::time::SystemTime>), Option<MediaDetails>)>> = Mutex::new(Vec::new());
+static RECENT_SONGS: Mutex<Vec<(SongKey, Option<MediaDetails>)>> = Mutex::new(Vec::new());
+
+/// A song file as it is now: its path (lowercase), size and date.
+type SongKey = (String, u64, Option<std::time::SystemTime>);
 
 fn details_kept(path: &str) -> Option<MediaDetails> {
     if kind_of(path) != Some("song") {
