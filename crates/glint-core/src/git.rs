@@ -182,15 +182,18 @@ fn record(view: &mut GitView, prefix: &str, path: &BStr, mark: Mark) {
 /// The view of `folder` in its repository, or None when it isn't in one with a working folder (a bare
 /// repository, the `.git` folder itself). `force` (F5) runs status on a network path and in a very
 /// big repository too; `trusted` lists repositories (by root) whose own settings may run programs.
+#[cfg(test)]
 fn view(folder: &str, trusted: &[String], force: bool, stop: Arc<AtomicBool>) -> Result<Option<GitView>, String> {
+    view_in(folder, gix::discover(folder).ok(), trusted, force, stop)
+}
+
+/// [`view`] with the repository `folder` is in, as `gix::discover` found it (None: not in one).
+fn view_in(folder: &str, repo: Option<gix::Repository>, trusted: &[String], force: bool, stop: Arc<AtomicBool>) -> Result<Option<GitView>, String> {
     let started = Instant::now();
     if folder.to_lowercase().split(['\\', '/']).any(|part| part == ".git") {
         return Ok(None);
     }
-    let repo = match gix::discover(folder) {
-        Ok(repo) => repo,
-        Err(_) => return Ok(None),
-    };
+    let Some(repo) = repo else { return Ok(None) };
     let Some(workdir) = repo.workdir().map(Path::to_path_buf) else { return Ok(None) };
     let Some(relative) = inside(&workdir, Path::new(folder)) else { return Ok(None) };
     let root = workdir.to_string_lossy().trim_end_matches(['\\', '/']).replace('/', "\\");
@@ -228,19 +231,22 @@ fn view(folder: &str, trusted: &[String], force: bool, stop: Arc<AtomicBool>) ->
     if stop.load(Ordering::Relaxed) {
         return Err("cancelled".into());
     }
-    // Out of time (or stopped), status ends with what it found: the watchdog says so.
+    // Out of time (or stopped), status ends with what it found: the watchdog says so. It looks at the stop
+    // flag every 50 ms and is woken the moment status ends.
     let interrupt = Arc::new(AtomicBool::new(false));
-    let finished = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new((Mutex::new(false), Condvar::new()));
     let watchdog = {
         let (interrupt, finished, stop) = (interrupt.clone(), finished.clone(), stop.clone());
         std::thread::spawn(move || {
             let begun = Instant::now();
-            while !finished.load(Ordering::Relaxed) {
+            let (lock, woken) = &*finished;
+            let mut done = lock.lock().unwrap_or_else(|e| e.into_inner());
+            while !*done {
                 if begun.elapsed() > DEADLINE || stop.load(Ordering::Relaxed) {
                     interrupt.store(true, Ordering::Relaxed);
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                done = woken.wait_timeout(done, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
             }
         })
     };
@@ -263,7 +269,11 @@ fn view(folder: &str, trusted: &[String], force: bool, stop: Arc<AtomicBool>) ->
             }
         }
     });
-    finished.store(true, Ordering::Relaxed);
+    {
+        let (lock, woken) = &*finished;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        woken.notify_one();
+    }
     let _ = watchdog.join();
     if stop.load(Ordering::Relaxed) {
         return Err("cancelled".into());
@@ -273,11 +283,7 @@ fn view(folder: &str, trusted: &[String], force: bool, stop: Arc<AtomicBool>) ->
 
     // What's left out by .gitignore, of what's right in the folder and isn't tracked.
     if let Ok(mut excludes) = repo.excludes(&index, None, gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped) {
-        let tracked: HashSet<String> = index
-            .entries()
-            .iter()
-            .filter_map(|e| e.path(&index).to_str_lossy().strip_prefix(prefix.as_str()).and_then(|rest| rest.split('/').next()).map(str::to_lowercase))
-            .collect();
+        let tracked = tracked_names(&index, &prefix);
         for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let lower = name.to_lowercase();
@@ -295,6 +301,27 @@ fn view(folder: &str, trusted: &[String], force: bool, stop: Arc<AtomicBool>) ->
     Ok(Some(view))
 }
 
+/// The names right in the folder (`prefix`, "" at the root, else ending in `/`) that something tracked is
+/// in or is, lowercase. The index is sorted by path, so the entries under the folder are one run, found by a
+/// binary search, and the entries under each name follow each other: a name is lowercased once, not once
+/// per file (at a big repository's root that was every one of up to 300,000 entries).
+fn tracked_names(index: &gix::index::State, prefix: &str) -> HashSet<String> {
+    let entries = index.entries();
+    let prefix = prefix.as_bytes();
+    let start = entries.partition_point(|e| e.path(index).as_bytes() < prefix);
+    let mut names = HashSet::new();
+    let mut last: &[u8] = &[];
+    for entry in &entries[start..] {
+        let Some(rest) = entry.path(index).as_bytes().strip_prefix(prefix) else { break };
+        let name = rest.split(|&b| b == b'/').next().unwrap_or(rest);
+        if name != last {
+            last = name;
+            names.insert(String::from_utf8_lossy(name).to_lowercase());
+        }
+    }
+    names
+}
+
 /// Git in `folder` for the tab `lane` (a newer request there, or Stop, ends this one): None when it
 /// isn't in a repository. A view worked out since its repository last changed comes back at once.
 pub async fn git_view(folder: String, lane: String, trusted: Vec<String>, force: bool) -> Result<Option<GitView>, String> {
@@ -308,13 +335,15 @@ pub async fn git_view(folder: String, lane: String, trusted: Vec<String>, force:
             let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
             cache.get(&(key(root), key(&folder))).filter(|(g, _)| *g == generation).map(|(_, v)| v.clone())
         };
-        // The repository is found again each time (cheap), and its view reused if nothing changed.
-        let root = gix::discover(&folder).ok().and_then(|r| r.workdir().map(|w| w.to_string_lossy().replace('/', "\\")));
+        // The repository is found again each time (cheap), and its view reused if nothing changed; once found,
+        // it isn't looked for again to work the view out.
+        let repo = gix::discover(&folder).ok();
+        let root = repo.as_ref().and_then(|r| r.workdir().map(|w| w.to_string_lossy().replace('/', "\\")));
         if let Some(view) = root.as_deref().filter(|_| !force).and_then(cached) {
             return Ok(Some(view));
         }
         let generation = root.as_deref().and_then(|r| GENERATIONS.lock().unwrap_or_else(|e| e.into_inner()).get(&key(r)).copied());
-        let found = view(&folder, &trusted, force, stop.clone());
+        let found = view_in(&folder, repo, &trusted, force, stop.clone());
         let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
         if runs.get(&lane).is_some_and(|s| Arc::ptr_eq(s, &stop)) {
             runs.remove(&lane);
@@ -686,6 +715,26 @@ mod tests {
         assert!(view(&outside.to_string_lossy(), &[], false, stop.clone()).unwrap().is_none() || std::env::temp_dir().join(".git").exists());
         let _ = fs::remove_dir_all(&outside);
         assert!(view(&repo.at(".git"), &[], false, stop).unwrap().is_none());
+    }
+
+    #[test]
+    fn tracked_names_are_a_folders_own_names_once_each() {
+        let Some(repo) = Repo::new("tracked") else { return };
+        // Names that sort between a folder's files ("a-b" and "a.txt" come before "a/…").
+        for path in ["a-b/x.txt", "a.txt", "a/x.txt", "a/y/z.txt", "B/z.txt", "c.txt"] {
+            repo.put(path, "x\n");
+        }
+        repo.git(&["add", "."]).unwrap();
+        let index = gix::discover(repo.at("")).unwrap().index_or_empty().unwrap();
+        let sorted = |prefix: &str| {
+            let mut names: Vec<String> = tracked_names(&index, prefix).into_iter().collect();
+            names.sort();
+            names
+        };
+        assert_eq!(sorted(""), ["a", "a-b", "a.txt", "b", "c.txt"]);
+        assert_eq!(sorted("a/"), ["x.txt", "y"]);
+        assert_eq!(sorted("a/y/"), ["z.txt"]);
+        assert!(sorted("nothing/").is_empty());
     }
 
     #[test]
