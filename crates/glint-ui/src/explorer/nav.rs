@@ -196,9 +196,13 @@ pub(super) fn match_selection(entries: &[glint_model::entries::FileEntry], wante
         .collect()
 }
 
-/// A string's length in UTF-16 units, how JavaScript counts it.
+/// A string's length in UTF-16 units, how JavaScript counts it. Most paths are ASCII, one unit a byte: told at once.
 fn utf16_len(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
+    if text.is_ascii() {
+        text.len()
+    } else {
+        text.chars().map(char::len_utf16).sum()
+    }
 }
 
 /// What a refresh (F5) does.
