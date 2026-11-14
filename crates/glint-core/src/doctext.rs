@@ -778,14 +778,15 @@ fn read_all(queue: mpsc::Receiver<PathBuf>, run: u64, found: mpsc::Sender<Docume
 }
 
 /// A match as ripgrep's JSON line of one: its line number the place in the document of its first line
-/// (of `lines`), its label where that is ("p. 3"); a passage's, how many lines it spans.
+/// (of `lines`), its label where that is ("p. 3"; none for a plain text file's line, which the window then
+/// shows by its number); a passage's, how many lines it spans.
 pub(crate) fn as_ripgrep(path: &Path, lines: Range<usize>, label: &str, text: &str, spans: &[(usize, usize)]) -> String {
     let submatches: Vec<_> = spans.iter().map(|&(s, e)| serde_json::json!({ "match": { "text": &text[s..e] }, "start": s, "end": e })).collect();
     let mut data = serde_json::json!({
         "path": { "text": path.to_string_lossy() },
         "lines": { "text": format!("{text}\n") },
         "line_number": lines.start,
-        "label": label,
+        "label": (!label.is_empty()).then_some(label),
         "submatches": submatches,
     });
     if lines.len() > 1 {
@@ -923,6 +924,10 @@ mod tests {
             (Some(7), Some("p. 2"), Some("é"), Some("find é here\n"))
         );
         assert!(json["data"].get("line_count").is_none());
+        // A text file's line (the content index's) has no label: the window shows its number.
+        let plain: serde_json::Value = serde_json::from_str(&as_ripgrep(Path::new(r"C:\d\a.txt"), 3..4, "", "the needle", &[(4, 10)])).unwrap();
+        assert!(plain["data"]["label"].is_null());
+        assert_eq!(plain["data"]["line_number"].as_u64(), Some(3));
         let passage: serde_json::Value = serde_json::from_str(&as_ripgrep(Path::new(r"C:\d\a.pdf"), 7..10, "p. 2 · 61%", "three lines", &[])).unwrap();
         assert_eq!((passage["data"]["line_number"].as_u64(), passage["data"]["line_count"].as_u64()), (Some(7), Some(3)));
     }
