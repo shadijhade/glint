@@ -12,9 +12,7 @@
 //! the columns). It draws nothing for This PC (its own page has its headings) and while a search's results are shown
 //! (the search bar is their head). It emits nothing: it reads the explorer and sets the tab's filter itself.
 
-use crate::components::status_bar::summary::{
-    chip_active, chip_title, items, spectrum_sized, Category, FOLDERS, SAMPLE,
-};
+use crate::components::status_bar::summary::{chip_active, chip_title, items, spectrum_of, Category, FOLDERS, SAMPLE};
 use crate::components::tab_strip::{glyph_of, name_of, Glyph};
 use crate::explorer::{self, Explorer, Tab, TabId};
 use crate::kit::prelude::*;
@@ -114,7 +112,7 @@ impl Head {
         let kinds = tab
             .listing
             .as_ref()
-            .map(|listing| spectrum_sized(&listing.entries, explorer.size_run(&tab.path)))
+            .map(|listing| spectrum_of(&listing.entries, explorer.size_run(&tab.path)))
             .unwrap_or_default();
         Some(Head {
             tab: tab.id,

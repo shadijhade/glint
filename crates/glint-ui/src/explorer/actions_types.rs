@@ -91,6 +91,21 @@ pub struct SizeRun {
 }
 
 impl SizeRun {
+    /// A finished run with these sizes, as the `version`th (tests elsewhere in the crate).
+    #[cfg(test)]
+    pub fn measured(sizes: HashMap<String, u64>, version: u64) -> SizeRun {
+        SizeRun {
+            total: sizes.values().sum(),
+            sizes: Arc::new(sizes),
+            elapsed: 1.,
+            running: false,
+            engine: "index".into(),
+            lane: TabId(1),
+            version,
+            run: 0,
+        }
+    }
+
     /// A subfolder's size by its name, if it has been measured.
     pub fn size_of(&self, name: &str) -> Option<u64> {
         self.sizes.get(name).copied()

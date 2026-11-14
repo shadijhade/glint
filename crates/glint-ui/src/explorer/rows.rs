@@ -304,6 +304,16 @@ impl Rows {
         Some(at)
     }
 
+    /// Whether `other` is these very rows: the same entries in the same order (shared, not compared).
+    pub fn same_lists(&self, other: &Rows) -> bool {
+        let same_order = match (&self.order, &other.order) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        Arc::ptr_eq(&self.entries, &other.entries) && same_order
+    }
+
     /// Group headers and lines when the list is grouped.
     pub fn groups(&self) -> Option<&GroupLayout> {
         self.groups.as_deref()

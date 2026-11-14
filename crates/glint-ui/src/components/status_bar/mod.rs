@@ -69,6 +69,8 @@ pub struct StatusBar {
     /// The index's last answer, copied from the model when it changes (so a frame doesn't clone it).
     index_info: Option<Index>,
     summary: Summary,
+    /// The selection's counts, kept from one change of the explorer to the next.
+    counted: summary::SelectedCount,
     /// The explorer changed since the summary was made.
     dirty: bool,
     /// The "What's in this folder" popover is open.
@@ -141,6 +143,7 @@ impl StatusBar {
             index: model,
             index_info: None,
             summary: Summary::default(),
+            counted: summary::SelectedCount::default(),
             dirty: true,
             details_open: false,
             dismissed_at: None,
@@ -160,7 +163,7 @@ impl StatusBar {
             let explorer = self.explorer.read(cx);
             let tab = explorer.active_tab();
             let sizes = tab.and_then(|tab| explorer.size_run(&tab.path));
-            Summary::of_sized(tab, explorer.drives().len(), sizes)
+            Summary::of_counted(tab, explorer.drives().len(), sizes, &mut self.counted)
         };
         if summary.tab != self.summary.tab {
             self.details_open = false;
@@ -245,22 +248,32 @@ impl StatusBar {
             )
     }
 
+    /// The active tab's selected paths, in row order.
+    fn selected_paths(&self, cx: &App) -> Vec<String> {
+        self.explorer
+            .read(cx)
+            .active_tab()
+            .map(summary::selected_paths)
+            .unwrap_or_default()
+    }
+
     /// File X-Ray of the one selected file: what "File X-Ray" in its menu opens (`inspectXRay`).
     fn xray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = self.summary.selected_paths.first().cloned() {
+        if let Some(path) = self.selected_paths(cx).first().cloned() {
             crate::dialogs::xray::open(window, cx, path);
         }
     }
 
     /// The batch rename dialog for the selected items: what F2 opens with several selected (`openBatchRename`).
     fn rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        crate::dialogs::batch_rename::open(window, cx, self.summary.selected_paths.clone());
+        let paths = self.selected_paths(cx);
+        crate::dialogs::batch_rename::open(window, cx, paths);
     }
 
     /// A zip of the selected items beside them, once the secrets check is through: what "Compress to > Zip file"
     /// does (`secretsCheckFirst`, then `compressEntries`).
     fn zip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = self.summary.selected_paths.clone();
+        let paths = self.selected_paths(cx);
         if paths.is_empty() {
             return;
         }
@@ -275,8 +288,9 @@ impl StatusBar {
 
     /// Copies the selected paths, one to a line (Copy paths).
     fn copy_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.summary.selected_paths.len();
-        let text = self.summary.selected_paths.join("\r\n");
+        let paths = self.selected_paths(cx);
+        let count = paths.len();
+        let text = paths.join("\r\n");
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         window.push_notification(Notification::success(t!("Copied {count} paths", count = count)), cx);
     }
