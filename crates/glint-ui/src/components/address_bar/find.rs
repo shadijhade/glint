@@ -4,7 +4,6 @@
 //! did. Searching the subfolders is the find part's: the box tells it with [`AddressBarEvent`]s.
 
 use super::*;
-use glint_model::entries::asks_models;
 use glint_model::js::is_js_space;
 use glint_model::paths::is_folder_path;
 use glint_model::plain::plain_query;
@@ -102,7 +101,7 @@ impl AddressBar {
         // Subfolders as you type only where the index answers in milliseconds: after the pause the explorer is
         // asked, and it decides (`findsAsTyped`, which also reads where instant search stands if that is not
         // known yet). An fd walk waits for Enter.
-        if !query.is_empty() && !asks_models(&query) {
+        if !query.is_empty() {
             let explorer = self.explorer.clone();
             let pause = as_typed_after(&query);
             self.find_timer = Some(cx.spawn(async move |this, cx| {
@@ -160,7 +159,6 @@ impl AddressBar {
             SearchOptionKey::Code => o.code,
             SearchOptionKey::Documents => o.documents,
             SearchOptionKey::Ocr => o.ocr,
-            SearchOptionKey::Meaning => o.meaning,
         };
         crate::persistence::update_app(cx, |app| app.set_option(key, !on));
         if self.seen.has_find {
@@ -441,16 +439,6 @@ impl AddressBar {
                     t!("With Documents: the text in pictures, read by Windows' OCR"),
                     !options.documents,
                     cx,
-                ))
-                .child(reach(
-                    "address-search-meaning",
-                    IconName::Sparkles,
-                    SearchOptionKey::Meaning,
-                    options.meaning,
-                    t!("By meaning"),
-                    t!("Documents and notes ranked by what they're about, not by their words (a small model, downloaded once)"),
-                    false,
-                    cx,
                 ));
             // The last searches: one click opens its folder and runs it again.
             let recent: Vec<(String, String)> = crate::persistence::app(cx)
@@ -571,7 +559,7 @@ impl AddressBar {
             .on_action(cx.listener(|_, _: &ListDown, _, cx| cx.emit(AddressBarEvent::FocusFiles { first: true })))
             .on_action(cx.listener(|this, _: &ListCancel, window, cx| this.leave_search(window, cx)))
             .tooltip(tip(t!(
-                "Typing filters this folder · Enter searches its subfolders too: names (the instant search index or fd; * and ? work, words all must match) and inside the files (ripgrep, or the content index). Filters: ext:pdf, path:src\\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:; shows: (what photos show) and says: (what recordings say), with photo and speech search on in Settings"
+                "Typing filters this folder · Enter searches its subfolders too: names (the instant search index or fd; * and ? work, words all must match) and inside the files (ripgrep, or the content index). Filters: ext:pdf, path:src\\lib, size:>10mb, dm:7d (changed in the last 7 days), dm:>1y, file:, folder:, and for photos, videos and songs width:>1920, height:, taken:2024, camera:, duration:>5m, artist:, album:"
             )))
             .child(input)
             .children(plain.map(|p| overlay(p.into_any_element())))

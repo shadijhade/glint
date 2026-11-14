@@ -339,8 +339,6 @@ pub fn reads_files(query: &str) -> bool {
         "duration:",
         "artist:",
         "album:",
-        "shows:",
-        "says:",
         "tag:",
     ]
     .iter()
@@ -940,7 +938,6 @@ mod tests {
     fn searches_that_read_the_files_cannot_be_counted_by_the_index() {
         assert!(reads_files("Width:>1000 cat"));
         assert!(reads_files("tag:\"Work\""));
-        assert!(reads_files("says:hello"));
         assert!(!reads_files("invoice kind:pdf"));
         assert!(!reads_files("shows up"), "needs the colon");
     }

@@ -8,7 +8,7 @@ use glint_model::js::is_js_space;
 pub(super) type Offer = (&'static str, &'static str, &'static str);
 
 /// The search box's filters, as it offers them when empty.
-pub(super) const FILTERS: [Offer; 9] = [
+pub(super) const FILTERS: [Offer; 7] = [
     ("ext:", "ext:pdf", "of a type (ext:jpg,png for more)"),
     ("tag:", "tag:work", "with that tag (tag:red;blue for either)"),
     (
@@ -20,16 +20,6 @@ pub(super) const FILTERS: [Offer; 9] = [
     ("dm:", "dm:7d", "changed in the last 7 days (dm:>1y before)"),
     ("file:", "file:", "files only"),
     ("folder:", "folder:", "folders only"),
-    (
-        "shows:",
-        "shows:dog on a beach",
-        "photos showing it (photo search, on in Settings)",
-    ),
-    (
-        "says:",
-        "says:budget meeting",
-        "recordings and videos saying it (speech search, on in Settings)",
-    ),
 ];
 
 /// What photos, videos and songs say of themselves (media.rs reads it): as you type.
@@ -145,7 +135,7 @@ mod tests {
 
     #[test]
     fn the_offers_are_the_typescripts() {
-        assert_eq!(FILTERS.len(), 9);
+        assert_eq!(FILTERS.len(), 7);
         assert_eq!(PROP_FILTERS.len(), 5);
         assert!(FILTERS.iter().all(|(start, example, _)| example.starts_with(start)));
         assert!(PROP_FILTERS

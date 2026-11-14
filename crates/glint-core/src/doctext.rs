@@ -399,16 +399,11 @@ pub struct DocSearch {
     /// Pictures too: their text, read by Windows' OCR (ocr.rs).
     #[serde(default)]
     pub ocr: bool,
-    /// Passages ranked by meaning (meaning.rs) rather than matched; notes (.txt, .md…) read too.
-    #[serde(default)]
-    pub meaning: bool,
 }
 
 /// Notes, read as text for Meaning search (ripgrep searches their words).
 const NOTES: &[&str] = &["txt", "md", "markdown", "rst", "org", "adoc"];
 /// Meaning search shows at most this many passages, and none less alike than this.
-const MEANING_RESULTS: usize = 100;
-const MEANING_FLOOR: f32 = 0.2;
 
 /// The pattern as ripgrep would take it: smart case unless case-sensitive, a literal unless a regular
 /// expression, whole words when asked.
@@ -518,7 +513,7 @@ fn stop(run: u64) {
 fn is_document(name: &str, search: &DocSearch) -> bool {
     let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
     let of = |list: &[&str]| list.iter().any(|d| d.eq_ignore_ascii_case(ext));
-    (of(DOCUMENTS) || (search.ocr && of(crate::ocr::PICTURES)) || (search.meaning && of(NOTES))) && !name.starts_with("~$")
+    (of(DOCUMENTS) || (search.ocr && of(crate::ocr::PICTURES))) && !name.starts_with("~$")
 }
 
 /// The exclusions as a search applies them: exact names (lowercase), and patterns with * or ?, which
@@ -810,10 +805,6 @@ pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Reg
     let (found, documents) = mpsc::channel();
     let mut batch = Vec::new();
     let (mut matches, mut searched, mut with_match) = (0usize, 0usize, 0usize);
-    // By meaning: the model and what's typed as a vector (run_doc_search made sure of both), and the
-    // passages alike enough, ranked once every document is read.
-    let meaning = request.meaning.then(|| crate::meaning::model().ok().and_then(|model| model.embed(&request.query).map(|query| (model, query)))).flatten();
-    let mut ranked: Vec<(f32, Arc<PathBuf>, crate::meaning::Passage)> = Vec::new();
     let unreadable = std::thread::scope(|scope| {
         scope.spawn(move || walk(folder, request, run, paths));
         let readers = scope.spawn(move || read_all(queue, run, found));
@@ -823,20 +814,6 @@ pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Reg
                 break;
             }
             searched += 1;
-            if let Some((model, query)) = &meaning {
-                let path = Arc::new(document.path.clone());
-                for passage in crate::meaning::passages(&document.lines) {
-                    let alike = model.embed(&passage.2).map_or(0.0, |v| crate::meaning::similarity(query, &v));
-                    if alike >= MEANING_FLOOR {
-                        ranked.push((alike, path.clone(), passage));
-                    }
-                }
-                if ranked.len() > 4 * MEANING_RESULTS {
-                    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-                    ranked.truncate(MEANING_RESULTS);
-                }
-                continue;
-            }
             let before = matches;
             for (i, (label, text)) in document.lines.iter().enumerate() {
                 let spans: Vec<_> = pattern.find_iter(text).map(|m| (m.start(), m.end())).collect();
@@ -860,25 +837,6 @@ pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Reg
         }
         readers.join().unwrap_or(0)
     });
-    if !ranked.is_empty() {
-        // The closest passages, each document's together (the documents in the order of their closest),
-        // each labelled with how alike it is.
-        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-        ranked.truncate(MEANING_RESULTS.min(max));
-        let mut order: Vec<Arc<PathBuf>> = Vec::new();
-        for (_, path, ..) in &ranked {
-            if !order.contains(path) {
-                order.push(path.clone());
-            }
-        }
-        for path in &order {
-            for (alike, _, (lines, label, text)) in ranked.iter().filter(|r| &r.1 == path) {
-                batch.push(as_ripgrep(path, lines.clone(), &format!("{label} · {}%", (alike * 100.0).round()), text, &[]));
-                matches += 1;
-            }
-        }
-        with_match = order.len();
-    }
     let elapsed = started.elapsed();
     batch.push(
         serde_json::json!({
@@ -950,7 +908,7 @@ mod tests {
 
     #[test]
     fn matches_as_ripgrep_would() {
-        let search = |query: &str, case_sensitive, whole_word, regex| DocSearch { query: query.into(), path: String::new(), case_sensitive, whole_word, regex, exclusions: vec![], everything: false, ocr: false, meaning: false };
+        let search = |query: &str, case_sensitive, whole_word, regex| DocSearch { query: query.into(), path: String::new(), case_sensitive, whole_word, regex, exclusions: vec![], everything: false, ocr: false };
         assert!(pattern(&search("glint", false, false, false)).unwrap().is_match("GLINT rocks"), "smart case: lowercase ignores case");
         assert!(!pattern(&search("Glint", false, false, false)).unwrap().is_match("glint"), "an uppercase letter matches exactly");
         assert!(!pattern(&search("glint", true, false, false)).unwrap().is_match("Glint"));
@@ -977,12 +935,10 @@ mod tests {
         let wide = cut("¶ 1".into(), "é".repeat(1500));
         assert!(wide.len() == 2 && wide.iter().all(|(_, t)| t.len() <= MAX_LINE), "cut between characters");
 
-        let plain = DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec![], everything: false, ocr: false, meaning: false };
+        let plain = DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec![], everything: false, ocr: false };
         let ocr = DocSearch { ocr: true, ..plain.clone() };
-        let meaning = DocSearch { meaning: true, ..plain.clone() };
         assert!(is_document("Report.PDF", &plain) && is_document("a.b.xlsx", &plain) && !is_document("~$Report.docx", &plain) && !is_document("pdf", &plain) && !is_document("notes.txt", &plain));
         assert!(!is_document("scan.png", &plain) && is_document("scan.PNG", &ocr) && !is_document("notes.txt", &ocr), "pictures with OCR only");
-        assert!(is_document("notes.md", &meaning) && !is_document("scan.png", &meaning), "notes with meaning only");
         assert!(glob("node_modules", "Node_Modules"));
         assert!(glob("*.pdf", "Report.PDF") && !glob("*.pdf", "report.pdf.bak"));
         assert!(glob("img_????.jpg", "IMG_0042.jpg") && !glob("img_????.jpg", "IMG_42.jpg"));
@@ -1001,7 +957,7 @@ mod tests {
         for file in ["a.pdf", "sub/b.DOCX", "sub/notes.txt", "sub/~$b.docx", "node_modules/c.pdf", ".hidden/d.pdf", "skip.xlsx"] {
             std::fs::write(dir.join(file), b"x").unwrap();
         }
-        let request = |everything| DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec!["node_modules".into(), "*.pdf".into(), "skip.xlsx".into()], everything, ocr: false, meaning: false };
+        let request = |everything| DocSearch { query: String::new(), path: String::new(), case_sensitive: false, whole_word: false, regex: false, exclusions: vec!["node_modules".into(), "*.pdf".into(), "skip.xlsx".into()], everything, ocr: false };
         let found = |everything| {
             let run = begin();
             let (tx, rx) = mpsc::sync_channel(64);

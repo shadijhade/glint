@@ -4,7 +4,7 @@
 use super::backend::{Backend, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
 use super::*;
 use crate::testing;
-use glint_core::{agents, content, meaning, media_ai, openers, rclone, term, verbs};
+use glint_core::{agents, content, openers, rclone, term, verbs};
 use glint_model::store::{Backdrop, Language as LanguageChoice, Theme};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{TestAppContext, VisualTestContext};
@@ -31,7 +31,6 @@ pub struct Fake {
     /// The next answers of the pickers, in order (`None` is "cancelled").
     pub picks: Mutex<VecDeque<Option<String>>>,
     pub content: Mutex<content::Status>,
-    pub media: Mutex<media_ai::Config>,
     pub integration_available: bool,
     pub fail_next: Mutex<Option<String>>,
 }
@@ -60,7 +59,6 @@ impl Fake {
                 pictures: true,
                 ..Default::default()
             }),
-            media: Mutex::new(media_ai::Config::default()),
             integration_available: true,
             fail_next: Mutex::new(None),
         }
@@ -147,34 +145,6 @@ impl Backend for Fake {
         ready(Ok(status.clone()))
     }
 
-    fn media_status(&self) -> Fut<media_ai::Status> {
-        ready(Ok(media_ai::Status {
-            config: lock(&self.media).clone(),
-            photos_installed: false,
-            speech_installed: false,
-            photos: media_ai::Progress::default(),
-            speech: media_ai::Progress::default(),
-        }))
-    }
-
-    fn media_configure(&self, config: media_ai::Config) -> Fut<media_ai::Status> {
-        self.said(format!(
-            "media_configure photos={} {:?}",
-            config.photos, config.photo_folders
-        ));
-        *lock(&self.media) = config;
-        self.media_status()
-    }
-
-    fn media_install(
-        &self,
-        kind: &'static str,
-        _progress: async_channel::Sender<backend::Fetch>,
-    ) -> Fut<media_ai::Status> {
-        self.said(format!("media_install {kind}"));
-        self.media_status()
-    }
-
     fn tools_status(&self) -> Fut<Vec<ToolInfo>> {
         let mut tools = lock(&self.tools).clone();
         if *lock(&self.rclone_installed) {
@@ -210,23 +180,6 @@ impl Backend for Fake {
 
     fn cancel_install(&self, id: String) {
         self.said(format!("cancel_install {id}"));
-    }
-
-    fn meaning_models(&self) -> Fut<meaning::Models> {
-        ready(Ok(meaning::Models {
-            english: true,
-            multilingual: false,
-        }))
-    }
-
-    fn meaning_install(&self, multilingual: bool, _progress: async_channel::Sender<backend::Fetch>) -> Fut<()> {
-        self.said(format!("meaning_install {multilingual}"));
-        ready(Ok(()))
-    }
-
-    fn meaning_remove(&self, multilingual: bool) -> Fut<()> {
-        self.said(format!("meaning_remove {multilingual}"));
-        ready(Ok(()))
     }
 
     fn rclone_status(&self) -> Fut<rclone::Status> {
@@ -530,7 +483,7 @@ fn settings_opens_as_a_named_dialog_with_every_section_listed(cx: &mut TestAppCo
         );
     }
     assert_eq!(role_of(&mut visual, "Settings sections"), Some(Role::Navigation));
-    // The page is the sections in order; Content and Media wait until their service has answered.
+    // The page is the sections in order; Content waits until its service has answered.
     let order = visual.update(|_, cx| view.read(cx).sections().to_vec());
     assert_eq!(&order[..3], &["appearance", "files", "instant-search"]);
     assert_eq!(order.last().copied(), Some("about"));

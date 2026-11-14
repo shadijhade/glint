@@ -713,7 +713,6 @@ impl Source for CoreSource {
                         exclusions: request.exclusions,
                         everything: request.everything,
                         ocr: request.options.ocr,
-                        meaning: request.options.meaning,
                     };
                     glint_core::run_doc_search(window, docs, request.id, request.max_results, state).await
                 }

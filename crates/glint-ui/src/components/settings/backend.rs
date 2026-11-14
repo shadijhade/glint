@@ -12,7 +12,7 @@
 use crate::core_bridge;
 use crate::platform::pickers::{self, Filter, Options};
 use glint_core::host::{self, Manager as _};
-use glint_core::{agents, content, meaning, media_ai, openers, rclone, term, verbs};
+use glint_core::{agents, content, openers, rclone, term, verbs};
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -178,21 +178,15 @@ pub trait Backend: Send + Sync + 'static {
         Box::pin(async { Err(crate::t!("Instant search isn't available here").to_string()) })
     }
     fn index_disable(&self) -> Fut<IndexInfo>;
-    // Search inside files; photos and recordings.
+    // Search inside files.
     fn content_status(&self) -> Fut<content::Status>;
     fn content_configure(&self, enabled: bool, folders: Vec<String>, pictures: Option<bool>) -> Fut<content::Status>;
-    fn media_status(&self) -> Fut<media_ai::Status>;
-    fn media_configure(&self, config: media_ai::Config) -> Fut<media_ai::Status>;
-    fn media_install(&self, kind: &'static str, progress: async_channel::Sender<Fetch>) -> Fut<media_ai::Status>;
-    // Tools and the meaning models.
+    // Tools.
     fn tools_status(&self) -> Fut<Vec<ToolInfo>>;
     fn tool_install(&self, id: String, progress: async_channel::Sender<Fetch>) -> Fut<()>;
     fn tool_remove(&self, id: String) -> Fut<()>;
-    /// Stops the install of `id` ("photos", "speech", "whisper", "onnxruntime", "meaning" or a tool).
+    /// Stops the install of `id` (a tool's, or "whisper-model").
     fn cancel_install(&self, id: String);
-    fn meaning_models(&self) -> Fut<meaning::Models>;
-    fn meaning_install(&self, multilingual: bool, progress: async_channel::Sender<Fetch>) -> Fut<()>;
-    fn meaning_remove(&self, multilingual: bool) -> Fut<()>;
     // rclone's clouds.
     fn rclone_status(&self) -> Fut<rclone::Status>;
     fn rclone_remotes(&self) -> Fut<Vec<rclone::Remote>>;
@@ -245,7 +239,7 @@ fn on_core<T: Send + 'static>(future: impl Future<Output = Result<T, String>> + 
 }
 
 /// A channel for core that tells `progress` how an install goes.
-fn fetch_channel(progress: async_channel::Sender<Fetch>) -> host::ipc::Channel<glint_core::tools::Progress> {
+pub(crate) fn fetch_channel(progress: async_channel::Sender<Fetch>) -> host::ipc::Channel<glint_core::tools::Progress> {
     host::ipc::Channel::new(move |p: glint_core::tools::Progress| {
         let value = serde_json::to_value(&p).unwrap_or(Value::Null);
         let fetch = Fetch {
@@ -296,22 +290,6 @@ impl Backend for CoreBackend {
         on_core(content::content_configure(enabled, folders, pictures))
     }
 
-    fn media_status(&self) -> Fut<media_ai::Status> {
-        on_core(async { Ok(media_ai::media_ai_status()) })
-    }
-
-    fn media_configure(&self, config: media_ai::Config) -> Fut<media_ai::Status> {
-        on_core(async move { media_ai::media_ai_configure(config) })
-    }
-
-    fn media_install(&self, kind: &'static str, progress: async_channel::Sender<Fetch>) -> Fut<media_ai::Status> {
-        let app = self.app.clone();
-        on_core(async move {
-            let installs = app.state::<glint_core::tools::Installs>();
-            media_ai::media_ai_install(kind.to_string(), fetch_channel(progress), installs).await
-        })
-    }
-
     fn tools_status(&self) -> Fut<Vec<ToolInfo>> {
         on_core(async {
             let tools = glint_core::tools::tools_status().await?;
@@ -340,23 +318,6 @@ impl Backend for CoreBackend {
     fn cancel_install(&self, id: String) {
         let installs = self.app.state::<glint_core::tools::Installs>();
         glint_core::tools::tool_cancel_install(id, installs);
-    }
-
-    fn meaning_models(&self) -> Fut<meaning::Models> {
-        on_core(async { Ok(meaning::meaning_models()) })
-    }
-
-    fn meaning_install(&self, multilingual: bool, progress: async_channel::Sender<Fetch>) -> Fut<()> {
-        let app = self.app.clone();
-        on_core(async move {
-            let installs = app.state::<glint_core::tools::Installs>();
-            let variant = multilingual.then(|| "multilingual".to_string());
-            meaning::meaning_install(fetch_channel(progress), installs, variant).await
-        })
-    }
-
-    fn meaning_remove(&self, multilingual: bool) -> Fut<()> {
-        on_core(async move { meaning::meaning_remove(multilingual.then(|| "multilingual".to_string())).await })
     }
 
     fn rclone_status(&self) -> Fut<rclone::Status> {

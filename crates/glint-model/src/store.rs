@@ -161,8 +161,6 @@ pub struct SearchOptions {
     pub documents: bool,
     /// With documents: pictures' text too, read by Windows' OCR (ocr.rs).
     pub ocr: bool,
-    /// Documents' and notes' passages ranked by meaning (meaning.rs) rather than matched.
-    pub meaning: bool,
 }
 
 /// One of [`SearchOptions`]' switches, for [`AppState::set_option`].
@@ -174,7 +172,6 @@ pub enum SearchOptionKey {
     Code,
     Documents,
     Ocr,
-    Meaning,
 }
 
 /// Which search the main box runs.
@@ -760,7 +757,6 @@ lenient_deserialize!(SearchOptions {
     "code" => code,
     "documents" => documents,
     "ocr" => ocr,
-    "meaning" => meaning,
 });
 lenient_deserialize!(SessionPane { "paths" => paths, "active" => active, "views" => views });
 lenient_deserialize!(Session { "dual" => dual, "activePane" => active_pane, "panes" => panes });
@@ -999,23 +995,13 @@ impl AppState {
             SearchOptionKey::Code => o.code = value,
             SearchOptionKey::Documents => o.documents = value,
             SearchOptionKey::Ocr => o.ocr = value,
-            SearchOptionKey::Meaning => o.meaning = value,
         }
         // Code patterns and documents are searches of their own: turning one on turns the other off.
-        // Meaning is a documents search, so it turns documents on, and off with them.
         if value && key == SearchOptionKey::Code {
             o.documents = false;
-            o.meaning = false;
         }
         if value && key == SearchOptionKey::Documents {
             o.code = false;
-        }
-        if value && key == SearchOptionKey::Meaning {
-            o.documents = true;
-            o.code = false;
-        }
-        if !value && key == SearchOptionKey::Documents {
-            o.meaning = false;
         }
     }
 
@@ -1163,7 +1149,7 @@ mod tests {
             concat!(
                 r#"{{"state":{{"query":"","path":"","history":[],"#,
                 r#""options":{{"caseSensitive":false,"wholeWord":false,"regex":false,"code":false,"#,
-                r#""documents":false,"ocr":false,"meaning":false}},"settings":{},"mode":"files","pinned":[],"#,
+                r#""documents":false,"ocr":false}},"settings":{},"mode":"files","pinned":[],"#,
                 r#""savedSearches":[],"remotes":[],"rules":[],"lastFolder":null,"session":null,"visits":{{}},"#,
                 r#""folderViews":{{}}}},"version":0}}"#
             ),
@@ -1334,14 +1320,13 @@ mod tests {
     fn search_options_turn_each_other_off() {
         let mut s = AppState::default();
         s.set_option(SearchOptionKey::Documents, true);
-        s.set_option(SearchOptionKey::Meaning, true);
-        assert!(s.options.documents && s.options.meaning && !s.options.code);
+        assert!(s.options.documents && !s.options.code);
         s.set_option(SearchOptionKey::Code, true);
-        assert!(s.options.code && !s.options.documents && !s.options.meaning);
-        s.set_option(SearchOptionKey::Meaning, true);
-        assert!(s.options.meaning && s.options.documents && !s.options.code);
+        assert!(s.options.code && !s.options.documents);
+        s.set_option(SearchOptionKey::Documents, true);
+        assert!(s.options.documents && !s.options.code);
         s.set_option(SearchOptionKey::Documents, false);
-        assert!(!s.options.documents && !s.options.meaning);
+        assert!(!s.options.documents);
         s.set_option(SearchOptionKey::Regex, true);
         assert!(s.options.regex);
     }

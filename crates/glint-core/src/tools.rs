@@ -207,7 +207,7 @@ pub static TOOLS: &[Tool] = &[
                 "Release/ggml-cpu-alderlake.dll",
             ],
         },
-        used_for: "Speech search (says: in the search box): what's said in recordings and videos, heard on this PC",
+        used_for: "Subtitles for videos and recordings (Media), heard on this PC",
     },
     Tool {
         id: "yara-x",
@@ -1208,9 +1208,8 @@ pub async fn tool_remove(id: String) -> Result<ToolStatus, String> {
     .await
 }
 
-/// `Glint.exe tools install <id>…`: installs tools as Settings → Tools does (and `meaning`, the meaning
-/// model), for the installer's Extra tools page (installer/tools.nsh) and scripted setups. One that's on
-/// this PC already is left as it is. What it's doing goes to stdout a line at a time (the installer's
+/// `Glint.exe tools install <id>…`: installs tools as Settings → Tools does, for the installer's Extra
+/// tools page (installer/tools.nsh) and scripted setups. One that's on this PC already is left as it is. What it's doing goes to stdout a line at a time (the installer's
 /// details) and, with `--installer <window>`, onto the installer's status line as it goes. `--data
 /// <folder>` is Glint's local data folder, whose tools folder the downloads go in (the installer names
 /// its own; else the one Glint uses). The exit code is 0 once every one is installed, else 1.
@@ -1288,12 +1287,7 @@ async fn install_here(id: &str, installs: &Arc<Installs>, status: Option<StatusL
         });
     }
     let progress = said_as_it_goes(status, heard);
-    let result = if id == "meaning" {
-        match blocking(|| Ok(crate::meaning::installed())).await? {
-            true => Ok("The meaning model is downloaded already".to_string()),
-            false => crate::meaning::install(&progress, installs).await.map(|()| "The meaning model is downloaded".to_string()),
-        }
-    } else {
+    let result = {
         let tool = get(id).ok_or_else(|| format!("no tool is called {id}"))?;
         match blocking(move || Ok(proc::locate(tool.exe))).await? {
             Some((path, _)) => Ok(format!("{} is on this PC already ({})", tool.name, path.display())),
@@ -1431,7 +1425,7 @@ mod tests {
     }
 
     /// The installer's Extra tools page (crates/glint/installer/tools.nsh) lists every tool that doesn't come with
-    /// Glint, with its program and package folder as here, plus instant search and the meaning model.
+    /// Glint, with its program and package folder as here, plus instant search.
     #[test]
     fn the_installer_offers_every_tool() {
         let rows: Vec<Vec<&str>> = include_str!("../../glint/installer/tools.nsh")
@@ -1448,7 +1442,7 @@ mod tests {
             assert_eq!(row[0], i.to_string(), "{}'s index", row[1]);
         }
         let mut offered: Vec<(&str, &str, &str, &str)> = rows.iter().map(|row| (row[1], row[3], row[4], row[5])).collect();
-        let mut expected = vec![("instant-search", "service", "\"\"", "\"\""), ("meaning", "model", "\"\"", "\"\"")];
+        let mut expected = vec![("instant-search", "service", "\"\"", "\"\"")];
         expected.extend(TOOLS.iter().filter(|tool| !tool.bundled).map(|tool| (tool.id, "tool", tool.exe, tool.package)));
         offered.sort();
         expected.sort();

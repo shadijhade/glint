@@ -1,5 +1,5 @@
-﻿; The Extra tools page: the tools Settings → Tools installs (src-tauri/src/tools.rs), the meaning model
-; and instant search, each with what Glint uses it for and, under the list, what it is. The ones picked
+﻿; The Extra tools page: the tools Settings → Tools installs (glint-core/src/tools.rs) and instant
+; search, each with what Glint uses it for and, under the list, what it is. The ones picked
 ; install once Glint is in place, by Glint itself (`Glint.exe tools install <id>`, as Settings → Tools
 ; installs them: with winget where the PC has it, else from the tool's own release, checked against
 ; its pinned SHA-256), so every one installs on any PC,
@@ -7,99 +7,96 @@
 ; installer.nsi inserts the page after the folder page, and NSIS_HOOK_POSTINSTALL (hooks.nsh) installs
 ; what was picked: on the page, or with /TOOLS=jaq,uv on the command line (silent installs too).
 
-; Every row, in order: its index, its id (tools.rs's), name, group, kind (service, model or tool),
+; Every row, in order: its index, its id (tools.rs's), name, group, kind (service or tool),
 ; program and winget package folder (to tell whether it's on this PC already), what Glint uses
 ; it for (the list's second column) and what it is.
 !macro GLINT_TOOLS ROW
   !insertmacro ${ROW} 0 instant-search "Instant search" 1 service "" "" \
     "Finds any file on every drive as you type" \
     "Glint's own index of your NTFS drives, like Everything's: any file on any drive found in milliseconds, best matches first. It runs as a Windows service, so Windows asks for administrator approval."
-  !insertmacro ${ROW} 1 meaning "Meaning model" 1 model "" "" \
-    "Searching text by what it means" \
-    "potion-base-8M, a small model (30 MB, MIT) that runs on this PC: Text's Meaning search then ranks passages by what they're about, not only by the words in them."
-  !insertmacro ${ROW} 2 czkawka "Czkawka" 2 tool windows_czkawka_cli qarmin.czkawka.cli \
+  !insertmacro ${ROW} 1 czkawka "Czkawka" 2 tool windows_czkawka_cli qarmin.czkawka.cli \
     "Look-alike pictures, videos and music" \
     "Czkawka finds similar and broken files. Clean up uses it for look-alike pictures, videos and music, broken files and files with the wrong extension."
-  !insertmacro ${ROW} 3 ffmpeg "FFmpeg" 2 tool ffmpeg gyan.ffmpeg \
+  !insertmacro ${ROW} 2 ffmpeg "FFmpeg" 2 tool ffmpeg gyan.ffmpeg \
     "Reading videos, for look-alike videos" \
     "FFmpeg reads almost any video and sound. Clean up uses it to compare videos. It's a large download, and an FFmpeg already on this PC is used instead."
-  !insertmacro ${ROW} 4 magika "Magika" 2 tool magika google.magika \
+  !insertmacro ${ROW} 3 magika "Magika" 2 tool magika google.magika \
     "A file's real type, in the File X-Ray" \
     "Google's Magika tells a file's type from its content. The File X-Ray uses it to catch a file that isn't what its name says: a program named photo.jpg, say."
-  !insertmacro ${ROW} 5 yara-x "YARA-X" 2 tool yr virustotal.yara-x \
+  !insertmacro ${ROW} 4 yara-x "YARA-X" 2 tool yr virustotal.yara-x \
     "Checking files with YARA rules" \
     "VirusTotal's YARA-X matches files against YARA rules. Check uses it with the rules in a folder you choose in Settings."
-  !insertmacro ${ROW} 6 kingfisher "Kingfisher" 2 tool kingfisher kingfisher \
+  !insertmacro ${ROW} 5 kingfisher "Kingfisher" 2 tool kingfisher kingfisher \
     "Finding passwords and keys left in files" \
     "MongoDB's Kingfisher finds passwords, keys and tokens left in files, so you can take them out before sharing. Nothing is sent anywhere."
-  !insertmacro ${ROW} 7 rimage "rimage" 2 tool rimage rimage \
+  !insertmacro ${ROW} 6 rimage "rimage" 2 tool rimage rimage \
     "Converting pictures to JPEG, PNG, WebP or AVIF" \
     "rimage converts and shrinks pictures. Convert pictures… uses it to make JPEG, PNG, WebP or AVIF files, smaller if you ask."
-  !insertmacro ${ROW} 8 difftastic "Difftastic" 3 tool difft wilfred.difftastic \
+  !insertmacro ${ROW} 7 difftastic "Difftastic" 3 tool difft wilfred.difftastic \
     "Comparing code by its structure" \
     "Difftastic compares code by its syntax. Compare two files then shows what changed in the code, not which lines moved."
-  !insertmacro ${ROW} 9 ast-grep "ast-grep" 3 tool ast-grep ast-grep.ast-grep \
+  !insertmacro ${ROW} 8 ast-grep "ast-grep" 3 tool ast-grep ast-grep.ast-grep \
     "Code patterns for AI agents" \
     "ast-grep searches code by its syntax. AI agents connected to Glint's MCP server then find code by its structure, such as console.log($$MSG) or $$X.unwrap()."
-  !insertmacro ${ROW} 10 jaq "jaq" 3 tool jaq 01mf02.jaq \
+  !insertmacro ${ROW} 9 jaq "jaq" 3 tool jaq 01mf02.jaq \
     "jq filters in JSON, YAML and TOML previews" \
     "jaq is jq, rewritten in Rust. The preview of a JSON, YAML or TOML file can then filter it with jq."
-  !insertmacro ${ROW} 11 onefetch "onefetch" 3 tool onefetch o2sh.onefetch \
+  !insertmacro ${ROW} 10 onefetch "onefetch" 3 tool onefetch o2sh.onefetch \
     "A Git repository's card in its preview" \
     "onefetch sums up a Git repository. Its preview gets a card with its languages, who works on it, its last change and its license."
-  !insertmacro ${ROW} 12 tokei "tokei" 3 tool tokei xampprocky.tokei \
+  !insertmacro ${ROW} 11 tokei "tokei" 3 tool tokei xampprocky.tokei \
     "Lines of code on a repository's card" \
     "tokei counts lines of code. A Git repository's card then shows its lines of code by language."
-  !insertmacro ${ROW} 13 just "just" 3 tool just casey.just \
+  !insertmacro ${ROW} 12 just "just" 3 tool just casey.just \
     "A justfile's recipes in the Run menu" \
     "just runs a project's commands. The Run menu then lists the recipes in a project's justfile."
-  !insertmacro ${ROW} 14 uv "uv" 4 tool uv astral-sh.uv \
+  !insertmacro ${ROW} 13 uv "uv" 4 tool uv astral-sh.uv \
     "Running Python scripts and projects" \
     "uv is Astral's fast Python manager. The Run menu runs Python projects' scripts with it, and Scripts runs Python scripts."
-  !insertmacro ${ROW} 15 bun "Bun" 4 tool bun oven-sh.bun \
+  !insertmacro ${ROW} 14 bun "Bun" 4 tool bun oven-sh.bun \
     "Running TypeScript and JavaScript scripts" \
     "Bun is a fast JavaScript runtime. Scripts runs TypeScript and JavaScript scripts with it."
-  !insertmacro ${ROW} 16 nushell "Nushell" 4 tool nu nushell.nushell \
+  !insertmacro ${ROW} 15 nushell "Nushell" 4 tool nu nushell.nushell \
     "A shell for the terminal, and Nu scripts" \
     "Nushell is a shell for structured data. The terminal under the files can start it, and Scripts runs Nushell scripts."
-  !insertmacro ${ROW} 17 zoxide "zoxide" 4 tool zoxide ajeetdsouza.zoxide \
+  !insertmacro ${ROW} 16 zoxide "zoxide" 4 tool zoxide ajeetdsouza.zoxide \
     "Folder history shared with your terminals" \
     "zoxide remembers the folders you go to. The folders you cd to in your terminals rank in Ctrl+K, and z finds the ones you open in Glint."
-  !insertmacro ${ROW} 18 sendme "sendme" 5 tool sendme n0-computer.sendme \
+  !insertmacro ${ROW} 17 sendme "sendme" 5 tool sendme n0-computer.sendme \
     "Sending files to another PC" \
     "sendme sends files and folders from PC to PC, encrypted end to end, with a ticket instead of an account."
-  !insertmacro ${ROW} 19 dufs "dufs" 5 tool dufs sigoden.dufs \
+  !insertmacro ${ROW} 18 dufs "dufs" 5 tool dufs sigoden.dufs \
     "Sharing a folder with a phone" \
     "dufs serves a folder on this network. Share with a phone then gives a link that the phone's browser opens."
-  !insertmacro ${ROW} 20 rclone "rclone" 5 tool rclone rclone.rclone \
+  !insertmacro ${ROW} 19 rclone "rclone" 5 tool rclone rclone.rclone \
     "Google Drive, OneDrive, Dropbox and 60 more clouds" \
     "rclone reaches more than 60 cloud storage services. Glint then opens Google Drive, OneDrive, Dropbox, Box, MEGA, S3 and the rest like folders, signs you in to them, and keeps folders in sync with them."
-  !insertmacro ${ROW} 21 c2patool "c2patool" 2 tool c2patool c2patool \
+  !insertmacro ${ROW} 20 c2patool "c2patool" 2 tool c2patool c2patool \
     "Content Credentials: who made a picture, and whether AI did" \
     "The Content Authenticity Initiative's c2patool reads a picture's or video's Content Credentials (C2PA): who made it, with what, and whether AI made or changed it. The preview and the File X-Ray show them."
-  !insertmacro ${ROW} 22 whisper "whisper.cpp" 1 tool whisper-cli whisper \
-    "Speech search: what's said in recordings and videos" \
-    "whisper.cpp runs OpenAI's Whisper on this PC. Speech search (says: in the search box) then finds recordings and videos by what's said in them, in any language; its model downloads when speech search is turned on in Settings."
-  !insertmacro ${ROW} 23 pdfcpu "pdfcpu" 6 tool pdfcpu pdfcpu     "PDF tools: merge, split, pages, smaller, passwords"     "pdfcpu works on PDFs on this PC: merging and splitting them, keeping, taking out and turning pages, making them smaller, saving their pictures, adding or taking off a password and stamping them. Nothing is uploaded."
-  !insertmacro ${ROW} 24 duckdb "DuckDB" 6 tool duckdb duckdb.cli     "SQL over data files of any size"     "DuckDB reads CSV, JSON and Parquet files where they are, however big: Query, Profile (every column described), Query together and Convert data use it, reading only."
-  !insertmacro ${ROW} 25 exiftool "ExifTool" 6 tool exiftool oliverbetz.exiftool     "Remove personal info from photos, videos and PDFs"     "ExifTool reads and changes what files say about themselves. Remove personal info takes out where a photo was taken, the camera's serial number, names and editing history before you share; it also changes when photos were taken."
-  !insertmacro ${ROW} 26 7zip "7-Zip" 6 tool 7z 7zip.7zip     "Disk images and installers opened like folders"     "7-Zip reads ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers and Linux packages. Glint opens them like folders, so you see what an installer holds without running it."
-  !insertmacro ${ROW} 27 ab-av1 "ab-av1" 6 tool ab-av1 ab-av1 \
+  !insertmacro ${ROW} 21 whisper "whisper.cpp" 1 tool whisper-cli whisper \
+    "Subtitles for videos and recordings" \
+    "whisper.cpp runs OpenAI's Whisper on this PC. Media's Subtitles then writes what's said in videos and recordings, in any language; its model downloads the first time."
+  !insertmacro ${ROW} 22 pdfcpu "pdfcpu" 6 tool pdfcpu pdfcpu     "PDF tools: merge, split, pages, smaller, passwords"     "pdfcpu works on PDFs on this PC: merging and splitting them, keeping, taking out and turning pages, making them smaller, saving their pictures, adding or taking off a password and stamping them. Nothing is uploaded."
+  !insertmacro ${ROW} 23 duckdb "DuckDB" 6 tool duckdb duckdb.cli     "SQL over data files of any size"     "DuckDB reads CSV, JSON and Parquet files where they are, however big: Query, Profile (every column described), Query together and Convert data use it, reading only."
+  !insertmacro ${ROW} 24 exiftool "ExifTool" 6 tool exiftool oliverbetz.exiftool     "Remove personal info from photos, videos and PDFs"     "ExifTool reads and changes what files say about themselves. Remove personal info takes out where a photo was taken, the camera's serial number, names and editing history before you share; it also changes when photos were taken."
+  !insertmacro ${ROW} 25 7zip "7-Zip" 6 tool 7z 7zip.7zip     "Disk images and installers opened like folders"     "7-Zip reads ISO, VHD and VHDX, VMDK, DMG, WIM, ext4 and APFS images, installers and Linux packages. Glint opens them like folders, so you see what an installer holds without running it."
+  !insertmacro ${ROW} 26 ab-av1 "ab-av1" 6 tool ab-av1 ab-av1 \
     "Make smaller: videos that still look the same" \
     "ab-av1 encodes short samples of a video and scores them with VMAF, to find the smallest size that still looks the same. Make smaller then encodes the video with FFmpeg at that setting."
-  !insertmacro ${ROW} 28 libjxl "libjxl" 6 tool cjxl libjxl \
+  !insertmacro ${ROW} 27 libjxl "libjxl" 6 tool cjxl libjxl \
     "Make smaller: photos repacked as JPEG XL, losslessly" \
     "libjxl repacks JPEG photos as JPEG XL, about a fifth smaller without losing a bit, and Back to JPEG gives the very same JPEG back. Windows 11 and Chrome open JPEG XL."
-  !insertmacro ${ROW} 29 ghostscript "Ghostscript" 6 tool gswin64c ghostscript \
+  !insertmacro ${ROW} 28 ghostscript "Ghostscript" 6 tool gswin64c ghostscript \
     "Make smaller: PDFs full of pictures" \
     "Ghostscript rewrites a PDF with its pictures at the resolution screens and mail need, or print does: often a tenth of the size. It's unpacked by 7-Zip, which installs first if it isn't here."
-  !insertmacro ${ROW} 30 pandoc "pandoc" 6 tool pandoc johnmacfarlane.pandoc \
+  !insertmacro ${ROW} 29 pandoc "pandoc" 6 tool pandoc johnmacfarlane.pandoc \
     "Convert document: Word, Markdown, HTML, EPUB and more" \
     "pandoc turns documents into one another: Word, OpenDocument, Markdown, HTML, EPUB, LaTeX, RTF and more, and Markdown into PowerPoint. It runs sandboxed: it reads only the document it's given."
-  !insertmacro ${ROW} 31 typst "Typst" 6 tool typst typst.typst \
+  !insertmacro ${ROW} 30 typst "Typst" 6 tool typst typst.typst \
     "PDFs from Convert document, and .typ files" \
     "Typst typesets documents. Convert document makes its PDFs with it, without LaTeX or Word, and .typ files get a preview and Export as PDF."
-  !insertmacro ${ROW} 32 restic "restic" 7 tool restic restic.restic \
+  !insertmacro ${ROW} 31 restic "restic" 7 tool restic restic.restic \
     "Back up folders to a drive, a network folder or a cloud" \
     "restic backs up folders, encrypted, each backup adding only what changed. Glint backs up to a USB drive, a network folder or any cloud Remote reaches, and shows the backups in Previous versions."
 !macroend
@@ -258,8 +255,6 @@ Var GlintFailed
     ${If} $5 == service
       ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Services\ShadUIRipgrepIndex" "ImagePath"
       ${IfThen} $0 != "" ${|} StrCpy $9 1 ${|}
-    ${ElseIf} $5 == model
-      ${IfThen} ${FileExists} "$LOCALAPPDATA\${BUNDLEID}\models\potion-base-8M\model.safetensors" ${|} StrCpy $9 1 ${|}
     ${Else}
       ReadEnvStr $4 ProgramData
       ClearErrors

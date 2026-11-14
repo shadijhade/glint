@@ -128,31 +128,6 @@ fn the_content_index_starts_in_documents_and_desktop_and_takes_folders_in_and_ou
 }
 
 #[gpui_kit::test]
-fn photo_search_picks_pictures_and_downloads_its_model_when_turned_on(cx: &mut TestAppContext) {
-    let _guard = testing::lock();
-    let fake = Arc::new(Fake::new());
-    let (mut visual, view) = open_settings(cx, &fake, None);
-    go_to(&mut visual, "instant-search");
-    reveal(&mut visual, &view, "settings-switch-photos");
-    assert!(has(&mut visual, "Photo search (shows:)"));
-    click(&mut visual, "settings-switch-photos");
-    settle(&mut visual, |_| {
-        fake.calls().iter().any(|c| c == "media_install photos")
-            && fake
-                .calls()
-                .iter()
-                .any(|c| c.starts_with("media_configure photos=true") && c.contains("Pictures"))
-    });
-    // The folders chosen are listed, named for removal.
-    settle(&mut visual, |cx| {
-        label_of(cx, "settings-button-photos-folder-0").is_some()
-    });
-    assert!(label_of(&mut visual, "settings-button-photos-folder-0")
-        .unwrap_or_default()
-        .starts_with("Remove "));
-}
-
-#[gpui_kit::test]
 fn tools_install_with_progress_and_clouds_wait_for_rclone(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let fake = Arc::new(Fake::new());

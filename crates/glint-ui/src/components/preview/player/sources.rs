@@ -14,23 +14,8 @@ use gpui_kit::{App, Global, Image, RenderImage};
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// What speech search heard in a recording: the language, each part with the millisecond it begins at, and which
-/// parts say the words that were searched for (`Heard`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Heard {
-    /// "en", "ar"…
-    pub lang: String,
-    /// `(milliseconds, text)`.
-    pub parts: Vec<(u64, String)>,
-    /// Indexes into `parts`.
-    pub hits: Vec<usize>,
-}
-
 /// Opens a file in an engine.
 pub type Open = Rc<dyn Fn(&str, Kind) -> Opened>;
-
-/// What speech search heard in a recording, for a path and the words to mark.
-pub type HeardFn = Rc<dyn Fn(&str, Option<&str>) -> Fut<Option<Heard>>>;
 
 /// A video's scrub frames, for a path and a width in device pixels.
 pub type FramesFn = Rc<dyn Fn(&str, u32) -> Fut<Option<Arc<Frames>>>>;
@@ -42,8 +27,6 @@ pub struct PlayerSources {
     pub open: Open,
     /// A recording's waveform: [`super::wave::BARS`] bars from 0 to 1, or nothing when it can't be decoded.
     pub peaks: Ask<Option<Vec<f32>>>,
-    /// What speech search heard in a recording, with the parts that say the words (second argument) marked.
-    pub heard: HeardFn,
     /// A song's cover, decoded.
     pub cover: Ask<Option<Arc<RenderImage>>>,
     /// A file in an archive (or on a remote), copied out to a temp file to be played: its path.
@@ -78,20 +61,6 @@ impl PlayerSources {
                 let path = path.to_string();
                 let running = off_thread(move || super::wave::peaks_of(&path).ok());
                 Box::pin(async move { running.await.flatten() })
-            }),
-            heard: Rc::new(|path, words| {
-                let running = core_bridge::run(glint_core::speech::speech_transcript(
-                    path.to_string(),
-                    words.map(str::to_string),
-                ));
-                Box::pin(async move {
-                    let heard = running.await.ok()?.ok()??;
-                    Some(Heard {
-                        lang: heard.lang,
-                        parts: heard.parts,
-                        hits: heard.hits,
-                    })
-                })
             }),
             cover: Rc::new(move |path| {
                 let running = core_bridge::run(glint_core::media::media_details(path.to_string()));

@@ -1199,7 +1199,6 @@ mod scrubbing {
         PlayerSources {
             open: Rc::new(|_, _| unreachable!("a grid tile never plays")),
             peaks: Rc::new(|_| Box::pin(async { None })),
-            heard: Rc::new(|_, _| Box::pin(async { None })),
             cover: Rc::new(|_| Box::pin(async { None })),
             extract: Rc::new(|_| Box::pin(async { Err("no".to_string()) })),
             frames: Rc::new(move |_, _| {

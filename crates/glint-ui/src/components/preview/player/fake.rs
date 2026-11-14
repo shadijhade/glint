@@ -3,7 +3,7 @@
 
 use super::engine::{Command, Engine, Event, Facts, Frame, Kind, Opened};
 use super::scrub::Frames;
-use super::sources::{Heard, PlayerSources};
+use super::sources::PlayerSources;
 use crate::components::preview::sources::Fut;
 use gpui_kit::RenderImage;
 use std::cell::RefCell;
@@ -124,10 +124,6 @@ pub fn film(duration: f64, width: u32, height: u32) -> Facts {
 pub struct Answers {
     /// The waveform's bars.
     pub peaks: RefCell<Option<Vec<f32>>>,
-    /// What speech search heard.
-    pub heard: RefCell<Option<Heard>>,
-    /// The words each transcript was asked for.
-    pub asked: RefCell<Vec<Option<String>>>,
     /// A song's cover.
     pub cover: RefCell<Option<Arc<RenderImage>>>,
     /// The temp copy an archived file is extracted to.
@@ -139,13 +135,7 @@ pub struct Answers {
 /// Fake sources that open [`Opening`]s and answer from [`Answers`].
 pub fn sources(opening: Rc<Opening>, answers: Rc<Answers>) -> PlayerSources {
     let open_in = opening.clone();
-    let (peaks, heard, cover, extract, frames) = (
-        answers.clone(),
-        answers.clone(),
-        answers.clone(),
-        answers.clone(),
-        answers,
-    );
+    let (peaks, cover, extract, frames) = (answers.clone(), answers.clone(), answers.clone(), answers);
     PlayerSources {
         open: Rc::new(move |path, kind| {
             open_in.opened.borrow_mut().push((path.to_string(), kind));
@@ -164,11 +154,6 @@ pub fn sources(opening: Rc<Opening>, answers: Rc<Answers>) -> PlayerSources {
         peaks: Rc::new(move |_| {
             let bars = peaks.peaks.borrow().clone();
             Box::pin(async move { bars })
-        }),
-        heard: Rc::new(move |_, words| {
-            heard.asked.borrow_mut().push(words.map(str::to_string));
-            let said = heard.heard.borrow().clone();
-            Box::pin(async move { said })
         }),
         cover: Rc::new(move |_| {
             let cover = cover.cover.borrow().clone();

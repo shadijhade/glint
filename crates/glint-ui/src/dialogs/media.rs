@@ -8,7 +8,7 @@
 //! |------------------------------------------------|-----------------------------------------------------------|
 //! | `openMedia(entries, mode)`                     | [`open`] (the menus' `Media { paths, tool }`)             |
 //! | `MediaDialog` / `MediaModal`                   | [`MediaDialog`]                                           |
-//! | `mediaProbe`, `mediaEncoders`, `mediaRun`, `mediaCancel`, `media_ai_*` | [`Backend`] (a fake in the tests)         |
+//! | `mediaProbe`, `mediaEncoders`, `mediaRun`, `mediaCancel`, `whisper_*` | [`Backend`] (a fake in the tests)          |
 //! | `isVideoFile`, `isAudioFile`, `isMediaFile`    | [`is_video_file`], [`is_audio_file`], [`is_media_file`]   |
 //! | `seconds`, `clock`, `encoderName`              | [`seconds`], [`clock`], [`encoder_name`]                  |
 //! | `last` (the choices of last time)              | `LAST`, kept while Glint runs                             |
@@ -31,6 +31,7 @@ use crate::components::settings::{Backend as SettingsBackend, CoreBackend as Set
 use crate::kit::prelude::*;
 use crate::{core_bridge, t, theme};
 use glint_core::actions::{Output, Progress, Report};
+use glint_core::host::Manager as _;
 use glint_core::media_tools::{AudioFormat, Encoders, Probe, Quality, Task, VideoFormat};
 use glint_model::format::{format_count, format_size, plural};
 use glint_model::paths::base_name;
@@ -290,10 +291,10 @@ pub trait Backend: Send + Sync {
     ) -> Fut<Report>;
     /// Stops the run under way (`mediaCancel`).
     fn cancel(&self);
-    /// Whether the speech model (and whisper.cpp) are there (`mediaStatus().speechInstalled`).
+    /// Whether whisper.cpp and its model are there (`mediaStatus().speechInstalled`).
     fn speech_installed(&self) -> Fut<bool>;
-    /// Downloads them, telling `progress` how far it is ("Downloading 40%"); whether they are there now
-    /// (`media_ai_install`).
+    /// Installs whisper.cpp and downloads its model, telling `progress` how far it is ("Downloading 40%"); whether
+    /// they are there now (`whisper_install`).
     fn install_speech(&self, progress: async_channel::Sender<String>) -> Fut<bool>;
     /// What the install cards ask about tools (none: every tool counts as there).
     fn tools(&self) -> Option<Arc<dyn SettingsBackend>>;
@@ -343,13 +344,17 @@ impl Backend for CoreBackend {
     }
 
     fn speech_installed(&self) -> Fut<bool> {
-        let status = SettingsCoreBackend::new(self.app.clone()).media_status();
-        Box::pin(async move { status.await.map(|status| status.speech_installed) })
+        action_run::on_core(glint_core::whisper::whisper_installed())
     }
 
     fn install_speech(&self, progress: async_channel::Sender<String>) -> Fut<bool> {
         let (fetch, heard) = async_channel::unbounded();
-        let install = SettingsCoreBackend::new(self.app.clone()).media_install("speech", fetch);
+        let app = self.app.clone();
+        let install = action_run::on_core(async move {
+            let installs = app.state::<glint_core::tools::Installs>();
+            let channel = crate::components::settings::fetch_channel(fetch);
+            glint_core::whisper::whisper_install(channel, installs).await
+        });
         // "Downloading 40%": the stage and how far, as the TypeScript's `setFetching` worded it.
         glint_core::host::async_runtime::spawn(async move {
             while let Ok(p) = heard.recv().await {
@@ -363,7 +368,7 @@ impl Backend for CoreBackend {
                 }
             }
         });
-        Box::pin(async move { install.await.map(|status| status.speech_installed) })
+        install
     }
 
     fn tools(&self) -> Option<Arc<dyn SettingsBackend>> {
