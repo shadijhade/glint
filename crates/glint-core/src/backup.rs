@@ -287,6 +287,7 @@ pub async fn backup_setup(source: String, repository: String, password: String, 
             None => list.push(plan.clone()),
         }
         save(list)?;
+        ensure_scheduler();
         Ok(plan)
     })
     .await
@@ -309,7 +310,12 @@ pub async fn backup_remove(id: String) -> Result<(), String> {
 
 /// Changes when a folder is backed up.
 pub async fn backup_schedule(id: String, schedule: Schedule) -> Result<Plan, String> {
-    blocking(move || update(&id, |p| p.schedule = schedule)).await
+    blocking(move || {
+        let plan = update(&id, |p| p.schedule = schedule)?;
+        ensure_scheduler();
+        Ok(plan)
+    })
+    .await
 }
 
 pub fn backup_cancel() {
@@ -560,9 +566,26 @@ pub async fn backup_restore(window: Window, plan: String, snapshot: String, path
     .await
 }
 
+/// The app the scheduler tells of the backups it ran (set by [`start_scheduler`]).
+static SCHEDULER_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+/// Whether the scheduler's thread is running.
+static SCHEDULER: AtomicBool = AtomicBool::new(false);
+
 /// Backs up, while Glint runs, the folders whose daily or weekly backup is due, a minute after Glint
-/// starts and every half hour after; a folder whose backup drive isn't there is tried next time.
+/// starts (or a folder gets a schedule) and every half hour after; a folder whose backup drive isn't
+/// there is tried next time. No thread runs while no folder has a schedule.
 pub fn start_scheduler(app: AppHandle) {
+    let _ = SCHEDULER_APP.set(app);
+    ensure_scheduler();
+}
+
+/// Starts the scheduler's thread when a folder has a schedule, the app has started the scheduler, and the
+/// thread isn't running already; it ends once no folder has a schedule.
+fn ensure_scheduler() {
+    let Some(app) = SCHEDULER_APP.get().cloned() else { return };
+    if !scheduled(&plans()) || SCHEDULER.swap(true, Ordering::SeqCst) {
+        return;
+    }
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(60));
         loop {
@@ -573,9 +596,21 @@ pub fn start_scheduler(app: AppHandle) {
                 let result = run(&plan.id, &|_| {});
                 let _ = app.emit("backup-finished", serde_json::json!({ "source": plan.source, "result": result.as_ref().ok(), "error": result.as_ref().err() }));
             }
+            if !scheduled(&plans()) {
+                SCHEDULER.store(false, Ordering::SeqCst);
+                // A schedule set between the check and now starts the loop again rather than a second thread.
+                if !scheduled(&plans()) || SCHEDULER.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+            }
             std::thread::sleep(Duration::from_secs(30 * 60));
         }
     });
+}
+
+/// Whether any plan is backed up on a schedule (not only by hand).
+fn scheduled(plans: &[Plan]) -> bool {
+    plans.iter().any(|plan| plan.schedule != Schedule::Manual)
 }
 
 /// Whether a plan's next backup is due at `now`: a day (20 hours) or a week (6½ days) after the last
@@ -618,6 +653,18 @@ mod tests {
         assert_eq!(chrono_ms("2026-11-09T20:15:31.5+02:00"), Some(1_794_248_131_500));
         let json = r#"[{"time":"2026-11-09T18:15:31.5Z","short_id":"4f2a9c1b","id":"4f2a9c1b77"},{"time":"bad","short_id":"x"}]"#;
         assert_eq!(snapshots_of(json), vec![("4f2a9c1b".to_string(), 1_794_248_131_500)]);
+    }
+
+    #[test]
+    fn the_scheduler_runs_only_while_a_folder_has_a_schedule() {
+        let plan = |schedule| Plan { id: "1".into(), source: r"C:\x".into(), repository: r"E:\b".into(), schedule, last: None, checked: 0 };
+        assert!(!scheduled(&[]));
+        assert!(!scheduled(&[plan(Schedule::Manual), plan(Schedule::Manual)]));
+        assert!(scheduled(&[plan(Schedule::Manual), plan(Schedule::Weekly)]));
+        assert!(scheduled(&[plan(Schedule::Daily)]));
+        // Not started by the app (tests, the MCP server): setting a schedule starts no thread.
+        ensure_scheduler();
+        assert!(!SCHEDULER.load(Ordering::SeqCst));
     }
 
     #[test]

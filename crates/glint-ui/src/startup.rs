@@ -32,6 +32,8 @@ use windows::Win32::Foundation::HWND;
 
 /// The main window waits this long for its first folder before it is shown without it.
 const SHOWN_EMPTY_AFTER: std::time::Duration = std::time::Duration::from_millis(120);
+/// The engine's background work starts this long after the first folder, clear of the first frames.
+const BACKGROUND_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The main window's handle, 0 until it exists: posted jobs and the tray's callbacks can't hold a `Window`.
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -195,6 +197,9 @@ pub(crate) fn start(cx: &mut App, request: launch::Request) {
                     let _ = main.update(cx, |_, window, cx| crate::notices::service_update(window, cx));
                 }
             }
+            if services.background {
+                start_background(cx);
+            }
         });
     })
     .detach();
@@ -225,6 +230,8 @@ struct Services {
     selftest: bool,
     /// The instant search service following the app's update.
     service_update: bool,
+    /// The engine's background work: the content index, remotes in File Explorer, scheduled backups, Ctrl+Alt+G.
+    background: bool,
 }
 
 fn services(secondary: bool) -> Services {
@@ -238,7 +245,28 @@ fn services(secondary: bool) -> Services {
         quick_search_window: main,
         selftest: main,
         service_update: main,
+        background: main,
     }
+}
+
+/// What the web app started once its page had painted (`app_ready`), once per process and a moment after the
+/// first folder: Search inside files instantly catching up with what changed while Glint was closed, the remotes
+/// shown in File Explorer answering it again, folders backed up daily or weekly, and Ctrl+Alt+G taking the file
+/// dialog in front to the folder shown. Each starts its own thread, off the UI thread.
+fn start_background(cx: &mut App) {
+    let Some(app) = cx.try_global::<core_bridge::Core>().map(|core| core.app.clone()) else {
+        return;
+    };
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(BACKGROUND_AFTER).await;
+        std::thread::spawn(move || {
+            glint_core::content::start(&app);
+            glint_core::ondemand::start();
+            glint_core::backup::start_scheduler(app);
+            glint_core::dialogs::listen();
+        });
+    })
+    .detach();
 }
 
 // ---- The main window -------------------------------------------------------------------------------------
@@ -1285,6 +1313,7 @@ mod tests {
             quick_search_window: false,
             selftest: false,
             service_update: false,
+            background: false,
         };
         assert_eq!(services(true), none);
         let all = services(false);
@@ -1296,7 +1325,8 @@ mod tests {
                 && all.later_launches
                 && all.quick_search_window
                 && all.selftest
-                && all.service_update,
+                && all.service_update
+                && all.background,
             "the main window has every one: {all:?}"
         );
     }
