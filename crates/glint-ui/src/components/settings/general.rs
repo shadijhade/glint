@@ -233,9 +233,6 @@ impl SettingsView {
         if self.media.read(cx).status().is_some() {
             page.push(("photos-and-recordings", self.media.clone().into_any_element()));
         }
-        if self.devices.read(cx).status().is_some() {
-            page.push(("devices", self.devices.clone().into_any_element()));
-        }
         page.extend([
             ("find-files-by-name", self.find(&s, t, cx).into_any_element()),
             ("quick-search", self.quick_search(&s, t, cx).into_any_element()),

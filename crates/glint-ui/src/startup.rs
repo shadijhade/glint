@@ -520,7 +520,7 @@ fn quick_search(cx: &mut App) {
 }
 
 /// What core tells without being asked, said in the main window: a scheduled backup that finished (App.tsx's
-/// "backup-finished" listener) and files a paired PC sent here (`listenForDeviceFiles`, with Show).
+/// "backup-finished" listener).
 fn hear_core_notices(cx: &mut App) {
     let Some(events) = cx.try_global::<core_bridge::Core>().map(|core| core.events.clone()) else {
         return;
@@ -531,7 +531,6 @@ fn hear_core_notices(cx: &mut App) {
         }
     })
     .detach();
-    crate::dialogs::nearby::hear_device_files(cx, Rc::new(notify));
 }
 
 /// The folder rules saved last time are handed to core, which watches their folders again (`initRules`).

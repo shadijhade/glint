@@ -17,7 +17,6 @@
 //! | `InstantSearch`                              | [`instant::InstantSearch`]                         |
 //! | `ContentIndexSection`                        | [`content::ContentIndex`]                          |
 //! | `MediaSearchSection`                         | [`media::MediaSearch`]                             |
-//! | `DevicesSection`                             | [`devices::Devices`]                               |
 //! | `AgentsSection`                              | [`agents::Agents`]                                 |
 //! | `CloudsSection`                              | [`clouds::Clouds`]                                 |
 //! | `ToolsSection`, `Meaning*Row`                | [`tools::Tools`]                                   |
@@ -35,7 +34,6 @@ pub mod agents;
 mod backend;
 pub mod clouds;
 pub mod content;
-pub mod devices;
 mod general;
 pub mod instant;
 pub mod integration;
@@ -191,7 +189,6 @@ pub struct SettingsView {
     pub(crate) instant: Entity<instant::InstantSearch>,
     pub(crate) content: Entity<content::ContentIndex>,
     pub(crate) media: Entity<media::MediaSearch>,
-    pub(crate) devices: Entity<devices::Devices>,
     pub(crate) agents: Entity<agents::Agents>,
     pub(crate) clouds: Entity<clouds::Clouds>,
     pub(crate) tools: Entity<tools::Tools>,
@@ -253,10 +250,6 @@ impl SettingsView {
         let media = {
             let backend = backend.clone();
             cx.new(|cx| media::MediaSearch::new(backend, window, cx))
-        };
-        let devices = {
-            let backend = backend.clone();
-            cx.new(|cx| devices::Devices::new(backend, window, cx))
         };
         let agents = {
             let backend = backend.clone();
@@ -333,7 +326,6 @@ impl SettingsView {
             instant,
             content,
             media,
-            devices,
             agents,
             clouds,
             tools,

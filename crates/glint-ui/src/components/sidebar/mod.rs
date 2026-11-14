@@ -95,9 +95,6 @@ pub enum SidebarRequest {
     /// keyboard is on. `position` is in the window: the pointer, or the row's bottom-start corner (`onPlaceContextMenu`).
     /// The window opens `components::menus::MenuHost::open_folder_menu(&path, position, ..)`.
     ContextMenu { path: String, position: Point<Pixels> },
-    /// Files dropped on a paired PC's place: send them to it (`sendToDevice(device, paths)`). `id` is the
-    /// connection's id. The window hands them to the devices part (`dialogs::nearby`).
-    SendToDevice { id: String, paths: Vec<String> },
 }
 
 /// A cloud's space from its service: its rclone remote's name and the folder in it. Total and free bytes, or
@@ -719,7 +716,6 @@ impl Sidebar {
             drop::Target::Bin => self
                 .explorer
                 .update(cx, |e, cx| e.drop_files(paths, RECYCLE_BIN, true, cx).detach()),
-            drop::Target::Device { id } => cx.emit(SidebarRequest::SendToDevice { id, paths }),
         }
     }
 
@@ -1018,7 +1014,6 @@ impl Sidebar {
                 }
                 RemoteKind::S3 => IconName::Database,
                 RemoteKind::Sftp => IconName::SquareTerminal,
-                RemoteKind::Device => IconName::Monitor,
                 RemoteKind::Webdav => IconName::Server,
             },
         }

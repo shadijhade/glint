@@ -64,7 +64,7 @@ mod spec;
 mod tests;
 mod view;
 
-pub use data::{Device, MenuData, Sources};
+pub use data::{MenuData, Sources};
 pub use event::{CloudPin, CompressFormat, MediaTool, MenuEvent, PdfTool};
 pub use folder::{folder_menu, undo_label, Connection, FolderCtx, FolderView};
 pub use item::{item_menu, open_in_menu, scripts_menu, shell_menu_fits, ItemCtx};
@@ -79,7 +79,6 @@ use crate::{i18n, persistence, state, t};
 use glint_core::host::Manager as _;
 use glint_model::entries::FileEntry;
 use glint_model::paths::{base_name, is_folder_path, is_remote_path, is_root, remote_id_of};
-use glint_model::store::RemoteKind;
 use gpui_kit::{anchored, deferred, Anchor};
 use std::time::{Duration, Instant};
 
@@ -402,7 +401,6 @@ impl MenuHost {
         ctx.editor_name = editor_name(&settings.editor_path);
         if let Some(app) = persistence::app(cx) {
             ctx.pinned = app.pinned.clone();
-            ctx.devices = devices(&app.remotes);
         }
         let Some(explorer) = try_explorer(cx) else { return ctx };
         let ex = explorer.read(cx);
@@ -462,7 +460,6 @@ impl MenuHost {
                     .map(|r| Connection {
                         id: r.id.clone(),
                         name: r.name.clone(),
-                        device: r.kind == RemoteKind::Device,
                     });
             }
         }
@@ -662,18 +659,6 @@ fn editor_name(editor_path: &str) -> String {
     } else {
         name.to_string()
     }
-}
-
-/// The paired PCs files can be sent to (`pairedDevices()`).
-fn devices(remotes: &[glint_model::store::RemoteConnection]) -> Vec<Device> {
-    remotes
-        .iter()
-        .filter(|r| r.kind == RemoteKind::Device && r.host.is_some())
-        .map(|r| Device {
-            id: r.id.clone(),
-            name: r.name.clone(),
-        })
-        .collect()
 }
 
 impl Render for MenuHost {

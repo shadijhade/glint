@@ -4,7 +4,7 @@
 use super::backend::{Backend, Fut, IndexInfo, IndexState, Known, McpSetup, ToolInfo, Volume};
 use super::*;
 use crate::testing;
-use glint_core::{agents, content, devices, meaning, media_ai, openers, rclone, term, verbs};
+use glint_core::{agents, content, meaning, media_ai, openers, rclone, term, verbs};
 use glint_model::store::{Backdrop, Language as LanguageChoice, Theme};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{TestAppContext, VisualTestContext};
@@ -32,8 +32,6 @@ pub struct Fake {
     pub picks: Mutex<VecDeque<Option<String>>>,
     pub content: Mutex<content::Status>,
     pub media: Mutex<media_ai::Config>,
-    pub sharing: Mutex<bool>,
-    pub shares: Mutex<Vec<devices::Share>>,
     pub integration_available: bool,
     pub fail_next: Mutex<Option<String>>,
 }
@@ -63,8 +61,6 @@ impl Fake {
                 ..Default::default()
             }),
             media: Mutex::new(media_ai::Config::default()),
-            sharing: Mutex::new(false),
-            shares: Mutex::new(Vec::new()),
             integration_available: true,
             fail_next: Mutex::new(None),
         }
@@ -177,35 +173,6 @@ impl Backend for Fake {
     ) -> Fut<media_ai::Status> {
         self.said(format!("media_install {kind}"));
         self.media_status()
-    }
-
-    fn devices_status(&self) -> Fut<devices::Status> {
-        ready(Ok(devices::Status {
-            name: "TEST-PC".into(),
-            sharing: *lock(&self.sharing),
-            shares: lock(&self.shares).clone(),
-            allowed: Vec::new(),
-        }))
-    }
-
-    fn devices_configure(&self, sharing: bool, shares: Vec<devices::Share>) -> Fut<devices::Status> {
-        self.said(format!("devices_configure {sharing} {}", shares.len()));
-        *lock(&self.sharing) = sharing;
-        *lock(&self.shares) = shares;
-        self.devices_status()
-    }
-
-    fn devices_forget(&self, _id: String) -> Fut<devices::Status> {
-        self.devices_status()
-    }
-
-    fn devices_pair_code(&self) -> Fut<String> {
-        ready(Ok("KEY-ABCDE23456".into()))
-    }
-
-    fn devices_pair(&self, code: String) -> Fut<(String, String)> {
-        self.said(format!("devices_pair {code}"));
-        ready(Ok(("device-key".into(), "Office PC".into())))
     }
 
     fn tools_status(&self) -> Fut<Vec<ToolInfo>> {
@@ -563,12 +530,11 @@ fn settings_opens_as_a_named_dialog_with_every_section_listed(cx: &mut TestAppCo
         );
     }
     assert_eq!(role_of(&mut visual, "Settings sections"), Some(Role::Navigation));
-    // The page is the sections in order; Content/Media/Devices wait until their service has answered.
+    // The page is the sections in order; Content and Media wait until their service has answered.
     let order = visual.update(|_, cx| view.read(cx).sections().to_vec());
     assert_eq!(&order[..3], &["appearance", "files", "instant-search"]);
     assert_eq!(order.last().copied(), Some("about"));
     assert!(order.contains(&"search-inside-files-instantly"));
-    assert!(order.contains(&"devices"));
 }
 
 #[gpui_kit::test]

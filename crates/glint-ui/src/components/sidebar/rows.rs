@@ -302,10 +302,6 @@ pub fn remote_where(r: &RemoteConnection) -> String {
             service_name(r.service.as_deref().unwrap_or("")),
             r.rclone.as_deref().unwrap_or("")
         ),
-        RemoteKind::Device => format!(
-            "The folders “{}” shares with this PC, over Glint's devices (read-only)",
-            r.name
-        ),
         RemoteKind::Sftp => {
             let user = if r.user.is_empty() {
                 String::new()
@@ -926,10 +922,6 @@ mod tests {
                 ..remote("w", "W", RemoteKind::Webdav)
             }),
             "WebDAV at https://dav.example/x"
-        );
-        assert_eq!(
-            remote_where(&remote("d", "Laptop", RemoteKind::Device)),
-            "The folders “Laptop” shares with this PC, over Glint's devices (read-only)"
         );
     }
 
