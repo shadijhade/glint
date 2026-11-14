@@ -107,6 +107,11 @@ impl Selection {
         self.paths.contains(path)
     }
 
+    /// Whether `other` selects these very paths (the same set, shared, not compared).
+    pub fn same_paths(&self, other: &Selection) -> bool {
+        Arc::ptr_eq(&self.paths, &other.paths)
+    }
+
     /// The selected paths, in the order they were selected.
     pub fn iter(&self) -> impl Iterator<Item = &str> + '_ {
         self.paths.iter()
