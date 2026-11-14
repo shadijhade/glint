@@ -250,7 +250,8 @@ fn services(secondary: bool) -> Services {
 /// What the web app started once its page had painted (`app_ready`), once per process and a moment after the
 /// first folder: Search inside files instantly catching up with what changed while Glint was closed, the remotes
 /// shown in File Explorer answering it again, folders backed up daily or weekly, and Ctrl+Alt+G taking the file
-/// dialog in front to the folder shown. Each starts its own thread, off the UI thread.
+/// dialog in front to the folder shown. Each starts its own thread, off the UI thread. First, what removed
+/// features left in the data folder is deleted (`retired::sweep`).
 fn start_background(cx: &mut App) {
     let Some(app) = cx.try_global::<core_bridge::Core>().map(|core| core.app.clone()) else {
         return;
@@ -258,6 +259,7 @@ fn start_background(cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor().timer(BACKGROUND_AFTER).await;
         std::thread::spawn(move || {
+            glint_core::retired::sweep();
             glint_core::content::start(&app);
             glint_core::ondemand::start();
             glint_core::backup::start_scheduler(app);

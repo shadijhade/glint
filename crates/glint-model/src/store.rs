@@ -1494,6 +1494,19 @@ mod tests {
     }
 
     #[test]
+    fn a_state_saved_with_what_0_12_removed_loads() {
+        // 0.11 saved the documents search's By meaning, and remotes of paired PCs.
+        let text = r#"{"state":{"options":{"documents":true,"ocr":true,"meaning":true,"regex":true},
+            "settings":{"theme":"dark"},"pinned":["C:\\Work"],
+            "remotes":[{"id":"laptop","name":"Laptop","kind":"device","host":"abc123"}]},"version":0}"#;
+        let s = load_persisted(text);
+        assert!(s.options.documents && s.options.ocr && s.options.regex);
+        assert_eq!(s.settings.theme, Theme::Dark);
+        assert_eq!(s.pinned, vec!["C:\\Work".to_string()]);
+        assert!(s.remotes.is_empty());
+    }
+
+    #[test]
     fn a_paired_pcs_connection_saved_by_an_older_glint_goes() {
         let text = r#"{"state":{"remotes":[
             {"id":"laptop","name":"Laptop","kind":"device","host":"abc123"},

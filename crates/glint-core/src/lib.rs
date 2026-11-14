@@ -65,6 +65,7 @@ pub mod sandbox;
 pub mod scrub;
 pub mod remote;
 pub mod repo;
+pub mod retired;
 pub mod scripts;
 pub mod lan;
 pub mod localsend;
