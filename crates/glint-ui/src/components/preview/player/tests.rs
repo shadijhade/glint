@@ -2,7 +2,7 @@
 //! without Windows' media engine. The Arabic UI and Arabic content are used where direction or text matters.
 
 use super::fake::{self, Answers, Opening};
-use super::scrub::{parse_frames, Scrub};
+use super::scrub::{frames_of, Scrub};
 use super::*;
 use crate::dialogs::media_tools::Handle;
 use crate::explorer::fake::file;
@@ -577,17 +577,13 @@ fn letting_go_of_the_view_stops_the_engine_and_a_playing_one_too(cx: &mut TestAp
 // ---- Scrubbing over a tile ---------------------------------------------------------------------------------
 
 fn tile_frames() -> Arc<scrub::Frames> {
-    let mut bytes = Vec::new();
-    for n in [10u32, 4, 2] {
-        bytes.extend_from_slice(&n.to_le_bytes());
-    }
-    bytes.extend_from_slice(&125f64.to_le_bytes());
-    for frame in 0..10u8 {
-        for _ in 0..8 {
-            bytes.extend_from_slice(&[frame * 20, 10, 10, 255]);
-        }
-    }
-    Arc::new(parse_frames(&bytes).expect("ten frames"))
+    let video = glint_core::scrub::VideoFrames {
+        width: 4,
+        height: 2,
+        seconds: 125.,
+        frames: (0..10u8).map(|frame| [10, 10, frame * 20, 255].repeat(8)).collect(),
+    };
+    Arc::new(frames_of(video).expect("ten frames"))
 }
 
 #[gpui_kit::test]

@@ -488,7 +488,7 @@ fn new_items(data: &MenuData) -> Vec<Node> {
                 IconName::FilePlus,
                 MenuEvent::NewOfKind { ext: kind.ext.clone() },
             )
-            .with_data_url_picture(kind.icon.as_deref()),
+            .with_picture(kind.icon.as_deref()),
         )
     }));
     items
@@ -499,21 +499,25 @@ mod tests {
     use super::*;
     use glint_core::newmenu::NewKind;
 
-    fn kind(ext: &str, name: &str, icon: Option<&str>) -> NewKind {
+    fn kind(ext: &str, name: &str, icon: Option<&glint_core::thumbs::Pixels>) -> NewKind {
         NewKind {
             ext: ext.into(),
             name: name.into(),
-            icon: icon.map(str::to_string),
+            icon: icon.cloned().map(std::sync::Arc::new),
             by_app: false,
         }
     }
 
     #[test]
     fn each_kind_in_the_new_menu_carries_its_own_icon() {
-        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        let png = glint_core::thumbs::Pixels {
+            width: 1,
+            height: 1,
+            bgra: vec![0, 0, 0, 255],
+        };
         let data = MenuData {
             new_kinds: vec![
-                kind(".docx", "Microsoft Word Document", Some(png)),
+                kind(".docx", "Microsoft Word Document", Some(&png)),
                 kind(".zip", "Zip", None),
             ],
             ..MenuData::default()

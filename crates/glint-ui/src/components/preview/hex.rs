@@ -74,18 +74,7 @@ pub struct HexSource {
 /// glint-core's `file_bytes` (at most 1 MB a read) and `archive_extract`.
 pub fn core_hex_source() -> HexSource {
     HexSource {
-        bytes: Arc::new(|path, offset, len| {
-            Box::pin(async move {
-                let answer = glint_core::filediff::file_bytes(path, offset, len).await?.into_bytes();
-                // Its size (u64, little-endian), then the bytes.
-                let size = answer
-                    .get(..8)
-                    .and_then(|head| <[u8; 8]>::try_from(head).ok())
-                    .map(u64::from_le_bytes)
-                    .ok_or_else(|| "The file's bytes came back without a size".to_string())?;
-                Ok((size, answer.get(8..).unwrap_or_default().to_vec()))
-            })
-        }),
+        bytes: Arc::new(|path, offset, len| Box::pin(glint_core::filediff::file_bytes(path, offset, len))),
         copy: Arc::new(|path| Box::pin(glint_core::archive::archive_extract(path, "preview".to_string()))),
     }
 }

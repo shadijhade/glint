@@ -5,18 +5,16 @@
 //! are left out, and so are folders and text documents, which Glint makes itself.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 
 /// A kind of file the New menu makes.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewKind {
     /// Its extension with the dot (".docx"): what `new_file` is asked for.
     pub ext: String,
     /// What the menu says: "Microsoft Word Document".
     pub name: String,
-    /// Its icon as File Explorer shows it, as a PNG's data URL.
-    pub icon: Option<String>,
+    /// Its icon as File Explorer shows it.
+    pub icon: Option<std::sync::Arc<crate::thumbs::Pixels>>,
     /// Its app makes it (with a command of its own), and may open a window to: not renamed right away.
     pub by_app: bool,
 }
@@ -80,7 +78,7 @@ fn with_path(command: &str, path: &str) -> String {
 #[cfg(windows)]
 mod imp {
     use super::{with_path, without_access_key, NewKind};
-    use base64::Engine;
+    use crate::thumbs::Pixels;
     use std::collections::HashSet;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -252,16 +250,16 @@ mod imp {
         Some(Entry { name, item, how })
     }
 
-    /// A file type's icon, as File Explorer shows it, as a PNG's data URL.
-    fn icon(ext: &str) -> Option<String> {
+    /// A file type's icon, as File Explorer shows it.
+    fn icon(ext: &str) -> Option<std::sync::Arc<Pixels>> {
         let mut info = SHFILEINFOW::default();
         let found = unsafe { SHGetFileInfoW(&HSTRING::from(ext), FILE_ATTRIBUTE_NORMAL, Some(&mut info), size_of::<SHFILEINFOW>() as u32, SHGFI_ICON | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES) };
         if found == 0 || info.hIcon.is_invalid() {
             return None;
         }
-        let png = unsafe { icon_png(info.hIcon) };
+        let pixels = unsafe { icon_pixels(info.hIcon) };
         let _ = unsafe { DestroyIcon(info.hIcon) };
-        png.map(|png| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png)))
+        pixels.map(std::sync::Arc::new)
     }
 
     /// A bitmap's pixels, top-down 32-bit BGRA.
@@ -285,11 +283,11 @@ mod imp {
         (got != 0).then_some(bgra)
     }
 
-    /// An icon as a PNG: its colors with their alpha, or (an old icon without one) its mask's.
-    unsafe fn icon_png(icon: HICON) -> Option<Vec<u8>> {
+    /// An icon's pixels: its colors with their alpha, or (an old icon without one) its mask's.
+    unsafe fn icon_pixels(icon: HICON) -> Option<Pixels> {
         let mut info = ICONINFO::default();
         GetIconInfo(icon, &mut info).ok()?;
-        let png = (|| {
+        let pixels = (|| {
             let mut bm = BITMAP::default();
             if GetObjectW(HGDIOBJ(info.hbmColor.0), size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as *mut _)) == 0 {
                 return None;
@@ -300,24 +298,19 @@ mod imp {
             }
             let bgra = pixels(info.hbmColor, w, h)?;
             let mask = bgra.as_chunks::<4>().0.iter().all(|p| p[3] == 0).then(|| pixels(info.hbmMask, w, h)).flatten();
-            let mut rgba = Vec::with_capacity(w * h * 4);
+            let mut out = Vec::with_capacity(w * h * 4);
             for (i, p) in bgra.as_chunks::<4>().0.iter().enumerate() {
                 let alpha = match &mask {
                     Some(mask) => if mask[i * 4] == 0 { 255 } else { 0 },
                     None => p[3],
                 };
-                rgba.extend([p[2], p[1], p[0], alpha]);
+                out.extend([p[0], p[1], p[2], alpha]);
             }
-            let mut png = Vec::new();
-            let mut encoder = png::Encoder::new(&mut png, w as u32, h as u32);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder.write_header().ok()?.write_image_data(&rgba).ok()?;
-            Some(png)
+            Some(Pixels { width: w as u32, height: h as u32, bgra: out })
         })();
         let _ = DeleteObject(HGDIOBJ(info.hbmColor.0));
         let _ = DeleteObject(HGDIOBJ(info.hbmMask.0));
-        png
+        pixels
     }
 
     pub fn kinds() -> Vec<NewKind> {
@@ -435,7 +428,7 @@ mod tests {
     fn lists_this_pcs_kinds() {
         let kinds = crate::shell::in_sta(|| Ok(imp::kinds())).unwrap();
         for kind in &kinds {
-            println!("{} {} {} icon {}", kind.ext, kind.name, kind.by_app, kind.icon.as_ref().map_or(0, |i| i.len()));
+            println!("{} {} {} icon {}", kind.ext, kind.name, kind.by_app, kind.icon.as_ref().map_or(0, |i| i.bgra.len()));
         }
         assert!(kinds.iter().all(|k| k.ext.starts_with('.') && !k.name.is_empty()));
     }

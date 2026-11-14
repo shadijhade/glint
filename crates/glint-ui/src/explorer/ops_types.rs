@@ -89,18 +89,8 @@ pub struct ClipboardFiles {
     pub cut: bool,
 }
 
-/// A kind of file Windows' New menu makes (a Word document, a zip…) (`NewKind` in newKinds.ts).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NewKind {
-    /// Its extension, with the dot.
-    pub ext: String,
-    /// What the menu says: "Microsoft Word Document".
-    pub name: String,
-    /// Its icon as File Explorer shows it (a PNG's data URL).
-    pub icon: Option<String>,
-    /// Its app makes it with a command of its own (and may open a window): not renamed right away.
-    pub by_app: bool,
-}
+/// A kind of file Windows' New menu makes (a Word document, a zip…).
+pub use glint_core::newmenu::NewKind;
 
 /// What the copy queue is asked to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

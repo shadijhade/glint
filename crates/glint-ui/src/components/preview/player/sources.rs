@@ -6,7 +6,7 @@
 
 use super::engine::{Kind, Opened};
 use super::mf;
-use super::scrub::{parse_frames, Frames};
+use super::scrub::{frames_of, Frames};
 use crate::components::preview::picture::sniff;
 use crate::components::preview::sources::{sources, Ask, Fut};
 use crate::core_bridge;
@@ -66,8 +66,8 @@ impl PlayerSources {
                 let running = core_bridge::run(glint_core::media::media_details(path.to_string()));
                 let renderer = renderer.clone();
                 Box::pin(async move {
-                    let url = running.await.ok()?.ok()??.cover?;
-                    off_thread(move || decode_cover(&url, renderer)).await.flatten()
+                    let cover = running.await.ok()?.ok()??.cover?;
+                    off_thread(move || decode_cover(cover, renderer)).await.flatten()
                 })
             }),
             extract,
@@ -78,8 +78,8 @@ impl PlayerSources {
                     width,
                 ));
                 Box::pin(async move {
-                    let bytes = running.await.ok()?.ok()?.into_bytes();
-                    off_thread(move || parse_frames(&bytes)).await.flatten().map(Arc::new)
+                    let video = running.await.ok()?.ok()?;
+                    off_thread(move || frames_of(video)).await.flatten().map(Arc::new)
                 })
             }),
         }
@@ -108,60 +108,8 @@ pub fn player_sources(cx: &mut App) -> PlayerSources {
 
 // ---- Covers ----------------------------------------------------------------------------------------------
 
-/// A `data:image/jpeg;base64,…` address as a picture.
-fn decode_cover(url: &str, renderer: gpui_kit::SvgRenderer) -> Option<Arc<RenderImage>> {
-    let bytes = cover_bytes(url)?;
+/// A song's cover (a JPEG, a PNG… as the file holds it) as a picture; `None` for anything else.
+fn decode_cover(bytes: Vec<u8>, renderer: gpui_kit::SvgRenderer) -> Option<Arc<RenderImage>> {
     let format = sniff(&bytes, "")?;
     Image::from_bytes(format, bytes).to_image_data(renderer).ok()
-}
-
-/// The bytes inside a `data:…;base64,…` address.
-fn cover_bytes(url: &str) -> Option<Vec<u8>> {
-    base64_decode(url.strip_prefix("data:")?.split_once(";base64,")?.1)
-}
-
-/// Standard base64, with or without padding, ignoring line breaks; `None` for anything else.
-pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let (mut bits, mut count) = (0u32, 0u32);
-    for byte in text.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' | b'\r' | b'\n' => continue,
-            _ => return None,
-        };
-        bits = bits << 6 | u32::from(value);
-        count += 6;
-        if count >= 8 {
-            count -= 8;
-            out.push((bits >> count) as u8);
-            bits &= (1 << count) - 1;
-        }
-    }
-    Some(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn base64_is_decoded_with_or_without_padding() {
-        assert_eq!(base64_decode("TWFu").as_deref(), Some(&b"Man"[..]));
-        assert_eq!(base64_decode("TWE=").as_deref(), Some(&b"Ma"[..]));
-        assert_eq!(base64_decode("TQ").as_deref(), Some(&b"M"[..]));
-        assert_eq!(base64_decode("TW\r\nFu").as_deref(), Some(&b"Man"[..]));
-        assert_eq!(base64_decode("").as_deref(), Some(&b""[..]));
-        assert!(base64_decode("T!Fu").is_none());
-    }
-
-    #[test]
-    fn a_cover_that_is_not_a_data_address_is_nothing() {
-        assert!(cover_bytes("https://x/y.jpg").is_none());
-        assert_eq!(cover_bytes("data:image/png;base64,TWFu").as_deref(), Some(&b"Man"[..]));
-    }
 }
