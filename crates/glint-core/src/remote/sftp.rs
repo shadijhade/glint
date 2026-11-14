@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 /// What a failed sign-in says when the server's host key isn't trusted yet (the connection's dialog,
 /// which offers to trust it, knows it by its start).
 pub const UNKNOWN_HOST: &str = "Its host key isn't known yet: Edit the connection (its right-click menu) and Test it to see its fingerprint and trust it";
+/// How [`UNKNOWN_HOST`] starts: what the interface looks for in a failed sign-in.
+pub const UNKNOWN_HOST_START: &str = "Its host key isn't known yet";
 
 /// How long a listing may take.
 const LIST_TIME: Duration = Duration::from_secs(120);
@@ -439,6 +441,7 @@ mod tests {
     fn says_why_it_failed() {
         let say = |l: &str| failure(&[l.to_string(), "Connection closed".to_string()], "nas");
         assert_eq!(say("No ED25519 host key is known for [127.0.0.1]:52222 and you have requested strict checking."), UNKNOWN_HOST);
+        assert!(UNKNOWN_HOST.starts_with(UNKNOWN_HOST_START));
         assert_eq!(say("glint@127.0.0.1: Permission denied (publickey,password)."), "The server didn't take the key or the password");
         assert_eq!(say("ssh: Could not resolve hostname nas: No such host is known."), "There's no server called “nas”");
         assert_eq!(say("Can't ls: \"/nope\" not found"), NOT_FOUND);

@@ -148,7 +148,8 @@ const MOST_TO_COMPARE: usize = 64;
 
 /// The two files Ctrl+M compares (`comparePair`): the two selected here, the one selected here against the one
 /// selected in the other pane, or its namesake in the other pane's folder. The first pane's is on the left.
-// TODO(coordinator): from workspace::compare_pair, which is private there; the logic is the same.
+// The workspace's compare_pair picks the same two, as paths; this one keeps the entries and looks at no more than
+// MOST_TO_COMPARE selected.
 fn compare_pair(explorer: &Explorer) -> Option<Pair> {
     let here = explorer.active_pane().min(1);
     let tab = explorer.active_tab()?;

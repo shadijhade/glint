@@ -15,6 +15,7 @@ mod dav;
 mod rclone;
 mod s3;
 mod sftp;
+pub use sftp::UNKNOWN_HOST_START;
 mod time;
 
 use crate::archive::{extract, Skipped, StageProgress, Staged};

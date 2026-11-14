@@ -6,9 +6,8 @@
 //! `isSong`, `canBackUp`, `isMediaFile` / `isVideoFile` (studio.ts) and `canWallpaper` / `canRotate`
 //! (Explorer.tsx).
 //!
-//! TODO(coordinator): each of these belongs to the dialog that does the work; when that dialog is ported, its
-//! module should export the predicate and this file should call it instead of keeping a copy. The extension
-//! lists are the dialogs' own and must stay in step with them.
+//! The extension lists are the dialogs' own (each dialog checks what it's given again) and must stay in step with
+//! them.
 
 use glint_model::entries::{is_archived, is_closed, is_online_only, is_recycled, is_remote, FileEntry};
 

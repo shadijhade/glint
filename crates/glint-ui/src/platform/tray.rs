@@ -516,32 +516,9 @@ fn run_command(exe: &std::path::Path) -> String {
     format!("\"{}\" --tray", exe.display())
 }
 
-/// The exe File Explorer's entries run (verbs.rs's `installed_exe`): this one when the setup program installed
-/// it, or a Scoop copy's `current` link. A portable copy or a dev build has none.
-// TODO(coordinator): from glint_core::verbs (pub(crate) there); a private copy until it is exported.
-fn installed_exe() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    if glint_core::installed_by_setup() {
-        Some(exe)
-    } else {
-        scoop_current(&exe)
-    }
-}
-
-/// A Scoop copy's `current` link to the exe (see verbs.rs).
-fn scoop_current(exe: &std::path::Path) -> Option<std::path::PathBuf> {
-    let name = exe.file_name()?;
-    let version = exe.parent()?;
-    let app = version.parent()?;
-    let apps = app.parent()?;
-    let current = app.join("current");
-    let scoops = apps.file_name()?.eq_ignore_ascii_case("apps")
-        && apps.join(r"scoop\current").is_dir()
-        // scoop-install.json since Scoop 0.6, install.json before.
-        && ["scoop-install.json", "install.json"].iter().any(|record| version.join(record).is_file())
-        && std::fs::canonicalize(&current).ok()? == std::fs::canonicalize(version).ok()?;
-    scoops.then(|| current.join(name))
-}
+/// The exe File Explorer's entries run: this one when the setup program installed it, or a Scoop copy's `current`
+/// link. A portable copy or a dev build has none.
+use glint_core::verbs::installed_exe;
 
 fn win32(error: windows::Win32::Foundation::WIN32_ERROR) -> Result<(), String> {
     if error.0 == 0 {
@@ -742,16 +719,6 @@ mod tests {
             Ok(()),
             "so is a missing key"
         );
-    }
-
-    #[test]
-    fn scoop_links_are_only_for_scoop_layouts() {
-        // Not under an `apps` folder: not a Scoop copy.
-        assert_eq!(
-            scoop_current(std::path::Path::new(r"C:\Tools\Glint\1.0\Glint.exe")),
-            None
-        );
-        assert_eq!(scoop_current(std::path::Path::new("Glint.exe")), None);
     }
 
     #[test]

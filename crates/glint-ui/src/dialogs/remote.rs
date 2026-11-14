@@ -36,8 +36,7 @@ use std::sync::Arc;
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
 /// How an SFTP sign-in's failure starts when the server's host key isn't trusted yet (remote/sftp.rs).
-// TODO(coordinator): from glint_core::remote::sftp::UNKNOWN_HOST, which that private module doesn't export.
-pub const UNKNOWN_HOST: &str = "Its host key isn't known yet";
+pub use glint_core::remote::UNKNOWN_HOST_START as UNKNOWN_HOST;
 
 /// An SFTP server's host keys, and their fingerprints, to see before trusting them.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -66,7 +66,7 @@ pub(crate) fn owner(_: &Window) -> isize {
 }
 
 #[cfg(windows)]
-pub(crate) use imp::in_sta;
+pub use imp::in_sta;
 
 /// Runs `f` on the UI thread, which owns the window and has COM set up.
 pub(crate) async fn on_main<T, F>(window: &Window, f: F) -> Result<T, String>
@@ -467,7 +467,7 @@ mod imp {
     }
 
     /// Runs `f` on a fresh single-threaded COM apartment, which the shell's dialogs need.
-    pub(crate) fn in_sta<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    pub fn in_sta<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
         std::thread::spawn(move || unsafe {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).ok().map_err(message)?;
             let result = f();

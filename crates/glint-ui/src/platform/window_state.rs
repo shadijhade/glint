@@ -526,7 +526,7 @@ mod imp {
         clicked_button, folder_links, progress_value, system32, task_links, thumb_channel, LinkSpec, Placement,
         ProgressState, Rect, RestorePlan, BUTTONS, FIRST_ID,
     };
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use windows::core::{w, Interface, BOOL, GUID, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, PROPERTYKEY, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
@@ -537,10 +537,7 @@ mod imp {
         HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, TRANSPARENT,
     };
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-        COINIT_DISABLE_OLE1DDE,
-    };
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::Shell::Common::{IObjectArray, IObjectCollection};
@@ -749,45 +746,7 @@ mod imp {
 
     // ---- The exe the list's entries start ----
 
-    /// The exe other programs (the Jump List) start Glint with: the installed one, or the Microsoft Store copy's
-    /// alias, which stays put as updates come, or this one. Mirrors glint-core's `verbs::launch_exe`.
-    // TODO(coordinator): from glint-core (`verbs::launch_exe` is pub(crate)).
-    fn launch_exe() -> Option<PathBuf> {
-        let exe = std::env::current_exe().ok()?;
-        let installed = if glint_core::installed_by_setup() {
-            Some(exe.clone())
-        } else {
-            scoop_current(&exe)
-        };
-        installed.or_else(store_alias).or(Some(exe))
-    }
-
-    /// The Microsoft Store copy's `glint.exe` alias, in the package's own folder of aliases.
-    fn store_alias() -> Option<PathBuf> {
-        let family = glint_core::package_family()?;
-        let alias = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-            .join(r"Microsoft\WindowsApps")
-            .join(family)
-            .join("glint.exe");
-        // An alias is a link Windows resolves itself, so it's looked at, not through.
-        alias.symlink_metadata().is_ok().then_some(alias)
-    }
-
-    /// For an exe Scoop installed (`<root>\apps\<app>\<version>\Glint.exe`), the same exe through the app's
-    /// `current` link, which `scoop update` points at each new version.
-    fn scoop_current(exe: &Path) -> Option<PathBuf> {
-        let name = exe.file_name()?;
-        let version = exe.parent()?;
-        let app = version.parent()?;
-        let apps = app.parent()?;
-        let current = app.join("current");
-        let scoops = apps.file_name()?.eq_ignore_ascii_case("apps")
-            && apps.join(r"scoop\current").is_dir()
-            // scoop-install.json since Scoop 0.6, install.json before.
-            && ["scoop-install.json", "install.json"].iter().any(|record| version.join(record).is_file())
-            && std::fs::canonicalize(&current).ok()? == std::fs::canonicalize(version).ok()?;
-        scoops.then(|| current.join(name))
-    }
+    use glint_core::verbs::launch_exe;
 
     // ---- Jump list ----
 
@@ -833,22 +792,8 @@ mod imp {
         }
     }
 
-    /// Runs `f` on a fresh single-threaded COM apartment (the Jump List's COM objects want one).
-    // TODO(coordinator): from glint-core (`shell::in_sta` is pub(crate)).
-    fn in_sta<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-        std::thread::spawn(move || {
-            // SAFETY: balanced with CoUninitialize below, on the same thread.
-            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
-                .ok()
-                .map_err(|e| e.message())?;
-            let result = f();
-            // SAFETY: matches the successful CoInitializeEx above.
-            unsafe { CoUninitialize() };
-            result
-        })
-        .join()
-        .map_err(|_| "The Jump List update failed unexpectedly".to_string())?
-    }
+    // The Jump List's COM objects want a single-threaded apartment of their own.
+    use glint_core::shell::in_sta;
 
     pub fn sync_jump_list(pinned: &[String], frequent: &[String]) -> Result<(), String> {
         // What its entries start (a Microsoft Store copy's alias), and the exe whose icon they show.

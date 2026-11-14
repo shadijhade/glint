@@ -1142,7 +1142,7 @@ fn clipped(text: &str, max: usize) -> String {
 }
 
 /// Scrolls a list a page (0.85 of what shows), as Page Down and Page Up do. Returns whether it moved.
-// TODO(coordinator): from components::preview::text::page_list (private to it).
+// As the text preview's own (private to it).
 fn page_list(handle: &UniformListScrollHandle, down: bool) -> bool {
     let base = handle.0.borrow().base_handle.clone();
     let max = base.max_offset().y;
@@ -3191,7 +3191,7 @@ const DIFF_SIDE: f64 = 2048.;
 
 /// A 32-bit top-down BMP of BGRA `pixels`, which GPUI's own BMP decoder turns into a picture (`image` is not a
 /// dependency of glint-ui; the thumbnails come the same way).
-// TODO(coordinator): from glint_core::thumbs::encode_bmp (which takes its own pixel type).
+// glint_core::thumbs::encode_bmp does the same for its own pixel type.
 fn bmp_of(width: u32, height: u32, bgra: &[u8]) -> Vec<u8> {
     const HEADERS: u32 = 14 + 108;
     let image = u32::try_from(bgra.len()).unwrap_or(u32::MAX);

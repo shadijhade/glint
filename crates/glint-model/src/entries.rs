@@ -58,9 +58,6 @@ pub mod attr {
 }
 
 /// A folder's Git mark for a file.
-///
-/// TODO(coordinator): `GitMark` comes from src/lib/fs.ts. Move it to the module that ports fs.ts and
-/// re-export it from here (or import it there).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GitMark {
@@ -72,9 +69,6 @@ pub enum GitMark {
 }
 
 /// What the Date taken sort and property filters (width:, taken:, artist:...) read of a photo, video or song.
-///
-/// TODO(coordinator): `MediaFacts` comes from src/lib/media.ts. Move it to the module that ports media.ts
-/// and re-export it from here (or import it there).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MediaFacts {
