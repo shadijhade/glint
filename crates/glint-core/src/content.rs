@@ -13,8 +13,8 @@ use crate::fsx::blocking;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
@@ -33,6 +33,8 @@ const TEXT_EXTS: &[&str] = &[
 ];
 const MAX_TEXT: u64 = 8 << 20;
 /// Folders never looked in: build output, package caches, version control.
+/// How long the watcher lets a burst of changes gather before indexing them.
+const SETTLE: Duration = Duration::from_secs(2);
 const SKIP_DIRS: &[&str] = &["node_modules", ".git", ".hg", ".svn", "target", ".next", "__pycache__", ".venv", "venv", ".cache", ".gradle", "$recycle.bin", "system volume information"];
 /// Matches shown at most from one file.
 const PER_FILE: usize = 50;
@@ -105,10 +107,18 @@ struct Content {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// Paths reported changed, indexed together a moment later.
     pending: Mutex<HashSet<PathBuf>>,
+    /// Told when `pending` gets a path, when indexing is turned off, and when the folders are watched anew.
+    changed: Condvar,
+    /// Which `watch` is current: an older one's thread ends.
+    watching: AtomicU64,
     /// Changes taken from `pending` are being indexed, not committed yet.
     applying: AtomicBool,
     /// The folders have been read through once since the index was opened (a start's catch-up is done).
     caught_up: AtomicBool,
+    /// Glint's own data folder, lowercase and ending in `\` (the index's files, logs, settings): never indexed.
+    own: String,
+    /// Whether a folder (lowercase) is hidden or a system folder, as `reconcile` skips them: asked once.
+    hidden_dirs: Mutex<HashMap<String, bool>>,
 }
 
 static CONTENT: OnceLock<Arc<Content>> = OnceLock::new();
@@ -177,6 +187,7 @@ fn open() -> Result<Arc<Content>, String> {
     };
     let reader = index.reader_builder().reload_policy(ReloadPolicy::OnCommitWithDelay).try_into().map_err(|e| e.to_string())?;
     let writer = index.writer(64 << 20).map_err(|e| e.to_string())?;
+    let own = dir.parent().map(|d| format!("{}\\", lower_key(d).trim_end_matches('\\'))).unwrap_or_default();
     let content = Arc::new(Content {
         dir,
         _index: index,
@@ -188,8 +199,12 @@ fn open() -> Result<Arc<Content>, String> {
         status: Mutex::default(),
         watcher: Mutex::default(),
         pending: Mutex::default(),
+        changed: Condvar::new(),
+        watching: AtomicU64::new(0),
         applying: AtomicBool::new(false),
         caught_up: AtomicBool::new(false),
+        own,
+        hidden_dirs: Mutex::default(),
     });
     content.load_known();
     let _ = CONTENT.set(content.clone());
@@ -198,6 +213,18 @@ fn open() -> Result<Arc<Content>, String> {
 
 fn lower_key(path: &Path) -> String {
     path.to_string_lossy().to_lowercase()
+}
+
+/// Hidden and system items (and links to elsewhere), which `reconcile` doesn't look in.
+fn hidden_or_system(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    let attrs = std::os::windows::fs::MetadataExt::file_attributes(meta);
+    #[cfg(not(windows))]
+    let attrs = {
+        let _ = meta;
+        0u32
+    };
+    attrs & (0x2 | 0x4 | 0x400) != 0
 }
 
 /// Every folder a file is in, lowercase, the drive first ("c:", "c:\users"…): a search below a folder
@@ -336,6 +363,60 @@ impl Content {
         *self.known.lock().unwrap() = known;
     }
 
+    /// Whether a change the watcher saw at `path` is one for the index: a file of a kind it reads, below a folder
+    /// it covers, not in a folder `reconcile` skips (SKIP_DIRS, hidden and system ones), not hidden itself, and
+    /// not Glint's own (its data folder holds the index, whose every commit is a change). A file that's gone counts
+    /// when the index holds it. Anything else would only make the index look out of date (ripgrep answers then)
+    /// and be read for nothing: `npm install` below an indexed folder, a browser's cache below an indexed profile.
+    fn wanted(&self, path: &Path) -> bool {
+        if kind(path).is_none() {
+            return false;
+        }
+        let key = lower_key(path);
+        if !self.own.is_empty() && key.starts_with(&self.own) {
+            return false;
+        }
+        let below = {
+            let config = self.config.read().unwrap();
+            config.folders.iter().find_map(|f| {
+                let f = f.trim_end_matches('\\').to_lowercase();
+                key.strip_prefix(&f).filter(|rest| rest.starts_with('\\')).map(|_| f.len())
+            })
+        };
+        let Some(root_len) = below else { return false };
+        let Ok(meta) = std::fs::metadata(path) else {
+            return self.known.lock().unwrap().contains_key(&key);
+        };
+        if hidden_or_system(&meta) {
+            return false;
+        }
+        // Each folder between the covered one and the file.
+        let mut at = root_len + 1;
+        while let Some(i) = key[at..].find('\\') {
+            let end = at + i;
+            let name = &key[at..end];
+            if SKIP_DIRS.contains(&name) || self.hidden_dir(&key[..end]) {
+                return false;
+            }
+            at = end + 1;
+        }
+        true
+    }
+
+    /// Whether the folder `dir` (lowercase) is hidden or a system folder, remembered.
+    fn hidden_dir(&self, dir: &str) -> bool {
+        if let Some(&hidden) = self.hidden_dirs.lock().unwrap().get(dir) {
+            return hidden;
+        }
+        let hidden = std::fs::metadata(dir).is_ok_and(|meta| hidden_or_system(&meta));
+        let mut known = self.hidden_dirs.lock().unwrap();
+        if known.len() > 4096 {
+            known.clear();
+        }
+        known.insert(dir.to_string(), hidden);
+        hidden
+    }
+
     fn covered(&self, path: &Path) -> bool {
         let key = lower_key(path);
         self.config.read().unwrap().folders.iter().any(|f| {
@@ -437,12 +518,8 @@ impl Content {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let Ok(meta) = entry.metadata() else { continue };
-                #[cfg(windows)]
-                let attrs = std::os::windows::fs::MetadataExt::file_attributes(&meta);
-                #[cfg(not(windows))]
-                let attrs = 0u32;
                 // Hidden and system items, and links to elsewhere, aren't looked in.
-                if attrs & (0x2 | 0x4 | 0x400) != 0 {
+                if hidden_or_system(&meta) {
                     continue;
                 }
                 if meta.is_dir() {
@@ -504,13 +581,25 @@ impl Content {
         status.bytes = std::fs::read_dir(&self.dir).map(|d| d.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0);
     }
 
-    /// Watches the folders: what changes is indexed again two seconds after it last changed.
+    /// Watches the folders: what changes is indexed again two seconds after the first change of a burst. The
+    /// thread sleeps until a change it wants comes (nothing wakes it while nothing changes), and commits only when
+    /// the index changed.
     fn watch(self: &Arc<Self>) {
         use notify::{RecursiveMode, Watcher};
+        let generation = self.watching.fetch_add(1, Ordering::SeqCst) + 1;
+        // An older watch's thread wakes and ends (told under `pending`'s lock, so it can't miss it).
+        {
+            let _pending = self.pending.lock().unwrap();
+            self.changed.notify_all();
+        }
         let content = self.clone();
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             if let Ok(event) = event {
-                content.pending.lock().unwrap().extend(event.paths);
+                let wanted: Vec<PathBuf> = event.paths.into_iter().filter(|p| content.wanted(p)).collect();
+                if !wanted.is_empty() {
+                    content.pending.lock().unwrap().extend(wanted);
+                    content.changed.notify_all();
+                }
             }
         });
         let Ok(mut watcher) = watcher else { return };
@@ -519,26 +608,39 @@ impl Content {
         }
         *self.watcher.lock().unwrap() = Some(watcher);
         let content = self.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(2));
-            if !content.config.read().unwrap().enabled {
-                return;
-            }
-            // Marked as being applied before they leave `pending`, so the index never looks current in between.
-            content.applying.store(true, Ordering::SeqCst);
-            let paths: Vec<PathBuf> = content.pending.lock().unwrap().drain().collect();
-            if paths.is_empty() {
-                content.applying.store(false, Ordering::SeqCst);
-                continue;
-            }
-            {
-                let writer = content.writer.lock().unwrap();
-                for path in paths.iter().filter(|p| kind(p).is_some()) {
-                    content.index_file(&writer, path);
+        std::thread::spawn(move || {
+            let goes_on = |content: &Content| content.watching.load(Ordering::SeqCst) == generation && content.config.read().unwrap().enabled;
+            loop {
+                {
+                    let mut pending = content.pending.lock().unwrap();
+                    while pending.is_empty() {
+                        if !goes_on(&content) {
+                            return;
+                        }
+                        pending = content.changed.wait(pending).unwrap();
+                    }
                 }
+                // The rest of a burst (a save that writes three times, a folder copied in) joins it.
+                std::thread::sleep(SETTLE);
+                if !goes_on(&content) {
+                    return;
+                }
+                // Marked as being applied before they leave `pending`, so the index never looks current in between.
+                content.applying.store(true, Ordering::SeqCst);
+                let paths: Vec<PathBuf> = content.pending.lock().unwrap().drain().collect();
+                let held = content.known.lock().unwrap().len();
+                let mut indexed = false;
+                {
+                    let writer = content.writer.lock().unwrap();
+                    for path in &paths {
+                        indexed |= content.index_file(&writer, path);
+                    }
+                }
+                if indexed || content.known.lock().unwrap().len() != held {
+                    content.commit();
+                }
+                content.applying.store(false, Ordering::SeqCst);
             }
-            content.commit();
-            content.applying.store(false, Ordering::SeqCst);
         });
     }
 
@@ -601,6 +703,11 @@ pub async fn content_configure(enabled: bool, folders: Vec<String>, pictures: Op
             if let Some(content) = CONTENT.get() {
                 *content.config.write().unwrap() = config.clone();
                 *content.watcher.lock().unwrap() = None;
+                // The watching thread wakes and ends (told under `pending`'s lock, so it can't miss it).
+                {
+                    let _pending = content.pending.lock().unwrap();
+                    content.changed.notify_all();
+                }
                 let mut writer = content.writer.lock().unwrap();
                 let _ = writer.delete_all_documents();
                 let _ = writer.commit();
@@ -685,8 +792,12 @@ mod tests {
             status: Mutex::default(),
             watcher: Mutex::default(),
             pending: Mutex::default(),
+            changed: Condvar::new(),
+            watching: AtomicU64::new(0),
             applying: AtomicBool::new(false),
             caught_up: AtomicBool::new(false),
+            own: String::new(),
+            hidden_dirs: Mutex::default(),
         }
     }
 
@@ -704,6 +815,38 @@ mod tests {
         content.applying.store(false, Ordering::SeqCst);
         content.status.lock().unwrap().indexing = true;
         assert!(!content.current(), "reading the folders again");
+    }
+
+    #[test]
+    fn the_watcher_wants_only_what_the_catch_up_would_read() {
+        let root = std::env::temp_dir().join(format!("glint-content-wanted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for path in ["notes.txt", "node_modules/x.js", "sub/a.exe", "sub/b.md", "secret/c.txt", "own/log.txt"] {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+        }
+        #[cfg(windows)]
+        let hidden = std::process::Command::new("attrib").arg("+h").arg(root.join("secret")).status().is_ok_and(|s| s.success());
+        let mut content = in_memory();
+        content.own = format!("{}\\", lower_key(&root.join("own")));
+        *content.config.write().unwrap() = Config { enabled: true, folders: vec![root.to_string_lossy().into_owned()], pictures: false };
+        assert!(content.wanted(&root.join("notes.txt")));
+        assert!(content.wanted(&root.join("sub").join("b.md")));
+        assert!(!content.wanted(&root.join("node_modules").join("x.js")), "a folder the catch-up skips");
+        assert!(!content.wanted(&root.join("sub").join("a.exe")), "not a kind the index reads");
+        assert!(!content.wanted(&root.join("own").join("log.txt")), "Glint's own data");
+        #[cfg(windows)]
+        if hidden {
+            assert!(!content.wanted(&root.join("secret").join("c.txt")), "in a hidden folder");
+        }
+        assert!(!content.wanted(Path::new(r"C:\elsewhere\notes.txt")), "outside the folders");
+        // A file that's gone counts only when the index holds it.
+        let gone = root.join("gone.txt");
+        assert!(!content.wanted(&gone));
+        content.known.lock().unwrap().insert(lower_key(&gone), 1);
+        assert!(content.wanted(&gone));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
