@@ -427,7 +427,8 @@ costs (CPU, allocations) weren't timed.
 
 The user's ask (2026-11-14): "find more Performance Improvements we could make before we release", then "Build all
 nine" of the nine found. They were found by reading `44956bd` (the app wasn't run) and with one standalone probe of
-the code previews' highlighter. Fourteen commits after `44956bd` (the last a clippy fix), each with its tests passing:
+the code previews' highlighter. Fourteen commits after `44956bd` (the last a clippy fix), each with its tests passing,
+then item 6 reverted after e2e:
 
 | Item | What it cost | Now |
 | :--- | :--- | :--- |
@@ -436,14 +437,16 @@ the code previews' highlighter. Fourteen commits after `44956bd` (the last a cli
 | 3. Folders that keep changing | Read again in full every 200 ms for as long as they changed: a folder of 100,000 files (11-47 ms a read) about five times a second through a build or a download | A read of 20 ms or more, with changes waiting, waits ten times as long before the next one (2 s at most) |
 | 4. Git view | At a repository's root every index entry (up to 300,000) was lowercased to find which of the folder's names are tracked; the repository was discovered twice; status's watchdog woke every 10 ms | One binary search, one lowercase per name; one discover; the watchdog waits on a condvar |
 | 5. Typing in search | A search a newer key press replaced kept its thread in a blocking pipe read, and the service scanned every drive's names and ranked them before finding the pipe closed at its first write; fast typing filled the 16 connections and fd answered | The app cancels the read (`CancelSynchronousIo`) and the pipe closes at once; the service (from 0.12) asks whether its client has gone (`PeekNamedPipe`, at most every 2 ms) before each chunk of names and stops. No protocol change |
-| 6. Redraws | No view reused its last frame: each key press in the files rendered every row of the sidebar again with the rest of the window | The sidebar is a cached view, drawn again when it changes. The status bar, the preview and the address bar aren't, yet (the commit says why) |
+| 6. Redraws | No view reused its last frame: each key press in the files rendered every row of the sidebar again with the rest of the window | **Reverted** (`08f1a65`). The sidebar made a cached view looked right, but GPUI builds its accessibility tree from the elements a frame renders and a cached view's frame is replayed without them: the sidebar went missing from UI Automation (e2e's `launch` and `tabs-sidebar` failed), and so would have from Narrator. Caching needs GPUI to carry a cached view's accessibility nodes over first |
 | 7. Network shares | Every row on screen opened its file's tags stream: a trip over the network per row | Rows on shares and mapped network drives don't; the selection's tags are still read, for the menus and the Tags dialog |
 | 8. Content index (when on) | Woke every 2 s for good; any change below an indexed folder (a browser's cache, `node_modules`, the index's own commits under Glint's data folder) made it commit, and look out of date meanwhile (ripgrep answered) | Waits until a change it would read comes (a kind it reads, outside the folders its catch-up skips, hidden ones and Glint's own), gathers the burst for 2 s, commits only when the index changed |
 | 9. 0.12's leftovers | D8: each thumbnail told four views on its own; D2: each change to the saved state copied all of it for the saver; D3: the folder tree kept every folder it revealed open; D7: the second pane's ten views were made at start and observed the explorer; E5: a picture's file was opened twice for its details, a song's tags read twice per preview | D8: told once for the answers already waiting; D2: the saver asks for one copy when it writes; D3: the latest 32 revealed are kept; D7: made when dual view first opens; E5: one open, the last two songs kept |
 
-Measured: item 1 only (the probe above). Not measured, since they need the app run: idle CPU and wake-ups (2), frame
-times (6), re-reads of a changing folder (3), the Git view and content index (4, 8), typing in search against a 0.12
-service (5; the service installed here is 0.9). Tests: core 296, model 231, window 2,334, index 93, all passing;
+Measured: item 1 only (the probe above). Not measured, since they need the app run: idle CPU and wake-ups (2),
+re-reads of a changing folder (3), the Git view and content index (4, 8), typing in search against a 0.12 service (5;
+the service installed here is 0.9). Tests: core 296, model 231, window 2,334, index 93, all passing;
 clippy `-D warnings` clean; the touched glint-ui files rustfmt-clean. The release build of the changed crates took
-145 s; `Glint.exe` 92,810,752 -> 92,975,616 B (+0.16 MB). e2e: not run (it takes the mouse and keyboard and needs the
-user's OK); it is what would show items 2, 6, D2 and D7 working in the real window.
+145 s; `Glint.exe` 92,810,752 -> 92,975,616 B (+0.16 MB). e2e on the debug build (2026-11-14, with the user's OK):
+15 of 18 with item 6 in (the two sidebar checks above, and `quit`); after its revert, 17 of 18, `quit` failing as it
+does on 0.11.0. The checks that draw on demand (keys, drags, rename, Quick Look, dual panes) all pass with the vsync
+thread resting (item 2).
