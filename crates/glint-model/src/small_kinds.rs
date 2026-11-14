@@ -23,8 +23,6 @@ pub enum SmallKind {
     Design,
     /// Graphviz graphs (.dot, .gv).
     Graphviz,
-    /// Mermaid diagrams (.mmd, .mermaid).
-    Mermaid,
 }
 
 /// The small preview kind of a file extension, or `None` when no small preview handles it.
@@ -44,7 +42,6 @@ pub fn small_kind_of(ext: &str) -> Option<SmallKind> {
         "msg" => Some(SmallKind::Outlook),
         "kra" | "ora" | "procreate" | "sketch" => Some(SmallKind::Design),
         "dot" | "gv" => Some(SmallKind::Graphviz),
-        "mmd" | "mermaid" => Some(SmallKind::Mermaid),
         _ => None,
     }
 }
@@ -68,8 +65,8 @@ mod tests {
         assert_eq!(small_kind_of("sketch"), Some(SmallKind::Design));
         assert_eq!(small_kind_of("dot"), Some(SmallKind::Graphviz));
         assert_eq!(small_kind_of("gv"), Some(SmallKind::Graphviz));
-        assert_eq!(small_kind_of("mmd"), Some(SmallKind::Mermaid));
-        assert_eq!(small_kind_of("mermaid"), Some(SmallKind::Mermaid));
+        // Mermaid files are text since 0.12.
+        assert_eq!(small_kind_of("mmd"), None);
     }
 
     #[test]
@@ -88,8 +85,8 @@ mod tests {
             Some("\"graphviz\"")
         );
         assert_eq!(
-            serde_json::from_str::<SmallKind>("\"mermaid\"").ok(),
-            Some(SmallKind::Mermaid)
+            serde_json::from_str::<SmallKind>("\"design\"").ok(),
+            Some(SmallKind::Design)
         );
     }
 }

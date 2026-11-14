@@ -58,7 +58,7 @@ pub mod cards;
 pub mod cast;
 pub mod choose;
 pub mod details;
-/// Mermaid and Graphviz diagrams, in Markdown and as files (merman, layout-rs).
+/// Graphviz diagrams, in Markdown and as files (layout-rs).
 pub mod diagram;
 /// Word documents laid out without Office (DocxView.tsx).
 pub mod docx;
@@ -98,7 +98,6 @@ pub mod states;
 pub mod svg_image;
 #[cfg(test)]
 mod tests;
-/// Typst documents typeset (TypstView.tsx).
 
 pub use choose::{choose, effective_view, views, Body, Choice, Fallback, View};
 pub use frame::{chosen, Chosen, EntryEvent, EntryView, Place};

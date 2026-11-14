@@ -1,7 +1,7 @@
 //! SVG drawn as a GPUI image, cached by its source and size: the pipeline diagrams and math share
 //! (docs/gpui/previews-native.md sections 4-7).
 //!
-//! Mermaid ([`super::diagram`]), Graphviz and RaTeX ([`super::math`]) all end in an SVG string. GPUI rasterises an
+//! Graphviz ([`super::diagram`]) and RaTeX ([`super::math`]) both end in an SVG string. GPUI rasterises an
 //! SVG with resvg, so the same three steps serve all of them:
 //!
 //! 1. **Ask** ([`request`]) for a picture by [`Key`] (what it is, its source, its theme, its size). A picture
@@ -19,11 +19,10 @@
 //! Failures are cached too (a source that cannot be drawn is not tried again each frame), at no pixel cost.
 //!
 //! A job carries a [`Ctl`]: a deadline, and a flag set when every view that waited for it has gone
-//! ([`forget`]), so work that has not started is skipped and work that can be stopped (Mermaid's operation
-//! control) is.
+//! ([`forget`]), so work that has not started is skipped and work that checks the flag stops.
 //!
 //! Not ported: nothing from the TypeScript, which put the SVG in an `<img>` (`data:image/svg+xml`); the text of
-//! a Mermaid SVG is drawn by resvg with the system fonts here, not by the page's.
+//! an SVG is drawn by resvg with the system fonts here, not by the page's.
 
 use crate::kit::prelude::*;
 use crate::{t, theme};
@@ -63,7 +62,7 @@ pub struct Key {
 }
 
 impl Key {
-    /// The key of a `kind` ("mermaid", "dot", "math", "display-math") drawn from `source`, at `size` (the font
+    /// The key of a `kind` ("dot", "math", "display-math") drawn from `source`, at `size` (the font
     /// size for math, 0 otherwise), in the light or dark colour set.
     pub fn new(kind: &str, source: &str, size: f32, dark: bool) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

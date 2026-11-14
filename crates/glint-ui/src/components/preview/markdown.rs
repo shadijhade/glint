@@ -10,17 +10,17 @@
 //! | `safeHref`, the `follow` of a link               | [`link_action`], run by the TextView's link handler            |
 //! | links within the file scroll to their heading    | [`headings`] and `reveal_range`                                |
 //! | code blocks highlighted                          | the TextView's own (syntect), by the fence's language          |
-//! | `MermaidView` (```mermaid)                       | `diagram::DiagramBlock` (feature `diagrams`): merman, drawn as a picture; the source and the reason when it can't be |
-//! | the same for ```dot, ```graphviz, ```gv          | `diagram::DiagramBlock`: layout-rs (new: the TypeScript drew only Mermaid) |
+//! | `MermaidView` (```mermaid)                       | none since 0.12: the block shows as code                       |
+//! | ```dot, ```graphviz, ```gv                       | `diagram::DiagramBlock`: layout-rs, drawn as a picture; the source and the reason when it can't be (new: the TypeScript drew only Mermaid) |
 //! | `MathView` (`$…$`, `$$…$$`, ```math)             | `math::MathInline` and `math::MathBlock`: RaTeX, inline on the text's baseline, display centred; the LaTeX in a tinted span when it doesn't parse |
 //! | `SHOWS_START`, "This file is empty."             | the same notes                                                 |
 //! | a binary file                                    | a [`HexPreview`] in its place                                  |
 //!
 //! Not ported:
-//! - Without the `diagrams` feature a ```mermaid block and a ```math block show as code, and `$…$` shows as its
-//!   text. With it they are drawn (see [`super::diagram`], [`super::math`] and [`super::svg_image`] for how, and
-//!   for what differs from Mermaid's and Temml's own drawing). The blocks, and the inline formulas, are the
-//!   TextView's plugin nodes: selecting and copying them gives their source.
+//! - A ```mermaid block shows as code (Mermaid went with merman in 0.12). Graphviz blocks, ```math blocks and `$…$`
+//!   are drawn (see [`super::diagram`], [`super::math`] and [`super::svg_image`] for how, and for what differs from
+//!   Graphviz's and Temml's own drawing). The blocks, and the inline formulas, are the TextView's plugin nodes:
+//!   selecting and copying them gives their source.
 //! - Raw HTML in the Markdown (the TypeScript kept an allow-list of GitHub's tags): the TextView's Markdown
 //!   parser shows what it understands. NOTE(port): READMEs that lean on `<div align="center">` and `<img>`
 //!   will look plainer; the TextView's HTML mode (`TextView::html`) is the way to bring those back.
@@ -353,7 +353,7 @@ fn image_source(folder: String, root: String) -> impl Fn(&SharedUri) -> ImageSou
 /// document when they are rebuilt every frame (`MarkdownExtensions::parser_revision`).
 const HOOKS_REVISION: u64 = 0x474c_494e_5401;
 
-/// The TextView's plugins for ```mermaid, ```dot, ```math and `$…$`, waking the view `wake` when a picture is
+/// The TextView's plugins for ```dot, ```math and `$…$`, waking the view `wake` when a picture is
 /// ready.
 pub fn hooks(wake: EntityId) -> gpui_kit::base::text::MarkdownExtensions {
     use super::diagram::DiagramBlock;
@@ -807,7 +807,7 @@ mod tests {
         });
         let drawn = view.read_with(&visual, |v, cx| v.rendered_text(cx)).unwrap_or_default();
         assert!(drawn.contains("Title") && drawn.contains("and a link."), "{drawn}");
-        // Code is drawn as code, the Mermaid diagram too (as code, until it can be drawn).
+        // Code is drawn as code, the Mermaid diagram too.
         assert!(drawn.contains("fn main() {}") && drawn.contains("graph TD;"), "{drawn}");
         assert!(!drawn.contains("**") && !drawn.contains("```"), "no marks: {drawn}");
         // A page down on a short document goes nowhere harmful.
@@ -1304,21 +1304,20 @@ mod tests {
         const DOT: &str = "digraph G { rankdir=LR; a -> b [label=\"edge\"]; b -> c; c -> a; }";
 
         #[gpui_kit::test]
-        fn mermaid_and_dot_blocks_are_drawn_as_pictures(cx: &mut TestAppContext) {
+        fn a_dot_block_is_drawn_as_a_picture_and_a_mermaid_block_stays_code(cx: &mut TestAppContext) {
             let _guard = testing::lock();
             testing::set_rtl(false);
             let text = format!(
                 "# Diagrams\n\nBefore.\n\n```mermaid\n{FLOW}\n```\n\nBetween.\n\n```dot\n{DOT}\n```\n\nAfter.\n"
             );
             let (view, mut visual) = show(cx, &text);
-            wait(&mut visual, "both pictures", |cx| {
-                !with_label(cx, Role::Image, |l| l == "A Mermaid diagram").is_empty()
-                    && !with_label(cx, Role::Image, |l| l == "A Graphviz graph").is_empty()
+            wait(&mut visual, "the picture", |cx| {
+                !with_label(cx, Role::Image, |l| l == "A Graphviz graph").is_empty()
             });
-            // The pictures have a size, so the document made room for them.
-            for (name, _, height) in with_label(&mut visual, Role::Image, |l| l.starts_with("A ")) {
-                assert!(height > 40., "{name} is {height} high");
-            }
+            // The picture has a size, so the document made room for it; the Mermaid block is no picture.
+            let pictures = with_label(&mut visual, Role::Image, |l| l.starts_with("A "));
+            assert_eq!(pictures.len(), 1, "{pictures:?}");
+            assert!(pictures[0].2 > 40., "{pictures:?}");
             // The words around them are still the document's, and the sources are still its text (copyable).
             let drawn = view.read_with(&visual, |v, cx| v.rendered_text(cx)).unwrap_or_default();
             assert!(
@@ -1326,12 +1325,8 @@ mod tests {
                 "{drawn}"
             );
             assert!(drawn.contains("flowchart TD") && drawn.contains("digraph G"), "{drawn}");
-            // Both are in the cache, as pictures.
-            let dark = false;
-            assert!(
-                svg_image::peek(&diagram::key_of(diagram::Language::Mermaid, FLOW, dark)).is_some_and(|o| o.is_ok())
-            );
-            assert!(svg_image::peek(&diagram::key_of(diagram::Language::Dot, DOT, dark)).is_some_and(|o| o.is_ok()));
+            // The graph is in the cache, as a picture.
+            assert!(svg_image::peek(&diagram::key_of(diagram::Language::Dot, DOT)).is_some_and(|o| o.is_ok()));
         }
 
         #[gpui_kit::test]
@@ -1340,13 +1335,12 @@ mod tests {
             testing::set_rtl(false);
             let text = "```mermaid\nthis is not a diagram at all ->->\n```\n\n```dot\ndigraph { a -> }\n```\n";
             let (_view, mut visual) = show(cx, text);
-            wait(&mut visual, "both banners", |cx| {
-                with_label(cx, Role::Status, |l| l.starts_with("Not a diagram Mermaid can draw: ")).len() == 1
-                    && with_label(cx, Role::Status, |l| l.starts_with("Not a graph Graphviz can draw: ")).len() == 1
+            wait(&mut visual, "the banner", |cx| {
+                with_label(cx, Role::Status, |l| l.starts_with("Not a graph Graphviz can draw: ")).len() == 1
             });
-            // Each banner has its diagnostic, and the source is shown below it.
+            // The banner has its diagnostic, and the source is shown below it; the Mermaid block is plain code.
             let sources = with_label(&mut visual, Role::Group, |l| l == "Source");
-            assert_eq!(sources.len(), 2, "{:?}", elements(&mut visual));
+            assert_eq!(sources.len(), 1, "{:?}", elements(&mut visual));
             // No empty box: nothing is labelled as a picture.
             assert!(with_label(&mut visual, Role::Image, |_| true).is_empty());
         }
@@ -1400,20 +1394,20 @@ mod tests {
         fn arabic_text_labels_and_formulas_in_an_arabic_window(cx: &mut TestAppContext) {
             let _guard = testing::lock();
             testing::set_rtl(true);
-            let flow = "flowchart LR\n  A[مرحبا] --> B[بالعالم أهلا وسهلا]";
+            let graph = "digraph { rankdir=LR; مرحبا -> بالعالم }";
             let text = format!(
-                "# عنوان\n\nالمعادلة $x^2$ هنا.\n\n```mermaid\n{flow}\n```\n\nوهذه معادلة بحروف: $\\text{{مرحبا}}$\n"
+                "# عنوان\n\nالمعادلة $x^2$ هنا.\n\n```dot\n{graph}\n```\n\nوهذه معادلة بحروف: $\\text{{مرحبا}}$\n"
             );
             let (view, mut visual) = show(cx, &text);
             wait(&mut visual, "the diagram", |cx| {
-                !with_label(cx, Role::Image, |l| l == "A Mermaid diagram").is_empty()
+                !with_label(cx, Role::Image, |l| l == "A Graphviz graph").is_empty()
             });
-            let svg = diagram::svg_of(diagram::Language::Mermaid, flow, false, None).expect("it draws");
+            let svg = diagram::svg_of(diagram::Language::Dot, graph).expect("it draws");
             // The Arabic label is in the picture, and its line was placed without a `dy` (resvg misplaces the first
             // letter of a right-to-left run that has one).
             assert!(svg.contains("مرحبا"));
             let at = svg.find("مرحبا").unwrap_or(0);
-            let tag_start = svg[..at].rfind("<tspan").unwrap_or(0);
+            let tag_start = svg[..at].rfind("<text").unwrap_or(0);
             assert!(!svg[tag_start..at].contains("dy="), "{}", &svg[tag_start..at]);
             // A formula with Arabic letters inside is shown as its LaTeX, and says why.
             wait(&mut visual, "the Arabic formula", |cx| {
@@ -1430,10 +1424,10 @@ mod tests {
         fn the_same_diagram_is_drawn_once(cx: &mut TestAppContext) {
             let _guard = testing::lock();
             testing::set_rtl(false);
-            let text = format!("```mermaid\n{FLOW}\n```\n\nAgain:\n\n```mermaid\n{FLOW}\n```\n");
+            let text = format!("```dot\n{DOT}\n```\n\nAgain:\n\n```dot\n{DOT}\n```\n");
             let (_view, mut visual) = show(cx, &text);
             wait(&mut visual, "both pictures", |cx| {
-                with_label(cx, Role::Image, |l| l == "A Mermaid diagram").len() == 2
+                with_label(cx, Role::Image, |l| l == "A Graphviz graph").len() == 2
             });
             assert_eq!(svg_image::held().0, 1);
         }
