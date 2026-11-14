@@ -5,26 +5,34 @@
 use crate::fsx::{blocking, ms_since, stat_sized};
 use crate::sizes::{self, Node};
 use crate::AppState;
-use shadui_index::proto::{GrowthSummary, UsageNode, NEW, NO_PARENT, WRITTEN};
+pub use shadui_index::proto::{GrowthSummary, UsageNode, NEW, NO_PARENT, WRITTEN};
 use std::collections::VecDeque;
 use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Instant;
-use crate::host::ipc::Response;
 use crate::host::State;
 
-const ENGINE_INDEX: u32 = 0;
-const ENGINE_PDU: u32 = 1;
-/// A folder in an archive, mapped from the archive's own list of entries: this plus the archive's
-/// format code (2 a zip, 3 a 7z…).
-const ENGINE_ARCHIVE: u32 = 2;
-/// Flags: smaller items were left out; the index service runs but is too old to map; what grew comes
-/// along (see `encode_map`); what grew was asked for, but the index service is too old to say.
-const LIMITED: u32 = 1;
-const SERVICE_TOO_OLD: u32 = 2;
-const GROWTH: u32 = 4;
-const GROWTH_TOO_OLD: u32 = 8;
+/// A folder mapped: its biggest items a few levels down, who measured them, and how.
+#[derive(Debug)]
+pub struct Measured {
+    pub path: String,
+    /// The folder first, then every item after the folder it's in, biggest first.
+    pub nodes: Vec<UsageNode>,
+    /// Milliseconds spent: the index's answer, pdu's whole run, or reading the archive's list.
+    pub elapsed: f64,
+    /// "index", "pdu", or (a folder in an archive) the archive's format ("zip", "7z"…).
+    pub engine: &'static str,
+    /// Smaller items were left out; they still count in their folders' sizes.
+    pub limited: bool,
+    /// pdu measured it because the index service runs, but is a version from before maps.
+    pub service_too_old: bool,
+    /// What grew was asked for, but the index service running is too old to say.
+    pub growth_too_old: bool,
+    /// What each item held at the index's daily mark closest to the time asked (`NEW`: it wasn't there;
+    /// `WRITTEN`: a file written since), and the mark.
+    pub growth: Option<(Vec<u64>, GrowthSummary)>,
+}
 
 /// What the index said to a map request.
 enum Indexed {
@@ -56,11 +64,11 @@ fn index_usage(_: &str, _: u32, _: u32, _: Option<i64>) -> Indexed {
     Indexed::No
 }
 
-/// Maps `path` down to `depth` levels with at most `max_items` items (the biggest), as one binary
-/// buffer (see `encode_map`); with `since` (Unix ms), what each item held at the index's daily mark
-/// closest to then comes along. Each tab maps in its own `lane`, so one pane's pdu run doesn't stop
-/// the other's. Rejects with "cancelled" when a newer map in the lane, or Stop, ended its pdu run.
-pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, max_items: u32, lane: String, since: Option<f64>) -> Result<Response, String> {
+/// Maps `path` down to `depth` levels with at most `max_items` items (the biggest); with `since` (Unix ms), what
+/// each item held at the index's daily mark closest to then comes along. Each tab maps in its own `lane`, so one
+/// pane's pdu run doesn't stop the other's. Rejects with "cancelled" when a newer map in the lane, or Stop, ended
+/// its pdu run.
+pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, max_items: u32, lane: String, since: Option<f64>) -> Result<Measured, String> {
     let started = Instant::now();
     let (depth, max_items) = (depth.clamp(1, 32), max_items.clamp(1, 500_000));
     let since = since.map(|s| s as i64);
@@ -69,23 +77,20 @@ pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, ma
     if let Some(found) = blocking(move || Ok(crate::archive::usage(&asked, depth, max_items))).await? {
         slot.kill();
         let (nodes, limited, format) = found?;
-        let engine = ENGINE_ARCHIVE + format.code() as u32;
-        return Ok(Response::new(encode_map(&path, &nodes, ms_since(started), engine, if limited { LIMITED } else { 0 }, None)));
+        let elapsed = ms_since(started);
+        return Ok(Measured { path, nodes, elapsed, engine: format.label(), limited, service_too_old: false, growth_too_old: false, growth: None });
     }
     let asked = path.clone();
     let too_old = match blocking(move || Ok(index_usage(&asked, depth, max_items, since))).await? {
         Indexed::Map(nodes, limited, growth) => {
             // A pdu run still going in this tab is for a map no longer wanted.
             slot.kill();
-            let mut flags = if limited { LIMITED } else { 0 };
-            if since.is_some() && growth.is_none() {
-                flags |= GROWTH_TOO_OLD;
-            }
-            let growth = growth.as_ref().map(|(previous, summary)| (previous.as_slice(), summary));
-            return Ok(Response::new(encode_map(&path, &nodes, ms_since(started), ENGINE_INDEX, flags, growth)));
+            let growth_too_old = since.is_some() && growth.is_none();
+            let elapsed = ms_since(started);
+            return Ok(Measured { path, nodes, elapsed, engine: "index", limited, service_too_old: false, growth_too_old, growth });
         }
-        Indexed::TooOld => SERVICE_TOO_OLD,
-        Indexed::No => 0,
+        Indexed::TooOld => true,
+        Indexed::No => false,
     };
     let mut command = crate::proc::tool("pdu")?;
     // Files and folders, `depth` levels below, apparent sizes in bytes; what's under a fifth of
@@ -109,7 +114,8 @@ pub async fn disk_usage(state: State<'_, AppState>, path: String, depth: u32, ma
         let mut nodes = biggest(pdu_nodes(sizes::parse_tree(&json)?, &path), max_items as usize);
         let own = fill_in(&mut nodes);
         let (nodes, limited) = without_folder_entries(nodes.into_iter().map(|(node, _)| node).collect(), &own, depth);
-        Ok(Response::new(encode_map(&path, &nodes, ms_since(started), ENGINE_PDU, too_old | if limited { LIMITED } else { 0 }, None)))
+        let elapsed = ms_since(started);
+        Ok(Measured { path, nodes, elapsed, engine: "pdu", limited, service_too_old: too_old, growth_too_old: false, growth: None })
     })
     .await
 }
@@ -234,96 +240,9 @@ fn fill_in(nodes: &mut [(UsageNode, String)]) -> Vec<u64> {
     own
 }
 
-/// A map as bytes for the UI, laid out like a listing (`fsx::encode_listing`) so each array can be
-/// viewed in place as a typed array. All little-endian:
-///   0: u32 count · 4: u32 path length (UTF-8 bytes) · 8: f64 milliseconds spent
-///   16: u32 engine (0 index, 1 pdu, 2 plus an archive's format code for its list of entries: 2 a zip's, 3 a 7z's…) · 20: u32 flags (1: smaller items left out; 2: the index service
-///   runs but is too old to map; 4: what grew comes along; 8: what grew was asked for, but the index
-///   service is too old to say)
-///   24, with flag 4: f64 since (the mark's Unix ms) · f64 oldest mark · f64 the drive's total then
-///   · f64 now
-///   then f64 size[count] · f64 modified[count] · with flag 4, f64 previous[count] (each item's size
-///   at the mark; -1: it wasn't there; -2: a file written since) · u32 attrs[count] (the directory
-///   bit set on folders) · u32 parent[count] (u32::MAX for the folder mapped, always first) · u32
-///   name length[count] (UTF-16 units) · the path (UTF-8) · every name back to back (UTF-8).
-pub fn encode_map(path: &str, nodes: &[UsageNode], elapsed: f64, engine: u32, flags: u32, growth: Option<(&[u64], &GrowthSummary)>) -> Vec<u8> {
-    let names: usize = nodes.iter().map(|n| n.name.len()).sum();
-    let mut out = Vec::with_capacity(56 + 36 * nodes.len() + path.len() + names);
-    out.extend((nodes.len() as u32).to_le_bytes());
-    out.extend((path.len() as u32).to_le_bytes());
-    out.extend(elapsed.to_le_bytes());
-    out.extend(engine.to_le_bytes());
-    out.extend((flags | if growth.is_some() { GROWTH } else { 0 }).to_le_bytes());
-    if let Some((_, summary)) = growth {
-        for value in [summary.since as f64, summary.oldest as f64, summary.drive_then as f64, summary.drive_now as f64] {
-            out.extend(value.to_le_bytes());
-        }
-    }
-    for n in nodes {
-        out.extend((n.size as f64).to_le_bytes());
-    }
-    for n in nodes {
-        out.extend((n.modified as f64).to_le_bytes());
-    }
-    if let Some((previous, _)) = growth {
-        for &then in previous {
-            let then = match then {
-                NEW => -1.0,
-                WRITTEN => -2.0,
-                then => then as f64,
-            };
-            out.extend(then.to_le_bytes());
-        }
-    }
-    for n in nodes {
-        out.extend((n.attrs | if n.dir { 0x10 } else { 0 }).to_le_bytes());
-    }
-    for n in nodes {
-        out.extend(n.parent.to_le_bytes());
-    }
-    for n in nodes {
-        out.extend((n.name.encode_utf16().count() as u32).to_le_bytes());
-    }
-    out.extend(path.as_bytes());
-    for n in nodes {
-        out.extend(n.name.as_bytes());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn encodes_maps_for_the_ui() {
-        let nodes = [
-            UsageNode { parent: NO_PARENT, name: String::new(), dir: true, size: 3 << 40, modified: 0, attrs: 0x16 },
-            UsageNode { parent: 0, name: "é😀.mkv".into(), dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x20 },
-        ];
-        let bytes = encode_map(r"D:\", &nodes, 2.5, ENGINE_PDU, LIMITED | SERVICE_TOO_OLD, None);
-        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-        assert_eq!((u32_at(0), u32_at(4), f64_at(8), u32_at(16), u32_at(20)), (2, 3, 2.5, ENGINE_PDU, LIMITED | SERVICE_TOO_OLD));
-        assert_eq!((f64_at(24), f64_at(32)), ((3u64 << 40) as f64, (1u64 << 40) as f64));
-        assert_eq!((f64_at(40), f64_at(48)), (0.0, 1_700_000_000_000.0));
-        assert_eq!((u32_at(56), u32_at(60)), (0x16, 0x20));
-        assert_eq!((u32_at(64), u32_at(68)), (NO_PARENT, 0));
-        // "é😀.mkv" is 7 UTF-16 units: é, a surrogate pair, then ".mkv".
-        assert_eq!((u32_at(72), u32_at(76)), (0, 7));
-        assert_eq!(std::str::from_utf8(&bytes[80..]).unwrap(), r"D:\é😀.mkv");
-
-        // What grew: the mark's block after the header, and each item's earlier size after the dates.
-        let summary = GrowthSummary { since: 1_000, oldest: 500, drive_then: 7, drive_now: 9 };
-        let bytes = encode_map(r"D:\", &nodes, 2.5, ENGINE_INDEX, 0, Some((&[2 << 40, WRITTEN], &summary)));
-        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-        assert_eq!(u32_at(20), GROWTH);
-        assert_eq!((f64_at(24), f64_at(32), f64_at(40), f64_at(48)), (1_000.0, 500.0, 7.0, 9.0));
-        assert_eq!((f64_at(56), f64_at(72), f64_at(88), f64_at(96)), ((3u64 << 40) as f64, 0.0, (2u64 << 40) as f64, -2.0));
-        assert_eq!((u32_at(104), u32_at(112)), (0x16, NO_PARENT));
-        assert_eq!(std::str::from_utf8(&bytes[128..]).unwrap(), r"D:\é😀.mkv");
-    }
 
     #[test]
     fn orders_pdu_trees_like_the_index() {
