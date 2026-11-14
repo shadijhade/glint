@@ -267,6 +267,8 @@ impl WindowsWindowInner {
             self.state
                 .invalidate_devices
                 .store(true, std::sync::atomic::Ordering::Release);
+            // Glint: the vsync thread makes them again, and may be resting.
+            self.state.vsync_rest.wake();
         }
         if let Some(mut callback) = self.state.callbacks.resize.take() {
             callback(new_logical_size, scale_factor);
@@ -1346,6 +1348,8 @@ impl WindowsWindowInner {
 
     fn handle_dm_pointer_hit_test(&self, wparam: WPARAM) -> Option<isize> {
         self.state.direct_manipulation.on_pointer_hit_test(wparam);
+        // Glint: a touchpad gesture begins; DirectManipulation advances on the vsync thread's ticks.
+        self.state.vsync_rest.wake();
         None
     }
 

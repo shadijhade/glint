@@ -95,6 +95,8 @@ pub struct WindowsWindowState {
     /// Flag to instruct the `VSyncProvider` thread to invalidate the directx devices
     /// as resizing them has failed, causing us to have lost at least the render target.
     pub invalidate_devices: Arc<AtomicBool>,
+    /// Glint: told of every frame drawn, and woken when there is one to draw (see `VsyncRest`).
+    pub(crate) vsync_rest: Arc<VsyncRest>,
     /// Shared with [`WindowsPlatformState::draw_coordinator`] and every other window.
     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
     fullscreen: Cell<Option<StyleAndBounds>>,
@@ -134,6 +136,7 @@ impl WindowsWindowState {
         appearance: WindowAppearance,
         disable_direct_composition: bool,
         invalidate_devices: Arc<AtomicBool>,
+        vsync_rest: Arc<VsyncRest>,
         draw_coordinator: Rc<DrawCoordinator>,
     ) -> Result<Self> {
         let scale_factor = {
@@ -167,8 +170,9 @@ impl WindowsWindowState {
         let fullscreen = None;
         let initial_placement = None;
 
-        let direct_manipulation = DirectManipulationHandler::new(hwnd, scale_factor)
-            .context("initializing Direct Manipulation")?;
+        let direct_manipulation =
+            DirectManipulationHandler::new(hwnd, scale_factor, vsync_rest.clone())
+                .context("initializing Direct Manipulation")?;
 
         Ok(Self {
             origin: Cell::new(origin),
@@ -206,6 +210,7 @@ impl WindowsWindowState {
             initial_placement: Cell::new(initial_placement),
             hwnd,
             invalidate_devices,
+            vsync_rest,
             draw_coordinator,
             direct_manipulation,
             a11y: RefCell::new(None),
@@ -298,6 +303,7 @@ impl WindowsWindowInner {
             context.appearance,
             context.disable_direct_composition,
             context.invalidate_devices.clone(),
+            context.vsync_rest.clone(),
             context.draw_coordinator.clone(),
         )?;
 
@@ -454,6 +460,7 @@ struct WindowCreateContext {
     disable_direct_composition: bool,
     directx_devices: DirectXDevices,
     invalidate_devices: Arc<AtomicBool>,
+    vsync_rest: Arc<VsyncRest>,
     draw_coordinator: Rc<DrawCoordinator>,
     parent_hwnd: Option<HWND>,
 }
@@ -482,6 +489,7 @@ impl WindowsWindow {
             disable_direct_composition,
             directx_devices,
             invalidate_devices,
+            vsync_rest,
             draw_coordinator,
         } = creation_info;
         register_window_class(icon);
@@ -567,6 +575,7 @@ impl WindowsWindow {
             disable_direct_composition,
             directx_devices,
             invalidate_devices,
+            vsync_rest,
             draw_coordinator,
             parent_hwnd,
         };
@@ -1017,18 +1026,20 @@ impl PlatformWindow for WindowsWindow {
     /// nor while one asked for is still to be handled, nor once the tick has taken over. So frames that flow
     /// (an animation, a scroll, the pointer moving over rows) are drawn once a refresh as before, with at most
     /// two early ones where they start. `GLINT_EARLY_FRAMES=0` turns it off (for measuring what it gives).
+    ///
+    /// It also wakes the vsync thread whenever it is called (see `VsyncRest`), early frames or not: gpui calls it
+    /// for every frame demand, and a resting thread ticks again only when woken.
     fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if !*ON.get_or_init(|| std::env::var_os("GLINT_EARLY_FRAMES").is_none_or(|value| value != "0")) {
-            return None;
-        }
+        let early = *ON.get_or_init(|| std::env::var_os("GLINT_EARLY_FRAMES").is_none_or(|value| value != "0"));
         let window = Rc::downgrade(&self.0);
         Some(Rc::new(move || {
             let Some(window) = window.upgrade() else {
                 return;
             };
             let state = &window.state;
-            if state.in_frame.get() || state.early_frame_asked.get() {
+            state.vsync_rest.wake();
+            if !early || state.in_frame.get() || state.early_frame_asked.get() {
                 return;
             }
             let refresh = crate::vsync::refresh_interval();
@@ -1110,7 +1121,9 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn draw(&self, scene: &Scene) {
-        // Glint: for `frame_waker`. A frame the tick drew ends the count of early ones.
+        // Glint: for `frame_waker`. A frame the tick drew ends the count of early ones. And the vsync thread keeps
+        // ticking while frames are drawn (`VsyncRest`).
+        self.state.vsync_rest.note_draw();
         let early = self.state.frame_is_early.get();
         self.state.last_draw.set(Some(Instant::now()));
         self.state.last_draw_early.set(early);
