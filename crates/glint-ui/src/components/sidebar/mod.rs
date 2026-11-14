@@ -44,7 +44,7 @@ use crate::{drops, persistence, state, t, theme};
 use glint_model::entries::{with_details, FileEntry, RawEntry};
 use glint_model::file_types::kind_of;
 use glint_model::paths::{same_path, RECYCLE_BIN, THIS_PC};
-use glint_model::store::{RemoteKind, SavedSearch};
+use glint_model::store::{RemoteConnection, RemoteKind, SavedSearch};
 use rows::{build_rows, count_key, reads_files, shown_tags, tag_search, Glyph, Inputs, Label, Place, Row, Space};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -159,6 +159,35 @@ impl Sources {
     }
 }
 
+/// What [`Sidebar::refresh`] builds the rows from, kept to compare against: shared lists by pointer (a new listing
+/// or list of drives is a new `Arc`), the rest by value.
+#[derive(PartialEq)]
+struct Seen {
+    path: String,
+    known: usize,
+    drives: usize,
+    listing: Option<usize>,
+    folder_tree: bool,
+    tree_follows: bool,
+    show_hidden: bool,
+    pinned: Vec<String>,
+    saved: Vec<SavedSearch>,
+    remotes: Vec<RemoteConnection>,
+}
+
+/// An `Arc`'s address, to tell a new list from the one seen before without comparing what is in it.
+fn arc_key<T: ?Sized>(shared: &Arc<T>) -> usize {
+    Arc::as_ptr(shared).cast::<()>() as usize
+}
+
+/// The active tab's listing, when it is a folder the tree can hold (not in an archive, not on a remote).
+fn tree_listing(explorer: &Explorer) -> Option<&crate::explorer::Listed> {
+    explorer
+        .active_tab()
+        .and_then(|t| t.listing.as_ref())
+        .filter(|l| l.archive.is_none() && !l.remote)
+}
+
 /// The places and the folder tree.
 pub struct Sidebar {
     explorer: Entity<Explorer>,
@@ -185,6 +214,12 @@ pub struct Sidebar {
     last_listing: Option<Arc<[FileEntry]>>,
     last_saved: Vec<SavedSearch>,
     last_drives: Option<Arc<[crate::explorer::Drive]>>,
+    /// What the rows were last built from. The explorer, the saved state and the settings change far more often
+    /// than anything the sidebar shows (a selection, a scroll, a sort, a visit): such a change rebuilds nothing.
+    seen: Option<Seen>,
+    /// How many times the rows were built.
+    #[cfg(test)]
+    built: usize,
     /// Scroll to the folder shown once its row exists (after the tree opened down to it).
     scroll_to_current: bool,
     /// The pixels in a rem the rows were measured at.
@@ -212,9 +247,9 @@ impl Sidebar {
         let explorer = explorer(cx);
         let focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
-            cx.observe(&explorer, |this, _, cx| this.refresh(cx)),
-            cx.observe_global::<Persistence>(|this, cx| this.refresh(cx)),
-            cx.observe_global::<UiState>(|this, cx| this.refresh(cx)),
+            cx.observe(&explorer, |this, _, cx| this.refresh_if_changed(cx)),
+            cx.observe_global::<Persistence>(|this, cx| this.refresh_if_changed(cx)),
+            cx.observe_global::<UiState>(|this, cx| this.refresh_if_changed(cx)),
             // A tag was set on something: the recent tags changed, and instant search lists what it has now.
             {
                 let tags = tags::hub(cx);
@@ -250,6 +285,9 @@ impl Sidebar {
             last_listing: None,
             last_saved: Vec::new(),
             last_drives: None,
+            seen: None,
+            #[cfg(test)]
+            built: 0,
             scroll_to_current: false,
             measured_at: theme::rem_size(cx),
             folder_tone: None,
@@ -276,11 +314,7 @@ impl Sidebar {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (path, known, drives, listing) = {
             let e = self.explorer.read(cx);
-            let listing = e
-                .active_tab()
-                .and_then(|t| t.listing.as_ref())
-                .filter(|l| l.archive.is_none() && !l.remote)
-                .map(|l| (l.path.clone(), l.entries.clone()));
+            let listing = tree_listing(e).map(|l| (l.path.clone(), l.entries.clone()));
             (
                 e.current_path().to_string(),
                 e.known_folders().clone(),
@@ -364,6 +398,46 @@ impl Sidebar {
             counts: &self.counts,
         });
         self.set_rows(built, cx);
+        #[cfg(test)]
+        {
+            self.built += 1;
+        }
+        self.seen = Some(Seen {
+            known: arc_key(&known),
+            drives: arc_key(&drives),
+            listing: listing.as_ref().map(|(_, entries)| arc_key(entries)),
+            path,
+            folder_tree,
+            tree_follows,
+            show_hidden,
+            pinned,
+            saved,
+            remotes,
+        });
+    }
+
+    /// [`Sidebar::refresh`], unless everything the rows are built from is as the last refresh saw it.
+    fn refresh_if_changed(&mut self, cx: &mut Context<Self>) {
+        if !self.unchanged(cx) {
+            self.refresh(cx);
+        }
+    }
+
+    fn unchanged(&self, cx: &App) -> bool {
+        let Some(seen) = &self.seen else {
+            return false;
+        };
+        let e = self.explorer.read(cx);
+        let s = state::settings(cx);
+        let kept = match persistence::app(cx) {
+            Some(app) => seen.pinned == app.pinned && seen.saved == app.saved_searches && seen.remotes == app.remotes,
+            None => seen.pinned.is_empty() && seen.saved.is_empty() && seen.remotes.is_empty(),
+        };
+        kept && seen.path == e.current_path()
+            && seen.known == arc_key(e.known_folders())
+            && seen.drives == arc_key(e.drives())
+            && seen.listing == tree_listing(e).map(|l| arc_key(&l.entries))
+            && (seen.folder_tree, seen.tree_follows, seen.show_hidden) == (s.folder_tree, s.tree_follows, s.show_hidden)
     }
 
     /// Replaces the rows, and the part of the list that differs. The keyboard's row stays on the same thing.

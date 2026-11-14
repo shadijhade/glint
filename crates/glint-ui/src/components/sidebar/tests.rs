@@ -535,6 +535,27 @@ fn clicking_a_folder_in_the_tree_opens_it_and_marks_it(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn an_explorer_change_the_sidebar_does_not_show_rebuilds_nothing(cx: &mut TestAppContext) {
+    let _guard = testing::lock();
+    let mut w = world(cx, "unchanged");
+    w.settle(|w| w.path() == HOME && !w.tab_loading());
+    let built = |w: &mut World| w.sidebar.read_with(&w.cx, |s, _| s.built);
+    let before = built(&mut w);
+    // A selection and a sort change the explorer and the settings, not what the sidebar shows.
+    w.explorer.update(&mut w.cx, |e, cx| {
+        e.set_selection([format!("{HOME}\\readme.txt")], None, None, cx)
+    });
+    w.cx.update(|_, cx| state::update(cx, |s| s.folders_first = !s.folders_first));
+    w.cx.run_until_parked();
+    assert_eq!(built(&mut w), before);
+    // Another folder does.
+    w.explorer
+        .update(&mut w.cx, |e, cx| e.navigate(DOCS, NavOptions::default(), cx));
+    w.settle(|w| w.path() == DOCS && !w.tab_loading());
+    assert!(built(&mut w) > before);
+}
+
+#[gpui_kit::test]
 fn the_tree_follows_the_folder_shown_when_asked_and_keeps_up_with_its_listing(cx: &mut TestAppContext) {
     let _guard = testing::lock();
     let mut w = world(cx, "follows");
