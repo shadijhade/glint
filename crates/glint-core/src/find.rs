@@ -3,10 +3,10 @@
 //! doesn't index, .gitignore rules). Results stream in either way, each with its size, date and
 //! attributes.
 
-use crate::fsx::{encode_items, entry_for_path, ms_since, Entry};
+use crate::fsx::{entry_for_path, ms_since, Entry};
 use crate::proc::Slot;
 use crate::AppState;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use shadui_index::query::{parse, without_props, Filters, Kind};
 use std::io::{BufRead, BufReader, Read};
 use std::process::Stdio;
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
-use crate::host::ipc::{Channel, InvokeResponseBody};
+use crate::host::ipc::Channel;
 use crate::host::State;
 
 #[derive(Deserialize, Clone)]
@@ -38,22 +38,19 @@ pub struct FindOptions {
     pub rank: bool,
 }
 
-/// What a search says besides its results, as JSON; the results themselves go as bytes (`encode_items`).
-#[derive(Serialize, Clone)]
-#[serde(tag = "type", rename_all = "camelCase")]
+/// What a search sends as it goes: who answers, what it found (in batches, each with its own path), how it ended.
+#[derive(Clone, Debug)]
 pub enum FindEvent {
     /// Who answers: "index", "fd", or "index + fd" when the index covers only some of the folders.
     Started { engine: &'static str },
+    Found(Vec<Entry>),
     Error { message: String },
     /// `fuzzy`: nothing matched as typed, and the index found these close matches.
-    #[serde(rename_all = "camelCase")]
     Finished { count: usize, elapsed: f64, limited: bool, fuzzy: bool },
 }
 
-fn tell(channel: &Channel, event: FindEvent) {
-    if let Ok(json) = serde_json::to_string(&event) {
-        let _ = channel.send(InvokeResponseBody::Json(json));
-    }
+fn tell(channel: &Channel<FindEvent>, event: FindEvent) {
+    let _ = channel.send(event);
 }
 
 /// The searches in flight, one per lane (each tab searches on its own), so a newer search in the
@@ -196,7 +193,7 @@ fn full_path_regex(term: &str) -> String {
 
 /// Sends results in batches: up to 10,000 at a time, at least every 40 ms.
 struct Out<'a> {
-    channel: &'a Channel,
+    channel: &'a Channel<FindEvent>,
     batch: Vec<Entry>,
     sent: Instant,
     count: usize,
@@ -210,7 +207,7 @@ struct Out<'a> {
 }
 
 impl<'a> Out<'a> {
-    fn new(channel: &'a Channel, check: Option<mpsc::SyncSender<Entry>>) -> Self {
+    fn new(channel: &'a Channel<FindEvent>, check: Option<mpsc::SyncSender<Entry>>) -> Self {
         Out { channel, batch: Vec::new(), sent: Instant::now(), count: 0, started: false, check, tags: Vec::new() }
     }
 
@@ -237,8 +234,7 @@ impl<'a> Out<'a> {
 
     fn flush(&mut self) {
         if !self.batch.is_empty() {
-            let _ = self.channel.send(InvokeResponseBody::Raw(encode_items("", &self.batch, &[], 0.0, false)));
-            self.batch.clear();
+            let _ = self.channel.send(FindEvent::Found(std::mem::take(&mut self.batch)));
             self.sent = Instant::now();
         }
     }
@@ -384,7 +380,7 @@ pub async fn find_files(
     roots: Vec<String>,
     query: String,
     options: FindOptions,
-    on_event: Channel,
+    on_event: Channel<FindEvent>,
     lane: String,
 ) -> Result<(), String> {
     let (terms, filters) = parse(&query)?;

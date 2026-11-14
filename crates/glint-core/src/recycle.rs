@@ -60,13 +60,13 @@ fn item(recycled: &str) -> Option<(Entry, String)> {
     Some((entry, original.parent()?.to_string_lossy().into_owned()))
 }
 
-/// The Recycle Bin as a listing: `fsx::encode_items` with each item's name and the folder it was
-/// deleted from, sorted as a folder's listing is.
-pub fn listing(started: Instant) -> Result<Vec<u8>, String> {
+/// The Recycle Bin as a listing: each item at its own path, with its name and the folder it was deleted from,
+/// sorted as a folder's listing is.
+pub fn listing(started: Instant) -> Result<fsx::Listing, String> {
     let mut items: Vec<(Entry, String)> = imp::recycled()?.iter().filter_map(|path| item(path)).collect();
     items.sort_by_cached_key(|(e, _)| (!e.dir, fsx::natural_key(&e.name.to_lowercase()), e.name.clone()));
     let (entries, origins): (Vec<Entry>, Vec<String>) = items.into_iter().unzip();
-    Ok(fsx::encode_items(PLACE, &entries, &origins, fsx::ms_since(started), false))
+    Ok(fsx::Listing::Items { location: PLACE.into(), entries, origins, elapsed: fsx::ms_since(started) })
 }
 
 /// Empties the Recycle Bin, every drive's, as File Explorer does: Windows asks first, then shows its

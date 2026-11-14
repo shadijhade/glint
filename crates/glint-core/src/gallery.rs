@@ -140,7 +140,7 @@ fn walk(folders: &[String]) -> Vec<Entry> {
 
 /// Gallery as a listing: each photo and video at its own path, its date when it was taken where it says
 /// (else when it was modified), newest first. Files not dated yet are read in the background.
-pub fn listing(started: Instant) -> Result<Vec<u8>, String> {
+pub fn listing(started: Instant) -> Result<fsx::Listing, String> {
     let folders: Vec<String> = state().folders.iter().filter(|f| Path::new(f).is_dir()).cloned().collect();
     let mut entries = files(&folders);
     let mut unread = Vec::new();
@@ -163,7 +163,7 @@ pub fn listing(started: Instant) -> Result<Vec<u8>, String> {
     if !unread.is_empty() && !DATING.swap(true, Ordering::SeqCst) {
         std::thread::spawn(move || date(unread));
     }
-    Ok(fsx::encode_items(PLACE, &entries, &[], fsx::ms_since(started), false))
+    Ok(fsx::Listing::Items { location: PLACE.into(), entries, origins: Vec::new(), elapsed: fsx::ms_since(started) })
 }
 
 /// Reads when each file was taken, four at a time, keeps it, and tells the app.

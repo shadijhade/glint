@@ -54,46 +54,43 @@ impl ListError {
     }
 }
 
-/// Lists a folder for the UI, sorted, as one binary buffer (see `encode_listing`). A path that goes
-/// into a zip or 7z archive lists the folder in the archive. A link Windows won't list, such as
-/// "Documents and Settings" (kept for old apps, it lets no one look inside), lists where it points;
-/// a folder Windows keeps this user out of lists what instant search's index has in it, if it can.
-/// The Recycle Bin (`recycle::PLACE`) and Recent (`recent::PLACE`) list their items, each with a path
-/// of its own (`encode_items`), and a remote connection's folder (`remote:<id>\…`) what's in it there.
-pub async fn list_dir(path: String) -> Result<crate::host::ipc::Response, ListError> {
-    list_folder(path, Listing::into_bytes).await.map(crate::host::ipc::Response::new)
-}
-
-/// A folder listed, for a caller in this process.
+/// A folder listed: what was read, as it was read, for the caller to take as it is.
+#[derive(Debug)]
 pub enum Listing {
-    /// A folder on disk (or a server's shares, or what the index has of a closed folder): its entries as they
-    /// were read, sorted. Nothing was encoded: the caller takes the names as they are.
+    /// A folder, sorted folders first in natural order: on disk (or a server's shares, or what the index has of a
+    /// closed folder), in an archive, or on a remote connection.
     Folder {
         /// The folder as listed: made absolute, and where a link pointed when the link itself wouldn't list.
         path: String,
+        /// Each without a path of its own: they all live in `path`.
         entries: Vec<Entry>,
-        /// Milliseconds spent reading and sorting.
+        /// Milliseconds spent reading and sorting (or reading the archive's list of entries).
         elapsed: f64,
+        /// Listed from instant search's index: Windows keeps the folder closed to this account, so it's read-only
+        /// and nothing in it opens.
         from_index: bool,
+        /// A folder on a remote connection: read-only, its files downloaded to be read.
+        remote: bool,
+        /// A folder in an archive (read-only): where the archive is in `path`, and how its list was read.
+        archive: Option<InArchive>,
     },
-    /// Anything else (a folder in an archive, on a remote, the Recycle Bin, Recent, the Gallery, a listing read
-    /// as Glint started) in the binary form: `encode_listing`'s or `encode_items`'s.
-    Encoded(Vec<u8>),
+    /// Items that each carry their own path (`Entry::path`): the Recycle Bin's, Recent's, the Gallery's.
+    Items {
+        /// The place listed (`recycle::PLACE`…).
+        location: String,
+        entries: Vec<Entry>,
+        /// Where each item came from, one per entry, or none: the folder each was deleted from (the Recycle Bin).
+        origins: Vec<String>,
+        elapsed: f64,
+    },
 }
 
-impl Listing {
-    /// The binary form of any listing (`encode_listing`).
-    pub fn into_bytes(self) -> Vec<u8> {
-        match self {
-            Listing::Folder { path, entries, elapsed, from_index } => encode_listing(&path, &entries, elapsed, None, from_index),
-            Listing::Encoded(bytes) => bytes,
-        }
-    }
-}
-
-/// Lists a folder (`list_dir` says which and how) and hands what was read to `shape` on the thread that read
-/// it: the interface makes its rows there, so a big folder costs one trip between threads and its names are
-/// never packed into bytes only to be unpacked again.
+/// Lists a folder and hands what was read to `shape` on the thread that read it, so the interface makes its rows
+/// there and a big folder costs one trip between threads. A path that goes into an archive lists the folder in
+/// the archive. A link Windows won't list, such as "Documents and Settings" (kept for old apps, it lets no one
+/// look inside), lists where it points; a folder Windows keeps this user out of lists what instant search's index
+/// has in it, if it can. The Recycle Bin (`recycle::PLACE`), Recent (`recent::PLACE`) and the Gallery list their
+/// items, each with a path of its own, and a remote connection's folder (`remote:<id>\…`) what's in it there.
 pub async fn list_folder<T, F>(path: String, shape: F) -> Result<T, ListError>
 where
     T: Send + 'static,
@@ -105,11 +102,11 @@ where
     };
     // Read already, as Glint started (startup.rs), and the folder is as it was then.
     if let Some(warm) = crate::startup::take(path.trim()) {
-        return shaped(Listing::Encoded(warm), shape).await;
+        return shaped(warm, shape).await;
     }
     if crate::remote::is_remote(path.trim()) {
         let listing = crate::remote::listing(path.trim(), Instant::now()).await.map_err(|e| ListError::other(path.trim(), e))?;
-        return shaped(Listing::Encoded(listing), shape).await;
+        return shaped(listing, shape).await;
     }
     let asked = path.clone();
     crate::host::async_runtime::spawn_blocking(move || read_listing(path).map(shape))
@@ -121,22 +118,22 @@ where
 fn read_listing(path: String) -> Result<Listing, ListError> {
     let started = Instant::now();
     if crate::recycle::is_place(path.trim()) {
-        return crate::recycle::listing(started).map(Listing::Encoded).map_err(|e| ListError::other(crate::recycle::PLACE, e));
+        return crate::recycle::listing(started).map_err(|e| ListError::other(crate::recycle::PLACE, e));
     }
     if crate::recent::is_place(path.trim()) {
-        return crate::recent::listing(started).map(Listing::Encoded).map_err(|e| ListError::other(crate::recent::PLACE, e));
+        return crate::recent::listing(started).map_err(|e| ListError::other(crate::recent::PLACE, e));
     }
     if crate::gallery::is_place(path.trim()) {
-        return crate::gallery::listing(started).map(Listing::Encoded).map_err(|e| ListError::other(crate::gallery::PLACE, e));
+        return crate::gallery::listing(started).map_err(|e| ListError::other(crate::gallery::PLACE, e));
     }
     let path = normalize(&path).map_err(|e| ListError::other(&path, e))?;
     if let Some(listing) = crate::archive::list(&path, started) {
-        return listing.map(Listing::Encoded).map_err(|e| ListError::other(&path, e));
+        return listing.map_err(|e| ListError::other(&path, e));
     }
     if let Some(server) = server_of(&path) {
         let mut entries = shares(server).map_err(|e| ListError { kind: "other", message: format!("Glint couldn't list the shares on {server}: {e}"), path: path.clone(), remote: true })?;
         sort_entries(&mut entries);
-        return Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index: false });
+        return Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index: false, remote: false, archive: None });
     }
     let mut from_index = false;
     let (path, mut entries) = match read_dir(&path) {
@@ -155,12 +152,12 @@ fn read_listing(path: String) -> Result<Listing, ListError> {
         // A path into (or to) an archive not named like one: a renamed zip, or one opened with
         // "Open as archive". Its first bytes say so, and it's remembered from then on.
         Err(e) => match crate::archive::sniff(&path).then(|| crate::archive::list(&path, started)).flatten() {
-            Some(listing) => return listing.map(Listing::Encoded).map_err(|e| ListError::other(&path, e)),
+            Some(listing) => return listing.map_err(|e| ListError::other(&path, e)),
             None => return Err(ListError::other(&path, describe(&e))),
         },
     };
     sort_entries(&mut entries);
-    Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index })
+    Ok(Listing::Folder { path, entries, elapsed: ms_since(started), from_index, remote: false, archive: None })
 }
 
 /// A folder's own last-write time, in ms: every add, delete and rename in it changes it. Prefetched
@@ -313,160 +310,20 @@ fn shares(_: &str) -> io::Result<Vec<Entry>> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
-/// What a listing shows of each item: a folder's entries, or an archive's.
-pub trait Listed {
-    fn name(&self) -> &str;
-    fn dir(&self) -> bool;
-    fn size(&self) -> u64;
-    fn modified(&self) -> i64;
-    fn attrs(&self) -> u32;
-}
-
-impl Listed for Entry {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn dir(&self) -> bool {
-        self.dir
-    }
-    fn size(&self) -> u64 {
-        self.size
-    }
-    fn modified(&self) -> i64 {
-        self.modified
-    }
-    fn attrs(&self) -> u32 {
-        self.attrs
-    }
-}
-
-/// A listing of a folder in an archive also says where the archive is in its path, and how its
-/// list of entries was read.
+/// Where a folder in an archive is: the archive opened like a folder, and how its list of entries was read.
+#[derive(Clone, Debug, PartialEq)]
 pub struct InArchive {
-    /// UTF-16 units of the listing's path that are the archive's own path (an archive in an archive
-    /// included), and those that are the archive file on disk.
-    pub archive: u32,
-    pub outer: u32,
+    /// The archive's own path (an archive in an archive included), the start of the folder's.
+    pub path: String,
+    /// The archive file on disk everything is in (the same, unless archives nest).
+    pub outer: String,
+    /// The format's label ("zip", "tar.gz", "disk image"…: `archive::Format::label`).
+    pub format: &'static str,
     /// Files and folders in the whole archive.
     pub entries: u32,
-    /// The archive's list of entries was already in memory.
+    /// Its list of entries was already in memory; otherwise it took `read_ms` to read.
     pub cached: bool,
-    /// How long reading it took (0 when it was in memory).
     pub read_ms: f64,
-    /// The archive's format, by its code (`archive::Format::code`).
-    pub format: u8,
-}
-
-/// A listing as bytes rather than JSON: a third of the size for big folders, and nothing to parse.
-/// All little-endian, laid out so each array can be viewed in place as a typed array:
-///   0: u32 count · 4: u32 path length (UTF-8 bytes) · 8: f64 milliseconds spent
-///   16: u32 archive (UTF-16 units of the path that are the archive the folder is in; 0 for a
-///   folder on disk) · 20: u32 outer (those that are the archive file on disk, when archives nest)
-///   24: u32 entries in the archive · 28: u32 flags (1: the archive's list of entries was in memory;
-///   2: listed from instant search's index, as Windows keeps the folder closed to this user; 8: a
-///   remote's folder; bits 8 to 15: the archive's format code plus one)
-///   32: f64 milliseconds reading the archive's list of entries
-///   40: f64 size[count] · then f64 modified[count] · u32 attrs[count] · u32 name length[count]
-///   (UTF-16 units, how JavaScript counts) · the path (UTF-8) · every name back to back (UTF-8).
-pub fn encode_listing<T: Listed>(path: &str, entries: &[T], elapsed: f64, archive: Option<&InArchive>, from_index: bool) -> Vec<u8> {
-    let names: usize = entries.iter().map(|e| e.name().len()).sum();
-    let mut out = Vec::with_capacity(40 + 24 * entries.len() + path.len() + names);
-    out.extend((entries.len() as u32).to_le_bytes());
-    out.extend((path.len() as u32).to_le_bytes());
-    out.extend(elapsed.to_le_bytes());
-    let (inside, outer, count, flags, read_ms) = archive.map_or((0, 0, 0, 0, 0.0), |a| (a.archive, a.outer, a.entries, a.cached as u32 | (a.format as u32 + 1) << 8, a.read_ms));
-    let flags = flags | if from_index { 2 } else { 0 };
-    out.extend(inside.to_le_bytes());
-    out.extend(outer.to_le_bytes());
-    out.extend(count.to_le_bytes());
-    out.extend(flags.to_le_bytes());
-    out.extend(read_ms.to_le_bytes());
-    for e in entries {
-        out.extend((e.size() as f64).to_le_bytes());
-    }
-    for e in entries {
-        out.extend((e.modified() as f64).to_le_bytes());
-    }
-    for e in entries {
-        // The directory bit is what the UI reads, so set it on every platform.
-        out.extend((e.attrs() | if e.dir() { 0x10 } else { 0 }).to_le_bytes());
-    }
-    for e in entries {
-        out.extend((e.name().encode_utf16().count() as u32).to_le_bytes());
-    }
-    out.extend(path.as_bytes());
-    for e in entries {
-        out.extend(e.name().as_bytes());
-    }
-    out
-}
-
-/// Flag 4 in a listing's header: its items each carry their own path (`encode_items`).
-const ITEMS: u32 = 4;
-
-/// Flag 8: a folder on a remote connection (remote.rs), read-only, its files downloaded to be read.
-const REMOTE: u32 = 8;
-
-/// Marks a listing (`encode_listing`'s) as a remote's.
-pub fn mark_remote(listing: &mut [u8]) {
-    let flags = u32::from_le_bytes([listing[28], listing[29], listing[30], listing[31]]) | REMOTE;
-    listing[28..32].copy_from_slice(&flags.to_le_bytes());
-}
-
-/// Items that each have their own path, such as search results, as bytes: `encode_listing`'s header
-/// (with flag 4, its archive fields 0, and at 24 a u32 of columns: 1 when names follow the paths, 2
-/// when origins do), then
-///   f64 size[count] · f64 modified[count] · u32 attrs[count] · u32 path length[count] · u32 name
-///   length[count] · u32 origin length[count] when there are origins (UTF-16 units) · the location
-///   (UTF-8) · every path back to back (UTF-8) · only when some name isn't its path's last part, every
-///   name · and the origins.
-/// Otherwise each name is the last `name length` units of its path, which search results always are.
-/// `origins`, one per entry or none: where each came from (the Recycle Bin's, where it was deleted from).
-pub fn encode_items(location: &str, entries: &[Entry], origins: &[String], elapsed: f64, from_index: bool) -> Vec<u8> {
-    let paths: Vec<&str> = entries.iter().map(|e| e.path.as_deref().unwrap_or(&e.name)).collect();
-    let tails = entries.iter().zip(&paths).all(|(e, p)| *p == e.name || p.strip_suffix(e.name.as_str()).is_some_and(|rest| rest.ends_with(['\\', '/'])));
-    let with_origins = !origins.is_empty();
-    let text: usize = paths.iter().map(|p| p.len()).sum::<usize>() + if tails { 0 } else { entries.iter().map(|e| e.name.len()).sum() } + origins.iter().map(|o| o.len()).sum::<usize>();
-    let mut out = Vec::with_capacity(40 + 32 * entries.len() + location.len() + text);
-    out.extend((entries.len() as u32).to_le_bytes());
-    out.extend((location.len() as u32).to_le_bytes());
-    out.extend(elapsed.to_le_bytes());
-    out.extend(0u32.to_le_bytes());
-    out.extend(0u32.to_le_bytes());
-    out.extend((u32::from(!tails) | u32::from(with_origins) << 1).to_le_bytes());
-    out.extend((ITEMS | if from_index { 2 } else { 0 }).to_le_bytes());
-    out.extend(0f64.to_le_bytes());
-    for e in entries {
-        out.extend((e.size as f64).to_le_bytes());
-    }
-    for e in entries {
-        out.extend((e.modified as f64).to_le_bytes());
-    }
-    for e in entries {
-        out.extend((e.attrs | if e.dir { 0x10 } else { 0 }).to_le_bytes());
-    }
-    for path in &paths {
-        out.extend((path.encode_utf16().count() as u32).to_le_bytes());
-    }
-    for e in entries {
-        out.extend((e.name.encode_utf16().count() as u32).to_le_bytes());
-    }
-    for origin in origins {
-        out.extend((origin.encode_utf16().count() as u32).to_le_bytes());
-    }
-    out.extend(location.as_bytes());
-    for path in &paths {
-        out.extend(path.as_bytes());
-    }
-    if !tails {
-        for e in entries {
-            out.extend(e.name.as_bytes());
-        }
-    }
-    for origin in origins {
-        out.extend(origin.as_bytes());
-    }
-    out
 }
 
 /// What a change inside an archive is answered with.
@@ -1413,64 +1270,6 @@ mod tests {
     }
 
     #[test]
-    fn encodes_listings_for_the_ui() {
-        let entries = [
-            Entry { name: "sub".into(), path: None, dir: true, size: 0, modified: 5, attrs: 0 },
-            Entry { name: "é😀.txt".into(), path: None, dir: false, size: 1 << 40, modified: 1_700_000_000_000, attrs: 0x2 },
-        ];
-        let archive = InArchive { archive: 3, outer: 2, entries: 50_000, cached: true, read_ms: 12.5, format: 1 };
-        let bytes = encode_listing("C:\\x", &entries, 1.5, Some(&archive), false);
-        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-        assert_eq!((u32_at(0), u32_at(4), f64_at(8)), (2, 4, 1.5));
-        // Flags: in memory (1), and the format's code plus one in bits 8 to 15 (a 7z: 2).
-        assert_eq!((u32_at(16), u32_at(20), u32_at(24), u32_at(28), f64_at(32)), (3, 2, 50_000, 1 | 2 << 8, 12.5));
-        assert_eq!((f64_at(40), f64_at(48)), (0.0, (1u64 << 40) as f64));
-        assert_eq!((f64_at(56), f64_at(64)), (5.0, 1_700_000_000_000.0));
-        assert_eq!((u32_at(72), u32_at(76)), (0x10, 0x2));
-        // "é😀.txt" is 7 UTF-16 units: é, a surrogate pair, then ".txt".
-        assert_eq!((u32_at(80), u32_at(84)), (3, 7));
-        assert_eq!(std::str::from_utf8(&bytes[88..]).unwrap(), "C:\\xsubé😀.txt");
-        // A folder on disk has zeros where the archive's details go.
-        let plain = encode_listing("D:\\", &entries[..0], 0.5, None, false);
-        assert_eq!(plain.len(), 40 + 3);
-        assert!(plain[16..40].iter().all(|&b| b == 0));
-        // One listed from the index says so in its flags.
-        let closed = encode_listing("C:\\PerfLogs", &entries, 0.5, None, true);
-        assert_eq!(u32::from_le_bytes(closed[28..32].try_into().unwrap()), 2);
-    }
-
-    #[test]
-    fn encodes_items_with_their_own_paths() {
-        let entries = [
-            Entry { name: "é😀.txt".into(), path: Some("C:\\x\\é😀.txt".into()), dir: false, size: 7, modified: 9, attrs: 0x20 },
-            Entry { name: "D:\\".into(), path: Some("D:\\".into()), dir: true, size: 0, modified: 0, attrs: 0 },
-        ];
-        let bytes = encode_items("", &entries, &[], 1.5, false);
-        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        let f64_at = |at: usize| f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-        assert_eq!((u32_at(0), u32_at(4), f64_at(8)), (2, 0, 1.5));
-        // No names column (each is its path's end), and flag 4: items.
-        assert_eq!((u32_at(16), u32_at(20), u32_at(24), u32_at(28)), (0, 0, 0, 4));
-        assert_eq!((f64_at(40), f64_at(48), f64_at(56), f64_at(64)), (7.0, 0.0, 9.0, 0.0));
-        assert_eq!((u32_at(72), u32_at(76)), (0x20, 0x10));
-        // Paths, then names, in UTF-16 units: "C:\x\é😀.txt" is 12.
-        assert_eq!((u32_at(80), u32_at(84), u32_at(88), u32_at(92)), (12, 3, 7, 3));
-        assert_eq!(std::str::from_utf8(&bytes[96..]).unwrap(), "C:\\x\\é😀.txtD:\\");
-        // A name that isn't its path's end goes after the paths, and the columns say so.
-        let recycled = [Entry { name: "budget.xlsx".into(), path: Some("C:\\$Recycle.Bin\\$RQ2.xlsx".into()), dir: false, size: 1, modified: 1, attrs: 0 }];
-        let bytes = encode_items("", &recycled, &[], 0.0, true);
-        assert_eq!((u32::from_le_bytes(bytes[24..28].try_into().unwrap()), u32::from_le_bytes(bytes[28..32].try_into().unwrap())), (1, 4 | 2));
-        assert!(std::str::from_utf8(&bytes[40 + 28..]).unwrap().ends_with("$RQ2.xlsxbudget.xlsx"));
-        // Where each came from, after the names, its length after theirs.
-        let bytes = encode_items("shell:RecycleBinFolder", &recycled, &["C:\\Users\\me\\Désktop".into()], 0.0, false);
-        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        assert_eq!((u32_at(4), u32_at(24)), (22, 1 | 2));
-        assert_eq!((u32_at(40 + 20), u32_at(40 + 24), u32_at(40 + 28)), (25, 11, 19));
-        assert_eq!(std::str::from_utf8(&bytes[40 + 32..]).unwrap(), "shell:RecycleBinFolderC:\\$Recycle.Bin\\$RQ2.xlsxbudget.xlsxC:\\Users\\me\\Désktop");
-    }
-
-    #[test]
     fn expands_variables() {
         std::env::set_var("SHADUI_TEST_VAR", "X");
         assert_eq!(expand_vars("%SHADUI_TEST_VAR%\\a"), "X\\a");
@@ -1544,23 +1343,20 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_is_handed_over_as_it_was_read_and_its_bytes_are_the_same_listing() {
+    fn a_folder_is_handed_over_as_it_was_read() {
         let dir = std::env::temp_dir().join(format!("glint-listing-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("b.txt"), b"hello").unwrap();
         std::fs::write(dir.join("a10.txt"), b"x").unwrap();
         std::fs::write(dir.join("a2.txt"), b"xy").unwrap();
         let path = dir.to_str().unwrap().to_string();
-        let Ok(Listing::Folder { path: listed, entries, from_index, .. }) = read_listing(path.clone()) else {
-            panic!("a folder on disk comes as its entries, not as bytes");
+        let Ok(Listing::Folder { path: listed, entries, from_index, remote, archive, .. }) = read_listing(path.clone()) else {
+            panic!("a folder on disk comes as its entries");
         };
         assert_eq!(listed, normalize(&path).unwrap());
-        assert!(!from_index);
+        assert!(!from_index && !remote && archive.is_none());
         // Sorted as the list shows them: folders first, then natural order.
         assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["sub", "a2.txt", "a10.txt", "b.txt"]);
-        // Its binary form (what `list_dir` answers) is `encode_listing`'s of the same entries.
-        let bytes = Listing::Folder { path: listed.clone(), entries: entries.clone(), elapsed: 1.5, from_index: false }.into_bytes();
-        assert_eq!(bytes, encode_listing(&listed, &entries, 1.5, None, false));
         // A folder that isn't there is an error that says so.
         let missing = read_listing(dir.join("missing").to_string_lossy().into_owned());
         assert!(matches!(missing, Err(ref e) if e.kind == "other" && !e.message.is_empty()));

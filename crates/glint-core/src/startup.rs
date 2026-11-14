@@ -1,10 +1,9 @@
-//! A quicker start: the folders the last session showed are read in Rust the moment Glint starts, while
-//! WebView2's own processes are still starting, so the first listing the page asks for is waiting for it
-//! (used only if the folder hasn't changed since). The page says which folders those are as its tabs
-//! change (`startup_hint`).
+//! A quicker start: the folders the last session showed are read the moment Glint starts, while the window is
+//! still being made, so the first listing a tab asks for is waiting for it (used only if the folder hasn't changed
+//! since). The window says which folders those are as its tabs change (`startup_hint`).
 //!
-//! `npm run bench -- --start` measures it: with GLINT_BENCH_START naming a file, the page reports its
-//! first folder painted, and Glint writes the time since it started there and quits.
+//! `npm run bench -- --start` measures it: with GLINT_BENCH_START naming a file, the window reports its first
+//! folder painted, and Glint writes the time since it started there and quits.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,11 +11,10 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Instant;
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
-/// Listings read at start, by folder (lowercase): the bytes the page takes, and the folder's last-write
-/// time when they were read.
+/// Listings read at start, by folder (lowercase), with the folder's last-write time when they were read.
 static WARM: LazyLock<Mutex<HashMap<String, Warm>>> = LazyLock::new(Default::default);
 /// A listing read ahead, and its folder's stamp then.
-type Warm = (Vec<u8>, f64);
+type Warm = (crate::fsx::Listing, f64);
 /// The most folders read ahead at start.
 const MOST: usize = 4;
 /// How long a listing read ahead waits to be taken: one no tab took by then never will be.
@@ -44,8 +42,8 @@ pub fn begin() {
     });
 }
 
-/// A plain folder's listing as the page takes it, and its stamp; None for anything that isn't one
-/// (archives, remotes, the Recycle Bin…: those are read when asked).
+/// A plain folder's listing, and its stamp; None for anything that isn't one (archives, remotes, the Recycle
+/// Bin…: those are read when asked).
 fn read(path: &str) -> Option<Warm> {
     if crate::remote::is_remote(path) || crate::recycle::is_place(path) || crate::recent::is_place(path) || crate::gallery::is_place(path) {
         return None;
@@ -54,14 +52,15 @@ fn read(path: &str) -> Option<Warm> {
     let started = Instant::now();
     let mut entries = crate::fsx::read_dir(path).ok()?;
     crate::fsx::sort_entries(&mut entries);
-    Some((crate::fsx::encode_listing(path, &entries, crate::fsx::ms_since(started), None, false), stamp))
+    let elapsed = crate::fsx::ms_since(started);
+    Some((crate::fsx::Listing::Folder { path: path.to_string(), entries, elapsed, from_index: false, remote: false, archive: None }, stamp))
 }
 
 /// The listing read at start for `path`, if it's still as the folder is (taken: it's used once).
-pub fn take(path: &str) -> Option<Vec<u8>> {
-    let (bytes, stamp) = WARM.lock().unwrap_or_else(|e| e.into_inner()).remove(&path.to_lowercase())?;
+pub fn take(path: &str) -> Option<crate::fsx::Listing> {
+    let (listing, stamp) = WARM.lock().unwrap_or_else(|e| e.into_inner()).remove(&path.to_lowercase())?;
     let now = crate::fsx::folder_stamp(path.to_string()).ok()?;
-    (now == stamp).then_some(bytes)
+    (now == stamp).then_some(listing)
 }
 
 /// The folders shown now (the panes' tabs), for the next start to read ahead.
