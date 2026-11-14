@@ -106,7 +106,7 @@ pub enum Body {
     Notebook,
     /// A program's sections, imports and exports (`preview::program`).
     Program,
-    /// Contacts, calendars, mail, design files, Graphviz and Mermaid sources (`preview::small`).
+    /// Contacts, calendars, mail, design files and Graphviz sources (`preview::small`).
     Small(SmallKind),
     /// What Git changed in the file since the last commit (`git::changes`).
     Changes,
@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(body("mail.msg"), Body::Small(SmallKind::Outlook));
         assert_eq!(body("art.kra"), Body::Small(SmallKind::Design));
         assert_eq!(body("graph.dot"), Body::Small(SmallKind::Graphviz));
-        assert_eq!(body("flow.mmd"), Body::Small(SmallKind::Mermaid));
+        assert_eq!(body("flow.mmd"), Body::Text);
         assert_eq!(body("letter.doc"), Body::Shell(Fallback::Icon));
         assert_eq!(body("font.ttf"), Body::Shell(Fallback::Icon));
     }

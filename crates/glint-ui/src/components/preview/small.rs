@@ -10,7 +10,7 @@
 //! | `readOutlook` (msgreader)                    | [`read_outlook`] over [`Cfb`], a compound-file reader of its own   |
 //! | `openAttachment`                             | [`Hooks`]: glint-core's `attachment_save`, then the explorer opens the copy |
 //! | `DesignPicture` (zip.js)                     | the archive layer (`sources.extract`) reads the picture out of the file; drawn with `img` |
-//! | `Graphviz`, `MermaidFile`                    | the diagram drawn ([`super::diagram`], feature `diagrams`), with the source one button away; as text without the feature |
+//! | `Graphviz`                                   | the diagram drawn ([`super::diagram`]), with the source one button away (`MermaidFile` went in 0.12: a `.mmd` file is text) |
 //!
 //! # Where this goes (for the coordinator)
 //!
@@ -45,12 +45,10 @@
 //! - Outlook bodies: PR_HTML, else PR_RTF_COMPRESSED ([`rtf_decompress`], LZFu) de-encapsulated to HTML
 //!   (the `fromhtml1` flag) or reduced to text ([`rtf_body`]). The last three bytes of the LZFu starting dictionary are
 //!   not known (see `LZFU_DICTIONARY`). Messages attached inside a message (`.msg` in a `.msg`) are not listed.
-//! - **Graphviz and Mermaid files** are drawn when the `diagrams` feature is on (layout-rs for `.dot` and `.gv`, merman
-//!   for `.mmd` and `.mermaid`: see [`super::diagram`] for how they differ from Graphviz and Mermaid), fitted to the
-//!   width and scrolled down, as the TypeScript's `h-full overflow-auto p-3` was. A button toggles the source (the
-//!   read-only editor it always was); a file that can't be drawn shows "Mermaid couldn't draw it: …" or "Graphviz
-//!   couldn't draw it: …" above its source, where the TypeScript replaced the preview with the message. Without the
-//!   feature the file shows as its source with a note. Not ported: zoom (the TypeScript had none), the white page
+//! - **Graphviz files** are drawn (layout-rs for `.dot` and `.gv`: see [`super::diagram`] for how it differs from
+//!   Graphviz), fitted to the width and scrolled down, as the TypeScript's `h-full overflow-auto p-3` was. A button
+//!   toggles the source (the read-only editor it always was); a file that can't be drawn shows "Graphviz couldn't
+//!   draw it: …" above its source, where the TypeScript replaced the preview with the message. Not ported: zoom (the TypeScript had none), the white page
 //!   behind a Graphviz graph (it takes the app's background and text colour), a Word 97 template named `.dot` still
 //!   says what it is.
 //! - Dates in an event or a message are written with Windows' long date (`format_full_date`), which has seconds
@@ -3172,7 +3170,7 @@ fn read_small(kind: SmallKind, path: &str, size: u64) -> Result<Loaded, Problem>
         }
         SmallKind::Email => Ok(laid_out(read_email(&bytes))),
         SmallKind::Outlook => read_outlook(&bytes).map(laid_out).map_err(Problem::Outlook),
-        SmallKind::Graphviz | SmallKind::Mermaid => diagram_source(&bytes).map(Loaded::Source),
+        SmallKind::Graphviz => diagram_source(&bytes).map(Loaded::Source),
         SmallKind::Design => Err(Problem::NoPicture),
     }
 }
@@ -3470,11 +3468,7 @@ impl SmallPreview {
                 });
                 editor.update(cx, |editor, cx| editor.set_readonly(true, cx));
                 {
-                    let language = if self.kind == SmallKind::Graphviz {
-                        diagram::Language::Dot
-                    } else {
-                        diagram::Language::Mermaid
-                    };
+                    let language = diagram::Language::Dot;
                     Load::Source {
                         editor,
                         drawing: Drawing {
@@ -5878,18 +5872,14 @@ mod tests {
         }
 
         #[gpui_kit::test]
-        fn mermaid_and_dot_files_are_drawn_and_their_source_is_a_button_away(cx: &mut TestAppContext) {
+        fn dot_files_are_drawn_and_their_source_is_a_button_away(cx: &mut TestAppContext) {
             let _guard = testing::lock();
             svg_image::clear();
             let dir = temp_dir("drawn");
-            let entry = entry_of(
-                &dir,
-                "flow.mmd",
-                b"flowchart LR\n  A[Start] --> B{Ok?}\n  B --> C[Done]",
-            );
-            let (view, mut visual) = open(cx, entry, SmallKind::Mermaid, false);
+            let entry = entry_of(&dir, "flow.gv", b"digraph { rankdir=LR; Start -> Ok; Ok -> Done }");
+            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
             settle(&view, &mut visual);
-            wait(&mut visual, "the Mermaid picture", |v| picture_is_shown(v, "flow.mmd"));
+            wait(&mut visual, "the Graphviz picture", |v| picture_is_shown(v, "flow.gv"));
             // The picture has a size, and the way to the source is offered.
             assert!(with_role(&mut visual, Role::Image)
                 .iter()
@@ -5898,12 +5888,12 @@ mod tests {
             visual.update(|window, cx| window.click("small-diagram-toggle", cx));
             visual.run_until_parked();
             assert!(has(&mut visual, "Show the diagram"));
-            assert!(!picture_is_shown(&mut visual, "flow.mmd"));
+            assert!(!picture_is_shown(&mut visual, "flow.gv"));
             visual.update(|window, cx| window.click("small-diagram-toggle", cx));
             visual.run_until_parked();
-            assert!(picture_is_shown(&mut visual, "flow.mmd"));
+            assert!(picture_is_shown(&mut visual, "flow.gv"));
 
-            // Graphviz: an identifier in Arabic, unquoted as DOT allows.
+            // An identifier in Arabic, unquoted as DOT allows.
             let entry = entry_of(
                 &dir,
                 "graph.gv",
@@ -5920,15 +5910,6 @@ mod tests {
             let _guard = testing::lock();
             svg_image::clear();
             let dir = temp_dir("broken");
-            let entry = entry_of(&dir, "bad.mmd", b"this is not a diagram ->->");
-            let (view, mut visual) = open(cx, entry, SmallKind::Mermaid, false);
-            settle(&view, &mut visual);
-            wait(&mut visual, "the Mermaid failure", |v| {
-                with_role(v, Role::Status)
-                    .iter()
-                    .any(|(l, ..)| l.starts_with("Mermaid couldn't draw it: "))
-            });
-            assert!(!picture_is_shown(&mut visual, "bad.mmd"));
             let entry = entry_of(&dir, "bad.gv", b"digraph { a -> }");
             let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
             settle(&view, &mut visual);
@@ -5937,6 +5918,7 @@ mod tests {
                     .iter()
                     .any(|(l, ..)| l.starts_with("Graphviz couldn't draw it: "))
             });
+            assert!(!picture_is_shown(&mut visual, "bad.gv"));
             let _ = std::fs::remove_dir_all(&dir);
         }
 
@@ -5945,21 +5927,15 @@ mod tests {
             let _guard = testing::lock();
             svg_image::clear();
             let dir = temp_dir("tall");
-            let mut source = String::from(
-                "flowchart TD
-",
-            );
+            let mut source = String::from("digraph {\n");
             for n in 0..30 {
-                source.push_str(&format!(
-                    "  S{n}[Step {n}] --> S{}
-",
-                    n + 1
-                ));
+                source.push_str(&format!("  S{n} -> S{};\n", n + 1));
             }
-            let entry = entry_of(&dir, "tall.mmd", source.as_bytes());
-            let (view, mut visual) = open(cx, entry, SmallKind::Mermaid, false);
+            source.push('}');
+            let entry = entry_of(&dir, "tall.gv", source.as_bytes());
+            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
             settle(&view, &mut visual);
-            wait(&mut visual, "the picture", |v| picture_is_shown(v, "tall.mmd"));
+            wait(&mut visual, "the picture", |v| picture_is_shown(v, "tall.gv"));
             // Laid out once the picture is there.
             for _ in 0..3 {
                 visual.update(|window, cx| window.render_frame(cx));
@@ -5977,15 +5953,19 @@ mod tests {
             let _guard = testing::lock();
             svg_image::clear();
             let dir = temp_dir("wide");
-            let mut source = String::from("flowchart LR\n");
-            for n in 0..14 {
-                source.push_str(&format!("  N{n}[Station number {n}] --> N{}\n", n + 1));
+            let mut source = String::from("digraph {\n  rankdir=LR;\n");
+            for n in 0..20 {
+                source.push_str(&format!(
+                    "  N{n} [label=\"Station number {n}\"];\n  N{n} -> N{};\n",
+                    n + 1
+                ));
             }
-            let entry = entry_of(&dir, "wide.mmd", source.as_bytes());
-            let (view, mut visual) = open(cx, entry, SmallKind::Mermaid, false);
+            source.push('}');
+            let entry = entry_of(&dir, "wide.gv", source.as_bytes());
+            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, false);
             settle(&view, &mut visual);
-            wait(&mut visual, "the picture", |v| picture_is_shown(v, "wide.mmd"));
-            let drawn = svg_image::peek(&diagram::key_of(diagram::Language::Mermaid, &source, false))
+            wait(&mut visual, "the picture", |v| picture_is_shown(v, "wide.gv"));
+            let drawn = svg_image::peek(&diagram::key_of(diagram::Language::Dot, &source))
                 .and_then(|outcome| outcome.as_ref().as_ref().ok().map(|d| (d.width, d.height)))
                 .expect("it was drawn");
             assert!(
@@ -5995,7 +5975,7 @@ mod tests {
             // The picture is no wider than the window, and keeps the shape it was drawn in.
             let frame = with_role(&mut visual, Role::Image)
                 .into_iter()
-                .find(|(l, ..)| l.contains("wide.mmd"))
+                .find(|(l, ..)| l.contains("wide.gv"))
                 .expect("the picture");
             assert!(frame.1 <= 1000. && frame.1 > 300., "{frame:?}");
             assert!(
@@ -6010,14 +5990,12 @@ mod tests {
             let _guard = testing::lock();
             svg_image::clear();
             let dir = temp_dir("arabic");
-            let source = "flowchart RL\n  A[البداية] --> B[النهاية]";
-            let entry = entry_of(&dir, "مخطط.mmd", source.as_bytes());
-            let (view, mut visual) = open(cx, entry, SmallKind::Mermaid, true);
+            let source = "digraph { rankdir=RL; البداية -> النهاية }";
+            let entry = entry_of(&dir, "مخطط.gv", source.as_bytes());
+            let (view, mut visual) = open(cx, entry, SmallKind::Graphviz, true);
             settle(&view, &mut visual);
-            wait(&mut visual, "the picture", |v| picture_is_shown(v, "مخطط.mmd"));
-            assert!(
-                svg_image::peek(&diagram::key_of(diagram::Language::Mermaid, source, false)).is_some_and(|o| o.is_ok())
-            );
+            wait(&mut visual, "the picture", |v| picture_is_shown(v, "مخطط.gv"));
+            assert!(svg_image::peek(&diagram::key_of(diagram::Language::Dot, source)).is_some_and(|o| o.is_ok()));
             let _ = std::fs::remove_dir_all(&dir);
             testing::set_rtl(false);
         }

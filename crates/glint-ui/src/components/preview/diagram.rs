@@ -1,38 +1,24 @@
-//! Mermaid and Graphviz diagrams, in Markdown and as files (MarkdownView.tsx's `MermaidView`, SmallPreviews.tsx's
-//! `Graphviz` and `MermaidFile`; docs/gpui/previews-native.md sections 5 and 6).
+//! Graphviz diagrams, in Markdown and as files (SmallPreviews.tsx's `Graphviz`; docs/gpui/previews-native.md
+//! section 6). (Mermaid was drawn here too, by merman, until 0.12: a ```` ```mermaid ```` block now shows as code
+//! and a `.mmd` file as text.)
 //!
 //! | TypeScript                                          | Here                                                      |
 //! |-----------------------------------------------------|-----------------------------------------------------------|
-//! | `mermaid.initialize({theme: dark ? "dark" : "default", htmlLabels: false, securityLevel: "strict"})` | [`mermaid_svg`]: merman with the same theme and no HTML labels |
-//! | `mermaid.render(id, source)`                        | merman's `Renderer` with its **resvg-safe** SVG pipeline (CSS turned into attributes, labels as SVG text) |
 //! | `@hpcc-js/wasm-graphviz` `dot(source)`              | [`dot_svg`]: layout-rs parses and lays out the DOT, then the SVG is themed |
 //! | `<img src="data:image/svg+xml,…">`                  | [`super::svg_image`]: rasterised by GPUI's resvg, cached    |
-//! | the source and "Not a diagram Mermaid can draw: …"  | [`super::svg_image::error_banner`]: the diagnostic, then the source |
+//! | the source and "Not a graph Graphviz can draw: …"   | [`super::svg_image::error_banner`]: the diagnostic, then the source |
 //!
 //! # How a diagram is made
 //!
-//! [`request`] builds a job for [`super::svg_image::request`]: on a background thread merman (or layout-rs)
-//! makes an SVG, which is rasterised there too. Each has a **time budget** ([`BUDGET`]) and **size caps**
-//! ([`MAX_SOURCE`] bytes of source, [`MAX_NODES`] DOT nodes, [`MAX_EDGES`] DOT edges):
-//!
-//! - merman gets a deadline through its `OperationControl` and its `interactive` resource policy (it stops
-//!   itself), and [`super::svg_image::Ctl`]'s cancel hook cancels it when nobody waits for the picture.
-//! - layout-rs has no way to be told to stop, so it runs on a thread of its own and is abandoned at the
-//!   deadline; no more than [`MAX_LAYOUTS`] may be running (or abandoned and still running) at once, a further graph
-//!   waits for a place within its own budget. A panic inside it (layout-rs asserts on some input) is caught and
-//!   reported.
-//!
-//! **Text is measured with the host's fonts.** merman measures labels to size boxes, and its built-in measurer
-//! knows Latin metrics only, which squeezes an Arabic label into a box a letter wide. [`HostFonts`] answers its
-//! measurement requests with GPUI's own text system (DirectWrite shaping, with font fallback), in the family the
-//! SVG will be drawn in ([`FONT`]), so what resvg draws fits the boxes. Requests it cannot answer (vertical
-//! offsets) fall back to merman's deterministic profile.
+//! [`request`] builds a job for [`super::svg_image::request`]: on a background thread layout-rs makes an SVG,
+//! which is rasterised there too. Each has a **time budget** ([`BUDGET`]) and **size caps** ([`MAX_SOURCE`] bytes
+//! of source, [`MAX_NODES`] nodes, [`MAX_EDGES`] edges). layout-rs has no way to be told to stop, so it runs on a
+//! thread of its own and is abandoned at the deadline; no more than [`MAX_LAYOUTS`] may be running (or abandoned and
+//! still running) at once, a further graph waits for a place within its own budget. A panic inside it (layout-rs
+//! asserts on some input) is caught and reported.
 //!
 //! # Not ported / differences
 //!
-//! - merman is a re-implementation of Mermaid (parity with 12.x): layouts and spacing differ a little from
-//!   mermaid.js's, and some diagram types are newer or older. ELK is not built in (EPL-2.0), so diagrams that
-//!   ask for it fall back to the usual layout.
 //! - Graphviz is not Graphviz: layout-rs draws a subset of DOT (no HTML-like labels, `splines=ortho`, ports on every
 //!   shape, nested clusters; only the layered engine, whatever `layout=` says). The layouts are not the same as
 //!   `dot`'s, and the TypeScript's white page behind the graph is the app's own background here, with the graph's
@@ -42,16 +28,10 @@
 
 use super::svg_image::{self, Ctl, Lookup};
 use crate::kit::prelude::*;
-use crate::{t, theme};
-use gpui_kit::{EntityId, TextSystem};
-use merman::svg::{
-    HostMeasurementResult, HostTextMeasurement, HostTextMeasurementRequest, HostTextMeasurer, MeasurementProfileId,
-    RenderResourcePolicy, SvgEnvironment, SvgPipeline, TextMeasurementOperation, TextMeasurementPhase,
-    TextMeasurementPolicy, TextMeasurementProfileIdentity, TextMetrics, TextStyle, WrapMode,
-};
-use merman::{Engine, MermaidConfig, OperationControl, RenderError, RenderOutput, RenderRequest, Renderer, SvgRequest};
+use crate::t;
+use gpui_kit::EntityId;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 /// The longest a diagram may take to draw (the TypeScript had none: a stuck diagram froze the page).
@@ -74,17 +54,14 @@ const LAYOUT_STACK: usize = 32 << 20;
 /// The languages drawn here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Language {
-    /// Mermaid.
-    Mermaid,
     /// Graphviz's DOT.
     Dot,
 }
 
 impl Language {
-    /// The language a code fence's info word names: `mermaid`; `dot`, `graphviz` and `gv`.
+    /// The language a code fence's info word names: `dot`, `graphviz` and `gv`.
     pub fn of_fence(word: &str) -> Option<Self> {
         match word.trim().to_ascii_lowercase().as_str() {
-            "mermaid" => Some(Language::Mermaid),
             "dot" | "graphviz" | "gv" => Some(Language::Dot),
             _ => None,
         }
@@ -93,33 +70,29 @@ impl Language {
     /// The word the cache and accessibility names use.
     pub fn kind(self) -> &'static str {
         match self {
-            Language::Mermaid => "mermaid",
             Language::Dot => "dot",
         }
     }
 
-    /// What a picture of it is called ("A Mermaid diagram": the TypeScript's alt text).
+    /// What a picture of it is called (the TypeScript's alt text).
     pub fn picture_name(self) -> SharedString {
         match self {
-            Language::Mermaid => t!("A Mermaid diagram"),
             Language::Dot => t!("A Graphviz graph"),
         }
     }
 
-    /// Why a diagram in a Markdown document couldn't be drawn (`Not a diagram Mermaid can draw: …`).
+    /// Why a diagram in a Markdown document couldn't be drawn (`Not a graph Graphviz can draw: …`).
     pub fn failure_in_document(self, error: &str) -> SharedString {
         let error = trimmed(error);
         match self {
-            Language::Mermaid => t!("Not a diagram Mermaid can draw: {error}", error = error),
             Language::Dot => t!("Not a graph Graphviz can draw: {error}", error = error),
         }
     }
 
-    /// Why a diagram file couldn't be drawn (`Mermaid couldn't draw it: …`).
+    /// Why a diagram file couldn't be drawn (`Graphviz couldn't draw it: …`).
     pub fn failure_in_file(self, error: &str) -> SharedString {
         let error = trimmed(error);
         match self {
-            Language::Mermaid => t!("Mermaid couldn't draw it: {error}", error = error),
             Language::Dot => t!("Graphviz couldn't draw it: {error}", error = error),
         }
     }
@@ -141,215 +114,6 @@ pub fn hex(color: Hsla) -> String {
     let rgba: Rgba = color.into();
     let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
     format!("#{:02x}{:02x}{:02x}", byte(rgba.r), byte(rgba.g), byte(rgba.b))
-}
-
-// ---- Measuring text with the host's fonts -----------------------------------------------------------------
-
-/// Answers how wide a line of text is in a font (CSS pixels). The GPUI-backed one is [`HostFonts::of`]; tests
-/// pass their own.
-pub type Widths = Box<dyn Fn(&str, &TextStyle) -> f64 + Send + Sync>;
-
-/// merman's text measurement, answered with the host's fonts.
-pub struct HostFonts {
-    width: Widths,
-}
-
-impl HostFonts {
-    /// Measurement through GPUI's text system (DirectWrite): shaped, with the system's font fallback.
-    pub fn of(text: Arc<TextSystem>) -> Self {
-        let system = Mutex::new(gpui_kit::WindowTextSystem::new(text));
-        HostFonts {
-            width: Box::new(move |line, style| {
-                if line.is_empty() {
-                    return 0.;
-                }
-                let Ok(system) = system.lock() else { return 0. };
-                let mut font = gpui_kit::font(family_of(style.font_family.as_deref()));
-                if style
-                    .font_weight
-                    .as_deref()
-                    .is_some_and(|w| w.eq_ignore_ascii_case("bold") || w.parse::<u32>().is_ok_and(|n| n >= 600))
-                {
-                    font = font.bold();
-                }
-                if style.font_style.as_deref().is_some_and(|s| s.contains("italic")) {
-                    font = font.italic();
-                }
-                let run = gpui_kit::TextRun {
-                    len: line.len(),
-                    font,
-                    color: gpui_kit::black(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let layout = system.layout_line(line, gpui_kit::px(style.font_size as f32), &[run], None);
-                f64::from(f32::from(layout.width))
-            }),
-        }
-    }
-
-    /// Measurement through `width`.
-    pub fn with(width: Widths) -> Self {
-        HostFonts { width }
-    }
-
-    fn line_width(&self, line: &str, style: &TextStyle) -> f64 {
-        (self.width)(line, style)
-    }
-
-    /// The lines `text` makes: Mermaid's `<br>`s and newlines split it, other tags go, entities are decoded.
-    fn lines(text: &str) -> Vec<String> {
-        let mut out = vec![String::new()];
-        let mut rest = text;
-        while let Some(c) = rest.chars().next() {
-            if c == '<' {
-                if let Some(end) = rest.find('>') {
-                    let tag = rest[1..end].trim().to_ascii_lowercase();
-                    if tag == "br" || tag == "br/" || tag == "br /" {
-                        out.push(String::new());
-                    }
-                    rest = &rest[end + 1..];
-                    continue;
-                }
-            }
-            if c == '&' {
-                if let Some(end) = rest.find(';').filter(|&e| e <= 8) {
-                    let decoded = match &rest[1..end] {
-                        "amp" => Some('&'),
-                        "lt" => Some('<'),
-                        "gt" => Some('>'),
-                        "quot" => Some('"'),
-                        "apos" | "#39" => Some('\''),
-                        "nbsp" => Some(' '),
-                        _ => None,
-                    };
-                    if let (Some(d), Some(line)) = (decoded, out.last_mut()) {
-                        line.push(d);
-                        rest = &rest[end + 1..];
-                        continue;
-                    }
-                }
-            }
-            if c == '\n' {
-                out.push(String::new());
-            } else if let Some(line) = out.last_mut() {
-                line.push(c);
-            }
-            rest = &rest[c.len_utf8()..];
-        }
-        out
-    }
-
-    /// The text wrapped to `max` (CSS pixels) at spaces, as lines; a word wider than `max` stays whole.
-    fn wrap(&self, line: &str, style: &TextStyle, max: f64) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut current = String::new();
-        for word in line.split(' ').filter(|w| !w.is_empty()) {
-            let candidate = if current.is_empty() {
-                word.to_string()
-            } else {
-                format!("{current} {word}")
-            };
-            if current.is_empty() || self.line_width(&candidate, style) <= max {
-                current = candidate;
-            } else {
-                out.push(std::mem::take(&mut current));
-                current = word.to_string();
-            }
-        }
-        out.push(current);
-        out
-    }
-
-    fn metrics(&self, request: &HostTextMeasurementRequest<'_>, wrapped: bool) -> Option<(TextMetrics, f64)> {
-        let mut rows: Vec<String> = Vec::new();
-        let mut raw = 0.0_f64;
-        for line in Self::lines(request.text) {
-            raw = raw.max(self.line_width(&line, request.style));
-            match request.max_width.filter(|m| wrapped && *m > 0.) {
-                Some(max) => rows.extend(self.wrap(&line, request.style, max)),
-                None => rows.push(line),
-            }
-        }
-        if rows.is_empty() {
-            rows.push(String::new());
-        }
-        let width = rows
-            .iter()
-            .map(|r| self.line_width(r, request.style))
-            .fold(0., f64::max);
-        if request.text.chars().any(|c| !c.is_whitespace()) && width <= 0. {
-            // The host could not measure it (no fonts): let the built-in profile answer.
-            return None;
-        }
-        let factor = if request.wrap_mode == WrapMode::HtmlLike {
-            1.5
-        } else {
-            1.1
-        };
-        let height = rows.len() as f64 * request.style.font_size.max(1.) * factor;
-        Some((
-            TextMetrics {
-                width,
-                height,
-                line_count: rows.len(),
-            },
-            raw,
-        ))
-    }
-}
-
-/// The first family of a CSS list, without quotes; Segoe UI for a missing or generic one.
-fn family_of(css: Option<&str>) -> String {
-    let first = css
-        .and_then(|list| list.split(',').next())
-        .map(|f| f.trim().trim_matches(['"', '\'']).to_string())
-        .unwrap_or_default();
-    match first.to_ascii_lowercase().as_str() {
-        "" | "sans-serif" | "system-ui" | "serif" | "ui-sans-serif" | "inherit" => FONT.to_string(),
-        _ => first,
-    }
-}
-
-impl HostTextMeasurer for HostFonts {
-    fn measure(&self, request: HostTextMeasurementRequest<'_>) -> HostMeasurementResult {
-        use TextMeasurementOperation as Op;
-        let answer = match request.operation {
-            Op::Measure | Op::MermaidCalculateTextDimensions => self
-                .metrics(&request, false)
-                .map(|(metrics, _)| HostTextMeasurement::Metrics(metrics)),
-            Op::Wrapped => self
-                .metrics(&request, true)
-                .map(|(metrics, _)| HostTextMeasurement::Metrics(metrics)),
-            Op::WrappedWithRawWidth => {
-                self.metrics(&request, true)
-                    .map(|(metrics, raw)| HostTextMeasurement::WrappedWithRawWidth {
-                        metrics,
-                        raw_width: (request.wrap_mode == WrapMode::HtmlLike).then_some(raw),
-                    })
-            }
-            Op::ComputedLength
-            | Op::SimpleBBoxWidth
-            | Op::RawBBoxWidth
-            | Op::TspanBBoxWidth
-            | Op::WrapProbeBBoxWidth
-            | Op::BoundingClientRectWidth
-            | Op::CanvasMeasureTextWidth => self
-                .metrics(&request, false)
-                .map(|(metrics, _)| HostTextMeasurement::Length(metrics.width)),
-            Op::BBoxX | Op::BBoxXWithAsciiOverhang | Op::TitleBBoxX => {
-                self.metrics(&request, false)
-                    .map(|(m, _)| HostTextMeasurement::HorizontalExtents {
-                        left: m.width / 2.,
-                        right: m.width / 2.,
-                    })
-            }
-            // Heights and vertical offsets: the deterministic profile's.
-            _ => None,
-        };
-        Ok(answer)
-    }
 }
 
 // ---- Right-to-left text, as resvg draws it ------------------------------------------------------------
@@ -494,46 +258,6 @@ pub fn fix_rtl_text(svg: &str) -> String {
     }
     out.push_str(&svg[at..]);
     out
-}
-
-// ---- Mermaid --------------------------------------------------------------------------------------------
-
-/// The SVG merman makes of Mermaid `source` in the light or dark theme, for resvg (labels as text, CSS as
-/// attributes). `fonts` measures the text (None: merman's own measurer). `ctl` stops it at the deadline and
-/// when nobody wants it.
-pub fn mermaid_svg(source: &str, dark: bool, fonts: Option<HostFonts>, ctl: &Ctl) -> Result<String, String> {
-    check_source(source)?;
-    let config = MermaidConfig::from_value(serde_json::json!({
-        "theme": if dark { "dark" } else { "default" },
-        "fontFamily": format!("\"{FONT}\", sans-serif"),
-        "htmlLabels": false,
-        "flowchart": { "htmlLabels": false },
-        "securityLevel": "strict",
-    }));
-    let renderer = Renderer::new().with_engine(Engine::new().with_site_config(config));
-    let mut environment = SvgEnvironment::deterministic().with_resource_policy(RenderResourcePolicy::interactive());
-    if let Some(fonts) = fonts {
-        let identity = MeasurementProfileId::new("glint-host-fonts")
-            .and_then(|id| TextMeasurementProfileIdentity::new(id, "1"))
-            .map_err(|error| error.to_string())?;
-        let policy = TextMeasurementPolicy::host_display(identity, Arc::new(fonts), TextMeasurementPhase::ALL);
-        environment = environment.with_text_measurement_policy(policy);
-    }
-    let request = SvgRequest {
-        environment,
-        pipeline: Some(SvgPipeline::resvg_safe()),
-        ..SvgRequest::default()
-    };
-    let control = OperationControl::new().with_deadline(ctl.remaining());
-    let stop = control.clone();
-    ctl.on_cancel(move || stop.cancel());
-    match renderer.render(RenderRequest::svg(source, control, request)) {
-        Ok(RenderOutput::Svg(Some(svg))) => Ok(fix_rtl_text(&svg.into_parts().0)),
-        Ok(_) => Err("There is no diagram in it".to_string()),
-        Err(RenderError::Cancelled(_)) if ctl.cancelled() => Err("Cancelled".to_string()),
-        Err(RenderError::Cancelled(_)) => Err(format!("It took longer than {} seconds to draw", BUDGET.as_secs())),
-        Err(error) => Err(error.to_string()),
-    }
 }
 
 fn check_source(source: &str) -> Result<(), String> {
@@ -859,41 +583,31 @@ pub fn dot_svg(source: &str, ctl: &Ctl) -> Result<String, String> {
 
 // ---- Asking for a picture -------------------------------------------------------------------------------
 
-/// The cache key of `source` drawn as `language` in the colour set now in use (a Graphviz graph is drawn on its own
-/// white page, so it is the same in both).
-pub fn key_of(language: Language, source: &str, dark: bool) -> svg_image::Key {
-    svg_image::Key::new(language.kind(), source, 0., dark && language == Language::Mermaid)
+/// The cache key of `source` drawn as `language` (a Graphviz graph is drawn on its own white page, so it is the same
+/// in both colour sets).
+pub fn key_of(language: Language, source: &str) -> svg_image::Key {
+    svg_image::Key::new(language.kind(), source, 0., false)
 }
 
 /// The picture of `source` as `language`: made if it hasn't been (on a background thread; `wake` is notified when
 /// it is done), else returned.
 pub fn request(cx: &mut App, language: Language, source: &Arc<str>, wake: EntityId) -> Lookup {
-    let dark = theme::tokens(cx).dark;
-    let text = cx.text_system().clone();
     let source = source.clone();
-    svg_image::request(
-        cx,
-        key_of(language, &source, dark),
-        wake,
-        BUDGET,
-        move |renderer, ctl| {
-            let svg = match language {
-                Language::Mermaid => mermaid_svg(&source, dark, Some(HostFonts::of(text)), ctl)?,
-                Language::Dot => dot_svg(&source, ctl)?,
-            };
-            if ctl.cancelled() {
-                return Err("Cancelled".to_string());
-            }
-            svg_image::rasterize(renderer, &svg)
-        },
-    )
+    svg_image::request(cx, key_of(language, &source), wake, BUDGET, move |renderer, ctl| {
+        let svg = match language {
+            Language::Dot => dot_svg(&source, ctl)?,
+        };
+        if ctl.cancelled() {
+            return Err("Cancelled".to_string());
+        }
+        svg_image::rasterize(renderer, &svg)
+    })
 }
 
 /// The SVG of `source`, without GPUI (for tests and callers that rasterise themselves).
-pub fn svg_of(language: Language, source: &str, dark: bool, fonts: Option<HostFonts>) -> Result<String, String> {
+pub fn svg_of(language: Language, source: &str) -> Result<String, String> {
     let ctl = Ctl::new(BUDGET);
     match language {
-        Language::Mermaid => mermaid_svg(source, dark, fonts, &ctl),
         Language::Dot => dot_svg(source, &ctl),
     }
 }
@@ -1006,28 +720,13 @@ mod tests {
     use crate::testing;
     use gpui_kit::TestAppContext;
 
-    const FLOW: &str = "flowchart TD\n  A[Start] --> B{Is it ok?}\n  B -->|yes| C[Done]\n  B -->|no| D[Again]";
-    const SEQUENCE: &str = "sequenceDiagram\n  Alice->>Bob: Hello Bob\n  Bob-->>Alice: Hi Alice";
     const DOT: &str = "digraph G { rankdir=LR; a -> b [label=\"edge\"]; b -> c; c -> a; }";
-
-    /// Eight pixels a character at any size: wide enough that wrapping and box sizes follow the text.
-    fn fonts() -> HostFonts {
-        HostFonts::with(Box::new(|line, style| {
-            line.chars().count() as f64 * style.font_size * 0.5
-        }))
-    }
-
-    fn raster(cx: &mut TestAppContext, svg: &str) -> svg_image::Drawn {
-        let renderer = cx.update(|cx| cx.svg_renderer());
-        svg_image::rasterize(&renderer, svg).expect("the svg draws")
-    }
 
     // ---- The languages --------------------------------------------------------------------------------------------
 
     #[test]
     fn fences_name_their_language() {
-        assert_eq!(Language::of_fence("mermaid"), Some(Language::Mermaid));
-        assert_eq!(Language::of_fence("Mermaid"), Some(Language::Mermaid));
+        assert_eq!(Language::of_fence("mermaid"), None);
         assert_eq!(Language::of_fence("dot"), Some(Language::Dot));
         assert_eq!(Language::of_fence("graphviz"), Some(Language::Dot));
         assert_eq!(Language::of_fence("gv"), Some(Language::Dot));
@@ -1047,110 +746,6 @@ mod tests {
         assert_eq!(trimmed("a\n  b\tc"), "a b c");
         let long = "x".repeat(1000);
         assert!(trimmed(&long).chars().count() <= 401);
-    }
-
-    // ---- Measuring ------------------------------------------------------------------------------------------------
-
-    #[test]
-    fn text_is_split_into_lines_without_its_markup() {
-        assert_eq!(
-            HostFonts::lines("one<br>two<br/>three<BR />four"),
-            ["one", "two", "three", "four"]
-        );
-        assert_eq!(HostFonts::lines("a &amp; b &lt;c&gt;"), ["a & b <c>"]);
-        assert_eq!(HostFonts::lines("<b>bold</b> text\nnext"), ["bold text", "next"]);
-        assert_eq!(HostFonts::lines("مرحبا<br>بالعالم"), ["مرحبا", "بالعالم"]);
-        assert_eq!(HostFonts::lines(""), [""]);
-    }
-
-    #[test]
-    fn long_lines_wrap_at_spaces_and_a_long_word_stays_whole() {
-        let fonts = fonts();
-        let style = TextStyle {
-            font_size: 10.,
-            ..TextStyle::default()
-        };
-        // 5 px a character: 40 px is 8 characters.
-        assert_eq!(fonts.wrap("aaa bbb ccc ddd", &style, 40.), ["aaa bbb", "ccc ddd"]);
-        assert_eq!(
-            fonts.wrap("abcdefghijklmnop qr", &style, 40.),
-            ["abcdefghijklmnop", "qr"]
-        );
-        assert_eq!(fonts.wrap("short", &style, 400.), ["short"]);
-    }
-
-    #[test]
-    fn the_host_answers_widths_heights_and_extents() {
-        use TextMeasurementOperation as Op;
-        let fonts = fonts();
-        let style = TextStyle {
-            font_size: 16.,
-            ..TextStyle::default()
-        };
-        let ask = |operation, text: &str, max_width, wrap_mode| {
-            fonts.measure(HostTextMeasurementRequest {
-                operation,
-                phase: TextMeasurementPhase::Layout,
-                text,
-                style: &style,
-                max_width,
-                wrap_mode,
-            })
-        };
-        // An Arabic word is as wide as the host says it is (8 px a character here), not as a Latin guess.
-        let Ok(Some(HostTextMeasurement::Length(width))) = ask(Op::ComputedLength, "مرحبا", None, WrapMode::SvgLike)
-        else {
-            panic!("a length");
-        };
-        assert_eq!(width, 40.);
-        let Ok(Some(HostTextMeasurement::Metrics(m))) =
-            ask(Op::Wrapped, "aaaa bbbb cccc", Some(80.), WrapMode::HtmlLike)
-        else {
-            panic!("metrics");
-        };
-        assert_eq!((m.line_count, m.width), (2, 72.));
-        assert_eq!(m.height, 2. * 16. * 1.5);
-        let Ok(Some(HostTextMeasurement::Metrics(m))) = ask(Op::Measure, "one<br>two", None, WrapMode::SvgLike) else {
-            panic!("metrics");
-        };
-        assert_eq!(m.line_count, 2);
-        assert!((m.height - 2. * 16. * 1.1).abs() < 1e-9);
-        let Ok(Some(HostTextMeasurement::HorizontalExtents { left, right })) =
-            ask(Op::BBoxX, "abcd", None, WrapMode::SvgLike)
-        else {
-            panic!("extents");
-        };
-        assert_eq!((left, right), (16., 16.));
-        let Ok(Some(HostTextMeasurement::WrappedWithRawWidth { metrics, raw_width })) =
-            ask(Op::WrappedWithRawWidth, "aaaa bbbb cccc", Some(80.), WrapMode::HtmlLike)
-        else {
-            panic!("wrapped with raw width");
-        };
-        assert_eq!((metrics.line_count, raw_width), (2, Some(112.)));
-        // What it can't answer goes to the built-in profile.
-        assert!(matches!(
-            ask(Op::CreateTextBBoxYOffset, "x", None, WrapMode::SvgLike),
-            Ok(None)
-        ));
-        // A host with no fonts answers 0: not a measurement.
-        let blind = HostFonts::with(Box::new(|_, _| 0.));
-        let none = blind.measure(HostTextMeasurementRequest {
-            operation: Op::Measure,
-            phase: TextMeasurementPhase::Layout,
-            text: "text",
-            style: &style,
-            max_width: None,
-            wrap_mode: WrapMode::SvgLike,
-        });
-        assert!(matches!(none, Ok(None)));
-    }
-
-    #[test]
-    fn families_come_from_css_lists() {
-        assert_eq!(family_of(Some("\"Segoe UI\", sans-serif")), "Segoe UI");
-        assert_eq!(family_of(Some("Tahoma, Arial")), "Tahoma");
-        assert_eq!(family_of(Some("sans-serif")), FONT);
-        assert_eq!(family_of(None), FONT);
     }
 
     // ---- Right-to-left text, as resvg wants it ---------------------------------------------------------------------
@@ -1243,29 +838,23 @@ mod tests {
     }
 
     #[test]
-    fn dot_is_laid_out_on_a_white_page_in_both_themes() {
-        let drawn = svg_of(Language::Dot, DOT, false, None).expect("it draws");
+    fn dot_is_laid_out_on_a_white_page() {
+        let drawn = svg_of(Language::Dot, DOT).expect("it draws");
         assert!(drawn.contains("<svg") && drawn.contains("edge"), "{drawn}");
         assert!(
             drawn.contains("fill=\"#ffffff\"") && drawn.contains("Segoe UI"),
             "{drawn}"
-        );
-        // The same picture whatever the theme: one cache entry.
-        assert_eq!(key_of(Language::Dot, DOT, true), key_of(Language::Dot, DOT, false));
-        assert_ne!(
-            key_of(Language::Mermaid, DOT, true),
-            key_of(Language::Mermaid, DOT, false)
         );
     }
 
     #[test]
     fn broken_dot_says_where_it_went_wrong() {
         for source in ["digraph { a -> }", "graph { a -- b", "not dot"] {
-            let reason = svg_of(Language::Dot, source, false, None).expect_err(source);
+            let reason = svg_of(Language::Dot, source).expect_err(source);
             assert!(reason.starts_with("Syntax error in the DOT: "), "{reason}");
         }
-        assert!(svg_of(Language::Dot, "", false, None).is_err());
-        assert!(svg_of(Language::Dot, "   \n", false, None).is_err());
+        assert!(svg_of(Language::Dot, "").is_err());
+        assert!(svg_of(Language::Dot, "   \n").is_err());
     }
 
     #[test]
@@ -1275,7 +864,7 @@ mod tests {
             source.push_str(&format!("  n{n};\n"));
         }
         source.push('}');
-        let reason = svg_of(Language::Dot, &source, false, None).expect_err("too many");
+        let reason = svg_of(Language::Dot, &source).expect_err("too many");
         assert!(
             reason.contains("nodes") && reason.contains(&MAX_NODES.to_string()),
             "{reason}"
@@ -1296,7 +885,7 @@ mod tests {
             ));
         }
         source.push('}');
-        let reason = svg_of(Language::Dot, &source, false, None).expect_err("too many");
+        let reason = svg_of(Language::Dot, &source).expect_err("too many");
         assert!(
             reason.contains("edges") && reason.contains(&MAX_EDGES.to_string()),
             "{reason}"
@@ -1351,7 +940,7 @@ mod tests {
     #[test]
     fn a_graph_layout_rs_could_not_finish_in_time_is_refused_up_front() {
         let started = std::time::Instant::now();
-        let reason = svg_of(Language::Dot, &skipping_chain(60), false, None).expect_err("refused");
+        let reason = svg_of(Language::Dot, &skipping_chain(60)).expect_err("refused");
         assert!(reason.contains("too many paths"), "{reason}");
         // At once: not after the budget.
         assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
@@ -1368,15 +957,9 @@ mod tests {
     }
 
     #[test]
-    fn a_source_over_the_cap_is_refused_for_both_languages() {
+    fn a_source_over_the_cap_is_refused() {
         let big = format!("digraph {{ a -> b; /* {} */ }}", "x".repeat(MAX_SOURCE));
-        assert!(svg_of(Language::Dot, &big, false, None)
-            .expect_err("big")
-            .contains("too big"));
-        let big = format!("flowchart TD\n  A --> B\n%% {}\n", "x".repeat(MAX_SOURCE));
-        assert!(svg_of(Language::Mermaid, &big, false, None)
-            .expect_err("big")
-            .contains("too big"));
+        assert!(svg_of(Language::Dot, &big).expect_err("big").contains("too big"));
     }
 
     #[test]
@@ -1401,96 +984,6 @@ mod tests {
         panic!("layout threads are still running: {}", LAYOUTS.load(Ordering::SeqCst));
     }
 
-    // ---- Mermaid --------------------------------------------------------------------------------------------------
-
-    #[gpui_kit::test]
-    fn a_flowchart_and_a_sequence_diagram_are_drawn(cx: &mut TestAppContext) {
-        let flow = svg_of(Language::Mermaid, FLOW, false, Some(fonts())).expect("it draws");
-        // (Mermaid sets a label's words in a tspan each.)
-        assert!(
-            flow.contains("Start") && flow.contains(" ok?") && flow.contains("yes"),
-            "{flow}"
-        );
-        // For resvg: no foreignObject (HTML labels), the labels are SVG text.
-        assert!(!flow.contains("foreignObject"), "{flow}");
-        let drawn = raster(cx, &flow);
-        assert!(
-            drawn.width > 100. && drawn.height > 100.,
-            "{} x {}",
-            drawn.width,
-            drawn.height
-        );
-        let sequence = svg_of(Language::Mermaid, SEQUENCE, false, Some(fonts())).expect("it draws");
-        assert!(
-            sequence.contains("Alice") && sequence.contains("Hello Bob"),
-            "{sequence}"
-        );
-        let drawn = raster(cx, &sequence);
-        assert!(drawn.width > 100. && drawn.height > 100.);
-    }
-
-    #[test]
-    fn the_dark_theme_is_not_the_light_one() {
-        let light = svg_of(Language::Mermaid, FLOW, false, None).expect("it draws");
-        let dark = svg_of(Language::Mermaid, FLOW, true, None).expect("it draws");
-        assert_ne!(light, dark);
-        // The text colour of Mermaid's dark theme is light, its default theme's dark.
-        assert!(
-            dark.contains("#ccc") || dark.contains("#cccccc") || dark.contains("lightgrey") || dark.contains("#d3d3d3"),
-            "{}",
-            &dark[..800.min(dark.len())]
-        );
-    }
-
-    #[test]
-    fn broken_mermaid_says_what_is_wrong() {
-        let cases = [
-            ("this is not a diagram at all ->->", "No Mermaid diagram type detected"),
-            ("flowchart TD\n A[unclosed", "Unterminated node label"),
-            ("sequenceDiagram\n  Alice->>", "sequence"),
-            ("", "nothing"),
-            ("   ", "nothing"),
-        ];
-        for (source, expected) in cases {
-            let reason = svg_of(Language::Mermaid, source, false, None).expect_err(source);
-            assert!(reason.contains(expected), "{source:?}: {reason}");
-        }
-    }
-
-    #[test]
-    fn mermaid_that_is_cancelled_stops() {
-        let ctl = Ctl::new(Duration::from_secs(60));
-        ctl.cancel();
-        assert_eq!(
-            mermaid_svg(FLOW, false, None, &ctl).expect_err("cancelled"),
-            "Cancelled"
-        );
-    }
-
-    #[test]
-    fn an_arabic_label_is_in_the_picture_and_its_box_is_as_wide_as_the_host_says() {
-        // The host here says 8 px a character at 16 px: a 22-character Arabic label needs 176 px.
-        let wide = "flowchart LR\n  A[مرحبا بالعالم أهلا] --> B[ب]";
-        let svg = svg_of(Language::Mermaid, wide, false, Some(fonts())).expect("it draws");
-        assert!(svg.contains("مرحبا"), "{svg}");
-        // The first node's rectangle is at least as wide as that label's text (the built-in measurer would have
-        // made it a Latin-sized guess).
-        let first_rect = svg.find("<rect").expect("a node");
-        let tag = &svg[first_rect..first_rect + svg[first_rect..].find('>').unwrap_or(0)];
-        let width: f64 = tag
-            .split("width=\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|w| w.parse().ok())
-            .expect("a width");
-        assert!(width >= 130., "{tag}");
-        // And no line of it carries a `dy` (see `fix_rtl_text`).
-        for (at, _) in svg.match_indices("مرحبا") {
-            let start = svg[..at].rfind("<tspan").unwrap_or(0);
-            assert!(!svg[start..at].contains("dy="), "{}", &svg[start..at]);
-        }
-    }
-
     // ---- Through the cache ------------------------------------------------------------------------------------------
 
     struct Probe;
@@ -1508,10 +1001,10 @@ mod tests {
         svg_image::clear();
         let (_visual, view) = testing::open_window(cx, |_, cx| cx.new(|_| Probe));
         let id = view.entity_id();
-        let source: Arc<str> = Arc::from(FLOW);
-        let ask = |cx: &mut TestAppContext| cx.update(|cx| request(cx, Language::Mermaid, &source, id));
+        let source: Arc<str> = Arc::from(DOT);
+        let ask = |cx: &mut TestAppContext| cx.update(|cx| request(cx, Language::Dot, &source, id));
         assert!(matches!(ask(cx), Lookup::Making));
-        let key = key_of(Language::Mermaid, &source, false);
+        let key = key_of(Language::Dot, &source);
         for _ in 0..1200 {
             cx.run_until_parked();
             if svg_image::peek(&key).is_some() {
@@ -1524,8 +1017,6 @@ mod tests {
         };
         let drawn = outcome.as_ref().as_ref().expect("it was drawn");
         assert!(drawn.width > 100.);
-        // The dark theme is another picture of the same source.
-        assert_ne!(key, key_of(Language::Mermaid, &source, true));
         svg_image::clear();
     }
 }

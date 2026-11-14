@@ -615,5 +615,3 @@ async fn wave9_checks(folder: &Path, cx: &mut AsyncApp) -> Vec<String> {
     );
     log
 }
-
-
