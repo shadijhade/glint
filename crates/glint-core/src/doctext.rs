@@ -491,21 +491,6 @@ fn remember(key: Key, lines: Arc<Lines>) {
     }
 }
 
-/// A document's lines `from` to `to` (1-based), as the search read them, for the preview: from
-/// memory, or read again.
-pub fn lines_of(path: &str, from: usize, to: usize) -> Result<Lines, String> {
-    let key = key_of(Path::new(path)).ok_or("This document isn't there anymore.")?;
-    let lines = match cached(&key) {
-        Some(lines) => lines,
-        None => {
-            let lines = Arc::new(Reader::start()?.read(Path::new(path), None).map_err(|why| why.unwrap_or_else(|| "Reading this document failed or took too long.".into()))?);
-            remember(key, lines.clone());
-            lines
-        }
-    };
-    Ok(lines.iter().skip(from.saturating_sub(1)).take((to + 1).saturating_sub(from)).cloned().collect())
-}
-
 /// Bumped by each Documents search and Stop: an older search's workers stop.
 static RUN: AtomicU64 = AtomicU64::new(0);
 
