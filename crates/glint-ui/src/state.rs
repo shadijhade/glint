@@ -53,11 +53,17 @@ pub fn settings(cx: &App) -> &Settings {
     &cx.global::<UiState>().settings
 }
 
-/// Changes the settings, then re-applies what depends on them and redraws every window.
+/// Changes the settings, then re-applies what depends on them and redraws every window. The language and the
+/// theme are applied again only when a setting they read changed: most changes (a sort, a zoom notch, a column's
+/// width) touch neither.
 pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
+    let looks = |s: &Settings| (s.theme, s.accent, s.backdrop, s.font_size, s.language);
+    let before = looks(settings(cx));
     change(&mut cx.global_mut::<UiState>().settings);
-    crate::i18n::apply_setting(cx);
-    crate::theme::apply(cx);
+    if looks(settings(cx)) != before {
+        crate::i18n::apply_setting(cx);
+        crate::theme::apply(cx);
+    }
     // Saved soon (nothing before `persistence::init`, which loads the saved settings through here).
     crate::persistence::sync(cx);
     cx.refresh_windows();
@@ -85,6 +91,29 @@ mod tests {
             assert!(crate::i18n::is_rtl() && crate::i18n::is_rtl_in(cx));
             update(cx, |s| s.language = glint_model::store::Language::En);
             assert!(!crate::i18n::is_rtl());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn only_a_change_the_theme_reads_applies_it_again(cx: &mut TestAppContext) {
+        let _guard = crate::testing::lock();
+        cx.update(|cx| {
+            crate::testing::init(cx);
+            let start = crate::theme::times_applied(cx);
+            update(cx, |s| s.show_hidden = !s.show_hidden);
+            assert_eq!(
+                crate::theme::times_applied(cx),
+                start,
+                "showing hidden items leaves the theme alone"
+            );
+            update(cx, |s| s.theme = Theme::Dark);
+            assert_eq!(crate::theme::times_applied(cx), start + 1);
+            update(cx, |s| s.theme = Theme::Dark);
+            assert_eq!(
+                crate::theme::times_applied(cx),
+                start + 1,
+                "the same theme again changes nothing"
+            );
         });
     }
 }
