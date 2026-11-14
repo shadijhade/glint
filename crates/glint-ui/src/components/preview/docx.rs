@@ -1110,6 +1110,7 @@ impl DocxView {
     }
 
     /// The rich view the document is drawn in.
+    #[cfg(test)]
     pub fn text_view(&self) -> &Entity<RichView> {
         &self.rich
     }

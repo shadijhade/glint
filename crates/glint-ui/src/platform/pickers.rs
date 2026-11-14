@@ -72,6 +72,7 @@ impl Filter {
     }
 
     /// Every file ("All files", `*.*`).
+    #[cfg(test)]
     pub fn all_files() -> Self {
         Filter {
             name: crate::t!("All files").to_string(),
@@ -161,6 +162,7 @@ pub fn open_file(options: Options) -> Fut<Result<Option<String>, String>> {
 }
 
 /// Several existing files (one or more), or none when cancelled.
+#[cfg(test)]
 pub fn open_files(options: Options) -> Fut<Result<Vec<String>, String>> {
     pick(Request {
         kind: Kind::OpenFiles { multiple: true },
@@ -177,6 +179,7 @@ pub fn open_folder(options: Options) -> Fut<Result<Option<String>, String>> {
 }
 
 /// Several folders, or none when cancelled.
+#[cfg(test)]
 pub fn open_folders(options: Options) -> Fut<Result<Vec<String>, String>> {
     pick(Request {
         kind: Kind::Folders { multiple: true },

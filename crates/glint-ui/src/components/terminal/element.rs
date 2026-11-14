@@ -27,11 +27,11 @@ use super::view::TerminalView;
 use crate::i18n;
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui_kit::{
-    fill, point, px, quad, relative, rgb, size, AnyElement, App, AvailableSpace, BorderStyle, Bounds, ContentMask,
-    CursorStyle, DispatchPhase, Edges, Element, ElementId, ElementInputHandler, Entity, FocusHandle, Font, FontStyle,
-    FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollEvent, SharedString, Size, StrikethroughStyle,
-    Style, TextAlign, TextRun, UnderlineStyle, Window,
+    fill, point, px, quad, relative, rgb, size, App, AvailableSpace, BorderStyle, Bounds, ContentMask, CursorStyle,
+    DispatchPhase, Edges, Element, ElementId, ElementInputHandler, Entity, FocusHandle, Font, FontStyle, FontWeight,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollEvent, SharedString, Size, StrikethroughStyle, Style, TextAlign,
+    TextRun, UnderlineStyle, Window,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -625,11 +625,7 @@ fn scrollbar_boxes(
 }
 
 /// For [`AnyElement`]-typed callers.
-impl TerminalElement {
-    pub fn into_any(self) -> AnyElement {
-        self.into_any_element()
-    }
-}
+impl TerminalElement {}
 
 #[cfg(test)]
 mod tests {

@@ -360,6 +360,7 @@ impl AddressBar {
     }
 
     /// Whether the address is being typed in.
+    #[cfg(test)]
     pub fn is_editing(&self) -> bool {
         self.editing
     }

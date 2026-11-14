@@ -261,6 +261,7 @@ impl Usage {
     }
 
     /// Changes how long after a re-read an index map is made again.
+    #[cfg(test)]
     pub fn set_remap_after(&mut self, after: Duration) {
         self.remap_after = after;
     }

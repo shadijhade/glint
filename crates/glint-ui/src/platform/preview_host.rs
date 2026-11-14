@@ -205,6 +205,7 @@ pub fn unload(claimant: u32) {
 }
 
 /// Whether Windows has a preview handler this module would use for a file like `path`.
+#[cfg(test)]
 pub fn has_handler(path: &str) -> bool {
     handler_for(path).is_some()
 }

@@ -572,12 +572,6 @@ impl FileList {
         self.focus.focus(window, cx);
     }
 
-    /// A press that may turn into a drag was started on a row; a drag from the list calls this so the release
-    /// that ends the drag doesn't also narrow the selection.
-    pub fn cancel_press(&mut self) {
-        self.press = None;
-    }
-
     // ---- Reading the explorer ---------------------------------------------------------------------------
 
     /// The pane's tab as the list shows it, or None when there is no such pane.

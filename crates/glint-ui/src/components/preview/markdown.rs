@@ -462,14 +462,6 @@ impl MarkdownPreview {
         }
     }
 
-    /// The Markdown source on screen, once it has been parsed.
-    pub fn source_text(&self, cx: &App) -> Option<String> {
-        match &self.load {
-            Load::Shown(shown) => Some(shown.state.read(cx).rendered_text().source().to_string()),
-            _ => None,
-        }
-    }
-
     fn read(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;

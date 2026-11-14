@@ -133,6 +133,7 @@ pub fn parse_cast(text: &str, idle: f64) -> Option<Cast> {
 }
 
 /// The output up to `seconds` in, all at once (to show a moment of it), and how many events that is.
+#[cfg(test)]
 pub fn output_until(cast: &Cast, seconds: f64) -> Output {
     let mut count = 0;
     let mut data = String::new();

@@ -43,8 +43,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, IsWindowVisible, PostMessageW, RegisterClassW, SetForegroundWindow, ShowWindow,
-    HWND_MESSAGE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, PostMessageW, RegisterClassW, SetForegroundWindow, ShowWindow, HWND_MESSAGE,
+    SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WNDCLASSW,
 };
 
 /// A closure to run on the UI thread.
@@ -299,8 +299,7 @@ pub fn register_window(cx: &App, label: &str, window: &Window) {
         core.app.clone(),
         label,
         raw,
-        // SAFETY (all four): `raw` is a window handle; a stale one makes these calls fail, never misbehave.
-        move || unsafe { IsWindowVisible(handle()) }.as_bool(),
+        // SAFETY (all three): `raw` is a window handle; a stale one makes these calls fail, never misbehave.
         move || unsafe { ShowWindow(handle(), SW_SHOW) }.as_bool(),
         move || unsafe { SetForegroundWindow(handle()) }.as_bool(),
         move || f64::from(unsafe { GetDpiForWindow(handle()) }) / 96.0,

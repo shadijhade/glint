@@ -280,6 +280,7 @@ impl TerminalView {
     }
 
     /// The text on screen, a row each (tests, and screen readers' summary).
+    #[cfg(test)]
     pub fn visible_text(&self) -> Vec<String> {
         self.screen.with(|emu| emu.visible_text())
     }

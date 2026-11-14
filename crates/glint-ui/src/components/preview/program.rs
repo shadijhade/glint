@@ -141,6 +141,7 @@ impl ProgramPreview {
     }
 
     /// How many import cards and export rows the filter leaves.
+    #[cfg(test)]
     pub fn shown_counts(&self) -> (usize, usize) {
         (self.imports.len(), self.exports.len())
     }
@@ -153,6 +154,7 @@ impl ProgramPreview {
     }
 
     /// Whether the frame handed over a signature chip.
+    #[cfg(test)]
     pub fn has_signature(&self) -> bool {
         self.signature.is_some()
     }

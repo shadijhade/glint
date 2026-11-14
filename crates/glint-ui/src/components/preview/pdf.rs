@@ -917,6 +917,7 @@ impl PdfView {
     }
 
     /// The pages held drawn now (1 is the first), for the tests of what is let go.
+    #[cfg(test)]
     pub fn drawn_pages(&self) -> Vec<usize> {
         let mut pages: Vec<usize> = self.drawn.keys().map(|p| p + 1).collect();
         pages.sort_unstable();
@@ -924,11 +925,13 @@ impl PdfView {
     }
 
     /// The bytes of the pages held drawn.
+    #[cfg(test)]
     pub fn drawn_bytes(&self) -> usize {
         self.drawn.values().map(|d| d.bytes).sum()
     }
 
     /// The pages (1 is the first) that Find found words on.
+    #[cfg(test)]
     pub fn found_on(&self) -> Vec<usize> {
         self.matches.iter().map(|p| p + 1).collect()
     }

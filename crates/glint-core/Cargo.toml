@@ -35,9 +35,6 @@ png = "0.18"
 # windows crate already in the build.
 reflink-copy = "0.1"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-# Markdown previews: GitHub's flavor (tables, task lists, footnotes), its HTML kept to an allowlist by
-# the preview.
-comrak = { version = "0.57", default-features = false }
 # JSON, YAML and TOML as a tree: jaq's readers and JSON writer, without its filters (jq filters run in
 # the jaq program, installed on demand: compiled in, they'd add 4 MB). Run in a worker process (jq.rs).
 jaq-json = { version = "2", default-features = false, features = ["std"] }

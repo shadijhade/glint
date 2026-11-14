@@ -52,10 +52,6 @@ pub fn snapshots() -> Vec<Snapshot> {
     Vec::new()
 }
 
-/// Each shadow copy of a drive, newest first.
-pub async fn shadow_copies() -> Result<Vec<Snapshot>, String> {
-    crate::fsx::blocking(|| Ok(snapshots())).await
-}
 
 /// A file or folder in each shadow copy that has it, newest first: a file only where it differs from
 /// the copy after it (and from now), a folder in every copy.

@@ -95,11 +95,13 @@ pub struct Drawn {
 
 impl Drawn {
     /// The SVG's own width in its units.
+    #[cfg(test)]
     pub fn natural_width(&self) -> f32 {
         self.width / self.scale
     }
 
     /// The SVG's own height in its units.
+    #[cfg(test)]
     pub fn natural_height(&self) -> f32 {
         self.height / self.scale
     }
@@ -365,6 +367,7 @@ pub fn forget(wake: EntityId) {
 }
 
 /// The picture for `key` if it is already made (a finished one only; nothing is started).
+#[cfg(test)]
 pub fn peek(key: &Key) -> Option<Arc<Outcome>> {
     match cache().slots.get(key) {
         Some(Slot::Done(outcome, _)) => Some(outcome.clone()),
@@ -381,6 +384,7 @@ pub fn release_retired(window: &mut Window) {
 }
 
 /// How many pictures and failures are kept, and the pixel memory they hold (for tests and the status line).
+#[cfg(test)]
 pub fn held() -> (usize, usize) {
     let inner = cache();
     (
@@ -394,6 +398,7 @@ pub fn held() -> (usize, usize) {
 }
 
 /// Empties the cache (tests; and a theme or font change that makes every picture stale).
+#[cfg(test)]
 pub fn clear() {
     let mut inner = cache();
     let gone: Vec<Arc<RenderImage>> = inner

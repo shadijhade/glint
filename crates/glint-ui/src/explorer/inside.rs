@@ -344,13 +344,9 @@ struct Heard {
 
 impl Explorer {
     /// The words the active tab's search looks for inside files, when it does or could.
+    #[cfg(test)]
     pub fn inside_of(&self, tab: TabId) -> Option<&Inside> {
         self.tabs.get(&tab)?.find.as_ref().map(|find| &find.inside)
-    }
-
-    /// Whether a content search runs for `tab`.
-    pub fn inside_running(&self, tab: TabId) -> bool {
-        self.inside_of(tab).is_some_and(|inside| inside.running)
     }
 
     /// Starts looking inside the files for the words of `tab`'s search, replacing any content search that runs.
@@ -487,6 +483,7 @@ impl Explorer {
     }
 
     /// Whether every event handed over has been applied (tests wait for it).
+    #[cfg(test)]
     pub fn inside_idle(&self) -> bool {
         self.searching.inside_waiting == 0
     }

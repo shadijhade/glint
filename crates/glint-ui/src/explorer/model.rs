@@ -381,13 +381,6 @@ impl Explorer {
         })
     }
 
-    /// Teaches the explorer what remote connections are called, by id (`remoteName`). The remotes part calls
-    /// this when connections load or change; tabs on remote folders redraw.
-    pub fn set_remote_names(&mut self, names: impl IntoIterator<Item = (String, String)>, cx: &mut Context<Self>) {
-        self.remote_names = names.into_iter().map(|(id, name)| (id.to_lowercase(), name)).collect();
-        cx.notify();
-    }
-
     /// What the explorer keeps between runs (see [`Memory`]).
     pub fn memory(&self) -> &Memory {
         &self.memory

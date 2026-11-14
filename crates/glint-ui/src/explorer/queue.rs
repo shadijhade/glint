@@ -12,7 +12,9 @@ use super::ops_types::*;
 use super::types::*;
 use glint_model::format::plural;
 use glint_model::paths::{base_name, parent_path, same_path};
-use gpui_kit::{AsyncApp, Context, Task, WeakEntity};
+#[cfg(test)]
+use gpui_kit::Task;
+use gpui_kit::{AsyncApp, Context, WeakEntity};
 use serde::Deserialize;
 
 /// One failed file of a job.
@@ -73,6 +75,7 @@ impl Explorer {
     /// Queues a copy or a move of `sources` into `dest`, and shows the queue (`queueFiles`). The queue runs it
     /// when the ones before it are done, with Pause and Resume, checking the copies afterwards where Settings say.
     #[must_use = "dropping the task stops waiting for it; `.detach()` it to let it run"]
+    #[cfg(test)]
     pub fn queue_files(
         &mut self,
         kind: QueueKind,

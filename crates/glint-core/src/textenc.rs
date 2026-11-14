@@ -115,9 +115,6 @@ fn region_hint() -> Option<&'static [u8]> {
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
-pub fn text_cancel() {
-    STOP.store(true, Ordering::SeqCst);
-}
 
 /// Convert to UTF-8: each file read as `encoding` (or as guessed, when None) and written as UTF-8,
 /// with a byte order mark for CSV and TSV files (Excel reads UTF-8 by it). Line endings and the date stay.

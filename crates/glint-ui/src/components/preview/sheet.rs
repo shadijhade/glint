@@ -53,6 +53,7 @@ pub fn is_sheet_candidate(path: &str) -> bool {
 }
 
 /// Whether the file is a workbook (the Previewer view is offered for these) and not Parquet.
+#[cfg(test)]
 pub fn is_workbook(path: &str) -> bool {
     is_sheet_candidate(path) && super::text::ext_of(path) != "parquet"
 }
@@ -385,6 +386,7 @@ impl SheetPreview {
     }
 
     /// The names of the sheets there are to pick from (none for Parquet).
+    #[cfg(test)]
     pub fn sheet_names(&self) -> Vec<String> {
         match &self.load {
             Load::Ready { sheet, .. } => sheet.sheets.clone(),
@@ -393,6 +395,7 @@ impl SheetPreview {
     }
 
     /// The rows the grid shows now, as text.
+    #[cfg(test)]
     pub fn shown_cells(&self, cx: &App) -> Vec<Vec<String>> {
         match &self.load {
             Load::Ready { sheet, grid } => {

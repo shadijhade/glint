@@ -11,8 +11,8 @@ tests.rs, *_tests.rs, tests_*.rs, fake*.rs or testing.rs, files under a tests/ f
 (crates/glint/src for glint-ui; glint-ui and glint for glint-core and glint-model; glint-core, glint-ui and the
 service's main.rs for shadui-index), anywhere in the crate outside function bodies (statics, macros, use lines), in
 an attribute that names functions (serde's with, default, serialize_with...), or in the body of a live function;
-every method of a trait impl is live. What is left is printed per file, biggest first, with line counts; "~" marks a
-function that isn't pub.
+every method of a trait impl is live. What is left is printed per file, biggest first, with their line and length;
+"~" marks a function that isn't pub, and "tests" one that tests (or other unreached functions) still call.
 
 It matches by name only, so a dead function whose name is common (start, new, render) looks alive. The second list
 covers free pub functions for that: those never named with their module outside it (content::start,
@@ -45,7 +45,7 @@ ALIAS = re.compile(r"\b([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)\b")
 # Attribute keys whose string names a function or a module of them: #[serde(with = "b64", default = "default_port")].
 NAMING_KEY = re.compile(r'\b(?:with|serialize_with|deserialize_with|default|skip_serializing_if|getter|from|try_from|into)'
                         r'\s*=\s*"([^"]*)"')
-CFG_TEST = re.compile(r"#\[cfg\(test\)\]")
+CFG_TEST = re.compile(r"#\[(?:cfg\(test\)|test)\]")
 ITEM = re.compile(r"\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:(?:unsafe|async|const|extern)\s+)*"
                   r"(mod|impl|fn|struct|enum|trait|const|static|type|use|macro_rules!)\b")
 TEST_MOD = re.compile(r"#\[cfg\(test\)\]\s*(?:#\[path\s*=\s*\"([^\"]+)\"\]\s*)?(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
@@ -261,11 +261,17 @@ def paths_used(code):
         elif right == "{":
             group = code[match.end():match_brace(code, match.end())]
             pairs.update((left, word) for word in WORD.findall(group))
+            # `use glint_model::i18n::{self as model, ...}` names the module `model`.
+            for alias in re.findall(r"\bself\s+as\s+([A-Za-z_]\w*)", group):
+                pairs.add(("self as", left + " " + alias))
         else:
             pairs.add((left, right))
     aliases = collections.defaultdict(set)
     for match in ALIAS.finditer(code):
         aliases[match.group(1)].add(match.group(2))
+    for kind, both in [p for p in pairs if p[0] == "self as"]:
+        module, alias = both.split()
+        aliases[module].add(alias)
     return pairs, globs, aliases
 
 
@@ -292,11 +298,17 @@ def main():
             named |= attribute_words(sources[rel], code)
     everywhere = "\n".join(shipping.values())
     paths = paths_used(everywhere)
+    # Words of test code: test files whole, and what is left of the others once their shipping code is taken out.
+    tested = set()
+    for rel, text in sources.items():
+        code = blank_code(text)
+        kept = shipping[rel] or " " * len(code)
+        tested.update(WORD.findall("".join(c if k == " " else " " for c, k in zip(code, kept))))
     for crate in args.crate or DEFAULT_CRATES:
-        report(crate, sources, shipping, named, paths, args.min_lines)
+        report(crate, sources, shipping, named, paths, tested, args.min_lines)
 
 
-def report(crate, sources, shipping, named, paths, min_lines):
+def report(crate, sources, shipping, named, paths, tested, min_lines):
     prefix = f"crates/{crate}/src/"
     ident = crate.replace("-", "_")
     files = {rel: code for rel, code in shipping.items() if rel.startswith(prefix) and code.strip()}
@@ -334,16 +346,25 @@ def report(crate, sources, shipping, named, paths, min_lines):
                     todo.append(word)
 
     lines = lambda rel, start, end: sources[rel][start:end].count("\n") + 1  # noqa: E731
+    line_of = lambda rel, at: sources[rel].count("\n", 0, at) + 1  # noqa: E731
+    # Names other unreached functions use: those stay for whatever keeps the callers (tests, say).
+    dead_names = {d[3] for d in defs if d[3] not in live}
+    used_by_dead = set()
+    for rel, start, end, name, *_ in defs:
+        if name in dead_names:
+            used_by_dead.update(set(WORD.findall(shipping[rel][start:end])) - {name})
     unreached = collections.defaultdict(list)
     for rel, start, end, name, is_pub, _, _, _ in defs:
         if name not in live and lines(rel, start, end) >= min_lines:
-            unreached[rel].append((lines(rel, start, end), name, is_pub))
-    total = sum(n for found in unreached.values() for n, _, _ in found)
+            kept_by = name in tested or name in used_by_dead
+            unreached[rel].append((lines(rel, start, end), name, is_pub, line_of(rel, start), kept_by))
+    total = sum(f[0] for found in unreached.values() for f in found)
     count = sum(len(found) for found in unreached.values())
     print(f"=== {crate}: {len(defs)} functions, {count} never reached by name (about {total} lines)")
-    for rel, found in sorted(unreached.items(), key=lambda kv: -sum(n for n, _, _ in kv[1])):
-        names = ", ".join(f"{'' if p else '~'}{name}({n})" for n, name, p in sorted(found, reverse=True))
-        print(f"  {rel[len(prefix):]} [{sum(n for n, _, _ in found)}]: {names}")
+    for rel, found in sorted(unreached.items(), key=lambda kv: -sum(f[0] for f in kv[1])):
+        names = ", ".join(f"{'' if p else '~'}{name}:{at}({n}{', tests' if t else ''})"
+                          for n, name, p, at, t in sorted(found, reverse=True))
+        print(f"  {rel[len(prefix):]} [{sum(f[0] for f in found)}]: {names}")
 
     # Free pub functions never named with their module outside it, nor used inside it or below it.
     pairs, globs, aliases = paths

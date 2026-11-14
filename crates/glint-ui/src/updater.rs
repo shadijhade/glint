@@ -576,6 +576,7 @@ fn refusal(error: MinisignError) -> Refusal {
 
 /// Checks that `data` is what `signature` (base64, as latest.json holds it) was made for with `public_key`
 /// (base64, [`PUBLIC_KEY`]'s form), and for version `announced`.
+#[cfg(test)]
 pub fn verify_bytes(data: &[u8], signature: &str, public_key: &str, announced: &str) -> Result<(), Refusal> {
     let (key, signature) = decode_pair(public_key, signature)?;
     key.verify(data, &signature, true).map_err(refusal)?;
@@ -956,11 +957,6 @@ impl Updater {
     /// Why the last install failed.
     pub fn install_error(&self) -> Option<&str> {
         self.install_error.as_deref()
-    }
-
-    /// This build's version.
-    pub fn current_version(&self) -> &str {
-        &self.config.current
     }
 
     /// How this copy updates.
@@ -1474,6 +1470,7 @@ pub fn try_shared(cx: &App) -> Option<Entity<Updater>> {
 }
 
 /// Makes `updater` the shared model, without starting it (tests, and a window of its own).
+#[cfg(test)]
 pub fn set_shared(cx: &mut App, updater: Entity<Updater>) {
     cx.set_global(Shared(updater));
 }

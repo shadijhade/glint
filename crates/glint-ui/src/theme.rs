@@ -100,6 +100,7 @@ pub mod motion {
     }
 
     /// The curve things move between two places on (`cubic-bezier(0.2, 0, 0, 1)`).
+    #[cfg(test)]
     pub fn glide(t: f32) -> f32 {
         bezier(0.2, 0.0, 0.0, 1.0, t)
     }
@@ -270,15 +271,6 @@ pub mod elevation {
         vec![
             shadow(2., 6., 0., if dark { 0.30 } else { 0.06 }),
             shadow(12., 32., -4., if dark { 0.55 } else { 0.16 }),
-        ]
-    }
-
-    /// A dialog.
-    pub fn modal(cx: &App) -> Vec<BoxShadow> {
-        let dark = tokens(cx).dark;
-        vec![
-            shadow(4., 12., 0., if dark { 0.35 } else { 0.08 }),
-            shadow(28., 72., -8., if dark { 0.65 } else { 0.22 }),
         ]
     }
 }

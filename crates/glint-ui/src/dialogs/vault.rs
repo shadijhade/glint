@@ -242,6 +242,7 @@ impl VaultDialog {
     }
 
     /// Where the run stands.
+    #[cfg(test)]
     pub fn run_state(&self) -> &Run {
         &self.run
     }
@@ -252,11 +253,13 @@ impl VaultDialog {
     }
 
     /// The second passphrase box.
+    #[cfg(test)]
     pub fn again_input(&self) -> &Entity<InputState> {
         &self.again
     }
 
     /// The age keys box.
+    #[cfg(test)]
     pub fn keys_input(&self) -> &Entity<InputState> {
         &self.keys
     }

@@ -328,6 +328,7 @@ struct SharedConvert(Convert);
 impl Global for SharedConvert {}
 
 /// Sets the conversion in use (tests pass a fake). [`converter`] gives core's if this was never called.
+#[cfg(test)]
 pub fn init_convert_with(cx: &mut App, convert: Convert) {
     cx.set_global(SharedConvert(convert));
 }
@@ -597,6 +598,7 @@ impl TextPreview {
     }
 
     /// Whether long lines wrap (off at first, as the TypeScript's `wrap`).
+    #[cfg(test)]
     pub fn wrapping(&self) -> bool {
         self.wrap
     }
@@ -620,6 +622,7 @@ impl TextPreview {
     }
 
     /// What the file was read as, when it isn't plain UTF-8, and whether that was a guess.
+    #[cfg(test)]
     pub fn encoding_read(&self) -> Option<(&str, bool)> {
         match &self.state {
             Load::Shown(shown) => shown.encoding.as_deref().map(|e| (e, shown.guessed)),
@@ -628,6 +631,7 @@ impl TextPreview {
     }
 
     /// The lines on screen, when there are some.
+    #[cfg(test)]
     pub fn shown_text(&self, cx: &App) -> Option<SharedString> {
         match &self.state {
             Load::Shown(shown) => Some(shown.editor.read(cx).value()),

@@ -12,7 +12,9 @@ use super::types::*;
 use crate::{core_bridge, t};
 use glint_core::batch_rename::RenamePair;
 use glint_model::format::plural;
-use gpui_kit::{App, Context, Global, Task};
+#[cfg(test)]
+use gpui_kit::App;
+use gpui_kit::{Context, Global, Task};
 use std::sync::Arc;
 
 /// glint-core, doing the steps that are not Windows' file engine: the batch renamer and `wof_undo`.
@@ -67,6 +69,7 @@ impl Global for RunnerOverride {}
 impl Explorer {
     /// Sets where the steps that are not Windows' file engine (a batch rename, a compression in place) are
     /// taken back. Tests pass a fake; the app never calls this.
+    #[cfg(test)]
     pub fn set_undo_runner(cx: &mut App, runner: Arc<dyn UndoRunner>) {
         cx.set_global(RunnerOverride(runner));
     }

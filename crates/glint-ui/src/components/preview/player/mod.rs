@@ -342,11 +342,13 @@ impl PlayerView {
     }
 
     /// Whether it plays.
+    #[cfg(test)]
     pub fn is_playing(&self) -> bool {
         self.playing
     }
 
     /// Whether it reached the end.
+    #[cfg(test)]
     pub fn is_ended(&self) -> bool {
         self.ended
     }
@@ -357,6 +359,7 @@ impl PlayerView {
     }
 
     /// Whether it is muted.
+    #[cfg(test)]
     pub fn is_muted(&self) -> bool {
         self.muted
     }
@@ -367,11 +370,13 @@ impl PlayerView {
     }
 
     /// Whether a picture of the video has arrived.
+    #[cfg(test)]
     pub fn has_frame(&self) -> bool {
         self.frame.is_some()
     }
 
     /// The waveform's bars once decoded.
+    #[cfg(test)]
     pub fn waveform(&self) -> Option<&Arc<Vec<f32>>> {
         self.peaks.as_ref()
     }

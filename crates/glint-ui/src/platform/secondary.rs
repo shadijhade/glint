@@ -296,6 +296,7 @@ struct Spawners(Spawner);
 impl Global for Spawners {}
 
 /// Makes `spawner` start the windows (tests).
+#[cfg(test)]
 pub fn use_spawner(cx: &mut App, spawner: Spawner) {
     cx.set_global(Spawners(spawner));
 }
@@ -410,6 +411,7 @@ struct MainAsks(MainAsk);
 impl Global for MainAsks {}
 
 /// Makes `ask` carry the Settings request to the main instance (tests).
+#[cfg(test)]
 pub fn use_main_ask(cx: &mut App, ask: MainAsk) {
     cx.set_global(MainAsks(ask));
 }

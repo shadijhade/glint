@@ -116,11 +116,6 @@ impl Waiting {
             _later: later,
         }
     }
-
-    /// Whether the spinner shows yet.
-    pub fn is_late(&self) -> bool {
-        self.late
-    }
 }
 
 impl Render for Waiting {

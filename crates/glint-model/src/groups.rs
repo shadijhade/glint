@@ -251,6 +251,7 @@ fn group_in(
 }
 
 /// The group `entry` falls in. `now` is when the grouping is made (Unix ms, for dates), `size_of` a folder's size.
+#[cfg(test)]
 pub fn group_of(entry: &FileEntry, by: GroupBy, now: i64, size_of: Option<&SizeOf>, git: Option<&GitMarks>) -> Group {
     let bounds = if by == GroupBy::Date {
         DateBounds::new(now)

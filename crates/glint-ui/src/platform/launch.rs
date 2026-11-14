@@ -378,6 +378,7 @@ pub fn hand_to_explorer(items: &[String]) {
 }
 
 /// The taskbar's Quick search task starts Glint with `--quick-search`.
+#[cfg(test)]
 pub fn asks_for_quick_search<S: AsRef<str>>(mut args: impl Iterator<Item = S>) -> bool {
     args.any(|arg| arg.as_ref().trim().eq_ignore_ascii_case("--quick-search"))
 }

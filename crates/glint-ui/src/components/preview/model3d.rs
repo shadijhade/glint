@@ -95,6 +95,7 @@ pub fn release_retired(window: &mut Window) {
 }
 
 /// How many pictures wait to be let go of.
+#[cfg(test)]
 pub fn retired_count() -> usize {
     RETIRED.with(|retired| retired.borrow().len())
 }
@@ -299,6 +300,7 @@ impl ModelView {
     }
 
     /// Whether the picture on screen is the full one (not the draft drawn while turning).
+    #[cfg(test)]
     pub fn is_full(&self) -> bool {
         self.shown.as_ref().is_some_and(|s| s.key.full)
     }

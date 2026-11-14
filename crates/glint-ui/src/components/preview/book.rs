@@ -2665,6 +2665,7 @@ impl BookView {
     }
 
     /// The rich view the chapter is drawn in.
+    #[cfg(test)]
     pub fn text_view(&self) -> &Entity<RichView> {
         &self.rich
     }
@@ -2675,11 +2676,13 @@ impl BookView {
     }
 
     /// Whether the contents panel is open.
+    #[cfg(test)]
     pub fn contents_open(&self) -> bool {
         self.show_toc
     }
 
     /// Reads aloud through `speaker` from now on (tests give a fake one). What the old one said stops.
+    #[cfg(test)]
     pub fn set_speaker(&mut self, speaker: Arc<dyn Speaker>, cx: &mut Context<Self>) {
         self.stop_reading(cx);
         self.speaker = speaker;

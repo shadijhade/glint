@@ -38,8 +38,12 @@ use crate::i18n;
 use crate::kit::prelude::*;
 use crate::t;
 use glint_core::media::MediaDetails;
-use glint_model::columns::{clock_time, ColumnId, FACT_SORTS};
-use glint_model::entries::{is_archived, is_recycled, FileEntry, MediaFacts, SortKey};
+use glint_model::columns::clock_time;
+#[cfg(test)]
+use glint_model::columns::{ColumnId, FACT_SORTS};
+#[cfg(test)]
+use glint_model::entries::SortKey;
+use glint_model::entries::{is_archived, is_recycled, FileEntry, MediaFacts};
 use glint_model::format::{format_date, format_full_date};
 use glint_model::paths::is_remote_path;
 use std::collections::{HashMap, HashSet};
@@ -90,6 +94,7 @@ pub struct Want {
 
 /// What a list needs read for its columns and sort: every media file's facts while a column of them is shown or
 /// the list is sorted by them (`factsWanted`), else nothing.
+#[cfg(test)]
 pub fn media_wanted(columns: &[ColumnId], sort: SortKey) -> Media {
     if FACT_SORTS.contains(&sort) || columns.iter().any(|id| id.def().facts) {
         Media::All

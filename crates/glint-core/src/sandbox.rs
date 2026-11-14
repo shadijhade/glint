@@ -55,10 +55,6 @@ pub async fn sandbox_run(path: String, network: bool) -> Result<(), String> {
     .await
 }
 
-/// Whether Windows Sandbox is there to run things in.
-pub fn sandbox_available() -> bool {
-    sandbox_exe().is_some()
-}
 
 #[cfg(test)]
 mod tests {

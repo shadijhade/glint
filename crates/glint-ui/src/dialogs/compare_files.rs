@@ -1324,6 +1324,7 @@ impl TextPane {
     }
 
     /// The current change, 0-based.
+    #[cfg(test)]
     pub fn current_change(&self) -> Option<usize> {
         self.at
     }
@@ -2704,11 +2705,13 @@ impl BytesPane {
     }
 
     /// The difference the list is at.
+    #[cfg(test)]
     pub fn shown_offset(&self) -> Option<u64> {
         self.shown
     }
 
     /// Where the first difference is: `None` while looking, `Some(None)` when the files are the same.
+    #[cfg(test)]
     pub fn first_difference(&self) -> Option<Option<u64>> {
         self.first
     }
@@ -3342,6 +3345,7 @@ impl PicturesPane {
     }
 
     /// How many pixels differ of how many, once worked out.
+    #[cfg(test)]
     pub fn difference(&self) -> Option<(u64, u64)> {
         self.diff.as_ref().map(|d| (d.changed, d.total))
     }
@@ -4032,6 +4036,7 @@ impl CompareDialog {
     }
 
     /// The text view, when that is the view shown.
+    #[cfg(test)]
     pub fn text_pane(&self) -> Option<&Entity<TextPane>> {
         match &self.body {
             Body::Text(pane) => Some(pane),
@@ -4040,6 +4045,7 @@ impl CompareDialog {
     }
 
     /// The bytes view, when that is the view shown.
+    #[cfg(test)]
     pub fn bytes_pane(&self) -> Option<&Entity<BytesPane>> {
         match &self.body {
             Body::Bytes(pane) => Some(pane),
@@ -4048,6 +4054,7 @@ impl CompareDialog {
     }
 
     /// The pictures view, when that is the view shown.
+    #[cfg(test)]
     pub fn pictures_pane(&self) -> Option<&Entity<PicturesPane>> {
         match &self.body {
             Body::Pictures(pane) => Some(pane),

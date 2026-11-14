@@ -412,6 +412,7 @@ impl SongDialog {
     }
 
     /// Where the run stands.
+    #[cfg(test)]
     pub fn run_state(&self) -> &Run {
         &self.run
     }

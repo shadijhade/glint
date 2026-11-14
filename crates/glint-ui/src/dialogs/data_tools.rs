@@ -509,6 +509,7 @@ impl QueryView {
     }
 
     /// The SQL box, to type in and focus.
+    #[cfg(test)]
     pub fn sql_input(&self) -> &Entity<TextareaState> {
         &self.sql
     }
@@ -1081,6 +1082,7 @@ impl DataConvertDialog {
     }
 
     /// Where the run stands.
+    #[cfg(test)]
     pub fn run_state(&self, cx: &App) -> Run {
         self.run.read(cx).state().clone()
     }

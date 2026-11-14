@@ -106,6 +106,7 @@ impl QuickLook {
     }
 
     /// Whether it is maximized.
+    #[cfg(test)]
     pub fn is_maximized(&self) -> bool {
         self.maximized.get()
     }
@@ -207,6 +208,7 @@ pub fn is_open(window: &mut Window, cx: &mut App) -> bool {
 }
 
 /// The open Quick Look, if one is.
+#[cfg(test)]
 pub fn current(cx: &App) -> Option<Entity<QuickLook>> {
     cx.try_global::<Current>().and_then(|current| current.0.upgrade())
 }

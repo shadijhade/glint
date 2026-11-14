@@ -430,6 +430,7 @@ impl NotebookView {
     }
 
     /// The Markdown a cell was drawn as (the cell's text, or the fenced code), once it has been drawn.
+    #[cfg(test)]
     pub fn cell_text(&self, ix: usize, cx: &App) -> Option<String> {
         let state = self.texts.get(ix)?.as_ref()?;
         Some(state.read(cx).rendered_text().source().to_string())

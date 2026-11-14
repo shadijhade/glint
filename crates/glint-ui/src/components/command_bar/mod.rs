@@ -276,6 +276,7 @@ impl CommandBar {
     }
 
     /// The menu on screen, for tests and screen-reader checks.
+    #[cfg(test)]
     pub fn menu_view(&self) -> Option<&Entity<MenuView>> {
         self.menu.as_ref().map(|open| &open.view)
     }

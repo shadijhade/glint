@@ -6,9 +6,12 @@
 //! UTF-16 code units, as JavaScript counts them, so a name with odd characters cannot make the slices panic.
 //! Malformed input gives NaN parts (and so "NaN" text), as the TypeScript did, rather than a panic.
 
-use crate::js::{is_js_space, js_max, js_min, js_round, number_to_string};
+use crate::js::is_js_space;
+#[cfg(test)]
+use crate::js::{js_max, js_min, js_round, number_to_string};
 
 /// "333 71% 51%", as the color tokens in index.css are written, for #rrggbb.
+#[cfg(test)]
 pub fn hsl_of(hex: &str) -> String {
     let units: Vec<u16> = hex.encode_utf16().collect();
     let [r, g, b] = [1, 3, 5].map(|i| channel(&units, i));

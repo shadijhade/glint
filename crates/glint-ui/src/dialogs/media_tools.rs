@@ -31,7 +31,6 @@ use crate::kit::prelude::*;
 use crate::{core_bridge, i18n, t, theme};
 use glint_core::actions::{Output, Progress, Report};
 use glint_core::media_tools::Task;
-use glint_model::paths::base_name;
 use gpui_kit::{Bounds, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -921,11 +920,6 @@ impl Render for CantPlay {
 pub fn cant_play(window: &mut Window, cx: &mut App, path: String, size: u64) -> Entity<CantPlay> {
     let backend = backend_of(cx);
     cx.new(|cx| CantPlay::new(path, size, backend, window, cx))
-}
-
-/// The file's name, for the notifications about it.
-pub fn name_of(path: &str) -> String {
-    base_name(path).to_string()
 }
 
 // ---- Tests ----------------------------------------------------------------------------------------------------

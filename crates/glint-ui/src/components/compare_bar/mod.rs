@@ -362,6 +362,7 @@ impl CompareBar {
     }
 
     /// The options menu's view, while it is open (tests drive it).
+    #[cfg(test)]
     pub fn menu_view(&self) -> Option<&Entity<MenuView>> {
         self.menu.as_ref().map(|open| &open.view)
     }

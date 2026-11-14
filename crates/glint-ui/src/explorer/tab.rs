@@ -235,6 +235,7 @@ impl Tab {
     }
 
     /// What Git says of the folder's items (lowercase name to mark), as the window last told the explorer.
+    #[cfg(test)]
     pub fn git_marks(&self) -> Option<&Arc<GitMarks>> {
         self.git.as_ref()
     }

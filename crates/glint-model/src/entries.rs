@@ -652,6 +652,7 @@ pub fn sort_entries<'a, 'f: 'a>(
 
 /// `sorted` with `more` sorted into it, both in `order`: a list that grows (a search's results, batch by batch)
 /// sorts only what's new. Ties keep `sorted`'s first, as sorting them all (stably) would.
+#[cfg(test)]
 pub fn merge_sorted(
     sorted: Vec<FileEntry>,
     mut more: Vec<FileEntry>,
@@ -1020,6 +1021,7 @@ fn now_ms() -> i64 {
 }
 
 /// `prop_test` at the time of the call (the TypeScript's default for `now`).
+#[cfg(test)]
 pub fn prop_test_now(key: &str, value: &str) -> Option<FactsTest> {
     prop_test(key, value, now_ms())
 }

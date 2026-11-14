@@ -131,12 +131,6 @@ impl Entry {
         self
     }
 
-    /// No key shown, though the command has one.
-    pub fn unhinted(mut self) -> Entry {
-        self.hint = None;
-        self
-    }
-
     /// Greyed out when `yes`.
     pub fn disabled(mut self, yes: bool) -> Entry {
         self.disabled = yes;

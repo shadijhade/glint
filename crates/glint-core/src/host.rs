@@ -101,10 +101,6 @@ impl AppHandle {
         }))
     }
 
-    /// An app whose events go nowhere and whose "UI thread" is the caller's, for tests and tools.
-    pub fn headless() -> Self {
-        Self::new(|_| {}, |run| run(), |code| std::process::exit(code))
-    }
 
     /// Registers the window the UI opened under `label` ("main", "quick"…).
     pub fn register_window(&self, window: Window) {
@@ -153,34 +149,12 @@ impl PathResolver {
     pub fn app_data_dir(&self) -> Result<PathBuf> {
         Ok(Self::known("APPDATA")?.join(identifier()))
     }
-    /// %APPDATA%\com.shado.shadui-ripgrep
-    pub fn app_config_dir(&self) -> Result<PathBuf> {
-        self.app_data_dir()
-    }
     /// %LOCALAPPDATA%\com.shado.shadui-ripgrep
     pub fn app_local_data_dir(&self) -> Result<PathBuf> {
         Ok(Self::known("LOCALAPPDATA")?.join(identifier()))
     }
-    /// %LOCALAPPDATA%\com.shado.shadui-ripgrep
-    pub fn app_cache_dir(&self) -> Result<PathBuf> {
-        self.app_local_data_dir()
-    }
-    /// %LOCALAPPDATA%\com.shado.shadui-ripgrep\logs
-    pub fn app_log_dir(&self) -> Result<PathBuf> {
-        Ok(self.app_local_data_dir()?.join("logs"))
-    }
-    /// The folder Glint.exe is in (where Tauri looked for bundled resources).
-    pub fn resource_dir(&self) -> Result<PathBuf> {
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(PathBuf::from))
-            .ok_or_else(|| Error("can't tell where Glint.exe is".into()))
-    }
     pub fn temp_dir(&self) -> Result<PathBuf> {
         Ok(std::env::temp_dir())
-    }
-    pub fn home_dir(&self) -> Result<PathBuf> {
-        Self::known("USERPROFILE")
     }
 }
 
@@ -294,7 +268,6 @@ pub struct Window {
     label: String,
     hwnd: isize,
     app: AppHandle,
-    visible: Arc<WindowCall>,
     show: Arc<WindowCall>,
     focus: Arc<WindowCall>,
     scale: Arc<dyn Fn() -> f64 + Send + Sync>,
@@ -303,12 +276,11 @@ pub struct Window {
 pub type WebviewWindow = Window;
 
 impl Window {
-    /// Made by the UI for each window it opens; `visible`, `show` and `focus` answer and act for it.
+    /// Made by the UI for each window it opens; `show` and `focus` act for it.
     pub fn new(
         app: AppHandle,
         label: impl Into<String>,
         hwnd: isize,
-        visible: impl Fn() -> bool + Send + Sync + 'static,
         show: impl Fn() -> bool + Send + Sync + 'static,
         focus: impl Fn() -> bool + Send + Sync + 'static,
         scale: impl Fn() -> f64 + Send + Sync + 'static,
@@ -317,7 +289,6 @@ impl Window {
             label: label.into(),
             hwnd,
             app,
-            visible: Arc::new(visible),
             show: Arc::new(show),
             focus: Arc::new(focus),
             scale: Arc::new(scale),
@@ -333,9 +304,6 @@ impl Window {
         Ok(windows::Win32::Foundation::HWND(self.hwnd as *mut _))
     }
 
-    pub fn is_visible(&self) -> Result<bool> {
-        Ok((self.visible)())
-    }
 
     pub fn show(&self) -> Result<()> {
         (self.show)();
@@ -488,8 +456,4 @@ pub mod async_runtime {
         RUNTIME.block_on(future)
     }
 
-    /// The runtime itself, for code that needs a handle.
-    pub fn handle() -> tokio::runtime::Handle {
-        RUNTIME.handle().clone()
-    }
 }

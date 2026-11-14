@@ -455,13 +455,6 @@ impl DataTree {
         this
     }
 
-    /// Reads the tools the jaq card needs from `tools` (tests pass a model over a fake backend).
-    pub fn with_tools(mut self, tools: Entity<Tools>, cx: &mut Context<Self>) -> Self {
-        self._tools_watch = Some(cx.observe(&tools, |_, _, cx| cx.notify()));
-        self.tools = Some(tools);
-        self
-    }
-
     /// The card that offers to install jaq: while a filter is in force and jaq isn't there.
     fn jaq_card(&self, cx: &App) -> Option<AnyElement> {
         let tools = self.tools.as_ref().filter(|_| self.filter != ".")?;
@@ -548,6 +541,7 @@ impl DataTree {
     }
 
     /// The rows shown now, as text: key and value (tests read this).
+    #[cfg(test)]
     pub fn row_texts(&self) -> Vec<String> {
         self.rows
             .iter()
@@ -1495,6 +1489,7 @@ impl TableViewer {
     }
 
     /// The rows the grid shows now, as text.
+    #[cfg(test)]
     pub fn shown_cells(&self, cx: &App) -> Vec<Vec<String>> {
         match &self.load {
             TableLoad::Ready { grid, table } => {

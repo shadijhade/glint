@@ -33,6 +33,7 @@ impl CompressFormat {
     }
 
     /// The format whose extension this is ("zip", "7z", "tar.zst"), as the password dialog and the menus name it.
+    #[cfg(test)]
     pub fn from_ext(ext: &str) -> Option<Self> {
         match ext {
             "zip" => Some(CompressFormat::Zip),
@@ -43,6 +44,7 @@ impl CompressFormat {
     }
 
     /// Whether a password can protect the archive (a tar can't).
+    #[cfg(test)]
     pub fn can_have_password(self) -> bool {
         self != CompressFormat::TarZst
     }
