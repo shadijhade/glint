@@ -1,8 +1,8 @@
 //! The live settings the interface reads: one `Settings` (from glint-model, the shape the old app saved)
 //! in a GPUI `Global`.
 //!
-//! The TypeScript kept these in a zustand store. glint-model ports only the types, defaults and pure update
-//! functions (STANDARDS.md section 4), so the UI layer owns the live copy, and it lives here.
+//! glint-model has only the types, defaults and pure update functions, so the UI layer owns the live copy, and it
+//! lives here.
 //!
 //! **Pattern for the component waves.** Read with [`settings`]. Change with [`update`], never by mutating
 //! the global yourself: `update` re-applies everything that follows from a setting (the theme and its

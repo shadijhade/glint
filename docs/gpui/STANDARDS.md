@@ -1,29 +1,27 @@
-# Glint on GPUI: standards for everyone porting code
+# Glint on GPUI: standards for everyone writing its code
 
-*Read this before writing a line. The coordinator reviews every change against it; work that doesn't follow it gets sent back. The plan, and why each decision was made, is in [migration-plan.md](migration-plan.md).*
+*Read this before writing a line. Every change is reviewed against it; work that doesn't follow it gets sent back. (The migration from the web app, finished in 0.10, had its own plan and tracker; they're in the repository's history.)*
 
 ## 1. What we're building
 
-Glint is a fast Windows file explorer. Its UI moves from WebView2 (React/TypeScript) to **GPUI**, drawn in-process by Rust. When the migration is done:
+Glint is a fast Windows file explorer, drawn in-process by Rust on **GPUI** (until 0.10 its interface was a web page in WebView2):
 
 - There is **no WebView** of any kind: no WebView2, no wry, no HTML or JS engine, not even for previews.
 - There is **no TypeScript**.
-- Every preview that used a web library gets a native replacement: EPUB, Word, 3D, Mermaid, math, email HTML, the terminal, video.
+- Every preview is native: EPUB, Word, 3D, math, email HTML, the terminal, video.
 
 **Speed and memory are the product.** A change that makes a hot path slower (listing, scrolling, typing, search, startup) is wrong, even if it works.
-
-**Nothing leaves this PC.** The work lives on the local branch `gpui-migration`, in the worktree `.claude/worktrees/gpui-migration`. Never `git push`, never open a PR, never publish anything. The branch's push remote is deliberately broken.
 
 ## 2. Where code goes, and who may touch what
 
 ```
-crates/glint-model/   pure logic ported from src/lib/*.ts. No GPUI, no Tauri, no I/O beyond what a
-                      module did before. Fast to build and test.
-crates/glint-core/    (coming) Glint's Rust from src-tauri/src, with Tauri replaced by a small host shim.
-crates/glint-ui/      (coming) GPUI views on gpui-kit, behind Glint's own kit layer.
-crates/glint/         (coming) Glint.exe: platform services and main().
-vendor/               (coming) patched gpui-pre, gpui-pre-windows and gpui-base (the right-to-left fix).
-src/, src-tauri/      the old app: read it, port from it, don't change it.
+crates/glint-model/   pure logic. No GPUI, no window, no I/O beyond reading what it's given. Fast to build and test.
+crates/glint-core/    the engine (files, search, archives, media, clouds, tools), with a small host shim where
+                      Tauri was.
+crates/glint-ui/      GPUI views on gpui-kit, behind Glint's own kit layer.
+crates/glint/         Glint.exe: main(), its resources, the installer.
+crates/shadui-index/  the instant search service.
+vendor/               patched gpui-pre, gpui-pre-windows, gpui-base and gpui-component (VENDOR.md).
 ```
 
 **The files you may edit are named in your task.** All other files are read-only to you. The coordinator owns these:
@@ -67,39 +65,7 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
 
 ## 4. Porting TypeScript to Rust
 
-**The TypeScript is the spec.** Port behavior, not just signatures.
-- Same results, same edge cases, same order of results, same rounding.
-- If the TS looks like a bug, port it as it is, mark it `// NOTE(port):` with what you think is wrong, and mention it in your report. The coordinator decides.
-
-**The tests come with it.** `src/lib/explorer.check.ts` and `src/lib/text.check.ts` hold Glint's assertions; port every assertion that exercises your module.
-- Each `assert.equal(f(x), y)` becomes an `assert_eq!` in a `#[test]`. Group them as the check file does (one test per section or function).
-- Count them: your report says how many you found and how many you ported. Skipping one needs a reason.
-
-**Strings are the classic trap:**
-- **JS strings are UTF-16.** `.length`, `.slice`, `.indexOf`, `charCodeAt` and regex indices count UTF-16 code units. Rust `str` is UTF-8 bytes.
-- **Never index a `str` by a JS-derived number.** Work in `char`s or `char_indices`.
-- **Indices you return** that the UI will use (highlight ranges, cursor offsets) are **UTF-8 byte offsets on char boundaries**, because GPUI's text runs use byte offsets. Document that in the item's comment.
-- **`toLowerCase`** becomes `to_lowercase()`, not ASCII-only lowercasing. File names are Unicode: Arabic, Hebrew, CJK, emoji.
-- **`localeCompare` and `Intl.Collator`** need a decision. The coordinator will provide Windows' own comparison (`CompareStringEx` with `SORT_DIGITSASNUMBERS`, the one Explorer uses). Until then, write the comparison as a single function your module calls, and note it.
-
-**Numbers:**
-- **Pick the Rust type from the meaning:** `u64` for byte sizes, `i64` for Unix milliseconds, `usize` for counts and indices, `f64` for real-valued math, `f32` only for pixels.
-- **Match JS math exactly where results are visible:**
-  - `Math.round` rounds .5 up, toward +∞. Rust's `f64::round` rounds half away from zero, so for negative values use `(x + 0.5).floor()`.
-  - `%` on negative numbers.
-  - `parseInt` stops at the first bad character.
-
-**Locale-aware formatting:**
-- **No hand-rolled formats.** Where TS used `Intl` (numbers, dates, times, durations), use Windows' own formatting through the `windows` crate (`GetNumberFormatEx`, `GetDateFormatEx`, `GetTimeFormatEx`) with the user's locale, as WebView2 did.
-- **Tests stay deterministic:** functions take an explicit locale name (`"en-US"`) underneath, so tests don't depend on this PC's settings.
-
-**Browser and app state:**
-- **Browser APIs don't exist here** (`document`, `window`, `navigator`, `localStorage`, timers). Pure logic takes what it needs as parameters: the language, today's date, the settings.
-- **zustand stores aren't ported as stores.** Port the state's types, defaults and pure update functions; the UI layer owns the live state.
-
-**Serialization:**
-- **Anything that reaches disk keeps its JSON shape** (settings, the settings export file, session): use `#[serde(rename_all = "camelCase")]` and the same field names and defaults.
-- **Existing files still load:** add `#[serde(default)]` where the TS tolerated missing fields.
+Retired with the migration (0.10). What it said about strings still holds: indices handed to GPUI are UTF-8 byte offsets on char boundaries, `to_lowercase()` rather than ASCII-only lowercasing for names, and anything that reaches disk keeps its JSON shape (`#[serde(rename_all = "camelCase")]`, `#[serde(default)]` so older files still load).
 
 ## 5. The UI (GPUI) rules, for the component waves
 
@@ -249,18 +215,12 @@ src/, src-tauri/      the old app: read it, port from it, don't change it.
 
 ## 6. Core rules (src-tauri to glint-core)
 
-- **Module code moves nearly unchanged:**
-  - `tauri::` paths become `crate::host::` (`AppHandle`, `State`, `ipc::Channel`, `ipc::Response`, `Emitter`, `Manager`, `async_runtime`).
-  - `#[tauri::command]` attributes go; the functions stay.
-- **Window and WebView code** (`WebviewWindow`, `get_webview_window`, appearance, print, quick, more_windows, placement, snap, native_preview, dragdrop, jumplist and the setup in lib.rs) **doesn't move to core.** It's rewritten for GPUI in glint-ui or glint.
-- **Behavior doesn't change** in the move. Bugs found on the way are reported, not fixed in the same change.
+Retired with the migration (0.10): glint-core is Glint's engine now, not code on its way from src-tauri.
 
 ## 7. Done means
 
-1. It builds, and the tests and clippy pass for your crate and features.
-   - glint-model: `cargo test -p glint-model --no-default-features --features <yours>`
-   - glint-model: `cargo clippy -p glint-model --no-default-features --features <yours> -- -D warnings`
-2. Every exported TS function, type and constant of your module has a Rust counterpart, or a line in your report saying why not (for example, a browser-only helper the UI layer replaces).
-3. Every relevant assertion is ported and passes.
+1. It builds, and the tests and clippy pass: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`.
+2. What it changes is tested, headless where it can be (GPUI's test platform), and the e2e checks still pass (`tests\e2e\run.ps1`).
+3. A change made for speed is measured before and after, and the numbers are in its commit.
 4. No `todo!()`, `unimplemented!()`, placeholder logic, or silently dropped behavior.
 5. Your report (the structured output you're asked for) is honest. Say what's partial, what you weren't sure of, and what you need from the coordinator. A wrong "done" costs more than an honest "partial".
