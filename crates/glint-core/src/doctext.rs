@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -777,35 +776,30 @@ fn read_all(queue: mpsc::Receiver<PathBuf>, run: u64, found: mpsc::Sender<Docume
     failed.into_inner()
 }
 
-/// A match as ripgrep's JSON line of one: its line number the place in the document of its first line
-/// (of `lines`), its label where that is ("p. 3"; none for a plain text file's line, which the window then
-/// shows by its number); a passage's, how many lines it spans.
-pub(crate) fn as_ripgrep(path: &Path, lines: Range<usize>, label: &str, text: &str, spans: &[(usize, usize)]) -> String {
-    let submatches: Vec<_> = spans.iter().map(|&(s, e)| serde_json::json!({ "match": { "text": &text[s..e] }, "start": s, "end": e })).collect();
-    let mut data = serde_json::json!({
-        "path": { "text": path.to_string_lossy() },
-        "lines": { "text": format!("{text}\n") },
-        "line_number": lines.start,
-        "label": (!label.is_empty()).then_some(label),
-        "submatches": submatches,
-    });
-    if lines.len() > 1 {
-        data["line_count"] = lines.len().into();
+/// A line of a document (or of a text file, from the content index) that matched: its number, the place in the
+/// document as its label ("p. 3"; none for a plain text file's line, which the window then shows by its number),
+/// and the hits, byte ranges of `text`.
+pub(crate) fn text_match(path: &Path, line: usize, label: &str, text: &str, spans: &[(usize, usize)]) -> crate::TextMatch {
+    crate::TextMatch {
+        path: path.to_string_lossy().into_owned(),
+        text: Some(format!("{text}\n")),
+        line_number: Some(line as u64),
+        hits: spans.to_vec(),
+        label: (!label.is_empty()).then(|| label.to_string()),
     }
-    serde_json::json!({ "type": "match", "data": data }).to_string()
 }
 
-/// Runs Documents search `run` (from `begin`): finds the documents under `folder`, reads them, and
-/// sends what matches as ripgrep's JSON lines (`send(lines)`, in batches), then a summary like
-/// ripgrep's, with how many documents couldn't be read; until all are read, `max` matches came, or
-/// another search started.
-pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Regex, max: usize, send: impl Fn(Vec<String>)) {
+/// Runs Documents search `run` (from `begin`): finds the documents under `folder`, reads them, and sends what
+/// matches (`send`, in batches), then how long it took; until all are read, `max` matches came, or another search
+/// started.
+pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Regex, max: usize, send: impl Fn(crate::TextSaid)) {
+    use crate::TextSaid;
     let started = Instant::now();
     let (paths, queue) = mpsc::sync_channel(256);
     let (found, documents) = mpsc::channel();
     let mut batch = Vec::new();
-    let (mut matches, mut searched, mut with_match) = (0usize, 0usize, 0usize);
-    let unreadable = std::thread::scope(|scope| {
+    let mut matches = 0usize;
+    std::thread::scope(|scope| {
         scope.spawn(move || walk(folder, request, run, paths));
         let readers = scope.spawn(move || read_all(queue, run, found));
         let mut sent = Instant::now();
@@ -813,21 +807,18 @@ pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Reg
             if !current(run) {
                 break;
             }
-            searched += 1;
-            let before = matches;
             for (i, (label, text)) in document.lines.iter().enumerate() {
                 let spans: Vec<_> = pattern.find_iter(text).map(|m| (m.start(), m.end())).collect();
                 if !spans.is_empty() {
-                    batch.push(as_ripgrep(&document.path, i + 1..i + 2, label, text, &spans));
+                    batch.push(text_match(&document.path, i + 1, label, text, &spans));
                     matches += 1;
                     if matches >= max {
                         break;
                     }
                 }
             }
-            with_match += usize::from(matches > before);
             if !batch.is_empty() && (batch.len() >= 1000 || sent.elapsed() >= Duration::from_millis(50)) {
-                send(std::mem::take(&mut batch));
+                send(TextSaid::Matches(std::mem::take(&mut batch)));
                 sent = Instant::now();
             }
             if matches >= max {
@@ -835,20 +826,12 @@ pub fn search(run: u64, folder: &Path, request: &DocSearch, pattern: &regex::Reg
                 break;
             }
         }
-        readers.join().unwrap_or(0)
+        let _ = readers.join();
     });
-    let elapsed = started.elapsed();
-    batch.push(
-        serde_json::json!({
-            "type": "summary",
-            "data": {
-                "elapsed_total": { "secs": elapsed.as_secs(), "nanos": elapsed.subsec_nanos(), "human": format!("{:.3}s", elapsed.as_secs_f64()) },
-                "stats": { "searches": searched, "searches_with_match": with_match, "matched_lines": matches, "unreadable": unreadable },
-            }
-        })
-        .to_string(),
-    );
-    send(batch);
+    if !batch.is_empty() {
+        send(TextSaid::Matches(batch));
+    }
+    send(TextSaid::Summary { elapsed_ms: Some(started.elapsed().as_secs_f64() * 1000.) });
 }
 
 #[cfg(test)]
@@ -918,18 +901,15 @@ mod tests {
         assert!(pattern(&search("c.t|dog", false, true, true)).unwrap().is_match("the dog"));
         assert!(pattern(&search("[", false, false, true)).is_err());
 
-        let json: serde_json::Value = serde_json::from_str(&as_ripgrep(Path::new(r"C:\d\a.pdf"), 7..8, "p. 2", "find é here", &[(5, 7)])).unwrap();
+        let found = text_match(Path::new(r"C:\d\a.pdf"), 7, "p. 2", "find é here", &[(5, 7)]);
         assert_eq!(
-            (json["data"]["line_number"].as_u64(), json["data"]["label"].as_str(), json["data"]["submatches"][0]["match"]["text"].as_str(), json["data"]["lines"]["text"].as_str()),
-            (Some(7), Some("p. 2"), Some("é"), Some("find é here\n"))
+            found,
+            crate::TextMatch { path: r"C:\d\a.pdf".into(), text: Some("find é here\n".into()), line_number: Some(7), hits: vec![(5, 7)], label: Some("p. 2".into()) }
         );
-        assert!(json["data"].get("line_count").is_none());
+        assert_eq!(&found.text.as_deref().unwrap()[5..7], "é");
         // A text file's line (the content index's) has no label: the window shows its number.
-        let plain: serde_json::Value = serde_json::from_str(&as_ripgrep(Path::new(r"C:\d\a.txt"), 3..4, "", "the needle", &[(4, 10)])).unwrap();
-        assert!(plain["data"]["label"].is_null());
-        assert_eq!(plain["data"]["line_number"].as_u64(), Some(3));
-        let passage: serde_json::Value = serde_json::from_str(&as_ripgrep(Path::new(r"C:\d\a.pdf"), 7..10, "p. 2 · 61%", "three lines", &[])).unwrap();
-        assert_eq!((passage["data"]["line_number"].as_u64(), passage["data"]["line_count"].as_u64()), (Some(7), Some(3)));
+        let plain = text_match(Path::new(r"C:\d\a.txt"), 3, "", "the needle", &[(4, 10)]);
+        assert_eq!((plain.label, plain.line_number), (None, Some(3)));
     }
 
     #[test]

@@ -147,10 +147,7 @@ pub use actions_types::*;
 pub use archive_types::*;
 pub use compare::{compare_listings, Comparison, RowDiffs};
 pub use find_types::{FindNotice, FindOptions, Found, SearchIndex, Wider};
-pub use inside::{
-    can_search_inside, inside_filters, inside_unasked, inside_words, InsideEngine, InsideRequest,
-    RawEvent as InsideEvent,
-};
+pub use inside::{can_search_inside, inside_filters, inside_unasked, inside_words, InsideEngine, InsideRequest};
 pub use memory::Memory;
 pub(crate) use model::let_go;
 pub use model::Explorer;

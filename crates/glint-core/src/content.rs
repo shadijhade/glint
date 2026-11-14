@@ -640,8 +640,8 @@ pub struct ContentSearch {
     pub path: String,
 }
 
-/// A Text search answered by the content index: its matches arrive as `search-event`s, as ripgrep's
-/// JSON lines, then a summary with how long it took. Returns the folder as searched.
+/// A Text search answered by the content index: its matches arrive as `Event::Search`es, then a summary with how
+/// long it took. Returns the folder as searched.
 pub async fn run_content_search(window: Window, request: ContentSearch, search_id: String, max_results: Option<usize>) -> Result<String, String> {
     blocking(move || {
         let content = CONTENT.get().cloned().ok_or("Content indexing isn't on")?;
@@ -652,30 +652,16 @@ pub async fn run_content_search(window: Window, request: ContentSearch, search_i
             Some(n) => n,
         };
         let found = content.search(&request.query, &folder, max);
-        let emit = |kind: &str, lines: Vec<String>| {
-            window.emit(crate::host::Event::Search(crate::SearchEvent { id: search_id.clone(), kind: kind.into(), lines }));
-        };
-        let mut batch = Vec::new();
-        let mut matches = 0;
-        for (path, lines) in &found {
-            for (label, number, text, spans) in lines {
-                batch.push(crate::doctext::as_ripgrep(Path::new(path), *number..*number + 1, label, text, spans));
-                matches += 1;
-            }
+        let emit = |said: crate::TextSaid| window.emit(crate::host::Event::Search(crate::SearchEvent { id: search_id.clone(), said }));
+        let matches: Vec<crate::TextMatch> = found
+            .iter()
+            .flat_map(|(path, lines)| lines.iter().map(move |(label, number, text, spans)| crate::doctext::text_match(Path::new(path), *number, label, text, spans)))
+            .collect();
+        if !matches.is_empty() {
+            emit(crate::TextSaid::Matches(matches));
         }
-        let elapsed = started.elapsed();
-        batch.push(
-            serde_json::json!({
-                "type": "summary",
-                "data": {
-                    "elapsed_total": { "secs": elapsed.as_secs(), "nanos": elapsed.subsec_nanos(), "human": format!("{:.3}s", elapsed.as_secs_f64()) },
-                    "stats": { "searches": content.status.lock().unwrap().files, "searches_with_match": found.len(), "matches": matches, "matched_lines": matches, "engine": "index" },
-                }
-            })
-            .to_string(),
-        );
-        emit("data", batch);
-        emit("finished", Vec::new());
+        emit(crate::TextSaid::Summary { elapsed_ms: Some(started.elapsed().as_secs_f64() * 1000.) });
+        emit(crate::TextSaid::Finished);
         Ok(folder)
     })
     .await
