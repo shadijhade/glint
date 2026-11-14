@@ -17,7 +17,7 @@ use crate::core_bridge::{self, CoreEvent};
 use crate::state::UiState;
 use glint_model::columns::{folder_kind_of, in_order, ColumnId, FolderKind, FolderPlace};
 use glint_model::entries::{FileEntry, Sort};
-use glint_model::grid::{zoom_tiles, TileSize};
+use glint_model::grid::zoom_tiles;
 use glint_model::groups::GroupBy;
 use glint_model::paths::{is_gallery, is_recent, is_recycle_bin, same_path, THIS_PC};
 use glint_model::store::{FolderViewPatch, Settings, StartFolder};
@@ -53,14 +53,8 @@ pub(super) struct Prefs {
     pub list_columns: Vec<ColumnId>,
     pub restore_tabs: bool,
     pub start_folder: StartFolder,
-    pub zoxide: bool,
-    pub tile_size: TileSize,
     /// Copies and moves go to Glint's copy queue rather than Windows' dialog.
     pub copy_queue: bool,
-    /// The queue reads copies back and compares them with their originals.
-    pub verify_copies: bool,
-    /// Windows asks before it deletes.
-    pub confirm_delete: bool,
     /// Searches by name follow .gitignore files (fd's alone).
     pub find_respect_ignore: bool,
     /// Names and globs a search skips.
@@ -88,11 +82,7 @@ impl Prefs {
             list_columns: settings.list_columns.clone(),
             restore_tabs: settings.restore_tabs,
             start_folder: settings.start_folder,
-            zoxide: settings.zoxide,
-            tile_size: settings.tile_size,
             copy_queue: settings.copy_queue,
-            verify_copies: settings.verify_copies,
-            confirm_delete: settings.confirm_delete,
             find_respect_ignore: settings.find_respect_ignore,
             find_exclusions: settings.find_exclusions.clone(),
             find_max_results: settings.find_max_results,
@@ -107,6 +97,14 @@ impl Prefs {
         match cx.try_global::<UiState>() {
             Some(ui) => Prefs::of(&ui.settings),
             None => Prefs::of(&Settings::default()),
+        }
+    }
+
+    /// One setting, read without copying the others ([`Prefs::read`] copies the column and exclusion lists).
+    pub fn one<T>(cx: &App, pick: impl FnOnce(&Settings) -> T) -> T {
+        match cx.try_global::<UiState>() {
+            Some(ui) => pick(&ui.settings),
+            None => pick(&Settings::default()),
         }
     }
 }
@@ -443,7 +441,7 @@ impl Explorer {
     /// Ctrl+wheel, Ctrl+= and Ctrl+- in a grid: bigger tiles (`steps` up) or smaller ones, in every grid; 0 for
     /// medium again (`zoomGrid`).
     pub fn zoom_grid(&mut self, steps: i64, cx: &mut Context<Self>) {
-        let current = Prefs::read(cx).tile_size;
+        let current = Prefs::one(cx, |s| s.tile_size);
         let wanted = if steps != 0 {
             zoom_tiles(current.as_str(), steps)
         } else {

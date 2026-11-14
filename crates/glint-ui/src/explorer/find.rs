@@ -179,7 +179,7 @@ impl Explorer {
     /// than the app, as fd answers them until it's updated. Until where instant search stands is known (see
     /// [`Explorer::refresh_search_index`]) nothing is the index's alone.
     pub fn finds_as_typed(&self, query: &str, path: &str, cx: &App) -> bool {
-        if Prefs::read(cx).find_respect_ignore || glint_model::entries::has_prop_filter(query) {
+        if Prefs::one(cx, |s| s.find_respect_ignore) || glint_model::entries::has_prop_filter(query) {
             return false;
         }
         let outdated = self.search_index().is_some_and(|index| index.outdated);

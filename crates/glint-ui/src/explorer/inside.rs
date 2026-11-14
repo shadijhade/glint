@@ -652,9 +652,7 @@ impl Explorer {
         if let Some(elapsed) = core_elapsed {
             run.inside.elapsed = elapsed;
         }
-        let limit = Prefs::read(cx)
-            .inside_max_results
-            .and_then(|max| usize::try_from(max).ok());
+        let limit = Prefs::one(cx, |s| s.max_results).and_then(|max| usize::try_from(max).ok());
         if let Some(error) = ended.clone() {
             run.inside.running = false;
             if run.inside.elapsed == 0. {
