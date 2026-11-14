@@ -54,16 +54,27 @@ fn tell(channel: &Channel<FindEvent>, event: FindEvent) {
 #[derive(Clone, Default)]
 pub struct Finds(Arc<Mutex<HashMap<String, Run>>>);
 
-/// One search: the flag that stops the index's answer, and fd's process.
+/// One search: the flag that stops the index's answer, what ends its wait for the service at once, and fd's
+/// process.
 #[derive(Clone, Default)]
 struct Run {
     stop: Arc<AtomicBool>,
+    index: Arc<IndexCancel>,
     fd: Slot,
 }
+
+#[cfg(windows)]
+type IndexCancel = shadui_index::client::Cancel;
+#[cfg(not(windows))]
+#[derive(Default)]
+struct IndexCancel;
 
 impl Run {
     fn end(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        // The service's answer isn't waited for: its pipe closes now, and the service stops scanning for it.
+        #[cfg(windows)]
+        self.index.cancel();
         self.fd.kill();
     }
 }
@@ -246,7 +257,7 @@ struct Answered {
 
 /// Asks the index service. None when it isn't running, isn't allowed, or covers none of `roots`.
 #[cfg(windows)]
-fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &AtomicBool, out: &mut Out) -> Option<Answered> {
+fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &AtomicBool, cancel: &IndexCancel, out: &mut Out) -> Option<Answered> {
     use shadui_index::client::{self, Event};
     let request = shadui_index::proto::SearchRequest {
         query: query.to_string(),
@@ -259,7 +270,7 @@ fn search_index(roots: &[String], query: &str, options: &FindOptions, stop: &Ato
     };
     let mut answered = None;
     // A failure halfway keeps what arrived; one before the plan leaves everything to fd.
-    let _ = client::search(&request, |event| {
+    let _ = client::search_until(&request, cancel, |event| {
         if stop.load(Ordering::SeqCst) {
             return false;
         }
@@ -324,7 +335,7 @@ fn any_service_reads(terms: &[String], filters: &Filters) -> bool {
 }
 
 #[cfg(not(windows))]
-fn search_index(_: &[String], _: &str, _: &FindOptions, _: &AtomicBool, _: &mut Out) -> Option<Answered> {
+fn search_index(_: &[String], _: &str, _: &FindOptions, _: &AtomicBool, _: &IndexCancel, _: &mut Out) -> Option<Answered> {
     None
 }
 
@@ -471,7 +482,7 @@ pub async fn find_files(
             }
             // .gitignore rules are fd's alone; anything else goes to the index first.
             if !options.respect_ignore && index_reads {
-                if let Some(answered) = search_index(&roots, &query, &options, stop, &mut out) {
+                if let Some(answered) = search_index(&roots, &query, &options, stop, &run.index, &mut out) {
                     (fd_roots, limited, fuzzy) = (answered.skipped, answered.limited, answered.fuzzy);
                 }
             }

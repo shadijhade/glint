@@ -24,6 +24,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::FILETIME;
 use windows::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
 
+/// What a search for a client that has gone ends with: the error a write to its pipe gets, which the pipe's
+/// server says nothing of.
+const ERROR_BROKEN_PIPE: i32 = windows::Win32::Foundation::ERROR_BROKEN_PIPE.0 as i32;
+
 /// How often an idle journal is checked.
 const POLL: Duration = Duration::from_millis(250);
 /// After a scan, changes younger than this are read again: the disk's copy of the MFT can lag.
@@ -605,9 +609,13 @@ impl Engine {
         Status { version: crate::VERSION.into(), volumes }
     }
 
-    /// Answers a name search: a plan, result frames, then a summary.
-    pub fn search(&self, request: &SearchRequest, out: &mut dyn Write) -> io::Result<()> {
+    /// Answers a name search: a plan, result frames, then a summary. Ended as soon as `gone` says the client has
+    /// gone: an app typing fast closes the connection of the search a newer key press replaced, and that scan (all
+    /// of every drive's names, then the ranking, under the tree's read lock) would otherwise run to its end, and
+    /// its pipe be found closed only at the first write. Ends with a broken-pipe error, as such a write would.
+    pub fn search_until(&self, request: &SearchRequest, out: &mut dyn Write, gone: &(dyn Fn() -> bool + Sync)) -> io::Result<()> {
         let started = Instant::now();
+        let check = || if gone() { Err(io::Error::from_raw_os_error(ERROR_BROKEN_PIPE)) } else { Ok(()) };
         let (names, filters) = match query::parse(&request.query) {
             Ok(parsed) => parsed,
             Err(message) => return proto::write_message(out, &Message::Error { message }),
@@ -647,7 +655,7 @@ impl Engine {
             .unwrap_or_default();
         let mut send = |matcher: &NameMatcher| -> io::Result<(usize, bool)> {
             if request.rank {
-                return send_ranked(&targets, matcher, &filters, now, request.hidden, &excludes, word.as_bytes(), max, out);
+                return send_ranked(&targets, matcher, &filters, now, request.hidden, &excludes, word.as_bytes(), max, gone, out);
             }
             let (mut count, mut limited) = (0, false);
             for (slot, scope) in &targets {
@@ -655,12 +663,14 @@ impl Engine {
                     limited = true;
                     break;
                 }
+                check()?;
                 // Results are encoded under the lock (ids are only valid until the next change), then sent.
                 let (frames, found) = {
                     let tree = slot.tree.read().unwrap();
                     let search = Search { matcher, filters: &filters, now, scope: *scope, hidden: request.hidden, excludes: &excludes };
-                    collect_hits(&tree, slot.letter, &search, max - count)
+                    collect_hits_until(&tree, slot.letter, &search, max - count, gone)
                 };
+                check()?;
                 let taken = found.min(max - count);
                 limited |= taken < found;
                 count += taken;
@@ -674,6 +684,7 @@ impl Engine {
         // Nothing as typed: close matches, when asked for and a word is long enough to have typos.
         let near = if count == 0 && request.fuzzy { NameMatcher::near(names) } else { None };
         if let Some(near) = &near {
+            check()?;
             (count, limited) = send(near)?;
         }
         proto::write_message(out, &Message::Done { count: count as u64, limited, elapsed: ms(started), fuzzy: near.is_some() })
@@ -814,15 +825,19 @@ fn now_at(tree: &Tree, file: u64, letter: char, dirs: &mut HashMap<u32, String>)
 /// Searches one drive and encodes up to `max` results into frames; also returns how many matched.
 /// A ranked search's answer: every drive's matches ranked, and the best `max` of them all sent, best first.
 /// How many were sent, and whether there were more.
+/// Gives up (a broken-pipe error) once `gone` says the client has gone, between drives and before ranking.
 #[allow(clippy::too_many_arguments)]
-fn send_ranked(targets: &[(Arc<Slot>, u32)], matcher: &NameMatcher, filters: &Filters, now: i64, hidden: bool, excludes: &Excludes, word: &[u8], max: usize, out: &mut dyn Write) -> io::Result<(usize, bool)> {
+fn send_ranked(targets: &[(Arc<Slot>, u32)], matcher: &NameMatcher, filters: &Filters, now: i64, hidden: bool, excludes: &Excludes, word: &[u8], max: usize, gone: &(dyn Fn() -> bool + Sync), out: &mut dyn Write) -> io::Result<(usize, bool)> {
+    let check = || if gone() { Err(io::Error::from_raw_os_error(ERROR_BROKEN_PIPE)) } else { Ok(()) };
     let mut total = 0;
     let mut drives = Vec::with_capacity(targets.len());
     for (slot, scope) in targets {
+        check()?;
         // Ranked and encoded under the lock: ids are only valid until the next change.
         let tree = slot.tree.read().unwrap();
         let search = Search { matcher, filters, now, scope: *scope, hidden, excludes };
-        let found = tree.search(&search);
+        let found = tree.search_until(&search, gone);
+        check()?;
         total += found.len();
         drives.push(encode_ranked(&tree, &tree.rank(&found, &search, word, max), &format!("{}:\\", slot.letter)));
     }
@@ -855,7 +870,15 @@ fn encode_ranked(tree: &Tree, ranked: &[Rank], drive: &str) -> (Vec<u8>, Vec<(Ra
 }
 
 pub(crate) fn collect_hits(tree: &Tree, letter: char, search: &Search, max: usize) -> (Vec<Vec<u8>>, usize) {
-    let found = tree.search(search);
+    collect_hits_until(tree, letter, search, max, &|| false)
+}
+
+/// [`collect_hits`], with a scan that `gone` can end (see `Tree::search_until`); nothing is encoded then.
+fn collect_hits_until(tree: &Tree, letter: char, search: &Search, max: usize, gone: &(dyn Fn() -> bool + Sync)) -> (Vec<Vec<u8>>, usize) {
+    let found = tree.search_until(search, gone);
+    if gone() {
+        return (Vec::new(), 0);
+    }
     let drive = format!("{letter}:\\");
     let frames = found[..found.len().min(max)].par_chunks(BATCH).map(|ids| encode_hits(tree, ids, &drive)).collect();
     (frames, found.len())
