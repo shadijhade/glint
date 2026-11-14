@@ -12,7 +12,7 @@
 
 use super::types::{Hit, Hits};
 use glint_model::entries::{entry_order, is_hidden, matcher, FileEntry, GitMarks, SizeOf, Sort, SortKey};
-use glint_model::groups::{group_rows, GroupBy, GroupHeader, Grouped, SizeOf as GroupSizeOf};
+use glint_model::groups::{group_order, GroupBy, GroupHeader, GroupedOrder, SizeOf as GroupSizeOf};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -455,26 +455,34 @@ pub fn build_rows(entries: &Arc<[FileEntry]>, spec: &RowSpec, now: i64) -> Rows 
             None => sorted,
         };
     }
-    let flat: Vec<FileEntry> = sorted.iter().cloned().collect();
+    // Grouped as an order over the listing's own entries: no row is copied.
+    let shown: Vec<&FileEntry> = sorted.iter().collect();
     let group_size = spec.sizes.as_ref().map(|s| {
         let sizes = s.sizes.clone();
         move |e: &FileEntry| -> Option<u64> { sizes.get(&e.name).copied() }
     });
-    let Grouped {
-        rows,
+    let GroupedOrder {
+        order: picked,
         headers,
         lines,
         line_of,
-    } = group_rows(
-        &flat,
+    } = group_order(
+        &shown,
         spec.group,
         now,
         group_size.as_ref().map(|f| f as &GroupSizeOf),
         marks,
     );
+    let in_entries = |at: usize| -> u32 {
+        match &sorted.order {
+            Some(order) => order.get(at).copied().unwrap_or(u32::MAX),
+            None => u32::try_from(at).unwrap_or(u32::MAX),
+        }
+    };
+    let order: Arc<[u32]> = picked.into_iter().map(in_entries).collect();
     let grouped = Rows {
-        entries: Arc::from(rows),
-        order: None,
+        entries: entries.clone(),
+        order: Some(order),
         groups: Some(Arc::new(GroupLayout {
             headers,
             lines,
