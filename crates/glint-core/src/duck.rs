@@ -12,7 +12,6 @@ use crate::actions::{self, Job, Output, Progress, Report};
 use crate::data_lens::TableColumn;
 use crate::fsx::blocking;
 use crate::sql::{SqlAnswer, SqlTables};
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,8 +170,7 @@ pub async fn duck_run(paths: Vec<String>, sql: String) -> Result<SqlAnswer, Stri
 }
 
 /// A column described: its type, how many values are missing, distinct (about), and the spread of numbers.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ColumnProfile {
     pub name: String,
     pub kind: String,
@@ -189,8 +187,7 @@ pub struct ColumnProfile {
     pub q75: String,
 }
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct Profile {
     pub rows: u64,
     pub columns: Vec<ColumnProfile>,
@@ -242,8 +239,7 @@ fn short_number(text: &str) -> String {
     }
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DataFormat {
     Csv,
     Parquet,

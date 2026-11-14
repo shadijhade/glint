@@ -3,13 +3,11 @@
 //! time without external crates.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct SqliteObject {
     /** "table", "index", "view", or "trigger". */
     pub kind: String,
@@ -19,8 +17,7 @@ pub struct SqliteObject {
     pub sql: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct SqliteInfo {
     pub page_size: u32,
     pub page_count: u32,
@@ -34,16 +31,14 @@ pub struct SqliteInfo {
     pub elapsed_ms: f64,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TableColumn {
     pub name: String,
     /** "number", "boolean", or "text". */
     pub kind: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TablePreview {
     /** "CSV", "TSV", "DSV", or "JSONL". */
     pub format: String,

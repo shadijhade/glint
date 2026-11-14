@@ -6,7 +6,6 @@
 
 use crate::actions::{self, Job, Output, Progress, Report};
 use crate::fsx::blocking;
-use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,8 +19,7 @@ pub fn pdf_cancel() {
     STOP.store(true, Ordering::SeqCst);
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PdfTask {
     /// The PDFs, in the order given, as one named `name` (without .pdf).
     Merge { name: String },
@@ -53,8 +51,7 @@ fn pdfcpu() -> Result<Command, String> {
 }
 
 /// What a PDF is: its pages and whether it's locked.
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PdfInfo {
     pub pages: u32,
     pub encrypted: bool,

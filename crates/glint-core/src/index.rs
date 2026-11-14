@@ -3,11 +3,9 @@
 //! nothing runs elevated unless the user turns it on here.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use crate::host::Window;
 
-#[derive(Serialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct IndexInfo {
     /// "on", "off" (not installed), "stopped", "noAccess" (turned on for another user), "untrusted"
     /// (something else holds the service's pipe), or "unsupported" (not Windows).

@@ -6,7 +6,6 @@
 use crate::fsx::{entry_for_path, ms_since, Entry};
 use crate::proc::Slot;
 use crate::AppState;
-use serde::Deserialize;
 use shadui_index::query::{parse, without_props, Filters, Kind};
 use std::io::{BufRead, BufReader, Read};
 use std::process::Stdio;
@@ -18,8 +17,7 @@ use std::time::{Duration, Instant};
 use crate::host::ipc::Channel;
 use crate::host::State;
 
-#[derive(Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct FindOptions {
     /// Include hidden and system files.
     pub hidden: bool,
@@ -30,11 +28,9 @@ pub struct FindOptions {
     pub max_results: Option<usize>,
     /// When nothing matches as typed, the index looks again with typos allowed (a word an edit or two
     /// from the start of a name's word); fd doesn't.
-    #[serde(default)]
     pub fuzzy: bool,
     /// The index sends the best `max_results` of every drive's matches, best first, instead of the first
     /// ones it comes to (quick search's and Files' order; fd's stays its own).
-    #[serde(default)]
     pub rank: bool,
 }
 

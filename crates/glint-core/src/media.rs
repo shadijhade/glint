@@ -8,7 +8,6 @@ use crate::fsx::blocking;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use lofty::prelude::*;
 use nom_exif::{EntryValue, ExifDateTime, ExifTag, MediaKind, MediaParser, MediaSource, TrackInfoTag};
-use serde::Serialize;
 use shadui_index::query::{Prop, Taken};
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,8 +24,7 @@ const SONGS: &[&str] = &["mp3", "flac", "m4a", "m4b", "ogg", "oga", "opus", "wav
 const MAX_COVER: usize = 1 << 20;
 
 /// What's worth knowing about a photo, video or song.
-#[derive(Serialize, Default, Debug, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct MediaDetails {
     /// Label and value, in the order the preview shows them.
     pub rows: Vec<[String; 2]>,
@@ -47,7 +45,6 @@ pub struct MediaDetails {
     /// A video's or song's length, in seconds.
     pub duration: Option<f64>,
     /// The photo's EXIF turns it a quarter (orientations 5 to 8): its width and height swap.
-    #[serde(skip)]
     turned: bool,
 }
 

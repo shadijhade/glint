@@ -3,11 +3,9 @@
 //! the storage stack's own counters and temperature, an NVMe drive's health log, a SATA drive's SMART
 //! table and its own failure prediction.
 
-use serde::Serialize;
 
 /// One physical disk, and the drive letters on it.
-#[derive(Serialize, Debug, Default, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Clone)]
 pub struct DriveHealth {
     /// \\.\PhysicalDriveN's N.
     pub disk: u32,

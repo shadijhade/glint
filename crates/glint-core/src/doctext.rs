@@ -384,8 +384,7 @@ fn unescape_url(href: &str) -> String {
 // The search: documents found in a folder, read by workers (or from memory), matched here.
 
 /// A Documents search as Text mode asks for it.
-#[derive(Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct DocSearch {
     pub query: String,
     pub path: String,
@@ -393,10 +392,8 @@ pub struct DocSearch {
     pub whole_word: bool,
     pub regex: bool,
     pub exclusions: Vec<String>,
-    #[serde(default)]
     pub everything: bool,
     /// Pictures too: their text, read by Windows' OCR (ocr.rs).
-    #[serde(default)]
     pub ocr: bool,
 }
 

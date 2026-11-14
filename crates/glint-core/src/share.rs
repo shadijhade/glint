@@ -9,7 +9,6 @@
 
 use crate::fsx::blocking;
 use crate::proc::Job;
-use serde::Serialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -171,8 +170,7 @@ pub(crate) fn qr_svg(text: &str) -> String {
         .unwrap_or_default()
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SendEvent {
     /// What's sent has been read: the ticket that receives it, and that ticket as a QR code (an SVG).
     Ready { ticket: String, size: String, qr: String },
@@ -230,8 +228,7 @@ fn send_said(line: &str, size: &mut String) -> Option<SendEvent> {
     Some(SendEvent::Ready { ticket, size: size.clone(), qr })
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ReceiveEvent {
     /// What's coming: how many files, and their size (as sendme says it, and in bytes).
     Getting { files: u64, size: String, bytes: u64 },

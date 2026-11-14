@@ -6,7 +6,7 @@
 //! file and compressed with each algorithm, so the estimate is the real algorithm's. Undo takes the
 //! compression off the files that were compressed.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -34,8 +34,7 @@ const PACKED: &[&str] = &[
 ];
 
 /// WOF's algorithms, lightest first.
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Algorithm {
     Xpress4k,
     Xpress8k,
@@ -94,8 +93,7 @@ pub struct Estimate {
     pub after: u64,
 }
 
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub done: usize,
     pub total: usize,

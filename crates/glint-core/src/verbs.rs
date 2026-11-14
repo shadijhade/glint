@@ -9,11 +9,9 @@
 //! exactly what turning it on added, and puts back what folders opened with before.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use crate::host::AppHandle;
 
-#[derive(Serialize, Default, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default, Debug, PartialEq)]
 pub struct Integration {
     /// Whether this copy can turn them on: the setup program or Scoop installed it.
     pub available: bool,

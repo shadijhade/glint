@@ -11,7 +11,6 @@
 
 use crate::fsx::blocking;
 use crate::proc;
-use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Stdio};
@@ -262,8 +261,7 @@ pub fn item_of(value: &Value) -> Option<(String, bool, u64, i64)> {
 }
 
 /// A question rclone asks while setting a remote up, or one of a service's settings.
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Question {
     pub name: String,
     pub help: String,
@@ -279,8 +277,7 @@ pub struct Question {
     pub provider: String,
 }
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Example {
     pub value: String,
     pub help: String,
@@ -319,8 +316,7 @@ fn question(option: &Value) -> Question {
 }
 
 /// A kind of storage rclone reaches, and the settings it asks for first (the advanced ones aside).
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct Provider {
     /// Its type in rclone: "drive", "onedrive", "s3"…
     pub name: String,
@@ -364,8 +360,7 @@ pub async fn rclone_providers() -> Result<Vec<Provider>, String> {
 }
 
 /// A step of setting a remote up: rclone's next question, or (with no question and no state) done.
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct Step {
     pub state: String,
     pub question: Option<Question>,
@@ -479,8 +474,7 @@ pub fn rclone_authorize_cancel() {
 }
 
 /// A remote in rclone's configuration: its name, type ("drive") and, for S3, its service ("AWS").
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Remote {
     pub name: String,
     pub kind: String,
@@ -504,7 +498,7 @@ pub async fn rclone_delete(name: String) -> Result<(), String> {
 }
 
 /// How full a remote is, where its service says.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Space {
     pub total: Option<u64>,
     pub used: Option<u64>,
@@ -525,8 +519,7 @@ pub async fn rclone_about(remote: String, root: String) -> Result<Option<Space>,
 
 /// rclone on this PC: whether it's there, its version, where its configuration is, and whether that's
 /// encrypted and still locked.
-#[derive(Serialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct Status {
     pub installed: bool,
     pub version: Option<String>,

@@ -1,18 +1,16 @@
 //! File-system access for the explorer: one Win32 enumeration pass per folder (names, sizes,
 //! dates and attributes all come with it), natural folders-first sorting, drives and previews.
 
-use serde::Serialize;
 #[cfg(test)]
 use std::cmp::Ordering;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Entry {
     pub name: String,
     /// Full path. Only search results carry it; a listing's entries all live in its folder.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub dir: bool,
     pub size: u64,
@@ -37,8 +35,7 @@ pub fn ms_since(start: Instant) -> f64 {
 
 /// Why a folder couldn't be listed. "denied": Windows doesn't let this user open it (the UI says so
 /// in the tab, with Get access unless it's on another computer); anything else is said in words.
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct ListError {
     pub kind: &'static str,
     pub message: String,
@@ -206,7 +203,6 @@ pub async fn count_dir(path: String) -> Result<Option<DirCounts>, String> {
 
 /// A folder in the sidebar's tree: its name, and whether it has folders of its own (None: not looked at,
 /// or too much in it to tell quickly).
-#[derive(Serialize)]
 pub struct Subfolder {
     pub name: String,
     pub children: Option<bool>,
@@ -329,7 +325,6 @@ pub struct InArchive {
 /// What a change inside an archive is answered with.
 pub const READ_ONLY: &str = "Archives open read-only in Glint. Copy items out of the archive to change them.";
 
-#[derive(Serialize)]
 pub struct Resolved {
     pub path: String,
     pub dir: bool,
@@ -890,7 +885,6 @@ fn portable_entry(name: String, meta: Option<&std::fs::Metadata>) -> Entry {
     Entry { name, path: None, dir, size: if dir { 0 } else { meta.map_or(0, |m| m.len()) }, modified, attrs }
 }
 
-#[derive(Serialize)]
 pub struct Drive {
     /// Root path, e.g. "C:\".
     pub path: String,
@@ -1035,7 +1029,6 @@ fn drives() -> Vec<Drive> {
     vec![Drive { path: "/".into(), label: "Root".into(), kind: "fixed", fs: String::new(), total: 0, free: 0 }]
 }
 
-#[derive(Serialize)]
 pub struct TextPreview {
     pub text: String,
     pub truncated: bool,

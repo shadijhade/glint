@@ -4,10 +4,8 @@
 //! looked up by the file's hash.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Signature {
     /// "valid", "unsigned", "invalid" (changed since it was signed, or a damaged signature),
     /// "untrusted" (by a certificate Windows doesn't trust), "expired", "revoked", or "unknown".

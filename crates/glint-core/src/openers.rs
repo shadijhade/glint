@@ -3,12 +3,10 @@
 //! PATH; and opening a folder or a file in one, the way it takes one.
 
 use crate::fsx::blocking;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Opener {
     pub id: &'static str,
     pub name: &'static str,
