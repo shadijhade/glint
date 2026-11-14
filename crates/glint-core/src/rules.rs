@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard, Once};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::host::{AppHandle, Emitter};
+use crate::host::{AppHandle, Event};
 
 /// A rule, as the app's settings keep it.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
@@ -391,7 +391,7 @@ fn note(mut done: Done, told: bool) -> Done {
     let excess = engine.log.len().saturating_sub(KEPT);
     engine.log.drain(..excess);
     if let Some(app) = engine.app.as_ref().filter(|_| told) {
-        let _ = app.emit("rule-did", &done);
+        app.emit(Event::RuleDid(done.clone()));
     }
     done
 }

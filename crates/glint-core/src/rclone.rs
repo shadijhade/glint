@@ -446,7 +446,7 @@ pub async fn rclone_authorize(window: Window, help: String) -> Result<String, St
             if !opened {
                 if let Some(at) = line.find("http://127.0.0.1:") {
                     let url: String = line[at..].chars().take_while(|c| !c.is_whitespace()).collect();
-                    let _ = window.emit("rclone-sign-in", url);
+                    window.emit(crate::host::Event::RcloneSignIn(url));
                     opened = true;
                 }
             }

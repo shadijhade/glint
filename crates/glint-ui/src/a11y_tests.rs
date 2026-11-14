@@ -917,7 +917,7 @@ fn a_searchs_results_with_lines_found_inside_files_and_the_disk_map_have_every_c
         ("finished", Vec::new()),
     ] {
         let event = inside_event(&id, kind, lines);
-        visual.update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.inside_heard(event, cx)));
+        visual.update(|_, cx| explorer::explorer(cx).update(cx, |e, cx| e.inside_heard(&event, cx)));
         settle(&mut visual);
     }
     // Both parts are there, each under its header, and the line under its file.

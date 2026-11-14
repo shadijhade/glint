@@ -577,7 +577,7 @@ pub async fn git_watch(window: Window, state: State<'_, RepoWatcher>, roots: Vec
                     std::thread::spawn(move || {
                         std::thread::sleep(Duration::from_millis(500));
                         pending.store(false, Ordering::SeqCst);
-                        let _ = window.emit("git-changed", root);
+                        window.emit(crate::host::Event::GitChanged(root));
                     });
                 }
             });

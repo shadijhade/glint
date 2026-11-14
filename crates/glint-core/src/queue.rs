@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::host::{AppHandle, Emitter};
+use crate::host::{AppHandle, Event};
 
 /// What went wrong with one file.
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -138,7 +138,7 @@ fn tell(now: bool) {
         (q.app.clone(), q.jobs.iter().map(|j| told(j)).collect::<Vec<_>>())
     };
     if let Some(app) = app {
-        let _ = app.emit("copy-queue", views);
+        app.emit(Event::CopyQueue(views));
     }
 }
 

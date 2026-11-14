@@ -394,7 +394,7 @@ fn core_dir_changed_rereads_the_tabs_showing_that_folder(cx: &mut TestAppContext
     assert_eq!(h.names(cx).len(), 2);
     h.disk.folder("C:\\b", vec![file("C:\\b", "b1.txt", 1, 1)]);
     // The event comes from core's watchers, with the folder's path (any case).
-    cx.update(|cx| crate::core_bridge::emit(cx, "dir-changed", serde_json::json!("c:\\B")));
+    cx.update(|cx| crate::core_bridge::emit(cx, crate::core_bridge::CoreEvent::DirChanged("c:\\B".into())));
     for _ in 0..50 {
         cx.run_until_parked();
         if h.names(cx).len() == 1 {
@@ -405,7 +405,7 @@ fn core_dir_changed_rereads_the_tabs_showing_that_folder(cx: &mut TestAppContext
     assert_eq!(h.names(cx), ["b1.txt"]);
     // Another folder's change is none of this tab's business.
     let before = h.disk.listed().len();
-    cx.update(|cx| crate::core_bridge::emit(cx, "dir-changed", serde_json::json!("C:\\a")));
+    cx.update(|cx| crate::core_bridge::emit(cx, crate::core_bridge::CoreEvent::DirChanged("C:\\a".into())));
     for _ in 0..10 {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
@@ -439,7 +439,7 @@ fn a_change_on_disk_does_not_take_the_tab_back_from_a_folder_being_opened(cx: &m
     cx.run_until_parked();
     // The folder being left changes meanwhile. Reading it again then would be the tab's newer navigation, and
     // the folder asked for would never open.
-    cx.update(|cx| crate::core_bridge::emit(cx, "dir-changed", serde_json::json!("C:\\")));
+    cx.update(|cx| crate::core_bridge::emit(cx, crate::core_bridge::CoreEvent::DirChanged("C:\\".into())));
     wait_for_a_read_to_wait(&h, cx);
     gate.close();
     assert!(
@@ -466,7 +466,7 @@ fn a_change_on_disk_does_not_take_the_tab_back_from_a_folder_being_opened(cx: &m
         .update(cx, |e, cx| e.navigate_task("C:\\gone", NavOptions::default(), cx));
     cx.run_until_parked();
     h.disk.folder("C:\\a", vec![file("C:\\a", "new.txt", 7, 7)]);
-    cx.update(|cx| crate::core_bridge::emit(cx, "dir-changed", serde_json::json!("C:\\a")));
+    cx.update(|cx| crate::core_bridge::emit(cx, crate::core_bridge::CoreEvent::DirChanged("C:\\a".into())));
     wait_for_a_read_to_wait(&h, cx);
     gate.close();
     assert!(!cx.foreground_executor().block_test(opening), "there is no such folder");

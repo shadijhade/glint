@@ -7,11 +7,10 @@
 
 use crate::platform::window_state::ProgressState;
 use crate::t;
-use glint_core::queue::{Failure, JobView, Made};
+use glint_core::queue::JobView;
 use glint_model::format::{format_count, format_size, plural};
 use glint_model::paths::{base_name, parent_path};
 use gpui_kit::SharedString;
-use serde_json::Value;
 
 /// `finished(job)`: done, cancelled or failed.
 pub fn finished(job: &JobView) -> bool {
@@ -195,61 +194,4 @@ pub fn taskbar(jobs: &[JobView]) -> (ProgressState, u64, u64) {
 pub fn taskbar_key(state: ProgressState, done: u64, total: u64) -> String {
     let steps = (done as f64 / total.max(1) as f64 * 200.0).round() as u64;
     format!("{state:?} {steps}")
-}
-
-// ---- core's word of the jobs ---------------------------------------------------------------------------
-
-/// The jobs in a "copy-queue" event's payload (an array of the camelCase objects `JobView` serializes to).
-/// `None` for any other payload; a job without an id is dropped, a missing field takes its default.
-pub fn jobs_from_json(payload: &Value) -> Option<Vec<JobView>> {
-    Some(payload.as_array()?.iter().filter_map(job_from_json).collect())
-}
-
-fn job_from_json(value: &Value) -> Option<JobView> {
-    let o = value.as_object()?;
-    let text = |key: &str| o.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-    let number = |key: &str| o.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let flag = |key: &str| o.get(key).and_then(Value::as_bool).unwrap_or(false);
-    let optional = |key: &str| o.get(key).and_then(Value::as_str).map(str::to_string);
-    let stamp = |key: &str| o.get(key).and_then(Value::as_i64);
-    let list = |key: &str| o.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
-    let pair = |item: &Value, a: &str, b: &str| {
-        let get = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-        (get(a), get(b))
-    };
-    Some(JobView {
-        id: o.get("id")?.as_u64()?,
-        kind: text("kind"),
-        sources: list("sources")
-            .iter()
-            .filter_map(|s| s.as_str().map(str::to_string))
-            .collect(),
-        dest: text("dest"),
-        verify: flag("verify"),
-        state: text("state"),
-        files: number("files"),
-        files_done: number("filesDone"),
-        bytes: number("bytes"),
-        bytes_done: number("bytesDone"),
-        verified: number("verified"),
-        current: optional("current"),
-        speed: o.get("speed").and_then(Value::as_f64).unwrap_or(0.0),
-        started: stamp("started"),
-        finished: stamp("finished"),
-        errors: list("errors")
-            .iter()
-            .map(|e| {
-                let (path, error) = pair(e, "path", "error");
-                Failure { path, error }
-            })
-            .collect(),
-        conflict: optional("conflict"),
-        made: list("made")
-            .iter()
-            .map(|m| {
-                let (from, to) = pair(m, "from", "to");
-                Made { from, to }
-            })
-            .collect(),
-    })
 }

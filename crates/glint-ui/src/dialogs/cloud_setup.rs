@@ -243,7 +243,7 @@ pub trait Backend: Send + Sync {
     /// Answers rclone's question at `state` (`rclone_config_answer`).
     fn config_answer(&self, name: String, state: String, answer: String) -> Fut<Step>;
     /// A browser sign-in as rclone's question (its `help`) says: the answer to give. The page's address comes
-    /// as the core event `rclone-sign-in` (see [`SIGN_IN_PAGE`]).
+    /// as core's `RcloneSignIn` event.
     fn authorize(&self, help: String) -> Fut<String>;
     /// Stops a browser sign-in that waits (`rclone_authorize_cancel`).
     fn authorize_cancel(&self);
@@ -252,9 +252,6 @@ pub trait Backend: Send + Sync {
     /// Tries the connection as Glint will open it: what is at its top (`remote_test`).
     fn test(&self, connection: RemoteConnection) -> Fut<String>;
 }
-
-/// The core event that carries the sign-in page's address.
-pub const SIGN_IN_PAGE: &str = "rclone-sign-in";
 
 /// Waits for a core call and flattens the two layers of failure (the task panicking, the call failing).
 fn flat<T: Send + 'static>(call: impl Future<Output = Result<T, String>> + Send + 'static) -> Fut<T> {
@@ -1026,13 +1023,10 @@ impl CloudSetup {
         );
         // The sign-in page rclone has ready is opened in the browser.
         if let Some(subscription) = core_bridge::subscribe(cx, |this, event, cx| {
-            if event.name != SIGN_IN_PAGE {
-                return;
-            }
-            let Some(url) = event.payload.as_str().map(str::to_string) else {
+            let core_bridge::CoreEvent::RcloneSignIn(url) = event else {
                 return;
             };
-            if let Some(url) = this.model.update(cx, |m, cx| m.sign_in_page(url, cx)) {
+            if let Some(url) = this.model.update(cx, |m, cx| m.sign_in_page(url.clone(), cx)) {
                 cx.open_url(&url);
             }
         }) {

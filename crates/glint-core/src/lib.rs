@@ -242,11 +242,13 @@ pub async fn diagnostics(app: crate::host::AppHandle) -> Result<String, String> 
     .await
 }
 
-#[derive(Clone, serde::Serialize)]
+/// What a search inside files says as it goes: the search it belongs to, its kind ("data", "error", "finished")
+/// and ripgrep's JSON lines (an error's words, for "error").
+#[derive(Clone, Debug)]
 pub struct SearchEvent {
-    pub(crate) id: String,
-    pub(crate) r#type: String,
-    pub(crate) lines: Vec<String>,
+    pub id: String,
+    pub kind: String,
+    pub lines: Vec<String>,
 }
 
 /// Text searches in the order they were asked for: one that took longer to start (its folder on a share
@@ -463,8 +465,8 @@ pub fn doc_search(window: Window, request: doctext::DocSearch, search_id: String
     };
     let base = std::path::PathBuf::from(&folder);
     thread::spawn(move || {
-        let emit = |r#type: &str, lines: Vec<String>| {
-            let _ = window.emit("search-event", SearchEvent { id: search_id.clone(), r#type: r#type.into(), lines });
+        let emit = |kind: &str, lines: Vec<String>| {
+            window.emit(host::Event::Search(SearchEvent { id: search_id.clone(), kind: kind.into(), lines }));
         };
         doctext::search(run, &base, &request, &pattern, max, |lines| emit("data", lines));
         emit("finished", Vec::new());
@@ -512,14 +514,11 @@ pub fn stream_search(window: Window, search_id: String, mut child: std::process:
             batch.push(l);
 
             if batch.len() >= 1000 || last_emit.elapsed() >= Duration::from_millis(50) {
-                let _ = window.emit(
-                    "search-event",
-                    SearchEvent {
-                        id: search_id.clone(),
-                        r#type: "data".to_string(),
-                        lines: std::mem::take(&mut batch),
-                    },
-                );
+                window.emit(host::Event::Search(SearchEvent {
+                    id: search_id.clone(),
+                    kind: "data".to_string(),
+                    lines: std::mem::take(&mut batch),
+                }));
                 last_emit = Instant::now();
             }
 
@@ -534,38 +533,21 @@ pub fn stream_search(window: Window, search_id: String, mut child: std::process:
         }
 
         if !batch.is_empty() {
-            let _ = window.emit(
-                "search-event",
-                SearchEvent {
-                    id: search_id.clone(),
-                    r#type: "data".to_string(),
-                    lines: batch,
-                },
-            );
+            window.emit(host::Event::Search(SearchEvent { id: search_id.clone(), kind: "data".to_string(), lines: batch }));
         }
 
         // Surface real failures (e.g. an invalid regex); per-file errors are silenced by --no-messages.
         let errors = stderr_reader.join().unwrap_or_default();
         search.finish(pid);
         if total_matches == 0 && !errors.trim().is_empty() {
-            let _ = window.emit(
-                "search-event",
-                SearchEvent {
-                    id: search_id.clone(),
-                    r#type: "error".to_string(),
-                    lines: vec![errors.trim().to_string()],
-                },
-            );
+            window.emit(host::Event::Search(SearchEvent {
+                id: search_id.clone(),
+                kind: "error".to_string(),
+                lines: vec![errors.trim().to_string()],
+            }));
         }
 
-        let _ = window.emit(
-            "search-event",
-            SearchEvent {
-                id: search_id,
-                r#type: "finished".to_string(),
-                lines: vec![],
-            },
-        );
+        window.emit(host::Event::Search(SearchEvent { id: search_id, kind: "finished".to_string(), lines: vec![] }));
     });
     Ok(())
 }

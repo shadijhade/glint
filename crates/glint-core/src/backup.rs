@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::host::ipc::Channel;
-use crate::host::{AppHandle, Emitter, Window};
+use crate::host::{AppHandle, Event, Window};
 
 /// What backs a folder up, and how it went last time.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -44,6 +44,13 @@ pub enum Schedule {
     Manual,
     Daily,
     Weekly,
+}
+
+/// A scheduled backup that ran: its folder, and how it went or why it couldn't.
+#[derive(Clone, Debug)]
+pub struct Finished {
+    pub source: String,
+    pub result: Result<LastRun, String>,
 }
 
 /// How a backup went.
@@ -594,7 +601,7 @@ fn ensure_scheduler() {
                     continue;
                 }
                 let result = run(&plan.id, &|_| {});
-                let _ = app.emit("backup-finished", serde_json::json!({ "source": plan.source, "result": result.as_ref().ok(), "error": result.as_ref().err() }));
+                app.emit(Event::BackupFinished(Finished { source: plan.source.clone(), result }));
             }
             if !scheduled(&plans()) {
                 SCHEDULER.store(false, Ordering::SeqCst);

@@ -199,20 +199,10 @@ impl Nearby {
     /// A model that sends `paths` (none: only looks and receives) through `backend`, and scans now.
     pub fn new(backend: Arc<dyn Backend>, paths: Vec<String>, cx: &mut Context<Self>) -> Self {
         let events = core_bridge::subscribe(cx, |this: &mut Nearby, event, cx| {
-            if event.name != "nearby-received" {
-                return;
-            }
-            let text = |key: &str| {
-                event
-                    .payload
-                    .get(key)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string()
-            };
-            let (from, path) = (text("from"), text("path"));
-            if !path.is_empty() {
-                this.on_received(from, path, cx);
+            if let core_bridge::CoreEvent::NearbyReceived { from, path } = event {
+                if !path.is_empty() {
+                    this.on_received(from.clone(), path.clone(), cx);
+                }
             }
         });
         let mut this = Self {
@@ -1133,8 +1123,10 @@ mod tests {
         env.visual.update(|_, cx| {
             core_bridge::emit(
                 cx,
-                "nearby-received",
-                serde_json::json!({ "from": "سارة", "path": r"C:\Users\me\Downloads\LocalSend\صورة.jpg" }),
+                core_bridge::CoreEvent::NearbyReceived {
+                    from: "سارة".into(),
+                    path: r"C:\Users\me\Downloads\LocalSend\صورة.jpg".into(),
+                },
             )
         });
         settle(&mut env.visual, |cx| {
@@ -1175,8 +1167,15 @@ mod tests {
         assert_eq!(count, 50);
         assert_eq!(newest, r"C:\In\59.jpg");
         // A device that sent no path says nothing (and a closed dialog that never asked has nothing to stop).
-        env.visual
-            .update(|_, cx| core_bridge::emit(cx, "nearby-received", serde_json::json!({ "from": "x" })));
+        env.visual.update(|_, cx| {
+            core_bridge::emit(
+                cx,
+                core_bridge::CoreEvent::NearbyReceived {
+                    from: "x".into(),
+                    path: String::new(),
+                },
+            )
+        });
         env.visual.run_until_parked();
         assert_eq!(model.read_with(&env.visual, |n, _| n.received().len()), 50);
     }

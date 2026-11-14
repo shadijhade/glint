@@ -287,10 +287,8 @@ impl Git {
         }
         // A repository on screen changed (a save, git add, a checkout): its tabs look again.
         if let Some(subscription) = core_bridge::subscribe(cx, |this, event, cx| {
-            if event.name == "git-changed" {
-                if let Some(root) = event.payload.as_str() {
-                    this.repository_changed(root, cx);
-                }
+            if let core_bridge::CoreEvent::GitChanged(root) = event {
+                this.repository_changed(root, cx);
             }
         }) {
             subscriptions.push(subscription);

@@ -71,7 +71,7 @@ fn watch(window: &Window, path: &str) -> Result<RecommendedWatcher, String> {
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(200));
                     pending.store(false, Ordering::SeqCst);
-                    let _ = window.emit("dir-changed", path);
+                    window.emit(crate::host::Event::DirChanged(path));
                 });
             }
         }

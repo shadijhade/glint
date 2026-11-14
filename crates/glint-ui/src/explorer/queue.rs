@@ -1,56 +1,22 @@
 //! The copy queue's side of the explorer. Ported from src/lib/queue.ts (`queueFiles`) and from explorer.ts
 //! (`initQueue`'s `whenFinished`).
 //!
-//! Adding a job asks glint-core's queue (`queue_add`). Core tells how every job goes with its "copy-queue"
-//! event (all jobs, as JSON); this part watches it only for the moment a job finishes: Undo is offered for what
-//! it made, what didn't go is said, and the folders it touched are read again. The queue's panel (progress,
+//! Adding a job asks glint-core's queue (`queue_add`). Core tells how every job goes with its copy-queue event
+//! (all jobs); this part watches it only for the moment a job finishes: Undo is offered for what it made, what
+//! didn't go is said, and the folders it touched are read again. The queue's panel (progress,
 //! Pause, Resume, Cancel, the conflict question) and the taskbar progress are the copy queue view's.
 
 use super::model::{Explorer, Prefs};
 use super::ops::notify_failed;
 use super::ops_types::*;
 use super::types::*;
+use crate::components::copy_queue::finished;
+use glint_core::queue::JobView;
 use glint_model::format::plural;
 use glint_model::paths::{base_name, parent_path, same_path};
 #[cfg(test)]
 use gpui_kit::Task;
 use gpui_kit::{AsyncApp, Context, WeakEntity};
-use serde::Deserialize;
-
-/// One failed file of a job.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct JobError {
-    path: String,
-    error: String,
-}
-
-/// One item a job made: where it came from and where it is now.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct JobMade {
-    from: String,
-    to: String,
-}
-
-/// The parts of core's `JobView` this part reads.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Job {
-    id: u64,
-    kind: String,
-    sources: Vec<String>,
-    dest: String,
-    state: String,
-    errors: Vec<JobError>,
-    made: Vec<JobMade>,
-}
-
-impl Job {
-    fn finished(&self) -> bool {
-        matches!(self.state.as_str(), "done" | "cancelled" | "failed")
-    }
-}
 
 /// Adds a copy or move to the queue and says the panel should show (`queueFiles`).
 pub(super) async fn queue_in(
@@ -88,20 +54,17 @@ impl Explorer {
         cx.spawn(async move |this, cx| queue_in(&this, cx, kind, sources, dest).await)
     }
 
-    /// Core's "copy-queue" event: every job as it is now. A job that went from running to finished is handled.
-    pub(super) fn on_queue_event(&mut self, payload: &serde_json::Value, cx: &mut Context<Self>) {
-        let Ok(jobs) = serde_json::from_value::<Vec<Job>>(payload.clone()) else {
-            return;
-        };
+    /// Core's copy-queue event: every job as it is now. A job that went from running to finished is handled.
+    pub(super) fn on_queue_event(&mut self, jobs: &[JobView], cx: &mut Context<Self>) {
         // The jobs as last told: only a job seen running before counts as newly finished (one first told as
         // finished, such as a list that was cleared and came back, isn't new).
         let before = std::mem::take(&mut self.ops.queue_seen);
         let mut newly_finished = Vec::new();
         for job in jobs {
-            let done = job.finished();
+            let done = finished(job);
             self.ops.queue_seen.insert(job.id, done);
             if done && before.get(&job.id) == Some(&false) {
-                newly_finished.push(job);
+                newly_finished.push(job.clone());
             }
         }
         for job in newly_finished {
@@ -111,7 +74,7 @@ impl Explorer {
 
     /// A queued copy or move finished: Undo offered as for Windows' own, what didn't go said, and the folders it
     /// touched read again.
-    fn job_finished(&mut self, job: Job, cx: &mut Context<Self>) {
+    fn job_finished(&mut self, job: JobView, cx: &mut Context<Self>) {
         let moving = job.kind == "move";
         let count = job.made.len();
         if count > 0 {
@@ -170,26 +133,5 @@ impl Explorer {
         for id in touched {
             self.reload(Some(id), cx).detach();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_job_is_read_from_cores_json_and_knows_when_it_is_finished() {
-        let jobs: Vec<Job> = serde_json::from_value(serde_json::json!([
-            {"id": 3, "kind": "copy", "sources": ["C:\\a\\x"], "dest": "C:\\b", "state": "done", "files": 1,
-             "errors": [{"path": "C:\\a\\y", "error": "Access is denied"}],
-             "made": [{"from": "C:\\a\\x", "to": "C:\\b\\x"}]},
-            {"id": 4, "kind": "move", "state": "copying"}
-        ]))
-        .expect("jobs parse");
-        assert!(jobs[0].finished());
-        assert_eq!(jobs[0].made[0].to, "C:\\b\\x");
-        assert_eq!(jobs[0].errors[0].error, "Access is denied");
-        assert!(!jobs[1].finished());
-        assert_eq!(jobs[1].id, 4);
     }
 }

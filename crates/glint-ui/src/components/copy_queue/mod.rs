@@ -35,7 +35,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-pub use job::{finished, job_from, job_title, jobs_from_json, left, state_text, status_line, taskbar, took};
+pub use job::{finished, job_from, job_title, left, state_text, status_line, taskbar, took};
 
 /// What the panel asks of the queue: core's `queue_*` functions, one for each button.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,11 +172,9 @@ impl CopyQueue {
     /// progress on, if any.
     pub fn with_service(service: Arc<dyn Service>, taskbar: Option<AnyWindowHandle>, cx: &mut Context<Self>) -> Self {
         let events = core_bridge::subscribe(cx, |this, event, cx| {
-            // The payload is the whole list. Anything else (an empty object) carries nothing to show.
-            if event.name == "copy-queue" {
-                if let Some(jobs) = jobs_from_json(&event.payload) {
-                    this.apply(jobs, cx);
-                }
+            // The whole list, as it is now.
+            if let core_bridge::CoreEvent::CopyQueue(jobs) = event {
+                this.apply(jobs.clone(), cx);
             }
         });
         let read = service.jobs();
