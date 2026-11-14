@@ -506,6 +506,18 @@ pub enum RemoteKind {
     Rclone,
 }
 
+impl RemoteKind {
+    /// The word it's saved as ("s3", "webdav", "sftp", "rclone"), which glint-core's connections take.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RemoteKind::S3 => "s3",
+            RemoteKind::Webdav => "webdav",
+            RemoteKind::Sftp => "sftp",
+            RemoteKind::Rclone => "rclone",
+        }
+    }
+}
+
 /// A remote connection (remote/), as its folders are reached at `remote:<id>`: no secret, which Windows
 /// Credential Manager keeps. `id` is made from the first name it's given, and kept through renames.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -575,6 +587,20 @@ pub enum RuleAction {
     Sync,
 }
 
+impl RuleAction {
+    /// The word it's saved as ("move", "rename"…), which glint-core's rules take.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleAction::Move => "move",
+            RuleAction::Rename => "rename",
+            RuleAction::Recycle => "recycle",
+            RuleAction::Unblock => "unblock",
+            RuleAction::Extract => "extract",
+            RuleAction::Sync => "sync",
+        }
+    }
+}
+
 /// How a sync rule keeps two places alike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -585,6 +611,17 @@ pub enum SyncMode {
     Mirror,
     /// Both ways.
     Both,
+}
+
+impl SyncMode {
+    /// The word it's saved as ("copy", "mirror", "both"), which glint-core's rules take.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SyncMode::Copy => "copy",
+            SyncMode::Mirror => "mirror",
+            SyncMode::Both => "both",
+        }
+    }
 }
 
 /// A folder rule (rules.rs): what it looks at (a folder, its subfolders if asked), what it takes (names,
@@ -1113,6 +1150,27 @@ impl AppState {
 mod tests {
     use super::*;
     const HOUR: i64 = 3_600_000;
+
+    /// glint-core takes a choice by the word it's saved as: the two must never drift apart.
+    #[test]
+    fn choices_are_handed_to_core_as_the_words_they_are_saved_as() {
+        for kind in [RemoteKind::S3, RemoteKind::Webdav, RemoteKind::Sftp, RemoteKind::Rclone] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), kind.as_str());
+        }
+        for action in [
+            RuleAction::Move,
+            RuleAction::Rename,
+            RuleAction::Recycle,
+            RuleAction::Unblock,
+            RuleAction::Extract,
+            RuleAction::Sync,
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), action.as_str());
+        }
+        for sync in [SyncMode::Copy, SyncMode::Mirror, SyncMode::Both] {
+            assert_eq!(serde_json::to_value(sync).unwrap(), sync.as_str());
+        }
+    }
 
     const DEFAULT_EXCLUSIONS: &str = concat!(
         r#"["node_modules",".git","dist","build","bin","obj",".vs",".idea","#,

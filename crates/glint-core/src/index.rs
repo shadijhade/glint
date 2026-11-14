@@ -108,7 +108,10 @@ pub async fn index_count(query: String, roots: Vec<String>, max: usize) -> Resul
 /// What was renamed, moved and deleted on the drives instant search covers, newest first: since
 /// `since` (ms), with `query` in a path, at most `max`. Rejects with "tooOld" for a service from
 /// before it kept history, and "off" when instant search doesn't run.
-pub async fn index_history(query: String, since: f64, max: u32) -> Result<shadui_index::proto::HistoryAnswer, String> {
+/// What instant search's service remembers of renames, moves and deletions.
+pub use shadui_index::proto::{HistoryAnswer, HistoryEvent, Kind as HistoryKind};
+
+pub async fn index_history(query: String, since: f64, max: u32) -> Result<HistoryAnswer, String> {
     #[cfg(windows)]
     {
         use shadui_index::client::{history, Error};

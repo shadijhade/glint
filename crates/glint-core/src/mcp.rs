@@ -594,16 +594,15 @@ fn search_text(args: &Value) -> Result<Value, String> {
 }
 
 /// How an agent starts this server: Glint.exe's path, and each agent's way of being told.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct Setup {
-    exe: String,
+    pub exe: String,
     /// Claude Code's command.
-    claude_code: String,
+    pub claude_code: String,
     /// VS Code's command, for PowerShell.
-    vscode: String,
+    pub vscode: String,
     /// For the settings files of Claude Desktop, Cursor and others (mcpServers).
-    json: String,
+    pub json: String,
 }
 
 pub fn mcp_setup() -> Result<Setup, String> {

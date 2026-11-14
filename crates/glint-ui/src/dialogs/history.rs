@@ -15,9 +15,7 @@
 //! **Stale answers.** The TypeScript numbered its requests and dropped the old ones. Here starting a load drops
 //! the one under way (its task is cancelled), so only the newest answer reaches the model.
 //!
-//! **Where the answer comes from.** glint-core returns `shadui_index`'s own `HistoryAnswer`, which glint-ui can't
-//! name (it doesn't depend on that crate). The answer crosses as JSON, which is the shape the TypeScript read, and
-//! is read here into this file's [`HistoryAnswer`]. A few serde steps for at most 5,000 events, on core's thread.
+//! **Where the answer comes from.** glint-core hands over the service's own `HistoryAnswer` as it is.
 //!
 //! **Local time.** Days are counted from local midnights (the TypeScript's `setHours`), through Windows' own time
 //! zone rules ([`local_day`]). The older days' heading is the date alone in Windows' long form, and a change's row
@@ -37,7 +35,6 @@ use crate::{t, theme};
 use glint_core::host::{AppHandle, Manager};
 use glint_model::format::{format_count, format_duration, format_full_date};
 use glint_model::paths::{base_name, parent_path};
-use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -55,96 +52,44 @@ const BIN_DIR: &str = "$recycle.bin\\";
 
 // ---- What the service answers --------------------------------------------------------------------------
 
-/// What was renamed, moved and deleted, newest first (the service's `HistoryAnswer`, read from its JSON).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryAnswer {
-    pub events: Vec<HistoryEvent>,
-    /// More matched than came.
-    pub limited: bool,
-    /// When the oldest event kept happened, in Unix milliseconds (0: none).
-    pub oldest: i64,
-    /// The service's time, in milliseconds.
-    pub elapsed: f64,
+/// What was renamed, moved and deleted, newest first: the service's own answer, as core hands it over.
+pub use glint_core::index::{HistoryAnswer, HistoryEvent, HistoryKind as Kind};
+
+/// The badge's word for a kind of change.
+fn kind_label(kind: Kind) -> SharedString {
+    match kind {
+        Kind::Renamed => t!("Renamed"),
+        Kind::Moved => t!("Moved"),
+        Kind::Deleted => t!("Deleted"),
+        Kind::Recycled => t!("Recycled"),
+        Kind::Restored => t!("Restored"),
+        Kind::Emptied => t!("Emptied"),
+    }
 }
 
-/// One change (the service's `HistoryEvent`).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryEvent {
-    /// Unix milliseconds.
-    pub time: i64,
-    pub kind: Kind,
-    pub dir: bool,
-    /// Where it was (for something in the Recycle Bin, its place there).
-    pub path: String,
-    /// Where it went (renamed, moved, recycled, restored).
-    #[serde(default)]
-    pub to: Option<String>,
-    /// For something in the Recycle Bin: where it was before.
-    #[serde(default)]
-    pub was: Option<String>,
-    /// Where it is now, if it's still there.
-    #[serde(default)]
-    pub now: Option<String>,
-    /// A folder deleted with what was in it: how many items went with it. A burst: how many more went from `path`.
-    pub items: u32,
-    pub burst: bool,
+fn kind_icon(kind: Kind) -> IconName {
+    match kind {
+        Kind::Renamed => IconName::PenLine,
+        Kind::Moved => IconName::FolderInput,
+        Kind::Deleted | Kind::Emptied => IconName::FileX,
+        Kind::Recycled => IconName::Trash,
+        Kind::Restored => IconName::Undo2,
+    }
 }
 
-/// How a change happened (the TypeScript's `HistoryKind`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Kind {
-    Renamed,
-    Moved,
-    /// Deleted for good, not to the Recycle Bin.
-    Deleted,
-    /// Put in the Recycle Bin.
-    Recycled,
-    /// Taken back out of it.
-    Restored,
-    /// Deleted from it.
-    Emptied,
-}
-
-impl Kind {
-    /// The badge's word.
-    fn label(self) -> SharedString {
-        match self {
-            Self::Renamed => t!("Renamed"),
-            Self::Moved => t!("Moved"),
-            Self::Deleted => t!("Deleted"),
-            Self::Recycled => t!("Recycled"),
-            Self::Restored => t!("Restored"),
-            Self::Emptied => t!("Emptied"),
-        }
-    }
-
-    fn icon(self) -> IconName {
-        match self {
-            Self::Renamed => IconName::PenLine,
-            Self::Moved => IconName::FolderInput,
-            Self::Deleted | Self::Emptied => IconName::FileX,
-            Self::Recycled => IconName::Trash,
-            Self::Restored => IconName::Undo2,
-        }
-    }
-
-    /// The badge's color: sky for a rename or move, rose for a deletion, amber for the bin, emerald for a restore
-    /// (the TypeScript's `KIND` tones), in the theme's light or dark shade.
-    fn tone(self, t: &theme::Tokens) -> Hsla {
-        let name = match (self, t.dark) {
-            (Self::Renamed | Self::Moved, false) => "sky-600",
-            (Self::Renamed | Self::Moved, true) => "sky-400",
-            (Self::Deleted | Self::Emptied, _) => "rose-500",
-            (Self::Recycled, false) => "amber-700",
-            (Self::Recycled, true) => "amber-400",
-            (Self::Restored, false) => "emerald-600",
-            (Self::Restored, true) => "emerald-400",
-        };
-        theme::tailwind(name).unwrap_or(t.muted_foreground)
-    }
+/// The badge's color: sky for a rename or move, rose for a deletion, amber for the bin, emerald for a restore, in
+/// the theme's light or dark shade.
+fn kind_tone(kind: Kind, t: &theme::Tokens) -> Hsla {
+    let name = match (kind, t.dark) {
+        (Kind::Renamed | Kind::Moved, false) => "sky-600",
+        (Kind::Renamed | Kind::Moved, true) => "sky-400",
+        (Kind::Deleted | Kind::Emptied, _) => "rose-500",
+        (Kind::Recycled, false) => "amber-700",
+        (Kind::Recycled, true) => "amber-400",
+        (Kind::Restored, false) => "emerald-600",
+        (Kind::Restored, true) => "emerald-400",
+    };
+    theme::tailwind(name).unwrap_or(t.muted_foreground)
 }
 
 /// The span the dialog looks back over (the TypeScript's `SPANS`). The default is a week.
@@ -266,12 +211,7 @@ pub fn core_source(app: AppHandle) -> Source {
     let enable_app = app.clone();
     Source {
         answer: Arc::new(|query: String, since: i64, max: u32| {
-            Box::pin(async move {
-                let answer = glint_core::index::index_history(query, since as f64, max).await?;
-                // The same JSON shape the TypeScript read; see the module notes for why it goes through it.
-                let value = serde_json::to_value(&answer).map_err(|error| error.to_string())?;
-                serde_json::from_value::<HistoryAnswer>(value).map_err(|error| error.to_string())
-            })
+            Box::pin(async move { glint_core::index::index_history(query, since as f64, max).await })
         }),
         enable: Arc::new(move || {
             let app = enable_app.clone();
@@ -889,7 +829,7 @@ impl HistoryDialog {
     /// its day's card: the card's top and bottom edges are drawn by its first and last rows.
     fn event_row(index: usize, e: &HistoryEvent, (first, last): (bool, bool), t: &theme::Tokens) -> impl IntoElement {
         let kind = e.kind;
-        let tone = kind.tone(t);
+        let tone = kind_tone(kind, t);
         let (name, place) = describe(e);
         // Still in the Recycle Bin is no place to show: it's restored from there.
         let still_there = e.now.as_deref().filter(|path| !in_recycle_bin(path));
@@ -945,7 +885,7 @@ impl HistoryDialog {
         row_start()
             .id(("history-row", index))
             .role(Role::Group)
-            .aria_label(format!("{}: {name}, {place}", kind.label()))
+            .aria_label(format!("{}: {name}, {place}", kind_label(kind)))
             .test_support()
             .items_center()
             .gap(space(3.))
@@ -972,8 +912,8 @@ impl HistoryDialog {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(tone)
                     .bg(tone.opacity(0.15))
-                    .child(icon(kind.icon()).size_3().flex_none())
-                    .child(kind.label()),
+                    .child(icon(kind_icon(kind)).size_3().flex_none())
+                    .child(kind_label(kind)),
             )
             .child(
                 col()
@@ -1725,7 +1665,7 @@ mod tests {
         let fake = Fake::new(Ok(answer(vec![arabic.clone()])));
         visual.update(|window, cx| open_with(window, cx, fake.source(), "تقرير"));
         let (name, place) = describe(&arabic);
-        let label = format!("{}: {name}, {place}", Kind::Renamed.label());
+        let label = format!("{}: {name}, {place}", kind_label(Kind::Renamed));
         settle(&mut visual, |cx| has(cx, &label));
         assert_eq!(role_of(&mut visual, &label), Some(Role::Group));
         // The dialog's own name is the catalog's Arabic.
